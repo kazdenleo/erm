@@ -53,4 +53,17 @@ export const pricingStrategiesApi = {
     const response = await api.post('/pricing-strategies/preview', payload);
     return response.data;
   },
+
+  async priceChanges({ days = 7, marketplace = '', productId = '', limit = 150, offset = 0 } = {}) {
+    const response = await api.get('/pricing-strategies/price-changes', {
+      params: {
+        days,
+        limit,
+        offset,
+        ...(marketplace ? { marketplace } : {}),
+        ...(productId ? { productId } : {}),
+      },
+    });
+    return response.data;
+  },
 };

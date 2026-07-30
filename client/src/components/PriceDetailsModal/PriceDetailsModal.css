@@ -121,6 +121,67 @@
   color: #3b82f6;
 }
 
+.price-discount-helper {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.price-discount-helper-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.price-discount-helper-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1 1 140px;
+}
+
+.price-discount-helper-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.price-discount-helper-input {
+  width: 140px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.price-discount-helper-input:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.price-discount-helper-suffix {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 14px;
+}
+
+.price-discount-helper-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.35;
+}
+
 @media (max-width: 768px) {
   .price-details-grid {
     grid-template-columns: 1fr;
@@ -130,6 +191,10 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+  }
+
+  .price-discount-helper-input {
+    width: 120px;
   }
 }
 

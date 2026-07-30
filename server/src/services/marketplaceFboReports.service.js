@@ -17,8 +17,22 @@ import {
   loadMarketplaceTaxContext,
   buildTaxMetaFromContext,
 } from '../utils/marketplaceOrderTax.js';
+import {
+  articleKeyVariants,
+  sqlArticlesMatch,
+  sqlOzonOfferProductMapSubquery,
+} from '../utils/offerArticleKey.js';
+import {
+  withReportMaintenanceLock,
+  queryRetryDeadlock,
+  FBO_REPORT_MAINT_LOCK_BASE,
+} from '../utils/marketplaceReportMaintenanceLock.js';
 
 const YM_API = 'https://api.partner.market.yandex.ru';
+
+async function withFboReportMaintenanceLock(profileId, fn) {
+  return withReportMaintenanceLock(FBO_REPORT_MAINT_LOCK_BASE, profileId, fn);
+}
 
 function parseDateYmd(raw, fallback) {
   const s = String(raw || '').trim();
@@ -562,8 +576,47 @@ async function buildProductSkuLookup(profileId) {
       map.set(`wb:${normSkuKey(p.sku)}`, p.id);
       map.set(`ozon:${normSkuKey(p.sku)}`, p.id);
       map.set(`ym:${normSkuKey(p.sku)}`, p.id);
+      for (const k of articleKeyVariants(p.sku)) {
+        if (!map.has(`ozon:art:${k}`)) map.set(`ozon:art:${k}`, p.id);
+      }
     }
     if (p.mp_wb_vendor_code) map.set(`wb:${normSkuKey(p.mp_wb_vendor_code)}`, p.id);
+  }
+
+  for (const row of res.rows || []) {
+    const mp = mpToProductSkusMarketplace(row.marketplace);
+    if (mp === 'ozon' && row.sku) {
+      for (const k of articleKeyVariants(row.sku)) {
+        if (!map.has(`ozon:art:${k}`)) map.set(`ozon:art:${k}`, row.product_id);
+      }
+    }
+  }
+
+  // Ozon finance reports use numeric SKU (= marketplace_sku в заказах), часто ≠ product_skus.marketplace_product_id.
+  const fromOrders = await query(
+    `SELECT DISTINCT ON (TRIM(CAST(o.marketplace_sku AS TEXT)))
+       TRIM(CAST(o.marketplace_sku AS TEXT)) AS mp_sku,
+       TRIM(o.offer_id) AS offer_id
+     FROM orders o
+     WHERE o.profile_id = $1
+       AND LOWER(o.marketplace) = 'ozon'
+       AND o.marketplace_sku IS NOT NULL
+       AND TRIM(CAST(o.marketplace_sku AS TEXT)) <> ''
+       AND o.offer_id IS NOT NULL
+       AND TRIM(o.offer_id) <> ''
+     ORDER BY TRIM(CAST(o.marketplace_sku AS TEXT)), o.id DESC`,
+    [profileId]
+  );
+  for (const row of fromOrders.rows || []) {
+    if (!row.mp_sku) continue;
+    if (map.has(`ozon:${normSkuKey(row.mp_sku)}`)) continue;
+    for (const k of articleKeyVariants(row.offer_id)) {
+      const pid = map.get(`ozon:art:${k}`);
+      if (pid) {
+        map.set(`ozon:${normSkuKey(row.mp_sku)}`, pid);
+        break;
+      }
+    }
   }
 
   return map;
@@ -593,7 +646,8 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
      WHERE profile_id = $1
        AND marketplace = 'ozon'
        AND raw_json IS NOT NULL
-       ${syncFilter}`,
+       ${syncFilter}
+     ORDER BY id ASC`,
     params
   );
 
@@ -602,7 +656,7 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
   const batchSize = 100;
   let updated = 0;
   for (let i = 0; i < res.rows.length; i += batchSize) {
-    const batch = res.rows.slice(i, i + batchSize);
+    const batch = res.rows.slice(i, i + batchSize).sort((a, b) => Number(a.id) - Number(b.id));
     const values = [];
     const batchParams = [];
     let p = 1;
@@ -623,7 +677,7 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
         amounts.payout_amount
       );
     }
-    await query(
+    await queryRetryDeadlock(
       `UPDATE marketplace_fbo_report_lines AS l
        SET
          retail_amount = v.retail_amount,
@@ -657,7 +711,8 @@ async function recategorizeYmReportLines(profileId, syncId = null) {
      WHERE profile_id = $1
        AND marketplace IN ('ym', 'yandex', 'yandexmarket')
        AND raw_json IS NOT NULL
-       ${syncFilter}`,
+       ${syncFilter}
+     ORDER BY id ASC`,
     params
   );
 
@@ -666,7 +721,7 @@ async function recategorizeYmReportLines(profileId, syncId = null) {
   const batchSize = 100;
   let updated = 0;
   for (let i = 0; i < res.rows.length; i += batchSize) {
-    const batch = res.rows.slice(i, i + batchSize);
+    const batch = res.rows.slice(i, i + batchSize).sort((a, b) => Number(a.id) - Number(b.id));
     const values = [];
     const batchParams = [];
     let p = 1;
@@ -687,7 +742,7 @@ async function recategorizeYmReportLines(profileId, syncId = null) {
         amounts.payout_amount
       );
     }
-    await query(
+    await queryRetryDeadlock(
       `UPDATE marketplace_fbo_report_lines AS l
        SET
          retail_amount = v.retail_amount,
@@ -721,7 +776,8 @@ async function recategorizeWbReportLines(profileId, syncId = null) {
      WHERE profile_id = $1
        AND marketplace IN ('wb', 'wildberries')
        AND raw_json IS NOT NULL
-       ${syncFilter}`,
+       ${syncFilter}
+     ORDER BY id ASC`,
     params
   );
 
@@ -730,7 +786,7 @@ async function recategorizeWbReportLines(profileId, syncId = null) {
   const batchSize = 100;
   let updated = 0;
   for (let i = 0; i < res.rows.length; i += batchSize) {
-    const batch = res.rows.slice(i, i + batchSize);
+    const batch = res.rows.slice(i, i + batchSize).sort((a, b) => Number(a.id) - Number(b.id));
     const values = [];
     const batchParams = [];
     let p = 1;
@@ -751,7 +807,7 @@ async function recategorizeWbReportLines(profileId, syncId = null) {
         amounts.payout_amount
       );
     }
-    await query(
+    await queryRetryDeadlock(
       `UPDATE marketplace_fbo_report_lines AS l
        SET
          retail_amount = v.retail_amount,
@@ -829,8 +885,17 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
          SELECT l2.id, ps.product_id
          FROM marketplace_fbo_report_lines l2
          JOIN product_skus ps ON ps.marketplace = 'ozon'
-           AND ps.marketplace_product_id IS NOT NULL
-           AND TRIM(CAST(ps.marketplace_product_id AS TEXT)) = TRIM(l2.sku)
+           AND (
+             (
+               ps.marketplace_product_id IS NOT NULL
+               AND TRIM(CAST(ps.marketplace_product_id AS TEXT)) = TRIM(l2.sku)
+             )
+             OR (
+               ps.mp_extra ? 'ozon_sku'
+               AND NULLIF(TRIM(ps.mp_extra->>'ozon_sku'), '') IS NOT NULL
+               AND TRIM(ps.mp_extra->>'ozon_sku') = TRIM(l2.sku)
+             )
+           )
          JOIN products p ON p.id = ps.product_id AND p.profile_id = l2.profile_id
          WHERE l2.profile_id = $1
            AND l2.marketplace = 'ozon'
@@ -839,7 +904,7 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
            AND TRIM(l2.sku) <> ''
            ${syncFilter}
          UNION ALL
-         SELECT l2.id, ps.product_id
+         SELECT l2.id, hit.product_id
          FROM marketplace_fbo_report_lines l2
          JOIN orders o ON o.profile_id = l2.profile_id
            AND LOWER(o.marketplace) = 'ozon'
@@ -848,15 +913,39 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
              l2.sku IS NULL OR TRIM(l2.sku) = ''
              OR CAST(o.marketplace_sku AS TEXT) = TRIM(l2.sku)
            )
-         JOIN product_skus ps ON ps.marketplace = 'ozon'
-           AND o.offer_id IS NOT NULL
-           AND TRIM(ps.sku) = TRIM(o.offer_id)
-         JOIN products p ON p.id = ps.product_id AND p.profile_id = l2.profile_id
+         JOIN LATERAL (
+           SELECT p.id AS product_id
+           FROM products p
+           LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+           WHERE p.profile_id = l2.profile_id
+             AND o.offer_id IS NOT NULL
+             AND TRIM(o.offer_id) <> ''
+             AND (
+               ${sqlArticlesMatch('ps.sku', 'o.offer_id')}
+               OR ${sqlArticlesMatch('p.sku', 'o.offer_id')}
+             )
+           ORDER BY p.id
+           LIMIT 1
+         ) hit ON true
          WHERE l2.profile_id = $1
            AND l2.marketplace = 'ozon'
            AND l2.product_id IS NULL
            AND l2.posting_number IS NOT NULL
            AND TRIM(l2.posting_number) <> ''
+           ${syncFilter}
+         UNION ALL
+         -- Ozon: finance SKU = orders.marketplace_sku (offer_id с нормализацией дефисов/DT/х)
+         SELECT l2.id, map.product_id
+         FROM marketplace_fbo_report_lines l2
+         JOIN (
+           ${sqlOzonOfferProductMapSubquery()}
+         ) map ON map.mp_sku = TRIM(l2.sku)
+         WHERE l2.profile_id = $1
+           AND l2.marketplace = 'ozon'
+           AND l2.product_id IS NULL
+           AND l2.sku IS NOT NULL
+           AND TRIM(l2.sku) <> ''
+           AND TRIM(l2.sku) <> '0'
            ${syncFilter}
        ) all_matches
        ORDER BY line_id, product_id
@@ -1330,16 +1419,18 @@ class MarketplaceFboReportsService {
     const itemsQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
     const summaryQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter);
 
-    if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
-      await backfillWbLineIdentity(pid);
-      await recategorizeWbReportLines(pid);
-    }
-    if (!mpFilter || mpFilter.includes('ozon')) {
-      await recategorizeOzonReportLines(pid);
-    }
-    if (!mpFilter || mpFilter.includes('ym') || mpFilter.includes('yandex')) {
-      await recategorizeYmReportLines(pid);
-    }
+    await withFboReportMaintenanceLock(pid, async () => {
+      if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
+        await backfillWbLineIdentity(pid);
+        await recategorizeWbReportLines(pid);
+      }
+      if (!mpFilter || mpFilter.includes('ozon')) {
+        await recategorizeOzonReportLines(pid);
+      }
+      if (!mpFilter || mpFilter.includes('ym') || mpFilter.includes('yandex')) {
+        await recategorizeYmReportLines(pid);
+      }
+    });
 
     const itemsSql = `
       SELECT
@@ -1350,11 +1441,27 @@ class MarketplaceFboReportsService {
         SUM(
           CASE
             WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN GREATEST(l.quantity, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries') THEN GREATEST(l.quantity, 0)
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+              THEN GREATEST(l.quantity, 0)
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN GREATEST(l.quantity, 0)
             ELSE 0
           END
         )::int AS sold_qty,
-        SUM(l.retail_amount)::numeric AS sold_amount,
+        SUM(
+          CASE
+            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN l.retail_amount
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+              THEN l.retail_amount
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN l.retail_amount
+            ELSE 0
+          END
+        )::numeric AS sold_amount,
         SUM(l.commission_amount)::numeric AS commission_amount,
         SUM(l.logistics_amount)::numeric AS logistics_amount,
         SUM(l.storage_amount)::numeric AS storage_amount,
@@ -1366,8 +1473,12 @@ class MarketplaceFboReportsService {
           CASE
             WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
               THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries')
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
               THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
             ELSE 0
           END
         )::numeric AS cost_amount
@@ -1377,7 +1488,18 @@ class MarketplaceFboReportsService {
         AND l.operation_date >= $2::date AND l.operation_date <= $3::date
         ${itemsQuery.mpClause}
       GROUP BY COALESCE(l.product_id, 0), COALESCE(NULLIF(TRIM(l.sku), ''), '—')
-      ORDER BY SUM(l.retail_amount) DESC, sku ASC
+      ORDER BY SUM(
+        CASE
+          WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN l.retail_amount
+          WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+            THEN l.retail_amount
+          WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+            l.operation_type ILIKE '%Плат%покупателя%'
+            OR l.operation_type ILIKE '%платеж покупателя%'
+          ) THEN l.retail_amount
+          ELSE 0
+        END
+      ) DESC, sku ASC
       ${itemsQuery.limitClause}
     `;
 
@@ -1386,11 +1508,27 @@ class MarketplaceFboReportsService {
         SUM(
           CASE
             WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN GREATEST(l.quantity, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries') THEN GREATEST(l.quantity, 0)
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+              THEN GREATEST(l.quantity, 0)
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN GREATEST(l.quantity, 0)
             ELSE 0
           END
         )::int AS sold_qty,
-        SUM(l.retail_amount)::numeric AS sold_amount,
+        SUM(
+          CASE
+            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN l.retail_amount
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+              THEN l.retail_amount
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN l.retail_amount
+            ELSE 0
+          END
+        )::numeric AS sold_amount,
         SUM(l.commission_amount)::numeric AS commission_amount,
         SUM(l.logistics_amount)::numeric AS logistics_amount,
         SUM(l.storage_amount)::numeric AS storage_amount,
@@ -1402,8 +1540,12 @@ class MarketplaceFboReportsService {
           DISTINCT CASE
             WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
               THEN NULLIF(TRIM(l.order_id), '')
-            WHEN l.marketplace NOT IN ('wb', 'wildberries')
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
               THEN COALESCE(NULLIF(TRIM(l.posting_number), ''), NULLIF(TRIM(l.order_id), ''))
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN COALESCE(NULLIF(TRIM(l.posting_number), ''), NULLIF(TRIM(l.order_id), ''))
           END
         )::int AS orders_count
       FROM marketplace_fbo_report_lines l
@@ -1505,17 +1647,19 @@ class MarketplaceFboReportsService {
     const mpFilter = normalizeMarketplaceFilter(marketplace);
     const rowLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 500));
 
-    if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
-      await enrichWbLinesFromOrderSale(pid);
-      await recategorizeWbReportLines(pid);
-    }
-    if (!mpFilter || mpFilter.includes('ozon')) {
-      await recategorizeOzonReportLines(pid);
-    }
-    if (!mpFilter || mpFilter.includes('ym') || mpFilter.includes('yandex')) {
-      await recategorizeYmReportLines(pid);
-    }
-    await linkReportLinesToProducts(pid);
+    await withFboReportMaintenanceLock(pid, async () => {
+      if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
+        await enrichWbLinesFromOrderSale(pid);
+        await recategorizeWbReportLines(pid);
+      }
+      if (!mpFilter || mpFilter.includes('ozon')) {
+        await recategorizeOzonReportLines(pid);
+      }
+      if (!mpFilter || mpFilter.includes('ym') || mpFilter.includes('yandex')) {
+        await recategorizeYmReportLines(pid);
+      }
+      await linkReportLinesToProducts(pid);
+    });
 
     const orderQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
 

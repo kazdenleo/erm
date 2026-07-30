@@ -842,11 +842,17 @@ class OrdersController {
       const action = req.body?.action ?? 'toggle';
       const productId = req.body?.productId ?? req.body?.product_id ?? null;
       const quantity = req.body?.quantity ?? null;
+      const allowIncomingReserve =
+        req.body?.allowIncomingReserve === true ||
+        req.body?.allow_incoming_reserve === true ||
+        req.body?.fromIncoming === true ||
+        req.body?.from_incoming === true;
       const data = await ordersService.setOrderReserve(marketplace, orderId, {
         profileId: req.user?.profileId ?? null,
         action,
         productId,
-        quantity
+        quantity,
+        allowIncomingReserve
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {

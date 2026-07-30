@@ -205,6 +205,8 @@ ls
 ```bash
 cd /opt/erm && git pull origin main
 cd /opt/erm/client && npm run build
+# nginx (www-data): client/ должен быть 755 (не 700), иначе SPA 404
+bash /opt/erm/scripts/vps-fix-client-build-perms.sh
 pm2 restart erm-api --update-env
 ```
 

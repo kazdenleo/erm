@@ -16,21 +16,20 @@ import ordersService from './orders.service.js';
 import {
   trySubmitPurchaseToSupplier,
   supplierPreSubmitRequired,
-  buildSubmitLinesFromItems,
-  trySubmitLinesToSupplier,
 } from './supplierOrderPlacement.service.js';
 import {
   enrichProcurementNote,
   upgradeLegacyPurchaseArrivalNote,
   resolveArrivalBucketForSupplier,
 } from '../utils/openPurchaseLookup.js';
+import { orderIdsForPurchaseLookup } from '../utils/orderPurchaseLookup.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
 import { requireWarehouseDocumentScope } from '../utils/stockDocumentScope.js';
 import {
   readDocumentIncomingNetOnWarehouse,
-  readProductGlobalIncomingNet,
   transferIncomingBetweenWarehouses,
 } from '../utils/stockWarehouseReassign.js';
 
@@ -424,6 +423,61 @@ function collectSourceOrdersFromPurchaseItems(items) {
   return [...map.values()];
 }
 
+function formatSourceOrderIdsForMessage(refs, limit = 12) {
+  const ids = (refs || []).map((r) => String(r.orderId || '').trim()).filter(Boolean);
+  if (!ids.length) return '';
+  const head = ids.slice(0, limit);
+  return head.join(', ') + (ids.length > limit ? '…' : '');
+}
+
+function supplierSubmitNeedsRollback(supplierSubmit, { apiSubmitRequired = false } = {}) {
+  if (!apiSubmitRequired) return false;
+  if (!supplierSubmit || supplierSubmit.skipped) return false;
+  if (supplierSubmit.reason === 'already_submitted') return false;
+  if (supplierSubmit.submitted === true && !supplierSubmit.partial) return false;
+  // Полный отказ или частичный приём — откатываем то, что поставщик не взял.
+  if (supplierSubmit.submitted !== true) return true;
+  return Boolean(supplierSubmit.partial && Array.isArray(supplierSubmit.failedLines));
+}
+
+async function notifySupplierSubmitFailed({
+  supplierSubmit,
+  orderRefs,
+  purchaseId,
+  supplierName,
+  profileId,
+}) {
+  const refs = Array.isArray(orderRefs) ? orderRefs : [];
+  const orderLabel = formatSourceOrderIdsForMessage(refs) || '—';
+  const reason =
+    String(supplierSubmit?.message || '').trim() ||
+    'Поставщик не принял позиции (ошибка API или блок заказа)';
+  const name = supplierName || supplierSubmit?.supplierName || 'поставщик';
+  try {
+    await addRuntimeNotification({
+      type: 'supplier_order_submit_failed',
+      severity: 'error',
+      source: 'supplier_order_placement',
+      title: 'Заказы не отправлены поставщику',
+      message:
+        `${name}: ${reason}. Заказы остались в статусе «Новый»: ${orderLabel}.` +
+        (purchaseId ? ` Локальная закупка №${purchaseId} откачена.` : ''),
+      meta: {
+        url: '/orders?status=new',
+        purchase_id: purchaseId || null,
+        profile_id: profileId ?? null,
+        supplier_name: name,
+        order_ids: refs.map((r) => r.orderId),
+        reason: supplierSubmit?.reason || null,
+      },
+    });
+  } catch (e) {
+    logger.warn('[Purchases] notifySupplierSubmitFailed failed', {
+      message: e?.message || String(e),
+    });
+  }
+}
+
 async function loadOrderRowsForSourceOrders(sourceOrders) {
   const rows = [];
   for (const ref of sourceOrders || []) {
@@ -516,7 +570,7 @@ function scheduleProcurementReserveReapply(productIds, { label = 'procurement-re
   });
 }
 
-/** После приёмки/заказа у поставщика: дозарезервировать заказы «В закупке», если появилось покрытие. */
+/** После приёмки/заказа у поставщика: дозарезервировать и перевести покрытие «в пути» → «со склада». */
 async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
   const purId = parseInt(purchaseId, 10);
   const pid = normalizeProfileId(profileId);
@@ -526,9 +580,30 @@ async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
     [purId]
   );
   const productIds = new Set();
+  const sourceRefs = [];
   for (const row of items.rows || []) {
     const p = parseInt(row.product_id, 10);
     if (Number.isFinite(p) && p > 0) productIds.add(p);
+    for (const o of parseSourceOrdersJson(row.source_orders)) {
+      if (o?.marketplace != null && o?.orderId != null) {
+        sourceRefs.push({ marketplace: o.marketplace, orderId: String(o.orderId) });
+      }
+    }
+  }
+  if (productIds.size > 0) {
+    try {
+      await ordersService.promoteIncomingOrderReservesToOnHand({
+        productIds: [...productIds],
+        sourceOrders: sourceRefs,
+        profileId: pid,
+        reason: `Приёмка по закупке №${purId}: резерв «в пути» → со склада`,
+      });
+    } catch (e) {
+      logger.warn('[Purchases] promoteIncomingOrderReservesToOnHand failed', {
+        purchaseId: purId,
+        message: e?.message || String(e),
+      });
+    }
   }
   scheduleProcurementReserveReapply(productIds, {
     label: 'background reapply reserve after purchase',
@@ -700,10 +775,14 @@ async function reconcilePurchasePendingIncomingOnWarehouseInTx(
   if (gap <= 0) return;
 
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
-  const globalNet = await readProductGlobalIncomingNet(client, pid);
+  const pr = await client.query(
+    'SELECT COALESCE(incoming_quantity, 0)::int AS inc FROM products WHERE id = $1',
+    [pid]
+  );
+  const currentInc = Math.max(0, Number(pr.rows?.[0]?.inc) || 0);
   await client.query(
     'UPDATE products SET incoming_quantity = GREATEST(0, $1::int), updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-    [Math.max(0, globalNet + gap), pid]
+    [Math.max(0, currentInc + gap), pid]
   );
   await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
     productId: pid,
@@ -928,12 +1007,21 @@ async function subtractIncomingForPurchaseLineRemovalInTx(
     metaKey: 'purchase_id',
     documentId: purchaseId,
   });
-  const actualRem = Math.min(rem, netOnPurchaseWh > 0 ? netOnPurchaseWh : rem);
+  // Только остаток по ЭТОМУ документу. Нельзя fallback на rem при net=0 —
+  // иначе списываем «в пути» чужих открытых закупок.
+  if (netOnPurchaseWh <= 0) return;
+  const actualRem = Math.min(rem, netOnPurchaseWh);
   if (actualRem <= 0) return;
 
+  // База — products.incoming_quantity, не SUM(журнала): исторический нетто журнала
+  // часто отрицательный (старые перекосы) и Math.max(0, journal) обнуляет чужое «в пути».
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
-  const globalNet = await readProductGlobalIncomingNet(client, pid);
-  const newIncoming = Math.max(0, globalNet - actualRem);
+  const pr = await client.query(
+    'SELECT COALESCE(incoming_quantity, 0)::int AS inc FROM products WHERE id = $1',
+    [pid]
+  );
+  const currentInc = Math.max(0, Number(pr.rows?.[0]?.inc) || 0);
+  const newIncoming = Math.max(0, currentInc - actualRem);
   await client.query(
     'UPDATE products SET incoming_quantity = GREATEST(0, $1::int), updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     [newIncoming, pid]
@@ -1279,14 +1367,23 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId, { re
   const isReceiptEdit = /изменение/i.test(suffix);
   const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
   const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
-  // Только «исходные» проводки документа; строки сторно (reversal_of) не трогаем — нельзя откатить откат.
+  // Только «исходные» проводки документа; сторно (reversal_of) не трогаем.
+  // Уже откатанные оригиналы тоже пропускаем — иначе повторный откат (отмена + удаление закупки)
+  // заново возвращает incoming и раздувает «в пути».
   const movements = await client.query(
-    `SELECT id, product_id, type, quantity_change, warehouse_id, meta
-     FROM stock_movements
-     WHERE (meta->>'purchase_receipt_id') IS NOT NULL
-       AND (meta->>'purchase_receipt_id')::bigint = $1
-       AND (meta->>'reversal_of') IS NULL
-     ORDER BY id ASC`,
+    `SELECT sm.id, sm.product_id, sm.type, sm.quantity_change, sm.warehouse_id, sm.meta
+     FROM stock_movements sm
+     WHERE (sm.meta->>'purchase_receipt_id') IS NOT NULL
+       AND (sm.meta->>'purchase_receipt_id')::bigint = $1
+       AND (sm.meta->>'reversal_of') IS NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM stock_movements rev
+         WHERE (rev.meta->>'reversal_of') IS NOT NULL
+           AND (rev.meta->>'reversal_of') ~ '^[0-9]+$'
+           AND (rev.meta->>'reversal_of')::bigint = sm.id
+       )
+     ORDER BY sm.id ASC`,
     [rid]
   );
   const rows = movements.rows || [];
@@ -1635,8 +1732,11 @@ async function releaseReservesAfterRevertForSourceOrder(marketplace, orderId) {
       ? await repo.findByOrderGroupId(String(gid))
       : [row];
   for (const r of rows || []) {
-    const st = r.status;
+    const st = String(r.status ?? '').trim().toLowerCase();
+    // Ещё в закупке — резерв оставляем под строку.
     if (st === 'in_procurement') continue;
+    // На сборке / собран: правка закупки не должна снимать резерв (даже если заказ ещё в source_orders).
+    if (st === 'in_assembly' || st === 'wb_assembly' || st === 'assembled') continue;
     await ordersService.releaseReserveIfExistsForOrder(r.marketplace, r.orderId ?? r.order_id);
   }
 }
@@ -2285,7 +2385,7 @@ class PurchasesService {
     return { purchase, items: lines.rows || [], receipts: receipts2.rows || [] };
   }
 
-  /** Отправить закупку поставщику (Mikado / Moskvorechie). force=true — повторная отправка. */
+  /** Отправить закупку поставщику по API (любой адаптер). force=true — повторная отправка. */
   async submitToSupplier(purchaseId, { profileId, force = false } = {}) {
     const id = parseInt(purchaseId, 10);
     if (!id || Number.isNaN(id)) {
@@ -2319,16 +2419,233 @@ class PurchasesService {
       err.statusCode = 400;
       throw err;
     }
-    return trySubmitPurchaseToSupplier({
+    const result = await trySubmitPurchaseToSupplier({
       purchaseId: id,
       supplierId,
       profileId: pid,
       force: Boolean(force),
     });
+    if (
+      result &&
+      !result.skipped &&
+      result.reason !== 'already_submitted' &&
+      result.submitted !== true
+    ) {
+      const sources = await query(
+        `SELECT source_orders FROM purchase_items WHERE purchase_id = $1`,
+        [id]
+      );
+      const orderRefs = [];
+      const seen = new Set();
+      for (const row of sources.rows || []) {
+        for (const o of parseSourceOrdersJson(row.source_orders)) {
+          const dbMp = orderMarketplaceToDb(o.marketplace);
+          const oid = String(o.orderId ?? '').trim();
+          const key = `${dbMp}|${oid}`;
+          if (!dbMp || !oid || seen.has(key)) continue;
+          seen.add(key);
+          orderRefs.push({ marketplace: dbMp, orderId: oid });
+        }
+      }
+      await notifySupplierSubmitFailed({
+        supplierSubmit: result,
+        orderRefs,
+        purchaseId: id,
+        supplierName: result.supplierName,
+        profileId: pid,
+      });
+    }
+    return result;
   }
 
   /**
-   * Из заказов: закупка в ERP → резерв по заказам. API поставщика — только по явному submitToSupplier.
+   * Убрать заказ маркетплейса из открытой закупки и вернуть в «Новый»
+   * (после отказа любого API-поставщика).
+   */
+  async revertMarketplaceOrderFromPurchase(
+    purchaseId,
+    { marketplace, orderId, profileId } = {}
+  ) {
+    const purId = parseInt(purchaseId, 10);
+    const pid = normalizeProfileId(profileId);
+    const oid = String(orderId ?? '').trim();
+    if (!Number.isFinite(purId) || purId < 1 || pid == null || !oid) {
+      return { ok: false, reason: 'invalid_args' };
+    }
+
+    const lookupIds = new Set(
+      (await orderIdsForPurchaseLookup(pid, marketplace, oid)).map((x) =>
+        String(x).toLowerCase()
+      )
+    );
+    lookupIds.add(oid.toLowerCase());
+    const wantMp = orderMarketplaceToDb(marketplace);
+
+    let removedSources = [];
+    let productIdsToTrim = [];
+
+    await purchaseTransaction(async (client) => {
+      await assertPurchaseInProfile(client, purId, pid);
+      const ph = await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [purId]);
+      if (!ph.rows?.[0]) {
+        const err = new Error('Закупка не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+      await assertPurchaseNotArchivedInTx(client, purId);
+
+      const items = await client.query(
+        `SELECT id, product_id, source_orders, expected_quantity, received_quantity
+         FROM purchase_items WHERE purchase_id = $1 FOR UPDATE`,
+        [purId]
+      );
+
+      for (const row of items.rows || []) {
+        const full = parseSourceOrdersJson(row.source_orders);
+        const kept = [];
+        const removed = [];
+        for (const ent of full) {
+          const entOid = String(ent.orderId ?? '').trim().toLowerCase();
+          const entMp = orderMarketplaceToDb(ent.marketplace);
+          if (entMp === wantMp && lookupIds.has(entOid)) {
+            removed.push(ent);
+          } else {
+            kept.push(ent);
+          }
+        }
+        if (!removed.length) continue;
+
+        const productId = Number(row.product_id);
+        const expected = Math.max(0, Math.floor(Number(row.expected_quantity) || 0));
+        const received = Math.max(0, Math.floor(Number(row.received_quantity) || 0));
+        const maxReduce = Math.max(0, expected - received);
+        const reduceBy = Math.min(removed.length, maxReduce);
+        if (reduceBy <= 0) continue;
+
+        const newExpected = expected - reduceBy;
+        if (Number.isFinite(productId) && productId > 0) productIdsToTrim.push(productId);
+
+        if (productId) {
+          await subtractIncomingForPurchaseLineRemovalInTx(client, purId, productId, reduceBy, {
+            reason: `Снятие ожидания: заказ не принят поставщиком (закупка №${purId})`,
+          });
+        }
+
+        if (newExpected === 0 && received === 0) {
+          await client.query(`DELETE FROM purchase_items WHERE id = $1`, [row.id]);
+        } else {
+          const keptTrimmed =
+            kept.length > newExpected ? kept.slice(0, newExpected) : kept;
+          await client.query(
+            `UPDATE purchase_items SET expected_quantity = $1, source_orders = $2::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+            [newExpected, JSON.stringify(keptTrimmed), row.id]
+          );
+        }
+        removedSources.push(...removed);
+      }
+
+      if (removedSources.length) {
+        await revertInProcurementOrdersFromSourceListInTx(client, removedSources, {
+          profileId: pid,
+          excludePurchaseId: purId,
+        });
+      }
+
+      const left = await client.query(
+        `SELECT COUNT(*)::int AS n FROM purchase_items WHERE purchase_id = $1`,
+        [purId]
+      );
+      if ((left.rows?.[0]?.n || 0) === 0) {
+        await client.query(`DELETE FROM purchases WHERE id = $1`, [purId]);
+      } else {
+        await recalcPurchaseStatusAfterReceiptChangeInTx(client, purId);
+      }
+    });
+
+    if (removedSources.length || productIdsToTrim.length) {
+      schedulePurchaseReserveCleanup({
+        orders: removedSources,
+        productIds: productIdsToTrim,
+        reason: 'Откат заказа после отказа поставщика',
+        meta: { purchase_id: purId },
+      });
+    }
+
+    return { ok: true, removed: removedSources.length, purchaseId: purId };
+  }
+
+  /**
+   * Откат только что добавленных в закупку позиций (после отказа API поставщика).
+   * Новая закупка удаляется целиком; дополнение существующей — уменьшается на qty батча.
+   */
+  async revertProcureItemsBatch(
+    purchaseId,
+    items,
+    { profileId, createdNew = false } = {}
+  ) {
+    const purId = parseInt(purchaseId, 10);
+    const pid = normalizeProfileId(profileId);
+    if (!Number.isFinite(purId) || purId < 1 || pid == null) {
+      return { ok: false, reason: 'invalid_args' };
+    }
+
+    if (createdNew) {
+      await this.deletePurchase(purId, { profileId: pid });
+      return { ok: true, deleted: true, purchaseId: purId };
+    }
+
+    const list = Array.isArray(items) ? items : [];
+    for (const it of list) {
+      const productId = parseInt(it?.productId ?? it?.product_id, 10);
+      const qty = Math.max(1, parseInt(it?.quantity ?? it?.qty, 10) || 1);
+      if (!Number.isFinite(productId) || productId < 1) continue;
+      const line = await query(
+        `SELECT id, expected_quantity, received_quantity
+         FROM purchase_items
+         WHERE purchase_id = $1 AND product_id = $2
+         LIMIT 1`,
+        [purId, productId]
+      );
+      const row = line.rows?.[0];
+      if (!row) continue;
+      const expected = Math.max(0, Math.floor(Number(row.expected_quantity) || 0));
+      const received = Math.max(0, Math.floor(Number(row.received_quantity) || 0));
+      const maxReduce = Math.max(0, expected - received);
+      if (maxReduce <= 0) continue;
+      try {
+        await this.removeDraftLineItem(purId, row.id, {
+          profileId: pid,
+          reduceBy: Math.min(qty, maxReduce),
+        });
+      } catch (e) {
+        logger.warn('[Purchases] revertProcureItemsBatch line failed', {
+          purchaseId: purId,
+          productId,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    const left = await query(
+      `SELECT COUNT(*)::int AS n FROM purchase_items WHERE purchase_id = $1`,
+      [purId]
+    );
+    if ((left.rows?.[0]?.n || 0) === 0) {
+      await this.deletePurchase(purId, { profileId: pid }).catch((e) => {
+        logger.warn('[Purchases] revertProcureItemsBatch delete empty purchase', {
+          purchaseId: purId,
+          message: e?.message || String(e),
+        });
+      });
+      return { ok: true, deleted: true, purchaseId: purId };
+    }
+
+    return { ok: true, deleted: false, purchaseId: purId };
+  }
+
+  /**
+   * Из заказов: закупка в ERP → (опц.) API поставщика → статус «В закупке».
+   * Если API обязателен и поставщик отказал — откат позиций, заказы остаются в «Новых», уведомление.
    */
   async procureFromOrders(
     {
@@ -2347,8 +2664,10 @@ class PurchasesService {
     let resolvedSupplierId =
       supplierId != null && supplierId !== '' ? Number(supplierId) : null;
     let warehouseNameForSubmit = supplierWarehouseName || null;
+    const createdNew =
+      existingPurchaseId == null || String(existingPurchaseId).trim() === '';
 
-    if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+    if (!createdNew) {
       const purId = parseInt(existingPurchaseId, 10);
       const head = await query(
         `SELECT supplier_id, supplier_warehouse_name FROM purchases WHERE id = $1 LIMIT 1`,
@@ -2367,76 +2686,25 @@ class PurchasesService {
     }
 
     // Успешная отправка поставщику не должна повторяться при retry БД (503 lock timeout).
-    let cachedSupplierPreSubmit = null;
-    let supplierPreSubmitCompleted = false;
-    let cachedItemsAfterPreSubmit = null;
     let cachedPostSubmit = null;
     let postSubmitCompleted = false;
+    let postSubmitRolledBack = false;
 
     return runWithLockRetry(async () => {
-      let itemsToProcess = cachedItemsAfterPreSubmit ?? initialItems;
-      let supplierSubmit = cachedSupplierPreSubmit;
-
-      // Сначала закупка в ERP, затем отправка поставщику (post-submit).
-      // Pre-submit до создания закупки давал заказы в Moskvorechie без записи в ERM.
-      const usePreSubmitBeforePurchase = false;
-
-      if (
-        usePreSubmitBeforePurchase &&
-        submitToSupplier &&
-        itemsToProcess.length > 0 &&
-        Number.isFinite(resolvedSupplierId) &&
-        resolvedSupplierId > 0
-      ) {
-        const pre = await supplierPreSubmitRequired(resolvedSupplierId, profileId);
-        if (pre.required) {
-          if (!supplierPreSubmitCompleted) {
-            const submitLines = await buildSubmitLinesFromItems(itemsToProcess);
-            supplierSubmit = await trySubmitLinesToSupplier({
-              supplierId: resolvedSupplierId,
-              profileId,
-              lines: submitLines,
-              purchaseMeta: {
-                supplier_warehouse_name: warehouseNameForSubmit,
-                note: note || null,
-              },
-            });
-            if (!supplierSubmit.submitted) {
-              const err = new Error(
-                supplierSubmit.message || 'Не удалось отправить заказ поставщику'
-              );
-              err.statusCode = 400;
-              err.supplierSubmit = supplierSubmit;
-              throw err;
-            }
-            if (supplierSubmit.partial && Array.isArray(supplierSubmit.lines)) {
-              const okIds = new Set(
-                supplierSubmit.lines
-                  .map((l) => Number(l.productId))
-                  .filter((id) => Number.isFinite(id) && id > 0)
-              );
-              itemsToProcess = itemsToProcess.filter((it) =>
-                okIds.has(Number(it.productId))
-              );
-              if (!itemsToProcess.length) {
-                const err = new Error('Ни одна позиция не принята поставщиком');
-                err.statusCode = 400;
-                err.supplierSubmit = supplierSubmit;
-                throw err;
-              }
-            }
-            cachedSupplierPreSubmit = supplierSubmit;
-            cachedItemsAfterPreSubmit = itemsToProcess;
-            supplierPreSubmitCompleted = true;
-          } else {
-            supplierSubmit = cachedSupplierPreSubmit;
-            itemsToProcess = cachedItemsAfterPreSubmit ?? itemsToProcess;
-          }
-        }
+      if (postSubmitRolledBack) {
+        return {
+          purchaseId: null,
+          procurement: { updated: 0, skipped: 0 },
+          supplierSubmit: cachedPostSubmit,
+          rolledBack: true,
+        };
       }
 
+      let itemsToProcess = initialItems;
+      let supplierSubmit = cachedPostSubmit;
+
       let purchaseId;
-      if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+      if (!createdNew) {
         purchaseId = parseInt(existingPurchaseId, 10);
         const prof = normalizeProfileId(profileId);
         await transaction(async (client) => {
@@ -2502,7 +2770,6 @@ class PurchasesService {
         purchaseId = created?.id;
       }
 
-      let procurement = { updated: 0, skipped: 0 };
       const refsFromItems = collectSourceOrdersFromPurchaseItems(itemsToProcess);
       const refsForProcurement =
         refsFromItems.length > 0
@@ -2515,6 +2782,101 @@ class PurchasesService {
               }))
               .filter((it) => it.marketplace && it.orderId);
 
+      let apiSubmitRequired = false;
+      if (submitToSupplier && purchaseId) {
+        if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
+          const head = await query(`SELECT supplier_id FROM purchases WHERE id = $1 LIMIT 1`, [
+            purchaseId,
+          ]);
+          resolvedSupplierId =
+            head.rows?.[0]?.supplier_id != null ? Number(head.rows[0].supplier_id) : null;
+        }
+        if (Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0) {
+          const pre = await supplierPreSubmitRequired(resolvedSupplierId, profileId);
+          apiSubmitRequired = Boolean(pre.required);
+          if (!postSubmitCompleted) {
+            supplierSubmit = await trySubmitPurchaseToSupplier({
+              purchaseId,
+              supplierId: resolvedSupplierId,
+              profileId,
+            }).catch((e) => ({
+              submitted: false,
+              reason: 'submit_error',
+              message: e?.message || String(e),
+              supplierName: pre.supplierName || pre.supplier?.name,
+            }));
+            cachedPostSubmit = supplierSubmit;
+            postSubmitCompleted = true;
+          } else {
+            supplierSubmit = cachedPostSubmit;
+          }
+        }
+      }
+
+      // Поставщик не принял (блок / ошибка) — убираем из локальной закупки, статус «Новый».
+      if (
+        submitToSupplier &&
+        purchaseId &&
+        supplierSubmitNeedsRollback(supplierSubmit, { apiSubmitRequired })
+      ) {
+        let rollbackItems = itemsToProcess;
+        if (supplierSubmit?.partial && Array.isArray(supplierSubmit.failedLines)) {
+          const failedIds = new Set(
+            supplierSubmit.failedLines
+              .map((l) => Number(l.productId))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          );
+          rollbackItems = itemsToProcess.filter((it) => failedIds.has(Number(it.productId)));
+        }
+
+        const rollbackRefs = collectSourceOrdersFromPurchaseItems(rollbackItems);
+        await this.revertProcureItemsBatch(purchaseId, rollbackItems, {
+          profileId,
+          createdNew: createdNew && !(supplierSubmit?.partial && supplierSubmit?.submitted),
+        });
+
+        await notifySupplierSubmitFailed({
+          supplierSubmit,
+          orderRefs: rollbackRefs.length ? rollbackRefs : refsForProcurement,
+          purchaseId,
+          supplierName: supplierSubmit?.supplierName,
+          profileId,
+        });
+
+        postSubmitRolledBack = !supplierSubmit?.partial;
+        const keptPurchase =
+          supplierSubmit?.partial && supplierSubmit?.submitted ? purchaseId : null;
+
+        let procurement = { updated: 0, skipped: 0 };
+        if (keptPurchase && Array.isArray(supplierSubmit.lines)) {
+          const okIds = new Set(
+            supplierSubmit.lines
+              .map((l) => Number(l.productId))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          );
+          const okItems = itemsToProcess.filter((it) => okIds.has(Number(it.productId)));
+          const okRefs = collectSourceOrdersFromPurchaseItems(okItems);
+          if (okRefs.length > 0) {
+            const bulk = await ordersService.bulkSetToProcurement(okRefs, profileId, {
+              skipReserveReapply: true,
+            });
+            procurement = { updated: bulk.updated, skipped: bulk.skipped };
+          }
+          if (syncReserveReapply && okRefs.length) {
+            const rows = await loadOrderRowsForSourceOrders(okRefs);
+            if (rows.length > 0) await ordersService._reapplyReserveForOrderRows(rows);
+          }
+        }
+
+        return {
+          purchaseId: keptPurchase,
+          procurement,
+          supplierSubmit,
+          rolledBack: true,
+        };
+      }
+
+      let procurement = { updated: 0, skipped: 0 };
       if (refsForProcurement.length > 0) {
         const bulk = await ordersService.bulkSetToProcurement(refsForProcurement, profileId, {
           skipReserveReapply: true,
@@ -2551,35 +2913,6 @@ class PurchasesService {
         scheduleReapplyReserveForPurchaseSourceOrders(itemsToProcess, {
           label: 'reapply reserve for linked orders after procure-from-orders',
         });
-      }
-
-      if (submitToSupplier && purchaseId && !supplierSubmit) {
-        if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
-          const head = await query(`SELECT supplier_id FROM purchases WHERE id = $1 LIMIT 1`, [
-            purchaseId,
-          ]);
-          resolvedSupplierId =
-            head.rows?.[0]?.supplier_id != null ? Number(head.rows[0].supplier_id) : null;
-        }
-        if (Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0) {
-          if (!postSubmitCompleted) {
-            supplierSubmit = await trySubmitPurchaseToSupplier({
-              purchaseId,
-              supplierId: resolvedSupplierId,
-              profileId,
-            }).catch((e) => ({
-              submitted: false,
-              reason: 'submit_error',
-              message: e?.message || String(e),
-            }));
-            if (supplierSubmit?.submitted) {
-              cachedPostSubmit = supplierSubmit;
-              postSubmitCompleted = true;
-            }
-          } else {
-            supplierSubmit = cachedPostSubmit;
-          }
-        }
       }
 
       return { purchaseId, procurement, supplierSubmit };
@@ -4278,6 +4611,16 @@ class PurchasesService {
           const whRow = await client.query(`SELECT warehouse_receipt_id FROM purchase_receipts WHERE id = $1 FOR UPDATE`, [rId]);
           const whId = whRow.rows?.[0]?.warehouse_receipt_id ?? null;
           await reverseCompletedPurchaseReceiptInTx(client, rId, id);
+          await client.query(`DELETE FROM purchase_receipts WHERE id = $1`, [rId]);
+          await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
+        } else if (rst === 'cancelled') {
+          // Уже откатанная приёмка: только удаляем документ, без повторного сторно остатков.
+          const whRow = await client.query(
+            `SELECT warehouse_receipt_id FROM purchase_receipts WHERE id = $1 FOR UPDATE`,
+            [rId]
+          );
+          const whId = whRow.rows?.[0]?.warehouse_receipt_id ?? null;
+          await client.query(`DELETE FROM purchase_receipt_items WHERE receipt_id = $1`, [rId]);
           await client.query(`DELETE FROM purchase_receipts WHERE id = $1`, [rId]);
           await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
         } else {

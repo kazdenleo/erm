@@ -6,6 +6,9 @@ const router = express.Router();
 router.get('/defaults', (req, res, next) => pricingStrategiesController.defaults(req, res, next));
 router.get('/settings', (req, res, next) => pricingStrategiesController.getSettings(req, res, next));
 router.put('/settings', (req, res, next) => pricingStrategiesController.updateSettings(req, res, next));
+router.get('/price-changes', (req, res, next) =>
+  pricingStrategiesController.priceChanges(req, res, next)
+);
 router.post('/recalculate-product', (req, res, next) =>
   pricingStrategiesController.recalculateProduct(req, res, next)
 );

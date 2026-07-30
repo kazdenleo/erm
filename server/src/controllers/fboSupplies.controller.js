@@ -830,10 +830,15 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const { barcode, activeCargoUnitId, scanMode } = req.body || {};
+      const { barcode, activeCargoUnitId, scanMode, allowOverage } = req.body || {};
       const data = await fboSuppliesPackingService.scan(
         id,
-        { barcode, activeCargoUnitId, scanMode },
+        {
+          barcode,
+          activeCargoUnitId,
+          scanMode,
+          allowOverage: allowOverage === true,
+        },
         { profileId }
       );
       return res.status(200).json({ ok: true, data });
@@ -843,6 +848,7 @@ class FboSuppliesController {
           ok: false,
           message: e.message,
           code: e.code || undefined,
+          ...(e.details && typeof e.details === 'object' ? e.details : {}),
         });
       }
       next(e);

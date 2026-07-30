@@ -556,6 +556,14 @@ class StockMovementsService {
           [journalAfter, idNum]
         );
         quantityChange = release;
+        await this._ensureUnreserveReserveFromMeta(metaOut, {
+          productId: idNum,
+          releaseQty: release,
+          netReserved: netForOrder,
+          warehouseId: whCap ?? warehouseId,
+          orderDbId: Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : null,
+          orderIdLabel: mpOrderId,
+        });
       } else {
         const err = new Error('Некорректная операция резерва');
         err.statusCode = 400;
@@ -635,6 +643,67 @@ class StockMovementsService {
       warehouseId,
       movement
     };
+  }
+
+  /**
+   * Если caller не передал reserve_from_*, проставляем списание meta пропорционально
+   * текущему резерву заказа (иначе unreserve оставляет фантомный meta_incoming).
+   */
+  async _ensureUnreserveReserveFromMeta(
+    metaOut,
+    { productId, releaseQty, netReserved = null, warehouseId = null, orderDbId = null, orderIdLabel = null } = {}
+  ) {
+    if (!metaOut || typeof metaOut !== 'object') return;
+    const hasExplicit =
+      metaOut.reserve_from_on_hand != null || metaOut.reserve_from_incoming != null;
+    if (hasExplicit) return;
+
+    const release = Math.max(0, Math.floor(Number(releaseQty) || 0));
+    if (release < 1) return;
+
+    const oid = Number(orderDbId);
+    const hasOrder = (Number.isFinite(oid) && oid >= 1) ||
+      (orderIdLabel != null && String(orderIdLabel).trim() !== '');
+    if (!hasOrder) {
+      // Нет привязки к заказу — списываем как on_hand (не оставляем фантом incoming).
+      metaOut.reserve_from_on_hand = release;
+      metaOut.reserve_from_incoming = 0;
+      return;
+    }
+
+    try {
+      const { queryOrderProductReserveMetaMap, allocateUnreserveReserveFromMeta } = await import(
+        './orders.service.js'
+      );
+      const orderIds = Number.isFinite(oid) && oid >= 1 ? [oid] : [];
+      // Без numeric order_id meta map не строится — fallback ниже.
+      let fromOnHand = 0;
+      let fromIncoming = 0;
+      if (orderIds.length) {
+        const metaMap = await queryOrderProductReserveMetaMap(productId, orderIds, {
+          warehouseId,
+        });
+        const cur = metaMap.get(oid) || { fromOnHand: 0, fromIncoming: 0 };
+        fromOnHand = cur.fromOnHand;
+        fromIncoming = cur.fromIncoming;
+      }
+      const alloc = allocateUnreserveReserveFromMeta(
+        release,
+        { fromOnHand, fromIncoming },
+        netReserved
+      );
+      // Если meta в журнале пустая (старые reserve без тегов) — не раздуваем incoming.
+      if (fromOnHand + fromIncoming < 1) {
+        metaOut.reserve_from_on_hand = release;
+        metaOut.reserve_from_incoming = 0;
+      } else {
+        metaOut.reserve_from_on_hand = alloc.reserve_from_on_hand;
+        metaOut.reserve_from_incoming = alloc.reserve_from_incoming;
+      }
+    } catch {
+      metaOut.reserve_from_on_hand = release;
+      metaOut.reserve_from_incoming = 0;
+    }
   }
 
   /**
@@ -2966,6 +3035,14 @@ class StockMovementsService {
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]
         );
+        await this._ensureUnreserveReserveFromMeta(metaOut, {
+          productId: idNum,
+          releaseQty: release,
+          netReserved: netForOrder,
+          warehouseId,
+          orderDbId: Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : null,
+          orderIdLabel: mpOrderId,
+        });
         unreserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
           productId: idNum,
           type: 'unreserve',

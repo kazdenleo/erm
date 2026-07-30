@@ -101,6 +101,11 @@ export function Organizations() {
                     {org.article_prefix && (
                       <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>Префикс артикулов: <strong>{org.article_prefix}</strong></div>
                     )}
+                    {org.auto_push_marketplace_prices === true && (
+                      <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                        Автоотправка цен на МП: <strong>вкл.</strong>
+                      </div>
+                    )}
                     {org.address && <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>{org.address}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: '8px' }}>

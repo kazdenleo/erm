@@ -162,4 +162,25 @@ export const pricingStrategiesController = {
       next(e);
     }
   },
+
+  async priceChanges(req, res, next) {
+    try {
+      const marketplacePriceChanges = await import('../services/marketplacePriceChanges.service.js');
+      // opportunistic prune
+      marketplacePriceChanges.pruneMarketplacePriceChanges().catch(() => {});
+      const profileId = profileIdFromReq(req);
+      const data = await marketplacePriceChanges.listMarketplacePriceChanges({
+        days: req.query?.days ?? 7,
+        limit: req.query?.limit ?? 150,
+        offset: req.query?.offset ?? 0,
+        productId: req.query?.productId ?? null,
+        marketplace: req.query?.marketplace ?? null,
+        profileId,
+      });
+      res.json({ ok: true, data });
+    } catch (e) {
+      logger.error('[PricingStrategies] priceChanges', e);
+      next(e);
+    }
+  },
 };

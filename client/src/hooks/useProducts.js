@@ -46,10 +46,16 @@ export function useProducts(options = {}) {
       const params = { cacheBust: true };
       if (opts.organizationId != null && opts.organizationId !== '') params.organizationId = opts.organizationId;
       if (opts.brandId != null && opts.brandId !== '') params.brandId = String(opts.brandId);
+      if (opts.supplierId != null && opts.supplierId !== '') params.supplierId = String(opts.supplierId);
       if (opts.categoryId != null && opts.categoryId !== '') params.categoryId = opts.categoryId;
       if (opts.search != null && String(opts.search).trim() !== '') params.search = String(opts.search).trim();
       if (opts.productType != null && String(opts.productType).trim() !== '') {
         params.productType = String(opts.productType).trim();
+      }
+      if (opts.unlinkedMp != null && opts.unlinkedMp !== '') {
+        params.unlinkedMp = Array.isArray(opts.unlinkedMp)
+          ? opts.unlinkedMp
+          : String(opts.unlinkedMp);
       }
       if (opts.warehouseId != null && opts.warehouseId !== '') {
         params.warehouseId = String(opts.warehouseId);

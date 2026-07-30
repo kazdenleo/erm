@@ -1,15 +1,15 @@
 /** Плашка резерва: зелёная — со склада, серая — с участием «в пути». */
 
 /**
- * Числа для плашки «зарезервировано/нужно» (в штуках для комплекта).
- * Если резерв в штуках, а needQty ещё в комплектах (2/1), подтягиваем знаменатель.
+ * Числа для плашки «зарезервировано/нужно» в единицах строки заказа (комплект = 1 шт заказа).
+ * Знаменатель — qty/needQty заказа; числитель не выше need (лишний резерв в журнале не раздувает плашку).
  */
 export function orderReserveBadgeCounts({ qty, reservedQty, needQty }) {
   const displayQty = Number.isFinite(Number(qty)) && Number(qty) > 0 ? Number(qty) : 1;
-  const r = Math.max(0, Number(reservedQty) || 0);
   let n = Math.max(0, Number(needQty) || 0);
   if (n < 1) n = displayQty;
-  if (r > n && n === displayQty) n = r;
+  const rRaw = Math.max(0, Number(reservedQty) || 0);
+  const r = Math.min(rRaw, n);
   return { reserved: r, need: n, displayQty };
 }
 

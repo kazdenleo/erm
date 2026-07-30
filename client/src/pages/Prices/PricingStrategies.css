@@ -92,3 +92,71 @@
   background: rgba(148, 163, 184, 0.2);
   color: #cbd5e1;
 }
+
+.pricing-strategies-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.pricing-strategies-history-toolbar select {
+  margin-left: 6px;
+  min-width: 140px;
+}
+
+.pricing-strategies-history-table-wrap {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.pricing-strategies-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pricing-strategies-history-table th,
+.pricing-strategies-history-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  vertical-align: top;
+}
+
+.pricing-strategies-history-table th {
+  position: sticky;
+  top: 0;
+  background: #1e2430;
+  z-index: 1;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pricing-strategies-history-table tr.changed td {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.pricing-strategies-history-table .sku {
+  font-weight: 600;
+}
+
+.pricing-strategies-history-table .name.muted,
+.pricing-strategies-history-table .muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pricing-strategies-history-table .nowrap {
+  white-space: nowrap;
+}
+
+.pricing-strategies-history-table .reason {
+  max-width: 320px;
+  line-height: 1.35;
+}
+

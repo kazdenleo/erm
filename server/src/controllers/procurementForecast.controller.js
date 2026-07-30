@@ -8,6 +8,7 @@ export async function getFbsForecast(req, res) {
     salesDateFrom,
     salesDateTo,
     procurementDays,
+    bufferPercent,
   } = req.query || {};
 
   const data = await procurementForecastService.getFbsForecast({
@@ -17,6 +18,7 @@ export async function getFbsForecast(req, res) {
     salesDateFrom,
     salesDateTo,
     procurementDays,
+    bufferPercent,
   });
 
   return res.json({ ok: true, data });

@@ -380,11 +380,12 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  packingScan: async (id, { barcode, activeCargoUnitId, scanMode }) => {
+  packingScan: async (id, { barcode, activeCargoUnitId, scanMode, allowOverage } = {}) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
       barcode,
       activeCargoUnitId: activeCargoUnitId ?? null,
       ...(scanMode ? { scanMode } : {}),
+      ...(allowOverage === true ? { allowOverage: true } : {}),
     });
     return response.data?.data ?? response.data;
   },

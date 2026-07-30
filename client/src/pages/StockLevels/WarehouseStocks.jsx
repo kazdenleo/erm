@@ -973,7 +973,12 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     const dbInc = movementNum(head, 'incoming_after');
     const dbRes = movementNum(head, 'reserved_after');
     const dbBal = movementNum(head, 'balance_after');
-    if (dbInc != null) out.inc = dbInc;
+    // Отгрузка не меняет «в пути» — не показываем ложный +Δ из снимка incoming_after.
+    if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+      out.inc = prevLineBelow.inc;
+    } else if (dbInc != null) {
+      out.inc = dbInc;
+    }
     if (dbRes != null) out.res = dbRes;
     if (dbBal != null) out.bal = dbBal;
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;

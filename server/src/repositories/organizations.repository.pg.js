@@ -47,11 +47,21 @@ class OrganizationsRepositoryPG {
         data.skipMarketplaceStockSync === 'true' ||
         data.skipMarketplaceStockSync === 1 ||
         data.skipMarketplaceStockSync === '1');
+    const autoPushPrices =
+      typeof data === 'object' &&
+      (data.auto_push_marketplace_prices === true ||
+        data.auto_push_marketplace_prices === 'true' ||
+        data.auto_push_marketplace_prices === 1 ||
+        data.auto_push_marketplace_prices === '1' ||
+        data.autoPushMarketplacePrices === true ||
+        data.autoPushMarketplacePrices === 'true' ||
+        data.autoPushMarketplacePrices === 1 ||
+        data.autoPushMarketplacePrices === '1');
     const result = await query(
-      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id, skip_marketplace_stock_sync)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id, skip_marketplace_stock_sync, auto_push_marketplace_prices)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [name, inn, address, taxSystem, vat, articlePrefix, profileId, skipMpStock]
+      [name, inn, address, taxSystem, vat, articlePrefix, profileId, skipMpStock, autoPushPrices]
     );
     return result.rows[0];
   }
@@ -96,6 +106,14 @@ class OrganizationsRepositoryPG {
     ) {
       const v = updates.skip_marketplace_stock_sync ?? updates.skipMarketplaceStockSync;
       fields.push(`skip_marketplace_stock_sync = $${i++}`);
+      params.push(v === true || v === 'true' || v === 1 || v === '1');
+    }
+    if (
+      updates.auto_push_marketplace_prices !== undefined ||
+      updates.autoPushMarketplacePrices !== undefined
+    ) {
+      const v = updates.auto_push_marketplace_prices ?? updates.autoPushMarketplacePrices;
+      fields.push(`auto_push_marketplace_prices = $${i++}`);
       params.push(v === true || v === 'true' || v === 1 || v === '1');
     }
     if (fields.length === 0) return await this.findById(id);

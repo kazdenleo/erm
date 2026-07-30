@@ -34,10 +34,11 @@ function ozonSuggestedEntryPrice(p) {
   return null;
 }
 
-function isOzonElasticBoostingAction(action) {
-  const t = String(action?.action_type || action?.discount_type || '').toUpperCase();
-  if (t === 'ELASTIC_BOOSTING') return true;
-  return /эластич|elastic/i.test(String(action?.title || ''));
+/** У доступных к акции action_price=0 — показываем цену входа. */
+function ozonDisplayActionPrice(p) {
+  const ap = Number(p?.action_price);
+  if (Number.isFinite(ap) && ap > 0) return ap;
+  return ozonSuggestedEntryPrice(p);
 }
 
 export function PricePromotions() {
@@ -446,9 +447,13 @@ export function PricePromotions() {
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Цена по акции, ₽</th>
+                      <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
+                        Цена по акции, ₽
+                      </th>
                       <th title="Цена выше рекомендуемой">⚠ Превышена</th>
-                      <th>Рек. цена акции, ₽</th>
+                      <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0; берём max_action_price / цену мин. бустинга">
+                        Предлагаемая цена входа, ₽
+                      </th>
                       <th>Макс. цена акции, ₽</th>
                       <th>Режим</th>
                       <th>Мин. остаток</th>
@@ -492,18 +497,20 @@ export function PricePromotions() {
                           )}
                         </td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
-                        <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{p.action_price != null ? `${p.action_price} ₽` : '—'}</td>
+                        <td>{formatRub(p.min_price_ozon)}</td>
+                        <td>{formatRub(p.price)}</td>
+                        <td>{formatRub(ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой, товар может быть исключён' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
-                        <td>{p.alert_max_action_price != null ? `${p.alert_max_action_price} ₽` : '—'}</td>
-                        <td>{p.max_action_price != null ? `${p.max_action_price} ₽` : '—'}</td>
+                        <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
+                          {formatRub(ozonSuggestedEntryPrice(p))}
+                        </td>
+                        <td>{formatRub(p.max_action_price)}</td>
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
                         <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{p.price_min_elastic != null ? `${p.price_min_elastic} ₽` : '—'}</td>
-                        <td>{p.price_max_elastic != null ? `${p.price_max_elastic} ₽` : '—'}</td>
+                        <td>{formatRub(p.price_min_elastic)}</td>
+                        <td>{formatRub(p.price_max_elastic)}</td>
                         <td>{p.min_boost != null ? p.min_boost : '—'}</td>
                         <td>{p.max_boost != null ? p.max_boost : '—'}</td>
                       </tr>
@@ -532,9 +539,13 @@ export function PricePromotions() {
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Цена по акции, ₽</th>
+                      <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
+                        Цена по акции, ₽
+                      </th>
                       <th title="Цена выше рекомендуемой">⚠ Превышена</th>
-                      <th>Рек. цена акции, ₽</th>
+                      <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0; берём max_action_price / цену мин. бустинга">
+                        Предлагаемая цена входа, ₽
+                      </th>
                       <th>Макс. цена акции, ₽</th>
                       <th>Режим</th>
                       <th>Мин. остаток</th>
@@ -552,18 +563,20 @@ export function PricePromotions() {
                         <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>{p.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{p.our_sku ?? p.offer_id ?? '—'}</td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
-                        <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{p.action_price != null ? `${p.action_price} ₽` : '—'}</td>
+                        <td style={{ color: 'var(--primary)' }}>{formatRub(p.min_price_ozon)}</td>
+                        <td>{formatRub(p.price)}</td>
+                        <td>{formatRub(ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
-                        <td>{p.alert_max_action_price != null ? `${p.alert_max_action_price} ₽` : '—'}</td>
-                        <td>{p.max_action_price != null ? `${p.max_action_price} ₽` : '—'}</td>
+                        <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
+                          {formatRub(ozonSuggestedEntryPrice(p))}
+                        </td>
+                        <td>{formatRub(p.max_action_price)}</td>
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
                         <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{p.price_min_elastic != null ? `${p.price_min_elastic} ₽` : '—'}</td>
-                        <td>{p.price_max_elastic != null ? `${p.price_max_elastic} ₽` : '—'}</td>
+                        <td>{formatRub(p.price_min_elastic)}</td>
+                        <td>{formatRub(p.price_max_elastic)}</td>
                         <td>{p.min_boost != null ? p.min_boost : '—'}</td>
                         <td>{p.max_boost != null ? p.max_boost : '—'}</td>
                       </tr>

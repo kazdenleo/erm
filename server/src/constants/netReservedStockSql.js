@@ -120,9 +120,14 @@ export function allocateWarehouseScopedIncoming({
   if (hasIncomingJournal) {
     if (hasWarehouseIncomingJournal) {
       const strictPositive = Math.max(0, strict);
+      const globalCap = Math.max(0, journalNetGlobal, globalInc);
       if (snapshotInc != null) {
-        if (strict < 0) return clampStockMetric(snapshotInc);
-        return clampStockMetric(Math.max(strictPositive, snapshotInc));
+        // Снимок incoming_after с отгрузки/резерва часто устаревший (глобальный на момент операции).
+        // Не даём складу показать «в пути» больше, чем есть глобально в журнале/products.
+        let fromSnap =
+          strict < 0 ? snapshotInc : Math.max(strictPositive, snapshotInc);
+        fromSnap = Math.min(fromSnap, globalCap);
+        return clampStockMetric(fromSnap);
       }
       return strictPositive;
     }

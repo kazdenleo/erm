@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
+import { Modal } from '../../components/common/Modal/Modal';
 import { BarcodeScanField } from '../../components/common/BarcodeScanField/BarcodeScanField';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
@@ -89,6 +90,8 @@ export function FboSupplyPacking({
   const [newCargoMode, setNewCargoMode] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
   const [placementWarning, setPlacementWarning] = useState(null);
+  const [overageConfirm, setOverageConfirm] = useState(null);
+  const [overageConfirmBusy, setOverageConfirmBusy] = useState(false);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -137,8 +140,41 @@ export function FboSupplyPacking({
     }
   }, [cargoUnits, activeCargoUnitId]);
 
+  const applyScanResult = useCallback(
+    (data, { scannedAsNewCargo = false } = {}) => {
+      if (data?.activeCargoUnitId != null) {
+        setActiveCargoUnitId(data.activeCargoUnitId);
+      }
+      if (scannedAsNewCargo && (data?.action === 'cargo_created' || data?.action === 'cargo_selected')) {
+        setNewCargoMode(false);
+      }
+      if (data?.packing) {
+        onPackingChange(data.packing, {
+          supplyStatus: data.supplyStatus,
+          packingAllMatch: data.packingAllMatch,
+          statusReverted: data.statusReverted,
+        });
+        if (data.statusReverted) {
+          setScanMsg('Статус сброшен в «Новая»: сборка не совпадает с планом');
+        }
+        const nextActiveId = data.activeCargoUnitId ?? activeCargoUnitId;
+        const nextActive = (data.packing.cargoUnits || []).find(
+          (c) => String(c.id) === String(nextActiveId)
+        );
+        setWeightWarning(data?.weightWarning || cargoWeightExceededMessage(nextActive) || null);
+      } else {
+        setWeightWarning(data?.weightWarning || null);
+      }
+      if (!data?.statusReverted) {
+        setScanMsg(data?.message || 'Готово');
+      }
+      playEventSound(SOUND_EVENTS.scan_ok);
+    },
+    [activeCargoUnitId, onPackingChange]
+  );
+
   const handleScan = useCallback(
-    async (raw) => {
+    async (raw, { allowOverage = false } = {}) => {
       const trimmed = (raw || '').trim();
       if (trimmed.length < 2 || scanLoadingRef.current) return;
       setScanError(null);
@@ -151,36 +187,25 @@ export function FboSupplyPacking({
           barcode: trimmed,
           activeCargoUnitId,
           scanMode: newCargoMode ? 'cargo' : 'product',
+          ...(allowOverage ? { allowOverage: true } : {}),
         });
-        if (data?.activeCargoUnitId != null) {
-          setActiveCargoUnitId(data.activeCargoUnitId);
-        }
-        if (newCargoMode && (data?.action === 'cargo_created' || data?.action === 'cargo_selected')) {
-          setNewCargoMode(false);
-        }
-        if (data?.packing) {
-          onPackingChange(data.packing, {
-            supplyStatus: data.supplyStatus,
-            packingAllMatch: data.packingAllMatch,
-            statusReverted: data.statusReverted,
-          });
-          if (data.statusReverted) {
-            setScanMsg('Статус сброшен в «Новая»: сборка не совпадает с планом');
-          }
-          const nextActiveId = data.activeCargoUnitId ?? activeCargoUnitId;
-          const nextActive = (data.packing.cargoUnits || []).find(
-            (c) => String(c.id) === String(nextActiveId)
-          );
-          setWeightWarning(data?.weightWarning || cargoWeightExceededMessage(nextActive) || null);
-        } else {
-          setWeightWarning(data?.weightWarning || null);
-        }
-        setScanMsg(data?.message || 'Готово');
-        playEventSound(SOUND_EVENTS.scan_ok);
+        applyScanResult(data, { scannedAsNewCargo: newCargoMode });
       } catch (e) {
         playEventSound(SOUND_EVENTS.scan_error);
-        const msg = e.response?.data?.message || e.message || 'Ошибка сканирования';
-        if (e.response?.status === 409 && e.response?.data?.code === 'PLACEMENT_ZONE_CONFLICT') {
+        const payload = e.response?.data || {};
+        const msg = payload.message || e.message || 'Ошибка сканирования';
+        if (e.response?.status === 409 && payload.code === 'PACKING_OVERAGE') {
+          setOverageConfirm({
+            barcode: trimmed,
+            message: msg,
+            productName: payload.productName || null,
+            planned: payload.planned,
+            packed: payload.packed,
+            sku: payload.sku || null,
+          });
+          setScanError(null);
+          setPlacementWarning(null);
+        } else if (e.response?.status === 409 && payload.code === 'PLACEMENT_ZONE_CONFLICT') {
           setPlacementWarning(msg);
           setScanError(null);
         } else {
@@ -191,8 +216,36 @@ export function FboSupplyPacking({
         setScanLoading(false);
       }
     },
-    [supplyId, activeCargoUnitId, newCargoMode, onPackingChange]
+    [supplyId, activeCargoUnitId, newCargoMode, applyScanResult]
   );
+
+  const handleConfirmOverage = async () => {
+    if (!overageConfirm?.barcode || overageConfirmBusy) return;
+    setOverageConfirmBusy(true);
+    setScanError(null);
+    try {
+      const data = await fboSuppliesApi.packingScan(supplyId, {
+        barcode: overageConfirm.barcode,
+        activeCargoUnitId,
+        scanMode: 'product',
+        allowOverage: true,
+      });
+      setOverageConfirm(null);
+      applyScanResult(data);
+    } catch (e) {
+      playEventSound(SOUND_EVENTS.scan_error);
+      setScanError(e.response?.data?.message || e.message || 'Не удалось добавить товар');
+      setOverageConfirm(null);
+    } finally {
+      setOverageConfirmBusy(false);
+    }
+  };
+
+  const handleCancelOverage = () => {
+    if (overageConfirmBusy) return;
+    setOverageConfirm(null);
+    setScanMsg('Лишний товар не добавлен');
+  };
 
   const handleNewCargoMode = () => {
     setScanError(null);
@@ -786,6 +839,41 @@ export function FboSupplyPacking({
         activeCargoBarcode={activeCargo?.barcode}
         onPackingChange={handlePackingChange}
       />
+
+      <Modal
+        isOpen={Boolean(overageConfirm)}
+        onClose={handleCancelOverage}
+        title="Лишний товар"
+        size="medium"
+        closeOnBackdropClick={!overageConfirmBusy}
+        closeOnEscape={!overageConfirmBusy}
+      >
+        <p className="mb-2">
+          {overageConfirm?.message ||
+            'Упаковано больше, чем в поставке. Добавить ещё 1 шт. в грузоместо?'}
+        </p>
+        {overageConfirm?.sku || overageConfirm?.productName ? (
+          <p className="text-muted small mb-3">
+            {[overageConfirm.sku, overageConfirm.productName].filter(Boolean).join(' · ')}
+            {overageConfirm.planned != null && overageConfirm.packed != null
+              ? ` · план ${overageConfirm.planned}, уже ${overageConfirm.packed}`
+              : null}
+          </p>
+        ) : null}
+        <div className="d-flex flex-wrap gap-2 justify-content-end">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleCancelOverage}
+            disabled={overageConfirmBusy}
+          >
+            Не добавлять
+          </Button>
+          <Button type="button" variant="primary" onClick={handleConfirmOverage} disabled={overageConfirmBusy}>
+            {overageConfirmBusy ? 'Добавление…' : 'Добавить всё равно'}
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

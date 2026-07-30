@@ -13,6 +13,7 @@ import {
   autoArrivalNoteText,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { sortSupplierCandidatesByProcurementRules } from '../utils/supplierCandidateSort.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 import { computeProcurementDeficit } from '../utils/orderProcurementCoverage.js';
@@ -72,7 +73,7 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
      INNER JOIN purchases p ON p.id = pi.purchase_id
      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
      WHERE p.profile_id = $1
-       AND p.status = 'open'
+       AND LOWER(COALESCE(p.status, '')) NOT IN ('cancelled', 'canceled')
        AND (
          LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM($3))
          OR (
@@ -94,30 +95,58 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
   return (r.rows?.length ?? 0) > 0;
 }
 
-/** Сколько уже в открытых закупках по заказу и товару (антидубль автозакупки). */
+/**
+ * Сколько уже закуплено по заказу и товару (антидубль автозакупки).
+ * Учитываем не только open: после приёмки закупка уходит в archived, и иначе
+ * заказ снова выглядит «без покрытия» и автозаказ дублирует позицию.
+ */
 async function purchasedQtyInOpenPurchases(profileId, orderDbId, productId) {
   const oid = Number(orderDbId);
   const pid = Number(productId);
   if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
   const r = await query(
-    `SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int AS qty
-     FROM purchase_items pi
-     INNER JOIN purchases p ON p.id = pi.purchase_id
-     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
-     INNER JOIN orders o ON o.id = $2
-     WHERE p.profile_id = $1
-       AND pi.product_id = $3
-       AND p.status = 'open'
-       AND (
-         LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
-         OR (
-           o.order_group_id IS NOT NULL
-           AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
-         )
-       )`,
+    `SELECT
+       GREATEST(1, COALESCE(o.quantity, 1))::int AS order_qty,
+       EXISTS (
+         SELECT 1
+         FROM purchase_items pi
+         INNER JOIN purchases p ON p.id = pi.purchase_id
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+         WHERE p.profile_id = $1
+           AND pi.product_id = $3
+           AND LOWER(COALESCE(p.status, '')) NOT IN ('cancelled', 'canceled')
+           AND (
+             LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+             OR (
+               o.order_group_id IS NOT NULL
+               AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+             )
+           )
+       ) AS ever_linked,
+       (
+         SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int
+         FROM purchase_items pi
+         INNER JOIN purchases p ON p.id = pi.purchase_id
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+         WHERE p.profile_id = $1
+           AND pi.product_id = $3
+           AND p.status = 'open'
+           AND (
+             LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+             OR (
+               o.order_group_id IS NOT NULL
+               AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+             )
+           )
+       ) AS open_remaining
+     FROM orders o
+     WHERE o.id = $2`,
     [profileId, oid, pid]
   );
-  return Math.max(0, Number(r.rows?.[0]?.qty) || 0);
+  const row = r.rows?.[0];
+  if (!row) return 0;
+  if (row.ever_linked) return Math.max(0, Number(row.order_qty) || 0);
+  return Math.max(0, Number(row.open_remaining) || 0);
 }
 
 async function loadActiveSuppliers(profileId, { requireAutoOrdersEnabled = false } = {}) {
@@ -148,31 +177,48 @@ async function loadAutoSuppliers(profileId) {
   return loadActiveSuppliers(profileId, { requireAutoOrdersEnabled: true });
 }
 
-async function pickSupplierForProduct(productId, autoSuppliers, qty = 1) {
+async function pickSupplierForProduct(
+  productId,
+  autoSuppliers,
+  qty = 1,
+  { warehouseWeekendDays = null, now = new Date() } = {}
+) {
   const ids = autoSuppliers.map((s) => s.id);
   if (!ids.length) return null;
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
     `SELECT ss.supplier_id, ss.price, ss.stock,
+            COALESCE(ss.delivery_days, 0)::int AS delivery_days,
             COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false) AS is_priority
      FROM supplier_stocks ss
      INNER JOIN suppliers s ON s.id = ss.supplier_id
      WHERE ss.product_id = $1
        AND ss.supplier_id = ANY($2::bigint[])
        AND ss.stock IS NOT NULL
-       AND ss.stock >= $3
-     ORDER BY ss.price ASC NULLS LAST,
-              COALESCE(ss.delivery_days, 999) ASC,
-              CASE WHEN COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false)
-                THEN 0 ELSE 1 END,
-              ss.stock DESC NULLS LAST
-     LIMIT 1`,
+       AND ss.stock >= $3`,
     [productId, ids, need]
   );
-  const row = r.rows?.[0];
-  if (!row) return null;
-  const sid = Number(row.supplier_id);
-  return autoSuppliers.find((s) => s.id === sid) || { id: sid };
+
+  const supplierById = new Map(autoSuppliers.map((s) => [Number(s.id), s]));
+  const candidates = [];
+  for (const row of r.rows || []) {
+    const sid = Number(row.supplier_id);
+    const base = supplierById.get(sid);
+    if (!base) continue;
+    candidates.push({
+      ...base,
+      price: row.price != null ? Number(row.price) : null,
+      stock: row.stock != null ? Number(row.stock) : null,
+      deliveryDays: Number(row.delivery_days) || 0,
+      isPriority: Boolean(row.is_priority),
+    });
+  }
+  if (!candidates.length) return null;
+  const ranked = sortSupplierCandidatesByProcurementRules(candidates, {
+    now,
+    warehouseWeekendDays,
+  });
+  return ranked[0] || null;
 }
 
 /** Сопоставить product_id по offer_id / SKU (как ручная «В закупку» / «Отправить поставщику»). */
@@ -222,7 +268,7 @@ async function resolveOrderProductForAuto(row) {
 
   return { ...row, product_id: pid, productId: pid };
 }
-async function expandDemandForOrderRow(row, autoSuppliers) {
+async function expandDemandForOrderRow(row, autoSuppliers, pickOpts = {}) {
   const productId = Number(row.product_id);
   const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
   if (!Number.isFinite(productId) || productId < 1) return [];
@@ -235,7 +281,7 @@ async function expandDemandForOrderRow(row, autoSuppliers) {
   };
 
   if (await isKitProductId(productId)) {
-    const whole = await pickSupplierForProduct(productId, autoSuppliers, qty);
+    const whole = await pickSupplierForProduct(productId, autoSuppliers, qty, pickOpts);
     if (whole) {
       return [{ ...base, productId, quantityNeeded: qty }];
     }
@@ -319,6 +365,26 @@ async function retryPendingAutoSubmits(profileId, autoSuppliers) {
         reason: out.reason,
         message: out.message,
       });
+      try {
+        const { addRuntimeNotification } = await import('../utils/runtime-notifications.js');
+        await addRuntimeNotification({
+          type: 'supplier_order_submit_failed',
+          severity: 'error',
+          source: 'auto_procurement',
+          title: 'Заказы не отправлены поставщику',
+          message: `${out.supplierName || 'Поставщик'}: ${
+            out.message || 'ошибка повторной отправки'
+          }. Закупка №${purchaseId} — заказы нужно проверить (статус «Новый» при новой автозакупке).`,
+          meta: {
+            url: '/orders?status=new',
+            purchase_id: purchaseId,
+            supplier_id: supplierId,
+            reason: out.reason || null,
+          },
+        });
+      } catch (_) {
+        /* ignore */
+      }
     }
   }
   return { checked: r.rows?.length || 0, submitted };
@@ -510,6 +576,7 @@ class AutoProcurementService {
       return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, error: 'no_org_warehouse' };
     }
     const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
+    const pickOpts = { warehouseWeekendDays, now };
 
     const ordersRes = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
@@ -561,7 +628,7 @@ class AutoProcurementService {
         });
       }
 
-      const demandLines = await expandDemandForOrderRow(resolvedRow, autoSuppliers);
+      const demandLines = await expandDemandForOrderRow(resolvedRow, autoSuppliers, pickOpts);
       if (!demandLines.length) {
         skipped += 1;
         continue;
@@ -572,7 +639,12 @@ class AutoProcurementService {
         const deficit = await deficitQtyForDemandLine(line, pid);
         if (deficit <= 0) continue;
 
-        const supplier = await pickSupplierForProduct(line.productId, autoSuppliers, deficit);
+        const supplier = await pickSupplierForProduct(
+          line.productId,
+          autoSuppliers,
+          deficit,
+          pickOpts
+        );
         if (!supplier) {
           skipped += 1;
           continue;
@@ -698,7 +770,11 @@ class AutoProcurementService {
             purchaseId: result?.purchaseId,
             reason: result.supplierSubmit.reason,
             message: result.supplierSubmit.message,
+            rolledBack: Boolean(result?.rolledBack),
           });
+          if (result?.rolledBack) {
+            // Уведомление уже создано в procureFromOrders
+          }
         }
       } catch (e) {
         logger.warn('[AutoProcurement] procure failed', {
@@ -764,6 +840,7 @@ class AutoProcurementService {
       };
     }
     const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
+    const pickOpts = { warehouseWeekendDays, now };
 
     const orderRows = await loadOrderRowsForSupplierOrder(pid, marketplace, orderId);
     if (!orderRows.length) {
@@ -815,7 +892,7 @@ class AutoProcurementService {
 
         const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
 
-        const picked = await pickSupplierForProduct(productId, suppliers, qty);
+        const picked = await pickSupplierForProduct(productId, suppliers, qty, pickOpts);
         if (!picked) {
           skippedNoSupplierStock += 1;
           continue;

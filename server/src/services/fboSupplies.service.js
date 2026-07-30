@@ -206,6 +206,10 @@ class FboSuppliesService {
     if (!supply.deductStock) {
       return { applied: false, reason: 'deduct_disabled' };
     }
+    // Резерв снимаем всегда при отгрузке — даже если остаток уже списан ранее.
+    // Иначе willDeduct → already_deducted пропускал release, и резерв «залипал».
+    await fboSupplyReserveService.releaseReservesForSupply(supplyId, { profileId });
+
     if (await this._alreadyDeductedStock(supplyId)) {
       return { applied: false, reason: 'already_deducted', stockDeductedAt: supply.stockDeductedAt };
     }
@@ -214,8 +218,6 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
-
-    await fboSupplyReserveService.releaseReservesForSupply(supplyId, { profileId });
 
     const whId = Number(supply.deductionWarehouseId);
     const items = (supply.items || []).filter((it) => it.productId && it.quantity > 0);
@@ -389,8 +391,11 @@ class FboSuppliesService {
       throw err;
     }
     const supply = mapSupplyRow(r.rows[0]);
-    if (!supply.deductStock && !FBO_RESERVE_TERMINAL_STATUSES.has(supply.status)) {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    // Самолечение: терминал / deduct_stock=off — резерв не должен висеть.
+    if (FBO_RESERVE_TERMINAL_STATUSES.has(supply.status) || !supply.deductStock) {
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
+        console.warn('[FboSupplies] release on getById:', e?.message || e);
+      });
     }
     const itemsR = await query(
       `SELECT i.*, p.name AS product_name, p.user_category_id AS product_category_id,
@@ -674,8 +679,14 @@ class FboSuppliesService {
         );
         throw e;
       }
-    } else if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    }
+
+    // Терминальные статусы: всегда снимаем резерв (идемпотентно).
+    // Раньше при willDeduct + already_deducted ветка release не выполнялась.
+    if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
+        console.warn('[FboSupplies] release on terminal:', e?.message || e);
+      });
     } else if (result.deductStock) {
       const runRebalance = () =>
         fboSupplyReserveService
@@ -689,7 +700,9 @@ class FboSuppliesService {
         await runRebalance();
       }
     } else {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
+        console.warn('[FboSupplies] release (deduct off):', e?.message || e);
+      });
     }
 
     if (

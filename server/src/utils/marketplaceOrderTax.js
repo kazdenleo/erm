@@ -14,7 +14,16 @@ function formatRubTooltip(n) {
   return `${Math.round(v).toLocaleString('ru-RU')} ₽`;
 }
 
-function buildTaxTooltip({ vat, incomeTax, taxProfile, orgName, taxSystemRaw }) {
+function buildTaxTooltip({
+  vat,
+  incomeTax,
+  taxProfile,
+  orgName,
+  taxSystemRaw,
+  price,
+  totalExpenses,
+  profitBeforeIncomeTax,
+}) {
   const parts = [];
   if (orgName) parts.push(`Организация: ${orgName}`);
   const label = formatTaxSystemLabel(taxSystemRaw || taxProfile?.taxSystemCode);
@@ -23,8 +32,21 @@ function buildTaxTooltip({ vat, incomeTax, taxProfile, orgName, taxSystemRaw }) 
     parts.push(`НДС ${(taxProfile.vatRate * 100).toFixed(0)}%: ${formatRubTooltip(vat)}`);
   }
   if ((taxProfile?.incomeTaxRate || 0) > 0) {
-    const base = taxProfile.incomeTaxOnRevenue ? 'с выручки' : 'с прибыли (после расходов и НДС)';
-    parts.push(`Налог ${(taxProfile.incomeTaxRate * 100).toFixed(0)}% ${base}: ${formatRubTooltip(incomeTax)}`);
+    if (taxProfile.incomeTaxOnRevenue) {
+      parts.push(`Налог ${(taxProfile.incomeTaxRate * 100).toFixed(0)}% с выручки: ${formatRubTooltip(incomeTax)}`);
+    } else {
+      parts.push(
+        `Налог ${(taxProfile.incomeTaxRate * 100).toFixed(0)}% с прибыли: ${formatRubTooltip(incomeTax)}`
+      );
+      parts.push(
+        `База: выручка ${formatRubTooltip(price)} − расходы ${formatRubTooltip(totalExpenses)}` +
+          ((taxProfile.vatRate || 0) > 0 ? ` − НДС ${formatRubTooltip(vat)}` : '') +
+          ` = ${formatRubTooltip(profitBeforeIncomeTax)}`
+      );
+      if ((Number(profitBeforeIncomeTax) || 0) <= 0 && (Number(incomeTax) || 0) === 0) {
+        parts.push('Налог 0 ₽: нет положительной прибыли (УСН «доходы − расходы» / ОСН).');
+      }
+    }
   }
   if (!parts.length) {
     return 'Не указана система налогообложения организации';
@@ -44,7 +66,7 @@ export function computeMarketplaceRowTax({
   const price = Number(retailAmount) || 0;
   const totalExpenses = (Number(costAmount) || 0) + (Number(expensesTotal) || 0);
   const profile = taxProfile || resolveOrganizationTaxProfile(null);
-  const { vat, incomeTax, netProfit } = computeTaxesAndNetProfit({
+  const { vat, incomeTax, netProfit, profitBeforeIncomeTax } = computeTaxesAndNetProfit({
     price,
     totalExpenses,
     taxProfile: profile,
@@ -60,12 +82,16 @@ export function computeMarketplaceRowTax({
     vatAmount: vat,
     incomeTaxAmount: incomeTax,
     netIncome: netProfit,
+    profitBeforeIncomeTax,
     taxTooltip: buildTaxTooltip({
       vat,
       incomeTax,
       taxProfile: profile,
       orgName,
       taxSystemRaw,
+      price,
+      totalExpenses,
+      profitBeforeIncomeTax,
     }),
     organizationName: orgName || null,
     taxConfigured,
@@ -156,12 +182,26 @@ export async function enrichAnalyticsItemsWithTax(items, profileId) {
 export function buildTaxMetaFromContext(taxContext) {
   const org = taxContext?.defaultOrg;
   if (!org) {
-    return { organizationName: null, taxSystemLabel: null, configured: false };
+    return {
+      organizationName: null,
+      taxSystemLabel: null,
+      vatLabel: null,
+      vatRate: 0,
+      configured: false,
+    };
   }
   const profile = resolveOrganizationTaxProfile(org);
+  const vatPct = profile.vatRate > 0 ? Math.round(profile.vatRate * 100) : 0;
+  const vatLabel = vatPct > 0 ? `НДС ${vatPct}%` : 'Без НДС';
+  const taxSystemLabel = formatTaxSystemLabel(org.tax_system);
+  const parts = [];
+  if (taxSystemLabel && taxSystemLabel !== '—') parts.push(taxSystemLabel);
+  if (vatPct > 0) parts.push(vatLabel);
   return {
     organizationName: org.name || null,
-    taxSystemLabel: formatTaxSystemLabel(org.tax_system),
+    taxSystemLabel: parts.length ? parts.join(' + ') : taxSystemLabel,
+    vatLabel,
+    vatRate: profile.vatRate,
     configured: Boolean(org.tax_system || profile.vatRate > 0),
   };
 }

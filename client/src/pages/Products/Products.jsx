@@ -30,6 +30,7 @@ import {
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
+import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -50,6 +51,13 @@ function buildKitCompositionTitle(components) {
 }
 
 const PRODUCTS_LIST_PAGE_SIZES = [50, 100, 200];
+
+/** Тумблеры фильтра «не связаны с МП» (те же цвета/лейблы, что у бейджей) */
+const UNLINKED_MP_FILTER_TOGGLES = [
+  { code: 'ozon', label: 'OZ', name: 'Ozon', color: '#005bff' },
+  { code: 'wb', label: 'WB', name: 'Wildberries', color: '#cb11ab' },
+  { code: 'ym', label: 'ЯМ', name: 'Яндекс.Маркет', color: '#fc3f1d' },
+];
 
 /** Бейджи МП слева от фото — по сохранённым sku / product_id в product_skus */
 function getProductMarketplaceLinkBadges(product) {
@@ -112,6 +120,7 @@ export function Products() {
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const productFormRef = useRef(null);
   const [editingProduct, setEditingProduct] = useState(null);
   const [printHelperUrl, setPrintHelperUrl] = useState('');
   const [labelPrintProduct, setLabelPrintProduct] = useState(null);
@@ -137,6 +146,8 @@ export function Products() {
   const [filterProductType, setFilterProductType] = useState('');
   /** '' — только активные; 'include' — с архивом; 'only' — только архив */
   const [filterArchiveMode, setFilterArchiveMode] = useState('');
+  /** Активные тумблеры: показать товары без связи с этими МП */
+  const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() => new Set());
   /** null — ещё не проверяли; иначе есть ли товары без категории в текущих фильтрах org/бренд/тип/поиск */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -271,12 +282,19 @@ export function Products() {
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
     const archiveMode =
       partial.archiveMode !== undefined ? partial.archiveMode : filterArchiveMode;
+    const unlinked =
+      partial.unlinkedMp !== undefined ? partial.unlinkedMp : filterUnlinkedMp;
     const searchRaw = partial.search !== undefined ? partial.search : listSearch;
     const page = partial.page !== undefined ? partial.page : currentPage;
     const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
     const ptTrim = typeof pt === 'string' ? pt.trim() : '';
     const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
     const limit = PRODUCTS_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
+    const unlinkedArr = unlinked instanceof Set
+      ? [...unlinked]
+      : Array.isArray(unlinked)
+        ? unlinked
+        : [];
     return loadProducts({
       organizationId: org || undefined,
       brandId: brand || undefined,
@@ -286,6 +304,7 @@ export function Products() {
       search: search || undefined,
       includeArchived: archiveMode === 'include' || archiveMode === 'only',
       archivedOnly: archiveMode === 'only',
+      unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
       limit,
       offset: Math.max(0, (page - 1) * limit),
       silent: true
@@ -300,7 +319,9 @@ export function Products() {
     (supplierBindingEnabled && filterSupplierId ? 1 : 0) +
     (filterCategoryId ? 1 : 0) +
     (filterProductType ? 1 : 0) +
-    (filterArchiveMode ? 1 : 0);
+    (filterArchiveMode ? 1 : 0) +
+    filterUnlinkedMp.size;
+
   const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
   const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
 
@@ -312,7 +333,27 @@ export function Products() {
     setFilterCategoryId('');
     setFilterProductType('');
     setFilterArchiveMode('');
-    loadList({ organizationId: '', brandId: '', supplierId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
+    setFilterUnlinkedMp(new Set());
+    loadList({
+      organizationId: '',
+      brandId: '',
+      supplierId: '',
+      categoryId: '',
+      productType: '',
+      archiveMode: '',
+      unlinkedMp: [],
+      page: 1,
+    });
+  };
+
+  const toggleUnlinkedMpFilter = (mpCode) => {
+    setCurrentPage(1);
+    setFilterUnlinkedMp((prev) => {
+      const next = new Set(prev);
+      if (next.has(mpCode)) next.delete(mpCode);
+      else next.add(mpCode);
+      return next;
+    });
   };
 
   const handleListSearchChange = (e) => {
@@ -397,11 +438,14 @@ export function Products() {
     filterCategoryId,
     filterProductType,
     filterArchiveMode,
+    filterUnlinkedMp,
     supplierBindingEnabled,
   ]);
 
   const openProductIdParam = searchParams.get('open');
+  const openProductTabParam = searchParams.get('tab');
   const searchFromUrl = searchParams.get('search');
+  const [formInitialTab, setFormInitialTab] = useState('main');
 
   useEffect(() => {
     if (searchFromUrl == null) return;
@@ -417,6 +461,7 @@ export function Products() {
         (prev) => {
           const next = new URLSearchParams(prev);
           next.delete('open');
+          next.delete('tab');
           return next;
         },
         { replace: true }
@@ -430,6 +475,10 @@ export function Products() {
         const response = await productsApi.getById(id);
         const full = response?.data ?? response;
         if (cancelled || !full?.id) return;
+        const tab = String(openProductTabParam || 'main').trim();
+        setFormInitialTab(
+          ['main', 'ozon', 'wb', 'ym', 'competitors'].includes(tab) ? tab : 'main'
+        );
         setEditingProduct(full);
         setIsModalOpen(true);
       } catch (err) {
@@ -440,6 +489,7 @@ export function Products() {
             (prev) => {
               const next = new URLSearchParams(prev);
               next.delete('open');
+              next.delete('tab');
               return next;
             },
             { replace: true }
@@ -451,10 +501,11 @@ export function Products() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadCategories из useCategories не стабилен по ссылке
-  }, [openProductIdParam, categories.length, setSearchParams]);
+  }, [openProductIdParam, openProductTabParam, categories.length, setSearchParams]);
 
   const handleCreate = () => {
     setEditingProduct(null);
+    setFormInitialTab('main');
     void loadCategories({ silent: categories.length > 0 });
     setIsModalOpen(true);
   };
@@ -464,10 +515,12 @@ export function Products() {
       await loadCategories({ silent: categories.length > 0 });
       const response = await productsApi.getById(product.id);
       const fullProduct = response?.data ?? response;
+      setFormInitialTab('main');
       setEditingProduct(fullProduct || product);
       setIsModalOpen(true);
     } catch (err) {
       console.error('Error loading product details:', err);
+      setFormInitialTab('main');
       setEditingProduct(product);
       setIsModalOpen(true);
     }
@@ -491,26 +544,33 @@ export function Products() {
     void loadList();
   };
 
-  const handleSubmit = async (productData) => {
+  const handleSubmit = async (productData, opts = {}) => {
+    const closeAfter = opts.close !== false;
     try {
+      let saved = null;
       if (editingProduct) {
         const updated = await updateProduct(editingProduct.id, productData);
         console.log('[Products] Product updated, returned product:', updated);
         console.log('[Products] Updated product buyout_rate:', updated?.buyout_rate);
-        // Обновляем editingProduct с данными, возвращенными с сервера
         if (updated) {
           setEditingProduct(updated);
+          saved = updated;
         }
-        // Перезагружаем список товаров, чтобы получить актуальные данные
         await loadList();
       } else {
         const created = await createProduct(productData);
         console.log('[Products] Product created, returned product:', created);
-        // Перезагружаем список товаров, чтобы получить актуальные данные с сервера
+        if (created) {
+          setEditingProduct(created);
+          saved = created;
+        }
         await loadList();
       }
-      setIsModalOpen(false);
-      setEditingProduct(null);
+      if (closeAfter) {
+        setIsModalOpen(false);
+        setEditingProduct(null);
+      }
+      return saved;
     } catch (error) {
       console.error('Error saving product:', error);
       const message =
@@ -519,6 +579,7 @@ export function Products() {
         || error.message
         || 'Неизвестная ошибка';
       alert('Ошибка сохранения товара: ' + message);
+      throw error;
     }
   };
 
@@ -958,6 +1019,30 @@ export function Products() {
                 />
               </div>
               <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
+                <div className="products-unlinked-mp-filter" title="Показать товары без связи с маркетплейсом">
+                  <span className="text-muted small d-block mb-1">Не связаны с</span>
+                  <div className="d-flex align-items-center gap-1">
+                    {UNLINKED_MP_FILTER_TOGGLES.map((mp) => {
+                      const active = filterUnlinkedMp.has(mp.code);
+                      return (
+                        <MarketplaceToggle
+                          key={mp.code}
+                          active={active}
+                          size={28}
+                          color={mp.color}
+                          title={
+                            active
+                              ? `Показаны товары без связи с ${mp.name}`
+                              : `Показать товары без связи с ${mp.name}`
+                          }
+                          onToggle={() => toggleUnlinkedMpFilter(mp.code)}
+                        >
+                          {mp.label}
+                        </MarketplaceToggle>
+                      );
+                    })}
+                  </div>
+                </div>
                 <span
                   className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}
                   aria-live="polite"
@@ -1568,6 +1653,10 @@ export function Products() {
       <Modal
         isOpen={isModalOpen}
         onClose={() => {
+          if (productFormRef.current?.requestClose) {
+            void productFormRef.current.requestClose();
+            return;
+          }
           setIsModalOpen(false);
           setEditingProduct(null);
         }}
@@ -1577,12 +1666,14 @@ export function Products() {
         usePortal={false}
       >
         <ProductForm
+          ref={productFormRef}
           product={editingProduct}
           categories={categories}
           brands={brands}
           organizations={organizations}
           products={products}
           productsListOrganizationId={filterOrganizationId}
+          initialTab={formInitialTab}
           onSubmit={handleSubmit}
           onCancel={() => {
             setIsModalOpen(false);

@@ -16,6 +16,14 @@ function normalizeOrganizationBody(body) {
     out.skip_marketplace_stock_sync = v === true || v === 'true' || v === 1 || v === '1';
     delete out.skipMarketplaceStockSync;
   }
+  if (
+    out.auto_push_marketplace_prices !== undefined ||
+    out.autoPushMarketplacePrices !== undefined
+  ) {
+    const v = out.auto_push_marketplace_prices ?? out.autoPushMarketplacePrices;
+    out.auto_push_marketplace_prices = v === true || v === 'true' || v === 1 || v === '1';
+    delete out.autoPushMarketplacePrices;
+  }
   return out;
 }
 

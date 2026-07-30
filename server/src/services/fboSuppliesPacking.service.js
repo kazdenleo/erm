@@ -452,7 +452,7 @@ class FboSuppliesPackingService {
     };
   }
 
-  async scan(supplyId, { barcode, activeCargoUnitId, scanMode } = {}, { profileId } = {}) {
+  async scan(supplyId, { barcode, activeCargoUnitId, scanMode, allowOverage = false } = {}, { profileId } = {}) {
     const supply = await assertSupplyAccess(supplyId, profileId);
     const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
     const packingCtx = { profileId, supply, weightLimits };
@@ -520,6 +520,35 @@ class FboSuppliesPackingService {
       }
 
       await assertCargoPlacementZoneCompatible(activeId, supplyItem, supply);
+
+      if (!allowOverage) {
+        const packedR = await query(
+          `SELECT COALESCE(SUM(cc.quantity), 0)::int AS packed
+           FROM fbo_supply_cargo_contents cc
+           INNER JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
+           WHERE cu.fbo_supply_id = $1 AND cc.fbo_supply_item_id = $2`,
+          [supplyId, supplyItem.id]
+        );
+        const packed = Math.max(0, Number(packedR.rows?.[0]?.packed) || 0);
+        const planned = Math.max(0, Number(supplyItem.quantity) || 0);
+        if (packed >= planned) {
+          const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
+          const err = new Error(
+            `Лишний товар: «${name}». В поставке ${planned} шт., уже упаковано ${packed} шт. Добавить ещё 1 шт.?`
+          );
+          err.statusCode = 409;
+          err.code = 'PACKING_OVERAGE';
+          err.details = {
+            supplyItemId: supplyItem.id,
+            productName: name,
+            sku: supplyItem.sku || null,
+            barcode: supplyItem.barcode || code,
+            planned,
+            packed,
+          };
+          throw err;
+        }
+      }
 
       const upsert = await query(
         `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity)

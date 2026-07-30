@@ -65,6 +65,29 @@ export function isLikelyBarcodeScan(raw) {
   return /^\d{4,}$/.test(v);
 }
 
+/** Релевантность для сортировки: точный артикул > префикс/хвост > название. */
+export function scoreProductSearchMatch(product, query) {
+  const q = normalizeProductSearchQuery(query).toLowerCase();
+  if (!q || !product) return 0;
+  const sku = String(product?.sku || '').trim().toLowerCase();
+  const name = String(product?.name || '').toLowerCase();
+  const barcodeList = barcodeStringsFromProduct(product.barcodes).map((b) =>
+    String(b || '').trim().toLowerCase()
+  );
+  let score = 0;
+  if (sku === q) score += 100;
+  if (barcodeList.some((b) => b === q)) score += 90;
+  if (sku.startsWith(q)) score += 50;
+  if (sku.endsWith(q)) score += 45;
+  if (sku.includes(q)) score += 30;
+  const skuDigits = sku.replace(/\D/g, '');
+  if (/^\d+$/.test(q) && skuDigits === q) score += 40;
+  if (skuDigits.includes(q) && /^\d+$/.test(q)) score += 20;
+  if (name.includes(q)) score += 10;
+  if (shouldUseBarcodeDigitFallback(q) && barcodeList.some((b) => b.includes(q))) score += 15;
+  return score;
+}
+
 export function matchProductsLocal(products, query, { limit = 30 } = {}) {
   const q = normalizeProductSearchQuery(query).toLowerCase();
   if (!q) return [];
@@ -94,9 +117,7 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
         ? barcodeList.some((b) => b === q)
         : barcodeList.some((b) => b.includes(q));
       if (!hitSku && !hitName && !hitBarcode) return null;
-      const score =
-        (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (hitBarcode ? 2 : 0) + (sku.startsWith(q) ? 1 : 0);
-      return { p, score };
+      return { p, score: scoreProductSearchMatch(p, q) };
     })
     .filter(Boolean)
     .sort((a, b) => b.score - a.score);
@@ -146,18 +167,21 @@ export async function searchProductsCombined(
   if (isLikelyBarcodeScan(q)) {
     try {
       barcodeHit = await fetchProductByScanCode(q);
-      if (barcodeHit?.id) {
-        return [barcodeHit].slice(0, limit);
-      }
     } catch {
       /* не точный ШК — продолжаем поиск по артикулу и названию */
     }
   }
 
+  // Не останавливаемся на одном совпадении по ШК: «2490» должно находить DTSN2490
+  // через ILIKE, даже если getByBarcode вернул другой товар (например, по Ozon id).
   const local = matchProductsLocal(products, q, { limit });
   const remote = await searchProductsRemote(q, { organizationId, warehouseId, limit });
   const merged = mergeProductLists(barcodeHit ? [barcodeHit] : [], local, remote);
-  return merged.slice(0, limit);
+  return merged
+    .map((p) => ({ p, score: scoreProductSearchMatch(p, q) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.p)
+    .slice(0, limit);
 }
 
 /**

@@ -52,8 +52,8 @@ export function hasAnyWbCommission(reportItem) {
   return getWbCommissionSchemeValues(reportItem).some((s) => s.display != null);
 }
 
-/** Поле raw_data / wb_commissions, которое идёт в расчёт мин. цен WB */
-export const WB_PRICE_CALC_SCHEME_KEY = 'kgvpMarketplace';
+/** Поле raw_data / wb_commissions, которое идёт в расчёт мин. цен WB (FBO/FBW) */
+export const WB_PRICE_CALC_SCHEME_KEY = 'paidStorageKgvp';
 
 export function getWbCommissionSchemesForDisplay(reportItem) {
   const schemes = getWbCommissionSchemeValues(reportItem).filter((s) => s.display);
@@ -61,7 +61,7 @@ export function getWbCommissionSchemesForDisplay(reportItem) {
     schemes,
     priceCalcSchemeKey: WB_PRICE_CALC_SCHEME_KEY,
     note: schemes.length
-      ? 'В расчёте мин. цен — FBS (kgvpMarketplace из wb_commissions по subjectID категории); FBO/остальные — справочно'
+      ? 'В расчёте мин. цен — FBO/FBW (paidStorageKgvp из wb_commissions по subjectID категории); FBS/остальные — справочно'
       : 'Комиссии WB не найдены — обновите отчёт в Интеграциях → Wildberries → Комиссия',
   };
 }

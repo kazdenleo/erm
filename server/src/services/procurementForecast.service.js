@@ -4,6 +4,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { batchWarehouseScopedIncomingMap } from './kitStock.service.js';
 
 const FBS_MARKETPLACES = ['ozon', 'wb', 'wildberries', 'ym', 'yandex', 'yandexmarket'];
 
@@ -12,10 +13,11 @@ function parseDateYmd(raw) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 
-function defaultSalesRange() {
+function defaultSalesRange(days = 7) {
+  const n = Math.max(1, Math.floor(Number(days) || 7));
   const to = new Date();
   const from = new Date(to);
-  from.setDate(from.getDate() - 30);
+  from.setDate(from.getDate() - (n - 1));
   const fmt = (d) => {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -43,6 +45,46 @@ function daysInclusive(fromYmd, toYmd) {
   return Math.max(1, Math.floor((end - start) / 86400000) + 1);
 }
 
+/**
+ * Сколько штук комплектующей уже лежит на складе внутри собранных комплектов.
+ * Пример: 3 комплекта по 2 наконечника → 6 шт. «в комплектах».
+ * @returns {Promise<Map<number, number>>} componentId → qty
+ */
+async function batchComponentQtyInKitsOnWarehouse(componentIds, warehouseId) {
+  const ids = [...new Set((componentIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  const map = new Map();
+  if (!ids.length || !Number.isFinite(warehouseId) || warehouseId < 1) return map;
+
+  const r = await query(
+    `
+    SELECT
+      kc.component_product_id AS component_id,
+      COALESCE(
+        SUM(
+          GREATEST(COALESCE(pws.quantity, 0), 0)::bigint
+          * GREATEST(COALESCE(kc.quantity, 1), 1)::bigint
+        ),
+        0
+      )::int AS qty_in_kits
+    FROM kit_components kc
+    INNER JOIN product_warehouse_stock pws
+      ON pws.product_id = kc.kit_product_id
+     AND pws.warehouse_id = $2
+    WHERE kc.component_product_id = ANY($1::bigint[])
+      AND COALESCE(pws.quantity, 0) > 0
+    GROUP BY kc.component_product_id
+    `,
+    [ids, warehouseId]
+  );
+
+  for (const row of r.rows || []) {
+    const cid = Number(row.component_id);
+    const qty = Math.max(0, Number(row.qty_in_kits) || 0);
+    if (Number.isFinite(cid) && cid > 0) map.set(cid, qty);
+  }
+  return map;
+}
+
 class ProcurementForecastService {
   async getFbsForecast({
     profileId,
@@ -50,7 +92,8 @@ class ProcurementForecastService {
     warehouseId,
     salesDateFrom = null,
     salesDateTo = null,
-    procurementDays = 30,
+    procurementDays = 7,
+    bufferPercent = 0,
   } = {}) {
     const pid = Number(profileId);
     const orgId = Number(organizationId);
@@ -76,13 +119,18 @@ class ProcurementForecastService {
       throw err;
     }
 
-    const defaults = defaultSalesRange();
+    const defaults = defaultSalesRange(7);
     const fromYmd = parseDateYmd(salesDateFrom) || defaults.salesDateFrom;
     const toYmd = parseDateYmd(salesDateTo) || defaults.salesDateTo;
     const salesStart = toInclusiveStart(fromYmd);
     const salesEnd = toExclusiveEnd(toYmd);
     const salesPeriodDays = daysInclusive(fromYmd, toYmd);
-    const procDays = Math.max(1, Math.floor(Number(procurementDays) || 30));
+    const procDays = Math.max(1, Math.floor(Number(procurementDays) || 7));
+    const bufferPctRaw = Number(bufferPercent);
+    const bufferPct = Number.isFinite(bufferPctRaw)
+      ? Math.max(0, Math.min(500, bufferPctRaw))
+      : 0;
+    const bufferFactor = 1 + bufferPct / 100;
 
     const sql = `
       WITH raw_sales AS (
@@ -131,7 +179,6 @@ class ProcurementForecastService {
         s.name AS supplier_name,
         COALESCE(sb.sold_qty, 0)::int AS sold_qty,
         COALESCE(pws.quantity, 0)::int AS on_hand,
-        COALESCE(p.incoming_quantity, 0)::int AS incoming,
         CASE
           WHEN EXISTS (SELECT 1 FROM kit_components kc WHERE kc.component_product_id = p.id)
           THEN true ELSE false
@@ -154,15 +201,31 @@ class ProcurementForecastService {
       FBS_MARKETPLACES,
     ]);
 
-    const items = (r.rows || []).map((row) => {
+    const rows = r.rows || [];
+    const productIds = rows
+      .map((row) => Number(row.product_id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    // «В пути» — как на странице остатков: журнал incoming + закупки по выбранному складу
+    // (не глобальный products.incoming_quantity, иначе чужие склады занижают «Закупить»).
+    const incomingByProduct = await batchWarehouseScopedIncomingMap(productIds, {
+      warehouseId: whId,
+      profileId: pid,
+    });
+    // Наличие внутри собранных комплектов на этом складе (не только свободные комплектующие).
+    const inKitsByProduct = await batchComponentQtyInKitsOnWarehouse(productIds, whId);
+
+    const items = rows.map((row) => {
+      const productId = Number(row.product_id);
       const soldQty = Number(row.sold_qty) || 0;
       const onHand = Number(row.on_hand) || 0;
-      const incoming = Number(row.incoming) || 0;
+      const incoming = Math.max(0, Number(incomingByProduct.get(productId)) || 0);
+      const onHandInKits = Math.max(0, Number(inKitsByProduct.get(productId)) || 0);
       const dailyRate = soldQty / salesPeriodDays;
-      const projectedNeed = Math.ceil(dailyRate * procDays);
-      const toPurchase = Math.max(0, projectedNeed - onHand - incoming);
+      // Запас % увеличивает потребность относительно темпа продаж (не обязательно).
+      const projectedNeed = Math.ceil(dailyRate * procDays * bufferFactor);
+      const toPurchase = Math.max(0, projectedNeed - onHand - incoming - onHandInKits);
       return {
-        productId: Number(row.product_id),
+        productId,
         productName: row.product_name || '',
         productSku: row.product_sku || '',
         supplierId: row.supplier_id != null ? Number(row.supplier_id) : null,
@@ -171,9 +234,11 @@ class ProcurementForecastService {
         soldQty,
         salesPeriodDays,
         procurementDays: procDays,
+        bufferPercent: bufferPct,
         projectedNeed,
         onHand,
         incoming,
+        onHandInKits,
         toPurchase,
       };
     });
@@ -184,11 +249,20 @@ class ProcurementForecastService {
         acc.projectedNeed += row.projectedNeed;
         acc.onHand += row.onHand;
         acc.incoming += row.incoming;
+        acc.onHandInKits += row.onHandInKits;
         acc.toPurchase += row.toPurchase;
         if (row.toPurchase > 0) acc.linesToPurchase += 1;
         return acc;
       },
-      { soldQty: 0, projectedNeed: 0, onHand: 0, incoming: 0, toPurchase: 0, linesToPurchase: 0 }
+      {
+        soldQty: 0,
+        projectedNeed: 0,
+        onHand: 0,
+        incoming: 0,
+        onHandInKits: 0,
+        toPurchase: 0,
+        linesToPurchase: 0,
+      }
     );
 
     return {
@@ -196,6 +270,7 @@ class ProcurementForecastService {
       warehouseId: whId,
       salesPeriod: { dateFrom: fromYmd, dateTo: toYmd, days: salesPeriodDays },
       procurementDays: procDays,
+      bufferPercent: bufferPct,
       summary,
       items,
     };

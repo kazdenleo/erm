@@ -178,6 +178,30 @@ export function scaleReserveMetaToDisplayQty({ fromOnHand = 0, fromIncoming = 0 
 }
 
 /**
+ * Сколько reserve_from_* списать при unreserve, чтобы meta осталась согласованной с net.
+ * Сначала «в пути» (как scaleReserveMetaToDisplayQty), плюс фантом meta_total > net.
+ */
+export function allocateUnreserveReserveFromMeta(
+  releaseQty,
+  { fromOnHand = 0, fromIncoming = 0 } = {},
+  netReserved = null
+) {
+  const release = Math.max(0, Math.floor(Number(releaseQty) || 0));
+  const oh = Math.max(0, Math.floor(Number(fromOnHand) || 0));
+  const inc = Math.max(0, Math.floor(Number(fromIncoming) || 0));
+  const net =
+    netReserved != null && Number.isFinite(Number(netReserved))
+      ? Math.max(0, Math.floor(Number(netReserved) || 0))
+      : oh + inc;
+  const targetNet = Math.max(0, net - release);
+  const scaled = scaleReserveMetaToDisplayQty({ fromOnHand: oh, fromIncoming: inc }, targetNet);
+  return {
+    reserve_from_on_hand: Math.max(0, oh - scaled.fromOnHand),
+    reserve_from_incoming: Math.max(0, inc - scaled.fromIncoming),
+  };
+}
+
+/**
  * Meta резерва по заказам для одного product_id (SKU).
  * @returns {Map<number, { fromOnHand: number, fromIncoming: number }>}
  */
@@ -279,7 +303,13 @@ async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = nul
     const oid = Number(row.order_db_id);
     const pid = Number(row.product_id);
     if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) continue;
-    const kind = coverageKindFromReserveMeta(row.meta_on_hand, row.meta_incoming);
+    // Unreserve без reserve_from_* оставляет фантомный meta_incoming —
+    // урезаем meta до net reserved (сначала incoming), иначе плашка серая при реальном on_hand.
+    const scaled = scaleReserveMetaToDisplayQty(
+      { fromOnHand: row.meta_on_hand, fromIncoming: row.meta_incoming },
+      row.reserved_qty
+    );
+    const kind = coverageKindFromReserveMeta(scaled.fromOnHand, scaled.fromIncoming);
     if (kind) map.set(`${oid}:${pid}`, kind);
   }
   return map;
@@ -288,6 +318,15 @@ async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = nul
 export function isAssembledOrderReserveStatus(status) {
   const st = String(status ?? '').trim().toLowerCase();
   return st === 'assembled' || st === 'wb_assembly';
+}
+
+/**
+ * На сборке / собран: резерв нельзя снимать фоновыми правками закупки / trim excess.
+ * Явное снятие (отгрузка, удаление, ручное) — через allowProtectedRelease.
+ */
+export function isOrderAssemblyReserveProtectedStatus(status) {
+  const st = String(status ?? '').trim().toLowerCase();
+  return st === 'in_assembly' || st === 'wb_assembly' || st === 'assembled';
 }
 
 /** Статусы с активным резервом, участвующие в FIFO-пуле on_hand/incoming. */
@@ -309,12 +348,14 @@ export function resolveReserveCoverageKind(
   if (isAssembledOrderReserveStatus(orderStatus) && reservedQty > 0) {
     return 'on_hand';
   }
+  // Meta движений (reserve_from_on_hand / incoming) — источник истины; FIFO по суммарному
+  // наличию всех складов иначе красит «в пути» на FBS в зелёный из‑за остатка на FBO.
+  if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
   if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
   const sup = supplyMap?.get(pid);
   if (sup) {
     return classifyOrderReserveCoverage({ ...sup, orderReserved: reserved });
   }
-  if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
   return 'incoming';
 }
 
@@ -394,6 +435,39 @@ export function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0, reser
   return Math.max(0, H - Math.min(R0, H));
 }
 
+/**
+ * Бюджет on_hand для перевода meta «в пути» → «со склада».
+ * Учитываем только активные резервы с meta «со склада» — не фантомный meta
+ * у delivered/cancelled (резерв снят, meta в журнале осталась).
+ * Свободный available=0 при полном резерве «с пути» не блокирует: эти единицы
+ * уже лежат в on_hand и как раз покрывают этот резерв.
+ */
+export function computePromoteOnHandBudget({ onHand = 0, claimedActiveOnHand = 0 } = {}) {
+  const H = Math.max(0, Math.floor(Number(onHand) || 0));
+  const claimed = Math.max(0, Math.floor(Number(claimedActiveOnHand) || 0));
+  return Math.max(0, H - Math.min(claimed, H));
+}
+
+/**
+ * Сколько meta «в пути» можно перевести в «со склада» при текущем бюджете on_hand.
+ * Бюджет уменьшается вызывающим кодом после каждого перевода (FIFO).
+ * metaOnHand учитываем: фантомный incoming (meta_oh+meta_inc > reserved после
+ * unreserve без meta) не промоутим — иначе раздуем claimed on_hand.
+ */
+export function computePromoteIncomingToOnHandQty({
+  metaIncoming = 0,
+  reservedQty = 0,
+  onHandBudget = 0,
+  metaOnHand = 0,
+} = {}) {
+  const fromIncoming = Math.max(0, Math.floor(Number(metaIncoming) || 0));
+  const reserved = Math.max(0, Math.floor(Number(reservedQty) || 0));
+  const budget = Math.max(0, Math.floor(Number(onHandBudget) || 0));
+  const alreadyOh = Math.max(0, Math.floor(Number(metaOnHand) || 0));
+  const realIncoming = Math.min(fromIncoming, Math.max(0, reserved - alreadyOh));
+  return Math.min(realIncoming, budget);
+}
+
 /** Снимок supply: остаток и резерв только в разрезе склада (warehouseId обязателен для операций). */
 export function onHandHeadroomFromSnapshot(snap, opts = {}) {
   const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
@@ -403,10 +477,15 @@ export function onHandHeadroomFromSnapshot(snap, opts = {}) {
   return onHandHeadroomBeforeReserve(snap);
 }
 
-/** Резерв с «в пути» (incoming) — только для заказов в закупке или на сборке. */
+/** Резерв с «в пути» (incoming): new / закупка / сборка. Сначала наличие, потом путь. */
 export function orderStatusAllowsIncomingReserve(status) {
   const st = String(status ?? '').trim().toLowerCase();
-  return st === 'in_procurement' || st === 'in_assembly' || st === 'wb_assembly';
+  return (
+    st === 'new' ||
+    st === 'in_procurement' ||
+    st === 'in_assembly' ||
+    st === 'wb_assembly'
+  );
 }
 
 /** Ручные заказы: резерв с «в пути» сразу после создания (как в UI «Доступно»). */
@@ -510,17 +589,8 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
   }
 
   const orderStatusById = await batchOrderStatusMap(ids);
-  let metaMap = null;
-  if (opts.skipMeta === true) {
-    const assembledIds = ids.filter((id) =>
-      isAssembledOrderReserveStatus(orderStatusById.get(id))
-    );
-    if (assembledIds.length) {
-      metaMap = await buildReserveCoverageMetaMap({ orderDbIds: assembledIds });
-    }
-  } else {
-    metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
-  }
+  // Meta всегда: иначе список красит резерв «с пути» на FBS в зелёный из‑за наличия на другом складе.
+  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
   if (!byOrder.size) {
     if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap, orderStatusById);
     return map;
@@ -827,9 +897,39 @@ function procurementSupplierMapKey(marketplace, orderId, productId = null) {
   return `${mp}|${oid}|`;
 }
 
-async function fetchProcurementSupplierLookupMap(profileId) {
+async function fetchProcurementSupplierLookupMap(profileId, orderRefs = null) {
   const pid = normalizeProfileIdForOrders(profileId);
   if (pid == null) return new Map();
+
+  const refs = Array.isArray(orderRefs)
+    ? orderRefs
+        .map((r) => ({
+          marketplace: String(r?.marketplace || '').trim().toLowerCase(),
+          orderId: String(r?.orderId ?? r?.order_id ?? '').trim().toLowerCase(),
+        }))
+        .filter((r) => r.marketplace && r.orderId)
+    : [];
+
+  const params = [pid];
+  let orderFilterSql = '';
+  if (refs.length > 0) {
+    const mpVariants = new Set();
+    const orderIds = new Set();
+    for (const r of refs) {
+      orderIds.add(r.orderId);
+      mpVariants.add(r.marketplace);
+      if (r.marketplace === 'wildberries') mpVariants.add('wb');
+      if (r.marketplace === 'wb') mpVariants.add('wildberries');
+      if (r.marketplace === 'yandex') mpVariants.add('ym');
+      if (r.marketplace === 'ym') mpVariants.add('yandex');
+    }
+    params.push([...orderIds]);
+    params.push([...mpVariants]);
+    orderFilterSql = `
+       AND LOWER(TRIM(COALESCE(elem->>'orderId', ''))) = ANY($2::text[])
+       AND LOWER(TRIM(COALESCE(elem->>'marketplace', ''))) = ANY($3::text[])`;
+  }
+
   const r = await query(
     `SELECT
        pi.product_id,
@@ -843,8 +943,9 @@ async function fetchProcurementSupplierLookupMap(profileId) {
      LEFT JOIN suppliers s ON s.id = p.supplier_id
      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
      WHERE p.profile_id = $1
-       AND p.status = 'open'`,
-    [pid]
+       AND p.status = 'open'
+       ${orderFilterSql}`,
+    params
   );
   const map = new Map();
   for (const row of r.rows || []) {
@@ -926,6 +1027,7 @@ class OrdersService {
                o.marketplace_sku,
                o.product_name,
                o.delivery_address,
+               o.profile_id,
                pm.matched_product_id
         FROM refs r
         JOIN orders o
@@ -960,6 +1062,7 @@ class OrdersService {
         o.marketplace_sku,
         o.product_name,
         o.delivery_address,
+        o.profile_id,
         p.id AS joined_product_id,
         p.product_type,
         COALESCE(p.quantity, 0)::int AS product_qty,
@@ -1103,9 +1206,13 @@ class OrdersService {
         continue;
       }
       if (isKit && orderDbId) {
+        // profile_id обязателен: без него warehouse_mappings резолвится в чужой профиль
+        // (напр. Электролитный id=1 вместо id=5) → ложный «резерв не покрыт наличием».
         const orderRowForWh = {
           marketplace: row.marketplace,
-          delivery_address: row.delivery_address ?? null
+          delivery_address: row.delivery_address ?? null,
+          profile_id: row.profile_id ?? null,
+          profileId: row.profile_id ?? null
         };
         const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRowForWh, prodId);
         const exceedsOnHand = await kitOrderReserveExceedsOnHand(
@@ -1273,11 +1380,20 @@ class OrdersService {
            AND (sm.meta->>'order_id') ~ '^[0-9]+$'
          GROUP BY (sm.meta->>'order_id')::bigint
        )
-       SELECT o.id AS order_row_id, o.order_id, o.marketplace, n.net_r
+       SELECT o.id AS order_row_id, o.order_id, o.marketplace, o.status, n.net_r
        FROM nets n
        JOIN orders o ON o.id = n.oid
        WHERE n.net_r > 0
-       ORDER BY o.created_at DESC NULLS LAST, o.id DESC`,
+       ORDER BY
+         CASE LOWER(TRIM(COALESCE(o.status, '')))
+           WHEN 'assembled' THEN 3
+           WHEN 'in_assembly' THEN 3
+           WHEN 'wb_assembly' THEN 3
+           WHEN 'in_procurement' THEN 1
+           ELSE 0
+         END ASC,
+         o.created_at DESC NULLS LAST,
+         o.id DESC`,
       [pid]
     );
 
@@ -1291,6 +1407,8 @@ class OrdersService {
       const orderDbId = Number(orow.order_row_id);
       const netForOrder = Number(orow.net_r) || 0;
       if (netForOrder <= 0 || !Number.isFinite(orderDbId)) continue;
+      // Собранные / на сборке не трогаем: избыток снимаем с «Новый» / «В закупке».
+      if (isOrderAssemblyReserveProtectedStatus(orow.status)) continue;
       const orderIdStr = String(orow.order_id ?? '');
       const trimMeta = {
         order_id: orderDbId,
@@ -1419,6 +1537,18 @@ class OrdersService {
           for (const m of mappings || []) {
             const mid = String(m.marketplace_warehouse_id || '').trim();
             if (!mid) continue;
+            if (mp === 'ym' || mp === 'yandex') {
+              const { parseYandexWarehouseMapping } = await import('../utils/yandexWarehouseMapping.js');
+              const parsed = parseYandexWarehouseMapping(mid);
+              if (
+                namePart === mid ||
+                namePart === parsed.campaignId ||
+                (parsed.campaignId && mid.includes(namePart))
+              ) {
+                return m.warehouse_id;
+              }
+              continue;
+            }
             const midName = mid.includes('—') ? mid.split('—').slice(1).join('—').trim() : mid;
             if (
               mid.includes(namePart) ||
@@ -1541,13 +1671,15 @@ class OrdersService {
     }
   }
 
-  async _availableUnitsForOrderReserve(productId, orderRow, warehouseId) {
+  async _availableUnitsForOrderReserve(productId, orderRow, warehouseId, opts = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
-    if (!orderRowAllowsIncomingReserve(orderRow)) {
+    const allowIncoming =
+      opts.allowIncomingReserve === true || orderRowAllowsIncomingReserve(orderRow);
+    if (!allowIncoming) {
       return Math.max(0, Math.floor(onHandHeadroomFromSnapshot(snap, { warehouseId: wh })));
     }
     return Math.max(0, Math.floor(snap.available));
@@ -1636,6 +1768,43 @@ class OrdersService {
     }
 
     await this._applyReserveForOrderComponent(productId, qtyWanted, orderId, meta);
+  }
+
+  /**
+   * Снять резерв простой позиции сверх quantity заказа (гонка двух _applyReserveForOrderIfAbsent).
+   * @returns {Promise<number>} сколько единиц снято
+   */
+  async _reconcileExcessSimpleProductReserveForOrder(
+    orderDbId,
+    productId,
+    orderQty,
+    orderIdLabel,
+    meta = {}
+  ) {
+    const oid = Number(orderDbId);
+    const pid = Number(productId);
+    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
+    if (await isKitProductId(pid)) return 0;
+    const need = Math.max(1, parseInt(orderQty, 10) || 1);
+    const already = await this._getReservedQtyForOrderProduct(oid, pid);
+    const excess = already - need;
+    if (excess <= 0) return 0;
+    const label =
+      orderIdLabel != null && String(orderIdLabel).trim() !== ''
+        ? String(orderIdLabel).trim()
+        : String(oid);
+    await stockMovementsService.applyChange(pid, {
+      delta: excess,
+      type: 'unreserve',
+      reason: `Снятие лишнего резерва по заказу ${label}`.trim(),
+      meta: {
+        ...meta,
+        order_id: oid,
+        orderId: label,
+        reconcile_excess_order_qty: true
+      }
+    });
+    return excess;
   }
 
   /** Резерв одной позиции: PWS + в пути − резерв (без остатков поставщиков); у комплекта — + собираемость из комплектующих. */
@@ -2638,7 +2807,11 @@ class OrdersService {
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
   async _applyReserveForOrderIfAbsent(
     orderRow,
-    { skipKitReconcile = false, allowDespiteManualUnreserve = false } = {}
+    {
+      skipKitReconcile = false,
+      allowDespiteManualUnreserve = false,
+      allowIncomingReserve = false
+    } = {}
   ) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
     if (isOrderTerminalNoReserve(orderRow.status)) return;
@@ -2658,24 +2831,36 @@ class OrdersService {
 
     const rawProductId = orderRow?.productId ?? orderRow?.product_id;
     if (rawProductId == null || String(rawProductId).trim() === '') {
-      query(
-        `UPDATE orders SET product_id = $1, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2 AND product_id IS NULL`,
-        [productId, id]
-      ).catch(() => {});
+      try {
+        await query(
+          `UPDATE orders SET product_id = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2 AND product_id IS NULL`,
+          [productId, id]
+        );
+        orderRow.productId = productId;
+        orderRow.product_id = productId;
+      } catch {
+        /* ignore */
+      }
     }
 
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRow, productId);
     const strictWh = isStrictWarehouseOrderRow(orderRow);
     if (warehouseId == null || String(warehouseId).trim() === '') return;
 
+    const allowIncoming =
+      allowIncomingReserve === true || orderRowAllowsIncomingReserve(orderRow);
+
     const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
     if (!(await isKitProductId(productId))) {
-      const avail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId);
+      const avail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId, {
+        allowIncomingReserve: allowIncoming
+      });
       if (avail <= 0) return;
     } else {
       const maxKitsGate = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId, {
-        orderRow
+        orderRow,
+        allowIncomingReserve: allowIncoming
       });
       if (maxKitsGate <= 0) return;
     }
@@ -2750,7 +2935,8 @@ class OrdersService {
       const need = Math.max(0, qty - alreadyReservedKits);
       if (need <= 0) return;
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId, {
-        orderRow
+        orderRow,
+        allowIncomingReserve: allowIncoming
       });
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
@@ -2766,7 +2952,10 @@ class OrdersService {
             order_row: orderRow,
             warehouse_id: warehouseId,
             strict_warehouse: strictWh,
-            partial: reserveKits < need
+            partial: reserveKits < need,
+            ...(allowIncoming
+              ? { allow_incoming_reserve: true, allowIncomingReserve: true }
+              : {})
           },
           (compId, compQty, oid, m) =>
             this._applyReserveForOrderComponent(compId, compQty, oid, m)
@@ -2779,11 +2968,21 @@ class OrdersService {
       return;
     }
 
+    await this._reconcileExcessSimpleProductReserveForOrder(
+      id,
+      productId,
+      qty,
+      orderIdStr || String(id),
+      { warehouse_id: warehouseId, strict_warehouse: strictWh }
+    ).catch(() => {});
+
     const alreadyReservedForOrder = await this._getReservedQtyForOrderProduct(id, productId);
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
 
-    const snapAvail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId);
+    const snapAvail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId, {
+      allowIncomingReserve: allowIncoming
+    });
     if (snapAvail <= 0) return;
 
     const reserveNow = Math.min(need, snapAvail);
@@ -2796,12 +2995,23 @@ class OrdersService {
         order_row: orderRow,
         warehouse_id: warehouseId,
         strict_warehouse: strictWh,
-        partial: reserveNow < need
+        partial: reserveNow < need,
+        ...(allowIncoming
+          ? { allow_incoming_reserve: true, allowIncomingReserve: true }
+          : {})
       });
     } catch (e) {
       if (e?.statusCode === 400) return;
       throw e;
     }
+    // Гонка двух параллельных reapply: оба видели already=0 и зарезервировали по 1.
+    await this._reconcileExcessSimpleProductReserveForOrder(
+      id,
+      productId,
+      qty,
+      orderIdStr || String(id),
+      { warehouse_id: warehouseId, strict_warehouse: strictWh }
+    ).catch(() => {});
     this._scheduleAutoSendToAssemblyAfterReserve(orderRow);
   }
 
@@ -2909,7 +3119,8 @@ class OrdersService {
     let result = await this.releaseReserveForOrderDbId(dbId, {
       reasonSuffix,
       orderRow,
-      reallocate: false
+      reallocate: false,
+      allowProtectedRelease: true
     });
     if ((result.releasedProductLines || 0) > 0) return result;
 
@@ -2974,7 +3185,12 @@ class OrdersService {
    */
   async releaseReserveForOrderDbId(
     orderDbId,
-    { reasonSuffix = null, reallocate = true, orderRow = null } = {}
+    {
+      reasonSuffix = null,
+      reallocate = true,
+      orderRow = null,
+      allowProtectedRelease = false
+    } = {}
   ) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       return { releasedProductLines: 0, affected: [] };
@@ -3000,6 +3216,14 @@ class OrdersService {
     }
 
     const label = String(order.orderId ?? order.order_id ?? oid);
+    const st = order.status ?? order.Status;
+    if (!allowProtectedRelease && isOrderAssemblyReserveProtectedStatus(st)) {
+      logger.info(
+        `[Orders] skip unreserve for protected assembly status=${String(st)} order=${label}`
+      );
+      return { releasedProductLines: 0, affected: [], skippedProtected: true };
+    }
+
     const reasonBase = reasonSuffix ? `Снятие резерва: ${reasonSuffix}` : 'Снятие резерва';
     const affected = await releaseAllReservesForOrder(oid, label, async (pid, net, orderIdLabel, meta) => {
       await stockMovementsService.applyChange(pid, {
@@ -3097,8 +3321,10 @@ class OrdersService {
     if (!isKit) {
       if (Math.floor(snapProduct.available) <= 0) return;
     } else {
-      const maxKits = await computeMaxKitUnitsReservable(pid);
-      if (maxKits <= 0 || Math.floor(snapProduct.available) <= 0) return;
+      // У комплекта «available» на SKU часто 0 при запасе только в комплектующих («в пути»).
+      // Считаем собираемость с allowIncoming — иначе очередь после закупки комплектующих не срабатывает.
+      const maxKits = await computeMaxKitUnitsReservable(pid, { allowIncomingReserve: true });
+      if (maxKits <= 0) return;
     }
 
     const runQueueForProduct = async (forPid) => {
@@ -3108,19 +3334,30 @@ class OrdersService {
         typeof this.repository.findReserveQueueOrdersByProductId === 'function'
           ? await this.repository.findReserveQueueOrdersByProductId(fp, 500)
           : [];
+      const queueIsKit = await isKitProductId(fp);
       for (const o of q) {
         const oid = orderRowDbId(o);
         if (oid && exclude.has(oid)) continue;
-        const snapLoop = await getProductSupplySnapshotWithClient(null, fp);
-        if (Math.floor(snapLoop.available) <= 0) break;
-        if (isKit) {
-          const maxK = await computeMaxKitUnitsReservable(fp);
-          if (maxK <= 0) break;
+        if (queueIsKit) {
+          const wh = await this._resolveWarehouseIdForOrderReserve(o, fp);
+          const maxK = await this._computeMaxKitUnitsReservableForOrder(fp, wh, {
+            orderRow: o,
+            allowIncomingReserve: orderRowAllowsIncomingReserve(o)
+          });
+          if (maxK <= 0) continue;
+        } else {
+          const snapLoop = await getProductSupplySnapshotWithClient(null, fp);
+          if (Math.floor(snapLoop.available) <= 0) break;
         }
         try {
           const st = String(o?.status ?? '').trim().toLowerCase();
           await this._applyReserveForOrderIfAbsent(o, {
-            allowDespiteManualUnreserve: st === 'in_procurement'
+            allowDespiteManualUnreserve:
+              st === 'in_procurement' ||
+              st === 'in_assembly' ||
+              st === 'wb_assembly' ||
+              st === 'assembled',
+            allowIncomingReserve: orderRowAllowsIncomingReserve(o)
           });
         } catch (e) {
           if (e?.statusCode === 400) continue;
@@ -3573,16 +3810,19 @@ class OrdersService {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders) || !orders.length) {
       return orders;
     }
-    const hasProcurement = orders.some(
+    const procurementOrders = orders.filter(
       (o) => String(o.status || '').trim().toLowerCase() === 'in_procurement'
     );
-    if (!hasProcurement) return orders;
+    if (!procurementOrders.length) return orders;
 
-    const lookup = await fetchProcurementSupplierLookupMap(profileId);
+    const orderRefs = procurementOrders.map((o) => ({
+      marketplace: o.marketplace,
+      orderId: o.orderId ?? o.order_id,
+    }));
+    const lookup = await fetchProcurementSupplierLookupMap(profileId, orderRefs);
     if (!lookup.size) return orders;
 
-    for (const o of orders) {
-      if (String(o.status || '').trim().toLowerCase() !== 'in_procurement') continue;
+    for (const o of procurementOrders) {
       const mp = o.marketplace;
       const oid = o.orderId ?? o.order_id;
       const pid = o.productId ?? o.product_id;
@@ -4277,7 +4517,8 @@ class OrdersService {
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     if (wh == null) return 0;
-    const allowIncoming = orderRowAllowsIncomingReserve(opts.orderRow);
+    const allowIncoming =
+      opts.allowIncomingReserve === true || orderRowAllowsIncomingReserve(opts.orderRow);
     return computeMaxKitUnitsReservable(kitId, {
       warehouseId: wh,
       allowIncomingReserve: allowIncoming
@@ -4285,14 +4526,22 @@ class OrdersService {
   }
 
   /** Сколько комплектов можно зарезервировать по строке заказа (целые SKU + сборка, с учётом «в пути»). */
-  async _kitReservableUnitsForOrderLine(kitId, warehouseId, orderRow, { remainingKits = null } = {}) {
+  async _kitReservableUnitsForOrderLine(
+    kitId,
+    warehouseId,
+    orderRow,
+    { remainingKits = null, allowIncomingReserve = false } = {}
+  ) {
     const kid = Number(kitId);
     if (!Number.isFinite(kid) || kid < 1) return 0;
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     const headroom =
       remainingKits != null ? Math.max(0, Number(remainingKits) || 0) : null;
-    const maxKits = await this._computeMaxKitUnitsReservableForOrder(kid, wh, { orderRow });
+    const maxKits = await this._computeMaxKitUnitsReservableForOrder(kid, wh, {
+      orderRow,
+      allowIncomingReserve
+    });
     return headroom != null ? Math.min(headroom, maxKits) : maxKits;
   }
 
@@ -4300,7 +4549,11 @@ class OrdersService {
    * Сколько единиц можно зарезервировать по позиции (комплектующая / комплект / обычный товар).
    * Для комплектующей заказа-комплекта — supply SKU и собираемость родительского комплекта.
    */
-  async _getAvailableUnitsForOrderReserveLine(productId, orderRow, { warehouseId = null, kitProductId = null } = {}) {
+  async _getAvailableUnitsForOrderReserveLine(
+    productId,
+    orderRow,
+    { warehouseId = null, kitProductId = null, allowIncomingReserve = false } = {}
+  ) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
     if (orderRow != null && this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) {
@@ -4311,6 +4564,8 @@ class OrdersService {
       kitProductId != null && Number.isFinite(Number(kitProductId))
         ? Number(kitProductId)
         : null;
+    const allowIncoming =
+      allowIncomingReserve === true || orderRowAllowsIncomingReserve(orderRow);
 
     if (kitId != null && kitId > 0 && pid !== kitId && (await isKitProductId(kitId))) {
       const components = await getKitComponents(kitId);
@@ -4320,14 +4575,17 @@ class OrdersService {
         warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
       });
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId, {
-        orderRow
+        orderRow,
+        allowIncomingReserve: allowIncoming
       });
       return Math.min(Math.floor(compAvail), Math.floor(maxKits) * perKit);
     }
 
     if (await isKitProductId(pid)) {
       return Math.floor(
-        await this._kitReservableUnitsForOrderLine(pid, warehouseId, orderRow)
+        await this._kitReservableUnitsForOrderLine(pid, warehouseId, orderRow, {
+          allowIncomingReserve: allowIncoming
+        })
       );
     }
 
@@ -4336,7 +4594,7 @@ class OrdersService {
         warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
       })
     );
-    if (!orderRowAllowsIncomingReserve(orderRow)) {
+    if (!allowIncoming) {
       const wh =
         warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
       const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
@@ -4376,7 +4634,8 @@ class OrdersService {
           allowDespiteManualUnreserve ||
           String(row?.status ?? '').trim().toLowerCase() === 'in_procurement';
         await this._applyReserveForOrderIfAbsent(row, {
-          allowDespiteManualUnreserve: allowDespite
+          allowDespiteManualUnreserve: allowDespite,
+          allowIncomingReserve: orderRowAllowsIncomingReserve(row)
         });
       } catch (e) {
         if (e?.statusCode !== 400) {
@@ -4511,6 +4770,29 @@ class OrdersService {
     if (found != null) return found;
     found = await tryProductTable(msku);
     if (found != null) return found;
+    // Ozon часто кладёт штрихкод в offer_id — ищем как при скане (barcodes / kit SKU).
+    try {
+      const productsRepo = repositoryFactory.getProductsRepository();
+      if (productsRepo && typeof productsRepo.findByBarcode === 'function') {
+        const barcodeCandidates = [];
+        const seenBc = new Set();
+        for (const c of [...skuCandidates, offer, msku]) {
+          const s = String(c ?? '').trim();
+          if (!s) continue;
+          const key = s.toLowerCase();
+          if (seenBc.has(key)) continue;
+          seenBc.add(key);
+          barcodeCandidates.push(s);
+        }
+        for (const candidate of barcodeCandidates) {
+          const prod = await productsRepo.findByBarcode(candidate);
+          const id = prod?.id ?? prod?.product_id ?? null;
+          if (id != null && Number(id) > 0) return Number(id);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
     return null;
   }
 
@@ -6276,10 +6558,21 @@ class OrdersService {
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {
         totalNeed += qty;
-        reserved = await this._getReservedQtyForOrderProduct(id, pid);
-        totalReserved += reserved;
         const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
         lineWarehouseId = warehouseId;
+        try {
+          await this._reconcileExcessSimpleProductReserveForOrder(
+            id,
+            pid,
+            qty,
+            String(row.orderId ?? row.order_id ?? id),
+            { warehouse_id: warehouseId }
+          );
+        } catch {
+          /* не блокируем карточку */
+        }
+        reserved = await this._getReservedQtyForOrderProduct(id, pid);
+        totalReserved += reserved;
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
@@ -6493,7 +6786,13 @@ class OrdersService {
   async setOrderReserveForProduct(
     marketplace,
     orderId,
-    { profileId = null, productId, action = 'toggle', quantity = null } = {}
+    {
+      profileId = null,
+      productId,
+      action = 'toggle',
+      quantity = null,
+      allowIncomingReserve = false
+    } = {}
   ) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const err = new Error('Резерв по заказам доступен только при использовании PostgreSQL');
@@ -6708,10 +7007,13 @@ class OrdersService {
         kitId != null && (await isKitProductId(kitId)) && pid !== Number(kitId)
           ? Number(kitId)
           : null;
-      const snapManual = await this._availableUnitsForOrderReserve(pid, row, warehouseId);
+      const snapManual = await this._availableUnitsForOrderReserve(pid, row, warehouseId, {
+        allowIncomingReserve
+      });
       let available = await this._getAvailableUnitsForOrderReserveLine(pid, row, {
         warehouseId,
-        kitProductId
+        kitProductId,
+        allowIncomingReserve
       });
       const reserveAsWholeKit = (await isKitProductId(pid)) && kitProductId == null;
       if (!reserveAsWholeKit) {
@@ -6747,7 +7049,10 @@ class OrdersService {
           warehouse_id: warehouseId,
           strict_warehouse: strictWh,
           manual_reserve: true,
-          partial_line: true
+          partial_line: true,
+          ...(allowIncomingReserve
+            ? { allow_incoming_reserve: true, allowIncomingReserve: true }
+            : {})
         };
         if (kitProductId != null) {
           const err = new Error(
@@ -6818,13 +7123,24 @@ class OrdersService {
    * Поставить / снять резерв по строкам выбранного заказа (не по всему order_group_id).
    * @param {'toggle'|'reserve'|'unreserve'} action
    */
-  async setOrderReserve(marketplace, orderId, { profileId = null, action = 'toggle', productId = null, quantity = null } = {}) {
+  async setOrderReserve(
+    marketplace,
+    orderId,
+    {
+      profileId = null,
+      action = 'toggle',
+      productId = null,
+      quantity = null,
+      allowIncomingReserve = false
+    } = {}
+  ) {
     if (productId != null && String(productId).trim() !== '') {
       return this.setOrderReserveForProduct(marketplace, orderId, {
         profileId,
         productId,
         action,
-        quantity
+        quantity,
+        allowIncomingReserve
       });
     }
     if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -6888,7 +7204,8 @@ class OrdersService {
         try {
           await this._applyReserveForOrderIfAbsent(row, {
             skipKitReconcile: false,
-            allowDespiteManualUnreserve: true
+            allowDespiteManualUnreserve: true,
+            allowIncomingReserve
           });
         } catch (e) {
           if (e?.statusCode === 400) throw e;
@@ -7054,6 +7371,195 @@ class OrdersService {
       rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
     }
     return this._localLinesFromOrderRows(rows);
+  }
+
+  /**
+   * После приёмки: резерв, оформленный «с в пути», перевести в покрытие «со склада»
+   * (плашка 1/1 становится зелёной). Не меняет величину резерва.
+   * Переводит только объём, который покрывается фактическим on_hand (с учётом уже
+   * помеченных «со склада» резервов) — безопасно и при вызове до приёмки (0 конверсий).
+   */
+  async promoteIncomingOrderReservesToOnHand({
+    productIds = [],
+    sourceOrders = [],
+    profileId = null,
+    reason = 'Резерв «в пути» → со склада после приёмки',
+  } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { converted: 0 };
+    const pids = [
+      ...new Set(
+        (Array.isArray(productIds) ? productIds : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    if (!pids.length) return { converted: 0 };
+
+    const refs = Array.isArray(sourceOrders) ? sourceOrders : [];
+    const orderIdsFromRefs = new Set();
+    for (const r of refs) {
+      const oid = String(r?.orderId ?? r?.order_id ?? '').trim();
+      if (oid) orderIdsFromRefs.add(oid.toLowerCase());
+    }
+
+    const params = [pids];
+    let orderFilterSql = '';
+    if (orderIdsFromRefs.size > 0) {
+      params.push([...orderIdsFromRefs]);
+      orderFilterSql = `
+        AND (
+          LOWER(TRIM(COALESCE(o.order_id::text, ''))) = ANY($2::text[])
+          OR LOWER(TRIM(COALESCE(o.order_group_id::text, ''))) = ANY($2::text[])
+        )`;
+    }
+    if (profileId != null && Number.isFinite(Number(profileId))) {
+      params.push(Number(profileId));
+      const pIdx = params.length;
+      orderFilterSql += ` AND o.profile_id = $${pIdx}::bigint`;
+    }
+
+    const r = await query(
+      `SELECT o.id AS order_db_id,
+              o.order_id AS marketplace_order_id,
+              o.created_at,
+              sm.product_id,
+              sm.warehouse_id,
+              ${RESERVE_META_INCOMING_SUM_SQL}::int AS meta_incoming,
+              ${RESERVE_META_ON_HAND_SUM_SQL}::int AS meta_on_hand,
+              ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
+       FROM orders o
+       JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+         AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+         AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+       WHERE sm.product_id = ANY($1::bigint[])
+         AND o.status IN (${ORDER_RESERVE_FIFO_STATUSES_SQL})
+         ${orderFilterSql}
+       GROUP BY o.id, o.order_id, o.created_at, sm.product_id, sm.warehouse_id
+       HAVING ${RESERVE_META_INCOMING_SUM_SQL} > 0
+          AND ${NET_RESERVED_SUM_EXPR_SQL} > 0
+       ORDER BY sm.product_id ASC, o.created_at ASC NULLS LAST, o.id ASC`,
+      params
+    );
+
+    const rows = r.rows || [];
+    if (!rows.length) return { converted: 0 };
+
+    /** Бюджет on_hand по ключу productId или productId:warehouseId. */
+    const onHandBudget = new Map();
+    const loadActiveOnHandClaimed = async (productId, warehouseId = null) => {
+      const claimedParams = [productId];
+      let whSql = '';
+      if (warehouseId != null) {
+        claimedParams.push(warehouseId);
+        whSql = ` AND sm.warehouse_id = $2`;
+      }
+      const claimedR = await query(
+        `SELECT COALESCE(SUM(t.meta_on_hand), 0)::int AS meta_on_hand
+         FROM (
+           SELECT GREATEST(0, ${RESERVE_META_ON_HAND_SUM_SQL})::int AS meta_on_hand
+           FROM stock_movements sm
+           JOIN orders o ON ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+           WHERE sm.product_id = $1
+             AND sm.type IN ('reserve', 'unreserve')
+             AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+             AND o.status IN (${ORDER_RESERVE_FIFO_STATUSES_SQL})
+             ${whSql}
+           GROUP BY o.id
+           HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+         ) t`,
+        claimedParams
+      );
+      return Math.max(0, Math.floor(Number(claimedR.rows?.[0]?.meta_on_hand) || 0));
+    };
+    const ensureBudget = async (productId, warehouseId) => {
+      const wh = parseStockMovementWarehouseId(warehouseId);
+      const key = wh != null ? `${productId}:${wh}` : String(productId);
+      if (onHandBudget.has(key)) return key;
+      // Только склад резерва заказа — без fallback на глобальный on_hand (склады изолированы).
+      const snap = await getProductSupplySnapshotWithClient(
+        null,
+        productId,
+        wh != null ? { warehouseId: wh } : {}
+      );
+      const onHand = Math.max(0, Math.floor(Number(snap?.onHand) || 0));
+      const claimed = await loadActiveOnHandClaimed(productId, wh);
+      onHandBudget.set(key, computePromoteOnHandBudget({ onHand, claimedActiveOnHand: claimed }));
+      return key;
+    };
+
+    let converted = 0;
+    let units = 0;
+    for (const row of rows) {
+      const orderDbId = Number(row.order_db_id);
+      const productId = Number(row.product_id);
+      if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
+      if (!Number.isFinite(productId) || productId < 1) continue;
+
+      const budgetKey = await ensureBudget(productId, row.warehouse_id);
+      const budget = onHandBudget.get(budgetKey) || 0;
+      const qty = computePromoteIncomingToOnHandQty({
+        metaIncoming: row.meta_incoming,
+        reservedQty: row.reserved_qty,
+        onHandBudget: budget,
+        metaOnHand: row.meta_on_hand,
+      });
+      if (qty < 1) continue;
+
+      const orderIdLabel =
+        row.marketplace_order_id != null && String(row.marketplace_order_id).trim() !== ''
+          ? String(row.marketplace_order_id).trim()
+          : String(orderDbId);
+      const metaBase = {
+        order_id: orderDbId,
+        orderId: orderIdLabel,
+        promote_incoming_to_on_hand: true,
+      };
+      const wh = parseStockMovementWarehouseId(row.warehouse_id);
+      if (wh != null) metaBase.warehouse_id = wh;
+
+      try {
+        await stockMovementsService.applyChange(productId, {
+          delta: qty,
+          type: 'unreserve',
+          reason,
+          meta: {
+            ...metaBase,
+            reserve_from_incoming: qty,
+            reserve_from_on_hand: 0,
+          },
+        });
+        await stockMovementsService.applyChange(productId, {
+          delta: -qty,
+          type: 'reserve',
+          reason,
+          meta: {
+            ...metaBase,
+            reserve_from_on_hand: qty,
+            reserve_from_incoming: 0,
+            journal_reconcile: true,
+          },
+        });
+        onHandBudget.set(budgetKey, Math.max(0, budget - qty));
+        converted += 1;
+        units += qty;
+      } catch (e) {
+        logger.warn('[Orders] promoteIncomingOrderReservesToOnHand row failed', {
+          orderDbId,
+          productId,
+          qty,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    if (converted > 0) {
+      logger.info('[Orders] promoteIncomingOrderReservesToOnHand', {
+        converted,
+        units,
+        products: pids.length,
+      });
+    }
+    return { converted, units };
   }
 }
 

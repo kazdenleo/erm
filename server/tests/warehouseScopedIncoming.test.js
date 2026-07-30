@@ -154,6 +154,22 @@ describe('allocateWarehouseScopedIncoming', () => {
     ).toBe(1);
   });
 
+  test('устаревший snapshot выше глобального журнала — не раздуваем «в пути» на складе', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: -4,
+        nullRaw: 2,
+        globalJournalNet: 0,
+        whOnHand: 0,
+        totalOnHand: 35,
+        globalIncoming: 0,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true,
+        warehouseIncomingSnapshot: 14
+      })
+    ).toBe(0);
+  });
+
   test('нулевой SUM incoming на складе при актуальном incoming_after — берём снимок', () => {
     expect(
       allocateWarehouseScopedIncoming({

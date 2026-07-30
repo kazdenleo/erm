@@ -456,6 +456,9 @@ export function Orders() {
   const [statusFilter, setStatusFilter] = useState('new');
   const [listRefreshing, setListRefreshing] = useState(false);
   const listFilterChangeRef = useRef(false);
+  /** Ключ фильтров, под который уже загружен текущий `orders` (чтобы не показывать «пусто» во время смены вкладки). */
+  const [loadedListKey, setLoadedListKey] = useState('');
+  const pendingListKeyRef = useRef('');
   useEffect(() => {
     if (!procurementStatusEnabled && statusFilter === 'in_procurement') {
       setStatusFilter('new');
@@ -779,6 +782,20 @@ export function Orders() {
     [currentPage, pageSize, marketplaceFilter, statusFilter, orderSearchQuery]
   );
 
+  const currentListKey = useMemo(
+    () =>
+      [
+        marketplaceFilter,
+        statusFilter,
+        String(orderSearchQuery || '').trim(),
+        String(pageSize),
+        String(currentPage),
+      ].join('|'),
+    [marketplaceFilter, statusFilter, orderSearchQuery, pageSize, currentPage]
+  );
+
+  const listFiltersSettled = loadedListKey === currentListKey && !listRefreshing;
+
   const reloadOrders = useCallback(
     async (options = {}) => {
       const page = options.page ?? currentPage;
@@ -820,31 +837,40 @@ export function Orders() {
 
   useEffect(() => {
     let cancelled = false;
-    const silent = ordersHydratedRef.current && !listFilterChangeRef.current;
-    void reloadOrders({ silent })
+    const requestKey = currentListKey;
+    pendingListKeyRef.current = requestKey;
+    setListRefreshing(true);
+    // Silent: не прячем таблицу через loading — иначе при медленном API кажется, что заказов нет.
+    void reloadOrders({ silent: true })
       .then((result) => {
         if (cancelled || result?.stale) return;
+        if (pendingListKeyRef.current !== requestKey) return;
+        setLoadedListKey(requestKey);
         if (!ordersHydratedRef.current) {
           ordersHydratedRef.current = true;
           setOrdersHydrateTick((n) => n + 1);
         }
       })
-      .catch(() => {
-        if (cancelled || ordersHydratedRef.current) return;
-        ordersHydratedRef.current = true;
-        setOrdersHydrateTick((n) => n + 1);
+      .catch((e) => {
+        if (cancelled) return;
+        if (pendingListKeyRef.current !== requestKey) return;
+        setLoadedListKey(requestKey);
+        if (!ordersHydratedRef.current) {
+          ordersHydratedRef.current = true;
+          setOrdersHydrateTick((n) => n + 1);
+        }
+        setRefreshError(e?.message || 'Не удалось загрузить заказы');
       })
       .finally(() => {
         if (cancelled) return;
-        if (listFilterChangeRef.current) {
-          listFilterChangeRef.current = false;
-          setListRefreshing(false);
-        }
+        if (pendingListKeyRef.current !== requestKey) return;
+        listFilterChangeRef.current = false;
+        setListRefreshing(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [reloadOrders]);
+  }, [reloadOrders, currentListKey]);
 
   const loadStatusCounts = useCallback(
     async ({ silent = false } = {}) => {
@@ -1057,6 +1083,7 @@ export function Orders() {
 
         if (forceImport) setCurrentPage(1);
         const loaded = await reloadOrders({ silent: true, page: forceImport ? 1 : undefined });
+        void loadStatusCounts({ silent: true });
         if (forceImport) {
           const r = lastStatus?.lastSyncResult;
           const totalImported =
@@ -1066,6 +1093,7 @@ export function Orders() {
             // Частый кейс: импорт принёс заказы, но текущий фильтр («Новые») их скрывает.
             setStatusFilter('all');
             await reloadOrders({ silent: true, page: 1 });
+            void loadStatusCounts({ silent: true });
             if (!silent) {
               setSyncInfo({
                 message:
@@ -1082,6 +1110,7 @@ export function Orders() {
         console.error('Ошибка синхронизации заказов:', e.message, status ? `[${status}]` : '', data || '');
         try {
           await reloadOrders({ silent: true });
+          void loadStatusCounts({ silent: true });
         } catch (_) {
           /* ignore */
         }
@@ -1108,7 +1137,7 @@ export function Orders() {
         }
       }
     },
-    [reloadOrders, statusFilter]
+    [reloadOrders, loadStatusCounts, statusFilter]
   );
 
   const handleSync = () => runSync(false, { refreshStatuses: true, daysBack: manualImportDays });
@@ -1172,30 +1201,34 @@ export function Orders() {
         ? POLL_HIDDEN_MS
         : POLL_VISIBLE_MS;
 
+    const refreshListAndCounts = () =>
+      void reloadOrders({ silent: true })
+        .finally(() => {
+          // Список обновляется с сервера, но бейджи статусов («Новый» и т.д.) — отдельный API.
+          // Без этого после cron/импорта заказ уже в таблице, а «Новый» остаётся 0.
+          void loadStatusCounts({ silent: true });
+          requestNewOrdersSoundCheck();
+        })
+        .finally(() => scheduleNext());
+
     const scheduleNext = () => {
       if (!mounted) return;
       if (timerId) clearTimeout(timerId);
       timerId = setTimeout(() => {
         if (!mounted) return;
-        void reloadOrders({ silent: true })
-          .finally(() => requestNewOrdersSoundCheck())
-          .finally(() => scheduleNext());
+        refreshListAndCounts();
       }, pollMs());
     };
 
     const t0 = setTimeout(() => {
       if (!mounted) return;
-      void reloadOrders({ silent: true })
-        .finally(() => requestNewOrdersSoundCheck())
-        .finally(() => scheduleNext());
+      refreshListAndCounts();
     }, 5000);
 
     const onVisibility = () => {
       if (!mounted || document.visibilityState !== 'visible') return;
       if (timerId) clearTimeout(timerId);
-      void reloadOrders({ silent: true })
-        .finally(() => requestNewOrdersSoundCheck())
-        .finally(() => scheduleNext());
+      refreshListAndCounts();
     };
 
     document.addEventListener('visibilitychange', onVisibility);
@@ -1206,7 +1239,7 @@ export function Orders() {
       if (timerId) clearTimeout(timerId);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [reloadOrders, runSync, ordersAutoSyncPauseLoaded, ordersAutoSyncPaused]);
+  }, [reloadOrders, loadStatusCounts, runSync, ordersAutoSyncPauseLoaded, ordersAutoSyncPaused]);
 
   const handleMarkShipped = async (marketplace, orderId, rowKey) => {
     try {
@@ -1865,14 +1898,15 @@ export function Orders() {
     const mpLower = String(o.marketplace || '').toLowerCase();
     const isWb = mpLower === 'wb' || mpLower === 'wildberries';
     const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
+    // Пока грузится новая вкладка — не прячем старые строки (иначе «Заказы не найдены» при медленном API).
     const byStatus =
-      listRefreshing ||
+      !listFiltersSettled ||
       statusFilter === 'all' ||
       stNorm === statusFilter ||
       (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
       (!isWb && o.status === statusFilter);
     return byMarketplace && byStatus && bySearch;
-  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery, listRefreshing]);
+  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery, listFiltersSettled]);
 
   const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
 
@@ -3335,8 +3369,8 @@ export function Orders() {
 
         {renderOrdersListPager('top')}
 
-        <div className={`orders-list${listRefreshing ? ' orders-list--refreshing' : ''}`}>
-        {!loading && !listRefreshing && sortedGroupedDisplayRows.length === 0 ? (
+        <div className={`orders-list${listRefreshing || !listFiltersSettled ? ' orders-list--refreshing' : ''}`}>
+        {!loading && listFiltersSettled && sortedGroupedDisplayRows.length === 0 ? (
           <div className="empty-state">
             <p>Заказы не найдены</p>
           </div>

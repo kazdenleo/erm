@@ -637,6 +637,15 @@ class SchedulerService {
             message: `recalculateAndSaveAllFromCache failed: ${error?.message || String(error)}`
           });
         }
+        try {
+          const { pruneMarketplacePriceChanges } = await import(
+            './marketplacePriceChanges.service.js'
+          );
+          const pruned = await pruneMarketplacePriceChanges(7);
+          logger.info('[Scheduler] Price changes prune', pruned);
+        } catch (error) {
+          logger.warn('[Scheduler] Price changes prune failed:', error?.message || error);
+        }
         logger.info('[Scheduler] Nightly: push min prices to marketplaces...');
         try {
           const pushRes = await pushMinPricesForAllProfiles();

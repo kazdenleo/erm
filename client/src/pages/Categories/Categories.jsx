@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useUserCategories } from '../../hooks/useUserCategories';
-import { categoryMappingsApi } from '../../services/categoryMappings.api';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api';
@@ -16,8 +15,30 @@ import {
   enrichUserCategoriesWithMappings,
   getCategoryMarketplaceLinkBadges,
 } from '../../utils/enrichUserCategories';
-import api from '../../services/api';
 import './Categories.css';
+
+function normalizeMappingValue(v) {
+  if (v == null || v === '') return '';
+  return String(v);
+}
+
+/** Какие маркетплейсы изменили сопоставление (для селективного пуша). */
+function getChangedMarketplaceKeys(prevMm, nextMm) {
+  const prev = prevMm && typeof prevMm === 'object' ? prevMm : {};
+  const next = nextMm && typeof nextMm === 'object' ? nextMm : {};
+  const changed = [];
+  if (normalizeMappingValue(prev.wb) !== normalizeMappingValue(next.wb)) changed.push('wb');
+  const ozonChanged =
+    normalizeMappingValue(prev.ozon) !== normalizeMappingValue(next.ozon) ||
+    normalizeMappingValue(prev.ozon_description_category_id) !==
+      normalizeMappingValue(next.ozon_description_category_id) ||
+    normalizeMappingValue(prev.ozon_type_id) !== normalizeMappingValue(next.ozon_type_id);
+  if (ozonChanged) changed.push('ozon');
+  if (normalizeMappingValue(prev.ym) !== normalizeMappingValue(next.ym)) changed.push('ym');
+  return changed;
+}
+
+const MP_PUSH_LABELS = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
 
 function CategoryMpBadges({ category }) {
   const badges = getCategoryMarketplaceLinkBadges(category);
@@ -138,313 +159,132 @@ export function Categories() {
 
   const handleSubmit = async (categoryData) => {
     try {
-      // Извлекаем данные о маппингах из payload
       const { marketplaceMappings, ...categoryPayload } = categoryData;
 
-      // При редактировании сразу отправляем сопоставления в теле обновления категории
-      if (editingCategory && marketplaceMappings != null) {
-        categoryPayload.marketplace_mappings = {
-          wb: marketplaceMappings.wb ?? null,
-          ozon: marketplaceMappings.ozon ?? null,
-          ym: marketplaceMappings.ym ?? null,
-          ...(marketplaceMappings.ozon_display ? { ozon_display: marketplaceMappings.ozon_display } : {}),
-          ...(marketplaceMappings.ozon_description_category_id != null && marketplaceMappings.ozon_type_id != null
-            ? { ozon_description_category_id: marketplaceMappings.ozon_description_category_id, ozon_type_id: marketplaceMappings.ozon_type_id }
-            : {})
-        };
+      const prevMappings =
+        categoryForFormMerged?.marketplace_mappings ||
+        editingCategory?.marketplace_mappings ||
+        {};
+      const changedMpKeys =
+        marketplaceMappings != null
+          ? getChangedMarketplaceKeys(prevMappings, marketplaceMappings)
+          : [];
+
+      const mappingsPayload =
+        marketplaceMappings != null
+          ? {
+              wb: marketplaceMappings.wb ?? null,
+              ozon: marketplaceMappings.ozon ?? null,
+              ym: marketplaceMappings.ym ?? null,
+              ...(marketplaceMappings.ozon_display
+                ? { ozon_display: marketplaceMappings.ozon_display }
+                : {}),
+              ...(marketplaceMappings.ozon_description_category_id != null &&
+              marketplaceMappings.ozon_type_id != null
+                ? {
+                    ozon_description_category_id:
+                      marketplaceMappings.ozon_description_category_id,
+                    ozon_type_id: marketplaceMappings.ozon_type_id,
+                  }
+                : {}),
+            }
+          : null;
+
+      if (mappingsPayload) {
+        categoryPayload.marketplace_mappings = mappingsPayload;
       }
-      
-      // attribute_ids уходит в API вместе с categoryPayload
+
       let savedCategory;
       if (editingCategory) {
         savedCategory = await updateCategory(editingCategory.id, categoryPayload);
       } else {
         savedCategory = await createCategory(categoryPayload);
-      }
-      
-      // ID категории: учитываем и обёртку { ok, data }, и сам объект категории
-      const categoryId = (savedCategory && (savedCategory.data && savedCategory.data.id != null ? savedCategory.data.id : savedCategory.id)) ?? editingCategory?.id;
-      
-      // Сохраняем маппинги маркетплейсов (даже если выбрана только одна категория)
-      if (categoryId && marketplaceMappings !== undefined && marketplaceMappings !== null) {
-        console.log('[Categories] Saving mappings:', { categoryId, marketplaceMappings });
-        try {
-          // Получаем товары этой категории
-          const productsResponse = await api.get('/products');
-          const allProducts = productsResponse.data?.data || [];
-          
-          console.log('[Categories] All products count:', allProducts.length);
-          console.log('[Categories] Looking for categoryId:', categoryId, 'category name:', editingCategory?.name || savedCategory?.name);
-          console.log('[Categories] Sample products user_category_id:', allProducts.slice(0, 5).map(p => ({
-            id: p.id,
-            name: p.name,
-            user_category_id: p.user_category_id,
-            categoryId: p.categoryId,
-            user_category_id_type: typeof p.user_category_id,
-            categoryId_type: typeof p.categoryId
-          })));
-          
-          // Ищем товары по новому ID (user_category_id) или старому ID (categoryId)
-          const categoryProducts = allProducts.filter(p => {
-            const productCategoryId = p.user_category_id || p.categoryId;
-            return productCategoryId === categoryId || 
-                   String(productCategoryId) === String(categoryId) ||
-                   Number(productCategoryId) === Number(categoryId);
-          });
-
-          console.log('[Categories] Category products:', categoryProducts.length);
-          console.log('[Categories] Found products:', categoryProducts.map(p => ({
-            id: p.id,
-            name: p.name,
-            user_category_id: p.user_category_id,
-            categoryId: p.categoryId
-          })));
-
-          // Если у категории нет товаров, сопоставления хранятся только в категории
-          if (categoryProducts.length === 0) {
-            const savedMappings = [];
-            if (marketplaceMappings.wb) savedMappings.push('Wildberries');
-            if (marketplaceMappings.ozon) savedMappings.push('Ozon');
-            if (marketplaceMappings.ym) savedMappings.push('Яндекс.Маркет');
-
-            // При создании новой категории сопоставления ещё не ушли — отправляем отдельным запросом
-            if (!editingCategory && categoryId) {
-              try {
-                const categoryUpdatePayload = {
-                  marketplace_mappings: {
-                    wb: marketplaceMappings.wb || null,
-                    ozon: marketplaceMappings.ozon || null,
-                    ym: marketplaceMappings.ym || null,
-                    ...(marketplaceMappings.ozon_display ? { ozon_display: marketplaceMappings.ozon_display } : {}),
-                    ...(marketplaceMappings.ozon_description_category_id != null && marketplaceMappings.ozon_type_id != null
-                      ? { ozon_description_category_id: marketplaceMappings.ozon_description_category_id, ozon_type_id: marketplaceMappings.ozon_type_id }
-                      : {})
-                  }
-                };
-                await api.put(`/user-categories/${categoryId}`, categoryUpdatePayload);
-              } catch (err) {
-                console.error('[Categories] Error saving marketplace_mappings to category:', err);
-                alert(`Категория сохранена, но не удалось сохранить сопоставления:\n${err.response?.data?.error || err.message}`);
-              }
-            }
-            if (savedMappings.length > 0) {
-              alert(`Сопоставление категорий сохранено!\n\nСопоставления для: ${savedMappings.join(', ')}\n\nСопоставления будут применены к товарам, когда вы добавите их в эту категорию.`);
-            }
-            setIsModalOpen(false);
-            setEditingCategory(null);
-            await loadData();
-            return;
-          }
-
-          // Создаем/обновляем маппинги для всех товаров категории
-          for (const product of categoryProducts) {
-            // WB
-            if (marketplaceMappings.wb !== null && marketplaceMappings.wb !== undefined) {
-              try {
-                const existingMappings = await categoryMappingsApi.getByProduct(product.id);
-                const existingWbMapping = (existingMappings.data?.data || existingMappings.data || []).find(
-                  m => m.marketplace === 'wb'
-                );
-
-                if (existingWbMapping) {
-                  // Убеждаемся, что category_id - это число
-                  const categoryId = typeof marketplaceMappings.wb === 'string' 
-                    ? parseInt(marketplaceMappings.wb, 10) 
-                    : Number(marketplaceMappings.wb);
-                  
-                  if (isNaN(categoryId) || categoryId <= 0) {
-                    console.error(`[Categories] Invalid category_id for product ${product.id}:`, marketplaceMappings.wb);
-                    throw new Error(`Некорректный ID категории: ${marketplaceMappings.wb}`);
-                  }
-                  
-                  console.log(`[Categories] Updating WB mapping for product ${product.id}:`, {
-                    mappingId: existingWbMapping.id,
-                    oldCategoryId: existingWbMapping.category_id,
-                    newCategoryId: categoryId,
-                    newCategoryIdType: typeof categoryId
-                  });
-                  await categoryMappingsApi.update(existingWbMapping.id, {
-                    category_id: categoryId
-                  });
-                  console.log(`[Categories] WB mapping updated successfully for product ${product.id}`);
-                } else {
-                  // Убеждаемся, что category_id - это число
-                  const categoryId = typeof marketplaceMappings.wb === 'string' 
-                    ? parseInt(marketplaceMappings.wb, 10) 
-                    : Number(marketplaceMappings.wb);
-                  
-                  if (isNaN(categoryId) || categoryId <= 0) {
-                    console.error(`[Categories] Invalid category_id for product ${product.id}:`, marketplaceMappings.wb);
-                    throw new Error(`Некорректный ID категории: ${marketplaceMappings.wb}`);
-                  }
-                  
-                  console.log(`[Categories] Creating new WB mapping for product ${product.id}:`, {
-                    product_id: product.id,
-                    marketplace: 'wb',
-                    category_id: categoryId,
-                    categoryIdType: typeof categoryId
-                  });
-                  await categoryMappingsApi.create({
-                    product_id: product.id,
-                    marketplace: 'wb',
-                    category_id: categoryId
-                  });
-                  console.log(`[Categories] WB mapping created successfully for product ${product.id}`);
-                }
-              } catch (err) {
-                console.error(`[Categories] Error saving WB mapping for product ${product.id}:`, err);
-                console.error('[Categories] Error details:', err.response?.data || err.message);
-              }
-            } else if (marketplaceMappings.wb === null) {
-              // Если категория убрана (null), удаляем маппинг
-              try {
-                const existingMappings = await categoryMappingsApi.getByProduct(product.id);
-                const existingWbMapping = (existingMappings.data?.data || existingMappings.data || []).find(
-                  m => m.marketplace === 'wb'
-                );
-                if (existingWbMapping) {
-                  await categoryMappingsApi.delete(existingWbMapping.id);
-                  console.log(`[Categories] WB mapping deleted for product ${product.id}`);
-                }
-              } catch (err) {
-                console.error(`[Categories] Error deleting WB mapping for product ${product.id}:`, err);
-              }
-            }
-
-            // Ozon
-            if (marketplaceMappings.ozon !== null && marketplaceMappings.ozon !== undefined) {
-              try {
-                const existingMappings = await categoryMappingsApi.getByProduct(product.id);
-                const existingOzonMapping = (existingMappings.data?.data || existingMappings.data || []).find(
-                  m => m.marketplace === 'ozon'
-                );
-
-                if (existingOzonMapping) {
-                  // Для Ozon category_id должен быть строкой (VARCHAR в БД)
-                  // Ozon использует description_category_id как строку
-                  const categoryId = String(marketplaceMappings.ozon || '');
-                  
-                  if (!categoryId || categoryId === 'undefined' || categoryId === 'null' || categoryId === '0') {
-                    console.error(`[Categories] Invalid Ozon category_id for product ${product.id}:`, marketplaceMappings.ozon);
-                    throw new Error(`Некорректный ID категории Ozon: ${marketplaceMappings.ozon}`);
-                  }
-                  
-                  console.log(`[Categories] Updating Ozon mapping for product ${product.id}:`, {
-                    mappingId: existingOzonMapping.id,
-                    oldCategoryId: existingOzonMapping.category_id,
-                    newCategoryId: categoryId,
-                    newCategoryIdType: typeof categoryId
-                  });
-                  
-                  await categoryMappingsApi.update(existingOzonMapping.id, {
-                    category_id: categoryId
-                  });
-                  console.log(`[Categories] Ozon mapping updated successfully for product ${product.id}`);
-                } else {
-                  // Для Ozon category_id должен быть строкой (VARCHAR в БД)
-                  const categoryId = String(marketplaceMappings.ozon || '');
-                  
-                  if (!categoryId || categoryId === 'undefined' || categoryId === 'null' || categoryId === '0') {
-                    console.error(`[Categories] Invalid Ozon category_id for product ${product.id}:`, marketplaceMappings.ozon);
-                    throw new Error(`Некорректный ID категории Ozon: ${marketplaceMappings.ozon}`);
-                  }
-                  
-                  console.log(`[Categories] Creating new Ozon mapping for product ${product.id}:`, {
-                    product_id: product.id,
-                    marketplace: 'ozon',
-                    category_id: categoryId,
-                    categoryIdType: typeof categoryId
-                  });
-                  
-                  await categoryMappingsApi.create({
-                    product_id: product.id,
-                    marketplace: 'ozon',
-                    category_id: categoryId
-                  });
-                  console.log(`[Categories] Ozon mapping created successfully for product ${product.id}`);
-                }
-              } catch (err) {
-                console.error(`[Categories] Error saving Ozon mapping for product ${product.id}:`, err);
-                console.error('[Categories] Error details:', err.response?.data || err.message);
-              }
-            } else if (marketplaceMappings.ozon === null) {
-              // Если категория убрана (null), удаляем маппинг
-              try {
-                const existingMappings = await categoryMappingsApi.getByProduct(product.id);
-                const existingOzonMapping = (existingMappings.data?.data || existingMappings.data || []).find(
-                  m => m.marketplace === 'ozon'
-                );
-                if (existingOzonMapping) {
-                  await categoryMappingsApi.delete(existingOzonMapping.id);
-                  console.log(`[Categories] Ozon mapping deleted for product ${product.id}`);
-                }
-              } catch (err) {
-                console.error(`[Categories] Error deleting Ozon mapping for product ${product.id}:`, err);
-              }
-            }
-
-            // Yandex Market
-            if (marketplaceMappings.ym) {
-              try {
-                const existingMappings = await categoryMappingsApi.getByProduct(product.id);
-                const existingYmMapping = (existingMappings.data?.data || existingMappings.data || []).find(
-                  m => m.marketplace === 'ym'
-                );
-
-                if (existingYmMapping) {
-                  await categoryMappingsApi.update(existingYmMapping.id, {
-                    category_id: marketplaceMappings.ym
-                  });
-                } else {
-                  await categoryMappingsApi.create({
-                    product_id: product.id,
-                    marketplace: 'ym',
-                    category_id: marketplaceMappings.ym
-                  });
-                }
-              } catch (err) {
-                console.error(`[Categories] Error saving YM mapping for product ${product.id}:`, err);
-              }
-            }
-          }
-          
-          // Всегда сохраняем сопоставления и в саму категорию — чтобы форма и новые товары видели их
-          try {
-            await api.put(`/user-categories/${categoryId}`, {
-              marketplace_mappings: {
-                wb: marketplaceMappings.wb ?? null,
-                ozon: marketplaceMappings.ozon ?? null,
-                ym: marketplaceMappings.ym ?? null,
-                ...(marketplaceMappings.ozon_display ? { ozon_display: marketplaceMappings.ozon_display } : {}),
-                ...(marketplaceMappings.ozon_description_category_id != null && marketplaceMappings.ozon_type_id != null
-                  ? { ozon_description_category_id: marketplaceMappings.ozon_description_category_id, ozon_type_id: marketplaceMappings.ozon_type_id }
-                  : {})
-              }
-            });
-          } catch (err) {
-            console.warn('[Categories] Could not save marketplace_mappings to category:', err);
-          }
-
-          console.log('[Categories] All mappings saved successfully');
-          const savedMappings = [];
-          if (marketplaceMappings.wb) savedMappings.push('Wildberries');
-          if (marketplaceMappings.ozon) savedMappings.push('Ozon');
-          if (marketplaceMappings.ym) savedMappings.push('Яндекс.Маркет');
-          
-          if (savedMappings.length > 0) {
-            alert(`Категория и сопоставления успешно сохранены!\n\nСопоставления сохранены для: ${savedMappings.join(', ')}\n\nПрименено к ${categoryProducts.length} товару(ам) в категории.`);
-          }
-        } catch (error) {
-          console.error('[Categories] Error saving mappings:', error);
-          const errorMessage = error.response?.data?.message || error.message || 'Неизвестная ошибка';
-          alert(`Категория сохранена, но произошла ошибка при сохранении сопоставлений:\n\n${errorMessage}\n\nПроверьте консоль браузера (F12) для подробностей.`);
+        const newId =
+          savedCategory?.data?.id ?? savedCategory?.id ?? null;
+        // create мог не принять mappings — дозаписываем одним PUT (на сервере сразу bulk-sync)
+        if (newId && mappingsPayload) {
+          await updateCategory(newId, { marketplace_mappings: mappingsPayload });
         }
       }
-      
+
+      const categoryId =
+        (savedCategory &&
+          (savedCategory.data?.id != null ? savedCategory.data.id : savedCategory.id)) ??
+        editingCategory?.id;
+
+      let productIds = [];
+      if (categoryId != null) {
+        try {
+          const groupedRes = await productsApi.getProductIdsGroupedByUserCategory();
+          const grouped =
+            groupedRes?.data && typeof groupedRes.data === 'object'
+              ? groupedRes.data
+              : groupedRes && typeof groupedRes === 'object'
+                ? groupedRes
+                : {};
+          const raw = grouped[String(categoryId)] ?? grouped[categoryId] ?? [];
+          productIds = Array.isArray(raw) ? raw.filter((id) => id != null) : [];
+        } catch (e) {
+          console.warn('[Categories] Could not load product ids for category:', e);
+          const fallbackCount = Number(
+            editingCategory?.productsCount ?? categoryForFormMerged?.productsCount ?? 0
+          );
+          if (fallbackCount > 0) {
+            productIds = new Array(fallbackCount).fill(null);
+          }
+        }
+      }
+
+      const savedMappings = [];
+      if (mappingsPayload?.wb) savedMappings.push('Wildberries');
+      if (mappingsPayload?.ozon) savedMappings.push('Ozon');
+      if (mappingsPayload?.ym) savedMappings.push('Яндекс.Маркет');
+
+      if (savedMappings.length > 0) {
+        alert(
+          productIds.length > 0
+            ? `Категория и сопоставления сохранены (${savedMappings.join(', ')}).\nТоваров в категории: ${productIds.length}.`
+            : `Сопоставление сохранено (${savedMappings.join(', ')}).\nТоваров в категории пока нет — привязка применится к новым товарам.`
+        );
+      }
+
+      // Обновление на МП — по подтверждению; пуш в фоне (не ждём ответы кабинетов)
+      if (changedMpKeys.length > 0 && productIds.length > 0) {
+        const mpNames = changedMpKeys.map((k) => MP_PUSH_LABELS[k] || k).join(', ');
+        const countLabel = productIds[0] != null ? String(productIds.length) : String(productIds.length);
+        const offer = window.confirm(
+          `Сопоставление категорий изменено (${mpNames}).\n\n` +
+            `Обновить карточки на маркетплейсах у ${countLabel} товар(ов)?\n\n` +
+            `Как это работает:\n` +
+            `• Ozon / Яндекс.Маркет — уйдёт новая категория (+ контент из ERP).\n` +
+            `• Wildberries — API не меняет subjectId у созданной карточки, обновляется контент.\n` +
+            `Отправка ставится в очередь на сервере; в ЛК МП изменения появятся не сразу.`
+        );
+        if (offer && categoryId != null && mappingsPayload) {
+          try {
+            await updateCategory(categoryId, {
+              marketplace_mappings: mappingsPayload,
+              push_product_cards: true,
+              push_marketplaces: changedMpKeys,
+            });
+            alert(
+              `Отправка на ${mpNames} поставлена в очередь для товаров категории. Проверьте кабинеты МП через несколько минут.`
+            );
+          } catch (pushErr) {
+            console.error('[Categories] queue card push failed:', pushErr);
+            alert(
+              `Сохранено в ERP, но не удалось поставить отправку на МП:\n${
+                pushErr?.response?.data?.message || pushErr?.message || pushErr
+              }`
+            );
+          }
+        }
+      }
+
       setIsModalOpen(false);
       setEditingCategory(null);
       setCategoryForForm(null);
-      await loadData(); // Перезагружаем данные после сохранения
+      await loadData();
       return savedCategory;
     } catch (error) {
       console.error('Error saving category:', error);

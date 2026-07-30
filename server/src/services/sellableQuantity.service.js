@@ -18,8 +18,79 @@ import {
   allocateWarehouseScopedIncoming,
   clampStockMetric,
   parseStockMovementWarehouseId,
+  reconcileWarehouseIncomingWithPurchasePending,
   warehouseScopedOnHandForAllocation,
 } from '../constants/netReservedStockSql.js';
+
+/**
+ * Непринятое ожидание открытых закупок и нетто incoming по purchase_id
+ * (для согласования «в пути» с строками закупок).
+ */
+async function readOpenPurchaseIncomingMaps(run, productId, warehouseId = null) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return { pending: 0, docNet: 0 };
+  const wh =
+    warehouseId != null && Number.isFinite(Number(warehouseId)) && Number(warehouseId) > 0
+      ? Number(warehouseId)
+      : null;
+
+  const pendingR =
+    wh != null
+      ? await run(
+          `SELECT COALESCE(SUM(
+             GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
+           ), 0)::int AS pending
+           FROM purchase_items pi
+           INNER JOIN purchases p ON p.id = pi.purchase_id
+           WHERE pi.product_id = $1
+             AND p.status = 'open'
+             AND p.warehouse_id = $2`,
+          [pid, wh]
+        )
+      : await run(
+          `SELECT COALESCE(SUM(
+             GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
+           ), 0)::int AS pending
+           FROM purchase_items pi
+           INNER JOIN purchases p ON p.id = pi.purchase_id
+           WHERE pi.product_id = $1
+             AND p.status = 'open'`,
+          [pid]
+        );
+
+  const docNetR =
+    wh != null
+      ? await run(
+          `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+           FROM stock_movements
+           WHERE product_id = $1
+             AND LOWER(TRIM(type::text)) = 'incoming'
+             AND warehouse_id = $2
+             AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'`,
+          [pid, wh]
+        )
+      : await run(
+          `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+           FROM stock_movements
+           WHERE product_id = $1
+             AND LOWER(TRIM(type::text)) = 'incoming'
+             AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'`,
+          [pid]
+        );
+
+  return {
+    pending: Number(pendingR.rows?.[0]?.pending ?? 0) || 0,
+    docNet: Number(docNetR.rows?.[0]?.net ?? 0) || 0,
+  };
+}
+
+function applyOpenPurchaseIncomingReconcile(journalIncoming, maps) {
+  return reconcileWarehouseIncomingWithPurchasePending({
+    journalIncoming,
+    purchaseDocNet: maps?.docNet ?? 0,
+    purchasePending: maps?.pending ?? 0,
+  });
+}
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
 export { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved };
@@ -131,7 +202,9 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     run(
       `SELECT incoming_after::int AS inc
        FROM stock_movements
-       WHERE product_id = $1 AND warehouse_id = $2 AND incoming_after IS NOT NULL
+       WHERE product_id = $1 AND warehouse_id = $2
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND incoming_after IS NOT NULL
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
       [pid, wh]
@@ -146,7 +219,7 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     legacyProductQty
   });
 
-  return clampStockMetric(
+  const allocated = clampStockMetric(
     allocateWarehouseScopedIncoming({
       strictRaw: Number(strictR.rows[0]?.inc ?? 0) || 0,
       nullRaw: Number(nullR.rows[0]?.inc ?? 0) || 0,
@@ -162,6 +235,12 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
         snapshotR.rows?.[0]?.inc != null ? Number(snapshotR.rows[0].inc) || 0 : null
     })
   );
+  try {
+    const purchaseMaps = await readOpenPurchaseIncomingMaps(run, pid, wh);
+    return applyOpenPurchaseIncomingReconcile(allocated, purchaseMaps);
+  } catch {
+    return allocated;
+  }
 }
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
@@ -265,6 +344,8 @@ export async function computeAvailableQuantity(productId, opts = {}) {
         [pid]
       );
       incoming = Number(ir.rows[0]?.incoming_quantity ?? 0) || 0;
+      const purchaseMaps = await readOpenPurchaseIncomingMaps(query, pid, null);
+      incoming = applyOpenPurchaseIncomingReconcile(incoming, purchaseMaps);
     }
   } catch {
     incoming = 0;
@@ -416,6 +497,8 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
         [pid]
       );
       incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
+      const purchaseMaps = await readOpenPurchaseIncomingMaps(run, pid, null);
+      incoming = applyOpenPurchaseIncomingReconcile(incoming, purchaseMaps);
     }
   } catch {
     incoming = 0;

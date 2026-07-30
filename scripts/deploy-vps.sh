@@ -36,7 +36,7 @@ umask 022
 npm run build
 # postbuild в package.json тоже выставляет права; дублируем на случай старого package.json
 bash "$APP_ROOT/scripts/vps-fix-client-build-perms.sh" 2>/dev/null \
-  || chmod -R a+rX "$APP_ROOT/client/build" 2>/dev/null \
+  || { chmod 755 "$APP_ROOT/client"; chmod -R a+rX "$APP_ROOT/client/build"; } 2>/dev/null \
   || true
 
 echo "==> pm2 restart (cwd=$APP_ROOT/server)"

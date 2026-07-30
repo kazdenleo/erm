@@ -48,6 +48,9 @@ const FBO_RESERVE_QUEUE_ORDER_SQL = `
 const fboSourceWarehousesCache = new Map();
 
 const stockEventDebounce = new Map();
+
+/** Сериализация полного цикла rebalance по товару (иначе два параллельных прохода могут удвоить резерв). */
+const rebalanceProductChain = new Map();
 const STOCK_EVENT_DEBOUNCE_MS = Math.max(
   100,
   Math.min(5000, Number(process.env.FBO_STOCK_EVENT_DEBOUNCE_MS) || 750)
@@ -482,22 +485,84 @@ async function createKitFboReserveSimulator(kitId, stockWarehouseIds) {
   return buildKitStockPoolsForWarehouses(kitId, stockWarehouseIds);
 }
 
+/** Комплектующие нескольких комплектов — один запрос. */
+async function batchGetKitComponentsMap(kitIds) {
+  const ids = [...new Set((kitIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const result = new Map();
+  if (!ids.length) return result;
+  const r = await query(
+    `SELECT kit_product_id, component_product_id, quantity
+     FROM kit_components
+     WHERE kit_product_id = ANY($1::bigint[])
+     ORDER BY kit_product_id, component_product_id`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const kid = Number(row.kit_product_id);
+    if (!result.has(kid)) result.set(kid, []);
+    result.get(kid).push({
+      component_product_id: Number(row.component_product_id),
+      quantity: Math.max(1, parseInt(row.quantity, 10) || 1),
+    });
+  }
+  return result;
+}
+
+/** Пул комплекта из предзагруженных on_hand / reserved (без N+1 запросов). */
+function buildKitStockPoolsFromMaps(
+  kitId,
+  components,
+  stockWarehouseIds,
+  onHandByProductWh,
+  reservedByProductWh
+) {
+  const whs = normalizeWarehouseIdList(stockWarehouseIds);
+  const comps = Array.isArray(components) ? components : [];
+  let wholeRemaining = 0;
+  const kitOnHand = onHandByProductWh?.get(Number(kitId)) || new Map();
+  const kitReserved = reservedByProductWh?.get(Number(kitId)) || new Map();
+  for (const wh of whs) {
+    wholeRemaining += Math.max(0, (kitOnHand.get(wh) || 0) - (kitReserved.get(wh) || 0));
+  }
+  const componentPools = new Map();
+  for (const c of comps) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const byWh = onHandByProductWh?.get(pid) || new Map();
+    const resByWh = reservedByProductWh?.get(pid) || new Map();
+    let pool = 0;
+    for (const wh of whs) {
+      pool += Math.max(0, (byWh.get(wh) || 0) - (resByWh.get(wh) || 0));
+    }
+    componentPools.set(pid, pool);
+  }
+  return { components: comps, wholeRemaining, componentPools };
+}
+
 /** Пул целых комплектов и комплектующих по нескольким складам-источникам FBO. */
 async function buildKitStockPoolsForWarehouses(kitId, stockWarehouseIds) {
   const whs = normalizeWarehouseIdList(stockWarehouseIds);
   const components = await getKitComponents(kitId);
-  let wholeRemaining = 0;
-  const componentPools = new Map();
-  for (const wh of whs) {
-    wholeRemaining += await getWarehouseAvailablePoolForFbo(kitId, wh);
-    for (const c of components) {
-      const pid = Number(c.component_product_id);
-      if (!Number.isFinite(pid) || pid < 1) continue;
-      const pool = await getWarehouseAvailablePoolForFbo(pid, wh);
-      componentPools.set(pid, (componentPools.get(pid) || 0) + pool);
-    }
+  if (!whs.length) {
+    return { components, wholeRemaining: 0, componentPools: new Map() };
   }
-  return { components, wholeRemaining, componentPools };
+  const pids = [
+    Number(kitId),
+    ...components
+      .map((c) => Number(c.component_product_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  ];
+  const [onHandByProductWh, reservedByProductWh] = await Promise.all([
+    batchGetWarehouseOnHand(pids, whs),
+    batchGetNetReservedOnWarehouses(pids, whs),
+  ]);
+  return buildKitStockPoolsFromMaps(
+    kitId,
+    components,
+    whs,
+    onHandByProductWh,
+    reservedByProductWh
+  );
 }
 
 async function computeKitReservableBreakdownForWarehouseIds(kitId, warehouseIds) {
@@ -732,10 +797,11 @@ class FboSupplyReserveService {
     if (!uniquePids.length) return breakdown;
 
     const profileDeductionWh = await getProfileFboDeductionWarehouseId(profileId);
-    const [queuesByProduct, netReservedByItem, incomingByProduct] = await Promise.all([
+    const [queuesByProduct, netReservedByItem, incomingByProduct, kitFlags] = await Promise.all([
       findFboReserveQueuesByProducts(uniquePids, profileId),
       getNetReservedForFboItemsBatch(uniquePids),
       batchGetIncomingPoolForFboProducts(uniquePids),
+      batchIsKitProductIds(uniquePids),
     ]);
 
     const warehouseIdsSet = new Set();
@@ -748,16 +814,23 @@ class FboSupplyReserveService {
     }
     const allWhIds = [...warehouseIdsSet];
 
+    const kitIds = uniquePids.filter((id) => kitFlags.get(id) === true);
+    const kitComponentsMap = await batchGetKitComponentsMap(kitIds);
+    const stockProductIds = new Set(uniquePids);
+    for (const comps of kitComponentsMap.values()) {
+      for (const c of comps) {
+        const cid = Number(c.component_product_id);
+        if (Number.isFinite(cid) && cid > 0) stockProductIds.add(cid);
+      }
+    }
+
     const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
-      batchGetWarehouseOnHand(uniquePids, allWhIds),
-      batchGetNetReservedOnWarehouses(uniquePids, allWhIds),
+      batchGetWarehouseOnHand([...stockProductIds], allWhIds),
+      batchGetNetReservedOnWarehouses([...stockProductIds], allWhIds),
     ]);
 
-    const kitFlags = await batchIsKitProductIds(uniquePids);
-
     const kitQueueEntries = [];
-    for (const productId of uniquePids) {
-      if (kitFlags.get(productId) !== true) continue;
+    for (const productId of kitIds) {
       for (const row of queuesByProduct.get(productId) || []) {
         kitQueueEntries.push({
           kitProductId: productId,
@@ -775,21 +848,31 @@ class FboSupplyReserveService {
       const onHandByWh = onHandByProductWh.get(productId) || new Map();
       const reservedByWh = reservedOnWhByProductWh.get(productId) || new Map();
       const isKit = kitFlags.get(productId) === true;
+      /** Один симулятор на товар: пулы уменьшаются по FIFO, без N+1 SQL на каждую строку. */
+      let kitSim = null;
+      let kitSimWhKey = null;
 
       for (const row of queue) {
         const itemId = String(row.supply_item_id);
         const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
         const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
         const rowWhList = rowWh != null ? [rowWh] : [];
-        const kitSim =
-          isKit && rowWhList.length > 0
-            ? await createKitFboReserveSimulator(productId, rowWhList)
-            : null;
 
         let reservedFromStock = 0;
         if (isKit) {
           reservedFromStock = kitReservedByItem.get(itemId) || 0;
-          if (reservedFromStock <= 0 && kitSim) {
+          if (reservedFromStock <= 0 && rowWhList.length > 0) {
+            const whKey = rowWhList.join(',');
+            if (!kitSim || kitSimWhKey !== whKey) {
+              kitSim = buildKitStockPoolsFromMaps(
+                productId,
+                kitComponentsMap.get(productId) || [],
+                rowWhList,
+                onHandByProductWh,
+                reservedOnWhByProductWh
+              );
+              kitSimWhKey = whKey;
+            }
             reservedFromStock = simulateKitReserveFromPools(kitSim, qty);
           }
         } else {
@@ -1013,9 +1096,22 @@ class FboSupplyReserveService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
 
-    return runReserveDbLimited(() =>
-      this._rebalanceReservesForProductInner(pid, { profileId, skipMarketplaceSync })
-    );
+    const prev = rebalanceProductChain.get(pid) || Promise.resolve();
+    let unlock = () => {};
+    const gate = new Promise((resolve) => {
+      unlock = resolve;
+    });
+    const next = prev.catch(() => {}).then(() => gate);
+    rebalanceProductChain.set(pid, next);
+    await prev.catch(() => {});
+    try {
+      return await runReserveDbLimited(() =>
+        this._rebalanceReservesForProductInner(pid, { profileId, skipMarketplaceSync })
+      );
+    } finally {
+      unlock();
+      if (rebalanceProductChain.get(pid) === next) rebalanceProductChain.delete(pid);
+    }
   }
 
   async _rebalanceReservesForProductInner(pid, { profileId, skipMarketplaceSync = false } = {}) {
@@ -1023,6 +1119,13 @@ class FboSupplyReserveService {
       skipMarketplaceSync === true
         ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
         : {};
+    // Жёсткое снятие при пересчёте: не упираться в рассинхрон products.reserved_quantity.
+    const unreserveMeta = {
+      ...applyMeta,
+      manual_unreserve: true,
+      orphan_cleanup: true,
+      fbo_rebalance_unreserve: true,
+    };
 
     // Без runWithProductStockLock: applyChange уже берёт pg_advisory_xact_lock по product_id.
     // Сессионная advisory-блокировка здесь вешала бы applyChange на другом соединении.
@@ -1048,7 +1151,7 @@ class FboSupplyReserveService {
           supplyItemId: itemId,
           delta: -net,
           reason: `Пересчёт резерва FBO (${label})`,
-          extraMeta: applyMeta,
+          extraMeta: unreserveMeta,
         }).catch((err) => logFboReserveFailure(`unreserve item ${itemId}`, err));
       }
     }
@@ -1176,7 +1279,7 @@ class FboSupplyReserveService {
           supplyItemId: or.item_id,
           delta: -net,
           reason: 'Снятие резерва FBO (строка неактивна)',
-          extraMeta: applyMeta,
+          extraMeta: unreserveMeta,
         }).catch((err) => logFboReserveFailure(`orphan item ${or.item_id}`, err));
       }
     }
@@ -1276,6 +1379,12 @@ class FboSupplyReserveService {
       : {};
     const affectedProducts = new Set();
 
+    const releaseMeta = {
+      ...extraMeta,
+      manual_unreserve: true,
+      orphan_cleanup: true,
+      fbo_terminal_release: true,
+    };
     for (const row of netsR.rows || []) {
       const net = parseInt(row.net ?? 0, 10) || 0;
       if (net <= 0) continue;
@@ -1288,8 +1397,13 @@ class FboSupplyReserveService {
         supplyItemId: row.supply_item_id,
         delta: -net,
         reason: label,
-        extraMeta,
-      }).catch(() => {});
+        extraMeta: releaseMeta,
+      }).catch((err) => {
+        console.warn(
+          `[FBO reserve] release item ${row.supply_item_id} product ${row.product_id}:`,
+          err?.message || err
+        );
+      });
     }
 
     if (skipMarketplaceSync && affectedProducts.size > 0) {

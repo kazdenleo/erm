@@ -16,7 +16,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
     vat: '',
     article_prefix: '',
     profile_id: '',
-    skip_marketplace_stock_sync: false
+    skip_marketplace_stock_sync: false,
+    auto_push_marketplace_prices: false
   });
   const [errors, setErrors] = useState({});
 
@@ -42,7 +43,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
         vat: organization.vat || '',
         article_prefix: organization.article_prefix || '',
         profile_id: organization.profile_id != null ? String(organization.profile_id) : '',
-        skip_marketplace_stock_sync: organization.skip_marketplace_stock_sync === true
+        skip_marketplace_stock_sync: organization.skip_marketplace_stock_sync === true,
+        auto_push_marketplace_prices: organization.auto_push_marketplace_prices === true
       }));
     }
   }, [organization]);
@@ -77,7 +79,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
       tax_system: formData.tax_system && formData.tax_system.trim() !== '' ? formData.tax_system : null,
       vat: formData.vat && formData.vat.trim() !== '' ? formData.vat : null,
       article_prefix: formData.article_prefix.trim() || null,
-      skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true
+      skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
+      auto_push_marketplace_prices: formData.auto_push_marketplace_prices === true
     };
     if (isAdmin && profiles.length > 0) {
       payload.profile_id = formData.profile_id ? Number(formData.profile_id) : null;
@@ -199,6 +202,25 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
           <p className="text-muted small mt-1 mb-0">
             При включении остатки со склада организации не отправляются на Ozon, Wildberries и Яндекс.Маркет.
             Импорт остатков с маркетплейсов и другие операции не затрагиваются.
+          </p>
+        </div>
+        <div className="col-12">
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="orgAutoPushMpPrices"
+              checked={formData.auto_push_marketplace_prices === true}
+              onChange={(e) => handleChange('auto_push_marketplace_prices', e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="orgAutoPushMpPrices">
+              Автоматически отправлять цены на маркетплейсы
+            </label>
+          </div>
+          <p className="text-muted small mt-1 mb-0">
+            Если выключено, система не меняет цены на Ozon, Wildberries и Яндекс.Маркет для товаров этой организации
+            (ни при пересчёте минимума, ни по расписанию).
           </p>
         </div>
       </div>

@@ -18,6 +18,34 @@ import logger from '../utils/logger.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
+/**
+ * Перед upsert: сопоставить offer/sku/штрихкод → product_id (как WB после авторезерва),
+ * чтобы OZ/YM писали product_id в БД и авторезерв мог сработать.
+ */
+async function attachResolvedProductIds(orders) {
+  const list = Array.isArray(orders) ? orders : [];
+  for (const o of list) {
+    if (!o) continue;
+    const existing = o.productId ?? o.product_id;
+    if (existing != null && String(existing).trim() !== '' && Number(existing) > 0) continue;
+    try {
+      const pid =
+        typeof ordersService._resolveProductIdForOrderStock === 'function'
+          ? await ordersService._resolveProductIdForOrderStock(o)
+          : typeof ordersService.resolveProductIdForAssemblyLine === 'function'
+            ? await ordersService.resolveProductIdForAssemblyLine(o)
+            : null;
+      const n = Number(pid);
+      if (Number.isFinite(n) && n >= 1) {
+        o.productId = n;
+        o.product_id = n;
+      }
+    } catch {
+      /* не блокируем синк */
+    }
+  }
+}
+
 // Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
 const SYNC_STALE_LOCK_MS = 5 * 60 * 1000;
 const SYNC_BACKGROUND_MAX_MS = 25 * 60 * 1000;
@@ -80,6 +108,14 @@ const ordersSyncCache = {
   lastSyncError: null,
   syncInProgress: false,
   syncStartedAt: null
+};
+
+/** Лёгкий опрос WB /orders/new (отдельный lock, не блокирует полный FBS sync). */
+const wbNewPollCache = {
+  inProgress: false,
+  startedAt: null,
+  lastRunAt: null,
+  lastResult: null,
 };
 
 /** Заказ из GET /orders за период до сопоставления с POST /orders/status */
@@ -463,6 +499,195 @@ class OrdersSyncService {
     }, 0);
 
     return { started: true, inProgress: true };
+  }
+
+  getWbNewPollStatus() {
+    return {
+      inProgress: Boolean(wbNewPollCache.inProgress),
+      startedAt: wbNewPollCache.startedAt ?? null,
+      lastRunAt: wbNewPollCache.lastRunAt ?? null,
+      lastResult: wbNewPollCache.lastResult ?? null,
+    };
+  }
+
+  /**
+   * Быстрый опрос только WB GET /api/v3/orders/new по всем профилям с WB-ключом.
+   * Не занимает lock полного FBS sync и не ждёт мьютекс auto-procurement.
+   * Вставляет только ещё отсутствующие в ERP заказы (без demote статусов).
+   */
+  async pollWbNewOrdersForAllProfiles({ scheduler = true } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { skipped: true, reason: 'no_postgresql', inserted: 0 };
+    }
+    if (scheduler && isOrdersFbsBackgroundSyncPaused()) {
+      return { skipped: true, reason: 'paused', inserted: 0 };
+    }
+    this.resetStaleSyncLockIfNeeded();
+    if (ordersSyncCache.syncInProgress) {
+      return { skipped: true, reason: 'full_sync_in_progress', inserted: 0 };
+    }
+    if (wbNewPollCache.inProgress) {
+      return { skipped: true, reason: 'poll_in_progress', inserted: 0 };
+    }
+
+    wbNewPollCache.inProgress = true;
+    wbNewPollCache.startedAt = Date.now();
+    const startedMs = Date.now();
+
+    try {
+      const ids = await integrationsService.getProfileIdsWithActiveMarketplaceIntegrations();
+      let feedTotal = 0;
+      let inserted = 0;
+      const profiles = [];
+
+      for (const profileId of ids) {
+        const orgIds = await integrationsService.getOrganizationIdsWithMarketplaceIntegrations(profileId);
+        const targets =
+          orgIds.length > 0
+            ? orgIds.map((organizationId) => ({ profileId, organizationId }))
+            : [{ profileId, organizationId: null }];
+
+        for (const target of targets) {
+          if (ordersSyncCache.syncInProgress) {
+            profiles.push({ ...target, skipped: true, reason: 'full_sync_in_progress' });
+            continue;
+          }
+          const out = await this.pollWbNewOrdersForProfile(target);
+          profiles.push({ ...target, ...out });
+          feedTotal += Number(out.feedCount) || 0;
+          inserted += Number(out.inserted) || 0;
+        }
+      }
+
+      const result = {
+        skipped: false,
+        feedTotal,
+        inserted,
+        profiles,
+        durationMs: Date.now() - startedMs,
+      };
+      wbNewPollCache.lastResult = result;
+      wbNewPollCache.lastRunAt = new Date().toISOString();
+      if (inserted > 0) {
+        logger.info('[Orders Sync] WB new-poll inserted', {
+          inserted,
+          feedTotal,
+          durationMs: result.durationMs,
+        });
+      }
+      return result;
+    } catch (e) {
+      logger.warn('[Orders Sync] WB new-poll failed:', e?.message || e);
+      return {
+        skipped: false,
+        error: e?.message || String(e),
+        inserted: 0,
+        durationMs: Date.now() - startedMs,
+      };
+    } finally {
+      wbNewPollCache.inProgress = false;
+      wbNewPollCache.startedAt = null;
+    }
+  }
+
+  /**
+   * Один профиль/орг: GET /orders/new → upsert только новых строк → авторезерв + kick автозакупки.
+   */
+  async pollWbNewOrdersForProfile({ profileId = null, organizationId = null } = {}) {
+    let marketplaces = (
+      await integrationsService.getAllConfigs({
+        profileId,
+        organizationId,
+        onlyActive: true,
+      })
+    )?.marketplaces;
+    let wbConfig = marketplaces?.wildberries || {};
+    let hasWbKeys = Boolean(wbConfig?.api_key || wbConfig?.apiKey);
+    if (!hasWbKeys) {
+      marketplaces = (
+        await integrationsService.getAllConfigs({
+          profileId,
+          organizationId,
+          onlyActive: false,
+        })
+      )?.marketplaces;
+      wbConfig = marketplaces?.wildberries || {};
+      hasWbKeys = Boolean(wbConfig?.api_key || wbConfig?.apiKey);
+    }
+    if (!hasWbKeys) {
+      return { skipped: true, reason: 'no_wb_key', feedCount: 0, inserted: 0 };
+    }
+
+    const feed = await fetchWildberriesFBSOrders(wbConfig, { skipTitles: true });
+    if (!feed.length) {
+      return { feedCount: 0, inserted: 0 };
+    }
+
+    const ordersRepo = repositoryFactory.getOrdersRepository();
+    const toInsert = [];
+    for (const o of feed) {
+      const oid = String(o.orderId ?? '').trim();
+      if (!oid) continue;
+      const existing = await ordersRepo.findByMarketplaceAndOrderIdLite('wildberries', oid, profileId);
+      if (existing) continue;
+      toInsert.push({
+        ...o,
+        profileId,
+        profile_id: profileId,
+      });
+    }
+
+    if (!toInsert.length) {
+      return { feedCount: feed.length, inserted: 0 };
+    }
+
+    await attachResolvedProductIds(toInsert);
+    await ordersRepo.upsertFromSyncBatch(toInsert);
+
+    const rowsToAutoReserve = [];
+    for (const o of toInsert) {
+      try {
+        if (!o || !orderEligibleForProcurement(o)) continue;
+        const rows =
+          typeof ordersService._findOrderRowsForReserve === 'function'
+            ? await ordersService._findOrderRowsForReserve(o.marketplace, String(o.orderId), {
+                profileId,
+              })
+            : [];
+        const list = rows.length
+          ? rows
+          : [
+              await ordersRepo.findByMarketplaceAndOrderId(
+                o.marketplace,
+                String(o.orderId),
+                profileId
+              ),
+            ].filter(Boolean);
+        for (const row of list) {
+          if (!row || isOrderTerminalNoReserve(row.status)) continue;
+          rowsToAutoReserve.push(row);
+        }
+      } catch {
+        // не блокируем poll из-за одного заказа
+      }
+    }
+
+    if (rowsToAutoReserve.length > 0) {
+      try {
+        await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
+        logger.info(`[Orders Sync] WB new-poll auto-reserve: ${rowsToAutoReserve.length} row(s)`);
+      } catch (e) {
+        logger.warn('[Orders Sync] WB new-poll auto-reserve failed:', e?.message || e);
+      }
+      try {
+        const { default: autoProcurementService } = await import('./autoProcurement.service.js');
+        void autoProcurementService.scheduleImmediateRun({ reason: 'orders-wb-new-poll' });
+      } catch (e) {
+        logger.warn('[Orders Sync] WB new-poll auto-procurement kick failed:', e?.message || e);
+      }
+    }
+
+    return { feedCount: feed.length, inserted: toInsert.length };
   }
 
   /**
@@ -873,6 +1098,9 @@ class OrdersSyncService {
       ordersMap.set(key, {
         ...(existing || {}),
         ...order,
+        // Не затирать уже сохранённый product_id входящим sync без сопоставления.
+        productId: order.productId ?? order.product_id ?? existing?.productId ?? existing?.product_id ?? null,
+        product_id: order.productId ?? order.product_id ?? existing?.productId ?? existing?.product_id ?? null,
         status: nextStatus,
         returnedToNewAt: mergedReturnedToNewAt
       });
@@ -1052,6 +1280,7 @@ class OrdersSyncService {
         logger.info(
           `[Orders Sync] upsert ${toUpsert.length}/${allOrders.length} orders (profile=${profileId ?? 'all'})`
         );
+        await attachResolvedProductIds(toUpsert);
         await ordersRepo.upsertFromSyncBatch(toUpsert);
       } catch (err) {
         console.error('[Orders Sync] Batch upsert failed:', err.message);
@@ -1290,6 +1519,7 @@ class OrdersSyncService {
         if (!existing && profileId != null && merged.profileId == null) {
           merged.profileId = profileId;
         }
+        await attachResolvedProductIds([merged]);
         await ordersRepo.upsertFromSync(merged);
         lastMerged = merged;
       }
@@ -1411,6 +1641,7 @@ class OrdersSyncService {
         if (!existing && profileId != null && merged.profileId == null) {
           merged.profileId = profileId;
         }
+        await attachResolvedProductIds([merged]);
         await ordersRepo.upsertFromSync(merged);
         lastMerged = merged;
       }
@@ -2278,7 +2509,7 @@ async function fetchWBContentTitlesByNmIds(apiKey, nmIdStrings) {
   return map;
 }
 
-async function fetchWildberriesFBSOrders(config) {
+async function fetchWildberriesFBSOrders(config, { skipTitles = false } = {}) {
   try {
     const { api_key } = config;
 
@@ -2306,8 +2537,11 @@ async function fetchWildberriesFBSOrders(config) {
       return [];
     }
 
-    const nmIdsForTitles = orders.map(o => (o.nmId != null ? String(o.nmId) : '')).filter(Boolean);
-    const titlesByNm = await fetchWBContentTitlesByNmIds(api_key, nmIdsForTitles);
+    let titlesByNm = new Map();
+    if (!skipTitles) {
+      const nmIdsForTitles = orders.map(o => (o.nmId != null ? String(o.nmId) : '')).filter(Boolean);
+      titlesByNm = await fetchWBContentTitlesByNmIds(api_key, nmIdsForTitles);
+    }
 
     return orders.map(order => {
       const mappedStatus = 'new';

@@ -568,12 +568,17 @@ class OrdersRepositoryPG {
     const inProcessAt = toValidDate(order.inProcessAt);
     const shipmentDate = toValidDate(order.shipmentDate);
     const returnedToNewAt = toValidDate(order.returnedToNewAt ?? order.returned_to_new_at);
+    const rawProductId = order.productId ?? order.product_id ?? null;
+    const productIdNum =
+      rawProductId != null && String(rawProductId).trim() !== '' ? Number(rawProductId) : NaN;
+    const productId =
+      Number.isFinite(productIdNum) && productIdNum >= 1 ? Math.trunc(productIdNum) : null;
     return [
       pid,
       marketplace,
       orderId,
       orderGroupId,
-      null,
+      productId,
       order.offerId ?? order.offer_id ?? null,
       marketplaceSku,
       order.productName ?? order.product_name ?? null,
@@ -611,6 +616,7 @@ class OrdersRepositoryPG {
           WHEN EXCLUDED.marketplace = 'wb' AND EXCLUDED.order_group_id IS NULL THEN NULL
           ELSE COALESCE(EXCLUDED.order_group_id, orders.order_group_id)
         END,
+        product_id = COALESCE(orders.product_id, EXCLUDED.product_id),
         offer_id = EXCLUDED.offer_id,
         marketplace_sku = EXCLUDED.marketplace_sku,
         product_name = EXCLUDED.product_name,
@@ -667,6 +673,7 @@ class OrdersRepositoryPG {
           WHEN EXCLUDED.marketplace = 'wb' AND EXCLUDED.order_group_id IS NULL THEN NULL
           ELSE COALESCE(EXCLUDED.order_group_id, orders.order_group_id)
         END,
+        product_id = COALESCE(orders.product_id, EXCLUDED.product_id),
         offer_id = EXCLUDED.offer_id,
         marketplace_sku = EXCLUDED.marketplace_sku,
         product_name = EXCLUDED.product_name,
@@ -1208,9 +1215,15 @@ class OrdersRepositoryPG {
         o.profile_id,
         (${ORDER_RESERVED_QTY_SQL})::int AS reserved_qty
        FROM orders o
-       WHERE o.status IN ('new', 'in_procurement', 'in_assembly')
+       WHERE o.status IN ('new', 'in_procurement', 'in_assembly', 'wb_assembly', 'assembled')
          ${profileSql}
        ORDER BY
+         CASE o.status
+           WHEN 'assembled' THEN 0
+           WHEN 'in_assembly' THEN 1
+           WHEN 'wb_assembly' THEN 1
+           ELSE 2
+         END,
          CASE WHEN (${ORDER_RESERVED_QTY_SQL})::int = 0 THEN 0 ELSE 1 END,
          o.created_at ASC NULLS LAST,
          o.id ASC
@@ -1221,8 +1234,9 @@ class OrdersRepositoryPG {
   }
 
   /**
-   * Заказы «Новый» и «В закупке» по товару (product_id или совпадение по SKU/МП, как у сборки).
+   * Заказы «Новый» / «В закупке» / «На сборке» / «Собран» по товару (product_id или совпадение по SKU/МП).
    * FIFO по created_at — дозаполнение резерва после поступления остатка / снятия резерва.
+   * Приоритет: собранные и на сборке раньше закупки (нельзя оставлять их без резерва).
    */
   async findReserveQueueOrdersByProductId(productId, limit = 500) {
     const pid = Number(productId);
@@ -1235,13 +1249,15 @@ class OrdersRepositoryPG {
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
        FROM orders o
-       WHERE o.status IN ('new', 'in_procurement', 'in_assembly')
+       WHERE o.status IN ('new', 'in_procurement', 'in_assembly', 'wb_assembly', 'assembled')
          AND ${byProductMatch}
        ORDER BY
          CASE o.status
-           WHEN 'in_procurement' THEN 0
+           WHEN 'assembled' THEN 0
            WHEN 'in_assembly' THEN 1
-           ELSE 2
+           WHEN 'wb_assembly' THEN 1
+           WHEN 'in_procurement' THEN 2
+           ELSE 3
          END,
          o.created_at ASC NULLS LAST,
          o.id ASC
@@ -1256,6 +1272,8 @@ class OrdersRepositoryPG {
    * Учитывает как прямую связь (orders.product_id), так и совпадение по product_skus
    * (offer_id, marketplace_sku, для WB — nmId из product_name/offer_id).
    * Нужно для сборки по штрихкоду: заказы WB часто без product_id, но товар совпадает по nmId.
+   */
+  /**
    * @param {number|string} productId
    * @param {{ marketplaces?: string[]|null }} [options]
    *   marketplaces — если задан, ищем только среди этих значений orders.marketplace

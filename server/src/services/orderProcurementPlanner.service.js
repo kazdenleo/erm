@@ -7,15 +7,16 @@ import repositoryFactory from '../config/repository-factory.js';
 import ordersService from './orders.service.js';
 import purchasesService from './purchases.service.js';
 import logger from '../utils/logger.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import { isProfileProductSupplierBindingEnabled } from '../utils/profileProductSupplierBinding.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
 import {
   autoArrivalNoteText,
   computeProcurementDates,
-  plannedDeliveryYmdForSupplier,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { sortSupplierCandidatesByProcurementRules } from '../utils/supplierCandidateSort.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 import {
   computeProcurementDeficit,
@@ -329,33 +330,7 @@ async function rankSupplierCandidates(
       isPriority: Boolean(row.is_priority),
     });
   }
-  out.sort((a, b) => {
-    const pa = a.price != null ? a.price : Infinity;
-    const pb = b.price != null ? b.price : Infinity;
-    if (pa !== pb) return pa - pb;
-    if (a.deliveryDays !== b.deliveryDays) return a.deliveryDays - b.deliveryDays;
-    if (a.deliveryDays === b.deliveryDays) {
-      const arrivalA = plannedDeliveryYmdForSupplier(a.apiConfig, {
-        now,
-        deliveryDays: a.deliveryDays,
-        warehouseWeekendDays,
-        supplierCode: a.code,
-      });
-      const arrivalB = plannedDeliveryYmdForSupplier(b.apiConfig, {
-        now,
-        deliveryDays: b.deliveryDays,
-        warehouseWeekendDays,
-        supplierCode: b.code,
-      });
-      if (arrivalA !== arrivalB) return arrivalA.localeCompare(arrivalB);
-    }
-    if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
-    const sa = a.stock ?? 0;
-    const sb = b.stock ?? 0;
-    if (sa !== sb) return sb - sa;
-    return 0;
-  });
-  return out;
+  return sortSupplierCandidatesByProcurementRules(out, { now, warehouseWeekendDays });
 }
 
 async function supplierHasKitStock(suppliers, kitProductId, qty, { profileRow } = {}) {
@@ -578,6 +553,35 @@ async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, 
 
     if (supplierSubmit?.submitted) {
       await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
+    } else if (!supplierSubmit?.skipped) {
+      await purchasesService
+        .revertMarketplaceOrderFromPurchase(purchaseId, {
+          marketplace,
+          orderId: oid,
+          profileId: pid,
+        })
+        .catch((e) => {
+          logger.warn('[OrderProcurement] revert after retry submit failed', {
+            orderId: oid,
+            purchaseId,
+            message: e?.message || String(e),
+          });
+        });
+      await addRuntimeNotification({
+        type: 'supplier_order_submit_failed',
+        severity: 'error',
+        source: 'supplier_order_placement',
+        title: 'Заказы не отправлены поставщику',
+        message: `${row.supplier_name || 'Поставщик'}: ${
+          supplierSubmit?.message || 'ошибка отправки'
+        }. Заказ ${oid} оставлен в статусе «Новый».`,
+        meta: {
+          url: '/orders?status=new',
+          purchase_id: purchaseId,
+          order_ids: [oid],
+          supplier_name: row.supplier_name,
+        },
+      }).catch(() => {});
     }
 
     touched.push({
@@ -1032,6 +1036,7 @@ class OrderProcurementPlannerService {
 
     // 3) Создание / дополнение закупок
     const purchasesTouched = [];
+    const supplierRejects = [];
     for (const g of purchaseGroups.values()) {
       if (!g.items.length) continue;
       const note = `${autoArrivalNoteText(g.arrivalBucket)} · отправка в закупку`;
@@ -1058,8 +1063,24 @@ class OrderProcurementPlannerService {
         const result = await purchasesService.procureFromOrders(payload, {
           userId,
           profileId: pid,
-          submitToSupplier: false,
+          // Для любого API-поставщика сразу отправляем заказ;
+          // при отказе позиции откатываются, заказы остаются в «Новых».
+          submitToSupplier: true,
         });
+        if (result?.rolledBack && !result?.purchaseId) {
+          supplierRejects.push({
+            supplierId: g.supplierId,
+            supplierName: g.supplierName,
+            supplierSubmit: result?.supplierSubmit ?? null,
+          });
+          logger.warn('[OrderProcurement] supplier rejected — purchase rolled back', {
+            orderId,
+            supplierId: g.supplierId,
+            reason: result?.supplierSubmit?.reason,
+            message: result?.supplierSubmit?.message,
+          });
+          continue;
+        }
         const purchaseId = result?.purchaseId ?? g.existingPurchaseId;
         if (purchaseId) {
           await updatePurchaseDates(purchaseId, {
@@ -1073,6 +1094,7 @@ class OrderProcurementPlannerService {
             supplierName: g.supplierName,
             appended: Boolean(g.existingPurchaseId),
             supplierSubmit: result?.supplierSubmit ?? null,
+            rolledBack: Boolean(result?.rolledBack),
           });
         }
 
@@ -1192,6 +1214,20 @@ class OrderProcurementPlannerService {
       };
     }
 
+    if (!purchasesTouched.length && supplierRejects.length) {
+      const reason =
+        supplierRejects.find((r) => r.supplierSubmit?.message)?.supplierSubmit?.message ||
+        'Поставщик не принял заказ';
+      return {
+        ok: false,
+        error: 'supplier_submit_failed',
+        message: `${reason}. Заказы оставлены в статусе «Новый» (см. уведомления).`,
+        lines: lineResults,
+        manualLines,
+        supplierRejects,
+      };
+    }
+
     const reserveOnly =
       !purchasesTouched.length &&
       lineResults.length > 0 &&
@@ -1228,7 +1264,11 @@ class OrderProcurementPlannerService {
     }
 
     let procurementStatus = null;
-    if (purchasesTouched.some((p) => p.purchaseId)) {
+    // procureFromOrders уже ставит «В закупке» при успехе; здесь не дублируем после partial/rollback.
+    const canMarkProcurement =
+      purchasesTouched.some((p) => p.purchaseId) &&
+      !purchasesTouched.some((p) => p.rolledBack || p.supplierSubmit?.partial);
+    if (canMarkProcurement) {
       procurementStatus = await ensureOrdersMarkedInProcurement(
         pid,
         marketplace,
@@ -1529,8 +1569,19 @@ class OrderProcurementPlannerService {
       const result = await purchasesService.procureFromOrders(payload, {
         userId,
         profileId: pid,
-        submitToSupplier: false,
+        // Любой API-поставщик: при отказе — откат и заказы остаются «Новыми».
+        submitToSupplier: true,
       });
+      if (result?.rolledBack && !result?.purchaseId) {
+        return {
+          ok: false,
+          error: 'supplier_submit_failed',
+          message:
+            result?.supplierSubmit?.message ||
+            'Поставщик не принял заказ. Заказы оставлены в статусе «Новый» (см. уведомления).',
+          supplierSubmit: result?.supplierSubmit ?? null,
+        };
+      }
       purchaseId = result?.purchaseId ?? openId;
       supplierSubmit = result?.supplierSubmit ?? null;
       if (purchaseId) {
@@ -1734,20 +1785,54 @@ class OrderProcurementPlannerService {
     }
 
     let procurementStatus = null;
-    const shouldMarkProcurement =
-      anySubmitted ||
-      anyAlreadySubmitted ||
-      Boolean(autoProcure?.purchases?.some((p) => p.purchaseId));
+    // В «В закупке» только после успешной отправки API-поставщику (или если API не требуется).
+    const shouldMarkProcurement = anySubmitted || anyAlreadySubmitted;
     if (shouldMarkProcurement) {
       procurementStatus = await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
     }
 
     if (!anySubmitted && !anyAlreadySubmitted && anyFailed) {
       const reason = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
+      const failed = purchases.filter(
+        (p) =>
+          p.supplierSubmit &&
+          !p.supplierSubmit.skipped &&
+          !p.supplierSubmit.submitted &&
+          p.supplierSubmit.reason !== 'already_submitted'
+      );
+      for (const p of failed) {
+        await purchasesService
+          .revertMarketplaceOrderFromPurchase(p.purchaseId, {
+            marketplace,
+            orderId: oid,
+            profileId: pid,
+          })
+          .catch((e) => {
+            logger.warn('[OrderProcurement] revert after submit_failed', {
+              orderId: oid,
+              purchaseId: p.purchaseId,
+              message: e?.message || String(e),
+            });
+          });
+      }
+      await addRuntimeNotification({
+        type: 'supplier_order_submit_failed',
+        severity: 'error',
+        source: 'supplier_order_placement',
+        title: 'Заказы не отправлены поставщику',
+        message: `${reason || 'Не удалось отправить заказ поставщику'}. Заказ ${oid} оставлен в статусе «Новый».`,
+        meta: {
+          url: '/orders?status=new',
+          order_ids: [oid],
+          purchase_ids: failed.map((p) => p.purchaseId),
+        },
+      }).catch(() => {});
       return {
         ok: false,
         error: 'submit_failed',
-        message: reason || 'Не удалось отправить заказ поставщику',
+        message:
+          (reason || 'Не удалось отправить заказ поставщику') +
+          '. Заказ оставлен в статусе «Новый» (см. уведомления).',
         purchases,
       };
     }

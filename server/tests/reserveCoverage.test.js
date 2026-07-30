@@ -4,7 +4,10 @@ import {
   coverageKindFromReserveMeta,
   resolveReserveSourceKind,
   scaleReserveMetaToDisplayQty,
+  allocateUnreserveReserveFromMeta,
   onHandHeadroomBeforeReserve,
+  computePromoteIncomingToOnHandQty,
+  computePromoteOnHandBudget,
   orderStatusAllowsIncomingReserve,
   orderRowAllowsIncomingReserve,
   isKitComponentBatchReserve,
@@ -28,8 +31,8 @@ describe('isKitComponentBatchReserve', () => {
 });
 
 describe('orderStatusAllowsIncomingReserve', () => {
-  test('новый заказ — только со склада', () => {
-    expect(orderStatusAllowsIncomingReserve('new')).toBe(false);
+  test('новый заказ — наличие, затем путь', () => {
+    expect(orderStatusAllowsIncomingReserve('new')).toBe(true);
     expect(orderStatusAllowsIncomingReserve('unknown')).toBe(false);
   });
 
@@ -45,14 +48,71 @@ describe('orderRowAllowsIncomingReserve', () => {
     expect(orderRowAllowsIncomingReserve({ marketplace: 'manual', status: 'new' })).toBe(true);
   });
 
-  test('ozon new — только со склада', () => {
-    expect(orderRowAllowsIncomingReserve({ marketplace: 'ozon', status: 'new' })).toBe(false);
+  test('ozon new — наличие, затем путь', () => {
+    expect(orderRowAllowsIncomingReserve({ marketplace: 'ozon', status: 'new' })).toBe(true);
   });
 });
 
 describe('onHandHeadroomBeforeReserve', () => {
   test('headroom при частичном резерве', () => {
     expect(onHandHeadroomBeforeReserve({ onHand: 5, reservedRaw: 3 })).toBe(2);
+  });
+});
+
+describe('computePromoteOnHandBudget', () => {
+  test('весь on_hand свободен под promote, если нет активного meta со склада', () => {
+    // available=0 (единица уже в резерве «с пути»), но физически on_hand=1
+    expect(computePromoteOnHandBudget({ onHand: 1, claimedActiveOnHand: 0 })).toBe(1);
+  });
+
+  test('активный on_hand-резерв занимает бюджет', () => {
+    expect(computePromoteOnHandBudget({ onHand: 2, claimedActiveOnHand: 1 })).toBe(1);
+  });
+
+  test('фантомный claimed больше on_hand не даёт отрицательный бюджет', () => {
+    expect(computePromoteOnHandBudget({ onHand: 1, claimedActiveOnHand: 5 })).toBe(0);
+  });
+
+  test('без on_hand — 0', () => {
+    expect(computePromoteOnHandBudget({ onHand: 0, claimedActiveOnHand: 0 })).toBe(0);
+  });
+});
+
+describe('computePromoteIncomingToOnHandQty', () => {
+  test('полный перевод при достаточном on_hand', () => {
+    expect(
+      computePromoteIncomingToOnHandQty({ metaIncoming: 2, reservedQty: 2, onHandBudget: 5 })
+    ).toBe(2);
+  });
+
+  test('ограничение бюджетом после частичной приёмки', () => {
+    expect(
+      computePromoteIncomingToOnHandQty({ metaIncoming: 3, reservedQty: 3, onHandBudget: 1 })
+    ).toBe(1);
+  });
+
+  test('без on_hand — 0 (до приёмки не зеленеет)', () => {
+    expect(
+      computePromoteIncomingToOnHandQty({ metaIncoming: 2, reservedQty: 2, onHandBudget: 0 })
+    ).toBe(0);
+  });
+
+  test('после приёмки: on_hand покрывает резерв «с пути» даже при available=0', () => {
+    const budget = computePromoteOnHandBudget({ onHand: 1, claimedActiveOnHand: 0 });
+    expect(
+      computePromoteIncomingToOnHandQty({ metaIncoming: 1, reservedQty: 1, onHandBudget: budget })
+    ).toBe(1);
+  });
+
+  test('фантомный incoming при уже покрытом on_hand — не промоутим', () => {
+    expect(
+      computePromoteIncomingToOnHandQty({
+        metaIncoming: 5,
+        metaOnHand: 5,
+        reservedQty: 5,
+        onHandBudget: 5,
+      })
+    ).toBe(0);
   });
 });
 
@@ -118,6 +178,26 @@ describe('scaleReserveMetaToDisplayQty', () => {
   });
 });
 
+describe('allocateUnreserveReserveFromMeta', () => {
+  test('полное снятие с фантомным incoming', () => {
+    expect(
+      allocateUnreserveReserveFromMeta(5, { fromOnHand: 5, fromIncoming: 5 }, 5)
+    ).toEqual({ reserve_from_on_hand: 5, reserve_from_incoming: 5 });
+  });
+
+  test('частичное: сначала в пути', () => {
+    expect(
+      allocateUnreserveReserveFromMeta(2, { fromOnHand: 2, fromIncoming: 3 }, 5)
+    ).toEqual({ reserve_from_on_hand: 0, reserve_from_incoming: 2 });
+  });
+
+  test('частичное при фантоме: чистит excess + release', () => {
+    expect(
+      allocateUnreserveReserveFromMeta(2, { fromOnHand: 5, fromIncoming: 5 }, 5)
+    ).toEqual({ reserve_from_on_hand: 2, reserve_from_incoming: 5 });
+  });
+});
+
 describe('classifyOrderReserveCoverage', () => {
   test('полностью со склада', () => {
     expect(
@@ -176,6 +256,21 @@ describe('resolveReserveCoverageKind', () => {
         reserved: 1,
       })
     ).toBe('on_hand');
+  });
+
+  test('meta «в пути» важнее FIFO on_hand (изолированные склады)', async () => {
+    const { resolveReserveCoverageKind } = await import('../src/services/orders.service.js');
+    const metaMap = new Map([['300:5', 'incoming']]);
+    const fifoMap = new Map([['300:5', 'on_hand']]);
+    expect(
+      resolveReserveCoverageKind('300:5', {
+        metaMap,
+        fifoMap,
+        orderStatus: 'new',
+        pid: 5,
+        reserved: 1,
+      })
+    ).toBe('incoming');
   });
 
   test('в закупке без meta: FIFO incoming — серая плашка', async () => {

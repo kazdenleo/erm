@@ -34,6 +34,27 @@ export function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
 }
 
+/**
+ * Можно ли резервировать комплект «с пути» по строке заказа.
+ * Зеркало orderRowAllowsIncomingReserve из orders.service (без циклического импорта).
+ */
+export function kitOrderRowAllowsIncomingReserve(orderRow) {
+  if (!orderRow || typeof orderRow !== 'object') return false;
+  const mp = String(orderRow.marketplace ?? orderRow.marketplace_code ?? '')
+    .trim()
+    .toLowerCase();
+  if (mp === 'manual') return true;
+  const st = String(orderRow.status ?? orderRow.order_status ?? '')
+    .trim()
+    .toLowerCase();
+  return (
+    st === 'new' ||
+    st === 'in_procurement' ||
+    st === 'in_assembly' ||
+    st === 'wb_assembly'
+  );
+}
+
 /** Номер заказа на МП для сопоставления движений (meta.orderId). */
 async function resolveMarketplaceOrderLabel(orderDbId, opts = {}) {
   if (opts.marketplaceOrderId != null && String(opts.marketplaceOrderId).trim() !== '') {
@@ -1603,7 +1624,10 @@ export async function getNetReservedForOrderProduct(
   let whSql = '';
   if (whId != null) {
     params.push(whId);
-    whSql = ` AND warehouse_id = $${params.length}`;
+    // Только этот склад + резервы без warehouse_id (можно снять с любого).
+    // Не подмешиваем резерв с других складов — иначе проверка сборки на чужом WH
+    // видит net>0 при on_hand=0 и ложно блокирует заказ.
+    whSql = ` AND (warehouse_id = $${params.length} OR warehouse_id IS NULL)`;
   }
   const r = await query(
     `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
@@ -1613,19 +1637,7 @@ export async function getNetReservedForOrderProduct(
        AND ${orderReserveMovementMatchSql('', 2, 3)}${whSql}`,
     params
   );
-  const scoped = Number(r.rows?.[0]?.rv ?? 0) || 0;
-  if (scoped > 0 || whId == null) return scoped;
-
-  // Резерв без warehouse_id — при отгрузке со склада всё равно должен сниматься.
-  const globalRes = await query(
-    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-     FROM stock_movements
-     WHERE product_id = $1
-       AND type IN ('reserve', 'unreserve')
-       AND ${orderReserveMovementMatchSql('', 2, 3)}`,
-    [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
-  );
-  return Number(globalRes.rows?.[0]?.rv ?? 0) || 0;
+  return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
 
 /** Пакет: нетто-резерв по заказу для нескольких product_id (один запрос). */
@@ -1651,7 +1663,7 @@ async function batchNetReservedForOrderProducts(
   let whSql = '';
   if (whId != null) {
     params.push(whId);
-    whSql = ` AND warehouse_id = $${params.length}`;
+    whSql = ` AND (warehouse_id = $${params.length} OR warehouse_id IS NULL)`;
   }
   const r = await query(
     `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
@@ -1665,27 +1677,6 @@ async function batchNetReservedForOrderProducts(
   const map = new Map(ids.map((id) => [id, 0]));
   for (const row of r.rows || []) {
     map.set(Number(row.product_id), Number(row.rv) || 0);
-  }
-
-  if (whId != null) {
-    const needGlobal = ids.filter((id) => (map.get(id) || 0) <= 0);
-    if (needGlobal.length) {
-      const globalRes = await query(
-        `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements
-         WHERE product_id = ANY($1::bigint[])
-           AND type IN ('reserve', 'unreserve')
-           AND ${orderReserveMovementMatchSql('', 2, 3)}
-         GROUP BY product_id`,
-        [needGlobal, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
-      );
-      for (const row of globalRes.rows || []) {
-        const pid = Number(row.product_id);
-        if ((map.get(pid) || 0) <= 0) {
-          map.set(pid, Number(row.rv) || 0);
-        }
-      }
-    }
   }
   return map;
 }
@@ -2436,13 +2427,13 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
     meta?.fbs_strict_warehouse === true;
   const reserveOpts =
     whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
+  // Согласовано с orderRowAllowsIncomingReserve (orders.service):
+  // new / in_procurement / in_assembly / wb_assembly и manual — можно «с пути».
+  // Раньше здесь был только manual → WB-комплекты с наличием только в комплектующих «в пути» не резервировались.
   const allowIncomingReserve =
     meta?.allow_incoming_reserve === true ||
     meta?.allowIncomingReserve === true ||
-    (meta?.order_row &&
-      String(meta.order_row.marketplace ?? meta.order_row.marketplace_code ?? '')
-        .trim()
-        .toLowerCase() === 'manual');
+    kitOrderRowAllowsIncomingReserve(meta?.order_row);
   let breakdown = await computeKitReservableBreakdown(kitId, {
     ...reserveOpts,
     allowIncomingReserve,
@@ -3140,6 +3131,7 @@ async function batchIncomingMap(productIds, opts = {}) {
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND warehouse_id = $2
+         AND LOWER(TRIM(type::text)) = 'incoming'
          AND incoming_after IS NOT NULL
        ORDER BY product_id, created_at DESC, id DESC`,
       [ids, wid]

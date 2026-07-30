@@ -19,6 +19,7 @@ import {
 import { marketplaceOrderIdForApi, marketplaceRouteSegment } from '../../utils/orderListGroupKey';
 import {
   groupReserveCoverageKind,
+  orderReserveBadgeCounts,
   reserveBadgeClassName
 } from '../../utils/orderReserveBadge.js';
 import {
@@ -517,9 +518,14 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
 
   if (!marketplace || !orderId) return null;
 
-  const reservedQty = Number(reserve?.reservedQty ?? 0) || 0;
-  const needQty = Number(reserve?.needQty ?? 0) || 0;
-  const hasReserve = reserve?.hasReserve === true || reservedQty > 0;
+  const reservedQtyRaw = Number(reserve?.reservedQty ?? 0) || 0;
+  const needQtyRaw = Number(reserve?.needQty ?? 0) || 0;
+  const { reserved: reservedQty, need: needQty } = orderReserveBadgeCounts({
+    qty: needQtyRaw || 1,
+    reservedQty: reservedQtyRaw,
+    needQty: needQtyRaw || 1,
+  });
+  const hasReserve = reserve?.hasReserve === true || reservedQtyRaw > 0;
   const label = hasReserve ? 'Снять весь резерв' : 'Поставить резерв на заказ';
   const variant = hasReserve ? 'secondary' : 'primary';
   const summaryCoverage =
@@ -532,7 +538,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <div style={{ flex: '1 1 200px' }}>
           <h3 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            Резерв на складе
+            {summaryCoverage === 'incoming' ? 'Резерв (в пути)' : 'Резерв'}
             {needQty > 0 && reservedQty > 0 ? (
               <span
                 className={reserveBadgeClassName(summaryCoverage)}
@@ -569,7 +575,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             {reserve?.orderWarehouseLabel ? (
               <>
                 {' '}
-                Резерв берётся со склада: {reserve.orderWarehouseLabel}.
+                {summaryCoverage === 'incoming'
+                  ? `Склад заказа (ожидание «в пути»): ${reserve.orderWarehouseLabel}.`
+                  : `Резерв со склада: ${reserve.orderWarehouseLabel}.`}
               </>
             ) : null}
           </p>

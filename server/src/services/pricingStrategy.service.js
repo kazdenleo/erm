@@ -10,6 +10,10 @@
  */
 
 import { query } from '../config/database.js';
+import {
+  formatPriceChangeReason,
+  logMarketplacePriceChange,
+} from './marketplacePriceChanges.service.js';
 
 export const PRICING_STRATEGY_MODES = ['floor', 'target_margin', 'competitor', 'sales', 'hybrid'];
 
@@ -415,13 +419,14 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     const mp = String(row.marketplace).toLowerCase();
     const floor = Number(row.min_price);
     const previousSelling = row.selling_price != null ? Number(row.selling_price) : null;
+    const floorRounded = floorRub(floor);
 
     if (!strategy) {
       // Нет стратегии: не затираем ручную цену; иначе подставляем пол.
       const sellingPrice =
         previousSelling != null && Number.isFinite(previousSelling) && previousSelling > 0
           ? floorRub(previousSelling)
-          : floorRub(floor);
+          : floorRounded;
       await query(
         `UPDATE product_marketplace_prices
          SET selling_price = $1,
@@ -432,7 +437,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
            AND COALESCE(selling_price_manual, false) = false`,
         [
           sellingPrice,
-          JSON.stringify({ mode: 'floor', reason: 'no_strategy', sellingPrice, floor: floorRub(floor) }),
+          JSON.stringify({ mode: 'floor', reason: 'no_strategy', sellingPrice, floor: floorRounded }),
           pid,
           mp,
         ]
@@ -449,6 +454,15 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
         cur?.is_manual === true && cur.selling_price != null
           ? floorRub(cur.selling_price)
           : sellingPrice;
+      const details =
+        cur?.is_manual === true
+          ? {
+              mode: 'manual',
+              reason: 'manual_selling_price',
+              sellingPrice: finalSelling,
+              floor: floorRounded,
+            }
+          : { mode: 'floor', reason: 'no_strategy', sellingPrice: finalSelling, floor: floorRounded };
       if (cur?.is_manual === true) {
         await query(
           `UPDATE product_marketplace_prices
@@ -456,23 +470,33 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
                strategy_details = $1::jsonb,
                updated_at = CURRENT_TIMESTAMP
            WHERE product_id = $2 AND marketplace = $3`,
-          [
-            JSON.stringify({
-              mode: 'manual',
-              reason: 'manual_selling_price',
-              sellingPrice: finalSelling,
-              floor: floorRub(floor),
-            }),
-            pid,
-            mp,
-          ]
+          [JSON.stringify(details), pid, mp]
         );
       }
+      const reason = formatPriceChangeReason({
+        source: cur?.is_manual === true ? 'manual' : 'strategy',
+        meta: details,
+      });
+      await logMarketplacePriceChange({
+        productId: pid,
+        marketplace: mp,
+        source: cur?.is_manual === true ? 'manual' : 'strategy',
+        reason,
+        minPriceBefore: floorRounded,
+        minPriceAfter: floorRounded,
+        sellingPriceBefore: previousSelling,
+        sellingPriceAfter: finalSelling,
+        profileId: product.profile_id,
+        meta: details,
+      });
       results.push({
         marketplace: mp,
         sellingPrice: finalSelling,
-        floor: floorRub(floor),
+        sellingPriceBefore: previousSelling,
+        floor: floorRounded,
         mode: cur?.is_manual === true ? 'manual' : 'floor',
+        reason,
+        changed: !sameMoneyLocal(previousSelling, finalSelling),
       });
       continue;
     }
@@ -507,6 +531,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       floor: computed.floor,
       competitorsCount: (comp.prices || []).length,
       competitorSkip: comp.skipped ? comp.reason : null,
+      heldByBand: computed.heldByBand === true,
     };
 
     await query(
@@ -519,17 +544,47 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       [computed.sellingPrice, strategy.id, JSON.stringify(details), pid, mp]
     );
 
+    const reason = formatPriceChangeReason({
+      source: 'strategy',
+      meta: details,
+      strategyName: strategy.name,
+      mode,
+    });
+    await logMarketplacePriceChange({
+      productId: pid,
+      marketplace: mp,
+      source: 'strategy',
+      reason,
+      minPriceBefore: floorRounded,
+      minPriceAfter: computed.floor,
+      sellingPriceBefore: previousSelling,
+      sellingPriceAfter: computed.sellingPrice,
+      pricingStrategyId: strategy.id,
+      profileId: product.profile_id,
+      meta: details,
+    });
+
     results.push({
       marketplace: mp,
       sellingPrice: computed.sellingPrice,
+      sellingPriceBefore: previousSelling,
       floor: computed.floor,
       mode,
       strategyId: Number(strategy.id),
+      strategyName: strategy.name,
       heldByBand: computed.heldByBand,
+      reason,
+      changed: !sameMoneyLocal(previousSelling, computed.sellingPrice),
     });
   }
 
   return { ok: true, productId: pid, strategyId: strategy ? Number(strategy.id) : null, results };
+}
+
+function sameMoneyLocal(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return Math.abs(Number(a) - Number(b)) < 0.005;
 }
 
 export async function listStrategies({ profileId = null } = {}) {
