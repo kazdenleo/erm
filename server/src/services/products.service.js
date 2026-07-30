@@ -1342,7 +1342,11 @@ class ProductsService {
         const vendorExplicit = Object.prototype.hasOwnProperty.call(updates, 'mp_wb_vendor_code');
         const vendor = vendorExplicit ? sanitizeWbVendorCode(toStr(updates.mp_wb_vendor_code)) : undefined;
         let existing = null;
-        if (!vendorExplicit || nmRaw == null) {
+        const needExisting =
+          !vendorExplicit ||
+          nmRaw == null ||
+          !Object.prototype.hasOwnProperty.call(updates, 'wb_draft');
+        if (needExisting) {
           existing = await this.getById(id);
         }
         const vendorForSkus =
@@ -1350,7 +1354,11 @@ class ProductsService {
             ? vendor
             : sanitizeWbVendorCode(toStr(existing?.mp_wb_vendor_code));
         updates.marketplace_skus.wb = vendorForSkus;
-        updates.wb_draft = patchWbNmIdDraft(parseWbDraftColumn(existing?.wb_draft), nmRaw);
+        // Не затирать клиентский wb_draft (габариты и пр.): база = входящий draft, иначе из БД
+        const baseDraft = Object.prototype.hasOwnProperty.call(updates, 'wb_draft')
+          ? parseWbDraftColumn(updates.wb_draft)
+          : parseWbDraftColumn(existing?.wb_draft);
+        updates.wb_draft = patchWbNmIdDraft(baseDraft, nmRaw);
         updates.sku_wb = nmRaw;
       }
       if (updates.marketplace_skus.ozon) {

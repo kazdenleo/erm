@@ -1996,18 +1996,39 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
     }
     setFormData((prev) => {
-      const next = { ...prev };
+      let next = { ...prev };
       if (name) next.mp_ozon_name = name;
       if (description) next.mp_ozon_description = description;
       if (brand) next.mp_ozon_brand = brand;
+      // Ozon depth/width/height — мм; weight — г. Всегда в ozon_draft; в ERP — при связи.
+      const dx = data.dimension_x ?? data.width;
+      const dy = data.dimension_y ?? data.height;
+      const dz = data.dimension_z ?? data.depth ?? data.length;
+      const wG = data.weight ?? data.weight_brutto;
+      const toNum = (v) => {
+        const n = typeof v === 'number' ? v : (v != null && String(v).trim() !== '' ? Number(String(v).replace(',', '.')) : NaN);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      };
+      const length = toNum(dz);
+      const width = toNum(dx);
+      const height = toNum(dy);
+      const weight = toNum(wG);
+      if (length != null || width != null || height != null || weight != null) {
+        const prevDims = getMpDraftDimensionsMm(prev, 'ozon') || {};
+        const nextDims = {
+          ...prevDims,
+          ...(length != null ? { length } : {}),
+          ...(width != null ? { width } : {}),
+          ...(height != null ? { height } : {}),
+          ...(weight != null ? { weight } : {}),
+        };
+        next = withMpDraftPatch(next, 'ozon', { dimensions: nextDims });
+      }
       if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ozon')) {
-        if (data.weight != null) next.weight = String(data.weight);
-        const dx = data.dimension_x ?? data.width;
-        const dy = data.dimension_y ?? data.height;
-        const dz = data.dimension_z ?? data.length;
-        if (dx != null) next.width = String(dx);
-        if (dy != null) next.height = String(dy);
-        if (dz != null) next.length = String(dz);
+        if (weight != null) next.weight = String(weight);
+        if (width != null) next.width = String(width);
+        if (height != null) next.height = String(height);
+        if (length != null) next.length = String(length);
       }
       return next;
     });
