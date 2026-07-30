@@ -23,4 +23,16 @@ export const salesAnalyticsApi = {
     const r = await api.get(`/sales-analytics/by-category${qs ? `?${qs}` : ''}`);
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  /** @returns {Promise<{ ok?: boolean, data?: { summary, products, period, marketplace, scheme, thresholds } }>} */
+  getAbc: async ({ dateFrom, dateTo, marketplace = 'all', scheme = 'all' } = {}) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (marketplace) params.set('marketplace', marketplace);
+    if (scheme) params.set('scheme', scheme);
+    const qs = params.toString();
+    const r = await api.get(`/sales-analytics/abc${qs ? `?${qs}` : ''}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
 };

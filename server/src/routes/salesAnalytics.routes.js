@@ -9,5 +9,6 @@ router.use(requireAuth);
 
 router.get('/fbs-by-product', wrapAsync(controller.getFbsByProduct));
 router.get('/by-category', wrapAsync(controller.getByCategory));
+router.get('/abc', wrapAsync(controller.getAbcAnalysis));
 
 export default router;

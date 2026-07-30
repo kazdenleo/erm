@@ -9,6 +9,9 @@ import {
   loadMarketplaceTaxContext,
   buildTaxMetaFromContext,
 } from '../utils/marketplaceOrderTax.js';
+import { sqlNormArticle, sqlOzonSkuMapCte } from '../utils/offerArticleKey.js';
+import { ensureOzonFinanceSkuLinks } from './ozonFinanceSkuLink.service.js';
+import logger from '../utils/logger.js';
 
 function parseDateYmd(raw, fallback) {
   const s = String(raw || '').trim();
@@ -50,14 +53,8 @@ function normalizeScheme(raw) {
   return 'all';
 }
 
-/** FBO: продажа для qty/себестоимости. */
+/** Продажа для qty / выручки / себестоимости (FBO и FBS). */
 const FBO_SALE = `(
-  (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Продажа')
-  OR LOWER(TRIM(l.marketplace)) NOT IN ('wb', 'wildberries')
-)`;
-
-/** FBS: продажа для qty/выручки/себестоимости. */
-const FBS_SALE = `(
   (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Продажа')
   OR (LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer')
   OR (LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
@@ -66,11 +63,14 @@ const FBS_SALE = `(
   ))
 )`;
 
+/** FBS: то же правило продаж. */
+const FBS_SALE = FBO_SALE;
+
 function buildAggSelect(saleExpr) {
   return `
     COALESCE(p.user_category_id, 0) AS category_id,
     COALESCE(NULLIF(TRIM(uc.name), ''), 'Без категории') AS category_name,
-    COALESCE(l.product_id, 0) AS product_id,
+    COALESCE(l.product_id, m.product_id, nm.product_id, 0) AS product_id,
     COALESCE(NULLIF(TRIM(l.sku), ''), COALESCE(NULLIF(TRIM(p.sku), ''), '—')) AS sku,
     MAX(COALESCE(p.name, l.product_name, '—')) AS product_name,
     MAX(p.sku) AS erp_sku,
@@ -91,6 +91,108 @@ function buildAggSelect(saleExpr) {
     )::numeric AS cost_amount
   `;
 }
+
+/**
+ * Fallback: ERP sku (normalized, ±DT) встречается в product_name строки отчёта
+ * ИЛИ длинный alnum-префикс имени совпадает (уникально).
+ */
+function sqlOzonNameMapCte() {
+  const skuNorm = sqlNormArticle('p.sku');
+  const nameNorm = sqlNormArticle('l.product_name');
+  const coreSku = `CASE WHEN ${skuNorm} LIKE 'DT%' THEN substr(${skuNorm}, 3) ELSE ${skuNorm} END`;
+  const alnumName = `lower(regexp_replace(COALESCE(l.product_name, ''), '[^a-zA-Zа-яА-ЯёЁ0-9]+', '', 'g'))`;
+  const alnumProd = `lower(regexp_replace(COALESCE(p.name, ''), '[^a-zA-Zа-яА-ЯёЁ0-9]+', '', 'g'))`;
+  return `
+  ozon_name_map AS (
+    SELECT mp_sku, product_id
+    FROM (
+      SELECT
+        TRIM(l.sku) AS mp_sku,
+        p.id AS product_id,
+        COUNT(*) OVER (PARTITION BY TRIM(l.sku)) AS hit_cnt
+      FROM (
+        SELECT DISTINCT TRIM(sku) AS sku, MAX(product_name) AS product_name
+        FROM (
+          SELECT sku, product_name FROM marketplace_fbo_report_lines
+          WHERE profile_id = $1 AND LOWER(TRIM(marketplace)) = 'ozon'
+            AND product_id IS NULL
+            AND sku IS NOT NULL AND TRIM(sku) <> '' AND TRIM(sku) <> '0'
+            AND product_name IS NOT NULL AND TRIM(product_name) <> ''
+          UNION ALL
+          SELECT sku, product_name FROM marketplace_fbs_report_lines
+          WHERE profile_id = $1 AND LOWER(TRIM(marketplace)) = 'ozon'
+            AND product_id IS NULL
+            AND sku IS NOT NULL AND TRIM(sku) <> '' AND TRIM(sku) <> '0'
+            AND product_name IS NOT NULL AND TRIM(product_name) <> ''
+        ) raw
+        GROUP BY TRIM(sku)
+      ) l
+      JOIN products p ON p.profile_id = $1
+      WHERE NOT EXISTS (SELECT 1 FROM ozon_sku_map m0 WHERE m0.mp_sku = TRIM(l.sku))
+        AND (
+          (
+            ${coreSku} <> ''
+            AND length(${coreSku}) >= 5
+            AND ${coreSku} ~ '[A-Z]'
+            AND ${coreSku} ~ '[0-9]'
+            AND position(${coreSku} IN ${nameNorm}) > 0
+          )
+          OR (
+            length(${alnumName}) >= 45
+            AND left(${alnumProd}, 45) = left(${alnumName}, 45)
+          )
+        )
+    ) ranked
+    WHERE hit_cnt = 1
+  )`;
+}
+
+function lineProductJoins() {
+  return `
+        LEFT JOIN ozon_sku_map m ON l.product_id IS NULL
+          AND LOWER(TRIM(l.marketplace)) = 'ozon'
+          AND l.sku IS NOT NULL
+          AND TRIM(l.sku) <> ''
+          AND TRIM(l.sku) <> '0'
+          AND m.mp_sku = TRIM(l.sku)
+        LEFT JOIN ozon_name_map nm ON l.product_id IS NULL
+          AND m.product_id IS NULL
+          AND LOWER(TRIM(l.marketplace)) = 'ozon'
+          AND l.sku IS NOT NULL
+          AND TRIM(l.sku) <> ''
+          AND TRIM(l.sku) <> '0'
+          AND nm.mp_sku = TRIM(l.sku)
+        LEFT JOIN products p ON p.id = COALESCE(l.product_id, m.product_id, nm.product_id)
+        LEFT JOIN user_categories uc ON uc.id = p.user_category_id`;
+}
+
+/** Fee-only junk: МП:0 / empty SKU without ERP product — hide from category rows. */
+function isJunkUnlinkedProduct(row) {
+  const pid = Number(row.product_id ?? row.productId) || 0;
+  if (pid > 0) return false;
+  const sku = String(row.sku || '').trim();
+  if (!sku || sku === '—' || sku === '-' || sku === '0') return true;
+  // Только удержания без продаж и без названия — не показываем как «товар».
+  const soldQty = Number(row.sold_qty ?? row.soldQty) || 0;
+  const soldAmount = Number(row.sold_amount ?? row.soldAmount) || 0;
+  const name = String(row.product_name ?? row.productName ?? '').trim();
+  if (soldQty === 0 && soldAmount === 0 && (!name || name === '—')) return true;
+  return false;
+}
+
+/** Строки отчёта без товара и без нормального артикула (служебные удержания). */
+const SQL_EXCLUDE_JUNK_UNLINKED = `
+  AND NOT (
+    l.product_id IS NULL
+    AND m.product_id IS NULL
+    AND nm.product_id IS NULL
+    AND (
+      l.sku IS NULL
+      OR TRIM(l.sku) = ''
+      OR TRIM(l.sku) = '0'
+    )
+  )
+`;
 
 function mapProductRow(row) {
   const commissionAmount = Number(row.commission_amount) || 0;
@@ -128,6 +230,50 @@ function sumField(rows, key) {
   return rows.reduce((s, r) => s + (Number(r[key]) || 0), 0);
 }
 
+function isBadMpSku(sku) {
+  const s = String(sku || '').trim();
+  return !s || s === '—' || s === '-' || s === '0';
+}
+
+/** Слить строки одного ERP-товара (удержания с sku=0 иначе дублируют товар). */
+function mergeProductsByIdentity(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const pid = Number(row.productId) || 0;
+    const key = pid > 0 ? `p:${pid}` : `s:${String(row.sku || '').trim() || '—'}`;
+    const prev = map.get(key);
+    if (!prev) {
+      const sku = !isBadMpSku(row.sku) ? row.sku : row.erpSku || row.sku;
+      map.set(key, { ...row, sku });
+      continue;
+    }
+    const amountKeys = [
+      'soldQty',
+      'soldAmount',
+      'costAmount',
+      'commissionAmount',
+      'logisticsAmount',
+      'storageAmount',
+      'penaltyAmount',
+      'acquiringAmount',
+      'otherDeductions',
+      'expensesTotal',
+      'costsTotal',
+      'payoutAmount',
+    ];
+    for (const k of amountKeys) {
+      prev[k] = (Number(prev[k]) || 0) + (Number(row[k]) || 0);
+    }
+    if ((!prev.erpSku || prev.erpSku === '—') && row.erpSku) prev.erpSku = row.erpSku;
+    if ((!prev.productName || prev.productName === '—') && row.productName && row.productName !== '—') {
+      prev.productName = row.productName;
+    }
+    if (isBadMpSku(prev.sku) && !isBadMpSku(row.sku)) prev.sku = row.sku;
+    else if (isBadMpSku(prev.sku) && prev.erpSku) prev.sku = prev.erpSku;
+  }
+  return [...map.values()];
+}
+
 class MarketplaceCategoryAnalyticsService {
   async getByCategory({
     profileId,
@@ -161,19 +307,26 @@ class MarketplaceCategoryAnalyticsService {
       mpClause = `AND LOWER(TRIM(l.marketplace)) = ANY($${params.length}::text[])`;
     }
 
+    // Досвязать Ozon finance SKU → ERP (иначе «Без категории» / ERP: —)
+    try {
+      await ensureOzonFinanceSkuLinks(pid, { limit: 50 });
+    } catch (e) {
+      logger.warn('[Category Analytics] ensureOzonFinanceSkuLinks failed', e?.message || e);
+    }
+
     const parts = [];
     if (schemeNorm === 'all' || schemeNorm === 'fbo') {
       parts.push(`
         SELECT ${buildAggSelect(FBO_SALE)}
         FROM marketplace_fbo_report_lines l
-        LEFT JOIN products p ON p.id = l.product_id
-        LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+        ${lineProductJoins()}
         WHERE l.profile_id = $1
           AND l.operation_date >= $2::date AND l.operation_date <= $3::date
           ${mpClause}
+          ${SQL_EXCLUDE_JUNK_UNLINKED}
         GROUP BY COALESCE(p.user_category_id, 0),
                  COALESCE(NULLIF(TRIM(uc.name), ''), 'Без категории'),
-                 COALESCE(l.product_id, 0),
+                 COALESCE(l.product_id, m.product_id, nm.product_id, 0),
                  COALESCE(NULLIF(TRIM(l.sku), ''), COALESCE(NULLIF(TRIM(p.sku), ''), '—'))
       `);
     }
@@ -181,19 +334,21 @@ class MarketplaceCategoryAnalyticsService {
       parts.push(`
         SELECT ${buildAggSelect(FBS_SALE)}
         FROM marketplace_fbs_report_lines l
-        LEFT JOIN products p ON p.id = l.product_id
-        LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+        ${lineProductJoins()}
         WHERE l.profile_id = $1
           AND l.operation_date >= $2::date AND l.operation_date <= $3::date
           ${mpClause}
+          ${SQL_EXCLUDE_JUNK_UNLINKED}
         GROUP BY COALESCE(p.user_category_id, 0),
                  COALESCE(NULLIF(TRIM(uc.name), ''), 'Без категории'),
-                 COALESCE(l.product_id, 0),
+                 COALESCE(l.product_id, m.product_id, nm.product_id, 0),
                  COALESCE(NULLIF(TRIM(l.sku), ''), COALESCE(NULLIF(TRIM(p.sku), ''), '—'))
       `);
     }
 
     const sql = `
+      WITH ${sqlOzonSkuMapCte()},
+      ${sqlOzonNameMapCte()}
       SELECT
         category_id,
         MAX(category_name) AS category_name,
@@ -234,7 +389,9 @@ class MarketplaceCategoryAnalyticsService {
       loadMarketplaceTaxContext(pid),
     ]);
 
-    const productsRaw = (res.rows || []).map(mapProductRow);
+    const productsRaw = mergeProductsByIdentity(
+      (res.rows || []).filter((row) => !isJunkUnlinkedProduct(row)).map(mapProductRow)
+    );
     const products = productsRaw.map((row) => enrichAnalyticsRowWithTax(row, taxContext));
 
     const byCategory = new Map();
@@ -269,8 +426,11 @@ class MarketplaceCategoryAnalyticsService {
         costsTotal: p.costsTotal,
         payoutAmount: p.payoutAmount,
         taxAmount: p.taxAmount,
+        vatAmount: p.vatAmount,
+        incomeTaxAmount: p.incomeTaxAmount,
         netIncome: p.netIncome,
         taxTooltip: p.taxTooltip,
+        organizationName: p.organizationName,
       });
     }
 
@@ -288,8 +448,18 @@ class MarketplaceCategoryAnalyticsService {
         const costsTotal = costAmount + expensesTotal;
         const netIncome = sumField(cat.products, 'netIncome');
         const taxAmount = sumField(cat.products, 'taxAmount');
+        const vatAmount = sumField(cat.products, 'vatAmount');
+        const incomeTaxAmount = sumField(cat.products, 'incomeTaxAmount');
         const soldQty = sumField(cat.products, 'soldQty');
         const payoutAmount = sumField(cat.products, 'payoutAmount');
+        const taxTooltipParts = [];
+        if (vatAmount > 0) taxTooltipParts.push(`НДС: ${Math.round(vatAmount).toLocaleString('ru-RU')} ₽`);
+        if (incomeTaxAmount > 0) {
+          taxTooltipParts.push(`Налог по схеме: ${Math.round(incomeTaxAmount).toLocaleString('ru-RU')} ₽`);
+        }
+        if (taxTooltipParts.length) {
+          taxTooltipParts.push(`Итого: ${Math.round(taxAmount).toLocaleString('ru-RU')} ₽`);
+        }
         return {
           categoryId: cat.categoryId || null,
           categoryName: cat.categoryName,
@@ -306,11 +476,15 @@ class MarketplaceCategoryAnalyticsService {
           costsTotal,
           payoutAmount,
           taxAmount,
+          vatAmount,
+          incomeTaxAmount,
           netIncome,
+          taxTooltip: taxTooltipParts.length ? taxTooltipParts.join('\n') : null,
           productsCount: cat.products.length,
           products: cat.products.sort((a, b) => (b.soldAmount || 0) - (a.soldAmount || 0)),
         };
       })
+      .filter((cat) => (cat.productsCount || 0) > 0)
       .sort((a, b) => (b.soldAmount || 0) - (a.soldAmount || 0));
 
     return {
@@ -332,11 +506,67 @@ class MarketplaceCategoryAnalyticsService {
         costsTotal: sumField(categories, 'costsTotal'),
         payoutAmount: sumField(categories, 'payoutAmount'),
         taxAmount: sumField(categories, 'taxAmount'),
+        vatAmount: sumField(categories, 'vatAmount'),
+        incomeTaxAmount: sumField(categories, 'incomeTaxAmount'),
         netIncome: sumField(categories, 'netIncome'),
         categoriesCount: categories.length,
         productsCount: products.length,
       },
       categories,
+    };
+  }
+
+  /**
+   * ABC-анализ товаров: те же данные, что «По категориям», плоский список товаров.
+   * Классификацию A/B/C (80/15/5) считает клиент по выбранной метрике.
+   */
+  async getAbcAnalysis({
+    profileId,
+    dateFrom = null,
+    dateTo = null,
+    marketplace = 'all',
+    scheme = 'all',
+  } = {}) {
+    const data = await this.getByCategory({
+      profileId,
+      dateFrom,
+      dateTo,
+      marketplace,
+      scheme,
+    });
+
+    const products = [];
+    for (const cat of data.categories || []) {
+      for (const p of cat.products || []) {
+        products.push({
+          productId: p.productId,
+          sku: p.sku,
+          erpSku: p.erpSku,
+          productName: p.productName,
+          categoryId: cat.categoryId || null,
+          categoryName: cat.categoryName || 'Без категории',
+          soldQty: Number(p.soldQty) || 0,
+          soldAmount: Number(p.soldAmount) || 0,
+          netIncome: Number(p.netIncome) || 0,
+          costsTotal: Number(p.costsTotal) || 0,
+          taxAmount: Number(p.taxAmount) || 0,
+        });
+      }
+    }
+
+    return {
+      period: data.period,
+      marketplace: data.marketplace,
+      scheme: data.scheme,
+      taxMeta: data.taxMeta,
+      thresholds: { A: 0.8, B: 0.95 },
+      summary: {
+        soldQty: data.summary?.soldQty || 0,
+        soldAmount: data.summary?.soldAmount || 0,
+        netIncome: data.summary?.netIncome || 0,
+        productsCount: products.length,
+      },
+      products,
     };
   }
 }

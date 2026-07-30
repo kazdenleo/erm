@@ -17,7 +17,7 @@ const EMPTY_RULE = {
   localKey: '',
   id: null,
   title: '',
-  rating: '',
+  rating: '5',
   hasText: 'any',
   templateId: '',
   enabled: true,
@@ -48,8 +48,15 @@ function ruleToApi(r) {
     rating: r.rating === '' || r.rating == null ? null : Number(r.rating),
     hasText: r.hasText === 'yes' ? true : r.hasText === 'no' ? false : null,
     templateId: r.templateId || null,
-    enabled: Boolean(r.enabled) && Boolean(r.templateId),
+    enabled: Boolean(r.enabled) && Boolean(r.templateId) && r.rating !== '' && r.rating != null,
   };
+}
+
+function ruleConditionLabel(r) {
+  const stars = r.rating ? `${r.rating}★` : 'звёзды не выбраны';
+  const text =
+    r.hasText === 'yes' ? 'только с текстом' : r.hasText === 'no' ? 'только без текста' : 'с текстом и без';
+  return `${stars}, ${text}`;
 }
 
 export function ReviewTemplatesModal({
@@ -191,6 +198,12 @@ export function ReviewTemplatesModal({
     for (const r of rules) {
       if (!String(r.title || '').trim()) {
         setError('У каждой категории должно быть название');
+        return;
+      }
+      if (r.enabled && r.templateId && (r.rating === '' || r.rating == null)) {
+        setError(
+          `«${r.title || 'Категория'}»: для автоответа обязательно укажите звёзды (1–5). Иначе один шаблон уйдёт на все отзывы.`
+        );
         return;
       }
     }
@@ -349,9 +362,11 @@ export function ReviewTemplatesModal({
         ) : (
           <div className="reviews-templates-pane">
             <p className="text-muted small">
-              Создайте свои категории автоответа: название, звёзды, наличие текста и шаблон.
-              Автоответы уходят после синхронизации отзывов (раз в час) и сразу при сохранении
-              категорий / кнопке «Ответить сейчас».
+              Категория = число звёзд + наличие текста → шаблон. Звёзды обязательны для
+              включённой категории. Если нужен разный ответ на отзыв с текстом и без —
+              сделайте две категории (например «5★ с текстом» и «5★ без текста»).
+              Автоответы уходят после синхронизации (раз в час), при сохранении категорий
+              и по кнопке «Ответить сейчас».
             </p>
             {rulesInfo ? <p className="text-muted small reviews-rules-info">{rulesInfo}</p> : null}
             {rules.length === 0 ? (
@@ -376,10 +391,15 @@ export function ReviewTemplatesModal({
                         <select
                           className="form-select form-select-sm"
                           value={r.rating}
-                          onChange={(e) => updateRuleLocal(r.localKey, { rating: e.target.value })}
+                          onChange={(e) =>
+                            updateRuleLocal(r.localKey, {
+                              rating: e.target.value,
+                              enabled: e.target.value ? r.enabled : false,
+                            })
+                          }
                           disabled={saving}
                         >
-                          <option value="">Любые</option>
+                          <option value="">— выберите —</option>
                           <option value="5">5★</option>
                           <option value="4">4★</option>
                           <option value="3">3★</option>
@@ -426,8 +446,8 @@ export function ReviewTemplatesModal({
                       <label className="reviews-auto-rule-card__enabled">
                         <input
                           type="checkbox"
-                          checked={Boolean(r.enabled) && Boolean(r.templateId)}
-                          disabled={saving || !r.templateId}
+                          checked={Boolean(r.enabled) && Boolean(r.templateId) && Boolean(r.rating)}
+                          disabled={saving || !r.templateId || !r.rating}
                           onChange={(e) => updateRuleLocal(r.localKey, { enabled: e.target.checked })}
                         />
                         Вкл.
@@ -442,6 +462,10 @@ export function ReviewTemplatesModal({
                         Удалить
                       </Button>
                     </div>
+                    <p className="text-muted small mb-0 mt-1">
+                      Условие: {ruleConditionLabel(r)}
+                      {!r.rating ? ' — укажите звёзды, иначе автоответ не запустится' : ''}
+                    </p>
                   </div>
                 ))}
               </div>

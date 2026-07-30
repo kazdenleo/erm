@@ -114,7 +114,14 @@ class ReviewAutoReplyRulesRepositoryPG {
     const rating = parseRating(payload?.rating);
     const hasText = parseHasText(payload?.hasText);
     const templateId = await assertTemplate(pid, payload?.templateId);
-    const enabled = Boolean(payload?.enabled) && templateId != null;
+    let enabled = Boolean(payload?.enabled) && templateId != null;
+    if (enabled && rating == null) {
+      const err = new Error(
+        'Для включённой категории укажите число звёзд (1–5). «Любые» нельзя — иначе один шаблон уйдёт на все отзывы.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
     let sortOrder = payload?.sortOrder;
     if (sortOrder == null || !Number.isFinite(Number(sortOrder))) {
       const maxRes = await query(
@@ -182,7 +189,14 @@ class ReviewAutoReplyRulesRepositoryPG {
       payload && Object.prototype.hasOwnProperty.call(payload, 'enabled')
         ? Boolean(payload.enabled)
         : !!existing.enabled;
-    const enabled = enabledRaw && templateId != null;
+    let enabled = enabledRaw && templateId != null;
+    if (enabled && rating == null) {
+      const err = new Error(
+        'Для включённой категории укажите число звёзд (1–5). «Любые» нельзя — иначе один шаблон уйдёт на все отзывы.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
     const sortOrder =
       payload?.sortOrder != null && Number.isFinite(Number(payload.sortOrder))
         ? Number(payload.sortOrder)

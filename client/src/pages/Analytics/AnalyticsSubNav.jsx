@@ -10,6 +10,7 @@ const TABS = [
   { to: '/analytics/sales', label: 'Продажи FBS', end: true },
   { to: '/analytics/fbo-sales', label: 'Продажи FBO' },
   { to: '/analytics/categories', label: 'По категориям' },
+  { to: '/analytics/abc', label: 'ABC' },
 ];
 export function AnalyticsSubNav() {
   return (

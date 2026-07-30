@@ -2587,9 +2587,20 @@ class IntegrationsService {
         ? offerCard.offer.weightDimensions
         : null);
     const weightDimensions = weightDimensionsRaw;
-    const manufacturerCountries = Array.isArray(offer.manufacturerCountries)
-      ? offer.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean)
-      : [];
+    const manufacturerCountriesRaw =
+      (Array.isArray(offer.manufacturerCountries) && offer.manufacturerCountries.length
+        ? offer.manufacturerCountries
+        : null) ||
+      (Array.isArray(offerCard?.manufacturerCountries) && offerCard.manufacturerCountries.length
+        ? offerCard.manufacturerCountries
+        : null) ||
+      (Array.isArray(offerCard?.offer?.manufacturerCountries) && offerCard.offer.manufacturerCountries.length
+        ? offerCard.offer.manufacturerCountries
+        : null) ||
+      [];
+    const manufacturerCountries = manufacturerCountriesRaw
+      .map((c) => String(c || '').trim())
+      .filter(Boolean);
     return {
       offerId: resolvedOfferId,
       shopSku: shopSku != null ? String(shopSku).trim() : null,

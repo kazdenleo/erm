@@ -26,3 +26,16 @@ export async function getByCategory(req, res) {
   });
   return res.json({ ok: true, data });
 }
+
+export async function getAbcAnalysis(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { dateFrom, dateTo, marketplace, scheme } = req.query || {};
+  const data = await marketplaceCategoryAnalyticsService.getAbcAnalysis({
+    profileId,
+    dateFrom,
+    dateTo,
+    marketplace,
+    scheme,
+  });
+  return res.json({ ok: true, data });
+}

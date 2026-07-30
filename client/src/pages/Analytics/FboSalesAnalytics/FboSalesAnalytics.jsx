@@ -2,27 +2,15 @@
  * Аналитика продаж FBO: финансовые отчёты с маркетплейсов
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { marketplaceFboReportsApi } from '../../../services/marketplaceFboReports.api';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './FboSalesAnalytics.css';
 import { AmountCell, otherDeductionsTotal } from '../shared/AmountCell';
-
-function formatYmd(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function defaultRange() {
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - 30);
-  return { dateFrom: formatYmd(from), dateTo: formatYmd(to) };
-}
+import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
+import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 
 function formatQty(n) {
   if (!Number.isFinite(n)) return '0';
@@ -46,11 +34,12 @@ const MARKETPLACE_OPTIONS = [
 ];
 
 export function FboSalesAnalytics() {
-  const initial = useMemo(() => defaultRange(), []);
+  const initial = useMemo(() => defaultAnalyticsRange(DEFAULT_ANALYTICS_PERIOD), []);
+  const [periodPreset, setPeriodPreset] = useState(DEFAULT_ANALYTICS_PERIOD);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
   const [dateTo, setDateTo] = useState(initial.dateTo);
   const [marketplace, setMarketplace] = useState('all');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
   const [syncMessage, setSyncMessage] = useState(null);
@@ -98,7 +87,7 @@ export function FboSalesAnalytics() {
       const isTimeout = e?.code === 'ECONNABORTED' || /timeout/i.test(String(e?.message || ''));
       setError(
         isTimeout
-          ? 'Превышено время ожидания. Попробуйте короче период или загружайте по одному маркетплейсу. Данные могли частично сохраниться — нажмите «Обновить».'
+          ? 'Превышено время ожидания. Попробуйте короче период или загружайте по одному маркетплейсу. Данные могли частично сохраниться — нажмите «Показать».'
           : e?.response?.data?.message || e?.message || 'Не удалось загрузить отчёты с маркетплейсов'
       );
       await load();
@@ -106,10 +95,6 @@ export function FboSalesAnalytics() {
       setSyncing(false);
     }
   }, [dateFrom, dateTo, marketplace, load]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const summary = data?.summary || {};
   const items = Array.isArray(data?.items) ? data.items : [];
@@ -126,14 +111,14 @@ export function FboSalesAnalytics() {
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
-        <label className="sales-analytics__filter">
-          <span>С</span>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        </label>
-        <label className="sales-analytics__filter">
-          <span>По</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-        </label>
+        <AnalyticsPeriodFilters
+          periodPreset={periodPreset}
+          onPeriodPresetChange={setPeriodPreset}
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onDateFromChange={setDateFrom}
+          onDateToChange={setDateTo}
+        />
         <label className="sales-analytics__filter">
           <span>Маркетплейс</span>
           <select value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
@@ -145,7 +130,7 @@ export function FboSalesAnalytics() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading || syncing}>
-          {loading ? 'Загрузка…' : 'Обновить'}
+          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
         </Button>
         <Button variant="secondary" size="small" onClick={syncFromMarketplaces} disabled={loading || syncing}>
           {syncing ? 'Загрузка с МП…' : 'Загрузить с маркетплейсов'}
@@ -196,16 +181,21 @@ export function FboSalesAnalytics() {
             <thead>
               <tr>
                 <th>Товар</th>
-                <th>Артикул МП</th>
-                <th>Товар ERP</th>
+                <th>Артикул</th>
                 <th className="sales-analytics__num">Продано</th>
                 <th className="sales-analytics__num">Выручка</th>
+                <th className="sales-analytics__num">Себестоимость</th>
                 <th className="sales-analytics__num">Комиссия</th>
                 <th className="sales-analytics__num">Логистика</th>
                 <th className="sales-analytics__num">Хранение</th>
                 <th className="sales-analytics__num">Прочее</th>
                 <th className="sales-analytics__num">К выплате</th>
-                <th className="sales-analytics__num">Налоги</th>
+                <th
+                  className="sales-analytics__num"
+                  title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
+                >
+                  Налоги
+                </th>
                 <th className="sales-analytics__num">Чистый доход</th>
               </tr>
             </thead>
@@ -213,14 +203,15 @@ export function FboSalesAnalytics() {
               {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={12} className="sales-analytics__empty">
-                    Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.
+                    {data == null
+                      ? 'Выберите параметры и нажмите «Показать».'
+                      : 'Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.'}
                   </td>
                 </tr>
               )}
               {items.map((row) => (
                 <tr key={`${row.productId || 'x'}-${row.sku}`}>
                   <td>{row.productName || '—'}</td>
-                  <td>{row.sku || '—'}</td>
                   <td>
                     {row.erpSku ? (
                       <span title={row.productId ? `ID ${row.productId}` : undefined}>{row.erpSku}</span>
@@ -230,6 +221,7 @@ export function FboSalesAnalytics() {
                   </td>
                   <td className="sales-analytics__num">{formatQty(row.soldQty)}</td>
                   <td className="sales-analytics__num">{formatRub(row.soldAmount)}</td>
+                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.commissionAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.logisticsAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.storageAmount)}</td>
@@ -265,7 +257,12 @@ export function FboSalesAnalytics() {
                 <th className="sales-analytics__num">Хранение</th>
                 <th className="sales-analytics__num">Прочее</th>
                 <th className="sales-analytics__num">К выплате</th>
-                <th className="sales-analytics__num">Налоги</th>
+                <th
+                  className="sales-analytics__num"
+                  title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
+                >
+                  Налоги
+                </th>
                 <th className="sales-analytics__num">Чистый доход</th>
               </tr>
             </thead>
@@ -273,7 +270,9 @@ export function FboSalesAnalytics() {
               {!loading && orders.length === 0 && (
                 <tr>
                   <td colSpan={14} className="sales-analytics__empty">
-                    Нет данных по заказам за выбранный период.
+                    {data == null
+                      ? 'Выберите параметры и нажмите «Показать».'
+                      : 'Нет данных по заказам за выбранный период.'}
                   </td>
                 </tr>
               )}
@@ -286,9 +285,8 @@ export function FboSalesAnalytics() {
                   </td>
                   <td>
                     {row.productName || '—'}
-                    {row.sku ? ` (${row.sku})` : ''}
                     {row.erpSku ? (
-                      <span className="fbo-sales-analytics__erp-sku"> · ERP: {row.erpSku}</span>
+                      <span className="fbo-sales-analytics__erp-sku"> · {row.erpSku}</span>
                     ) : null}
                   </td>
                   <td className="sales-analytics__num">{formatQty(row.quantity)}</td>
@@ -336,8 +334,9 @@ export function FboSalesAnalytics() {
           <>
             {' '}
             Налоги: схема «{taxMeta.taxSystemLabel}»
-            {taxMeta.organizationName ? ` (${taxMeta.organizationName})` : ''}; база — выручка минус
-            себестоимость и удержания МП.
+            {taxMeta.organizationName ? ` (${taxMeta.organizationName})` : ''}. База — выручка минус
+            себестоимость и удержания МП. При УСН 15% / ОСН налог = 0, если прибыль отрицательная
+            (как у большинства строк на скрине). Наведите на «Налоги» — там разбивка базы.
           </>
         ) : (
           <> Укажите систему налогообложения в карточке организации для расчёта налогов.</>

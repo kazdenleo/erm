@@ -663,13 +663,51 @@ export async function processReviewAutoReplies(profileId, { limit = 50 } = {}) {
   let skipped = 0;
   const errors = [];
 
-  const matchRule = (rating, hasText) => {
-    for (const rule of rules) {
-      const ratingOk = rule.rating == null || Number(rule.rating) === Number(rating);
-      const textOk = rule.hasText == null || Boolean(rule.hasText) === Boolean(hasText);
-      if (ratingOk && textOk) return rule;
-    }
+  /** Нормализованный рейтинг правила: 1–5 или null («любой» — не используем для автоответа). */
+  const ruleRatingOf = (rule) => {
+    if (rule?.rating == null || rule.rating === '') return null;
+    const n = Number(rule.rating);
+    if (!Number.isFinite(n)) return null;
+    const r = Math.round(n);
+    return r >= 1 && r <= 5 ? r : null;
+  };
+
+  /** true/false или null («любой текст»). */
+  const ruleHasTextOf = (rule) => {
+    if (rule?.hasText === true || rule?.hasText === false) return Boolean(rule.hasText);
     return null;
+  };
+
+  const ruleSpecificity = (rule) => {
+    let score = 0;
+    if (ruleRatingOf(rule) != null) score += 2;
+    if (ruleHasTextOf(rule) != null) score += 1;
+    return score;
+  };
+
+  const ruleMatches = (rule, rating, hasText) => {
+    const wantRating = ruleRatingOf(rule);
+    const wantText = ruleHasTextOf(rule);
+    // Без звёзд правило слишком широкое — не применяем (иначе один шаблон уходит на все отзывы).
+    if (wantRating == null) return false;
+    if (wantRating !== Number(rating)) return false;
+    if (wantText != null && wantText !== Boolean(hasText)) return false;
+    return true;
+  };
+
+  /** Среди подходящих берём самое узкое (сначала звёзды, затем наличие текста). */
+  const matchRule = (rating, hasText) => {
+    let best = null;
+    let bestScore = -1;
+    for (const rule of rules) {
+      if (!ruleMatches(rule, rating, hasText)) continue;
+      const score = ruleSpecificity(rule);
+      if (score > bestScore) {
+        best = rule;
+        bestScore = score;
+      }
+    }
+    return best;
   };
 
   for (const item of items) {
@@ -693,6 +731,13 @@ export async function processReviewAutoReplies(profileId, { limit = 50 } = {}) {
       continue;
     }
     try {
+      logger.info('[MarketplaceReviews] auto-reply', {
+        reviewId: item.id,
+        rating,
+        hasText,
+        ruleId: rule.id,
+        ruleTitle: rule.title,
+      });
       // eslint-disable-next-line no-await-in-loop
       await submitMarketplaceReviewAnswer(pid, item.id, text);
       answered += 1;

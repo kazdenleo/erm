@@ -2,26 +2,14 @@
  * Аналитика продаж по категориям товаров
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './CategorySalesAnalytics.css';
-
-function formatYmd(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function defaultRange() {
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - 30);
-  return { dateFrom: formatYmd(from), dateTo: formatYmd(to) };
-}
+import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
+import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 
 function formatQty(n) {
   if (!Number.isFinite(n)) return '0';
@@ -71,12 +59,13 @@ function CostCells({ row, costsExpanded }) {
 }
 
 export function CategorySalesAnalytics() {
-  const initial = useMemo(() => defaultRange(), []);
+  const initial = useMemo(() => defaultAnalyticsRange(DEFAULT_ANALYTICS_PERIOD), []);
+  const [periodPreset, setPeriodPreset] = useState(DEFAULT_ANALYTICS_PERIOD);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
   const [dateTo, setDateTo] = useState(initial.dateTo);
   const [marketplace, setMarketplace] = useState('all');
   const [scheme, setScheme] = useState('all');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -101,14 +90,36 @@ export function CategorySalesAnalytics() {
     }
   }, [dateFrom, dateTo, marketplace, scheme]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
   const summary = data?.summary || {};
-  const categories = Array.isArray(data?.categories) ? data.categories : [];
   const taxMeta = data?.taxMeta || null;
-  const colCount = 6 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
+  const categories = (Array.isArray(data?.categories) ? data.categories : [])
+    .map((cat) => {
+      const products = (cat.products || []).filter((p) => {
+        const pid = Number(p.productId) || 0;
+        const sku = String(p.sku || '').trim();
+        const name = String(p.productName || '').trim();
+        const soldQty = Number(p.soldQty) || 0;
+        const soldAmount = Number(p.soldAmount) || 0;
+        if (pid > 0) return true;
+        if (!sku || sku === '—' || sku === '-' || sku === '0') return false;
+        if (soldQty === 0 && soldAmount === 0 && (!name || name === '—')) return false;
+        return true;
+      });
+      if (!products.length) return null;
+      const taxAmount = products.reduce((s, p) => s + (Number(p.taxAmount) || 0), 0);
+      const netIncome = products.reduce((s, p) => s + (Number(p.netIncome) || 0), 0);
+      const costsTotal = products.reduce((s, p) => s + (Number(p.costsTotal) || 0), 0);
+      return {
+        ...cat,
+        products,
+        productsCount: products.length,
+        taxAmount,
+        netIncome,
+        costsTotal,
+      };
+    })
+    .filter(Boolean);
+  const colCount = 7 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
 
   const toggleCategory = (categoryId) => {
     const key = String(categoryId ?? 0);
@@ -136,14 +147,14 @@ export function CategorySalesAnalytics() {
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
-        <label className="sales-analytics__filter">
-          <span>С</span>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        </label>
-        <label className="sales-analytics__filter">
-          <span>По</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-        </label>
+        <AnalyticsPeriodFilters
+          periodPreset={periodPreset}
+          onPeriodPresetChange={setPeriodPreset}
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onDateFromChange={setDateFrom}
+          onDateToChange={setDateTo}
+        />
         <label className="sales-analytics__filter">
           <span>Схема</span>
           <select value={scheme} onChange={(e) => setScheme(e.target.value)}>
@@ -165,7 +176,7 @@ export function CategorySalesAnalytics() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : 'Обновить'}
+          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
         </Button>
         <Button variant="secondary" size="small" onClick={expandAll} disabled={!categories.length}>
           Развернуть все
@@ -187,6 +198,15 @@ export function CategorySalesAnalytics() {
           <div className="sales-analytics__card-label">Затраты</div>
           <div className="sales-analytics__card-value">{formatRub(summary.costsTotal)}</div>
           <div className="sales-analytics__card-sub">Себестоимость + удержания МП</div>
+        </div>
+        <div className="sales-analytics__card">
+          <div className="sales-analytics__card-label">Налоги</div>
+          <div className="sales-analytics__card-value">{formatRub(summary.taxAmount)}</div>
+          <div className="sales-analytics__card-sub">
+            {taxMeta?.vatRate > 0
+              ? `НДС ${Math.round(taxMeta.vatRate * 100)}%: ${formatRub(summary.vatAmount)} · налог: ${formatRub(summary.incomeTaxAmount)}`
+              : taxMeta?.taxSystemLabel || 'По схеме организации'}
+          </div>
         </div>
         <div className="sales-analytics__card sales-analytics__card--returned">
           <div className="sales-analytics__card-label">Чистая прибыль</div>
@@ -235,6 +255,12 @@ export function CategorySalesAnalytics() {
                   </span>
                 </button>
               </th>
+              <th
+                className="sales-analytics__num"
+                title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
+              >
+                Налоги
+              </th>
               <th className="sales-analytics__num">Чистая прибыль</th>
             </tr>
           </thead>
@@ -242,7 +268,9 @@ export function CategorySalesAnalytics() {
             {!loading && categories.length === 0 && (
               <tr>
                 <td colSpan={colCount} className="sales-analytics__empty">
-                  Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».
+                  {data == null
+                    ? 'Выберите параметры и нажмите «Показать».'
+                    : 'Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».'}
                 </td>
               </tr>
             )}
@@ -271,6 +299,12 @@ export function CategorySalesAnalytics() {
                     <td className="sales-analytics__num">{formatRub(cat.soldAmount)}</td>
                     <CostCells row={cat} costsExpanded={costsExpanded} />
                     <td className="sales-analytics__num">{formatRub(cat.costsTotal)}</td>
+                    <td
+                      className="sales-analytics__num sales-analytics__num--hint"
+                      title={cat.taxTooltip || undefined}
+                    >
+                      {formatRub(cat.taxAmount)}
+                    </td>
                     <td className="sales-analytics__num">{formatRub(cat.netIncome)}</td>
                   </tr>
                   {isOpen &&
@@ -283,17 +317,20 @@ export function CategorySalesAnalytics() {
                         <td className="category-sales-analytics__product-cell">
                           <div>{p.productName || '—'}</div>
                           <div className="category-sales-analytics__meta">
-                            {p.erpSku ? `ERP: ${p.erpSku}` : 'ERP: —'}
-                            {p.sku ? ` · МП: ${p.sku}` : ''}
+                            Артикул: {p.erpSku || '—'}
                           </div>
                         </td>
                         <td className="sales-analytics__num">{formatQty(p.soldQty)}</td>
                         <td className="sales-analytics__num">{formatRub(p.soldAmount)}</td>
                         <CostCells row={p} costsExpanded={costsExpanded} />
                         <td className="sales-analytics__num">{formatRub(p.costsTotal)}</td>
-                        <td className="sales-analytics__num" title={p.taxTooltip || undefined}>
-                          {formatRub(p.netIncome)}
+                        <td
+                          className="sales-analytics__num sales-analytics__num--hint"
+                          title={p.taxTooltip || undefined}
+                        >
+                          {formatRub(p.taxAmount)}
                         </td>
+                        <td className="sales-analytics__num">{formatRub(p.netIncome)}</td>
                       </tr>
                     ))}
                 </React.Fragment>
@@ -305,12 +342,12 @@ export function CategorySalesAnalytics() {
 
       <p className="sales-analytics__hint">
         Затраты = себестоимость + удержания маркетплейса (комиссия, логистика, хранение и др.). Нажмите
-        на заголовок «Затраты», чтобы раскрыть статьи. Чистая прибыль — после налогов по схеме
-        организации.
+        на заголовок «Затраты», чтобы раскрыть статьи. «Налоги» = НДС (если указан в организации) + налог
+        по схеме. Чистая прибыль — после налогов.
         {taxMeta?.taxSystemLabel ? (
           <>
             {' '}
-            Налоги: «{taxMeta.taxSystemLabel}»
+            Схема: «{taxMeta.taxSystemLabel}»
             {taxMeta.organizationName ? ` (${taxMeta.organizationName})` : ''}.
           </>
         ) : null}{' '}

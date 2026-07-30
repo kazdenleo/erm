@@ -17,6 +17,7 @@ import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
 import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
 import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesAnalytics';
 import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
+import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { Warehouses } from './pages/Warehouses/Warehouses';
@@ -105,6 +106,7 @@ function App() {
             <Route path="sales" element={<SalesAnalytics />} />
             <Route path="fbo-sales" element={<FboSalesAnalytics />} />
             <Route path="categories" element={<CategorySalesAnalytics />} />
+            <Route path="abc" element={<AbcSalesAnalytics />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />

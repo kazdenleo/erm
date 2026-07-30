@@ -255,18 +255,15 @@ class MarketplaceReviewsRepositoryPG {
     let i = 2;
     const orParts = [];
     for (const rule of list) {
-      const parts = [];
-      if (rule.rating != null && Number.isFinite(Number(rule.rating))) {
-        parts.push(`rating = $${i++}`);
-        params.push(Math.round(Number(rule.rating)));
-      } else {
-        parts.push(`rating IS NOT NULL`);
-      }
+      // Без конкретного рейтинга правило не участвует в выборке (иначе «Любые» тянет все отзывы).
+      if (rule.rating == null || !Number.isFinite(Number(rule.rating))) continue;
+      const parts = [`rating = $${i++}`];
+      params.push(Math.round(Number(rule.rating)));
       if (rule.hasText === true || rule.hasText === false) {
         parts.push(`has_text = $${i++}`);
         params.push(Boolean(rule.hasText));
       }
-      if (parts.length) orParts.push(`(${parts.join(' AND ')})`);
+      orParts.push(`(${parts.join(' AND ')})`);
     }
     if (!orParts.length) return [];
     where.push(`(${orParts.join(' OR ')})`);

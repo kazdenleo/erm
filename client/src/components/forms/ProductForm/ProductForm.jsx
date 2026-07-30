@@ -1871,6 +1871,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const description = data.description != null ? String(data.description).trim() : '';
       // YM API: weightDimensions в см / кг → ERP мм / г
       const dimsErp = ymWeightDimensionsToErp(data.weightDimensions);
+      const countries = Array.isArray(data.manufacturerCountries) ? data.manufacturerCountries : [];
+      const country = countries.map((c) => String(c || '').trim()).find(Boolean) || '';
       setFormData((prev) => {
         const next = { ...prev };
         if (resolvedOfferId) next.sku_ym = resolvedOfferId;
@@ -1890,9 +1892,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           const vendor = String(data.vendor).trim();
           if (!String(prev.brand || '').trim()) next.brand = vendor;
         }
-        const countries = Array.isArray(data.manufacturerCountries) ? data.manufacturerCountries : [];
-        const country = countries.map((c) => String(c || '').trim()).find(Boolean) || '';
-        if (country && !String(prev.country_of_origin || '').trim()) {
+        if (country) {
           next.country_of_origin = country;
         }
         // Явное обновление с МП перезаписывает габариты/вес (ERP: мм / г)
@@ -1953,6 +1953,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       const attrCount = Array.isArray(data.parameterValues) ? data.parameterValues.length : 0;
       const parts = ['артикул', 'название', 'описание'];
+      if (country) parts.push('страна');
       if (attrCount > 0) parts.push(`характеристики (${attrCount})`);
       if (dimsErp) parts.push('габариты и вес');
       else if (data.weightDimensions) parts.push('габариты (не распознаны)');
@@ -5114,6 +5115,44 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           )}
 
+          <div className="card mb-3 border-secondary">
+            <div className="card-header">Габариты, вес и страна (Яндекс.Маркет)</div>
+            <div className="card-body">
+              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
+                Единый редактируемый блок. Габариты — см / кг (в ERP пишутся мм / г). Страна производства подтягивается с оффера Маркета.
+              </p>
+              <div className="row g-3 mb-3">
+                <div className="col-12 col-md-6">
+                  <label className="form-label" htmlFor="ym-tab-country">
+                    Страна производства
+                    {isMpFieldLinked(formData.mp_field_links, 'country', 'ym') ? (
+                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                    ) : null}
+                  </label>
+                  <input
+                    id="ym-tab-country"
+                    type="text"
+                    className="form-control form-control-sm"
+                    value={formData.country_of_origin}
+                    onChange={(e) => handleChange('country_of_origin', e.target.value)}
+                    placeholder="Например, Китай"
+                    list="ym-country-of-origin-list"
+                  />
+                  <datalist id="ym-country-of-origin-list">
+                    {COUNTRY_OPTIONS.map((country) => (
+                      <option key={country} value={country} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+              <YmPackagingDimensionFields
+                formData={formData}
+                onChange={handleYmPackagingDimChange}
+                idPrefix="ym-pack"
+              />
+            </div>
+          </div>
+
           {ymFetchedProduct && (
             <div className="card mb-3 border-warning">
               <div className="card-header">Данные с Яндекс.Маркета</div>
@@ -5133,39 +5172,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 {ymFetchedProduct.description ? (
                   <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Описание:</span>{ymFetchedProduct.description}</div>
                 ) : null}
-                {(() => {
-                  const d = ymWeightDimensionsToErp(ymFetchedProduct.weightDimensions);
-                  const wd = ymFetchedProduct.weightDimensions;
-                  if (!d && !wd) {
-                    return (
-                      <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
-                        Габариты/вес в карточке YM не указаны.
-                      </div>
-                    );
-                  }
-                  const rows = [
-                    { label: 'Длина', ym: wd?.length, u: 'см', erp: d?.length, eu: 'мм' },
-                    { label: 'Ширина', ym: wd?.width, u: 'см', erp: d?.width, eu: 'мм' },
-                    { label: 'Высота', ym: wd?.height, u: 'см', erp: d?.height, eu: 'мм' },
-                    { label: 'Вес', ym: wd?.weight, u: 'кг', erp: d?.weight, eu: 'г' },
-                  ];
-                  return (
-                    <div style={{ fontSize: '12px' }}>
-                      <div style={{ color: 'var(--muted)', marginBottom: 4 }}>
-                        Габариты с Маркета (подставлены в поля упаковки ниже):
-                      </div>
-                      {rows.map((r) => (
-                        <div key={r.label}>
-                          <span style={{ color: 'var(--muted)', marginRight: 6 }}>{r.label}:</span>
-                          {r.ym != null ? `${r.ym} ${r.u}` : '—'}
-                          {r.erp != null ? (
-                            <span style={{ color: 'var(--muted)', marginLeft: 6 }}>→ {r.erp} {r.eu}</span>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
+                {Array.isArray(ymFetchedProduct.manufacturerCountries) && ymFetchedProduct.manufacturerCountries.length > 0 ? (
+                  <div>
+                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Страна (из YM):</span>
+                    {ymFetchedProduct.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean).join(', ')}
+                  </div>
+                ) : null}
                 {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 4 }}>
@@ -5266,20 +5278,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     ).length}
                   </div>
                 </div>
-                {(isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') ||
-                  isMpFieldLinked(formData.mp_field_links, 'country', 'ym')) && (
+                {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') && (
                   <div className="col-12">
                     <div className="mp-linked-dims-preview">
-                      {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') && (
-                        <span>
-                          <span className="text-muted">Артикул:</span> {formData.sku || '—'}
-                        </span>
-                      )}
-                      {isMpFieldLinked(formData.mp_field_links, 'country', 'ym') && (
-                        <span>
-                          <span className="text-muted">Страна:</span> {formData.country_of_origin || '—'}
-                        </span>
-                      )}
+                      <span>
+                        <span className="text-muted">Артикул:</span> {formData.sku || '—'}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -5290,25 +5294,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div className="card mt-3">
             <div className="card-header">Характеристики Яндекс.Маркета (по категории)</div>
             <div className="card-body">
-              <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
-                <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: 8 }}>
-                  Габариты и вес упаковки
-                  <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 6 }}>
-                    (отдельные поля; в списке характеристик ниже не дублируются)
-                  </span>
-                </div>
-                <YmPackagingDimensionFields
-                  formData={formData}
-                  onChange={handleYmPackagingDimChange}
-                  idPrefix="ym-attrs-pack"
-                />
-              </div>
               <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 10 }}>
-                Показаны все параметры категории ({ymFormAttributes.length}
+                Параметры категории ({ymFormAttributes.length}
                 {ymCategoryAttributes.length > ymFormAttributes.length
-                  ? `, скрыто дублей dedicated-полей: ${ymCategoryAttributes.length - ymFormAttributes.length}`
+                  ? `, без дублей габаритов/страны/артикула: −${ymCategoryAttributes.length - ymFormAttributes.length}`
                   : ''}
-                ), включая незаполненные. Обязательные — сверху.
+                ), включая пустые. Обязательные сверху. Габариты и страна — в блоке выше.
               </div>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>

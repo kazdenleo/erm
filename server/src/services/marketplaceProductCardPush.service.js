@@ -13,6 +13,7 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import {
   gramsToKg,
+  isMpFieldLinked,
   mmToCm,
   resolveCardTextForPush,
   shouldPushDimensions,
@@ -375,6 +376,13 @@ async function pushYandexCard(product, categoryMm, ctx) {
         height: H,
         ...(Wt != null ? { weight: Wt } : {})
       };
+    }
+  }
+
+  if (isMpFieldLinked(product.mp_field_links, 'country', 'ym')) {
+    const country = String(product.country_of_origin || '').trim();
+    if (country) {
+      offer.manufacturerCountries = [country];
     }
   }
 
