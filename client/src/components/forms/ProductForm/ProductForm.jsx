@@ -626,7 +626,8 @@ function MpSkuCountryDimsEditor({
   ];
 
   return (
-    <div className="row g-3" data-testid={`mp-meta-dims-${code}`}>
+    <div data-testid={`mp-meta-dims-${code}`}>
+      <div className="row g-3">
       <div className="col-md-4">
         <label className="form-label" htmlFor={`${code}-tab-sku`}>
           {skuLabel}
@@ -730,6 +731,7 @@ function MpSkuCountryDimsEditor({
             </div>
           </div>
         ) : null}
+      </div>
       </div>
     </div>
   );
@@ -3858,98 +3860,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      {/* Характеристики упаковки */}
-      <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text)', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 0' }}>
-          <span>📦 Характеристики упаковки</span>
-          <MpFieldLinkToggles
-            fieldKey="dimensions"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
-          />
-        </h3>
-        <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
-          ERP: мм и г. Тумблеры связывают только с «Основным» (не Ozon↔WB↔YM между собой).
-          При связи: Ozon — мм/г, WB — см/г, Яндекс — см/кг.
-        </div>
-        <div className="row g-3">
-          <div className="col-md-2">
-            <label className="form-label" htmlFor="length">Длина (мм)</label>
-            <input
-              id="length"
-              type="number"
-              className="form-control form-control-sm"
-              step="1"
-              min="0"
-              placeholder="например, 150"
-              value={formData.length}
-              onChange={(e) => handleChange('length', e.target.value)}
-            />
-          </div>
-          <div className="col-md-2">
-            <label className="form-label" htmlFor="width">Ширина (мм)</label>
-            <input
-              id="width"
-              type="number"
-              className="form-control form-control-sm"
-              step="1"
-              min="0"
-              placeholder="например, 100"
-              value={formData.width}
-              onChange={(e) => handleChange('width', e.target.value)}
-            />
-          </div>
-          <div className="col-md-2">
-            <label className="form-label" htmlFor="height">Высота (мм)</label>
-            <input
-              id="height"
-              type="number"
-              className="form-control form-control-sm"
-              step="1"
-              min="0"
-              placeholder="например, 50"
-              value={formData.height}
-              onChange={(e) => handleChange('height', e.target.value)}
-            />
-          </div>
-          <div className="col-md-3">
-            <label className="form-label" htmlFor="weight">Вес (г)</label>
-            <input
-              id="weight"
-              type="number"
-              className="form-control form-control-sm"
-              step="1"
-              min="0"
-              placeholder="например, 250"
-              value={formData.weight}
-              onChange={(e) => handleChange('weight', e.target.value)}
-            />
-          </div>
-          <div className="col-md-3">
-            <div className="form-label">Объем (л)</div>
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                minHeight: '31px',
-                display: 'flex',
-                alignItems: 'center',
-                padding: '0.25rem 0',
-                fontSize: '0.9375rem',
-                fontWeight: 600,
-                color: calculatedVolume ? 'var(--text)' : 'var(--muted)',
-                fontVariantNumeric: 'tabular-nums',
-              }}
-            >
-              {calculatedVolume ? `${calculatedVolume} л` : '—'}
-            </div>
-            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Рассчитывается из габаритов
-            </div>
-          </div>
-        </div>
-      </div>
-
+      {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
       <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
           🖼️ Изображения товара
@@ -4479,129 +4390,251 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      {categoryAttributes.length > 0 && (
-        <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
-          <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
-            Атрибуты категории
-            <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)', marginLeft: 8 }}>
-              OZ/WB/ЯМ с обводкой = другое значение на МП
-            </span>
-          </h4>
-          <div className="row g-3">
-            {categoryAttributes.map((attr) => {
-              const key = String(attr.id);
-              const value = formData.attributeValues[key];
-              const rawValue = value !== undefined && value !== null ? value : '';
-              const attrDiffs = getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName);
-              const nameWithDiff = (
-                <>
-                  {attr.name}
-                  <MpValueDiffBadges diffs={attrDiffs} />
-                </>
-              );
-              if (attr.type === 'checkbox') {
-                const checked = rawValue === 'true' || rawValue === true;
-                return (
-                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                    <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexWrap: 'wrap' }}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => handleAttributeChange(attr.id, e.target.checked ? 'true' : 'false')}
-                      />
-                      <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                        {nameWithDiff}
-                        {TYPE_LABELS[attr.type] && <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>}
-                      </span>
-                    </label>
-                  </div>
-                );
-              }
-              if (attr.type === 'number') {
-                return (
-                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                    </label>
-                    <input
-                      id={`attr-${attr.id}`}
-                      type="number"
-                      className="form-control form-control-sm"
-                      value={rawValue}
-                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                    />
-                  </div>
-                );
-              }
-              if (attr.type === 'date') {
-                return (
-                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                    </label>
-                    <input
-                      id={`attr-${attr.id}`}
-                      type="date"
-                      className="form-control form-control-sm"
-                      value={rawValue}
-                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                    />
-                  </div>
-                );
-              }
-              if (attr.type === 'dictionary') {
-                // Значение из Excel/импорта может отсутствовать в словаре — без отдельной <option> select показывает «Не выбрано» и при сохранении значение теряется
-                const dictRaw = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
-                const dictStr = dictRaw.map((x) => String(x));
-                const storedStr = rawValue === undefined || rawValue === null ? '' : String(rawValue);
-                const trimmed = storedStr.trim();
-                const inDictionary = trimmed === ''
-                  ? false
-                  : dictStr.some((o) => o === storedStr || String(o).trim() === trimmed);
-                const merged = trimmed && !inDictionary ? [...dictStr, storedStr] : [...dictStr];
-                const options = [...new Set(merged.map(String))].sort((a, b) => a.localeCompare(b, 'ru'));
-                return (
-                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                    </label>
-                    <select
-                      id={`attr-${attr.id}`}
-                      className="form-select form-select-sm"
-                      value={storedStr}
-                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                    >
-                      <option value="">— Не выбрано —</option>
-                      {options.map((opt) => (
-                        <option key={opt} value={opt}>{opt}</option>
-                      ))}
-                    </select>
-                    {trimmed && !inDictionary && (
-                      <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-                        Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-              return (
-                <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                  <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                    {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span>
-                  </label>
-                  <input
-                    id={`attr-${attr.id}`}
-                    type="text"
-                    className="form-control form-control-sm"
-                    value={rawValue}
-                    onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                  />
-                </div>
-              );
-            })}
+      <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
+        <h4
+          style={{
+            fontSize: '13px',
+            fontWeight: 600,
+            marginBottom: '10px',
+            color: 'var(--text)',
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '4px 8px',
+          }}
+        >
+          <span>Атрибуты категории</span>
+          <MpFieldLinkToggles
+            fieldKey="dimensions"
+            links={formData.mp_field_links}
+            onToggle={handleMpFieldLinkToggle}
+          />
+          <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)' }}>
+            OZ/WB/ЯМ с обводкой = другое значение на МП
+          </span>
+        </h4>
+
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты упаковки</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
+          ERP: мм и г. Тумблеры OZ/WB/ЯМ связывают только с «Основным» (не между МП).
+        </div>
+        <div className="row g-3 mb-3">
+          <div className="col-6 col-md-2">
+            <label className="form-label" htmlFor="length">
+              Длина упаковки (мм)
+            </label>
+            <input
+              id="length"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              placeholder="150"
+              value={formData.length}
+              onChange={(e) => handleChange('length', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-2">
+            <label className="form-label" htmlFor="width">
+              Ширина упаковки (мм)
+            </label>
+            <input
+              id="width"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              placeholder="100"
+              value={formData.width}
+              onChange={(e) => handleChange('width', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-2">
+            <label className="form-label" htmlFor="height">
+              Высота упаковки (мм)
+            </label>
+            <input
+              id="height"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              placeholder="50"
+              value={formData.height}
+              onChange={(e) => handleChange('height', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-3">
+            <label className="form-label" htmlFor="weight">
+              Вес с упаковкой (г)
+            </label>
+            <input
+              id="weight"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              placeholder="250"
+              value={formData.weight}
+              onChange={(e) => handleChange('weight', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-3">
+            <div className="form-label">Объём (л)</div>
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                minHeight: '31px',
+                display: 'flex',
+                alignItems: 'center',
+                padding: '0.25rem 0',
+                fontSize: '0.9375rem',
+                fontWeight: 600,
+                color: calculatedVolume ? 'var(--text)' : 'var(--muted)',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {calculatedVolume ? `${calculatedVolume} л` : '—'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Из габаритов упаковки
+            </div>
           </div>
         </div>
-      )}
+
+        {categoryAttributes.length > 0 ? (
+          <>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 8,
+                paddingTop: 8,
+                borderTop: '1px solid rgba(0,0,0,0.08)',
+              }}
+            >
+              Прочие атрибуты
+            </div>
+            <div className="row g-3">
+              {categoryAttributes.map((attr) => {
+                const key = String(attr.id);
+                const value = formData.attributeValues[key];
+                const rawValue = value !== undefined && value !== null ? value : '';
+                const attrDiffs = getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName);
+                const nameWithDiff = (
+                  <>
+                    {attr.name}
+                    <MpValueDiffBadges diffs={attrDiffs} />
+                  </>
+                );
+                if (attr.type === 'checkbox') {
+                  const checked = rawValue === 'true' || rawValue === true;
+                  return (
+                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                      <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexWrap: 'wrap' }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => handleAttributeChange(attr.id, e.target.checked ? 'true' : 'false')}
+                        />
+                        <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                          {nameWithDiff}
+                          {TYPE_LABELS[attr.type] && <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>}
+                        </span>
+                      </label>
+                    </div>
+                  );
+                }
+                if (attr.type === 'number') {
+                  return (
+                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
+                      </label>
+                      <input
+                        id={`attr-${attr.id}`}
+                        type="number"
+                        className="form-control form-control-sm"
+                        value={rawValue}
+                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                      />
+                    </div>
+                  );
+                }
+                if (attr.type === 'date') {
+                  return (
+                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
+                      </label>
+                      <input
+                        id={`attr-${attr.id}`}
+                        type="date"
+                        className="form-control form-control-sm"
+                        value={rawValue}
+                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                      />
+                    </div>
+                  );
+                }
+                if (attr.type === 'dictionary') {
+                  const dictRaw = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
+                  const dictStr = dictRaw.map((x) => String(x));
+                  const storedStr = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+                  const trimmed = storedStr.trim();
+                  const inDictionary = trimmed === ''
+                    ? false
+                    : dictStr.some((o) => o === storedStr || String(o).trim() === trimmed);
+                  const merged = trimmed && !inDictionary ? [...dictStr, storedStr] : [...dictStr];
+                  const options = [...new Set(merged.map(String))].sort((a, b) => a.localeCompare(b, 'ru'));
+                  return (
+                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
+                      </label>
+                      <select
+                        id={`attr-${attr.id}`}
+                        className="form-select form-select-sm"
+                        value={storedStr}
+                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                      >
+                        <option value="">— Не выбрано —</option>
+                        {options.map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                      {trimmed && !inDictionary && (
+                        <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+                          Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return (
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span>
+                    </label>
+                    <input
+                      id={`attr-${attr.id}`}
+                      type="text"
+                      className="form-control form-control-sm"
+                      value={rawValue}
+                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+            Других атрибутов категории нет — выберите категорию с настроенными атрибутами или оставьте только габариты.
+          </div>
+        )}
+      </div>
 
       {/* SKU перенесён рядом с названием в верхнюю строку */}
 
@@ -4962,16 +4995,22 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     }
                   />
                 </div>
-                <div className="col-12">
-                  <MpSkuCountryDimsEditor
-                    mp="ozon"
-                    formData={formData}
-                    onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
-                    onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
-                    onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
-                  />
-                </div>
               </div>
+            </div>
+          </div>
+          <div className="card mt-3 border-secondary">
+            <div className="card-header">Габариты, вес и страна (Ozon)</div>
+            <div className="card-body">
+              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
+                Артикул, страна и габариты (мм / г). Связь с «Основным» — тумблеры выше; без связи значения только для Ozon.
+              </p>
+              <MpSkuCountryDimsEditor
+                mp="ozon"
+                formData={formData}
+                onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
+                onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
+                onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
+              />
             </div>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'ozon' ? (
@@ -5417,33 +5456,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     placeholder="Описание для Wildberries"
                   />
                 </div>
-                <div className="col-12">
-                  <MpSkuCountryDimsEditor
-                    mp="wb"
-                    formData={formData}
-                    onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
-                    onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
-                    onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
-                    packAttrValues={wbAttributeValues}
-                    onPackAttrChange={handleWbPackAttrChange}
-                    packAttrLabels={(() => {
-                      const labels = {};
-                      for (const a of wbCategoryAttributes || []) {
-                        const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id;
-                        if (id == null) continue;
-                        const key = String(id);
-                        if (
-                          key === WB_PACK_DIM_CHARC.length ||
-                          key === WB_PACK_DIM_CHARC.width ||
-                          key === WB_PACK_DIM_CHARC.height
-                        ) {
-                          labels[key] = a?.name ?? a?.charcName ?? a?.characteristic_name ?? key;
-                        }
-                      }
-                      return labels;
-                    })()}
-                  />
-                </div>
               </div>
               {wbFetchedProduct && (
                 <MpApiResponseDump
@@ -5453,6 +5465,40 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   label="сырой ответ API WB"
                 />
               )}
+            </div>
+          </div>
+
+          <div className="card mt-3 border-secondary">
+            <div className="card-header">Габариты упаковки и страна (Wildberries)</div>
+            <div className="card-body">
+              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
+                vendorCode, страна и габариты упаковки (см / кг). Без связи с «Основным» — только WB.
+              </p>
+              <MpSkuCountryDimsEditor
+                mp="wb"
+                formData={formData}
+                onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
+                onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
+                onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
+                packAttrValues={wbAttributeValues}
+                onPackAttrChange={handleWbPackAttrChange}
+                packAttrLabels={(() => {
+                  const labels = {};
+                  for (const a of wbCategoryAttributes || []) {
+                    const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id;
+                    if (id == null) continue;
+                    const key = String(id);
+                    if (
+                      key === WB_PACK_DIM_CHARC.length ||
+                      key === WB_PACK_DIM_CHARC.width ||
+                      key === WB_PACK_DIM_CHARC.height
+                    ) {
+                      labels[key] = a?.name ?? a?.charcName ?? a?.characteristic_name ?? key;
+                    }
+                  }
+                  return labels;
+                })()}
+              />
             </div>
           </div>
 
