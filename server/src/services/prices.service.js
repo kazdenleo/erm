@@ -2780,10 +2780,10 @@ class PricesService {
       const weightRaw = productRow.weight != null && Number(productRow.weight) > 0 ? Number(productRow.weight) : null;
 
       if (length == null || width == null || height == null) {
-        logger.warn('[Prices Service] getYMPrices: missing dimensions', { offer_id });
+        logger.warn('[Prices Service] getYMPrices: missing YM packaging dimensions', { offer_id });
         return {
           found: false,
-          error: `У товара ${offer_id} не указаны габариты (длина, ширина, высота) в мм`
+          error: `У товара ${offer_id} не указаны габариты упаковки Яндекс.Маркет (вкладка YM → длина/ширина/высота)`
         };
       }
       if (weightRaw == null) {

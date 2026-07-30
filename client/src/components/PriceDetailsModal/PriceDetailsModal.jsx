@@ -602,7 +602,13 @@ export function PriceDetailsModal({
         <div className="price-details-header" style={{ marginBottom: '16px', padding: '12px 16px', background: 'rgba(255,255,255,0.06)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', fontSize: '14px' }}>
           <span><strong>Артикул:</strong> {product.sku || '—'}</span>
           <span style={{ marginLeft: '16px' }}><strong>Название:</strong> {product.name || 'Без названия'}</span>
-          <span style={{ marginLeft: '16px' }}><strong>Объём:</strong> {headerVolume > 0 ? `${headerVolume.toFixed(2)} л` : '—'}</span>
+          <span style={{ marginLeft: '16px' }}><strong>Объём:</strong>{' '}
+            {headerVolume > 0
+              ? `${headerVolume.toFixed(2)} л`
+              : marketplace === 'ym'
+                ? 'нет габаритов'
+                : '—'}
+          </span>
         </div>
         {isEstimatedTariffs && (
           <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(251, 191, 36, 0.15)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#d97706', fontSize: '13px' }}>

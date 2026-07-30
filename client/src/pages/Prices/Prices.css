@@ -145,6 +145,11 @@
   white-space: nowrap;
 }
 
+.mp-price-volume-missing {
+  color: #b45309;
+  font-weight: 600;
+}
+
 .mp-price-stack {
   position: relative;
   display: inline-flex;

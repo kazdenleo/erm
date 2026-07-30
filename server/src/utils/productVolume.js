@@ -49,9 +49,12 @@ export function resolveProductVolumeLiters(product) {
  */
 export function resolveEffectiveVolumeLiters(calculator, product, marketplace = null) {
   const mp = marketplace || calculator?.marketplace || null;
+  const mpNorm = String(mp || '').toLowerCase();
   if (mp) {
     const fromMp = resolveMarketplaceVolumeLiters(product, mp);
     if (fromMp != null) return fromMp;
+    // YM: без габаритов упаковки не подставляем ERP / calculator
+    if (mpNorm === 'ym' || mpNorm === 'yandex') return null;
   }
 
   const fromProduct = resolveProductVolumeLiters(product);
@@ -74,10 +77,24 @@ export function resolveEffectiveVolumeLiters(calculator, product, marketplace = 
 export function enrichCalculatorVolumeFromProduct(calculator, product, marketplace = null) {
   if (!calculator || typeof calculator !== 'object') return calculator;
   const mp = marketplace || calculator.marketplace || null;
+  const mpNorm = String(mp || '').toLowerCase();
+  const isYm = mpNorm === 'ym' || mpNorm === 'yandex';
   const liters = mp
-    ? resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product)
+    ? (isYm
+        ? resolveMarketplaceVolumeLiters(product, mp)
+        : resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product))
     : resolveProductVolumeLiters(product);
-  if (liters == null) return calculator;
+  if (liters == null) {
+    if (isYm) {
+      return {
+        ...calculator,
+        volume_weight: null,
+        volume_source: 'ym:missing_packaging',
+        marketplace: 'ym',
+      };
+    }
+    return calculator;
+  }
   return {
     ...calculator,
     volume_weight: liters,

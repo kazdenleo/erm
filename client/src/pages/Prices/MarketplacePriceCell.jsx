@@ -164,13 +164,25 @@ export function MarketplacePriceCells({
   };
 
   const volumeLiters = resolveMarketplaceVolumeLiters(product, marketplace);
-  const volumeLabel =
-    volumeLiters != null && volumeLiters > 0 ? `${Number(volumeLiters).toFixed(2)} л` : null;
+  const mpNorm = String(marketplace || '').toLowerCase();
+  const volumeMissing = volumeLiters == null || !(Number(volumeLiters) > 0);
+  const volumeLabel = !volumeMissing
+    ? `${Number(volumeLiters).toFixed(2)} л`
+    : mpNorm === 'ym' || mpNorm === 'yandex'
+      ? 'нет габаритов'
+      : null;
 
   const renderVolumeHint = (show) => {
     if (!show || !volumeLabel) return null;
     return (
-      <div className="mp-price-volume" title={`Объём для расчёта мин. цены (${marketplace})`}>
+      <div
+        className={`mp-price-volume${volumeMissing ? ' mp-price-volume-missing' : ''}`}
+        title={
+          volumeMissing
+            ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft.weightDimensions)'
+            : `Объём для расчёта мин. цены (${marketplace})`
+        }
+      >
         {volumeLabel}
       </div>
     );

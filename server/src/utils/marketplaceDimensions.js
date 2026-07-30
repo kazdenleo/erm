@@ -167,25 +167,35 @@ export function extractGeneralDimensionsMm(product) {
 /**
  * @param {object|null|undefined} product
  * @param {string|null|undefined} marketplace — ozon|wb|ym
+ * @param {{ allowGeneralFallback?: boolean }} [opts]
  * @returns {{ length: number, width: number, height: number, source: string }|null}
  */
-export function resolveMarketplaceDimensionsMm(product, marketplace) {
+export function resolveMarketplaceDimensionsMm(product, marketplace, opts = {}) {
   const mp = String(marketplace || '').toLowerCase();
   let dims = null;
   if (mp === 'ozon') dims = extractOzonDimensionsMm(product);
   else if (mp === 'wb' || mp === 'wildberries') dims = extractWbDimensionsMm(product);
   else if (mp === 'ym' || mp === 'yandex') dims = extractYmDimensionsMm(product);
-  return dims || extractGeneralDimensionsMm(product);
+  // YM: только габариты упаковки Маркета (ym_draft.weightDimensions), без ERP fallback
+  if (mp === 'ym' || mp === 'yandex') return dims;
+  if (dims) return dims;
+  if (opts.allowGeneralFallback === false) return null;
+  return extractGeneralDimensionsMm(product);
 }
 
 /**
  * @param {object|null|undefined} product
  * @param {string|null|undefined} marketplace
+ * @param {{ allowGeneralFallback?: boolean }} [opts]
  * @returns {number|null} литры
  */
-export function resolveMarketplaceVolumeLiters(product, marketplace) {
-  const dims = resolveMarketplaceDimensionsMm(product, marketplace);
+export function resolveMarketplaceVolumeLiters(product, marketplace, opts = {}) {
+  const mp = String(marketplace || '').toLowerCase();
+  const dims = resolveMarketplaceDimensionsMm(product, marketplace, opts);
   if (!dims) {
+    // YM без упаковки — не подставляем products.volume / общие габариты
+    if (mp === 'ym' || mp === 'yandex') return null;
+    if (opts.allowGeneralFallback === false) return null;
     const direct = product?.volume ?? product?.volume_liters ?? product?.volumeLiters ?? product?.effectiveVolume;
     const n = num(direct);
     return n;

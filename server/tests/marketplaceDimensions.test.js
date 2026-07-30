@@ -54,11 +54,12 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('wb_attributes_pack');
   });
 
-  test('YM: ym_draft.weightDimensions cm', () => {
+  test('YM: ym_draft.weightDimensions cm → 2.874 л', () => {
     const product = {
       length: 100,
       width: 100,
       height: 100,
+      volume: 3.09,
       ym_draft: { weightDimensions: { length: 26, width: 16.5, height: 6.7 } },
     };
     const dims = resolveMarketplaceDimensionsMm(product, 'ym');
@@ -66,9 +67,16 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(dims.length).toBe(260);
     expect(dims.width).toBe(165);
     expect(dims.height).toBe(67);
+    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
   });
 
-  test('fallback to ERP dims when mp attrs empty', () => {
+  test('YM: without packaging dims — null (no ERP/volume fallback)', () => {
+    const product = { length: 400, width: 250, height: 150, volume: 3.09 };
+    expect(resolveMarketplaceDimensionsMm(product, 'ym')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBeNull();
+  });
+
+  test('Ozon/WB fallback to ERP dims when mp attrs empty', () => {
     const product = { length: 400, width: 250, height: 150 };
     expect(resolveMarketplaceDimensionsMm(product, 'ozon').source).toBe('product');
     expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(15);
