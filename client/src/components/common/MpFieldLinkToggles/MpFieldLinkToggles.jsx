@@ -45,8 +45,9 @@ export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22 }) {
 
 /**
  * Подпись поля + значки связи.
+ * @param {{ mp: string, label: string, title: string }[]} [diffs] — МП, где значение ≠ Основному
  */
-export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, required }) {
+export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, required, diffs }) {
   return (
     <label
       className="form-label"
@@ -58,6 +59,25 @@ export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, req
         {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
       </span>
       <MpFieldLinkToggles fieldKey={fieldKey} links={links} onToggle={onToggle} />
+      <MpValueDiffBadges diffs={diffs} />
     </label>
+  );
+}
+
+/** Компактные OZ/WB/ЯМ, если значение на МП отличается от Основного. */
+export function MpValueDiffBadges({ diffs }) {
+  if (!Array.isArray(diffs) || diffs.length === 0) return null;
+  return (
+    <span className="mp-attr-diff-badges" aria-label="Отличается от маркетплейса">
+      {diffs.map((d) => (
+        <span
+          key={d.mp}
+          className={`mp-badge ${d.mp} mp-badge--diff`}
+          title={d.title || `Отличается на ${d.label}`}
+        >
+          {d.label}
+        </span>
+      ))}
+    </span>
   );
 }
