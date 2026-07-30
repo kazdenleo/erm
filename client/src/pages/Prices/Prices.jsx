@@ -1165,6 +1165,22 @@ export function Prices() {
                   <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
                   <th
                     rowSpan={2}
+                    className="prices-cost-col"
+                    style={{
+                      width: '84px',
+                      minWidth: '84px',
+                      textAlign: 'center',
+                      verticalAlign: 'middle',
+                      background: 'rgba(100,116,139,0.14)',
+                      color: '#475569',
+                      fontWeight: 700,
+                    }}
+                    title="Себестоимость из карточки / остатков поставщиков (база для расчёта мин. цен)"
+                  >
+                    Себест.
+                  </th>
+                  <th
+                    rowSpan={2}
                     className="prices-private-col"
                     style={{
                       width: '88px',
@@ -1359,6 +1375,36 @@ export function Prices() {
                               : 'стратегия'}
                           </div>
                         ) : null}
+                      </td>
+                      <td
+                        className="prices-cost-col"
+                        style={{
+                          textAlign: 'center',
+                          verticalAlign: 'middle',
+                          background: 'rgba(100,116,139,0.06)',
+                          whiteSpace: 'nowrap',
+                          fontSize: '13px',
+                          color: 'var(--muted)',
+                        }}
+                        title="Себестоимость (карточка / мин. цена у поставщиков)"
+                      >
+                        {(() => {
+                          const costNum = Number(
+                            productMerged.cost ?? productMerged.price ?? productMerged.base_price ?? 0
+                          );
+                          if (!Number.isFinite(costNum) || costNum <= 0) {
+                            return <span className="mp-price-muted">—</span>;
+                          }
+                          const addExp = Number(
+                            productMerged.additionalExpenses ?? productMerged.additional_expenses ?? 0
+                          ) || 0;
+                          const label = `${Math.round(costNum)} ₽`;
+                          return (
+                            <span title={addExp > 0 ? `Себестоимость ${label}; доп. расходы ${Math.round(addExp)} ₽` : undefined}>
+                              {label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td
                         className="prices-private-col"
