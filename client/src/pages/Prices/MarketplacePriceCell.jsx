@@ -171,7 +171,7 @@ export function MarketplacePriceCells({
     : 'нет габаритов';
   const volumeMissingTitle =
     mpNorm === 'ozon'
-      ? 'Нет габаритов в атрибутах Ozon (длина/ширина/высота)'
+      ? 'Нет габаритов упаковки Ozon (атрибуты / вкладка Ozon / связь с Основным)'
       : mpNorm === 'wb' || mpNorm === 'wildberries'
         ? 'Нет габаритов упаковки WB (атрибуты 90849/90745/90846 или wb_draft.dimensions)'
         : mpNorm === 'ym' || mpNorm === 'yandex'

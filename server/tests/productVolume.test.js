@@ -54,10 +54,20 @@ describe('enrichCalculatorVolumeFromProduct', () => {
     expect(out.volume_source).toBe('wb:missing_packaging');
   });
 
-  test('Ozon without attrs — null (no ERP)', () => {
+  test('Ozon without attrs but linked — ERP packaging', () => {
     const out = enrichCalculatorVolumeFromProduct(
       { volume_weight: 3 },
-      { length: 400, width: 250, height: 150 },
+      { length: 400, width: 250, height: 150, mp_field_links: { dimensions: ['ozon'] } },
+      'ozon'
+    );
+    expect(out.volume_weight).toBe(15);
+    expect(out.volume_source).toBe('mp:ozon');
+  });
+
+  test('Ozon without attrs/draft and unlinked — null', () => {
+    const out = enrichCalculatorVolumeFromProduct(
+      { volume_weight: 3 },
+      { length: 400, width: 250, height: 150, mp_field_links: { dimensions: [] } },
       'ozon'
     );
     expect(out.volume_weight).toBeNull();

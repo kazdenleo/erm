@@ -1,9 +1,9 @@
 /**
  * Габариты для логистики/мин. цен строго из данных маркетплейса:
- * Ozon — ozon_attributes (мм);
+ * Ozon — ozon_attributes, иначе ozon_draft.dimensions, иначе ERP при связи dimensions↔ozon;
  * WB — атрибуты упаковки / wb_draft.dimensions;
  * YM — ym_draft.weightDimensions.
- * Без fallback на ERP length/width/height или products.volume.
+ * Без общего ERP fallback (products.volume) для известных МП.
  */
 
 function parseAttrs(raw) {
@@ -60,16 +60,61 @@ function isKnownMarketplace(mp) {
   );
 }
 
-/** Ozon: атрибуты «Длина/Ширина/Высота, мм» (типовые id). */
+/** Связь dimensions↔mp включена (по умолчанию — да, как normalizeMpFieldLinks). */
+function isDimensionsLinked(product, mp) {
+  const code = String(mp || '').toLowerCase();
+  const raw = product?.mp_field_links;
+  if (raw == null || raw === '') return true;
+  let obj = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return true;
+    }
+  }
+  if (!obj || typeof obj !== 'object') return true;
+  if (!Object.prototype.hasOwnProperty.call(obj, 'dimensions')) return true;
+  const v = obj.dimensions;
+  if (Array.isArray(v)) {
+    return v.map((x) => String(x || '').toLowerCase()).includes(code);
+  }
+  if (v && typeof v === 'object') return !!v[code];
+  return false;
+}
+
+/** Ozon: атрибуты «Длина/Ширина/Высота, мм», иначе draft/связанный ERP (как в карточке). */
 export function extractOzonDimensionsMm(product) {
   const attrs = parseAttrs(product?.ozon_attributes);
-  if (!attrs) return null;
-  const length = pickAttr(attrs, [9802, '9802']);
-  const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
-  const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
-  if (length != null && width != null && height != null) {
-    return { length, width, height, source: 'ozon_attributes' };
+  if (attrs) {
+    const length = pickAttr(attrs, [9802, '9802']);
+    const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
+    const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'ozon_attributes' };
+    }
   }
+
+  const draft = parseDraft(product?.ozon_draft);
+  const wd = draft?.dimensions;
+  if (wd && typeof wd === 'object') {
+    const length = num(wd.length);
+    const width = num(wd.width);
+    const height = num(wd.height);
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'ozon_draft.dimensions' };
+    }
+  }
+
+  if (isDimensionsLinked(product, 'ozon')) {
+    const length = num(product?.length);
+    const width = num(product?.width);
+    const height = num(product?.height);
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'product_linked' };
+    }
+  }
+
   return null;
 }
 

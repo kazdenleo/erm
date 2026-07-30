@@ -88,8 +88,51 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBeNull();
   });
 
+  test('Ozon: draft.dimensions when attrs empty', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      mp_field_links: { dimensions: [] },
+      ozon_draft: { dimensions: { length: 260, width: 165, height: 67 } },
+    };
+    const dims = resolveMarketplaceDimensionsMm(product, 'ozon');
+    expect(dims.source).toBe('ozon_draft.dimensions');
+    expect(dims).toMatchObject({ length: 260, width: 165, height: 67 });
+  });
+
+  test('Ozon: linked ERP packaging when attrs/draft empty', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      mp_field_links: { dimensions: ['ozon'] },
+    };
+    const dims = resolveMarketplaceDimensionsMm(product, 'ozon');
+    expect(dims.source).toBe('product_linked');
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(15);
+  });
+
+  test('Ozon: unlinked without draft — null (no ERP)', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      volume: 15,
+      mp_field_links: { dimensions: [] },
+    };
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBeNull();
+  });
+
   test('Ozon/WB: no ERP fallback when mp attrs empty', () => {
-    const product = { length: 400, width: 250, height: 150, volume: 15 };
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      volume: 15,
+      mp_field_links: { dimensions: [] },
+    };
     expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
     expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBeNull();
     expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();
@@ -97,7 +140,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
   });
 
   test('allowGeneralFallback opt-in restores ERP', () => {
-    const product = { length: 400, width: 250, height: 150 };
+    const product = { length: 400, width: 250, height: 150, mp_field_links: { dimensions: [] } };
     expect(resolveMarketplaceDimensionsMm(product, 'ozon', { allowGeneralFallback: true }).source).toBe(
       'product'
     );

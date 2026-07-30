@@ -590,6 +590,7 @@ function MpSkuCountryDimsEditor({
   onSkuChange,
   onCountryChange,
   onDimChange,
+  onProductDimChange = null,
   itemAttrValues = null,
   onItemAttrChange = null,
   itemAttrLabels = null,
@@ -635,6 +636,13 @@ function MpSkuCountryDimsEditor({
     { key: WB_ITEM_DIM_CHARC.width, fallback: 'Ширина товара' },
     { key: WB_ITEM_DIM_CHARC.height, fallback: 'Высота товара' },
   ];
+  const mainProductFields = [
+    { key: 'product_length', label: 'Длина товара (мм)' },
+    { key: 'product_width', label: 'Ширина товара (мм)' },
+    { key: 'product_height', label: 'Высота товара (мм)' },
+    { key: 'product_weight', label: 'Вес товара (г)' },
+  ];
+  const showMainProductDims = code === 'ozon' && typeof onProductDimChange === 'function';
   const ozonYmProductFields = Array.isArray(productAttrFields) ? productAttrFields : [];
 
   return (
@@ -683,7 +691,7 @@ function MpSkuCountryDimsEditor({
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
           {code === 'wb'
             ? 'Характеристики предмета WB (см), без упаковки.'
-            : 'Размеры и вес самого товара (без упаковки), если есть в атрибутах категории.'}
+            : 'Размеры и вес самого товара (без упаковки), как на вкладке «Основное».'}
         </div>
         {showWbItemAttrs ? (
           <div className="row g-2">
@@ -708,6 +716,44 @@ function MpSkuCountryDimsEditor({
               );
             })}
           </div>
+        ) : showMainProductDims ? (
+          <div className="row g-2">
+            {mainProductFields.map((f) => (
+              <div className="col-6 col-md-3" key={f.key}>
+                <label className="form-label" htmlFor={`${code}-${f.key}`}>
+                  {f.label}
+                </label>
+                <input
+                  id={`${code}-${f.key}`}
+                  type="number"
+                  className="form-control form-control-sm"
+                  min="0"
+                  step="1"
+                  value={formData[f.key] ?? ''}
+                  onChange={(e) => onProductDimChange(f.key, e.target.value)}
+                />
+              </div>
+            ))}
+            {ozonYmProductFields.length > 0 ? (
+              <div className="col-12" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                Дополнительно из атрибутов категории Ozon:
+              </div>
+            ) : null}
+            {ozonYmProductFields.map((f) => (
+              <div className="col-6 col-md-3" key={`attr-${f.key}`}>
+                <label className="form-label" htmlFor={`${code}-product-attr-${f.key}`}>
+                  {f.label}
+                </label>
+                <input
+                  id={`${code}-product-attr-${f.key}`}
+                  type="text"
+                  className="form-control form-control-sm"
+                  value={f.value}
+                  onChange={(e) => f.onChange(e.target.value)}
+                />
+              </div>
+            ))}
+          </div>
         ) : ozonYmProductFields.length > 0 ? (
           <div className="row g-2">
             {ozonYmProductFields.map((f) => (
@@ -727,7 +773,7 @@ function MpSkuCountryDimsEditor({
           </div>
         ) : (
           <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-            Атрибуты габаритов товара для этой категории не найдены — заполните на вкладке «Основное» или в характеристиках ниже.
+            Заполните габариты товара на вкладке «Основное».
           </div>
         )}
       </div>
@@ -5146,6 +5192,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
+                onProductDimChange={(key, v) => handleChange(key, v)}
                 productAttrFields={(ozonAttributes || [])
                   .filter((a) => classifyMarketplaceDimAttrName(a?.name) === 'product')
                   .map((a) => {
@@ -5862,19 +5909,36 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-                Параметры категории Маркета про размеры/вес товара (без упаковки).
+                Как на вкладке «Основное» (мм / г). Параметры категории Маркета — ниже, если есть.
+              </div>
+              <div className="row g-2 mb-3">
+                {[
+                  { key: 'product_length', label: 'Длина товара (мм)' },
+                  { key: 'product_width', label: 'Ширина товара (мм)' },
+                  { key: 'product_height', label: 'Высота товара (мм)' },
+                  { key: 'product_weight', label: 'Вес товара (г)' },
+                ].map((f) => (
+                  <div className="col-6 col-md-3" key={f.key}>
+                    <label className="form-label" htmlFor={`ym-${f.key}`}>
+                      {f.label}
+                    </label>
+                    <input
+                      id={`ym-${f.key}`}
+                      type="number"
+                      className="form-control form-control-sm"
+                      min="0"
+                      step="1"
+                      value={formData[f.key] ?? ''}
+                      onChange={(e) => handleChange(f.key, e.target.value)}
+                    />
+                  </div>
+                ))}
               </div>
               {(() => {
                 const productParams = (ymCategoryAttributes || []).filter(
                   (a) => classifyMarketplaceDimAttrName(a?.name) === 'product'
                 );
-                if (productParams.length === 0) {
-                  return (
-                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
-                      Параметры габаритов товара в этой категории не найдены — заполните на вкладке «Основное».
-                    </div>
-                  );
-                }
+                if (productParams.length === 0) return null;
                 return (
                   <div className="row g-2 mb-3">
                     {productParams.map((a) => {
