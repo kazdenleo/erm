@@ -2749,7 +2749,7 @@ class PricesService {
       try {
         const productResult = await query(
           `SELECT p.id, p.sku, p.cost, p.price, p.volume, p.weight, p.length, p.width, p.height,
-                  p.ym_draft, p.ym_attributes
+                  p.ym_draft, p.ym_attributes, p.mp_field_links
            FROM products p
            LEFT JOIN product_skus ps_ym ON ps_ym.product_id = p.id AND ps_ym.marketplace = 'ym'
            WHERE (ps_ym.sku = $1 OR p.sku = $1) LIMIT 1`,

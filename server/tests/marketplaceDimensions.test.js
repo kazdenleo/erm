@@ -66,12 +66,28 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBeNull();
   });
 
-  test('YM: ym_draft.weightDimensions cm → 2.874 л', () => {
+  test('YM: linked ERP preferred over stale ym_draft', () => {
+    const product = {
+      length: 260,
+      width: 165,
+      height: 67,
+      volume: 2.874,
+      mp_field_links: { dimensions: ['ozon', 'wb', 'ym'] },
+      ym_draft: { weightDimensions: { length: 26, width: 17, height: 7 } },
+    };
+    const dims = resolveMarketplaceDimensionsMm(product, 'ym');
+    expect(dims.source).toBe('product_linked');
+    expect(dims).toMatchObject({ length: 260, width: 165, height: 67 });
+    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
+  });
+
+  test('YM: unlinked ym_draft.weightDimensions cm → 2.874 л', () => {
     const product = {
       length: 100,
       width: 100,
       height: 100,
       volume: 3.09,
+      mp_field_links: { dimensions: [] },
       ym_draft: { weightDimensions: { length: 26, width: 16.5, height: 6.7 } },
     };
     const dims = resolveMarketplaceDimensionsMm(product, 'ym');
@@ -82,10 +98,25 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
   });
 
-  test('YM: without packaging dims — null (no ERP/volume fallback)', () => {
-    const product = { length: 400, width: 250, height: 150, volume: 3.09 };
+  test('YM: without packaging dims — null (no ERP when unlinked)', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      volume: 3.09,
+      mp_field_links: { dimensions: [] },
+    };
     expect(resolveMarketplaceDimensionsMm(product, 'ym')).toBeNull();
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBeNull();
+  });
+
+  test('YM: linked without ERP falls back to ym_draft', () => {
+    const product = {
+      mp_field_links: { dimensions: ['ym'] },
+      ym_draft: { weightDimensions: { length: 26, width: 16.5, height: 6.7 } },
+    };
+    expect(resolveMarketplaceDimensionsMm(product, 'ym').source).toBe('ym_draft.weightDimensions');
+    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
   });
 
   test('Ozon: draft.dimensions when attrs empty', () => {

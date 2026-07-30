@@ -2,7 +2,7 @@
  * Габариты для логистики/мин. цен строго из данных маркетплейса:
  * Ozon — ozon_attributes, иначе ozon_draft.dimensions, иначе ERP при связи dimensions↔ozon;
  * WB — атрибуты упаковки / wb_draft.dimensions;
- * YM — ym_draft.weightDimensions.
+ * YM — связь dimensions↔ym → ERP, иначе ym_draft.weightDimensions.
  * Без общего ERP fallback (products.volume) для известных МП.
  */
 
@@ -205,8 +205,20 @@ export function extractWbDimensionsMm(product) {
   return null;
 }
 
-/** YM: weightDimensions в ym_draft (см / кг), как в Partner API. */
+/**
+ * YM: как push — связь dimensions↔ym → ERP (мм); иначе ym_draft.weightDimensions (см).
+ * Иначе устаревший draft (округлённые см) даёт неверный объём при актуальных ERP-габаритах.
+ */
 export function extractYmDimensionsMm(product) {
+  if (isDimensionsLinked(product, 'ym')) {
+    const length = num(product?.length);
+    const width = num(product?.width);
+    const height = num(product?.height);
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'product_linked' };
+    }
+  }
+
   const draft = parseDraft(product?.ym_draft);
   const wd = draft?.weightDimensions;
   if (wd && typeof wd === 'object') {
