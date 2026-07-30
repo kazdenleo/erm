@@ -195,10 +195,20 @@ export function formatVolumeLitersLabel(length, width, height, unit = 'mm') {
 }
 
 /**
- * WB: только упаковка — атрибуты 90849/90745/90846 (см) или wb_draft.dimensions (мм).
- * Габариты «предмета» (90652/90673/90630) для логистики не используем.
+ * WB: упаковка — при связи dimensions↔wb → ERP (как push/UI);
+ * иначе атрибуты 90849/90745/90846 (см) или wb_draft.dimensions (мм).
+ * Габариты «предмета» для логистики не используем.
  */
 export function extractWbDimensionsMm(product) {
+  if (isDimensionsLinked(product, 'wb') || isDimensionsLinked(product, 'wildberries')) {
+    const length = num(product?.length);
+    const width = num(product?.width);
+    const height = num(product?.height);
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'product_linked' };
+    }
+  }
+
   const attrs = parseAttrs(product?.wb_attributes);
 
   if (attrs) {

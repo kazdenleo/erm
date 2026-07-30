@@ -32,11 +32,12 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(2.874);
   });
 
-  test('WB: pack cm attrs preferred', () => {
+  test('WB: pack cm attrs preferred when unlinked', () => {
     const product = {
       length: 210,
       width: 229,
       height: 45,
+      mp_field_links: { dimensions: [] },
       wb_attributes: { 90849: 21, 90745: 22.9, 90846: 4.5 },
     };
     const dims = resolveMarketplaceDimensionsMm(product, 'wb');
@@ -46,11 +47,37 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(dims.height).toBe(45);
   });
 
-  test('WB: wb_draft.dimensions preferred over item attrs', () => {
+  test('WB: linked ERP packaging preferred over empty pack attrs', () => {
+    const product = {
+      length: 350,
+      width: 120,
+      height: 60,
+      mp_field_links: { dimensions: ['wb'] },
+      wb_attributes: {},
+    };
+    const dims = resolveMarketplaceDimensionsMm(product, 'wb');
+    expect(dims.source).toBe('product_linked');
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.52);
+  });
+
+  test('WB: linked ERP preferred over pack attrs', () => {
+    const product = {
+      length: 350,
+      width: 120,
+      height: 60,
+      mp_field_links: { dimensions: ['ozon', 'wb', 'ym'] },
+      wb_attributes: { 90849: 21, 90745: 22.9, 90846: 4.5 },
+    };
+    expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('product_linked');
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.52);
+  });
+
+  test('WB: wb_draft.dimensions when unlinked', () => {
     const product = {
       length: 260,
       width: 165,
       height: 67,
+      mp_field_links: { dimensions: [] },
       wb_draft: { dimensions: { length: 260, width: 100, height: 100 } },
       wb_attributes: { 90652: 17, 90673: 10, 90630: 10 },
     };
@@ -60,8 +87,9 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.6);
   });
 
-  test('WB: pack attrs preferred over draft', () => {
+  test('WB: pack attrs preferred over draft when unlinked', () => {
     const product = {
+      mp_field_links: { dimensions: [] },
       wb_draft: { dimensions: { length: 260, width: 100, height: 100 } },
       wb_attributes: { 90849: 21, 90745: 22.9, 90846: 4.5 },
     };
@@ -74,6 +102,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
       width: 250,
       height: 150,
       volume: 15,
+      mp_field_links: { dimensions: [] },
       wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
     };
     expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();

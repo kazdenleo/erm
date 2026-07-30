@@ -31,11 +31,12 @@ describe('enrichCalculatorVolumeFromProduct', () => {
     expect(out.volume_weight).toBe(15);
   });
 
-  test('uses WB pack attrs when marketplace=wb', () => {
+  test('uses WB pack attrs when marketplace=wb and unlinked', () => {
     const product = {
       length: 400,
       width: 250,
       height: 150,
+      mp_field_links: { dimensions: [] },
       wb_attributes: { 90849: 26, 90745: 10, 90846: 10 },
     };
     const out = enrichCalculatorVolumeFromProduct({ volume_weight: 3 }, product, 'wb');
@@ -44,10 +45,26 @@ describe('enrichCalculatorVolumeFromProduct', () => {
     expect(out.marketplace).toBe('wb');
   });
 
-  test('WB without pack dims — null (no ERP)', () => {
+  test('WB linked — ERP packaging', () => {
     const out = enrichCalculatorVolumeFromProduct(
       { volume_weight: 3 },
-      { length: 400, width: 250, height: 150, volume: 15 },
+      { length: 350, width: 120, height: 60, mp_field_links: { dimensions: ['wb'] } },
+      'wb'
+    );
+    expect(out.volume_weight).toBe(2.52);
+    expect(out.volume_source).toBe('mp:wb');
+  });
+
+  test('WB unlinked without pack dims — null (no ERP)', () => {
+    const out = enrichCalculatorVolumeFromProduct(
+      { volume_weight: 3 },
+      {
+        length: 400,
+        width: 250,
+        height: 150,
+        volume: 15,
+        mp_field_links: { dimensions: [] },
+      },
       'wb'
     );
     expect(out.volume_weight).toBeNull();

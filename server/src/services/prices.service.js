@@ -2337,6 +2337,7 @@ class PricesService {
           productResult = await query(
             `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                     p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
+                    p.mp_field_links,
                     ps_wb.sku as sku_wb
              FROM products p
              LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2351,6 +2352,7 @@ class PricesService {
             isNmId
               ? `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                         p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
+                        p.mp_field_links,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2359,6 +2361,7 @@ class PricesService {
                  LIMIT 1`
               : `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                         p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
+                        p.mp_field_links,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
