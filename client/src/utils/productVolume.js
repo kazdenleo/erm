@@ -1,6 +1,6 @@
 /**
  * Объём товара в литрах (клиент).
- * Для мин. цен МП — из атрибутов Ozon/WB или ym_draft; YM без упаковки — null.
+ * Для мин. цен МП — строго из атрибутов/габаритов маркетплейса; без ERP fallback.
  */
 
 import { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
@@ -42,11 +42,10 @@ export function resolveProductVolumeLiters(product) {
 
 export function resolveEffectiveVolumeLiters(calculator, product, marketplace = null) {
   const mp = marketplace || calculator?.marketplace || null;
-  const mpNorm = String(mp || '').toLowerCase();
   if (mp) {
     const fromMp = resolveMarketplaceVolumeLiters(product, mp);
     if (fromMp != null) return fromMp;
-    if (mpNorm === 'ym' || mpNorm === 'yandex') return null;
+    return null;
   }
 
   const fromProduct = resolveProductVolumeLiters(product);
@@ -65,19 +64,16 @@ export function enrichCalculatorVolumeFromProduct(calculator, product, marketpla
   if (!calculator || typeof calculator !== 'object') return calculator;
   const mp = marketplace || calculator.marketplace || null;
   const mpNorm = String(mp || '').toLowerCase();
-  const isYm = mpNorm === 'ym' || mpNorm === 'yandex';
   const liters = mp
-    ? (isYm
-        ? resolveMarketplaceVolumeLiters(product, mp)
-        : resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product))
+    ? resolveMarketplaceVolumeLiters(product, mp)
     : resolveProductVolumeLiters(product);
   if (liters == null) {
-    if (isYm) {
+    if (mp) {
       return {
         ...calculator,
         volume_weight: null,
-        volume_source: 'ym:missing_packaging',
-        marketplace: 'ym',
+        volume_source: `${mpNorm}:missing_packaging`,
+        marketplace: mpNorm === 'yandex' ? 'ym' : mpNorm === 'wildberries' ? 'wb' : mpNorm,
       };
     }
     return calculator;
@@ -86,6 +82,6 @@ export function enrichCalculatorVolumeFromProduct(calculator, product, marketpla
     ...calculator,
     volume_weight: liters,
     volume_source: mp ? `mp:${mp}` : 'dimensions',
-    ...(mp ? { marketplace: mp } : {}),
+    ...(mp ? { marketplace: mpNorm === 'yandex' ? 'ym' : mpNorm === 'wildberries' ? 'wb' : mpNorm } : {}),
   };
 }

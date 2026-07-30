@@ -23,7 +23,7 @@ describe('resolveProductVolumeLiters', () => {
 });
 
 describe('enrichCalculatorVolumeFromProduct', () => {
-  test('replaces Ozon volumetric kg mistaken as liters', () => {
+  test('without marketplace keeps ERP dims', () => {
     const out = enrichCalculatorVolumeFromProduct(
       { volume_weight: 3, commissions: { FBS: { percent: 44 } } },
       { length: 400, width: 250, height: 150 }
@@ -31,20 +31,36 @@ describe('enrichCalculatorVolumeFromProduct', () => {
     expect(out.volume_weight).toBe(15);
   });
 
-  test('uses WB attrs when marketplace=wb', () => {
+  test('uses WB pack attrs when marketplace=wb', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      wb_attributes: { 90849: 26, 90745: 10, 90846: 10 },
+    };
+    const out = enrichCalculatorVolumeFromProduct({ volume_weight: 3 }, product, 'wb');
+    expect(out.volume_weight).toBe(resolveMarketplaceVolumeLiters(product, 'wb'));
+    expect(out.volume_weight).toBe(2.6);
+    expect(out.marketplace).toBe('wb');
+  });
+
+  test('WB without pack dims — null (no ERP)', () => {
     const out = enrichCalculatorVolumeFromProduct(
       { volume_weight: 3 },
-      {
-        length: 400,
-        width: 250,
-        height: 150,
-        wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
-      },
+      { length: 400, width: 250, height: 150, volume: 15 },
       'wb'
     );
-    expect(out.volume_weight).toBe(resolveMarketplaceVolumeLiters({
-      wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
-    }, 'wb'));
-    expect(out.marketplace).toBe('wb');
+    expect(out.volume_weight).toBeNull();
+    expect(out.volume_source).toBe('wb:missing_packaging');
+  });
+
+  test('Ozon without attrs — null (no ERP)', () => {
+    const out = enrichCalculatorVolumeFromProduct(
+      { volume_weight: 3 },
+      { length: 400, width: 250, height: 150 },
+      'ozon'
+    );
+    expect(out.volume_weight).toBeNull();
+    expect(out.volume_source).toBe('ozon:missing_packaging');
   });
 });

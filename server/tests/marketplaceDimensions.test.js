@@ -54,6 +54,18 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('wb_attributes_pack');
   });
 
+  test('WB: item attrs ignored (packaging only)', () => {
+    const product = {
+      length: 400,
+      width: 250,
+      height: 150,
+      volume: 15,
+      wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
+    };
+    expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBeNull();
+  });
+
   test('YM: ym_draft.weightDimensions cm → 2.874 л', () => {
     const product = {
       length: 100,
@@ -76,9 +88,19 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBeNull();
   });
 
-  test('Ozon/WB fallback to ERP dims when mp attrs empty', () => {
+  test('Ozon/WB: no ERP fallback when mp attrs empty', () => {
+    const product = { length: 400, width: 250, height: 150, volume: 15 };
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBeNull();
+    expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBeNull();
+  });
+
+  test('allowGeneralFallback opt-in restores ERP', () => {
     const product = { length: 400, width: 250, height: 150 };
-    expect(resolveMarketplaceDimensionsMm(product, 'ozon').source).toBe('product');
-    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(15);
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon', { allowGeneralFallback: true }).source).toBe(
+      'product'
+    );
+    expect(resolveMarketplaceVolumeLiters(product, 'wb', { allowGeneralFallback: true })).toBe(15);
   });
 });

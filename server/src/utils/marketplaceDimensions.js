@@ -1,7 +1,9 @@
 /**
- * Габариты для логистики/мин. цен по маркетплейсу.
- * Ozon / WB — из ozon_attributes / wb_attributes; YM — из ym_draft.weightDimensions (см/кг).
- * Fallback — общие products.length/width/height (мм).
+ * Габариты для логистики/мин. цен строго из данных маркетплейса:
+ * Ozon — ozon_attributes (мм);
+ * WB — атрибуты упаковки / wb_draft.dimensions;
+ * YM — ym_draft.weightDimensions.
+ * Без fallback на ERP length/width/height или products.volume.
  */
 
 function parseAttrs(raw) {
@@ -48,6 +50,16 @@ function pickAttr(attrs, keys) {
   return null;
 }
 
+function isKnownMarketplace(mp) {
+  return (
+    mp === 'ozon' ||
+    mp === 'wb' ||
+    mp === 'wildberries' ||
+    mp === 'ym' ||
+    mp === 'yandex'
+  );
+}
+
 /** Ozon: атрибуты «Длина/Ширина/Высота, мм» (типовые id). */
 export function extractOzonDimensionsMm(product) {
   const attrs = parseAttrs(product?.ozon_attributes);
@@ -72,13 +84,12 @@ export const WB_PACK_DIM_CHARC = {
 };
 
 /**
- * WB: сначала «* упаковки» (см), затем wb_draft.dimensions (мм), затем «* предмета».
- * charcID стабильны между категориями.
+ * WB: только упаковка — атрибуты 90849/90745/90846 (см) или wb_draft.dimensions (мм).
+ * Габариты «предмета» и ERP не используем.
  */
 export function extractWbDimensionsMm(product) {
   const attrs = parseAttrs(product?.wb_attributes);
 
-  // Упаковка — см (атрибуты категории)
   if (attrs) {
     const packL = pickAttr(attrs, [90849, '90849']);
     const packW = pickAttr(attrs, [90745, '90745']);
@@ -93,7 +104,6 @@ export function extractWbDimensionsMm(product) {
     }
   }
 
-  // Габариты упаковки из Content API (card.dimensions) — в wb_draft в мм
   const draft = parseDraft(product?.wb_draft);
   const wd = draft?.dimensions;
   if (wd && typeof wd === 'object') {
@@ -103,31 +113,6 @@ export function extractWbDimensionsMm(product) {
     if (length != null && width != null && height != null) {
       return { length, width, height, source: 'wb_draft.dimensions' };
     }
-  }
-
-  if (!attrs) return null;
-
-  // Предмет — мм
-  const itemLmm = pickAttr(attrs, [12153433, 64099, '12153433', '64099']);
-  const itemWmm = pickAttr(attrs, [7594048, '7594048']);
-  const itemHmm = pickAttr(attrs, [7594043, '7594043']);
-  if (itemLmm != null && itemWmm != null && itemHmm != null) {
-    return { length: itemLmm, width: itemWmm, height: itemHmm, source: 'wb_attributes_item_mm' };
-  }
-
-  // Предмет — см (длина/ширина/высота/глубина)
-  const itemLcm = pickAttr(attrs, [90675, '90675']);
-  const itemWcm = pickAttr(attrs, [90673, '90673']);
-  const itemHcm = pickAttr(attrs, [90630, '90630']);
-  const itemDepthCm = pickAttr(attrs, [90652, '90652']);
-  const L = itemLcm ?? itemDepthCm;
-  if (L != null && itemWcm != null && itemHcm != null) {
-    return {
-      length: Math.round(L * 10),
-      width: Math.round(itemWcm * 10),
-      height: Math.round(itemHcm * 10),
-      source: 'wb_attributes_item_cm',
-    };
   }
 
   return null;
@@ -167,7 +152,7 @@ export function extractGeneralDimensionsMm(product) {
 /**
  * @param {object|null|undefined} product
  * @param {string|null|undefined} marketplace — ozon|wb|ym
- * @param {{ allowGeneralFallback?: boolean }} [opts]
+ * @param {{ allowGeneralFallback?: boolean }} [opts] — только явный true включает ERP
  * @returns {{ length: number, width: number, height: number, source: string }|null}
  */
 export function resolveMarketplaceDimensionsMm(product, marketplace, opts = {}) {
@@ -176,11 +161,11 @@ export function resolveMarketplaceDimensionsMm(product, marketplace, opts = {}) 
   if (mp === 'ozon') dims = extractOzonDimensionsMm(product);
   else if (mp === 'wb' || mp === 'wildberries') dims = extractWbDimensionsMm(product);
   else if (mp === 'ym' || mp === 'yandex') dims = extractYmDimensionsMm(product);
-  // YM: только габариты упаковки Маркета (ym_draft.weightDimensions), без ERP fallback
-  if (mp === 'ym' || mp === 'yandex') return dims;
+  else return extractGeneralDimensionsMm(product);
+
   if (dims) return dims;
-  if (opts.allowGeneralFallback === false) return null;
-  return extractGeneralDimensionsMm(product);
+  if (opts.allowGeneralFallback === true) return extractGeneralDimensionsMm(product);
+  return null;
 }
 
 /**
@@ -192,13 +177,10 @@ export function resolveMarketplaceDimensionsMm(product, marketplace, opts = {}) 
 export function resolveMarketplaceVolumeLiters(product, marketplace, opts = {}) {
   const mp = String(marketplace || '').toLowerCase();
   const dims = resolveMarketplaceDimensionsMm(product, marketplace, opts);
-  if (!dims) {
-    // YM без упаковки — не подставляем products.volume / общие габариты
-    if (mp === 'ym' || mp === 'yandex') return null;
-    if (opts.allowGeneralFallback === false) return null;
-    const direct = product?.volume ?? product?.volume_liters ?? product?.volumeLiters ?? product?.effectiveVolume;
-    const n = num(direct);
-    return n;
-  }
-  return litersFromMm(dims.length, dims.width, dims.height);
+  if (dims) return litersFromMm(dims.length, dims.width, dims.height);
+
+  if (isKnownMarketplace(mp) && opts.allowGeneralFallback !== true) return null;
+
+  const direct = product?.volume ?? product?.volume_liters ?? product?.volumeLiters ?? product?.effectiveVolume;
+  return num(direct);
 }

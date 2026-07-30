@@ -168,9 +168,15 @@ export function MarketplacePriceCells({
   const volumeMissing = volumeLiters == null || !(Number(volumeLiters) > 0);
   const volumeLabel = !volumeMissing
     ? `${Number(volumeLiters).toFixed(2)} л`
-    : mpNorm === 'ym' || mpNorm === 'yandex'
-      ? 'нет габаритов'
-      : null;
+    : 'нет габаритов';
+  const volumeMissingTitle =
+    mpNorm === 'ozon'
+      ? 'Нет габаритов в атрибутах Ozon (длина/ширина/высота)'
+      : mpNorm === 'wb' || mpNorm === 'wildberries'
+        ? 'Нет габаритов упаковки WB (атрибуты 90849/90745/90846 или wb_draft.dimensions)'
+        : mpNorm === 'ym' || mpNorm === 'yandex'
+          ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft.weightDimensions)'
+          : 'Нет габаритов маркетплейса';
 
   const renderVolumeHint = (show) => {
     if (!show || !volumeLabel) return null;
@@ -179,7 +185,7 @@ export function MarketplacePriceCells({
         className={`mp-price-volume${volumeMissing ? ' mp-price-volume-missing' : ''}`}
         title={
           volumeMissing
-            ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft.weightDimensions)'
+            ? volumeMissingTitle
             : `Объём для расчёта мин. цены (${marketplace})`
         }
       >

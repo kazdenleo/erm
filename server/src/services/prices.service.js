@@ -2336,7 +2336,7 @@ class PricesService {
         if (productIdOpt != null && String(productIdOpt).trim() !== '') {
           productResult = await query(
             `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
-                    p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
+                    p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
                     ps_wb.sku as sku_wb
              FROM products p
              LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2350,7 +2350,7 @@ class PricesService {
           productResult = await query(
             isNmId
               ? `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
-                        p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
+                        p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2358,7 +2358,7 @@ class PricesService {
                     OR TRIM(COALESCE(p.wb_draft::jsonb->>'nmId', p.wb_draft::jsonb->>'nmID', '')) = $1
                  LIMIT 1`
               : `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
-                        p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
+                        p.ozon_attributes, p.wb_attributes, p.wb_draft, p.ym_attributes, p.ym_draft,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2373,8 +2373,14 @@ class PricesService {
           console.log(`[Prices Service] Found product: id=${row.id}, sku="${row.sku}", sku_wb="${row.sku_wb || 'N/A'}", cost=${row.cost}, price=${row.price}`);
           
           productVolume = resolveMarketplaceVolumeLiters(row, 'wb');
-          if (productVolume != null) {
+          if (productVolume != null && productVolume > 0) {
             console.log(`[Prices Service] Got product volume: ${productVolume} liters for ${offer_id}`);
+          } else {
+            console.warn(`[Prices Service] getWBPrices: missing WB packaging dimensions`, { offer_id });
+            return {
+              found: false,
+              error: `У товара ${offer_id} не указаны габариты упаковки Wildberries (вкладка WB → длина/ширина/высота упаковки)`
+            };
           }
           
           // Получаем себестоимость (cost) - может быть число или null

@@ -603,11 +603,7 @@ export function PriceDetailsModal({
           <span><strong>Артикул:</strong> {product.sku || '—'}</span>
           <span style={{ marginLeft: '16px' }}><strong>Название:</strong> {product.name || 'Без названия'}</span>
           <span style={{ marginLeft: '16px' }}><strong>Объём:</strong>{' '}
-            {headerVolume > 0
-              ? `${headerVolume.toFixed(2)} л`
-              : marketplace === 'ym'
-                ? 'нет габаритов'
-                : '—'}
+            {headerVolume > 0 ? `${headerVolume.toFixed(2)} л` : 'нет габаритов'}
           </span>
         </div>
         {isEstimatedTariffs && (

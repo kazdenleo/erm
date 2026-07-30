@@ -1,7 +1,7 @@
 /**
  * Объём товара в литрах.
- * Для мин. цен / логистики МП — из атрибутов соответствующего маркетплейса
- * (см. marketplaceDimensions.js); общие габариты — fallback.
+ * Для мин. цен / логистики МП — строго из атрибутов/габаритов маркетплейса
+ * (см. marketplaceDimensions.js); без ERP fallback.
  */
 
 import { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
@@ -49,12 +49,10 @@ export function resolveProductVolumeLiters(product) {
  */
 export function resolveEffectiveVolumeLiters(calculator, product, marketplace = null) {
   const mp = marketplace || calculator?.marketplace || null;
-  const mpNorm = String(mp || '').toLowerCase();
   if (mp) {
     const fromMp = resolveMarketplaceVolumeLiters(product, mp);
     if (fromMp != null) return fromMp;
-    // YM: без габаритов упаковки не подставляем ERP / calculator
-    if (mpNorm === 'ym' || mpNorm === 'yandex') return null;
+    return null;
   }
 
   const fromProduct = resolveProductVolumeLiters(product);
@@ -78,19 +76,16 @@ export function enrichCalculatorVolumeFromProduct(calculator, product, marketpla
   if (!calculator || typeof calculator !== 'object') return calculator;
   const mp = marketplace || calculator.marketplace || null;
   const mpNorm = String(mp || '').toLowerCase();
-  const isYm = mpNorm === 'ym' || mpNorm === 'yandex';
   const liters = mp
-    ? (isYm
-        ? resolveMarketplaceVolumeLiters(product, mp)
-        : resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product))
+    ? resolveMarketplaceVolumeLiters(product, mp)
     : resolveProductVolumeLiters(product);
   if (liters == null) {
-    if (isYm) {
+    if (mp) {
       return {
         ...calculator,
         volume_weight: null,
-        volume_source: 'ym:missing_packaging',
-        marketplace: 'ym',
+        volume_source: `${mpNorm}:missing_packaging`,
+        marketplace: mpNorm === 'yandex' ? 'ym' : mpNorm === 'wildberries' ? 'wb' : mpNorm,
       };
     }
     return calculator;
@@ -99,6 +94,6 @@ export function enrichCalculatorVolumeFromProduct(calculator, product, marketpla
     ...calculator,
     volume_weight: liters,
     volume_source: mp ? `mp:${mp}` : 'dimensions',
-    ...(mp ? { marketplace: mp } : {}),
+    ...(mp ? { marketplace: mpNorm === 'yandex' ? 'ym' : mpNorm === 'wildberries' ? 'wb' : mpNorm } : {}),
   };
 }
