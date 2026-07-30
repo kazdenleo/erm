@@ -8,6 +8,7 @@ import productsService from './products.service.js';
 import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
+import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -251,6 +252,23 @@ function mapWbCardToUpdates(product, data) {
   if (wMm != null && isEmptyVal(product.width)) updates.width = wMm;
   if (hMm != null && isEmptyVal(product.height)) updates.height = hMm;
 
+  // Всегда сохраняем габариты упаковки WB (Content API dimensions) в wb_draft
+  if (lMm != null || wMm != null || hMm != null || wG != null) {
+    const prevDraft = parseJsonObject(product.wb_draft);
+    const prevDims =
+      prevDraft.dimensions && typeof prevDraft.dimensions === 'object' ? prevDraft.dimensions : {};
+    updates.wb_draft = {
+      ...prevDraft,
+      dimensions: {
+        ...prevDims,
+        ...(lMm != null ? { length: lMm } : {}),
+        ...(wMm != null ? { width: wMm } : {}),
+        ...(hMm != null ? { height: hMm } : {}),
+        ...(wG != null ? { weight: wG } : {}),
+      },
+    };
+  }
+
   const barcodes = barcodesFromWbSizes(data.sizes);
   const prevBc = Array.isArray(product.barcodes) ? product.barcodes : [];
   const prevEmpty =
@@ -261,7 +279,19 @@ function mapWbCardToUpdates(product, data) {
   }
 
   const prevAttrs = parseJsonObject(product.wb_attributes);
-  const mergedAttrs = mergeWbAttrsFromCard(data.characteristics, prevAttrs);
+  let mergedAttrs = mergeWbAttrsFromCard(data.characteristics, prevAttrs);
+  // Зеркало card.dimensions → атрибуты «* упаковки» (см), чтобы объём/логистика брали упаковку
+  const lengthCm = toNumber(length);
+  const widthCm = toNumber(width);
+  const heightCm = toNumber(height);
+  if (lengthCm != null && widthCm != null && heightCm != null) {
+    mergedAttrs = {
+      ...mergedAttrs,
+      [WB_PACK_DIM_CHARC.length]: String(lengthCm),
+      [WB_PACK_DIM_CHARC.width]: String(widthCm),
+      [WB_PACK_DIM_CHARC.height]: String(heightCm),
+    };
+  }
   if (Object.keys(mergedAttrs).length > 0) {
     updates.wb_attributes = mergedAttrs;
   }

@@ -62,25 +62,50 @@ export function extractOzonDimensionsMm(product) {
 }
 
 /**
- * WB: сначала «* упаковки» (см), затем «* предмета» (мм/см).
+ * WB Content API: габариты упаковки (см) в characteristics.
+ * При отсутствии в категории всё равно пишем из card.dimensions — для объёма/логистики.
+ */
+export const WB_PACK_DIM_CHARC = {
+  length: '90849',
+  width: '90745',
+  height: '90846',
+};
+
+/**
+ * WB: сначала «* упаковки» (см), затем wb_draft.dimensions (мм), затем «* предмета».
  * charcID стабильны между категориями.
  */
 export function extractWbDimensionsMm(product) {
   const attrs = parseAttrs(product?.wb_attributes);
-  if (!attrs) return null;
 
-  // Упаковка — см
-  const packL = pickAttr(attrs, [90849, '90849']);
-  const packW = pickAttr(attrs, [90745, '90745']);
-  const packH = pickAttr(attrs, [90846, '90846']);
-  if (packL != null && packW != null && packH != null) {
-    return {
-      length: Math.round(packL * 10),
-      width: Math.round(packW * 10),
-      height: Math.round(packH * 10),
-      source: 'wb_attributes_pack',
-    };
+  // Упаковка — см (атрибуты категории)
+  if (attrs) {
+    const packL = pickAttr(attrs, [90849, '90849']);
+    const packW = pickAttr(attrs, [90745, '90745']);
+    const packH = pickAttr(attrs, [90846, '90846']);
+    if (packL != null && packW != null && packH != null) {
+      return {
+        length: Math.round(packL * 10),
+        width: Math.round(packW * 10),
+        height: Math.round(packH * 10),
+        source: 'wb_attributes_pack',
+      };
+    }
   }
+
+  // Габариты упаковки из Content API (card.dimensions) — в wb_draft в мм
+  const draft = parseDraft(product?.wb_draft);
+  const wd = draft?.dimensions;
+  if (wd && typeof wd === 'object') {
+    const length = num(wd.length);
+    const width = num(wd.width);
+    const height = num(wd.height);
+    if (length != null && width != null && height != null) {
+      return { length, width, height, source: 'wb_draft.dimensions' };
+    }
+  }
+
+  if (!attrs) return null;
 
   // Предмет — мм
   const itemLmm = pickAttr(attrs, [12153433, 64099, '12153433', '64099']);

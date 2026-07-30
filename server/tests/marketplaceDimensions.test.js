@@ -32,20 +32,26 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(dims.height).toBe(45);
   });
 
-  test('WB: item mm when pack missing', () => {
+  test('WB: wb_draft.dimensions preferred over item attrs', () => {
     const product = {
-      length: 210,
-      width: 229,
-      height: 45,
-      wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
+      length: 260,
+      width: 165,
+      height: 67,
+      wb_draft: { dimensions: { length: 260, width: 100, height: 100 } },
+      wb_attributes: { 90652: 17, 90673: 10, 90630: 10 },
     };
     const dims = resolveMarketplaceDimensionsMm(product, 'wb');
-    expect(dims).toMatchObject({
-      length: 200,
-      width: 214,
-      height: 35,
-      source: 'wb_attributes_item_mm',
-    });
+    expect(dims.source).toBe('wb_draft.dimensions');
+    expect(dims).toMatchObject({ length: 260, width: 100, height: 100 });
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.6);
+  });
+
+  test('WB: pack attrs preferred over draft', () => {
+    const product = {
+      wb_draft: { dimensions: { length: 260, width: 100, height: 100 } },
+      wb_attributes: { 90849: 21, 90745: 22.9, 90846: 4.5 },
+    };
+    expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('wb_attributes_pack');
   });
 
   test('YM: ym_draft.weightDimensions cm', () => {

@@ -293,9 +293,10 @@ export function convertDimensionsForMarketplace(mp, { length, width, height, wei
       length: safe(L) != null ? mmToCm(L) : null,
       width: safe(W) != null ? mmToCm(W) : null,
       height: safe(H) != null ? mmToCm(H) : null,
-      weight: safe(Wt),
+      // Content API weightBrutto — кг (как в кабинете WB)
+      weight: safe(Wt) != null ? gramsToKg(Wt) : null,
       lengthUnit: 'см',
-      weightUnit: 'г',
+      weightUnit: 'кг',
     };
   }
   if (code === 'ym') {
