@@ -4,11 +4,12 @@ import {
 } from '../src/utils/marketplaceDimensions.js';
 
 describe('resolveMarketplaceDimensionsMm / volume', () => {
-  test('Ozon: attrs mm over ERP dims', () => {
+  test('Ozon: attrs mm over ERP dims when unlinked', () => {
     const product = {
       length: 210,
       width: 229,
       height: 45,
+      mp_field_links: { dimensions: [] },
       ozon_attributes: { 9802: 200, 6605: 214, 6606: 35 },
     };
     const dims = resolveMarketplaceDimensionsMm(product, 'ozon');
@@ -16,6 +17,19 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(
       Math.round((200 * 214 * 35) / 1000) / 1000
     );
+  });
+
+  test('Ozon: linked ERP packaging preferred over attrs', () => {
+    const product = {
+      length: 260,
+      width: 165,
+      height: 67,
+      mp_field_links: { dimensions: ['ozon'] },
+      ozon_attributes: { 9802: 170, 6605: 100, 6606: 100 },
+    };
+    const dims = resolveMarketplaceDimensionsMm(product, 'ozon');
+    expect(dims.source).toBe('product_linked');
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(2.874);
   });
 
   test('WB: pack cm attrs preferred', () => {
@@ -119,7 +133,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
   });
 
-  test('Ozon: draft.dimensions when attrs empty', () => {
+  test('Ozon: draft.dimensions when unlinked and attrs empty', () => {
     const product = {
       length: 400,
       width: 250,

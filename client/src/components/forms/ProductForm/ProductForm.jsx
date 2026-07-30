@@ -82,11 +82,41 @@ import {
   WB_ITEM_DIM_CHARC,
   WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
+  formatVolumeLitersLabel,
+  isCoveredByDedicatedProductDimFields,
   isWbDedicatedDimCharcId,
 } from '../../../utils/marketplaceDimensions.js';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
+
+/** Readonly «Объём» рядом с габаритами (мм или см). */
+function DimVolumeReadonly({ length, width, height, unit = 'mm', id }) {
+  const label = formatVolumeLitersLabel(length, width, height, unit);
+  return (
+    <div className="col-6 col-md-3">
+      <label className="form-label" htmlFor={id}>
+        Объём
+      </label>
+      <div
+        id={id}
+        role="status"
+        aria-live="polite"
+        className="form-control form-control-sm"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          background: 'rgba(0,0,0,0.03)',
+          fontWeight: 600,
+          fontVariantNumeric: 'tabular-nums',
+          color: label ? 'var(--text)' : 'var(--muted)',
+        }}
+      >
+        {label || '—'}
+      </div>
+    </div>
+  );
+}
 
 /** Порядок в массиве = порядок на карточке; первый элемент — главное фото. */
 function normalizeProductImagesOrder(images) {
@@ -531,6 +561,13 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
           onChange={(e) => onChange('weight', e.target.value)}
         />
       </div>
+      <DimVolumeReadonly
+        id={`${idPrefix}-volume`}
+        unit="cm"
+        length={displayCm('length')}
+        width={displayCm('width')}
+        height={displayCm('height')}
+      />
     </div>
   );
 }
@@ -699,7 +736,7 @@ function MpSkuCountryDimsEditor({
               const label = (itemAttrLabels && itemAttrLabels[f.key]) || `${f.fallback} (см)`;
               const val = itemAttrValues?.[f.key] ?? '';
               return (
-                <div className="col-6 col-md-4" key={f.key}>
+                <div className="col-6 col-md-3" key={f.key}>
                   <label className="form-label" htmlFor={`wb-item-attr-${f.key}`}>
                     {label}
                   </label>
@@ -715,6 +752,13 @@ function MpSkuCountryDimsEditor({
                 </div>
               );
             })}
+            <DimVolumeReadonly
+              id={`${code}-product-volume`}
+              unit="cm"
+              length={itemAttrValues?.[WB_ITEM_DIM_CHARC.length]}
+              width={itemAttrValues?.[WB_ITEM_DIM_CHARC.width]}
+              height={itemAttrValues?.[WB_ITEM_DIM_CHARC.height]}
+            />
           </div>
         ) : showMainProductDims ? (
           <div className="row g-2">
@@ -734,6 +778,13 @@ function MpSkuCountryDimsEditor({
                 />
               </div>
             ))}
+            <DimVolumeReadonly
+              id={`${code}-product-volume`}
+              unit="mm"
+              length={formData.product_length}
+              width={formData.product_width}
+              height={formData.product_height}
+            />
             {ozonYmProductFields.length > 0 ? (
               <div className="col-12" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
                 Дополнительно из атрибутов категории Ozon:
@@ -813,6 +864,13 @@ function MpSkuCountryDimsEditor({
               />
             </div>
           ))}
+          <DimVolumeReadonly
+            id={`${code}-pack-volume`}
+            unit={code === 'wb' ? 'cm' : 'mm'}
+            length={dimDisp('length')}
+            width={dimDisp('width')}
+            height={dimDisp('height')}
+          />
         </div>
       </div>
       </div>
@@ -1126,7 +1184,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
         height: currentProduct.height || '',
         product_weight: (() => {
           const v = currentProduct.product_weight ?? currentProduct.productWeight;
-          return v != null && v !== '' ? String(v) : '';
+          if (v != null && v !== '') return String(v);
+          const attrs =
+            currentProduct.ozon_attributes && typeof currentProduct.ozon_attributes === 'object'
+              ? currentProduct.ozon_attributes
+              : null;
+          if (!attrs) return '';
+          for (const id of ['4497', '4383', 4497, 4383]) {
+            const raw = attrs[id];
+            if (raw == null || raw === '') continue;
+            const s = String(raw).trim().replace(',', '.');
+            if (/^\d+(\.\d+)?$/.test(s)) return s;
+          }
+          return '';
         })(),
         product_length: (() => {
           const v = currentProduct.product_length ?? currentProduct.productLength;
@@ -2675,6 +2745,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (itemCharc) {
         const cm = value === '' || value == null ? '' : (mmToCm(value) != null ? String(mmToCm(value)) : '');
         setWbAttributeValues((prev) => ({ ...prev, [itemCharc]: cm }));
+      }
+      // Вес товара → атрибуты Ozon «Вес товара» (без дубля в UI)
+      if (field === 'product_weight') {
+        setOzonAttributeValues((prev) => {
+          let next = prev;
+          for (const attr of ozonAttributes || []) {
+            if (!isCoveredByDedicatedProductDimFields(attr?.name)) continue;
+            const n = String(attr.name || '')
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, ' ');
+            if (!/^вес\s+товар/.test(n)) continue;
+            if (next === prev) next = { ...prev };
+            next[String(attr.id)] = value === '' || value == null ? '' : String(value);
+          }
+          return next;
+        });
       }
     }
     if (errors[field]) {
@@ -4603,6 +4690,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
               onChange={(e) => handleChange('product_weight', e.target.value)}
             />
           </div>
+          <DimVolumeReadonly
+            id="main-product-volume"
+            unit="mm"
+            length={formData.product_length}
+            width={formData.product_width}
+            height={formData.product_height}
+          />
         </div>
 
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты упаковки</div>
@@ -5193,17 +5287,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
                 onProductDimChange={(key, v) => handleChange(key, v)}
-                productAttrFields={(ozonAttributes || [])
-                  .filter((a) => classifyMarketplaceDimAttrName(a?.name) === 'product')
-                  .map((a) => {
-                    const key = String(a.id);
-                    return {
-                      key,
-                      label: a.name || `ID ${key}`,
-                      value: ozonAttributeValues[key] ?? '',
-                      onChange: (v) => setOzonAttributeValues((prev) => ({ ...prev, [key]: v })),
-                    };
-                  })}
+                productAttrFields={[]}
               />
             </div>
           </div>
@@ -5933,10 +6017,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     />
                   </div>
                 ))}
+                <DimVolumeReadonly
+                  id="ym-product-volume"
+                  unit="mm"
+                  length={formData.product_length}
+                  width={formData.product_width}
+                  height={formData.product_height}
+                />
               </div>
               {(() => {
                 const productParams = (ymCategoryAttributes || []).filter(
-                  (a) => classifyMarketplaceDimAttrName(a?.name) === 'product'
+                  (a) =>
+                    classifyMarketplaceDimAttrName(a?.name) === 'product' &&
+                    !isCoveredByDedicatedProductDimFields(a?.name)
                 );
                 if (productParams.length === 0) return null;
                 return (

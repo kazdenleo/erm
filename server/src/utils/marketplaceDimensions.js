@@ -83,15 +83,14 @@ function isDimensionsLinked(product, mp) {
   return false;
 }
 
-/** Ozon: атрибуты «Длина/Ширина/Высота, мм», иначе draft/связанный ERP (как в карточке). */
+/** Ozon: упаковка как в push — связь → ERP; иначе draft; иначе attrs (9802/…). */
 export function extractOzonDimensionsMm(product) {
-  const attrs = parseAttrs(product?.ozon_attributes);
-  if (attrs) {
-    const length = pickAttr(attrs, [9802, '9802']);
-    const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
-    const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
+  if (isDimensionsLinked(product, 'ozon')) {
+    const length = num(product?.length);
+    const width = num(product?.width);
+    const height = num(product?.height);
     if (length != null && width != null && height != null) {
-      return { length, width, height, source: 'ozon_attributes' };
+      return { length, width, height, source: 'product_linked' };
     }
   }
 
@@ -106,12 +105,13 @@ export function extractOzonDimensionsMm(product) {
     }
   }
 
-  if (isDimensionsLinked(product, 'ozon')) {
-    const length = num(product?.length);
-    const width = num(product?.width);
-    const height = num(product?.height);
+  const attrs = parseAttrs(product?.ozon_attributes);
+  if (attrs) {
+    const length = pickAttr(attrs, [9802, '9802']);
+    const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
+    const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
     if (length != null && width != null && height != null) {
-      return { length, width, height, source: 'product_linked' };
+      return { length, width, height, source: 'ozon_attributes' };
     }
   }
 
@@ -165,9 +165,33 @@ export function classifyMarketplaceDimAttrName(name) {
   if (/^габарит(ы)?\s+упаковк/.test(n)) return 'pack';
   if (/^(длина|ширина|высота)\s+товар/.test(n)) return 'product';
   if (/^вес\s+товар/.test(n)) return 'product';
+  if (/^вес\s+товар[аы]?,?\s*г/.test(n)) return 'product';
   if (/^габарит(ы)?\s+товар/.test(n)) return 'product';
   if (/^вес\s+без\s+упаковк/.test(n)) return 'product';
   return null;
+}
+
+/** Атрибут уже покрыт полями product_length/width/height/weight — не дублировать в форме. */
+export function isCoveredByDedicatedProductDimFields(name) {
+  return classifyMarketplaceDimAttrName(name) === 'product';
+}
+
+/**
+ * Подпись объёма для UI (литры).
+ * @param {unknown} length
+ * @param {unknown} width
+ * @param {unknown} height
+ * @param {'mm'|'cm'} [unit='mm']
+ * @returns {string|null}
+ */
+export function formatVolumeLitersLabel(length, width, height, unit = 'mm') {
+  const L = Number(length);
+  const W = Number(width);
+  const H = Number(height);
+  if (!(L > 0 && W > 0 && H > 0)) return null;
+  const liters = unit === 'cm' ? (L * W * H) / 1000 : (L * W * H) / 1_000_000;
+  if (!(liters > 0)) return null;
+  return `${(Math.round(liters * 1000) / 1000).toFixed(2)} л`;
 }
 
 /**

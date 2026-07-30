@@ -209,7 +209,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
   if (productVolume == null && offer_id) {
     try {
       let productResult = await query(
-        `SELECT p.volume, p.length, p.width, p.height, p.ozon_attributes, p.ym_draft
+        `SELECT p.volume, p.length, p.width, p.height, p.ozon_attributes, p.ozon_draft, p.ym_draft, p.mp_field_links
          FROM products p
          JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
          WHERE ps.sku = $1 LIMIT 1`,
@@ -217,7 +217,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
       );
       if (!productResult.rows?.length) {
         productResult = await query(
-          'SELECT volume, length, width, height, ozon_attributes, ym_draft FROM products WHERE sku = $1 LIMIT 1',
+          'SELECT volume, length, width, height, ozon_attributes, ozon_draft, ym_draft, mp_field_links FROM products WHERE sku = $1 LIMIT 1',
           [offer_id]
         );
       }
