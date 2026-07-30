@@ -71,13 +71,19 @@ import {
   isMpFieldLinked,
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
+  mmToCm,
   normalizeMpFieldLinks,
   toggleMpFieldLink,
   withMpDraftPatch,
   withYmDraftCountry,
   ymWeightDimensionsToErp,
 } from '../../../utils/productMpFieldLinks.js';
-import { WB_PACK_DIM_CHARC } from '../../../utils/marketplaceDimensions.js';
+import {
+  WB_ITEM_DIM_CHARC,
+  WB_PACK_DIM_CHARC,
+  classifyMarketplaceDimAttrName,
+  isWbDedicatedDimCharcId,
+} from '../../../utils/marketplaceDimensions.js';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
@@ -375,6 +381,10 @@ const EMPTY_PRODUCT_FORM_DATA = {
     length: '',
     width: '',
     height: '',
+    product_weight: '',
+    product_length: '',
+    product_width: '',
+    product_height: '',
     volume: '',
     kit_components: [],
   attributeValues: {},
@@ -580,9 +590,10 @@ function MpSkuCountryDimsEditor({
   onSkuChange,
   onCountryChange,
   onDimChange,
-  packAttrValues = null,
-  onPackAttrChange = null,
-  packAttrLabels = null,
+  itemAttrValues = null,
+  onItemAttrChange = null,
+  itemAttrLabels = null,
+  productAttrFields = null,
 }) {
   const code = String(mp || '').toLowerCase();
   const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
@@ -609,21 +620,22 @@ function MpSkuCountryDimsEditor({
   const d = convertDimensionsForMarketplace(code, dimsMm);
   const dimDisp = (key) => (d[key] != null ? String(d[key]) : '');
   const skuLabel = code === 'wb' ? 'vendorCode (WB)' : 'Артикул (Ozon)';
-  const dimFields = [
-    { key: 'length', label: `Длина (${d.lengthUnit})` },
-    { key: 'width', label: `Ширина (${d.lengthUnit})` },
-    { key: 'height', label: `Высота (${d.lengthUnit})` },
+  const packDimFields = [
+    { key: 'length', label: `Длина упаковки (${d.lengthUnit})` },
+    { key: 'width', label: `Ширина упаковки (${d.lengthUnit})` },
+    { key: 'height', label: `Высота упаковки (${d.lengthUnit})` },
     {
       key: 'weight',
-      label: code === 'wb' ? `Вес с упаковкой (${d.weightUnit})` : `Вес (${d.weightUnit})`,
+      label: `Вес с упаковкой (${d.weightUnit})`,
     },
   ];
-  const showWbPackAttrs = code === 'wb' && typeof onPackAttrChange === 'function';
-  const packFields = [
-    { key: WB_PACK_DIM_CHARC.length, dimKey: 'length', fallback: 'Длина упаковки' },
-    { key: WB_PACK_DIM_CHARC.width, dimKey: 'width', fallback: 'Ширина упаковки' },
-    { key: WB_PACK_DIM_CHARC.height, dimKey: 'height', fallback: 'Высота упаковки' },
+  const showWbItemAttrs = code === 'wb' && typeof onItemAttrChange === 'function';
+  const itemFields = [
+    { key: WB_ITEM_DIM_CHARC.length, fallback: 'Длина товара' },
+    { key: WB_ITEM_DIM_CHARC.width, fallback: 'Ширина товара' },
+    { key: WB_ITEM_DIM_CHARC.height, fallback: 'Высота товара' },
   ];
+  const ozonYmProductFields = Array.isArray(productAttrFields) ? productAttrFields : [];
 
   return (
     <div data-testid={`mp-meta-dims-${code}`}>
@@ -665,9 +677,64 @@ function MpSkuCountryDimsEditor({
           ))}
         </datalist>
       </div>
+
+      <div className="col-12">
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+          {code === 'wb'
+            ? 'Характеристики предмета WB (см), без упаковки.'
+            : 'Размеры и вес самого товара (без упаковки), если есть в атрибутах категории.'}
+        </div>
+        {showWbItemAttrs ? (
+          <div className="row g-2">
+            {itemFields.map((f) => {
+              const label = (itemAttrLabels && itemAttrLabels[f.key]) || `${f.fallback} (см)`;
+              const val = itemAttrValues?.[f.key] ?? '';
+              return (
+                <div className="col-6 col-md-4" key={f.key}>
+                  <label className="form-label" htmlFor={`wb-item-attr-${f.key}`}>
+                    {label}
+                  </label>
+                  <input
+                    id={`wb-item-attr-${f.key}`}
+                    type="number"
+                    className="form-control form-control-sm"
+                    min="0"
+                    step="0.1"
+                    value={val}
+                    onChange={(e) => onItemAttrChange(f.key, e.target.value)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        ) : ozonYmProductFields.length > 0 ? (
+          <div className="row g-2">
+            {ozonYmProductFields.map((f) => (
+              <div className="col-6 col-md-3" key={f.key}>
+                <label className="form-label" htmlFor={`${code}-product-attr-${f.key}`}>
+                  {f.label}
+                </label>
+                <input
+                  id={`${code}-product-attr-${f.key}`}
+                  type="text"
+                  className="form-control form-control-sm"
+                  value={f.value}
+                  onChange={(e) => f.onChange(e.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+            Атрибуты габаритов товара для этой категории не найдены — заполните на вкладке «Основное» или в характеристиках ниже.
+          </div>
+        )}
+      </div>
+
       <div className="col-12">
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-          {code === 'wb' ? 'Габариты упаковки' : 'Габариты и вес'}
+          Габариты упаковки
           {linkedDims ? (
             <span className="mp-field-linked-hint"> · синхрон с Основным</span>
           ) : (
@@ -676,11 +743,15 @@ function MpSkuCountryDimsEditor({
         </div>
         {code === 'wb' ? (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            Как в кабинете WB (см / кг). Если длина, ширина и высота окажутся меньше фактических, будет начислен штраф.
+            Как в кабинете WB (см / кг). Если габариты упаковки меньше фактических — возможен штраф.
           </div>
-        ) : null}
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+            Габариты для логистики Ozon (мм / г).
+          </div>
+        )}
         <div className="row g-2">
-          {dimFields.map((f) => (
+          {packDimFields.map((f) => (
             <div className="col-6 col-md-3" key={f.key}>
               <label className="form-label" htmlFor={`${code}-dim-${f.key}`}>
                 {f.label}
@@ -697,40 +768,6 @@ function MpSkuCountryDimsEditor({
             </div>
           ))}
         </div>
-        {showWbPackAttrs ? (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-              Атрибуты габаритов упаковки (характеристики WB)
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-              charcID {WB_PACK_DIM_CHARC.length}/{WB_PACK_DIM_CHARC.width}/{WB_PACK_DIM_CHARC.height} — см; подставляются из габаритов карточки при обновлении с WB.
-            </div>
-            <div className="row g-2">
-              {packFields.map((f) => {
-                const label =
-                  (packAttrLabels && packAttrLabels[f.key]) ||
-                  `${f.fallback} (см)`;
-                const val = packAttrValues?.[f.key] ?? '';
-                return (
-                  <div className="col-6 col-md-4" key={f.key}>
-                    <label className="form-label" htmlFor={`wb-pack-attr-${f.key}`}>
-                      {label}
-                    </label>
-                    <input
-                      id={`wb-pack-attr-${f.key}`}
-                      type="number"
-                      className="form-control form-control-sm"
-                      min="0"
-                      step="0.1"
-                      value={val}
-                      onChange={(e) => onPackAttrChange(f.key, e.target.value)}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
       </div>
       </div>
     </div>
@@ -1041,6 +1078,22 @@ export const ProductForm = React.forwardRef(function ProductForm({
         length: currentProduct.length || '',
         width: currentProduct.width || '',
         height: currentProduct.height || '',
+        product_weight: (() => {
+          const v = currentProduct.product_weight ?? currentProduct.productWeight;
+          return v != null && v !== '' ? String(v) : '';
+        })(),
+        product_length: (() => {
+          const v = currentProduct.product_length ?? currentProduct.productLength;
+          return v != null && v !== '' ? String(v) : '';
+        })(),
+        product_width: (() => {
+          const v = currentProduct.product_width ?? currentProduct.productWidth;
+          return v != null && v !== '' ? String(v) : '';
+        })(),
+        product_height: (() => {
+          const v = currentProduct.product_height ?? currentProduct.productHeight;
+          return v != null && v !== '' ? String(v) : '';
+        })(),
         volume: currentProduct.volume || '',
         kit_components: Array.isArray(currentProduct.kit_components) && currentProduct.kit_components.length > 0
           ? currentProduct.kit_components.map((c) => {
@@ -1111,6 +1164,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )
         : {};
       setWbAttributeValues(wbAttrs);
+      // Если габариты товара в ERP пустые — подставить из характеристик предмета WB (см → мм)
+      const itemL = wbAttrs[WB_ITEM_DIM_CHARC.length];
+      const itemW = wbAttrs[WB_ITEM_DIM_CHARC.width];
+      const itemH = wbAttrs[WB_ITEM_DIM_CHARC.height];
+      if (itemL || itemW || itemH) {
+        setFormData((prev) => {
+          const next = { ...prev };
+          const fillMm = (cmVal, key) => {
+            if (next[key] != null && String(next[key]).trim() !== '') return;
+            const mm = cmToMm(cmVal);
+            if (mm != null) next[key] = String(mm);
+          };
+          fillMm(itemL, 'product_length');
+          fillMm(itemW, 'product_width');
+          fillMm(itemH, 'product_height');
+          return next;
+        });
+      }
       const ymAttrs = currentProduct.ym_attributes && typeof currentProduct.ym_attributes === 'object'
         ? Object.fromEntries(
             Object.entries(currentProduct.ym_attributes).flatMap(([k, v]) => {
@@ -2546,6 +2617,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
         }
         return next;
       });
+      // Габариты товара на Основном → характеристики предмета WB (см)
+      const itemCharc =
+        field === 'product_length'
+          ? WB_ITEM_DIM_CHARC.length
+          : field === 'product_width'
+            ? WB_ITEM_DIM_CHARC.width
+            : field === 'product_height'
+              ? WB_ITEM_DIM_CHARC.height
+              : null;
+      if (itemCharc) {
+        const cm = value === '' || value == null ? '' : (mmToCm(value) != null ? String(mmToCm(value)) : '');
+        setWbAttributeValues((prev) => ({ ...prev, [itemCharc]: cm }));
+      }
     }
     if (errors[field]) {
       setErrors(prev => {
@@ -2647,21 +2731,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, []);
 
-  const handleWbPackAttrChange = useCallback((charcId, raw) => {
+  const handleWbItemAttrChange = useCallback((charcId, raw) => {
     setWbAttributeValues((prev) => ({
       ...prev,
       [charcId]: raw === '' || raw == null ? '' : String(raw),
     }));
     const dimKey =
-      String(charcId) === WB_PACK_DIM_CHARC.length
-        ? 'length'
-        : String(charcId) === WB_PACK_DIM_CHARC.width
-          ? 'width'
-          : String(charcId) === WB_PACK_DIM_CHARC.height
-            ? 'height'
+      String(charcId) === WB_ITEM_DIM_CHARC.length
+        ? 'product_length'
+        : String(charcId) === WB_ITEM_DIM_CHARC.width
+          ? 'product_width'
+          : String(charcId) === WB_ITEM_DIM_CHARC.height
+            ? 'product_height'
             : null;
-    if (dimKey) handleMpDimMetaChange('wb', dimKey, raw);
-  }, [handleMpDimMetaChange]);
+    if (!dimKey) return;
+    const mm = raw === '' || raw == null ? '' : (cmToMm(raw) != null ? String(cmToMm(raw)) : '');
+    setFormData((prev) => ({ ...prev, [dimKey]: mm }));
+  }, []);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
     setFormData((prev) => {
@@ -3508,6 +3594,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       length: formData.length ? parseFloat(formData.length) : null,
       width: formData.width ? parseFloat(formData.width) : null,
       height: formData.height ? parseFloat(formData.height) : null,
+      product_weight: formData.product_weight ? parseFloat(formData.product_weight) : null,
+      product_length: formData.product_length ? parseFloat(formData.product_length) : null,
+      product_width: formData.product_width ? parseFloat(formData.product_width) : null,
+      product_height: formData.product_height ? parseFloat(formData.product_height) : null,
       volume: calculatedVolume ? parseFloat(calculatedVolume) : (formData.volume ? parseFloat(formData.volume) : null),
       kit_components: formData.product_type === 'kit' && Array.isArray(formData.kit_components)
         ? formData.kit_components.filter(c => c.productId).map(c => ({ productId: Number(c.productId), quantity: Math.max(1, parseInt(c.quantity, 10) || 1) }))
@@ -4403,20 +4493,75 @@ export const ProductForm = React.forwardRef(function ProductForm({
             gap: '4px 8px',
           }}
         >
-          <span>Атрибуты категории</span>
+          <span>Габариты</span>
           <MpFieldLinkToggles
             fieldKey="dimensions"
             links={formData.mp_field_links}
             onToggle={handleMpFieldLinkToggle}
           />
           <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)' }}>
-            OZ/WB/ЯМ с обводкой = другое значение на МП
+            Тумблеры OZ/WB/ЯМ — связь упаковки с МП (не между МП)
           </span>
         </h4>
 
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
+          Размеры самого товара без упаковки (мм / г). На WB зеркалятся в характеристики предмета.
+        </div>
+        <div className="row g-3 mb-3">
+          <div className="col-6 col-md-3">
+            <label className="form-label" htmlFor="product_length">Длина товара (мм)</label>
+            <input
+              id="product_length"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              value={formData.product_length}
+              onChange={(e) => handleChange('product_length', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-3">
+            <label className="form-label" htmlFor="product_width">Ширина товара (мм)</label>
+            <input
+              id="product_width"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              value={formData.product_width}
+              onChange={(e) => handleChange('product_width', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-3">
+            <label className="form-label" htmlFor="product_height">Высота товара (мм)</label>
+            <input
+              id="product_height"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              value={formData.product_height}
+              onChange={(e) => handleChange('product_height', e.target.value)}
+            />
+          </div>
+          <div className="col-6 col-md-3">
+            <label className="form-label" htmlFor="product_weight">Вес товара (г)</label>
+            <input
+              id="product_weight"
+              type="number"
+              className="form-control form-control-sm"
+              step="1"
+              min="0"
+              value={formData.product_weight}
+              onChange={(e) => handleChange('product_weight', e.target.value)}
+            />
+          </div>
+        </div>
+
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты упаковки</div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          ERP: мм и г. Тумблеры OZ/WB/ЯМ связывают только с «Основным» (не между МП).
+          ERP: мм и г. Идут в логистику МП при включённой связи.
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-2">
@@ -4502,139 +4647,130 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           </div>
         </div>
+      </div>
 
-        {categoryAttributes.length > 0 ? (
-          <>
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                marginBottom: 8,
-                paddingTop: 8,
-                borderTop: '1px solid rgba(0,0,0,0.08)',
-              }}
-            >
-              Прочие атрибуты
-            </div>
-            <div className="row g-3">
-              {categoryAttributes.map((attr) => {
-                const key = String(attr.id);
-                const value = formData.attributeValues[key];
-                const rawValue = value !== undefined && value !== null ? value : '';
-                const attrDiffs = getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName);
-                const nameWithDiff = (
-                  <>
-                    {attr.name}
-                    <MpValueDiffBadges diffs={attrDiffs} />
-                  </>
+      {categoryAttributes.length > 0 && (
+        <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
+          <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
+            Атрибуты категории
+            <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)', marginLeft: 8 }}>
+              OZ/WB/ЯМ с обводкой = другое значение на МП
+            </span>
+          </h4>
+          <div className="row g-3">
+            {categoryAttributes.map((attr) => {
+              const key = String(attr.id);
+              const value = formData.attributeValues[key];
+              const rawValue = value !== undefined && value !== null ? value : '';
+              const attrDiffs = getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName);
+              const nameWithDiff = (
+                <>
+                  {attr.name}
+                  <MpValueDiffBadges diffs={attrDiffs} />
+                </>
+              );
+              if (attr.type === 'checkbox') {
+                const checked = rawValue === 'true' || rawValue === true;
+                return (
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                    <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexWrap: 'wrap' }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => handleAttributeChange(attr.id, e.target.checked ? 'true' : 'false')}
+                      />
+                      <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                        {nameWithDiff}
+                        {TYPE_LABELS[attr.type] && <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>}
+                      </span>
+                    </label>
+                  </div>
                 );
-                if (attr.type === 'checkbox') {
-                  const checked = rawValue === 'true' || rawValue === true;
-                  return (
-                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                      <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexWrap: 'wrap' }}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => handleAttributeChange(attr.id, e.target.checked ? 'true' : 'false')}
-                        />
-                        <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                          {nameWithDiff}
-                          {TYPE_LABELS[attr.type] && <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>}
-                        </span>
-                      </label>
-                    </div>
-                  );
-                }
-                if (attr.type === 'number') {
-                  return (
-                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                      </label>
-                      <input
-                        id={`attr-${attr.id}`}
-                        type="number"
-                        className="form-control form-control-sm"
-                        value={rawValue}
-                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                      />
-                    </div>
-                  );
-                }
-                if (attr.type === 'date') {
-                  return (
-                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                      </label>
-                      <input
-                        id={`attr-${attr.id}`}
-                        type="date"
-                        className="form-control form-control-sm"
-                        value={rawValue}
-                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                      />
-                    </div>
-                  );
-                }
-                if (attr.type === 'dictionary') {
-                  const dictRaw = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
-                  const dictStr = dictRaw.map((x) => String(x));
-                  const storedStr = rawValue === undefined || rawValue === null ? '' : String(rawValue);
-                  const trimmed = storedStr.trim();
-                  const inDictionary = trimmed === ''
-                    ? false
-                    : dictStr.some((o) => o === storedStr || String(o).trim() === trimmed);
-                  const merged = trimmed && !inDictionary ? [...dictStr, storedStr] : [...dictStr];
-                  const options = [...new Set(merged.map(String))].sort((a, b) => a.localeCompare(b, 'ru'));
-                  return (
-                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
-                      <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                        {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
-                      </label>
-                      <select
-                        id={`attr-${attr.id}`}
-                        className="form-select form-select-sm"
-                        value={storedStr}
-                        onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                      >
-                        <option value="">— Не выбрано —</option>
-                        {options.map((opt) => (
-                          <option key={opt} value={opt}>{opt}</option>
-                        ))}
-                      </select>
-                      {trimmed && !inDictionary && (
-                        <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-                          Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
+              }
+              if (attr.type === 'number') {
                 return (
                   <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span>
+                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
                     </label>
                     <input
                       id={`attr-${attr.id}`}
-                      type="text"
+                      type="number"
                       className="form-control form-control-sm"
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
                   </div>
                 );
-              })}
-            </div>
-          </>
-        ) : (
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-            Других атрибутов категории нет — выберите категорию с настроенными атрибутами или оставьте только габариты.
+              }
+              if (attr.type === 'date') {
+                return (
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
+                    </label>
+                    <input
+                      id={`attr-${attr.id}`}
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={rawValue}
+                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                    />
+                  </div>
+                );
+              }
+              if (attr.type === 'dictionary') {
+                const dictRaw = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
+                const dictStr = dictRaw.map((x) => String(x));
+                const storedStr = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+                const trimmed = storedStr.trim();
+                const inDictionary = trimmed === ''
+                  ? false
+                  : dictStr.some((o) => o === storedStr || String(o).trim() === trimmed);
+                const merged = trimmed && !inDictionary ? [...dictStr, storedStr] : [...dictStr];
+                const options = [...new Set(merged.map(String))].sort((a, b) => a.localeCompare(b, 'ru'));
+                return (
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                    <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                      {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>
+                    </label>
+                    <select
+                      id={`attr-${attr.id}`}
+                      className="form-select form-select-sm"
+                      value={storedStr}
+                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                    >
+                      <option value="">— Не выбрано —</option>
+                      {options.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    {trimmed && !inDictionary && (
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+                        Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                  <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                    {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span>
+                  </label>
+                  <input
+                    id={`attr-${attr.id}`}
+                    type="text"
+                    className="form-control form-control-sm"
+                    value={rawValue}
+                    onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                  />
+                </div>
+              );
+            })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* SKU перенесён рядом с названием в верхнюю строку */}
 
@@ -4999,10 +5135,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           </div>
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты, вес и страна (Ozon)</div>
+            <div className="card-header">Габариты товара и упаковки (Ozon)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Артикул, страна и габариты (мм / г). Связь с «Основным» — тумблеры выше; без связи значения только для Ozon.
+                Габариты товара — из атрибутов категории; упаковка — мм / г для логистики. Связь упаковки с «Основным» — тумблеры на Основном.
               </p>
               <MpSkuCountryDimsEditor
                 mp="ozon"
@@ -5010,6 +5146,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
+                productAttrFields={(ozonAttributes || [])
+                  .filter((a) => classifyMarketplaceDimAttrName(a?.name) === 'product')
+                  .map((a) => {
+                    const key = String(a.id);
+                    return {
+                      key,
+                      label: a.name || `ID ${key}`,
+                      value: ozonAttributeValues[key] ?? '',
+                      onChange: (v) => setOzonAttributeValues((prev) => ({ ...prev, [key]: v })),
+                    };
+                  })}
               />
             </div>
           </div>
@@ -5188,7 +5335,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов для этой категории Ozon (или сопоставление не заполнено).</p>
               ) : (
                 <div className="row g-3">
-                  {ozonAttributes.map((attr) => {
+                  {ozonAttributes
+                    .filter((attr) => {
+                      const kind = classifyMarketplaceDimAttrName(attr?.name);
+                      return kind !== 'product' && kind !== 'pack';
+                    })
+                    .map((attr) => {
                     const key = String(attr.id);
                     const value = ozonAttributeValues[key];
                     const rawValue = value !== undefined && value !== null ? value : '';
@@ -5469,10 +5621,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
 
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты упаковки и страна (Wildberries)</div>
+            <div className="card-header">Габариты товара и упаковки (Wildberries)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                vendorCode, страна и габариты упаковки (см / кг). Без связи с «Основным» — только WB.
+                Товар — характеристики предмета (см); упаковка — см / кг. Связь упаковки с «Основным» — тумблеры на Основном.
               </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
@@ -5480,19 +5632,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
-                packAttrValues={wbAttributeValues}
-                onPackAttrChange={handleWbPackAttrChange}
-                packAttrLabels={(() => {
+                itemAttrValues={wbAttributeValues}
+                onItemAttrChange={handleWbItemAttrChange}
+                itemAttrLabels={(() => {
                   const labels = {};
                   for (const a of wbCategoryAttributes || []) {
                     const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id;
                     if (id == null) continue;
                     const key = String(id);
-                    if (
-                      key === WB_PACK_DIM_CHARC.length ||
-                      key === WB_PACK_DIM_CHARC.width ||
-                      key === WB_PACK_DIM_CHARC.height
-                    ) {
+                    if (isWbDedicatedDimCharcId(key) && (
+                      key === WB_ITEM_DIM_CHARC.length ||
+                      key === WB_ITEM_DIM_CHARC.width ||
+                      key === WB_ITEM_DIM_CHARC.height
+                    )) {
                       labels[key] = a?.name ?? a?.charcName ?? a?.characteristic_name ?? key;
                     }
                   }
@@ -5529,12 +5681,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       {wbCategoryAttributes
                         .filter((a) => {
                           const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
-                          const key = id != null ? String(id) : '';
-                          return (
-                            key !== WB_PACK_DIM_CHARC.length &&
-                            key !== WB_PACK_DIM_CHARC.width &&
-                            key !== WB_PACK_DIM_CHARC.height
-                          );
+                          return !isWbDedicatedDimCharcId(id);
                         })
                         .map((a) => {
                         const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
@@ -5667,13 +5814,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )}
 
           <div className="card mb-3 border-secondary">
-            <div className="card-header">Габариты, вес и страна (Яндекс.Маркет)</div>
+            <div className="card-header">Габариты товара и упаковки (Яндекс.Маркет)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты — см / кг.
+                Товар — параметры категории; упаковка — см / кг (weightDimensions).
                 {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ym')
-                  ? ' Связь с «Основным» включена: правки меняют и ERP (мм / г). Другие МП не затрагиваются напрямую.'
-                  : ' Связь выключена: только Яндекс (ym_draft). «Основное» и другие МП не меняются.'}
+                  ? ' Связь упаковки с «Основным» включена.'
+                  : ' Связь упаковки выключена: только ym_draft.'}
               </p>
               <div className="row g-3 mb-3">
                 <div className="col-12 col-md-6">
@@ -5711,6 +5858,55 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     ))}
                   </datalist>
                 </div>
+              </div>
+
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+                Параметры категории Маркета про размеры/вес товара (без упаковки).
+              </div>
+              {(() => {
+                const productParams = (ymCategoryAttributes || []).filter(
+                  (a) => classifyMarketplaceDimAttrName(a?.name) === 'product'
+                );
+                if (productParams.length === 0) {
+                  return (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
+                      Параметры габаритов товара в этой категории не найдены — заполните на вкладке «Основное».
+                    </div>
+                  );
+                }
+                return (
+                  <div className="row g-2 mb-3">
+                    {productParams.map((a) => {
+                      const key = String(a.id);
+                      return (
+                        <div className="col-6 col-md-3" key={key}>
+                          <label className="form-label" htmlFor={`ym-product-attr-${key}`}>
+                            {a.name || `ID ${key}`}
+                          </label>
+                          <input
+                            id={`ym-product-attr-${key}`}
+                            type="text"
+                            className="form-control form-control-sm"
+                            value={ymAttributeValues[key] ?? ''}
+                            onChange={(e) =>
+                              setYmAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                Габариты упаковки
+                {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ym') ? (
+                  <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                ) : (
+                  <span className="mp-field-linked-hint"> · только Яндекс</span>
+                )}
               </div>
               <YmPackagingDimensionFields
                 formData={formData}

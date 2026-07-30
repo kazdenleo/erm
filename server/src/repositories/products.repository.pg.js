@@ -2490,6 +2490,28 @@ class ProductsRepositoryPG {
         if (minProfitYm != null) product.min_profit_ym = minProfitYm;
       }
 
+      const numOrNull = (v) =>
+        v != null && v !== '' && !isNaN(Number(v)) ? Number(v) : null;
+      const pLen = numOrNull(productData.product_length ?? productData.productLength);
+      const pWid = numOrNull(productData.product_width ?? productData.productWidth);
+      const pHei = numOrNull(productData.product_height ?? productData.productHeight);
+      const pWgt = numOrNull(productData.product_weight ?? productData.productWeight);
+      if (pLen != null || pWid != null || pHei != null || pWgt != null) {
+        await client.query(
+          `UPDATE products
+           SET product_length = COALESCE($2, product_length),
+               product_width = COALESCE($3, product_width),
+               product_height = COALESCE($4, product_height),
+               product_weight = COALESCE($5, product_weight)
+           WHERE id = $1`,
+          [product.id, pLen, pWid, pHei, pWgt]
+        );
+        if (pLen != null) product.product_length = pLen;
+        if (pWid != null) product.product_width = pWid;
+        if (pHei != null) product.product_height = pHei;
+        if (pWgt != null) product.product_weight = pWgt;
+      }
+
       await client.query(
         `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
          SELECT $1, w.id, 0
@@ -2663,7 +2685,9 @@ class ProductsRepositoryPG {
       const allowedFields = [
         'sku', 'name', 'brand_id', 'price', ...(isKit ? [] : ['cost']), 'buyout_rate', 
         'buyout_rate_ozon', 'buyout_rate_wb', 'buyout_rate_ym',
-        'weight', 'length', 'width', 'height', 'volume', 'quantity', 'unit', 'description', 'product_type', 'organization_id', 'country_of_origin',
+        'weight', 'length', 'width', 'height', 'volume',
+        'product_weight', 'product_length', 'product_width', 'product_height',
+        'quantity', 'unit', 'description', 'product_type', 'organization_id', 'country_of_origin',
         'mp_ozon_name', 'mp_ozon_description', 'mp_ozon_brand',
         'mp_wb_vendor_code', 'mp_wb_name', 'mp_wb_description', 'mp_wb_brand',
         'mp_ym_name', 'mp_ym_description',

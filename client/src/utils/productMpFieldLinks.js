@@ -148,7 +148,19 @@ export function isYmParamDuplicatingDedicatedField(name) {
 /** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. */
 export function filterYmCategoryAttributesForForm(attrs) {
   if (!Array.isArray(attrs)) return [];
-  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
+  return attrs.filter((a) => {
+    if (isYmParamDuplicatingDedicatedField(a?.name)) return false;
+    const n = String(a?.name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+    // Габариты товара — отдельный блок на вкладке YM
+    if (/^(длина|ширина|высота)\s+товар/.test(n)) return false;
+    if (/^вес\s+товар/.test(n)) return false;
+    if (/^габарит(ы)?\s+товар/.test(n)) return false;
+    if (/^вес\s+без\s+упаковк/.test(n)) return false;
+    return true;
+  });
 }
 
 /** см → мм (YM → ERP) */

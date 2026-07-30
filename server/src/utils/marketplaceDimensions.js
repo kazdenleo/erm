@@ -83,9 +83,51 @@ export const WB_PACK_DIM_CHARC = {
   height: '90846',
 };
 
+/** WB Content API: габариты предмета/товара (см) в characteristics. */
+export const WB_ITEM_DIM_CHARC = {
+  length: '90652',
+  width: '90673',
+  height: '90630',
+};
+
+/** charcID габаритов товара или упаковки WB — не дублировать в общем списке характеристик. */
+export function isWbDedicatedDimCharcId(id) {
+  const s = String(id ?? '');
+  if (!s) return false;
+  return (
+    s === WB_PACK_DIM_CHARC.length ||
+    s === WB_PACK_DIM_CHARC.width ||
+    s === WB_PACK_DIM_CHARC.height ||
+    s === WB_ITEM_DIM_CHARC.length ||
+    s === WB_ITEM_DIM_CHARC.width ||
+    s === WB_ITEM_DIM_CHARC.height
+  );
+}
+
+/**
+ * Классификация названия атрибута МП: габариты товара / упаковки / иное.
+ * @returns {'product'|'pack'|null}
+ */
+export function classifyMarketplaceDimAttrName(name) {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!n) return null;
+  if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return 'pack';
+  if (/^вес\s+(с\s+)?упаковк/.test(n)) return 'pack';
+  if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return 'pack';
+  if (/^габарит(ы)?\s+упаковк/.test(n)) return 'pack';
+  if (/^(длина|ширина|высота)\s+товар/.test(n)) return 'product';
+  if (/^вес\s+товар/.test(n)) return 'product';
+  if (/^габарит(ы)?\s+товар/.test(n)) return 'product';
+  if (/^вес\s+без\s+упаковк/.test(n)) return 'product';
+  return null;
+}
+
 /**
  * WB: только упаковка — атрибуты 90849/90745/90846 (см) или wb_draft.dimensions (мм).
- * Габариты «предмета» и ERP не используем.
+ * Габариты «предмета» (90652/90673/90630) для логистики не используем.
  */
 export function extractWbDimensionsMm(product) {
   const attrs = parseAttrs(product?.wb_attributes);
