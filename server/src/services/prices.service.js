@@ -2751,7 +2751,8 @@ class PricesService {
       let productRow = null;
       try {
         const productResult = await query(
-          `SELECT p.id, p.sku, p.cost, p.price, p.volume, p.weight, p.length, p.width, p.height,
+          `SELECT p.id, p.sku, p.cost, p.price, p.additional_expenses, p.volume, p.weight,
+                  p.length, p.width, p.height,
                   p.ym_draft, p.ym_attributes, p.mp_field_links
            FROM products p
            LEFT JOIN product_skus ps_ym ON ps_ym.product_id = p.id AND ps_ym.marketplace = 'ym'
@@ -2771,9 +2772,18 @@ class PricesService {
         };
       }
 
-      const basePrice = (productRow.cost ?? productRow.price) != null && Number(productRow.cost ?? productRow.price) > 0
-        ? Number(productRow.cost ?? productRow.price)
-        : null;
+      // Seed-цена для tariffs/calculate: как в recalculateAndSaveForProduct
+      // (cost/price + доп. расходы). Иначе YM падает при cost=null/price=0,
+      // хотя Ozon/WB уже считаются с additional_expenses.
+      const optBase = options.basePrice != null ? Number(options.basePrice) : NaN;
+      const costPart = Number(productRow.cost ?? productRow.price ?? 0) || 0;
+      const addExp = Number(productRow.additional_expenses ?? 0) || 0;
+      const basePrice =
+        Number.isFinite(optBase) && optBase > 0
+          ? optBase
+          : costPart + addExp > 0
+            ? costPart + addExp
+            : null;
       if (basePrice == null) {
         logger.warn('[Prices Service] getYMPrices: no cost/price', { offer_id });
         return {
@@ -3535,6 +3545,7 @@ class PricesService {
         const ymFbsResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, {
           ...mpOpts,
           sellingProgram: 'FBS',
+          basePrice,
         });
         const dataFbs = ymFbsResult?.data ?? ymFbsResult;
         if (dataFbs?.found && dataFbs?.calculator) {
@@ -3564,7 +3575,7 @@ class PricesService {
 
         // FBY = FBO на Яндексе (отдельный live-запрос; кэш FBS не подходит)
         try {
-          const ymFbyOpts = { ...mpOpts, sellingProgram: 'FBY', source: 'live' };
+          const ymFbyOpts = { ...mpOpts, sellingProgram: 'FBY', source: 'live', basePrice };
           const ymFbyResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, ymFbyOpts);
           const dataFby = ymFbyResult?.data ?? ymFbyResult;
           if (dataFby?.found && dataFby?.calculator) {
