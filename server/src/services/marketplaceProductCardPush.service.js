@@ -151,6 +151,136 @@ function splitOzonImportErrors(errors) {
   return { critical, warnings };
 }
 
+/** Ошибки карточки из /v3/product/info/list (то, что видит кабинет продавца). */
+function collectOzonProductInfoErrors(infoItem) {
+  if (!infoItem || typeof infoItem !== 'object') return [];
+  const raw = [];
+  if (Array.isArray(infoItem.errors)) raw.push(...infoItem.errors);
+  if (Array.isArray(infoItem.statuses)) {
+    for (const st of infoItem.statuses) {
+      if (Array.isArray(st?.errors)) raw.push(...st.errors);
+      const msg = String(
+        st?.message || st?.description || st?.status_description || st?.status_tooltip || ''
+      ).trim();
+      const name = String(st?.status_name || st?.status || st?.name || '').trim();
+      const state = String(st?.status_state || st?.state || '').toUpperCase();
+      const failed = st?.is_failed === true || st?.failed === true;
+      if (
+        msg &&
+        (failed ||
+          state.includes('FAIL') ||
+          state.includes('ERROR') ||
+          /ошиб|error|fail/i.test(name) ||
+          /ошиб|error|отрицательн|минимальн/i.test(msg))
+      ) {
+        raw.push({
+          level: /недоч|warning|контент/i.test(msg) ? 'ERROR_LEVEL_WARNING' : 'ERROR_LEVEL_ERROR',
+          message: msg,
+          attribute_name: name || null,
+        });
+      } else if (msg && (state.includes('WARN') || /недоч|warning/i.test(name))) {
+        raw.push({ level: 'ERROR_LEVEL_WARNING', message: msg, attribute_name: name || null });
+      }
+    }
+  }
+  const statusObj = infoItem.status;
+  if (statusObj && typeof statusObj === 'object') {
+    const state = String(statusObj.state || statusObj.status || '').toLowerCase();
+    const desc = String(statusObj.state_failed || statusObj.moderate_status || '').trim();
+    if (desc && (state.includes('fail') || state.includes('error') || /ошиб/i.test(desc))) {
+      raw.push({ level: 'ERROR_LEVEL_ERROR', message: desc });
+    }
+  }
+  const vis = infoItem.visibility_details;
+  if (vis && typeof vis === 'object') {
+    if (vis.has_price === false) {
+      raw.push({
+        level: 'ERROR_LEVEL_ERROR',
+        message: 'У товара не задана цена (visibility: has_price=false)',
+      });
+    }
+  }
+  return raw;
+}
+
+async function fetchOzonProductInfoItem(offerId, productId, apiOpts) {
+  const body =
+    productId != null && Number.isFinite(Number(productId)) && Number(productId) > 0
+      ? { product_id: [Number(productId)] }
+      : { offer_id: [String(offerId)] };
+  const data = await integrationsService._ozonApiPost('/v3/product/info/list', body, apiOpts);
+  const items = data?.result?.items ?? data?.items ?? [];
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const wantOffer = offerId != null ? String(offerId).trim() : '';
+  const wantPid = productId != null ? String(productId) : '';
+  return (
+    items.find(
+      (it) =>
+        (wantOffer && String(it?.offer_id || '').trim() === wantOffer) ||
+        (wantPid && String(it?.id ?? it?.product_id ?? '') === wantPid)
+    ) || items[0]
+  );
+}
+
+function extractOzonPriceFields(infoItem) {
+  if (!infoItem || typeof infoItem !== 'object') return {};
+  const toPos = (v) => {
+    const n = Number(String(v ?? '').replace(',', '.').replace(/[^\d.-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const price = toPos(infoItem.price ?? infoItem.marketing_price);
+  const oldPrice = toPos(infoItem.old_price);
+  const minPrice = toPos(infoItem.min_price ?? infoItem.min_price_for_auto_actions_enabled);
+  const out = {};
+  if (price != null) out.price = String(Math.round(price * 100) / 100);
+  if (oldPrice != null && price != null && oldPrice > price) {
+    out.old_price = String(Math.round(oldPrice * 100) / 100);
+  }
+  // min_price должен быть строго меньше price — иначе Ozon: «Измените минимальную цену»
+  if (minPrice != null && price != null && minPrice > 0 && minPrice < price) {
+    out.min_price = String(Math.round(minPrice * 100) / 100);
+  }
+  return out;
+}
+
+/**
+ * Склеиваем результат import с ошибками карточки из product/info/list.
+ * Кабинет показывает их даже когда import/info вернул skipped без errors[].
+ */
+function mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId } = {}) {
+  if (!Array.isArray(cardErrors) || cardErrors.length === 0) return result;
+  const { critical, warnings } = splitOzonImportErrors(cardErrors);
+  if (!critical.length && !warnings.length) return result;
+
+  const parts = [];
+  if (critical.length) parts.push(`Критичные ошибки Ozon (карточка):\n${critical.join('\n')}`);
+  if (warnings.length) parts.push(`Некритичные замечания Ozon (карточка):\n${warnings.join('\n')}`);
+  const cardText = parts.join('\n\n');
+
+  if (critical.length) {
+    const prev = result?.error || result?.message || result?.warnings || '';
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      taskId: result?.taskId ?? taskId ?? null,
+      status: result?.status || 'failed',
+      error: prev ? `${prev}\n\n${cardText}` : cardText,
+      errors: cardErrors,
+      cardErrors,
+    };
+  }
+
+  // только warnings
+  const prev = result?.message || result?.warnings || '';
+  return {
+    ...(result || { marketplace: 'ozon', ok: true }),
+    ok: true,
+    warnings: prev ? `${prev}\n\n${cardText}` : cardText,
+    message: prev ? `${prev}\n\n${cardText}` : cardText,
+    cardErrors,
+  };
+}
+
 /**
  * Ждём результат /v1/product/import/info после /v3/product/import.
  * Без опроса кабинет показывает ошибки, а ERP — «успех».
@@ -346,6 +476,24 @@ async function pushOzonCard(product, categoryMm, ctx) {
     ozonOverride,
   };
 
+  // Цена обязательна в /v3/product/import: без неё кабинет часто пишет
+  // «Цена не может быть отрицательной» / проблемы с min_price, а import/info — skipped.
+  let ozonInfoBefore = null;
+  try {
+    ozonInfoBefore = await fetchOzonProductInfoItem(offerId, item.product_id ?? null, apiOpts);
+    const priceFields = extractOzonPriceFields(ozonInfoBefore);
+    Object.assign(item, priceFields);
+    if (ozonInfoBefore?.id != null && item.product_id == null) {
+      const idNum = Number(ozonInfoBefore.id);
+      if (Number.isFinite(idNum) && idNum > 0) item.product_id = idNum;
+    }
+  } catch (e) {
+    logger.warn('[CardPush] Ozon product/info/list (pre-import) failed', {
+      offerId,
+      error: e?.message || String(e),
+    });
+  }
+
   try {
     logger.info('[CardPush] Ozon import payload', {
       offerId,
@@ -353,6 +501,8 @@ async function pushOzonCard(product, categoryMm, ctx) {
       attrs: Array.isArray(item.attributes) ? item.attributes.length : 0,
       hasDims: item.depth != null,
       weight: item.weight ?? null,
+      price: item.price ?? null,
+      min_price: item.min_price ?? null,
       nameLen: String(item.name || '').length,
     });
 
@@ -455,6 +605,34 @@ async function pushOzonCard(product, categoryMm, ctx) {
             `Повторная отправка характеристик не удалась: ${attrErr?.message || String(attrErr)}`,
         };
       }
+    }
+
+    // Ошибки в кабинете (цена, min_price, «Количество») часто не приходят в import/info при skipped —
+    // читаем карточку после обработки задачи.
+    try {
+      await sleep(1500);
+      const ozonInfoAfter = await fetchOzonProductInfoItem(
+        offerId,
+        item.product_id ?? ozonInfoBefore?.id ?? null,
+        apiOpts
+      );
+      const cardErrors = collectOzonProductInfoErrors(ozonInfoAfter);
+      result = mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId: result.taskId || taskId });
+      if (cardErrors.length) {
+        logger.warn('[CardPush] Ozon card errors after import', {
+          offerId,
+          count: cardErrors.length,
+          preview: cardErrors
+            .slice(0, 5)
+            .map((e) => formatOzonImportErrorLine(e))
+            .filter(Boolean),
+        });
+      }
+    } catch (e) {
+      logger.warn('[CardPush] Ozon product/info/list (post-import) failed', {
+        offerId,
+        error: e?.message || String(e),
+      });
     }
 
     if (!result.ok) {
