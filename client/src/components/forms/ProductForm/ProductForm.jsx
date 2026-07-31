@@ -3109,7 +3109,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const text = formatPushCardResults(payload);
       const results = Array.isArray(payload?.results) ? payload.results : [];
       const anyFailed = results.some((r) => !r.ok) || payload?.ok === false;
-      const hasWarnings = results.some((r) => r.ok && (r.warnings || /Некритичные/i.test(String(r.message || ''))));
+      const hasWarnings = results.some(
+        (r) =>
+          r.ok &&
+          (r.warnings ||
+            r.status === 'skipped' ||
+            /Некритичные|не применил|skipped/i.test(String(r.message || '')))
+      );
       if (anyFailed) {
         setPushCardError(text || 'Не удалось отправить данные на маркетплейс');
       } else if (hasWarnings) {
@@ -3697,11 +3703,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
         const attr = ozonAttributes.find((a) => String(a.id) === key);
         const hasDict = attr && attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
         const opts = hasDict ? ozonDictValues[attr.id] : null;
-        if (hasDict && Array.isArray(opts) && opts.length > 0) {
-          const hit = findOzonDictEntryForStored(str, opts);
-          out[key] = hit ? String(hit.id) : str;
+        if (hasDict) {
+          const hit = Array.isArray(opts) && opts.length > 0 ? findOzonDictEntryForStored(str, opts) : null;
+          if (hit) {
+            out[key] = { dictionary_value_id: Number(hit.id) };
+          } else if (/^\d+$/.test(str)) {
+            out[key] = { dictionary_value_id: Number(str) };
+          } else {
+            out[key] = { value: str };
+          }
         } else {
-          out[key] = str;
+          // Числовые поля (вес, габариты-атрибуты) — value, не dictionary_value_id
+          out[key] = { value: str };
         }
       }
       return Object.keys(out).length > 0 ? out : undefined;

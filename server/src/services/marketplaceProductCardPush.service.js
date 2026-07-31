@@ -94,15 +94,28 @@ function buildOzonAttributesArray(ozonAttrs) {
   for (const [key, raw] of Object.entries(obj)) {
     const id = Number(key);
     if (!Number.isFinite(id) || id <= 0) continue;
-    if (raw == null || String(raw).trim() === '') continue;
-    const s = String(raw).trim();
-    const num = Number(s);
-    const asDict = Number.isFinite(num) && num > 0 && /^\d+$/.test(s);
-    out.push({
-      complex_id: 0,
-      id,
-      values: asDict ? [{ dictionary_value_id: num }] : [{ value: s }]
-    });
+    if (raw == null || raw === '') continue;
+
+    let values = null;
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      // Явный формат: { dictionary_value_id } | { value }
+      if (raw.dictionary_value_id != null && String(raw.dictionary_value_id).trim() !== '') {
+        const did = Number(raw.dictionary_value_id);
+        if (!Number.isFinite(did) || did <= 0) continue;
+        values = [{ dictionary_value_id: did }];
+      } else {
+        const s = String(raw.value ?? raw.id ?? '').trim();
+        if (!s) continue;
+        values = [{ value: s }];
+      }
+    } else {
+      const s = String(raw).trim();
+      if (!s) continue;
+      // Legacy-строка: всегда value. Раньше цифры (вес 250) уходили как dictionary_value_id →
+      // Ozon отклонял атрибут, а импорт отвечал skipped.
+      values = [{ value: s }];
+    }
+    out.push({ complex_id: 0, id, values });
   }
   return out;
 }
@@ -200,10 +213,26 @@ function buildOzonImportResult({ offerId, taskId, item }) {
   }
 
   // imported / skipped
-  const base =
-    status === 'skipped'
-      ? `Ozon: изменений нет (skipped), task_id: ${taskId}`
-      : `Ozon: карточка обновлена (task_id: ${taskId})`;
+  if (status === 'skipped') {
+    const parts = [
+      `Ozon не применил изменений (skipped, task_id: ${taskId}).`,
+      'Запрос совпал с карточкой в кабинете или часть полей была проигнорирована.',
+      'Проверьте название, описание, габариты упаковки и атрибуты на вкладке Ozon — затем отправьте снова.',
+    ];
+    if (critText) parts.push(`Критичные ошибки:\n${critText}`);
+    if (warnText) parts.push(`Некритичные замечания:\n${warnText}`);
+    return {
+      marketplace: 'ozon',
+      ok: true,
+      taskId,
+      status: 'skipped',
+      warnings: parts.join('\n'),
+      message: parts.join('\n'),
+      errors: item?.errors || [],
+    };
+  }
+
+  const base = `Ozon: карточка обновлена (task_id: ${taskId})`;
 
   if (critText) {
     // Бывает imported с ERROR_LEVEL_* в массиве — всё равно показываем как ошибку.
@@ -287,12 +316,20 @@ async function pushOzonCard(product, categoryMm, ctx) {
     const dims = resolveDimensionsMmForPush(product, 'ozon') || {};
     if (dims.weight != null && Number(dims.weight) > 0) {
       item.weight = Number(dims.weight);
+      item.weight_unit = 'g';
     }
     if (dims.length && dims.width && dims.height) {
       item.dimension_unit = 'mm';
       item.depth = Number(dims.length);
       item.width = Number(dims.width);
       item.height = Number(dims.height);
+    }
+  } else {
+    // Вес без полного комплекта габаритов — всё равно отправляем
+    const dims = resolveDimensionsMmForPush(product, 'ozon') || {};
+    if (dims.weight != null && Number(dims.weight) > 0) {
+      item.weight = Number(dims.weight);
+      item.weight_unit = 'g';
     }
   }
 
@@ -304,14 +341,25 @@ async function pushOzonCard(product, categoryMm, ctx) {
     return { marketplace: 'ozon', ok: false, error: 'Кабинет Ozon не настроен для организации' };
   }
 
+  const apiOpts = {
+    profileId: ctx.profileId ?? null,
+    ozonOverride,
+  };
+
   try {
+    logger.info('[CardPush] Ozon import payload', {
+      offerId,
+      product_id: item.product_id ?? null,
+      attrs: Array.isArray(item.attributes) ? item.attributes.length : 0,
+      hasDims: item.depth != null,
+      weight: item.weight ?? null,
+      nameLen: String(item.name || '').length,
+    });
+
     const data = await integrationsService._ozonApiPost(
       '/v3/product/import',
       { items: [item] },
-      {
-        profileId: ctx.profileId ?? null,
-        ozonOverride
-      }
+      apiOpts
     );
     const taskId = data?.result?.task_id ?? data?.task_id ?? null;
     if (taskId == null || taskId === '') {
@@ -322,10 +370,6 @@ async function pushOzonCard(product, categoryMm, ctx) {
       };
     }
 
-    const apiOpts = {
-      profileId: ctx.profileId ?? null,
-      ozonOverride,
-    };
     let itemResult;
     try {
       itemResult = await pollOzonProductImportInfo(taskId, apiOpts, { offerId });
@@ -346,7 +390,73 @@ async function pushOzonCard(product, categoryMm, ctx) {
       };
     }
 
-    const result = buildOzonImportResult({ offerId, taskId, item: itemResult });
+    let result = buildOzonImportResult({ offerId, taskId, item: itemResult });
+
+    // skipped + есть атрибуты: добиваем через /v1/product/attributes/update
+    const status = String(itemResult?.status || result.status || '').toLowerCase();
+    const pid = item.product_id;
+    if (
+      status === 'skipped' &&
+      pid != null &&
+      Array.isArray(item.attributes) &&
+      item.attributes.length > 0
+    ) {
+      try {
+        const upd = await integrationsService._ozonApiPost(
+          '/v1/product/attributes/update',
+          {
+            items: [
+              {
+                offer_id: offerId,
+                product_id: Number(pid),
+                attributes: item.attributes,
+              },
+            ],
+          },
+          apiOpts
+        );
+        const updTaskId = upd?.result?.task_id ?? upd?.task_id ?? null;
+        if (updTaskId != null && updTaskId !== '') {
+          const updItem = await pollOzonProductImportInfo(updTaskId, apiOpts, { offerId });
+          result = buildOzonImportResult({ offerId, taskId: updTaskId, item: updItem });
+          if (result.status === 'skipped') {
+            result = {
+              ...result,
+              message:
+                `${result.message}\n\nДополнительно отправлены характеристики (attributes/update) — Ozon снова ответил skipped.`,
+              warnings: result.warnings || result.message,
+            };
+          } else if (result.ok) {
+            result = {
+              ...result,
+              message: `Ozon: характеристики обновлены через attributes/update (task_id: ${updTaskId})`,
+            };
+          }
+        } else {
+          result = {
+            ...result,
+            message:
+              `${result.message}\n\nДополнительно отправлен запрос attributes/update (без task_id). Проверьте карточку в кабинете.`,
+            warnings: result.warnings || result.message,
+          };
+        }
+      } catch (attrErr) {
+        logger.warn('[CardPush] Ozon attributes/update failed', {
+          offerId,
+          error: attrErr?.message || String(attrErr),
+        });
+        result = {
+          marketplace: 'ozon',
+          ok: false,
+          taskId,
+          status: 'skipped',
+          error:
+            `${result.message || result.warnings || 'Ozon: skipped'}\n\n` +
+            `Повторная отправка характеристик не удалась: ${attrErr?.message || String(attrErr)}`,
+        };
+      }
+    }
+
     if (!result.ok) {
       logger.warn('[CardPush] Ozon import finished with errors', {
         taskId,
