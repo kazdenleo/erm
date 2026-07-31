@@ -346,9 +346,11 @@ export const productsApi = {
   pushCard: async (productId, marketplace, productPatch = null) => {
     const id = encodeURIComponent(String(productId));
     const mp = encodeURIComponent(String(marketplace).trim());
+    // Ozon: после import ждём import/info (до ~30с) — нужен запас к дефолтным 90с
     const response = await api.post(
       `/products/${id}/push-card/${mp}`,
-      productPatch && typeof productPatch === 'object' ? productPatch : undefined
+      productPatch && typeof productPatch === 'object' ? productPatch : undefined,
+      { timeout: 120000 }
     );
     return response.data;
   },

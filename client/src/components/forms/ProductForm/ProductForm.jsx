@@ -632,6 +632,7 @@ function MpSkuCountryDimsEditor({
   onItemAttrChange = null,
   itemAttrLabels = null,
   productAttrFields = null,
+  onLinkToggle = null,
 }) {
   const code = String(mp || '').toLowerCase();
   const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
@@ -830,9 +831,26 @@ function MpSkuCountryDimsEditor({
       </div>
 
       <div className="col-12">
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-          Габариты упаковки
-          {linkedDims ? (
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            marginBottom: 6,
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '2px 4px',
+          }}
+        >
+          <span>Габариты упаковки</span>
+          {typeof onLinkToggle === 'function' ? (
+            <MpFieldLinkToggles
+              fieldKey="dimensions"
+              links={formData.mp_field_links}
+              onToggle={onLinkToggle}
+              size={20}
+            />
+          ) : linkedDims ? (
             <span className="mp-field-linked-hint"> · синхрон с Основным</span>
           ) : (
             <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
@@ -3030,6 +3048,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [pushCardLoading, setPushCardLoading] = useState(null);
   const [pushCardMessage, setPushCardMessage] = useState('');
   const [pushCardError, setPushCardError] = useState('');
+  const [pushCardIsWarning, setPushCardIsWarning] = useState(false);
 
   const formatPushCardResults = (data) => {
     const payload = data?.data ?? data;
@@ -3040,9 +3059,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return results
       .map((r) => {
         const label = r.marketplace === 'ozon' ? 'OZ' : r.marketplace === 'wb' ? 'WB' : r.marketplace === 'ym' ? 'YM' : r.marketplace;
-        return `${label}: ${r.ok ? r.message || 'OK' : r.error || 'ошибка'}`;
+        if (r.ok) {
+          const msg = r.message || 'OK';
+          return msg.startsWith(`${label}:`) || msg.startsWith('Ozon:') || msg.startsWith('WB:') || msg.startsWith('YM:')
+            ? msg
+            : `${label}: ${msg}`;
+        }
+        const err = r.error || 'ошибка';
+        return err.startsWith(`${label}:`) || err.startsWith('Ozon:') || err.startsWith('Критичные')
+          ? err
+          : `${label}: ${err}`;
       })
-      .join(' · ');
+      .join('\n\n');
   };
 
   const handlePushCard = async (marketplace) => {
@@ -3058,6 +3086,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setPushCardLoading(marketplace);
     setPushCardError('');
     setPushCardMessage('');
+    setPushCardIsWarning(false);
     try {
       const body = await productsApi.pushCard(currentProduct.id, marketplace, productPatch);
       const payload = body?.data ?? body;
@@ -3078,13 +3107,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
         }
       }
       const text = formatPushCardResults(payload);
-      const allFailed =
-        Array.isArray(payload?.results) && payload.results.length > 0 && payload.results.every((r) => !r.ok);
-      if (allFailed || payload?.ok === false) {
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      const anyFailed = results.some((r) => !r.ok) || payload?.ok === false;
+      const hasWarnings = results.some((r) => r.ok && (r.warnings || /Некритичные/i.test(String(r.message || ''))));
+      if (anyFailed) {
         setPushCardError(text || 'Не удалось отправить данные на маркетплейс');
+      } else if (hasWarnings) {
+        setPushCardIsWarning(true);
+        setPushCardMessage(text || 'Карточка отправлена, но Ozon вернул замечания');
       } else {
         setPushCardMessage(
-          (text ? `${text}. ` : '') + 'Изменения сохранены в ERP и отправлены в кабинет маркетплейса.'
+          (text ? `${text}\n` : '') + 'Изменения сохранены в ERP и отправлены в кабинет маркетплейса.'
         );
         refreshMpBaselineFromState(
           formData,
@@ -4645,27 +4678,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
 
       <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
-        <h4
-          style={{
-            fontSize: '13px',
-            fontWeight: 600,
-            marginBottom: '10px',
-            color: 'var(--text)',
-            display: 'flex',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: '4px 8px',
-          }}
-        >
-          <span>Габариты</span>
-          <MpFieldLinkToggles
-            fieldKey="dimensions"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
-          />
-          <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)' }}>
-            Тумблеры OZ/WB/ЯМ — связь упаковки с МП (не между МП)
-          </span>
+        <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
+          Габариты
         </h4>
 
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
@@ -4730,9 +4744,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
         </div>
 
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты упаковки</div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            marginBottom: 6,
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '2px 4px',
+          }}
+        >
+          <span>Габариты упаковки</span>
+          <MpFieldLinkToggles
+            fieldKey="dimensions"
+            links={formData.mp_field_links}
+            onToggle={handleMpFieldLinkToggle}
+          />
+        </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          ERP: мм и г. Идут в логистику МП при включённой связи.
+          ERP: мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-2">
@@ -5231,10 +5262,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Отправить поля вкладки Ozon в кабинет'}
             >
-              {pushCardLoading === 'ozon' ? 'Отправка…' : 'Сохранить и отправить на Ozon'}
+              {pushCardLoading === 'ozon' ? 'Ожидание ответа Ozon…' : 'Сохранить и отправить на Ozon'}
             </Button>
             <span className="text-muted small">
-              «Обновить с Ozon» — загрузка в ERP. «Сохранить и отправить» — сначала запись в ERP, затем выгрузка в кабинет Ozon.
+              «Обновить с Ozon» — загрузка в ERP. «Сохранить и отправить» — запись в ERP, выгрузка и проверка ошибок в кабинете Ozon.
             </span>
           </div>
           <div className="card mt-3 border-secondary">
@@ -5309,7 +5340,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Ozon)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты товара — из атрибутов категории; упаковка — мм / г для логистики. Связь упаковки с «Основным» — тумблеры на Основном.
+                Габариты товара — из атрибутов категории; упаковка — мм / г для логистики.
               </p>
               <MpSkuCountryDimsEditor
                 mp="ozon"
@@ -5319,13 +5350,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
                 onProductDimChange={(key, v) => handleChange(key, v)}
                 productAttrFields={[]}
+                onLinkToggle={handleMpFieldLinkToggle}
               />
             </div>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'ozon' ? (
             <div
-              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
-              style={{ fontSize: '12px' }}
+              className={`alert py-2 mb-2 ${
+                pushCardError ? 'alert-danger' : pushCardIsWarning ? 'alert-warning' : 'alert-success'
+              }`}
+              style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}
             >
               {pushCardError || pushCardMessage}
             </div>
@@ -5674,8 +5708,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
             <div
-              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
-              style={{ fontSize: '12px' }}
+              className={`alert py-2 mb-2 ${
+                pushCardError ? 'alert-danger' : pushCardIsWarning ? 'alert-warning' : 'alert-success'
+              }`}
+              style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}
             >
               {pushCardError || pushCardMessage}
             </div>
@@ -5786,7 +5822,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Wildberries)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Товар — характеристики предмета (см); упаковка — см / кг. Связь упаковки с «Основным» — тумблеры на Основном.
+                Товар — характеристики предмета (см); упаковка — см / кг.
               </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
@@ -5794,6 +5830,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
+                onLinkToggle={handleMpFieldLinkToggle}
                 itemAttrValues={wbAttributeValues}
                 onItemAttrChange={handleWbItemAttrChange}
                 itemAttrLabels={(() => {
@@ -5980,9 +6017,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
                 Товар — параметры категории; упаковка — см / кг (weightDimensions).
-                {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ym')
-                  ? ' Связь упаковки с «Основным» включена.'
-                  : ' Связь упаковки выключена: только ym_draft.'}
               </p>
               <div className="row g-3 mb-3">
                 <div className="col-12 col-md-6">
@@ -6088,13 +6122,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 );
               })()}
 
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-                Габариты упаковки
-                {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ym') ? (
-                  <span className="mp-field-linked-hint"> · синхрон с Основным</span>
-                ) : (
-                  <span className="mp-field-linked-hint"> · только Яндекс</span>
-                )}
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '2px 4px',
+                }}
+              >
+                <span>Габариты упаковки</span>
+                <MpFieldLinkToggles
+                  fieldKey="dimensions"
+                  links={formData.mp_field_links}
+                  onToggle={handleMpFieldLinkToggle}
+                  size={20}
+                />
               </div>
               <YmPackagingDimensionFields
                 formData={formData}
@@ -6178,8 +6223,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )}
           {(pushCardError || pushCardMessage) && activeTab === 'ym' ? (
             <div
-              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
-              style={{ fontSize: '12px' }}
+              className={`alert py-2 mb-2 ${
+                pushCardError ? 'alert-danger' : pushCardIsWarning ? 'alert-warning' : 'alert-success'
+              }`}
+              style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}
             >
               {pushCardError || pushCardMessage}
             </div>

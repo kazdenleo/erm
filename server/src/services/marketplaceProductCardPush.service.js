@@ -107,6 +107,136 @@ function buildOzonAttributesArray(ozonAttrs) {
   return out;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Текст одной ошибки import/info для показа пользователю. */
+function formatOzonImportErrorLine(err) {
+  if (err == null) return null;
+  if (typeof err === 'string') {
+    const t = err.trim();
+    return t || null;
+  }
+  const attr = String(err.attribute_name || err.field || '').trim();
+  const desc = String(err.description || err.message || err.code || '').trim();
+  if (!attr && !desc) return null;
+  return attr && desc ? `${attr}: ${desc}` : attr || desc;
+}
+
+function splitOzonImportErrors(errors) {
+  const critical = [];
+  const warnings = [];
+  if (!Array.isArray(errors)) return { critical, warnings };
+  for (const e of errors) {
+    const line = formatOzonImportErrorLine(e);
+    if (!line) continue;
+    const level = String(e?.level || '').toUpperCase();
+    if (level.includes('WARNING')) warnings.push(line);
+    else critical.push(line);
+  }
+  return { critical, warnings };
+}
+
+/**
+ * Ждём результат /v1/product/import/info после /v3/product/import.
+ * Без опроса кабинет показывает ошибки, а ERP — «успех».
+ */
+async function pollOzonProductImportInfo(taskId, apiOpts, { offerId, maxAttempts = 20, pollIntervalMs = 1500 } = {}) {
+  let lastItem = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await sleep(pollIntervalMs);
+    const data = await integrationsService._ozonApiPost(
+      '/v1/product/import/info',
+      { task_id: Number(taskId) || taskId },
+      apiOpts
+    );
+    const items = data?.result?.items ?? data?.items ?? [];
+    if (!Array.isArray(items) || items.length === 0) continue;
+    const want = offerId != null ? String(offerId).trim() : '';
+    const item =
+      (want ? items.find((it) => String(it?.offer_id || '').trim() === want) : null) || items[0] || null;
+    if (!item) continue;
+    lastItem = item;
+    const status = String(item.status || '').toLowerCase();
+    if (status && status !== 'pending') return item;
+  }
+  return lastItem;
+}
+
+function buildOzonImportResult({ offerId, taskId, item }) {
+  const status = String(item?.status || 'pending').toLowerCase();
+  const { critical, warnings } = splitOzonImportErrors(item?.errors);
+  const warnText = warnings.length ? warnings.join('\n') : '';
+  const critText = critical.length ? critical.join('\n') : '';
+
+  if (status === 'failed') {
+    const parts = [];
+    if (critText) parts.push(`Критичные ошибки Ozon:\n${critText}`);
+    if (warnText) parts.push(`Некритичные замечания Ozon:\n${warnText}`);
+    if (parts.length === 0) {
+      parts.push('Ozon отклонил обновление карточки (status: failed). Проверьте кабинет продавца.');
+    }
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      taskId,
+      status,
+      error: parts.join('\n\n'),
+      errors: item?.errors || [],
+    };
+  }
+
+  if (status === 'pending' || !item) {
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      taskId,
+      status: 'pending',
+      error:
+        `Ozon ещё обрабатывает карточку (task_id: ${taskId}). ` +
+        'Статус не успел обновиться — откройте кабинет Ozon или отправьте карточку ещё раз через минуту.',
+    };
+  }
+
+  // imported / skipped
+  const base =
+    status === 'skipped'
+      ? `Ozon: изменений нет (skipped), task_id: ${taskId}`
+      : `Ozon: карточка обновлена (task_id: ${taskId})`;
+
+  if (critText) {
+    // Бывает imported с ERROR_LEVEL_* в массиве — всё равно показываем как ошибку.
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      taskId,
+      status,
+      error: `${base}\n\nКритичные ошибки Ozon:\n${critText}${warnText ? `\n\nНекритичные замечания:\n${warnText}` : ''}`,
+      errors: item?.errors || [],
+    };
+  }
+
+  if (warnText) {
+    return {
+      marketplace: 'ozon',
+      ok: true,
+      taskId,
+      status,
+      warnings: warnText,
+      message: `${base}\n\nНекритичные замечания Ozon (карточка обновлена, но рейтинг контента может снизиться):\n${warnText}`,
+    };
+  }
+
+  return {
+    marketplace: 'ozon',
+    ok: true,
+    taskId,
+    status,
+    message: base,
+  };
+}
+
 function buildWbCharacteristics(wbAttrs) {
   const obj = parseJsonObject(wbAttrs);
   return Object.entries(obj)
@@ -184,14 +314,48 @@ async function pushOzonCard(product, categoryMm, ctx) {
       }
     );
     const taskId = data?.result?.task_id ?? data?.task_id ?? null;
-    return {
-      marketplace: 'ozon',
-      ok: true,
-      taskId,
-      message: taskId
-        ? `Задача обновления Ozon создана (task_id: ${taskId})`
-        : 'Запрос на обновление Ozon отправлен'
+    if (taskId == null || taskId === '') {
+      return {
+        marketplace: 'ozon',
+        ok: false,
+        error: 'Ozon принял запрос, но не вернул task_id — результат обновления неизвестен',
+      };
+    }
+
+    const apiOpts = {
+      profileId: ctx.profileId ?? null,
+      ozonOverride,
     };
+    let itemResult;
+    try {
+      itemResult = await pollOzonProductImportInfo(taskId, apiOpts, { offerId });
+    } catch (pollErr) {
+      logger.warn('[CardPush] Ozon import/info poll failed', {
+        taskId,
+        offerId,
+        error: pollErr?.message || String(pollErr),
+      });
+      return {
+        marketplace: 'ozon',
+        ok: false,
+        taskId,
+        error:
+          `Задача Ozon создана (task_id: ${taskId}), но не удалось получить статус: ${
+            pollErr?.message || String(pollErr)
+          }. Проверьте ошибки в кабинете продавца.`,
+      };
+    }
+
+    const result = buildOzonImportResult({ offerId, taskId, item: itemResult });
+    if (!result.ok) {
+      logger.warn('[CardPush] Ozon import finished with errors', {
+        taskId,
+        offerId,
+        status: result.status,
+        errorPreview: String(result.error || '').slice(0, 500),
+      });
+    }
+    return result;
   } catch (e) {
     return { marketplace: 'ozon', ok: false, error: e?.message || String(e) };
   }
