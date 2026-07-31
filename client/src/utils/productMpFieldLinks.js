@@ -1,7 +1,7 @@
 /**
  * Связь полей вкладки «Основное» с карточками маркетплейсов.
  * ERP: габариты мм, вес г.
- * Ozon: мм / г; WB: см / г (weightBrutto); YM: см / кг.
+ * Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
 export const MP_FIELD_LINK_KEYS = ['name', 'sku', 'description', 'brand', 'country', 'dimensions'];

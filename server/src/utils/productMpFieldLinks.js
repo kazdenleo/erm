@@ -1,6 +1,6 @@
 /**
  * Связь полей ERP ↔ маркетплейсы (серверная копия логики client/src/utils/productMpFieldLinks.js).
- * ERP: мм / г; Ozon: мм / г; WB: см / г; YM: см / кг.
+ * ERP: мм / г; Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
 export const MP_FIELD_LINK_KEYS = ['name', 'sku', 'description', 'brand', 'country', 'dimensions'];

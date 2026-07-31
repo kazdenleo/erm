@@ -935,19 +935,20 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     card.sizes = existing.sizes;
   }
 
-  // ERP: мм / г; WB Content API: габариты в см, weightBrutto в граммах.
+  // ERP: мм / г; WB Content API: габариты в см (целые), weightBrutto в килограммах (до 3 знаков).
   if (shouldPushDimensions(product, 'wb')) {
     const dims = resolveDimensionsMmForPush(product, 'wb') || {};
     const L = Number(dims.length);
     const W = Number(dims.width);
     const H = Number(dims.height);
     if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
+      const weightKg = dims.weight != null && Number(dims.weight) > 0 ? gramsToKg(dims.weight) : null;
       card.dimensions = {
         length: mmToCm(L),
         width: mmToCm(W),
         height: mmToCm(H),
-        ...(dims.weight != null && Number(dims.weight) > 0
-          ? { weightBrutto: Number(dims.weight) }
+        ...(weightKg != null
+          ? { weightBrutto: weightKg }
           : existing?.dimensions?.weightBrutto != null
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
             : {})

@@ -1007,7 +1007,7 @@ function MpSkuCountryDimsEditor({
         </div>
         {code === 'wb' ? (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            В интерфейсе — {L} / {Wt}. На WB уходит в см и г (weightBrutto). Если габариты упаковки меньше
+            В интерфейсе — {L} / {Wt}. На WB уходит в см и кг (weightBrutto). Если габариты упаковки меньше
             фактических — возможен штраф.
           </div>
         ) : (
@@ -6151,7 +6151,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Wildberries)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На WB уходит в см и г (weightBrutto).
+                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На WB уходит в см и кг (weightBrutto).
               </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
