@@ -32,6 +32,10 @@ import {
   lengthCmToDisplay,
   lengthDisplayToCm,
 } from '../../utils/displayUnits.js';
+import {
+  WB_ITEM_DIM_CHARC,
+  classifyMarketplaceDimAttrName,
+} from '../../utils/marketplaceDimensions.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import {
   FILTER_CATEGORY_NONE,
@@ -42,6 +46,53 @@ import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '..
 import { useSuppliers } from '../../hooks/useSuppliers';
 import './ProductsBulkEdit.css';
 import './Products.css';
+
+/** Алиасы габаритов товара (ERP + зеркала во вкладках МП) — одно значение на все. */
+const PRODUCT_DIM_ALIAS = {
+  product_length: [
+    'product_length',
+    'ozon_product_length',
+    'wb_product_length',
+    'ym_product_length',
+  ],
+  product_width: [
+    'product_width',
+    'ozon_product_width',
+    'wb_product_width',
+    'ym_product_width',
+  ],
+  product_height: [
+    'product_height',
+    'ozon_product_height',
+    'wb_product_height',
+    'ym_product_height',
+  ],
+  product_weight: [
+    'product_weight',
+    'ozon_product_weight',
+    'wb_product_weight',
+    'ym_product_weight',
+  ],
+};
+
+function productDimBaseKey(key) {
+  const k = String(key || '');
+  if (k.endsWith('product_length') || k === 'product_length') return 'product_length';
+  if (k.endsWith('product_width') || k === 'product_width') return 'product_width';
+  if (k.endsWith('product_height') || k === 'product_height') return 'product_height';
+  if (k.endsWith('product_weight') || k === 'product_weight') return 'product_weight';
+  return null;
+}
+
+function withSyncedProductDims(row, key, value) {
+  const base = productDimBaseKey(key);
+  if (!base) return { ...row, [key]: value };
+  const next = { ...row };
+  for (const alias of PRODUCT_DIM_ALIAS[base]) {
+    next[alias] = value;
+  }
+  return next;
+}
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
 const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
@@ -189,11 +240,16 @@ const COLUMNS = [
   { key: 'brand', label: 'Бренд', input: 'text', minW: 100 },
   /* описание */
   { key: 'description', label: 'Описание', input: 'textarea', minW: 220 },
-  /* габариты и вес */
-  { key: 'weight', label: 'Вес', input: 'number', minW: 72, dimKind: 'weight' },
-  { key: 'length', label: 'Длина', input: 'number', minW: 64, dimKind: 'length' },
-  { key: 'width', label: 'Ширина', input: 'number', minW: 64, dimKind: 'length' },
-  { key: 'height', label: 'Высота', input: 'number', minW: 64, dimKind: 'length' },
+  /* габариты товара (без упаковки) — вкладка «Основное» */
+  { key: 'product_length', label: 'Основное · Длина товара', title: 'Основное · Длина товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_width', label: 'Основное · Ширина товара', title: 'Основное · Ширина товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_height', label: 'Основное · Высота товара', title: 'Основное · Высота товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_weight', label: 'Основное · Вес товара', title: 'Основное · Вес товара', input: 'number', minW: 110, dimKind: 'weight' },
+  /* габариты упаковки (ERP / «Основное») — общие, связь с МП через тумблеры в карточке */
+  { key: 'length', label: 'Основное · Длина упаковки', title: 'Основное · Длина упаковки', input: 'number', minW: 120, dimKind: 'length' },
+  { key: 'width', label: 'Основное · Ширина упаковки', title: 'Основное · Ширина упаковки', input: 'number', minW: 120, dimKind: 'length' },
+  { key: 'height', label: 'Основное · Высота упаковки', title: 'Основное · Высота упаковки', input: 'number', minW: 120, dimKind: 'length' },
+  { key: 'weight', label: 'Основное · Вес с упаковкой', title: 'Основное · Вес с упаковкой', input: 'number', minW: 120, dimKind: 'weight' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
@@ -209,29 +265,41 @@ const COLUMNS = [
   { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
-  { key: 'ozon_pack_length', label: 'Длина упаковки', title: 'Ozon · Длина упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_width', label: 'Ширина упаковки', title: 'Ozon · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_height', label: 'Высота упаковки', title: 'Ozon · Высота упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_weight', label: 'Вес с упаковкой', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'weight' },
+  { key: 'ozon_product_length', label: 'Ozon · Длина товара', title: 'Ozon · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_width', label: 'Ozon · Ширина товара', title: 'Ozon · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_height', label: 'Ozon · Высота товара', title: 'Ozon · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_weight', label: 'Ozon · Вес товара', title: 'Ozon · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
+  { key: 'ozon_pack_length', label: 'Ozon · Длина упаковки', title: 'Ozon · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_width', label: 'Ozon · Ширина упаковки', title: 'Ozon · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_height', label: 'Ozon · Высота упаковки', title: 'Ozon · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_weight', label: 'Ozon · Вес с упаковкой', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
   { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 160, mpBucket: 'wb' },
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 200, mpBucket: 'wb' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 90, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Артикул продавца', title: 'Wildberries · Артикул продавца', input: 'text', minW: 110, mpBucket: 'wb' },
-  { key: 'wb_pack_length', label: 'Длина упаковки', title: 'Wildberries · Длина упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_width', label: 'Ширина упаковки', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_height', label: 'Высота упаковки', title: 'Wildberries · Высота упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_weight', label: 'Вес с упаковкой', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'weight' },
+  { key: 'wb_product_length', label: 'WB · Длина товара', title: 'Wildberries · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_width', label: 'WB · Ширина товара', title: 'Wildberries · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_height', label: 'WB · Высота товара', title: 'Wildberries · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_weight', label: 'WB · Вес товара', title: 'Wildberries · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
+  { key: 'wb_pack_length', label: 'WB · Длина упаковки', title: 'Wildberries · Длина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_width', label: 'WB · Ширина упаковки', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_height', label: 'WB · Высота упаковки', title: 'Wildberries · Высота упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_weight', label: 'WB · Вес с упаковкой', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 100, mpBucket: 'wb' },
   /* ——— Яндекс.Маркет ——— */
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 160, mpBucket: 'ym' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 100, mpBucket: 'ym' },
-  { key: 'ym_pack_length', label: 'Длина упаковки', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_width', label: 'Ширина упаковки', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_height', label: 'Высота упаковки', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_weight', label: 'Вес с упаковкой', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'weight' },
+  { key: 'ym_product_length', label: 'ЯМ · Длина товара', title: 'Яндекс.Маркет · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_width', label: 'ЯМ · Ширина товара', title: 'Яндекс.Маркет · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_height', label: 'ЯМ · Высота товара', title: 'Яндекс.Маркет · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_weight', label: 'ЯМ · Вес товара', title: 'Яндекс.Маркет · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
+  { key: 'ym_pack_length', label: 'ЯМ · Длина упаковки', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_width', label: 'ЯМ · Ширина упаковки', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_height', label: 'ЯМ · Высота упаковки', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_weight', label: 'ЯМ · Вес с упаковкой', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
 ];
 
 function withDisplayUnitLabels(cols, lengthUnit, weightUnit) {
@@ -438,7 +506,8 @@ function dedicatedMpColSortRank(col) {
   if (/_name$/.test(k) || k.endsWith('_name')) return 0;
   if (/description/.test(k)) return 1;
   if (/^sku_|vendor_code|product_id|offer/.test(k) || k.includes('product_id')) return 2;
-  if (/_pack_/.test(k)) return 3;
+  if (/_product_(length|width|height|weight)$/.test(k)) return 3;
+  if (/_pack_/.test(k)) return 4;
   if (/_brand$/.test(k)) return 5;
   return 6;
 }
@@ -607,9 +676,8 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     }
     if (h.includes('аннотация') || (h.includes('описание') && h.includes('маркетинг'))) return true;
     if (h === 'бренд' || h.includes('торговая марк')) return true;
-    // Габариты/вес упаковки — отдельные столбцы ozon_pack_*
-    if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(h)) return true;
-    if (/^вес\s+(с\s+)?упаковк|^вес\s+товара\s+с\s+упаковк/.test(h)) return true;
+    const kind = classifyMarketplaceDimAttrName(raw);
+    if (kind === 'pack' || kind === 'product') return true;
     return false;
   }
 
@@ -618,7 +686,8 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     if (h === 'бренд' || h.includes('бренд продавца') || h.includes('торговая марк')) return true;
     if (h === 'название' || (h.includes('наименование') && h.includes('товар'))) return true;
     if (h.includes('описание') && (h.includes('товар') || h.includes('продавца'))) return true;
-    // Габариты/вес упаковки — отдельные столбцы wb_pack_*
+    const kind = classifyMarketplaceDimAttrName(raw);
+    if (kind === 'pack' || kind === 'product') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк|брутто|brutto/.test(h)) return true;
     return false;
@@ -629,6 +698,8 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
       return true;
     }
     if ((h.includes('описание') && (h.includes('товар') || h.includes('карточк'))) || h === 'описание товара') return true;
+    const kind = classifyMarketplaceDimAttrName(raw);
+    if (kind === 'pack' || kind === 'product') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк/.test(h)) return true;
     return false;
@@ -722,6 +793,31 @@ function ozonAttrPositiveNumber(attrs, ...ids) {
   return null;
 }
 
+function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
+  const length = lengthMmToDisplay(p.product_length ?? p.productLength, lengthUnit);
+  const width = lengthMmToDisplay(p.product_width ?? p.productWidth, lengthUnit);
+  const height = lengthMmToDisplay(p.product_height ?? p.productHeight, lengthUnit);
+  const weight = weightGToDisplay(p.product_weight ?? p.productWeight, weightUnit);
+  return {
+    product_length: length,
+    product_width: width,
+    product_height: height,
+    product_weight: weight,
+    ozon_product_length: length,
+    ozon_product_width: width,
+    ozon_product_height: height,
+    ozon_product_weight: weight,
+    wb_product_length: length,
+    wb_product_width: width,
+    wb_product_height: height,
+    wb_product_weight: weight,
+    ym_product_length: length,
+    ym_product_width: width,
+    ym_product_height: height,
+    ym_product_weight: weight,
+  };
+}
+
 function readOzonPackDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const d = getMpDraftDimensionsMm(p, 'ozon') || {};
   const attrs = normalizeJsonAttrs(p.ozon_attributes);
@@ -799,6 +895,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   const ozPack = readOzonPackDimsFromProduct(p, lengthUnit, weightUnit);
   const wbPack = readWbPackDimsFromProduct(p, lengthUnit, weightUnit);
   const ymPack = readYmPackDimsFromProduct(p, lengthUnit, weightUnit);
+  const productDims = readProductDimsFromProduct(p, lengthUnit, weightUnit);
   const row = {
     id: str(p.id),
     name: str(p.name),
@@ -842,6 +939,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     ...ozPack,
     ...wbPack,
     ...ymPack,
+    ...productDims,
     weight: weightGToDisplay(p.weight, weightUnit),
     length: lengthMmToDisplay(p.length, lengthUnit),
     width: lengthMmToDisplay(p.width, lengthUnit),
@@ -1038,6 +1136,23 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   if (!eq(original.height, current.height)) {
     touch('height', lengthDisplayToMm(current.height, lengthUnit));
   }
+  if (!eq(original.product_length, current.product_length)) {
+    touch('product_length', lengthDisplayToMm(current.product_length, lengthUnit));
+  }
+  if (!eq(original.product_width, current.product_width)) {
+    touch('product_width', lengthDisplayToMm(current.product_width, lengthUnit));
+  }
+  if (!eq(original.product_height, current.product_height)) {
+    touch('product_height', lengthDisplayToMm(current.product_height, lengthUnit));
+  }
+  if (!eq(original.product_weight, current.product_weight)) {
+    touch('product_weight', weightDisplayToG(current.product_weight, weightUnit));
+  }
+  const productDimsTouched =
+    !eq(original.product_length, current.product_length) ||
+    !eq(original.product_width, current.product_width) ||
+    !eq(original.product_height, current.product_height) ||
+    !eq(original.product_weight, current.product_weight);
   const dimTouched =
     !eq(original.length, current.length) ||
     !eq(original.width, current.width) ||
@@ -1063,6 +1178,24 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         touch(map[bucket], after);
       }
     }
+  }
+
+  if (productDimsTouched) {
+    const prevWb = {
+      ...normalizeJsonAttrs(original._productRef?.wb_attributes),
+      ...normalizeJsonAttrs(original._mpAttrBaseline?.wb),
+      ...(payload.wb_attributes && typeof payload.wb_attributes === 'object'
+        ? payload.wb_attributes
+        : {}),
+    };
+    const nextWb = { ...prevWb };
+    const cmL = lengthDisplayToCm(current.product_length, lengthUnit);
+    const cmW = lengthDisplayToCm(current.product_width, lengthUnit);
+    const cmH = lengthDisplayToCm(current.product_height, lengthUnit);
+    if (cmL != null && Number(cmL) > 0) nextWb[WB_ITEM_DIM_CHARC.length] = String(cmL);
+    if (cmW != null && Number(cmW) > 0) nextWb[WB_ITEM_DIM_CHARC.width] = String(cmW);
+    if (cmH != null && Number(cmH) > 0) nextWb[WB_ITEM_DIM_CHARC.height] = String(cmH);
+    touch('wb_attributes', nextWb);
   }
 
   return payload;
@@ -1281,6 +1414,35 @@ export function ProductsBulkEdit() {
     }
     return withDisplayUnitLabels(out, lengthUnit, weightUnit);
   }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, lengthUnit, weightUnit]);
+
+  /** Сдвиг закреплённого столбца среди пинов (артикул всегда левее). dir: -1 влево, +1 вправо */
+  const movePinnedColumn = useCallback(
+    (colKey, dir) => {
+      const key = String(colKey || '');
+      if (!key || key === DEFAULT_STICKY_COL_KEY) return;
+      const step = dir < 0 ? -1 : 1;
+      setPinnedColumnKeys((prev) => {
+        const visibleKeySet = new Set((visibleColumns || []).map((c) => c.key));
+        const active = prev.filter((k) => visibleKeySet.has(k));
+        const inactive = prev.filter((k) => !visibleKeySet.has(k));
+        const i = active.indexOf(key);
+        if (i < 0) return prev;
+        const j = i + step;
+        if (j < 0 || j >= active.length) return prev;
+        const next = [...active];
+        const tmp = next[i];
+        next[i] = next[j];
+        next[j] = tmp;
+        return [...next, ...inactive];
+      });
+    },
+    [visibleColumns]
+  );
+
+  const visiblePinnedKeys = useMemo(() => {
+    const vis = new Set((visibleColumns || []).map((c) => c.key));
+    return (pinnedColumnKeys || []).filter((k) => vis.has(k));
+  }, [pinnedColumnKeys, visibleColumns]);
 
   const displayColumns = useMemo(
     () => orderColumnsWithPins(visibleColumns, pinnedColumnKeys),
@@ -1781,16 +1943,15 @@ export function ProductsBulkEdit() {
     if (!col) return;
     const key = col.key;
     setRows((prev) =>
-      prev.map((r) => ({
-        ...r,
-        [key]: bulkDraft,
-      }))
+      prev.map((r) => withSyncedProductDims(r, key, bulkDraft))
     );
     setBulkModal({ open: false, column: null });
   };
 
   const updateCell = (id, key, value) => {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+    setRows((prev) =>
+      prev.map((r) => (r.id === id ? withSyncedProductDims(r, key, value) : r))
+    );
   };
 
   const handleSave = async () => {
@@ -2429,6 +2590,9 @@ export function ProductsBulkEdit() {
                 {displayColumns.map((col) => {
                   const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
                   const isPinned = pinnedColumnKeys.includes(col.key);
+                  const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
+                  const canMoveLeft = pinIdx > 0;
+                  const canMoveRight = pinIdx >= 0 && pinIdx < visiblePinnedKeys.length - 1;
                   return (
                     <th
                       key={col.key}
@@ -2447,20 +2611,58 @@ export function ProductsBulkEdit() {
                             <PinIcon locked />
                           </span>
                         ) : (
-                          <button
-                            type="button"
-                            className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
-                            title={isPinned ? 'Открепить столбец' : 'Закрепить столбец слева (после артикула)'}
-                            aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
-                            aria-pressed={isPinned}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              togglePinColumn(col.key);
-                            }}
-                          >
-                            <PinIcon />
-                          </button>
+                          <span className="products-bulk-th-actions">
+                            {isPinned ? (
+                              <button
+                                type="button"
+                                className="products-bulk-pin-btn products-bulk-move-btn"
+                                title="Сдвинуть закреплённый столбец влево"
+                                aria-label="Сдвинуть столбец влево"
+                                disabled={!canMoveLeft}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  movePinnedColumn(col.key, -1);
+                                }}
+                              >
+                                ‹
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
+                              title={
+                                isPinned
+                                  ? 'Открепить столбец'
+                                  : 'Закрепить столбец слева (после артикула)'
+                              }
+                              aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
+                              aria-pressed={isPinned}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                togglePinColumn(col.key);
+                              }}
+                            >
+                              <PinIcon />
+                            </button>
+                            {isPinned ? (
+                              <button
+                                type="button"
+                                className="products-bulk-pin-btn products-bulk-move-btn"
+                                title="Сдвинуть закреплённый столбец вправо"
+                                aria-label="Сдвинуть столбец вправо"
+                                disabled={!canMoveRight}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  movePinnedColumn(col.key, 1);
+                                }}
+                              >
+                                ›
+                              </button>
+                            ) : null}
+                          </span>
                         )}
                       </div>
                       {col.hint ? (

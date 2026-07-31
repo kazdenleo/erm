@@ -249,6 +249,32 @@
   line-height: 1.25;
 }
 
+.products-bulk-th-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0;
+}
+
+.products-bulk-move-btn {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 3px;
+  min-width: 16px;
+  opacity: 0.55;
+}
+
+.products-bulk-move-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.products-bulk-move-btn:disabled {
+  opacity: 0.15;
+  cursor: default;
+  pointer-events: none;
+}
+
 .products-bulk-pin-btn {
   flex: 0 0 auto;
   margin: 0;
