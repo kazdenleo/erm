@@ -26,6 +26,7 @@ import supplierStocksRoutes from './supplierStocks.routes.js';
 import integrationsRoutes from './integrations.routes.js';
 import { categoriesRoutes } from './categories.routes.js';
 import { brandsRoutes } from './brands.routes.js';
+import { employeeTasksRoutes } from './employeeTasks.routes.js';
 import pricesRoutes from './prices.routes.js';
 import pricingStrategiesRoutes from './pricingStrategies.routes.js';
 import userCategoriesRoutes from './user_categories.routes.js';
@@ -271,6 +272,9 @@ router.use('/categories', categoriesRoutes);
 
 // Brands API
 router.use('/brands', brandsRoutes);
+
+// Задачи сотрудникам
+router.use('/employee-tasks', employeeTasksRoutes);
 
 // Prices API (расчет цен для маркетплейсов)
 router.use('/product/prices', pricesRoutes);

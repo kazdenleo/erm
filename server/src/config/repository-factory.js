@@ -34,6 +34,7 @@ import profilesRepositoryPG from '../repositories/profiles.repository.pg.js';
 import usersRepositoryPG from '../repositories/users.repository.pg.js';
 import inquiriesRepositoryPG from '../repositories/inquiries.repository.pg.js';
 import marketplaceInventorySnapshotsRepositoryPG from '../repositories/marketplaceInventorySnapshots.repository.pg.js';
+import employeeTasksRepositoryPG from '../repositories/employee_tasks.repository.pg.js';
 
 // Единый флаг с config/database.js (USE_POSTGRESQL в .env)
 const USE_POSTGRESQL = envFlag('USE_POSTGRESQL', true) || config.database.usePostgreSQL === true;
@@ -203,6 +204,13 @@ class RepositoryFactory {
     return inquiriesRepositoryPG;
   }
 
+  getEmployeeTasksRepository() {
+    if (!this.usePostgreSQL) {
+      throw new Error('Employee tasks repository is only available with PostgreSQL');
+    }
+    return employeeTasksRepositoryPG;
+  }
+
   /**
    * Универсальный метод для получения репозитория по имени
    */
@@ -225,7 +233,8 @@ class RepositoryFactory {
       profiles: this.getProfilesRepository(),
       users: this.getUsersRepository(),
       inquiries: this.getInquiriesRepository(),
-      certificates: this.getCertificatesRepository()
+      certificates: this.getCertificatesRepository(),
+      employee_tasks: this.getEmployeeTasksRepository(),
     };
     
     return repositories[name] || null;

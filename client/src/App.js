@@ -44,6 +44,7 @@ import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
 import { Brands } from './pages/Brands/Brands';
+import { Tasks } from './pages/Tasks/Tasks';
 import { Prices } from './pages/Prices/Prices';
 import { PricingStrategies } from './pages/Prices/PricingStrategies';
 import { PricePromotions } from './pages/Prices/PricePromotions';
@@ -158,6 +159,7 @@ function App() {
           <Route path="/print/product-labels-batch" element={<ProtectedRoute><PrintProductLabelsBatch /></ProtectedRoute>} />
           <Route path="/categories" element={<ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>} />
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
+          <Route path="/tasks" element={<ProtectedRoute><Layout><Tasks /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
           <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
           <Route path="/prices/promotions" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />

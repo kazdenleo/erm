@@ -35,6 +35,7 @@ export const NAV_SECTION_KEYS = [
   'categories',
   'brands',
   'integrations',
+  'tasks',
 ];
 
 export const NAV_SECTION_LABELS = {
@@ -69,12 +70,13 @@ export const NAV_SECTION_LABELS = {
   categories: 'Категории',
   brands: 'Бренды',
   integrations: 'Интеграции',
+  tasks: 'Задачи (оставлять и выполнять)',
 };
 
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'prices'],
+    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'prices', 'tasks'],
   },
   {
     title: 'Маркетплейс',
@@ -168,6 +170,7 @@ export const ROLE_NAV_PRESETS = {
     warehouse_writeoff: false,
     settings_users: false,
     settings_roles: false,
+    tasks: false,
   },
   admin: {},
 };
@@ -315,5 +318,6 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/brands')) return 'brands';
   if (path.startsWith('/integrations')) return 'integrations';
   if (path.startsWith('/assembly')) return 'assembly';
+  if (path.startsWith('/tasks')) return 'tasks';
   return null;
 }

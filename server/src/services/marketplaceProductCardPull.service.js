@@ -17,6 +17,7 @@ import { importImagesFromMarketplaceCard } from './marketplaceProductImages.serv
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { createDimensionsCheckTaskIfNeeded } from './employeeTasks.service.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -869,6 +870,24 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     await notifyCardFieldChanges(product, mp, changedLabels);
   }
 
+  const profileIdForTask = opts.profileId ?? product.profile_id ?? product.profileId ?? null;
+  if (profileIdForTask != null && changedLabels.length > 0) {
+    try {
+      await createDimensionsCheckTaskIfNeeded({
+        profileId: profileIdForTask,
+        product,
+        marketplace: mp,
+        changedLabels,
+      });
+    } catch (e) {
+      logger.warn('[CardPull] dimensions task create failed', {
+        productId: product.id,
+        mp,
+        error: e?.message || String(e),
+      });
+    }
+  }
+
   return {
     marketplace: mp,
     ok: true,
@@ -993,10 +1012,19 @@ export async function pullDailyMarketplaceCardsForEnabledOrgs(opts = {}) {
     0,
     Number(opts.delayMs ?? process.env.MP_CARD_PULL_DAILY_DELAY_MS ?? 250) || 250
   );
+  const onlyProfileId =
+    opts.profileId != null && Number.isFinite(Number(opts.profileId))
+      ? Number(opts.profileId)
+      : null;
   const orgRepo = repositoryFactory.getOrganizationsRepository();
-  const orgs = (await orgRepo.findAll()).filter((o) => o.daily_pull_marketplace_cards === true);
+  let orgs = (await orgRepo.findAll()).filter((o) => o.daily_pull_marketplace_cards === true);
+  if (onlyProfileId != null) {
+    orgs = orgs.filter((o) => Number(o.profile_id ?? o.profileId) === onlyProfileId);
+  }
   if (orgs.length === 0) {
-    logger.info('[MP Card Pull Daily] нет организаций с daily_pull_marketplace_cards=true');
+    logger.info('[MP Card Pull Daily] нет организаций с daily_pull_marketplace_cards=true', {
+      profileId: onlyProfileId,
+    });
     return { organizations: 0, products: 0, notified: 0, ok: 0, failed: 0 };
   }
 
