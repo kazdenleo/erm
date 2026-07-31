@@ -1365,6 +1365,17 @@ export function ProductsBulkEdit() {
     if (removed > 0) setChangedForPushCount(changedForPushIdsRef.current.size);
   }, []);
 
+  useEffect(() => {
+    if (!pushOfferOpen) return undefined;
+    const t = window.setTimeout(() => {
+      document.querySelector('.products-bulk-push-offer')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [pushOfferOpen]);
+
   const [mpAttrColumnDefs, setMpAttrColumnDefs] = useState([]);
   const [showMpOzon, setShowMpOzon] = useState(() => readMpBucketVisibility().ozon);
   const [showMpWb, setShowMpWb] = useState(() => readMpBucketVisibility().wb);
@@ -1993,7 +2004,7 @@ export function ProductsBulkEdit() {
   };
 
   const handleSave = async (opts = {}) => {
-    const offerPush = opts.offerPush === true;
+    const suppressPushOffer = opts?.suppressPushOffer === true;
     setSaving(true);
     setSaveMessage(null);
     const errors = [];
@@ -2025,14 +2036,19 @@ export function ProductsBulkEdit() {
             errors.slice(0, 5).map((e) => `#${e.id} (${e.sku}): ${e.msg}`).join('; ')
         );
       }
-      if (offerPush && ok > 0) {
+      if (!suppressPushOffer && ok > 0) {
         setPushOfferSavedCount(ok);
-        setPushOfferOpen(true);
+        // после async-сохранения открываем на следующем тике — иначе клик/фокус могут сразу закрыть модалку
+        window.setTimeout(() => setPushOfferOpen(true), 0);
       }
       return { ok, errorCount: errors.length };
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSaveClick = () => {
+    void handleSave({ suppressPushOffer: false });
   };
 
   const closeLeavePrompt = () => {
@@ -2041,7 +2057,7 @@ export function ProductsBulkEdit() {
   };
 
   const handleLeaveSaveAndContinue = async () => {
-    const result = await handleSave({ offerPush: false });
+    const result = await handleSave({ suppressPushOffer: true });
     if (result?.errorCount > 0) {
       // остаёмся на странице — показать ошибки
       pendingLeaveActionRef.current = null;
@@ -2106,7 +2122,7 @@ export function ProductsBulkEdit() {
       if (!okConfirm) return;
     }
     if (dirtyAmong.length > 0) {
-      const saveResult = await handleSave({ offerPush: false });
+      const saveResult = await handleSave({ suppressPushOffer: true });
       if (saveResult?.errorCount > 0) {
         setPushMpMessage('Отправка отменена: не удалось сохранить все изменения в ERP.');
         return;
@@ -2371,8 +2387,64 @@ export function ProductsBulkEdit() {
         </div>
       ) : null}
       {saveMessage ? (
-        <div className={`alert ${saveMessage.includes('Ошибок') ? 'alert-warning' : 'alert-success'} mb-0`} role="status">
+        <div className={`alert ${saveMessage.includes('Ошибок') ? 'alert-warning' : 'alert-success'} mb-2`} role="status">
           {saveMessage}
+        </div>
+      ) : null}
+
+      {pushOfferOpen ? (
+        <div className="alert alert-info products-bulk-push-offer mb-2" role="dialog" aria-label="Отправить на маркетплейсы">
+          <div className="d-flex flex-wrap align-items-center gap-2">
+            <span className="me-auto">
+              Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить изменения на
+              маркетплейсы?
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={!!pushMpLoading}
+              onClick={() => setPushOfferOpen(false)}
+            >
+              Не сейчас
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={!!pushMpLoading}
+              onClick={() => void handlePushToMarketplaces('ozon', { skipConfirm: true })}
+            >
+              {pushMpLoading === 'ozon' ? '…' : 'На Ozon'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={!!pushMpLoading}
+              onClick={() => void handlePushToMarketplaces('wb', { skipConfirm: true })}
+            >
+              {pushMpLoading === 'wb' ? '…' : 'На WB'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={!!pushMpLoading}
+              onClick={() => void handlePushToMarketplaces('ym', { skipConfirm: true })}
+            >
+              {pushMpLoading === 'ym' ? '…' : 'На Я.Маркет'}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              disabled={!!pushMpLoading}
+              onClick={() => void handlePushToMarketplaces('all', { skipConfirm: true })}
+            >
+              {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
+            </Button>
+          </div>
         </div>
       ) : null}
 
@@ -3044,7 +3116,7 @@ export function ProductsBulkEdit() {
               variant="primary"
               size="small"
               type="button"
-              onClick={() => void handleSave({ offerPush: true })}
+              onClick={handleSaveClick}
               disabled={saving || !hasUnsavedChanges}
             >
               {saving ? 'Сохранение…' : 'Сохранить изменения'}
