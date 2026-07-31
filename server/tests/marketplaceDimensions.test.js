@@ -96,7 +96,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('wb_attributes_pack');
   });
 
-  test('WB: item attrs ignored (packaging only)', () => {
+  test('WB: item attrs ignored; ERP packaging used when unlinked', () => {
     const product = {
       length: 400,
       width: 250,
@@ -105,8 +105,8 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
       mp_field_links: { dimensions: [] },
       wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
     };
-    expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();
-    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBeNull();
+    expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('product_packaging');
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(15);
   });
 
   test('YM: linked ERP preferred over stale ym_draft', () => {
@@ -141,7 +141,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(2.874);
   });
 
-  test('YM: without packaging dims — null (no ERP when unlinked)', () => {
+  test('YM: without mp draft — ERP packaging fallback', () => {
     const product = {
       length: 400,
       width: 250,
@@ -149,8 +149,8 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
       volume: 3.09,
       mp_field_links: { dimensions: [] },
     };
-    expect(resolveMarketplaceDimensionsMm(product, 'ym')).toBeNull();
-    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBeNull();
+    expect(resolveMarketplaceDimensionsMm(product, 'ym').source).toBe('product_packaging');
+    expect(resolveMarketplaceVolumeLiters(product, 'ym')).toBe(15);
   });
 
   test('YM: linked without ERP falls back to ym_draft', () => {
@@ -187,7 +187,7 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(15);
   });
 
-  test('Ozon: unlinked without draft — null (no ERP)', () => {
+  test('Ozon: unlinked without draft — ERP packaging fallback', () => {
     const product = {
       length: 400,
       width: 250,
@@ -195,29 +195,28 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
       volume: 15,
       mp_field_links: { dimensions: [] },
     };
-    expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
-    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBeNull();
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon').source).toBe('product_packaging');
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(15);
   });
 
-  test('Ozon/WB: no ERP fallback when mp attrs empty', () => {
+  test('Ozon/WB: zero attrs still fall back to ERP packaging', () => {
     const product = {
-      length: 400,
-      width: 250,
-      height: 150,
-      volume: 15,
+      length: 100,
+      width: 123,
+      height: 89,
+      volume: 1.095,
       mp_field_links: { dimensions: [] },
+      ozon_attributes: { 9802: '0', 6605: '0', 6606: '0' },
+      ozon_draft: {},
     };
-    expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
-    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBeNull();
-    expect(resolveMarketplaceDimensionsMm(product, 'wb')).toBeNull();
-    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBeNull();
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon').source).toBe('product_packaging');
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon')).toBe(1.095);
+    expect(resolveMarketplaceDimensionsMm(product, 'wb').source).toBe('product_packaging');
   });
 
-  test('allowGeneralFallback opt-in restores ERP', () => {
-    const product = { length: 400, width: 250, height: 150, mp_field_links: { dimensions: [] } };
-    expect(resolveMarketplaceDimensionsMm(product, 'ozon', { allowGeneralFallback: true }).source).toBe(
-      'product'
-    );
-    expect(resolveMarketplaceVolumeLiters(product, 'wb', { allowGeneralFallback: true })).toBe(15);
+  test('allowGeneralFallback still works when no ERP packaging fields', () => {
+    const product = { volume: 12, mp_field_links: { dimensions: [] } };
+    expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
+    expect(resolveMarketplaceVolumeLiters(product, 'ozon', { allowGeneralFallback: true })).toBe(12);
   });
 });

@@ -2013,14 +2013,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const width = toNum(dx);
       const height = toNum(dy);
       const weight = toNum(wG);
-      if (length != null || width != null || height != null || weight != null) {
+      const erpLength = toNum(prev.length);
+      const erpWidth = toNum(prev.width);
+      const erpHeight = toNum(prev.height);
+      const erpWeight = toNum(prev.weight);
+      // Если Ozon не вернул габариты (часто 0 в attrs), берём упаковку с «Основного» в draft —
+      // иначе в мин. ценах «нет габаритов» при заполненных ERP L×W×H.
+      const lengthF = length ?? erpLength;
+      const widthF = width ?? erpWidth;
+      const heightF = height ?? erpHeight;
+      const weightF = weight ?? erpWeight;
+      if (lengthF != null || widthF != null || heightF != null || weightF != null) {
         const prevDims = getMpDraftDimensionsMm(prev, 'ozon') || {};
         const nextDims = {
           ...prevDims,
-          ...(length != null ? { length } : {}),
-          ...(width != null ? { width } : {}),
-          ...(height != null ? { height } : {}),
-          ...(weight != null ? { weight } : {}),
+          ...(lengthF != null ? { length: lengthF } : {}),
+          ...(widthF != null ? { width: widthF } : {}),
+          ...(heightF != null ? { height: heightF } : {}),
+          ...(weightF != null ? { weight: weightF } : {}),
         };
         next = withMpDraftPatch(next, 'ozon', { dimensions: nextDims });
       }

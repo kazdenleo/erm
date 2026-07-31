@@ -171,11 +171,11 @@ export function MarketplacePriceCells({
     : 'нет габаритов';
   const volumeMissingTitle =
     mpNorm === 'ozon'
-      ? 'Нет габаритов упаковки Ozon (атрибуты / вкладка Ozon / связь с Основным)'
+      ? 'Нет габаритов упаковки: вкладка Ozon / атрибуты / ozon_draft / упаковка на Основном'
       : mpNorm === 'wb' || mpNorm === 'wildberries'
-        ? 'Нет габаритов упаковки WB (атрибуты 90849/90745/90846 или wb_draft.dimensions)'
+        ? 'Нет габаритов упаковки WB (атрибуты 90849/90745/90846, wb_draft или упаковка на Основном)'
         : mpNorm === 'ym' || mpNorm === 'yandex'
-          ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft.weightDimensions)'
+          ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft или упаковка на Основном)'
           : 'Нет габаритов маркетплейса';
 
   const renderVolumeHint = (show) => {

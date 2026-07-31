@@ -188,10 +188,43 @@ function mapOzonCardToUpdates(product, data) {
   }
   const dx = data.dimension_x ?? data.width;
   const dy = data.dimension_y ?? data.height;
-  const dz = data.dimension_z ?? data.length;
-  if (dx != null && isEmptyVal(product.width)) updates.width = Number(dx);
-  if (dy != null && isEmptyVal(product.height)) updates.height = Number(dy);
-  if (dz != null && isEmptyVal(product.length)) updates.length = Number(dz);
+  const dz = data.dimension_z ?? data.depth ?? data.length;
+  const toPos = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const apiLength = toPos(dz);
+  const apiWidth = toPos(dx);
+  const apiHeight = toPos(dy);
+  const apiWeight = toPos(data.weight ?? data.weight_brutto);
+  if (apiWidth != null && isEmptyVal(product.width)) updates.width = apiWidth;
+  if (apiHeight != null && isEmptyVal(product.height)) updates.height = apiHeight;
+  if (apiLength != null && isEmptyVal(product.length)) updates.length = apiLength;
+
+  // Как WB: габариты упаковки в ozon_draft (для мин. цен без связи dimensions↔ozon)
+  const erpLength = toPos(product.length);
+  const erpWidth = toPos(product.width);
+  const erpHeight = toPos(product.height);
+  const erpWeight = toPos(product.weight);
+  const draftLength = apiLength ?? erpLength;
+  const draftWidth = apiWidth ?? erpWidth;
+  const draftHeight = apiHeight ?? erpHeight;
+  const draftWeight = apiWeight ?? erpWeight;
+  if (draftLength != null || draftWidth != null || draftHeight != null || draftWeight != null) {
+    const prevDraft = parseJsonObject(product.ozon_draft);
+    const prevDims =
+      prevDraft.dimensions && typeof prevDraft.dimensions === 'object' ? prevDraft.dimensions : {};
+    updates.ozon_draft = {
+      ...prevDraft,
+      dimensions: {
+        ...prevDims,
+        ...(draftLength != null ? { length: draftLength } : {}),
+        ...(draftWidth != null ? { width: draftWidth } : {}),
+        ...(draftHeight != null ? { height: draftHeight } : {}),
+        ...(draftWeight != null ? { weight: draftWeight } : {}),
+      },
+    };
+  }
 
   const prevAttrs = parseJsonObject(product.ozon_attributes);
   const mergedAttrs = mergeOzonAttrsFromCard(attrs, prevAttrs);

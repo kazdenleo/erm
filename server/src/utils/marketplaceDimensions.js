@@ -1,9 +1,9 @@
 /**
- * Габариты для логистики/мин. цен строго из данных маркетплейса:
- * Ozon — ozon_attributes, иначе ozon_draft.dimensions, иначе ERP при связи dimensions↔ozon;
- * WB — атрибуты упаковки / wb_draft.dimensions;
- * YM — связь dimensions↔ym → ERP, иначе ym_draft.weightDimensions.
- * Без общего ERP fallback (products.volume) для известных МП.
+ * Габариты для логистики/мин. цен:
+ * Ozon — связь → ERP; иначе ozon_draft; иначе attrs; иначе упаковка ERP (L×W×H);
+ * WB — связь → ERP; иначе pack attrs / wb_draft; иначе упаковка ERP;
+ * YM — связь → ERP; иначе ym_draft.weightDimensions; иначе упаковка ERP.
+ * products.volume как fallback не используем (только явное L×W×H).
  */
 
 function parseAttrs(raw) {
@@ -115,7 +115,7 @@ export function extractOzonDimensionsMm(product) {
     }
   }
 
-  return null;
+  return extractErpPackagingMm(product);
 }
 
 /**
@@ -236,7 +236,7 @@ export function extractWbDimensionsMm(product) {
     }
   }
 
-  return null;
+  return extractErpPackagingMm(product);
 }
 
 /**
@@ -268,7 +268,7 @@ export function extractYmDimensionsMm(product) {
       };
     }
   }
-  return null;
+  return extractErpPackagingMm(product);
 }
 
 export function extractGeneralDimensionsMm(product) {
@@ -280,6 +280,13 @@ export function extractGeneralDimensionsMm(product) {
     return { length, width, height, source: 'product' };
   }
   return null;
+}
+
+/** Упаковка с вкладки «Основное» (мм), если у МП нет своих валидных габаритов. */
+function extractErpPackagingMm(product) {
+  const dims = extractGeneralDimensionsMm(product);
+  if (!dims) return null;
+  return { ...dims, source: 'product_packaging' };
 }
 
 /**
