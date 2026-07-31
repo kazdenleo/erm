@@ -1,9 +1,13 @@
-.products-bulk-category-pick-list {
+.products-bulk-category-scope {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  max-width: 420px;
+}
+
+.products-bulk-category-scope-select {
+  max-width: 420px;
   width: 100%;
-  min-height: 240px;
-  font-size: 14px;
-  padding: 6px 8px;
-  line-height: 1.45;
 }
 
 /* Поиск + фильтры: компактно слева, без растягивания на всю ширину монитора */

@@ -31,6 +31,9 @@ const SESSION_MP_WB = 'productsBulkShowMpWb';
 const SESSION_MP_YM = 'productsBulkShowMpYm';
 /** Старый один тумблер — мигрируем в три флага по МП */
 const SESSION_SHOW_MP_ATTRS_LEGACY = 'productsBulkShowMpAttrs';
+/** Стартовый выбор категории: ещё не выбрано / все категории */
+const CATEGORY_SCOPE_UNSET = '__unset__';
+const CATEGORY_SCOPE_ALL = '__all__';
 
 function readBulkPageSize() {
   try {
@@ -659,8 +662,13 @@ export function ProductsBulkEdit() {
     return Array.isArray(ids) && ids.length > 0;
   });
   const [categoryPickDraft, setCategoryPickDraft] = useState(() => {
-    const f = location.state?.filters;
-    return f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+    const ids = location.state?.selectedIds;
+    if (Array.isArray(ids) && ids.length > 0) {
+      const f = location.state?.filters;
+      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+      return cat === '' ? CATEGORY_SCOPE_ALL : cat;
+    }
+    return CATEGORY_SCOPE_UNSET;
   });
   const [pickerHasUncategorized, setPickerHasUncategorized] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -784,9 +792,8 @@ export function ProductsBulkEdit() {
     };
   }, []);
 
-  /** Категории для стартового выбора (пока таблица скрыта). */
+  /** Категории для стартового выбора. */
   useEffect(() => {
-    if (categoryScopeReady) return undefined;
     let cancelled = false;
     (async () => {
       try {
@@ -804,25 +811,31 @@ export function ProductsBulkEdit() {
     return () => {
       cancelled = true;
     };
-  }, [categoryScopeReady, loadCategories]);
+  }, [loadCategories]);
 
-  const confirmCategoryScope = () => {
-    setFilterCategoryId(categoryPickDraft);
+  const applyCategoryScope = (rawValue) => {
+    const v = String(rawValue ?? '');
+    if (v === CATEGORY_SCOPE_UNSET) return;
+    const cat = v === CATEGORY_SCOPE_ALL ? '' : v;
+    setCategoryPickDraft(v === CATEGORY_SCOPE_ALL ? CATEGORY_SCOPE_ALL : v);
+    setFilterCategoryId(cat);
     setCurrentPage(1);
     setCategoryScopeReady(true);
-  };
-
-  const reopenCategoryPicker = () => {
-    setCategoryPickDraft(filterCategoryId);
-    setCategoryScopeReady(false);
-    setRows([]);
-    setOriginals({});
-    setMpAttrColumnDefs([]);
-    setTotalProducts(0);
     setLoadError(null);
     setSaveMessage(null);
     setPushMpMessage(null);
     setPullMpMessage(null);
+  };
+
+  const handleCategoryScopeChange = (e) => {
+    const v = e.target.value;
+    if (v === CATEGORY_SCOPE_UNSET) return;
+    // смена категории — сбрасываем таблицу до новой загрузки
+    setRows([]);
+    setOriginals({});
+    setMpAttrColumnDefs([]);
+    setTotalProducts(0);
+    applyCategoryScope(v);
   };
 
   const clearListFilters = () => {
@@ -1281,7 +1294,7 @@ export function ProductsBulkEdit() {
 
   const subtitle = useMemo(() => {
     if (!categoryScopeReady) {
-      return 'Сначала выберите категорию (или все категории) — затем откроется таблица для массового редактирования.';
+      return 'Выберите категорию в списке ниже (или «Все категории») — затем загрузится таблица для редактирования.';
     }
     const n = rows.length;
     const sel = appliedSelectedIds.length;
@@ -1290,6 +1303,45 @@ export function ProductsBulkEdit() {
     }
     return `До ${pageSize} товаров на странице по фильтрам ниже. Отметьте строки на странице «Товары» и откройте массовое редактирование, чтобы править только выбранные.`;
   }, [categoryScopeReady, rows.length, appliedSelectedIds.length, pageSize]);
+
+  const categoryScopeSelect = (
+    <div className="products-bulk-category-scope">
+      <label className="text-muted small mb-1 d-block" htmlFor="bulk-category-scope-pick">
+        Категория для редактирования
+      </label>
+      <select
+        id="bulk-category-scope-pick"
+        className="form-select form-select-sm products-bulk-category-scope-select"
+        value={categoryScopeReady ? categoryPickDraft : CATEGORY_SCOPE_UNSET}
+        onChange={handleCategoryScopeChange}
+        disabled={appliedSelectedIds.length > 0}
+        aria-label="Выберите категорию для массового редактирования"
+      >
+        {!categoryScopeReady ? (
+          <option value={CATEGORY_SCOPE_UNSET} disabled>
+            — Выберите категорию —
+          </option>
+        ) : null}
+        <option value={CATEGORY_SCOPE_ALL}>Все категории</option>
+        {pickerHasUncategorized || showUncategorizedCategoryOption === true ? (
+          <option value={FILTER_CATEGORY_NONE}>Без категории</option>
+        ) : null}
+        {[...(categories || [])]
+          .filter((c) => c && c.id != null)
+          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+          .map((c) => (
+            <option key={c.id} value={String(c.id)}>
+              {c.name || `Категория #${c.id}`}
+            </option>
+          ))}
+      </select>
+      {!categoryScopeReady ? (
+        <p className="text-muted small mb-0 mt-2">
+          Товары появятся после выбора категории. Можно выбрать «Все категории».
+        </p>
+      ) : null}
+    </div>
+  );
 
   const renderInput = (col, row) => {
     if (col.readonly) {
@@ -1406,58 +1458,13 @@ export function ProductsBulkEdit() {
         </div>
       ) : null}
 
-      <Modal
-        isOpen={!categoryScopeReady}
-        onClose={() => navigate('/products')}
-        title="Выберите категорию"
-        size="medium"
-        closeOnBackdropClick={false}
-      >
-        <div className="products-bulk-category-pick">
-          <p className="text-muted small mb-3">
-            Товары появятся после выбора категории. Можно взять все категории сразу.
-          </p>
-          <label className="form-label" htmlFor="bulk-category-scope-pick">
-            Категория
-          </label>
-          <select
-            id="bulk-category-scope-pick"
-            className="form-select mb-3 products-bulk-category-pick-list"
-            value={categoryPickDraft}
-            onChange={(e) => setCategoryPickDraft(e.target.value)}
-            autoFocus
-            size={Math.min(14, Math.max(8, (categories?.length || 0) + 3))}
-          >
-            <option value="">Все категории</option>
-            {pickerHasUncategorized ? (
-              <option value={FILTER_CATEGORY_NONE}>Без категории</option>
-            ) : null}
-            {[...(categories || [])]
-              .filter((c) => c && c.id != null)
-              .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
-              .map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name || `Категория #${c.id}`}
-                </option>
-              ))}
-          </select>
-          <div className="d-flex justify-content-end gap-2 flex-wrap">
-            <Button type="button" variant="secondary" onClick={() => navigate('/products')}>
-              Отмена
-            </Button>
-            <Button type="button" variant="primary" onClick={confirmCategoryScope}>
-              Показать товары
-            </Button>
-          </div>
-        </div>
-      </Modal>
-
-      {categoryScopeReady ? (
-      <>
       <div className="main-card mb-0 card products-bulk-main-card">
             <div className="card-body p-0">
               <div className="products-list-toolbar">
                 <div className="products-bulk-toolbar-inner">
+                  {categoryScopeSelect}
+                  {categoryScopeReady ? (
+                  <div className="products-bulk-scoped-ui">
                   <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
                     <div className="products-bulk-toolbar-search">
                       <label className="text-muted small mb-1 d-block" htmlFor="bulk-products-search">
@@ -1476,18 +1483,6 @@ export function ProductsBulkEdit() {
                       />
                     </div>
                     <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
-                      {appliedSelectedIds.length === 0 ? (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="small"
-                          className="btn-shadow"
-                          onClick={reopenCategoryPicker}
-                          title="Выбрать другую категорию или все категории"
-                        >
-                          Сменить категорию
-                        </Button>
-                      ) : null}
                       <Button
                         type="button"
                         variant="secondary"
@@ -1731,11 +1726,15 @@ export function ProductsBulkEdit() {
                   {pullMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pullMpMessage}</div>
                   ) : null}
+                  </div>
+                  ) : null}
                 </div>
               </div>
             </div>
           </div>
 
+      {categoryScopeReady ? (
+      <div className="products-bulk-scoped-table">
       {renderBulkListPager('top')}
 
       <div className="products-bulk-scroll-region">
@@ -1942,7 +1941,7 @@ export function ProductsBulkEdit() {
           </div>
         </div>
       ) : null}
-      </>
+      </div>
       ) : null}
     </div>
   );
