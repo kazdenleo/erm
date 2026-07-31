@@ -414,6 +414,7 @@ function buildFindAllFilters(options = {}) {
     supplierId,
     unlinkedMp,
     linkedMp,
+    requireAnyMarketplaceLink,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -596,6 +597,42 @@ function buildFindAllFilters(options = {}) {
           AND COALESCE(TRIM(ps.sku::text), '') <> ''
       )`;
     }
+  }
+
+  // Только товары с хотя бы одной связью Ozon/WB/YM (страница мин. цен без частных заказов)
+  const requireAnyMp =
+    requireAnyMarketplaceLink === true ||
+    requireAnyMarketplaceLink === 'true' ||
+    requireAnyMarketplaceLink === '1' ||
+    requireAnyMarketplaceLink === 1;
+  if (requireAnyMp && linkedList.length === 0) {
+    whereSql += ` AND (
+      EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ozon'
+          AND (
+            COALESCE(TRIM(ps.sku::text), '') <> ''
+            OR ps.marketplace_product_id IS NOT NULL
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'wb'
+          AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
+      )
+      OR (
+        p.wb_draft IS NOT NULL
+        AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
+      )
+      OR EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ym'
+          AND COALESCE(TRIM(ps.sku::text), '') <> ''
+      )
+    )`;
   }
 
   const onlyInStock =

@@ -40,6 +40,12 @@ export function accountSettingsFromProfile(profile) {
   };
 }
 
+/** Частные (ручные) заказы включены в настройках аккаунта. */
+export function isProfilePrivateOrdersEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.allow_private_orders ?? profile.allowPrivateOrders);
+}
+
 /** Интеграция с поставщиками включена (по умолчанию да; выключает администратор системы). */
 export function isProfileSupplierSyncEnabled(profile) {
   if (profile == null) return true;

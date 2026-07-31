@@ -274,6 +274,12 @@ class ProductsController {
         const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
         if (list.length) options.linkedMp = list;
       }
+      if (
+        req.query.requireAnyMarketplaceLink === 'true' ||
+        req.query.requireAnyMarketplaceLink === '1'
+      ) {
+        options.requireAnyMarketplaceLink = true;
+      }
       const isStockList = resolveStockListMode(req, options);
       if (isStockList) {
         options.listView = 'stock';

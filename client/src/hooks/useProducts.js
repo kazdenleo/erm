@@ -62,6 +62,13 @@ export function useProducts(options = {}) {
           ? opts.linkedMp
           : String(opts.linkedMp);
       }
+      if (
+        opts.requireAnyMarketplaceLink === true ||
+        opts.requireAnyMarketplaceLink === '1' ||
+        opts.requireAnyMarketplaceLink === 1
+      ) {
+        params.requireAnyMarketplaceLink = true;
+      }
       if (opts.warehouseId != null && opts.warehouseId !== '') {
         params.warehouseId = String(opts.warehouseId);
       }

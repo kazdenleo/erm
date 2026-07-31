@@ -26,7 +26,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled, isProfilePrivateOrdersEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
 import { computeTaxesAndNetProfit, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
@@ -372,6 +372,7 @@ export function Prices() {
   const kitsEnabled = isProfileKitsEnabled(profile);
   const showFbsPrices = isProfileFbsEnabled(profile);
   const showFboPrices = isProfileFboEnabled(profile);
+  const privateOrdersEnabled = isProfilePrivateOrdersEnabled(profile);
   const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
   const mpColSpan = minColsPerMp; // только мин. цены (FBS/FBO)
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
@@ -451,6 +452,10 @@ export function Prices() {
       : Array.isArray(linked)
         ? linked
         : [];
+    // Без частных заказов — только товары со связью МП.
+    // Фильтр «Не связан» снимает это ограничение (показываем и без связей).
+    const requireAnyMarketplaceLink =
+      !privateOrdersEnabled && unlinkedArr.length === 0;
     return loadProducts({
       organizationId: org || undefined,
       brandId: brand || undefined,
@@ -461,6 +466,7 @@ export function Prices() {
       archivedOnly: archiveMode === 'only',
       unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
       linkedMp: linkedArr.length ? linkedArr : undefined,
+      requireAnyMarketplaceLink: requireAnyMarketplaceLink || undefined,
       limit,
       offset: Math.max(0, (page - 1) * limit),
       silent: true,
@@ -637,9 +643,9 @@ export function Prices() {
   }, [currentPage, totalPages, pageSize]);
 
   useEffect(() => {
-    loadList({ page: currentPage, silent: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка
-  }, []);
+    loadListRef.current({ page: currentPage, silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- загрузка при смене флага частных заказов / mount
+  }, [privateOrdersEnabled]);
 
   const renderPricesListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
@@ -1069,7 +1075,14 @@ export function Prices() {
                     </select>
                   </div>
                   <div className="col-12 col-md-6 col-lg-3">
-                    <div className="products-unlinked-mp-filter" title="Показать товары без связи с маркетплейсом">
+                    <div
+                      className="products-unlinked-mp-filter"
+                      title={
+                        privateOrdersEnabled
+                          ? 'Показать товары без связи с маркетплейсом'
+                          : 'Показать товары без связи с МП (в т.ч. без любой связи — по умолчанию они скрыты)'
+                      }
+                    >
                       <span className="text-muted small d-block mb-1">Не связан</span>
                       <div className="d-flex align-items-center gap-1">
                         {MP_LINK_FILTER_TOGGLES.map((mp) => {

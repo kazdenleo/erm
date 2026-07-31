@@ -108,6 +108,13 @@ export const productsApi = {
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.linkedMp = cleaned.join(',');
     }
+    if (
+      options.requireAnyMarketplaceLink === true ||
+      options.requireAnyMarketplaceLink === '1' ||
+      options.requireAnyMarketplaceLink === 1
+    ) {
+      params.requireAnyMarketplaceLink = '1';
+    }
     if (options.stockList === true || options.stockList === '1' || options.stockList === 1) {
       params.listView = 'stock';
       params.stockList = '1';
