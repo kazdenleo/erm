@@ -1,10 +1,9 @@
-.products-bulk-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  /* место под фиксированную панель «Сохранить» */
-  padding-bottom: 76px;
+.products-bulk-category-pick-list {
+  width: 100%;
+  min-height: 240px;
+  font-size: 14px;
+  padding: 6px 8px;
+  line-height: 1.45;
 }
 
 /* Поиск + фильтры: компактно слева, без растягивания на всю ширину монитора */

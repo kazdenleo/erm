@@ -653,7 +653,17 @@ export function ProductsBulkEdit() {
 
   const [rows, setRows] = useState([]);
   const [originals, setOriginals] = useState({});
-  const [loading, setLoading] = useState(true);
+  /** Пока false — товары не грузим: сначала выбор категории (или «все»). */
+  const [categoryScopeReady, setCategoryScopeReady] = useState(() => {
+    const ids = location.state?.selectedIds;
+    return Array.isArray(ids) && ids.length > 0;
+  });
+  const [categoryPickDraft, setCategoryPickDraft] = useState(() => {
+    const f = location.state?.filters;
+    return f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+  });
+  const [pickerHasUncategorized, setPickerHasUncategorized] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState(null);
@@ -773,6 +783,47 @@ export function ProductsBulkEdit() {
       if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     };
   }, []);
+
+  /** Категории для стартового выбора (пока таблица скрыта). */
+  useEffect(() => {
+    if (categoryScopeReady) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadCategories({ silent: true });
+      } catch {
+        /* ignore */
+      }
+      try {
+        const show = await fetchHasUncategorizedProducts({});
+        if (!cancelled) setPickerHasUncategorized(!!show);
+      } catch {
+        if (!cancelled) setPickerHasUncategorized(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [categoryScopeReady, loadCategories]);
+
+  const confirmCategoryScope = () => {
+    setFilterCategoryId(categoryPickDraft);
+    setCurrentPage(1);
+    setCategoryScopeReady(true);
+  };
+
+  const reopenCategoryPicker = () => {
+    setCategoryPickDraft(filterCategoryId);
+    setCategoryScopeReady(false);
+    setRows([]);
+    setOriginals({});
+    setMpAttrColumnDefs([]);
+    setTotalProducts(0);
+    setLoadError(null);
+    setSaveMessage(null);
+    setPushMpMessage(null);
+    setPullMpMessage(null);
+  };
 
   const clearListFilters = () => {
     setFilterOrganizationId('');
@@ -922,8 +973,9 @@ export function ProductsBulkEdit() {
   ]);
 
   useEffect(() => {
+    if (!categoryScopeReady) return;
     loadProducts();
-  }, [loadProducts]);
+  }, [loadProducts, categoryScopeReady]);
 
   const showNoneCategoryOption = showUncategorizedCategoryOption === true;
 
@@ -1228,13 +1280,16 @@ export function ProductsBulkEdit() {
   };
 
   const subtitle = useMemo(() => {
+    if (!categoryScopeReady) {
+      return 'Сначала выберите категорию (или все категории) — затем откроется таблица для массового редактирования.';
+    }
     const n = rows.length;
     const sel = appliedSelectedIds.length;
     if (sel > 0) {
       return `Редактирование выбранных товаров (${n} на странице из ${sel}). Фильтры ниже сужают выборку; выбранные id с «Товаров» по-прежнему ограничивают список.`;
     }
     return `До ${pageSize} товаров на странице по фильтрам ниже. Отметьте строки на странице «Товары» и откройте массовое редактирование, чтобы править только выбранные.`;
-  }, [rows.length, appliedSelectedIds.length, pageSize]);
+  }, [categoryScopeReady, rows.length, appliedSelectedIds.length, pageSize]);
 
   const renderInput = (col, row) => {
     if (col.readonly) {
@@ -1351,6 +1406,54 @@ export function ProductsBulkEdit() {
         </div>
       ) : null}
 
+      <Modal
+        isOpen={!categoryScopeReady}
+        onClose={() => navigate('/products')}
+        title="Выберите категорию"
+        size="medium"
+        closeOnBackdropClick={false}
+      >
+        <div className="products-bulk-category-pick">
+          <p className="text-muted small mb-3">
+            Товары появятся после выбора категории. Можно взять все категории сразу.
+          </p>
+          <label className="form-label" htmlFor="bulk-category-scope-pick">
+            Категория
+          </label>
+          <select
+            id="bulk-category-scope-pick"
+            className="form-select mb-3 products-bulk-category-pick-list"
+            value={categoryPickDraft}
+            onChange={(e) => setCategoryPickDraft(e.target.value)}
+            autoFocus
+            size={Math.min(14, Math.max(8, (categories?.length || 0) + 3))}
+          >
+            <option value="">Все категории</option>
+            {pickerHasUncategorized ? (
+              <option value={FILTER_CATEGORY_NONE}>Без категории</option>
+            ) : null}
+            {[...(categories || [])]
+              .filter((c) => c && c.id != null)
+              .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+              .map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name || `Категория #${c.id}`}
+                </option>
+              ))}
+          </select>
+          <div className="d-flex justify-content-end gap-2 flex-wrap">
+            <Button type="button" variant="secondary" onClick={() => navigate('/products')}>
+              Отмена
+            </Button>
+            <Button type="button" variant="primary" onClick={confirmCategoryScope}>
+              Показать товары
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {categoryScopeReady ? (
+      <>
       <div className="main-card mb-0 card products-bulk-main-card">
             <div className="card-body p-0">
               <div className="products-list-toolbar">
@@ -1373,6 +1476,18 @@ export function ProductsBulkEdit() {
                       />
                     </div>
                     <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
+                      {appliedSelectedIds.length === 0 ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="small"
+                          className="btn-shadow"
+                          onClick={reopenCategoryPicker}
+                          title="Выбрать другую категорию или все категории"
+                        >
+                          Сменить категорию
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         variant="secondary"
@@ -1826,6 +1941,8 @@ export function ProductsBulkEdit() {
             </Button>
           </div>
         </div>
+      ) : null}
+      </>
       ) : null}
     </div>
   );
