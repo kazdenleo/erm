@@ -5,10 +5,14 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import productsService from './products.service.js';
-import { downloadImageToProductFolder } from './productImagesImport.service.js';
+import {
+  fetchAndNormalizeImageBuffer,
+  saveNormalizedImageToProductFolder,
+} from './productImagesImport.service.js';
 import logger from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -134,6 +138,40 @@ function badgesForSourceMp(mp) {
   };
 }
 
+function readMarketplacesFlags(img) {
+  const flags = img?.marketplaces && typeof img.marketplaces === 'object' ? img.marketplaces : null;
+  if (!flags) return { ozon: true, wb: true, ym: true };
+  return {
+    ozon: flags.ozon !== false && flags.ozon !== 0 && flags.ozon !== '0' && flags.ozon !== 'false',
+    wb: flags.wb !== false && flags.wb !== 0 && flags.wb !== '0' && flags.wb !== 'false',
+    ym: flags.ym !== false && flags.ym !== 0 && flags.ym !== '0' && flags.ym !== 'false',
+  };
+}
+
+/**
+ * Включить бейдж МП на существующем фото.
+ * @returns {boolean} true если флаги реально изменились
+ */
+function enableMarketplaceBadge(img, mp) {
+  const prev = readMarketplacesFlags(img);
+  if (prev[mp] === true) return false;
+  img.marketplaces = { ...prev, [mp]: true };
+  return true;
+}
+
+function rememberSourceUrl(img, url, bySource) {
+  const key = urlKey(url);
+  if (!key) return;
+  const trimmed = String(url || '').trim();
+  if (!img.source_url) img.source_url = trimmed;
+  const alts = Array.isArray(img.source_urls) ? img.source_urls.map(String) : [];
+  if (trimmed && urlKey(img.source_url) !== key && !alts.some((u) => urlKey(u) === key)) {
+    alts.push(trimmed);
+    img.source_urls = alts;
+  }
+  bySource.set(key, img);
+}
+
 function ensurePrimary(images) {
   const arr = Array.isArray(images) ? images.map((x) => ({ ...x })) : [];
   if (arr.length === 0) return arr;
@@ -175,6 +213,39 @@ function resolveLocalUploadPath(urlOrPath) {
   const filename = m[2];
   const absPath = path.join(UPLOADS_PRODUCTS_ROOT, productId, filename);
   return { productId, filename, absPath };
+}
+
+function hashFileSha256(absPath) {
+  try {
+    if (!absPath || !fs.existsSync(absPath)) return '';
+    return crypto.createHash('sha256').update(fs.readFileSync(absPath)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+function buildSourceAndHashIndexes(existing) {
+  const bySource = new Map();
+  const byHash = new Map();
+  for (const img of existing) {
+    if (!img || typeof img !== 'object') continue;
+    const src = img.source_url ? urlKey(img.source_url) : '';
+    if (src) bySource.set(src, img);
+    if (Array.isArray(img.source_urls)) {
+      for (const u of img.source_urls) {
+        const k = urlKey(u);
+        if (k) bySource.set(k, img);
+      }
+    }
+    let h = img.content_hash ? String(img.content_hash).trim().toLowerCase() : '';
+    if (!h) {
+      const local = resolveLocalUploadPath(img.url ?? img.href ?? img.src);
+      h = local ? hashFileSha256(local.absPath) : '';
+      if (h) img.content_hash = h;
+    }
+    if (h && !byHash.has(h)) byHash.set(h, img);
+  }
+  return { bySource, byHash };
 }
 
 function isOzonFriendlyImageUrl(url) {
@@ -290,7 +361,7 @@ export async function getProductImageUrlsForMarketplacePush(product, marketplace
 
 /**
  * Скачать URL с МП в products.images, проставить бейдж источника.
- * Уже известные source_url не качаем повторно — только включаем бейдж.
+ * Уже известные source_url / тот же файл (content_hash) не дублируем — только включаем бейдж МП.
  *
  * @returns {Promise<{ images: array, added: number, enabled: number, errors: array }>}
  */
@@ -322,11 +393,7 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
   }
 
   const existing = Array.isArray(product.images) ? product.images.map((x) => ({ ...x })) : [];
-  const bySource = new Map();
-  for (const img of existing) {
-    const src = img?.source_url ? urlKey(img.source_url) : '';
-    if (src) bySource.set(src, img);
-  }
+  const { bySource, byHash } = buildSourceAndHashIndexes(existing);
 
   let added = 0;
   let enabled = 0;
@@ -335,36 +402,42 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
 
   for (const url of list) {
     const key = urlKey(url);
-    const found = bySource.get(key);
-    if (found) {
-      const prev =
-        found.marketplaces && typeof found.marketplaces === 'object'
-          ? {
-              ozon: found.marketplaces.ozon !== false,
-              wb: found.marketplaces.wb !== false,
-              ym: found.marketplaces.ym !== false,
-            }
-          : { ozon: true, wb: true, ym: true };
-      if (prev[mp] !== true) {
-        found.marketplaces = { ...prev, [mp]: true };
-        enabled += 1;
-      }
+    const foundByUrl = bySource.get(key);
+    if (foundByUrl) {
+      if (enableMarketplaceBadge(foundByUrl, mp)) enabled += 1;
+      rememberSourceUrl(foundByUrl, url, bySource);
       continue;
     }
 
     try {
-      const rec = await downloadImageToProductFolder(productId, url, {
+      const { buf, ext, contentHash } = await fetchAndNormalizeImageBuffer(url);
+      const foundByHash = contentHash ? byHash.get(String(contentHash).toLowerCase()) : null;
+      if (foundByHash) {
+        if (enableMarketplaceBadge(foundByHash, mp)) enabled += 1;
+        rememberSourceUrl(foundByHash, url, bySource);
+        if (!foundByHash.content_hash) foundByHash.content_hash = contentHash;
+        continue;
+      }
+
+      const rec = saveNormalizedImageToProductFolder(productId, url, buf, ext, {
         primary: !hadImages && added === 0,
         marketplaces: badgesForSourceMp(mp),
+        contentHash,
       });
       if (rec) {
         existing.push(rec);
-        bySource.set(key, rec);
+        rememberSourceUrl(rec, url, bySource);
+        if (contentHash) byHash.set(String(contentHash).toLowerCase(), rec);
         added += 1;
       }
     } catch (e) {
       errors.push({ url, message: e?.message || String(e) });
-      logger.warn('[MP Images] download failed', { productId, mp, url: url.slice(0, 120), error: e?.message });
+      logger.warn('[MP Images] download failed', {
+        productId,
+        mp,
+        url: url.slice(0, 120),
+        error: e?.message || String(e),
+      });
     }
   }
 

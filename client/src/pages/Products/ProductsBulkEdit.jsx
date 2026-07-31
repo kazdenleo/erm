@@ -29,6 +29,10 @@ const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
 const SESSION_MP_OZON = 'productsBulkShowMpOzon';
 const SESSION_MP_WB = 'productsBulkShowMpWb';
 const SESSION_MP_YM = 'productsBulkShowMpYm';
+/** Закреплённые столбцы (ключи), сразу справа от артикула */
+const SESSION_PINNED_COLS = 'productsBulkPinnedCols';
+/** Базовый sticky-столбец — всегда слева, пользовательские пины не левее него */
+const DEFAULT_STICKY_COL_KEY = 'sku';
 /** Старый один тумблер — мигрируем в три флага по МП */
 const SESSION_SHOW_MP_ATTRS_LEGACY = 'productsBulkShowMpAttrs';
 /** Стартовый выбор категории: ещё не выбрано / все категории */
@@ -72,6 +76,82 @@ function readMpBucketVisibility() {
   } catch {
     return { ozon: true, wb: true, ym: true };
   }
+}
+
+function readPinnedColumnKeys() {
+  try {
+    if (typeof sessionStorage === 'undefined') return [];
+    const raw = sessionStorage.getItem(SESSION_PINNED_COLS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((k) => String(k || '').trim())
+      .filter((k) => k && k !== DEFAULT_STICKY_COL_KEY);
+  } catch {
+    return [];
+  }
+}
+
+function colStickyWidthPx(col) {
+  const w = Number(col?.width);
+  if (Number.isFinite(w) && w > 0) return w;
+  const m = Number(col?.minW);
+  if (Number.isFinite(m) && m > 0) return m;
+  return 120;
+}
+
+/**
+ * Артикул всегда слева; закреплённые — сразу после него; остальные в исходном порядке.
+ */
+function orderColumnsWithPins(cols, pinnedKeys) {
+  const list = Array.isArray(cols) ? cols : [];
+  const byKey = new Map(list.map((c) => [c.key, c]));
+  const base = byKey.get(DEFAULT_STICKY_COL_KEY);
+  const pinned = [];
+  const pinnedSet = new Set([DEFAULT_STICKY_COL_KEY]);
+  for (const key of pinnedKeys || []) {
+    if (!key || pinnedSet.has(key)) continue;
+    const col = byKey.get(key);
+    if (!col) continue;
+    pinned.push(col);
+    pinnedSet.add(key);
+  }
+  const rest = list.filter((c) => !pinnedSet.has(c.key));
+  const out = [];
+  if (base) out.push(base);
+  out.push(...pinned);
+  out.push(...rest);
+  return out;
+}
+
+function buildStickyLeftMap(displayCols, pinnedKeys) {
+  const pinnedSet = new Set(
+    (pinnedKeys || []).filter((k) => k && k !== DEFAULT_STICKY_COL_KEY)
+  );
+  const stickyKeys = [];
+  for (const col of displayCols || []) {
+    if (col.key === DEFAULT_STICKY_COL_KEY || pinnedSet.has(col.key)) {
+      stickyKeys.push(col.key);
+    } else {
+      break; // sticky-блок всегда префикс: артикул + пины
+    }
+  }
+  const map = new Map();
+  let left = 0;
+  stickyKeys.forEach((key, i) => {
+    const col = displayCols.find((c) => c.key === key);
+    const width = colStickyWidthPx(col);
+    map.set(key, {
+      left,
+      width,
+      zIndex: 20 - i,
+      isLast: i === stickyKeys.length - 1,
+      isBase: key === DEFAULT_STICKY_COL_KEY,
+    });
+    left += width;
+  });
+  return map;
 }
 
 /** Базовые столбцы: порядок — основная карточка (артикулы → названия/бренд → описание → габариты → прочее),
@@ -736,6 +816,24 @@ function cloneRow(r) {
   return { ...rest };
 }
 
+function PinIcon({ locked = false }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      aria-hidden
+      focusable="false"
+      className={locked ? 'products-bulk-pin-icon is-locked' : 'products-bulk-pin-icon'}
+    >
+      <path
+        fill="currentColor"
+        d="M16 3a1 1 0 0 1 .8 1.6l-2.2 2.93 1.47 4.42a1 1 0 0 1-.34 1.1l-1.73 1.38V21a1 1 0 1 1-2 0v-6.57l-1.73-1.38a1 1 0 0 1-.34-1.1l1.47-4.42L9.2 4.6A1 1 0 0 1 10 3h6z"
+      />
+    </svg>
+  );
+}
+
 export function ProductsBulkEdit() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -827,6 +925,7 @@ export function ProductsBulkEdit() {
   const [showMpOzon, setShowMpOzon] = useState(() => readMpBucketVisibility().ozon);
   const [showMpWb, setShowMpWb] = useState(() => readMpBucketVisibility().wb);
   const [showMpYm, setShowMpYm] = useState(() => readMpBucketVisibility().ym);
+  const [pinnedColumnKeys, setPinnedColumnKeys] = useState(() => readPinnedColumnKeys());
 
   useEffect(() => {
     try {
@@ -855,6 +954,24 @@ export function ProductsBulkEdit() {
       /* ignore */
     }
   }, [showMpYm]);
+  useEffect(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(SESSION_PINNED_COLS, JSON.stringify(pinnedColumnKeys));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [pinnedColumnKeys]);
+
+  const togglePinColumn = useCallback((colKey) => {
+    const key = String(colKey || '');
+    if (!key || key === DEFAULT_STICKY_COL_KEY) return;
+    setPinnedColumnKeys((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key);
+      return [...prev, key];
+    });
+  }, []);
 
   const visibleMpAttrColumnDefs = useMemo(
     () =>
@@ -888,6 +1005,48 @@ export function ProductsBulkEdit() {
     }
     return out;
   }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled]);
+
+  const displayColumns = useMemo(
+    () => orderColumnsWithPins(visibleColumns, pinnedColumnKeys),
+    [visibleColumns, pinnedColumnKeys]
+  );
+
+  const stickyLeftMap = useMemo(
+    () => buildStickyLeftMap(displayColumns, pinnedColumnKeys),
+    [displayColumns, pinnedColumnKeys]
+  );
+
+  const colStickyClass = useCallback(
+    (col) => {
+      const meta = stickyLeftMap.get(col.key);
+      if (!meta) return '';
+      return [
+        'sticky-col-pin',
+        meta.isBase ? 'sticky-col-base' : '',
+        meta.isLast ? 'sticky-col-pin-edge' : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+    },
+    [stickyLeftMap]
+  );
+
+  const colStickyStyle = useCallback(
+    (col, { header = false } = {}) => {
+      const meta = stickyLeftMap.get(col.key);
+      const base = { minWidth: col.minW };
+      if (!meta) return base;
+      return {
+        ...base,
+        left: meta.left,
+        width: meta.width,
+        minWidth: meta.width,
+        maxWidth: meta.width,
+        zIndex: header ? meta.zIndex + 30 : meta.zIndex,
+      };
+    },
+    [stickyLeftMap]
+  );
 
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
@@ -1868,28 +2027,58 @@ export function ProductsBulkEdit() {
           <table className="products-bulk-table">
             <thead>
               <tr>
-                {visibleColumns.map((col) => (
-                  <th
-                    key={col.key}
-                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
-                    style={{ minWidth: col.minW }}
-                    title={col.title || undefined}
-                  >
-                    {col.label}
-                    {col.hint ? (
-                      <span className="text-muted fw-normal d-block" style={{ fontSize: 10 }}>
-                        {col.hint}
-                      </span>
-                    ) : null}
-                  </th>
-                ))}
+                {displayColumns.map((col) => {
+                  const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
+                  const isPinned = pinnedColumnKeys.includes(col.key);
+                  return (
+                    <th
+                      key={col.key}
+                      className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
+                      style={colStickyStyle(col, { header: true })}
+                      title={col.title || undefined}
+                    >
+                      <div className="products-bulk-th-label">
+                        <span className="products-bulk-th-text">{col.label}</span>
+                        {isBaseSticky ? (
+                          <span
+                            className="products-bulk-pin-btn products-bulk-pin-btn--locked"
+                            title="Столбец закреплён по умолчанию"
+                            aria-hidden
+                          >
+                            <PinIcon locked />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
+                            title={isPinned ? 'Открепить столбец' : 'Закрепить столбец слева (после артикула)'}
+                            aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
+                            aria-pressed={isPinned}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              togglePinColumn(col.key);
+                            }}
+                          >
+                            <PinIcon />
+                          </button>
+                        )}
+                      </div>
+                      {col.hint ? (
+                        <span className="text-muted fw-normal d-block" style={{ fontSize: 10 }}>
+                          {col.hint}
+                        </span>
+                      ) : null}
+                    </th>
+                  );
+                })}
               </tr>
               <tr className="bulk-actions-row">
-                {visibleColumns.map((col) => (
+                {displayColumns.map((col) => (
                   <th
                     key={`bulk-${col.key}`}
-                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
-                    style={{ minWidth: col.minW }}
+                    className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
+                    style={colStickyStyle(col, { header: true })}
                     title={col.title || undefined}
                   >
                     {col.readonly || col.noBulk ? (
@@ -1908,10 +2097,14 @@ export function ProductsBulkEdit() {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.id}>
-                  {visibleColumns.map((col) => {
+                  {displayColumns.map((col) => {
                     if (col.key === 'id') {
                       return (
-                        <td key={col.key} className="text-muted">
+                        <td
+                          key={col.key}
+                          className={`${colStickyClass(col)} text-muted`.trim()}
+                          style={colStickyStyle(col)}
+                        >
                           {row.id}
                         </td>
                       );
@@ -1919,7 +2112,11 @@ export function ProductsBulkEdit() {
                     if (col.key === '_photo') {
                       const url = getPrimaryProductImageUrl(row._productRef);
                       return (
-                        <td key={col.key}>
+                        <td
+                          key={col.key}
+                          className={colStickyClass(col) || undefined}
+                          style={colStickyStyle(col)}
+                        >
                           <div className="products-bulk-thumb">
                             {url ? <img src={url} alt="" loading="lazy" /> : <span>∅</span>}
                           </div>
@@ -1929,8 +2126,8 @@ export function ProductsBulkEdit() {
                     return (
                       <td
                         key={col.key}
-                        className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${mpColClassName(col)}`.trim() || undefined}
-                        style={{ minWidth: col.minW }}
+                        className={`${colStickyClass(col)} ${mpColClassName(col)}`.trim() || undefined}
+                        style={colStickyStyle(col)}
                       >
                         {renderInput(col, row)}
                       </td>

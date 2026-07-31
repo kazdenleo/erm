@@ -75,9 +75,20 @@ async function normalizeImageBufferForStorage(buf, ext) {
 export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const trimmed = String(url || '').trim();
   if (!isHttpUrl(trimmed)) return null;
+  const { buf, ext } = await fetchAndNormalizeImageBuffer(trimmed);
+  return saveNormalizedImageToProductFolder(productId, trimmed, buf, ext, opts);
+}
+
+/**
+ * Скачать и нормализовать буфер изображения (без записи на диск).
+ * @returns {Promise<{ buf: Buffer, ext: string, contentHash: string }>}
+ */
+export async function fetchAndNormalizeImageBuffer(url) {
+  const trimmed = String(url || '').trim();
+  if (!isHttpUrl(trimmed)) throw new Error('Некорректный URL');
   const res = await fetch(trimmed, {
     redirect: 'follow',
-    headers: { 'User-Agent': 'ERM-ProductImport/1.0' }
+    headers: { 'User-Agent': 'ERM-ProductImport/1.0' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const ct = res.headers.get('content-type') || '';
@@ -86,11 +97,20 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
   if (buf.length > MAX_BYTES) throw new Error('Файл слишком большой');
   let ext = extFromContentType(ct, trimmed) || '.jpg';
   ({ buf, ext } = await normalizeImageBufferForStorage(buf, ext));
+  const contentHash = crypto.createHash('sha256').update(buf).digest('hex');
+  return { buf, ext, contentHash };
+}
+
+/**
+ * Записать уже скачанный буфер в uploads/products/{id}.
+ */
+export function saveNormalizedImageToProductFolder(productId, sourceUrl, buf, ext, opts = {}) {
+  const trimmed = String(sourceUrl || '').trim();
   const uploadsRoot = path.resolve(__dirname, '../../uploads/products');
   const dir = path.join(uploadsRoot, String(productId));
   ensureDirSync(dir);
   const id = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-  const filename = `${id}${ext}`;
+  const filename = `${id}${ext || '.jpg'}`;
   fs.writeFileSync(path.join(dir, filename), buf);
   const rel = `/uploads/products/${String(productId)}/${filename}`;
   const mp =
@@ -101,15 +121,19 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
           ym: opts.marketplaces.ym === true,
         }
       : { ozon: true, wb: true, ym: true };
+  const contentHash =
+    opts.contentHash ||
+    (Buffer.isBuffer(buf) ? crypto.createHash('sha256').update(buf).digest('hex') : undefined);
   return {
     id: filename,
     url: rel,
     filename,
     originalname: trimmed.slice(0, 240),
     source_url: trimmed,
+    content_hash: contentHash || undefined,
     primary: opts.primary === true,
     marketplaces: mp,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   };
 }
 

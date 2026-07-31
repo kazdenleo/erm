@@ -159,35 +159,119 @@
   background: rgba(255, 204, 0, 0.14);
 }
 
-.products-bulk-table .sticky-col-sku {
+.products-bulk-table .sticky-col-pin {
   position: -webkit-sticky;
   position: sticky;
-  left: 0;
-  z-index: 3;
   box-sizing: border-box;
-  min-width: 120px;
-  max-width: 180px;
   background: #fff;
-  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.12);
   vertical-align: middle;
 }
 
-.products-bulk-table thead th.sticky-col-sku {
-  z-index: 6;
+.products-bulk-table .sticky-col-pin-edge {
+  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.12);
+}
+
+.products-bulk-table thead th.sticky-col-pin {
   background: #f1f3f5;
 }
 
-.products-bulk-table thead tr.bulk-actions-row th.sticky-col-sku {
+.products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin {
   background: #e9ecef;
 }
 
-.products-bulk-table tbody tr:hover td.sticky-col-sku {
-  background: #f8f9ff;
+.products-bulk-table thead th.sticky-col-pin.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.12);
+}
+.products-bulk-table thead th.sticky-col-pin.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.12);
+}
+.products-bulk-table thead th.sticky-col-pin.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.14);
 }
 
-.products-bulk-table .sticky-col-sku .products-bulk-cell-input {
+.products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.08);
+}
+.products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.08);
+}
+.products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.1);
+}
+
+.products-bulk-table tbody td.sticky-col-pin.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.06);
+}
+.products-bulk-table tbody td.sticky-col-pin.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.06);
+}
+.products-bulk-table tbody td.sticky-col-pin.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.08);
+}
+
+.products-bulk-table tbody tr:hover td.sticky-col-pin {
+  background: #f8f9ff;
+}
+.products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.1);
+}
+.products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.1);
+}
+.products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.14);
+}
+
+.products-bulk-table .sticky-col-pin .products-bulk-cell-input {
   max-width: 100%;
   min-width: 0;
+}
+
+.products-bulk-th-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.products-bulk-th-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.products-bulk-pin-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  line-height: 0;
+  cursor: pointer;
+  opacity: 0.35;
+  border-radius: 4px;
+  color: #495057;
+}
+
+.products-bulk-pin-btn:hover {
+  opacity: 0.85;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.products-bulk-pin-btn.is-pinned {
+  opacity: 1;
+  color: #0d6efd;
+}
+
+.products-bulk-pin-btn--locked {
+  cursor: default;
+  opacity: 0.55;
+  color: #6c757d;
+}
+
+.products-bulk-pin-icon {
+  display: block;
 }
 
 .products-bulk-fill-btn {
