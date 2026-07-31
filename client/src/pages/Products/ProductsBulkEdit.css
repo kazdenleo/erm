@@ -99,6 +99,17 @@
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
 }
 
+/* Цвета МП — как в минимальных ценах */
+.products-bulk-table thead th.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.12);
+}
+.products-bulk-table thead th.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.12);
+}
+.products-bulk-table thead th.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.14);
+}
+
 .products-bulk-table thead tr.bulk-actions-row th {
   top: 36px;
   z-index: 2;
@@ -108,14 +119,44 @@
   vertical-align: middle;
 }
 
+.products-bulk-table thead tr.bulk-actions-row th.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.08);
+}
+.products-bulk-table thead tr.bulk-actions-row th.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.08);
+}
+.products-bulk-table thead tr.bulk-actions-row th.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.1);
+}
+
 .products-bulk-table tbody td {
   padding: 4px 6px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   vertical-align: middle;
 }
 
+.products-bulk-table tbody td.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.06);
+}
+.products-bulk-table tbody td.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.06);
+}
+.products-bulk-table tbody td.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.08);
+}
+
 .products-bulk-table tbody tr:hover td {
   background: rgba(13, 110, 253, 0.04);
+}
+
+.products-bulk-table tbody tr:hover td.bulk-mp-ozon {
+  background: rgba(0, 91, 255, 0.1);
+}
+.products-bulk-table tbody tr:hover td.bulk-mp-wb {
+  background: rgba(203, 17, 171, 0.1);
+}
+.products-bulk-table tbody tr:hover td.bulk-mp-ym {
+  background: rgba(255, 204, 0, 0.14);
 }
 
 .products-bulk-table .sticky-col-sku {

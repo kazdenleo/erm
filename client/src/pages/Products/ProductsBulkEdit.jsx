@@ -105,21 +105,21 @@ const COLUMNS = [
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
   { key: 'country_of_origin', label: 'Страна', input: 'text', minW: 90 },
   /* ——— Ozon ——— */
-  { key: 'sku_ozon', label: 'Ozon offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
-  { key: 'ozon_product_id', label: 'Ozon product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
-  { key: 'mp_ozon_name', label: 'Ozon: название', input: 'textarea', minW: 160, mpBucket: 'ozon' },
-  { key: 'mp_ozon_description', label: 'Ozon: описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
-  { key: 'mp_ozon_brand', label: 'Ozon: бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
+  { key: 'mp_ozon_name', label: 'Название', title: 'Ozon · Название', input: 'textarea', minW: 160, mpBucket: 'ozon' },
+  { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
+  { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
+  { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
+  { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
-  { key: 'sku_wb', label: 'WB nmId', input: 'text', minW: 90, mpBucket: 'wb' },
-  { key: 'mp_wb_vendor_code', label: 'WB: артикул продавца', input: 'text', minW: 110, mpBucket: 'wb' },
-  { key: 'mp_wb_name', label: 'WB: название', input: 'textarea', minW: 160, mpBucket: 'wb' },
-  { key: 'mp_wb_description', label: 'WB: описание', input: 'textarea', minW: 200, mpBucket: 'wb' },
-  { key: 'mp_wb_brand', label: 'WB: бренд', input: 'text', minW: 100, mpBucket: 'wb' },
+  { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 160, mpBucket: 'wb' },
+  { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 200, mpBucket: 'wb' },
+  { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 90, mpBucket: 'wb' },
+  { key: 'mp_wb_vendor_code', label: 'Артикул продавца', title: 'Wildberries · Артикул продавца', input: 'text', minW: 110, mpBucket: 'wb' },
+  { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 100, mpBucket: 'wb' },
   /* ——— Яндекс.Маркет ——— */
-  { key: 'sku_ym', label: 'Я.Маркет offer', input: 'text', minW: 100, mpBucket: 'ym' },
-  { key: 'mp_ym_name', label: 'ЯМ: название', input: 'textarea', minW: 160, mpBucket: 'ym' },
-  { key: 'mp_ym_description', label: 'ЯМ: описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
+  { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 160, mpBucket: 'ym' },
+  { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
+  { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 100, mpBucket: 'ym' },
 ];
 
 function str(v) {
@@ -146,20 +146,63 @@ function stringifyMpAttrValue(v) {
   if (v == null) return '';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+  if (typeof v === 'object') {
+    if (v.dictionary_value_id != null || v.value != null) {
+      const text =
+        v.value != null && String(v.value).trim() !== ''
+          ? String(v.value).trim()
+          : '';
+      const did =
+        v.dictionary_value_id != null
+          ? String(v.dictionary_value_id).trim()
+          : '';
+      if (text && did && text !== did) return text;
+      if (text) return text;
+      return did;
+    }
+    return JSON.stringify(v);
+  }
+  return formatOzonAttrDisplayValue(String(v));
+}
+
+/** Для ячеек Ozon: «Китай->90296» → «Китай»; голый id оставляем. */
+function formatOzonAttrDisplayValue(raw) {
+  const t = String(raw ?? '').trim();
+  if (!t) return '';
+  const arrow = t.indexOf('->');
+  if (arrow > 0) {
+    const label = t.slice(0, arrow).trim();
+    if (label) return label;
+  }
+  const compound = t.match(/^\d+\s*[—–-]\s*(.+)$/);
+  if (compound) return compound[1].trim();
+  return t;
 }
 
 /**
  * Разбор значения ячейки атрибута МП.
  * Ozon — только string | number; WB/ЯМ — ещё boolean.
+ * Если в baseline было «Текст->id», а пользователь оставил тот же текст — сохраняем составное значение.
  */
-function parseMpAttrCellValue(text, bucket) {
+function parseMpAttrCellValue(text, bucket, baselineRaw) {
   const t = String(text ?? '').trim();
   if (t === '') return undefined;
   const lower = t.toLowerCase();
   if (bucket !== 'ozon' && (lower === 'true' || lower === 'false')) {
     return lower === 'true';
+  }
+  if (bucket === 'ozon') {
+    const base = String(baselineRaw ?? '').trim();
+    const arrow = base.indexOf('->');
+    if (arrow > 0) {
+      const baseLabel = base.slice(0, arrow).trim();
+      const baseId = base.slice(arrow + 2).trim();
+      if (baseLabel && baseId && (t === baseLabel || t === base)) {
+        return `${baseLabel}->${baseId}`;
+      }
+    }
+    // Пользователь мог вставить «Текст->id» вручную
+    if (t.includes('->')) return t;
   }
   if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(t)) {
     const n = Number(t);
@@ -190,7 +233,7 @@ function attrsFromRow(row, mpAttrColDefs, bucket) {
     if (c.mpAttr?.bucket !== bucket) continue;
     const { attrId } = c.mpAttr;
     const cell = row[c.key];
-    const parsed = parseMpAttrCellValue(cell, bucket);
+    const parsed = parseMpAttrCellValue(cell, bucket, base[attrId]);
     if (parsed === undefined) delete base[attrId];
     else base[attrId] = parsed;
   }
@@ -212,21 +255,61 @@ function collectAttrKeySets(products) {
 
 function mpAttrSortRankFromHuman(humanName) {
   const h = String(humanName || '').trim().toLowerCase();
-  if (!h) return 4;
+  if (!h) return 6;
+  // название / описание обычно скрыты как дубли mp_* — на всякий случай
   if (
-    /артикул|штрих|баркод|vendor|nm\b|offer_id|(^|[^а-я])offer\b|ean|идентификатор товара|код товара продавца|barcode/i.test(
-      h
-    ) &&
-    !/название|наименование/.test(h)
+    (h === 'название' ||
+      (h.startsWith('название') && !/модели|группы|файла|видео/.test(h)) ||
+      /наименование|имя товара/.test(h)) &&
+    !/описание/.test(h)
   ) {
     return 0;
   }
-  if ((/название|наименование|имя товара/.test(h) || h === 'бренд' || h.includes('торговая марк')) && !/описание/.test(h)) {
-    return 1;
+  if (/описание|аннотация|annotation/.test(h)) return 1;
+  if (
+    /артикул|штрих|баркод|vendor|nm\b|offer_id|(^|[^а-я])offer\b|ean|идентификатор товара|код товара продавца|код продавца|barcode/i.test(
+      h
+    ) &&
+    !/название|наименование|oem/.test(h)
+  ) {
+    return 2;
   }
-  if (/описание|аннотация|annotation/.test(h)) return 2;
   if (/вес|габарит|длин|ширин|высот|объём|объем|размер|глубин|толщин|упаковк/i.test(h)) return 3;
-  return 4;
+  if (/страна/.test(h)) return 4;
+  if (h === 'бренд' || h.includes('торговая марк') || /бренд продавца/.test(h)) return 5;
+  return 6;
+}
+
+function dedicatedMpColSortRank(col) {
+  const k = String(col?.key || '');
+  if (/_name$/.test(k) || k.endsWith('_name')) return 0;
+  if (/description/.test(k)) return 1;
+  if (/^sku_|vendor_code|product_id|offer/.test(k) || k.includes('product_id')) return 2;
+  if (/_brand$/.test(k)) return 5;
+  return 6;
+}
+
+function sortMpSectionColumns(dedicatedCols, attrCols) {
+  const tagged = [
+    ...dedicatedCols.map((c) => ({ c, rank: dedicatedMpColSortRank(c), tie: String(c.key) })),
+    ...attrCols.map((c) => ({
+      c,
+      rank: mpAttrSortRankFromHuman(c._humanName || c.label || ''),
+      tie: String(c.mpAttr?.attrId || c.key),
+    })),
+  ];
+  tagged.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    // внутри одного ранга: сначала dedicated, потом attrs
+    const ad = a.c.mpAttr ? 1 : 0;
+    const bd = b.c.mpAttr ? 1 : 0;
+    if (ad !== bd) return ad - bd;
+    return a.tie.localeCompare(b.tie, undefined, { numeric: true });
+  });
+  return tagged.map((x) => {
+    const { _humanName, ...rest } = x.c;
+    return _humanName !== undefined ? rest : x.c;
+  });
 }
 
 function sortAttrIdsWithLabels(set, labelMap) {
@@ -313,11 +396,11 @@ async function fetchMpAttributeLabelMaps(products) {
   return maps;
 }
 
-function formatMpColumnLabel(marketShort, attrId, humanName) {
+function formatMpColumnLabel(attrId, humanName) {
   const id = String(attrId);
   const h = humanName && String(humanName).trim() ? String(humanName).trim() : '';
-  if (h) return `${marketShort}: ${h}`;
-  return `${marketShort} (id ${id})`;
+  if (h) return h;
+  return `id ${id}`;
 }
 
 function mpColumnTitleAttr(bucket, attrId, humanName) {
@@ -325,6 +408,18 @@ function mpColumnTitleAttr(bucket, attrId, humanName) {
   const h = humanName && String(humanName).trim() ? String(humanName).trim() : '';
   const ru = bucket === 'ozon' ? 'Ozon' : bucket === 'wb' ? 'Wildberries' : 'Яндекс.Маркет';
   return h ? `${ru} · ${h}\nID: ${id}` : `${ru}\nID: ${id}`;
+}
+
+function mpBucketOfCol(col) {
+  return col?.mpBucket || col?.mpAttr?.bucket || null;
+}
+
+function mpColClassName(col) {
+  const b = mpBucketOfCol(col);
+  if (b === 'ozon') return 'bulk-mp-ozon';
+  if (b === 'wb') return 'bulk-mp-wb';
+  if (b === 'ym') return 'bulk-mp-ym';
+  return '';
 }
 
 /** Совпадение подписи с колонками карточки mp_* (плоские поля), чтобы не дублировать JSON-атрибуты */
@@ -392,12 +487,14 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
     cols.push({
       key: `__mpAttr__ozon__${id}`,
-      label: formatMpColumnLabel('Ozon', id, human),
+      label: formatMpColumnLabel(id, human),
       title: mpColumnTitleAttr('ozon', id, human),
       headerClass: 'mp-attr-head',
       input: 'textarea',
       minW: 120,
+      mpBucket: 'ozon',
       mpAttr: { bucket: 'ozon', attrId: id },
+      _humanName: human || '',
     });
   }
   for (const id of sortAttrIdsWithLabels(wb, wbM)) {
@@ -405,12 +502,14 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     if (isDuplicateMpCardJsonAttr('wb', human)) continue;
     cols.push({
       key: `__mpAttr__wb__${id}`,
-      label: formatMpColumnLabel('WB', id, human),
+      label: formatMpColumnLabel(id, human),
       title: mpColumnTitleAttr('wb', id, human),
       headerClass: 'mp-attr-head',
       input: 'textarea',
       minW: 120,
+      mpBucket: 'wb',
       mpAttr: { bucket: 'wb', attrId: id },
+      _humanName: human || '',
     });
   }
   for (const id of sortAttrIdsWithLabels(ym, ymM)) {
@@ -418,12 +517,14 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     if (isDuplicateMpCardJsonAttr('ym', human)) continue;
     cols.push({
       key: `__mpAttr__ym__${id}`,
-      label: formatMpColumnLabel('ЯМ', id, human),
+      label: formatMpColumnLabel(id, human),
       title: mpColumnTitleAttr('ym', id, human),
       headerClass: 'mp-attr-head',
       input: 'textarea',
       minW: 120,
+      mpBucket: 'ym',
       mpAttr: { bucket: 'ym', attrId: id },
+      _humanName: human || '',
     });
   }
   return cols;
@@ -768,16 +869,24 @@ export function ProductsBulkEdit() {
   );
 
   const visibleColumns = useMemo(() => {
-    const base = COLUMNS.filter((c) => {
+    const erp = COLUMNS.filter((c) => {
       if (c.key === 'supplierId' && !supplierBindingEnabled) return false;
-      const b = c.mpBucket;
-      if (b == null) return true;
+      return c.mpBucket == null;
+    });
+    const bucketVisible = (b) => {
       if (b === 'ozon') return showMpOzon;
       if (b === 'wb') return showMpWb;
       if (b === 'ym') return showMpYm;
       return false;
-    });
-    return [...base, ...visibleMpAttrColumnDefs];
+    };
+    const out = [...erp];
+    for (const bucket of ['ozon', 'wb', 'ym']) {
+      if (!bucketVisible(bucket)) continue;
+      const dedicated = COLUMNS.filter((c) => c.mpBucket === bucket);
+      const attrs = visibleMpAttrColumnDefs.filter((c) => c.mpAttr?.bucket === bucket);
+      out.push(...sortMpSectionColumns(dedicated, attrs));
+    }
+    return out;
   }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled]);
 
   const activeFiltersCount =
@@ -1762,7 +1871,7 @@ export function ProductsBulkEdit() {
                 {visibleColumns.map((col) => (
                   <th
                     key={col.key}
-                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''}`.trim()}
+                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
                     style={{ minWidth: col.minW }}
                     title={col.title || undefined}
                   >
@@ -1779,7 +1888,7 @@ export function ProductsBulkEdit() {
                 {visibleColumns.map((col) => (
                   <th
                     key={`bulk-${col.key}`}
-                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''}`.trim()}
+                    className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
                     style={{ minWidth: col.minW }}
                     title={col.title || undefined}
                   >
@@ -1818,7 +1927,11 @@ export function ProductsBulkEdit() {
                       );
                     }
                     return (
-                      <td key={col.key} className={col.key === 'sku' ? 'sticky-col-sku' : undefined} style={{ minWidth: col.minW }}>
+                      <td
+                        key={col.key}
+                        className={`${col.key === 'sku' ? 'sticky-col-sku' : ''} ${mpColClassName(col)}`.trim() || undefined}
+                        style={{ minWidth: col.minW }}
+                      >
                         {renderInput(col, row)}
                       </td>
                     );
@@ -1835,7 +1948,13 @@ export function ProductsBulkEdit() {
       <Modal
         isOpen={bulkModal.open && bulkModalCol != null}
         onClose={() => setBulkModal({ open: false, column: null })}
-        title={bulkModalCol ? `Массово: ${bulkModalCol.label}` : ''}
+        title={
+          bulkModalCol
+            ? `Массово: ${String(bulkModalCol.title || bulkModalCol.label || '')
+                .split('\n')[0]
+                .trim()}`
+            : ''
+        }
         size="large"
       >
         {bulkModalCol ? (

@@ -115,9 +115,23 @@ function buildOzonAttributesArray(ozonAttrs) {
     } else {
       const s = String(raw).trim();
       if (!s) continue;
-      // Legacy-строка: всегда value. Раньше цифры (вес 250) уходили как dictionary_value_id →
-      // Ozon отклонял атрибут, а импорт отвечал skipped.
-      values = [{ value: s }];
+      // «Текст->dictionary_value_id» (импорт / pull) → словарь Ozon
+      const arrow = s.indexOf('->');
+      if (arrow > 0) {
+        const idPart = s.slice(arrow + 2).trim();
+        const did = Number(idPart);
+        if (Number.isFinite(did) && did > 0 && /^\d+$/.test(idPart)) {
+          values = [{ dictionary_value_id: did }];
+        } else {
+          const textPart = s.slice(0, arrow).trim();
+          if (!textPart) continue;
+          values = [{ value: textPart }];
+        }
+      } else {
+        // Legacy-строка: всегда value. Раньше цифры (вес 250) уходили как dictionary_value_id →
+        // Ozon отклонял атрибут, а импорт отвечал skipped.
+        values = [{ value: s }];
+      }
     }
     out.push({ complex_id: 0, id, values });
   }

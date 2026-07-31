@@ -547,6 +547,22 @@ function ozonImportDisplayLabel(raw) {
 }
 
 /**
+ * Разбор «Текст->id» / «id — Текст» → { label, id }.
+ */
+export function splitOzonDictStored(raw) {
+  const t = String(raw ?? '').trim();
+  if (!t) return { label: '', id: '' };
+  const arrow = t.indexOf('->');
+  if (arrow > 0) {
+    return { label: t.slice(0, arrow).trim(), id: t.slice(arrow + 2).trim() };
+  }
+  const compound = t.match(/^(\d+)\s*[—–-]\s*(.+)$/);
+  if (compound) return { label: compound[2].trim(), id: compound[1].trim() };
+  if (/^\d+$/.test(t)) return { label: '', id: t };
+  return { label: t, id: '' };
+}
+
+/**
  * mp_dict_values → для каждого attribute_id карта «нормализованная подпись → dictionary_value_id».
  * @param {Array<{ cache_key: string, cache_value: unknown }>} mpDictValueCaches
  * @returns {Map<string, Map<string, string>>}
@@ -583,27 +599,108 @@ export function buildOzonDictionaryLabelToValueIdMap(mpDictValueCaches) {
   return byAttr;
 }
 
+/** id значения словаря → человекочитаемая подпись (по attribute_id). */
+export function buildOzonDictionaryIdToLabelMap(mpDictValueCaches) {
+  const byAttr = new Map();
+  for (const entry of mpDictValueCaches || []) {
+    const parsed = parseOzonDictCacheKeyForImport(entry.cache_key);
+    if (!parsed) continue;
+    const raw = parseCacheValueCellImport(entry.cache_value);
+    const items = Array.isArray(raw?.result) ? raw.result : [];
+    const attrKey = String(parsed.attrId);
+    let inner = byAttr.get(attrKey);
+    if (!inner) {
+      inner = new Map();
+      byAttr.set(attrKey, inner);
+    }
+    for (const it of items) {
+      if (!it || typeof it !== 'object') continue;
+      const id = it.id != null ? String(it.id).trim() : '';
+      const rawLabel =
+        it.value != null
+          ? String(it.value).trim()
+          : it.info != null
+            ? String(it.info).trim()
+            : it.title != null
+              ? String(it.title).trim()
+              : '';
+      const label = ozonImportDisplayLabel(rawLabel);
+      if (!id || !label) continue;
+      if (!inner.has(id)) inner.set(id, label);
+    }
+  }
+  return byAttr;
+}
+
 /**
- * Заменяет в ozon_attributes текстовые подписи словаря на id (как в UI селекта).
+ * Нормализует ozon_attributes: подписи словаря и голые id → «Текст->id»
+ * (в таблице/импорте виден текст, id сохраняется для push и селектов).
  * @param {Record<string, string>} ozonAttrs
  * @param {Map<string, Map<string, string>>} labelToIdByAttrId
+ * @param {Map<string, Map<string, string>>} [idToLabelByAttrId]
  */
-export function resolveOzonAttributesDictionaryLabels(ozonAttrs, labelToIdByAttrId) {
+export function resolveOzonAttributesDictionaryLabels(
+  ozonAttrs,
+  labelToIdByAttrId,
+  idToLabelByAttrId = null
+) {
   if (!ozonAttrs || typeof ozonAttrs !== 'object' || Array.isArray(ozonAttrs)) return ozonAttrs;
-  if (!labelToIdByAttrId || labelToIdByAttrId.size === 0) return ozonAttrs;
+  const hasLabelMap = labelToIdByAttrId && labelToIdByAttrId.size > 0;
+  const hasIdMap = idToLabelByAttrId && idToLabelByAttrId.size > 0;
+  if (!hasLabelMap && !hasIdMap) return ozonAttrs;
   const out = { ...ozonAttrs };
   for (const [k, v] of Object.entries(out)) {
     if (v == null || v === '') continue;
     if (String(k).startsWith('name_hash:')) continue;
-    let s = String(v).trim();
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      const did =
+        v.dictionary_value_id != null
+          ? String(v.dictionary_value_id).trim()
+          : v.id != null
+            ? String(v.id).trim()
+            : '';
+      const text =
+        v.value != null && String(v.value).trim() !== ''
+          ? String(v.value).trim()
+          : '';
+      if (did && text && text !== did && !/^\d+$/.test(text)) {
+        out[k] = `${text}->${did}`;
+        continue;
+      }
+      if (did) {
+        const label = hasIdMap ? idToLabelByAttrId.get(String(k))?.get(did) : '';
+        out[k] = label ? `${label}->${did}` : did;
+        continue;
+      }
+      if (text) {
+        // fall through as string
+        out[k] = text;
+      } else {
+        continue;
+      }
+    }
+    let s = String(out[k]).trim();
     if (!s) continue;
-    if (/^\d+$/.test(s)) continue;
-    s = ozonImportDisplayLabel(s);
-    if (!s) continue;
-    const inner = labelToIdByAttrId.get(String(k));
-    if (!inner) continue;
-    const id = inner.get(importNormLabel(s));
-    if (id != null && id !== '') out[k] = String(id);
+    const split = splitOzonDictStored(s);
+    if (split.label && split.id && /^\d+$/.test(split.id)) {
+      out[k] = `${split.label}->${split.id}`;
+      continue;
+    }
+    if (/^\d+$/.test(s)) {
+      const label = hasIdMap ? idToLabelByAttrId.get(String(k))?.get(s) : '';
+      if (label) out[k] = `${label}->${s}`;
+      continue;
+    }
+    const label = ozonImportDisplayLabel(s) || split.label || s;
+    if (!label || /^\d+$/.test(label)) continue;
+    const inner = hasLabelMap ? labelToIdByAttrId.get(String(k)) : null;
+    if (!inner) {
+      out[k] = label;
+      continue;
+    }
+    const id = inner.get(importNormLabel(label));
+    if (id != null && id !== '') out[k] = `${label}->${id}`;
+    else out[k] = label;
   }
   return out;
 }

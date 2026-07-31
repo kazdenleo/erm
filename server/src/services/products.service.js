@@ -31,6 +31,7 @@ import {
   mapImportRowToApiPayload,
   parseRowProductId,
   buildOzonDictionaryLabelToValueIdMap,
+  buildOzonDictionaryIdToLabelMap,
   resolveOzonAttributesDictionaryLabels
 } from './productsImport.service.js';
 import { resolveMarketplaceListingByErpSku } from './productMarketplaceLink.service.js';
@@ -919,6 +920,7 @@ class ProductsService {
       console.warn('[Products Service] import Excel: mp_dict_values cache:', e.message);
     }
     const ozonLabelToValueId = buildOzonDictionaryLabelToValueIdMap(mpDictValueCachesForImport);
+    const ozonIdToLabel = buildOzonDictionaryIdToLabelMap(mpDictValueCachesForImport);
 
     const lookups = { categoryByNormName, orgAllowedByNormName };
     const summary = {
@@ -941,7 +943,11 @@ class ProductsService {
       try {
         payload = mapImportRowToApiPayload(row, lookups);
         if (payload.ozon_attributes && ozonLabelToValueId.size > 0) {
-          payload.ozon_attributes = resolveOzonAttributesDictionaryLabels(payload.ozon_attributes, ozonLabelToValueId);
+          payload.ozon_attributes = resolveOzonAttributesDictionaryLabels(
+            payload.ozon_attributes,
+            ozonLabelToValueId,
+            ozonIdToLabel
+          );
         }
       } catch (e) {
         summary.errors.push({ row: excelRowIndex, message: e.message || 'Ошибка разбора строки' });
@@ -1177,7 +1183,12 @@ class ProductsService {
           ['mp_dict_values']
         );
         const labelMap = buildOzonDictionaryLabelToValueIdMap(dictRes.rows || []);
-        productData.ozon_attributes = resolveOzonAttributesDictionaryLabels(productData.ozon_attributes, labelMap);
+        const idMap = buildOzonDictionaryIdToLabelMap(dictRes.rows || []);
+        productData.ozon_attributes = resolveOzonAttributesDictionaryLabels(
+          productData.ozon_attributes,
+          labelMap,
+          idMap
+        );
       } catch (e) {
         console.warn('[Products Service] resolveOzonAttributesDictionaryLabels on create:', e?.message || e);
       }
@@ -1418,7 +1429,12 @@ class ProductsService {
           ['mp_dict_values']
         );
         const labelMap = buildOzonDictionaryLabelToValueIdMap(dictRes.rows || []);
-        updates.ozon_attributes = resolveOzonAttributesDictionaryLabels(updates.ozon_attributes, labelMap);
+        const idMap = buildOzonDictionaryIdToLabelMap(dictRes.rows || []);
+        updates.ozon_attributes = resolveOzonAttributesDictionaryLabels(
+          updates.ozon_attributes,
+          labelMap,
+          idMap
+        );
       } catch (e) {
         console.warn('[Products Service] resolveOzonAttributesDictionaryLabels on update:', e?.message || e);
       }

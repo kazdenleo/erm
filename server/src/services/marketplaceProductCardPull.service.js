@@ -199,70 +199,173 @@ function mergeOzonAttrsFromCard(attrs, prev = {}) {
   for (const a of attrs) {
     const id = a.attribute_id ?? a.id;
     if (id == null) continue;
-    let val = null;
-    if (Array.isArray(a.values) && a.values[0] != null) {
-      const v = a.values[0];
-      val = v.dictionary_value_id ?? v.value ?? v.id ?? v;
-    } else {
-      val = a.value ?? a.values;
-    }
-    next[String(id)] = val != null ? String(val) : '';
+    const normalized = ozonAttrValueToStored(a);
+    if (normalized === '') continue;
+    next[String(id)] = normalized;
   }
   return next;
 }
 
-function mergeWbAttrsFromCard(characteristics, prev = {}) {
-  const next = { ...prev };
-  if (!Array.isArray(characteristics)) return next;
-  for (const c of characteristics) {
-    const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
-    const key = id != null ? String(id) : String(c?.name ?? c?.characteristic_name ?? '').trim();
-    if (!key) continue;
-    if (!isEmptyVal(next[key])) continue;
-    const raw = c?.value;
-    let normalized = '';
-    if (raw === undefined || raw === null) normalized = '';
-    else if (typeof raw === 'boolean' || typeof raw === 'number') normalized = raw;
-    else if (Array.isArray(raw)) {
-      normalized = raw.map((x) => (x == null ? '' : String(x).trim())).filter(Boolean).join('; ');
-    } else if (typeof raw === 'object') {
-      try {
-        normalized = JSON.stringify(raw);
-      } catch {
-        normalized = String(raw);
-      }
-    } else {
-      normalized = String(raw);
+/** Значение атрибута Ozon для хранения: текст; для словаря — «Текст->id» (как в импорте). */
+function ozonAttrValueToStored(a) {
+  if (!a || typeof a !== 'object') return '';
+  if (Array.isArray(a.values) && a.values[0] != null) {
+    const v = a.values[0];
+    const textRaw =
+      v.value != null && String(v.value).trim() !== ''
+        ? String(v.value).trim()
+        : '';
+    const dictId =
+      v.dictionary_value_id != null && String(v.dictionary_value_id).trim() !== ''
+        ? String(v.dictionary_value_id).trim()
+        : v.id != null && String(v.id).trim() !== ''
+          ? String(v.id).trim()
+          : '';
+    // Иногда API кладёт в value тот же id — это не человекочитаемый текст
+    const text = textRaw && !(dictId && textRaw === dictId && /^\d+$/.test(textRaw)) ? textRaw : '';
+    if (text && dictId && dictId !== text && !text.includes('->')) {
+      return `${text}->${dictId}`;
     }
-    if (isEmptyVal(normalized)) continue;
-    next[key] = normalized;
+    if (text) return text;
+    if (dictId) return dictId;
+    return v != null ? String(v) : '';
   }
-  return next;
+  if (a.value != null && typeof a.value === 'object') {
+    return String(a.value.value ?? a.value.text ?? a.value.id ?? '').trim();
+  }
+  if (a.value != null) return String(a.value).trim();
+  return '';
 }
 
-function mergeYmAttrsFromCard(parameterValues, prev = {}) {
-  const next = { ...prev };
-  if (!Array.isArray(parameterValues)) return next;
-  for (const pv of parameterValues) {
-    const pid = pv?.parameterId ?? pv?.id;
-    if (pid == null) continue;
-    const key = String(pid);
-    if (!isEmptyVal(next[key])) continue;
-    // ENUM: valueId нужен для селекта; текст — запасной вариант
-    let val =
-      pv?.valueId ??
-      pv?.optionId ??
-      pv?.dictionaryValueId ??
-      pv?.value ??
-      null;
-    if (val != null && typeof val === 'object') {
-      val = val.valueId ?? val.id ?? val.value ?? val.label ?? '';
-    }
-    if (val != null && String(val).trim() !== '') {
-      next[key] = String(val).trim();
-    }
+function ozonAttrDisplayText(storedOrAttr) {
+  if (storedOrAttr == null) return '';
+  if (typeof storedOrAttr === 'object') {
+    return stripOzonDictArrow(ozonAttrValueToStored(storedOrAttr));
   }
-  return next;
+  return stripOzonDictArrow(String(storedOrAttr).trim());
+}
+
+function stripOzonDictArrow(s) {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  const idx = t.indexOf('->');
+  if (idx > 0) return t.slice(0, idx).trim();
+  return t;
+}
+
+function findOzonAttr(attrs, pred) {
+  if (!Array.isArray(attrs)) return null;
+  return attrs.find(pred) || null;
+}
+
+/**
+ * Дозаполнить dedicated-поля и ozon_draft из атрибутов карточки
+ * (у Ozon описание часто только в attr 4191; габариты/страна — в attrs).
+ */
+function enrichOzonUpdatesFromAttributes(updates, product, attrs) {
+  const list = Array.isArray(attrs) ? attrs : [];
+  const mergedAttrs = {
+    ...parseJsonObject(product.ozon_attributes),
+    ...(updates.ozon_attributes && typeof updates.ozon_attributes === 'object'
+      ? updates.ozon_attributes
+      : {}),
+  };
+
+  if (!trimStr(updates.mp_ozon_description)) {
+    const a =
+      findOzonAttr(list, (x) => Number(x.attribute_id ?? x.id) === 4191) ||
+      findOzonAttr(list, (x) => /аннотация|описание\s+товар/i.test(String(x.name ?? '')));
+    const t = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['4191']);
+    if (t) updates.mp_ozon_description = stripHtml(t);
+  }
+
+  if (!trimStr(updates.mp_ozon_name)) {
+    const a = findOzonAttr(list, (x) => {
+      const n = String(x.name || '')
+        .toLowerCase()
+        .trim();
+      return (
+        n === 'название' ||
+        (n.startsWith('название') && !/модели|группы|файла|видео/.test(n))
+      );
+    });
+    const t = a ? ozonAttrDisplayText(a) : '';
+    if (t) updates.mp_ozon_name = t;
+  }
+
+  if (!trimStr(updates.mp_ozon_brand)) {
+    const a =
+      findOzonAttr(list, (x) => Number(x.attribute_id ?? x.id) === 85) ||
+      findOzonAttr(list, (x) => /бренд|brand/i.test(String(x.name ?? '')));
+    const t = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['85']);
+    if (t) updates.mp_ozon_brand = t;
+  } else if (/^\d+$/.test(trimStr(updates.mp_ozon_brand))) {
+    // В mp_* попал только dictionary id — подставим человекочитаемый бренд из attrs
+    const a =
+      findOzonAttr(list, (x) => Number(x.attribute_id ?? x.id) === 85) ||
+      findOzonAttr(list, (x) => /бренд|brand/i.test(String(x.name ?? '')));
+    const t = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['85']);
+    if (t && !/^\d+$/.test(t)) updates.mp_ozon_brand = t;
+  }
+
+  const toPos = (v) => {
+    const n = Number(String(v ?? '').replace(',', '.').replace(/[^\d.\-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const pickMerged = (...keys) => {
+    for (const k of keys) {
+      const n = toPos(mergedAttrs[k] ?? mergedAttrs[String(k)]);
+      if (n != null) return n;
+    }
+    return null;
+  };
+
+  const prevDraft = parseJsonObject(updates.ozon_draft ?? product.ozon_draft);
+  const prevDims =
+    prevDraft.dimensions && typeof prevDraft.dimensions === 'object' ? { ...prevDraft.dimensions } : {};
+
+  // Упаковка: известные id Ozon (см. extractOzonDimensionsMm) + по имени атрибута
+  let packL = toPos(prevDims.length) ?? pickMerged(9802);
+  let packW = toPos(prevDims.width) ?? pickMerged(6605, 9799);
+  let packH = toPos(prevDims.height) ?? pickMerged(6606, 6859);
+  let packWt = toPos(prevDims.weight) ?? pickMerged(4497, 4383);
+
+  for (const a of list) {
+    const n = String(a.name || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    const val = toPos(ozonAttrDisplayText(a));
+    if (val == null) continue;
+    if (/^(длина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && packL == null) packL = val;
+    else if (/^(ширина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && packW == null) packW = val;
+    else if (/^(высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && packH == null) packH = val;
+    else if (/^вес\s+(с\s+)?упаковк|^вес\s+товара\s+с\s+упаковк/.test(n) && packWt == null) packWt = val;
+  }
+
+  let country = trimStr(prevDraft.country);
+  if (!country) {
+    const a =
+      findOzonAttr(list, (x) => Number(x.attribute_id ?? x.id) === 4389) ||
+      findOzonAttr(list, (x) =>
+        /страна\s+(производства|изготовления|происхождения)/i.test(String(x.name ?? ''))
+      );
+    country = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['4389']);
+  }
+
+  if (packL != null || packW != null || packH != null || packWt != null || country) {
+    updates.ozon_draft = {
+      ...prevDraft,
+      dimensions: {
+        ...prevDims,
+        ...(packL != null ? { length: packL } : {}),
+        ...(packW != null ? { width: packW } : {}),
+        ...(packH != null ? { height: packH } : {}),
+        ...(packWt != null ? { weight: packWt } : {}),
+      },
+      ...(country ? { country } : {}),
+    };
+  }
 }
 
 function mapOzonCardToUpdates(product, data) {
@@ -277,14 +380,13 @@ function mapOzonCardToUpdates(product, data) {
         Number(a.attribute_id ?? a.id) === 85 ||
         /бренд|brand/i.test(String(a.name ?? a.attribute_id ?? ''))
     );
-    const v0 = brandAttr?.values?.[0];
-    if (v0) brand = trimStr(v0.value ?? v0.dictionary_value_id ?? v0.id ?? '');
+    if (brandAttr) brand = ozonAttrDisplayText(brandAttr);
   }
   if (name) updates.mp_ozon_name = name;
   if (description) updates.mp_ozon_description = description;
   if (brand) updates.mp_ozon_brand = brand;
 
-  const offerIdFromOzon = trimStr(data.offer_id ?? data.sku);
+  const offerIdFromOzon = normalizeOzonOfferId(data.offer_id ?? data.sku);
   if (offerIdFromOzon) updates.sku_ozon = offerIdFromOzon;
   if (data.id != null && String(data.id).trim() !== '') {
     const n = Number(String(data.id).replace(/\D/g, '').slice(0, 19));
@@ -339,7 +441,63 @@ function mapOzonCardToUpdates(product, data) {
   if (Object.keys(mergedAttrs).length > 0) {
     updates.ozon_attributes = mergedAttrs;
   }
+
+  enrichOzonUpdatesFromAttributes(updates, product, attrs);
   return updates;
+}
+
+function mergeWbAttrsFromCard(characteristics, prev = {}) {
+  const next = { ...prev };
+  if (!Array.isArray(characteristics)) return next;
+  for (const c of characteristics) {
+    const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
+    const key = id != null ? String(id) : String(c?.name ?? c?.characteristic_name ?? '').trim();
+    if (!key) continue;
+    if (!isEmptyVal(next[key])) continue;
+    const raw = c?.value;
+    let normalized = '';
+    if (raw === undefined || raw === null) normalized = '';
+    else if (typeof raw === 'boolean' || typeof raw === 'number') normalized = raw;
+    else if (Array.isArray(raw)) {
+      normalized = raw.map((x) => (x == null ? '' : String(x).trim())).filter(Boolean).join('; ');
+    } else if (typeof raw === 'object') {
+      try {
+        normalized = JSON.stringify(raw);
+      } catch {
+        normalized = String(raw);
+      }
+    } else {
+      normalized = String(raw);
+    }
+    if (isEmptyVal(normalized)) continue;
+    next[key] = normalized;
+  }
+  return next;
+}
+
+function mergeYmAttrsFromCard(parameterValues, prev = {}) {
+  const next = { ...prev };
+  if (!Array.isArray(parameterValues)) return next;
+  for (const pv of parameterValues) {
+    const pid = pv?.parameterId ?? pv?.id;
+    if (pid == null) continue;
+    const key = String(pid);
+    if (!isEmptyVal(next[key])) continue;
+    // ENUM: valueId нужен для селекта; текст — запасной вариант
+    let val =
+      pv?.valueId ??
+      pv?.optionId ??
+      pv?.dictionaryValueId ??
+      pv?.value ??
+      null;
+    if (val != null && typeof val === 'object') {
+      val = val.valueId ?? val.id ?? val.value ?? val.label ?? '';
+    }
+    if (val != null && String(val).trim() !== '') {
+      next[key] = String(val).trim();
+    }
+  }
+  return next;
 }
 
 function toNumber(v) {
@@ -903,6 +1061,8 @@ export async function pullDailyMarketplaceCardsForEnabledOrgs(opts = {}) {
     failed,
   };
 }
+
+export { mapOzonCardToUpdates };
 
 export default {
   pullProductCard,

@@ -275,9 +275,19 @@ function ozonDictEntryText(o) {
 /** Сохранённое в БД значение: id или текст из таблицы/Excel → элемент справочника Ozon */
 function findOzonDictEntryForStored(stored, options) {
   if (stored === undefined || stored === null) return null;
-  const str = String(stored).trim();
+  let str = String(stored).trim();
   if (!str) return null;
   if (!Array.isArray(options) || options.length === 0) return null;
+  const arrow = str.indexOf('->');
+  if (arrow > 0) {
+    const idPart = str.slice(arrow + 2).trim();
+    if (idPart) {
+      const byArrowId = options.find((o) => o && String(o.id) === idPart);
+      if (byArrowId) return byArrowId;
+    }
+    str = str.slice(0, arrow).trim();
+    if (!str) return null;
+  }
   const byId = options.find((o) => o && String(o.id) === str);
   if (byId) return byId;
   const n = normOzonAttrLabel(str);
@@ -2065,27 +2075,61 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const mergeOzonFetchedIntoForm = useCallback((data) => {
     if (!data) return;
     const name = String(data.name ?? data.title ?? '').trim();
-    const rawDesc = data.description ?? data.description_html ?? '';
-    const description =
-      rawDesc != null
-        ? String(rawDesc)
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : '';
-    let brand = String(data.brand ?? '').trim();
     const attrs = data.attributes ?? data.attribute_values;
-    if (!brand && Array.isArray(attrs)) {
-      const brandAttr = attrs.find(
-        (a) =>
-          Number(a.attribute_id ?? a.id) === 85 ||
-          /бренд|brand/i.test(String(a.name ?? a.attribute_id ?? ''))
-      );
-      const v0 = brandAttr?.values?.[0];
-      if (v0) {
-        brand = String(v0.value ?? v0.dictionary_value_id ?? v0.id ?? '').trim();
+    const ozonAttrText = (a) => {
+      if (!a) return '';
+      const v0 = a.values?.[0];
+      if (v0 != null) {
+        const text = v0.value != null && String(v0.value).trim() !== '' ? String(v0.value).trim() : '';
+        if (text) return text.includes('->') ? text.slice(0, text.indexOf('->')).trim() : text;
+        return String(v0.dictionary_value_id ?? v0.id ?? '').trim();
       }
+      if (a.value != null && typeof a.value === 'object') {
+        return String(a.value.value ?? a.value.text ?? a.value.id ?? '').trim();
+      }
+      return a.value != null ? String(a.value).trim() : '';
+    };
+    const findAttr = (pred) => (Array.isArray(attrs) ? attrs.find(pred) : null);
+    let description = String(data.description ?? data.description_html ?? '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!description) {
+      const a4191 =
+        findAttr((a) => Number(a.attribute_id ?? a.id) === 4191) ||
+        findAttr((a) => /аннотация|описание\s+товар/i.test(String(a.name ?? '')));
+      description = ozonAttrText(a4191).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     }
+    let brand = String(data.brand ?? '').trim();
+    if (!brand || /^\d+$/.test(brand)) {
+      const brandAttr =
+        findAttr((a) => Number(a.attribute_id ?? a.id) === 85) ||
+        findAttr((a) => /бренд|brand/i.test(String(a.name ?? a.attribute_id ?? '')));
+      const t = ozonAttrText(brandAttr);
+      if (t && !/^\d+$/.test(t)) brand = t;
+      else if (!brand && t) brand = t;
+    }
+    const countryAttr =
+      findAttr((a) => Number(a.attribute_id ?? a.id) === 4389) ||
+      findAttr((a) => /страна\s+(производства|изготовления|происхождения)/i.test(String(a.name ?? '')));
+    const countryFromAttr = ozonAttrText(countryAttr);
+    const toNum = (v) => {
+      const n =
+        typeof v === 'number'
+          ? v
+          : v != null && String(v).trim() !== ''
+            ? Number(String(v).replace(',', '.').replace(/[^\d.\-]/g, ''))
+            : NaN;
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const attrNumById = (...ids) => {
+      for (const id of ids) {
+        const a = findAttr((x) => Number(x.attribute_id ?? x.id) === Number(id));
+        const n = toNum(ozonAttrText(a));
+        if (n != null) return n;
+      }
+      return null;
+    };
     setFormData((prev) => {
       let next = { ...prev };
       if (name) next.mp_ozon_name = name;
@@ -2096,14 +2140,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const dy = data.dimension_y ?? data.height;
       const dz = data.dimension_z ?? data.depth ?? data.length;
       const wG = data.weight ?? data.weight_brutto;
-      const toNum = (v) => {
-        const n = typeof v === 'number' ? v : (v != null && String(v).trim() !== '' ? Number(String(v).replace(',', '.')) : NaN);
-        return Number.isFinite(n) && n > 0 ? n : null;
-      };
-      const length = toNum(dz);
-      const width = toNum(dx);
-      const height = toNum(dy);
-      const weight = toNum(wG);
+      let length = toNum(dz) ?? attrNumById(9802);
+      let width = toNum(dx) ?? attrNumById(6605, 9799);
+      let height = toNum(dy) ?? attrNumById(6606, 6859);
+      let weight = toNum(wG) ?? attrNumById(4497, 4383);
+      if (Array.isArray(attrs)) {
+        for (const a of attrs) {
+          const n = String(a.name || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+          const val = toNum(ozonAttrText(a));
+          if (val == null) continue;
+          if (/^(длина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && length == null) length = val;
+          else if (/^(ширина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && width == null) width = val;
+          else if (/^(высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n) && height == null) height = val;
+          else if (/^вес\s+(с\s+)?упаковк|^вес\s+товара\s+с\s+упаковк/.test(n) && weight == null) weight = val;
+        }
+      }
       const erpLength = toNum(prev.length);
       const erpWidth = toNum(prev.width);
       const erpHeight = toNum(prev.height);
@@ -2114,16 +2168,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const widthF = width ?? erpWidth;
       const heightF = height ?? erpHeight;
       const weightF = weight ?? erpWeight;
+      const draftPatch = {};
       if (lengthF != null || widthF != null || heightF != null || weightF != null) {
         const prevDims = getMpDraftDimensionsMm(prev, 'ozon') || {};
-        const nextDims = {
+        draftPatch.dimensions = {
           ...prevDims,
           ...(lengthF != null ? { length: lengthF } : {}),
           ...(widthF != null ? { width: widthF } : {}),
           ...(heightF != null ? { height: heightF } : {}),
           ...(weightF != null ? { weight: weightF } : {}),
         };
-        next = withMpDraftPatch(next, 'ozon', { dimensions: nextDims });
+      }
+      if (countryFromAttr) draftPatch.country = countryFromAttr;
+      if (Object.keys(draftPatch).length > 0) {
+        next = withMpDraftPatch(next, 'ozon', draftPatch);
       }
       if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ozon')) {
         if (weight != null) next.weight = String(weight);
