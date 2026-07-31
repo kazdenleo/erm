@@ -124,17 +124,145 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Текст одной ошибки import/info для показа пользователю. */
+/** Человекочитаемые описания кодов ошибок Ozon (когда API отдаёт только code). */
+const OZON_ERROR_CODE_RU = {
+  warning_attribute_values_out_of_range:
+    'Значение характеристики вне допустимого диапазона. Проверьте числовые атрибуты на вкладке Ozon (габариты, вес, количество и т.п.) — они должны попадать в min/max категории.',
+  attribute_values_out_of_range:
+    'Значение характеристики вне допустимого диапазона. Исправьте число на вкладке Ozon в пределах, которые задаёт категория.',
+  ATTR_VALUE_OUT_OF_RANGE:
+    'Значение характеристики вне допустимого диапазона.',
+  warning_attribute_values_not_from_dictionary:
+    'Значение характеристики не из списка Ozon. Выберите вариант из выпадающего списка атрибута, а не вводите вручную.',
+  attribute_values_not_from_dictionary:
+    'Значение характеристики не из списка Ozon. Выберите значение из справочника.',
+  required_attribute_missing:
+    'Не заполнен обязательный атрибут. Заполните его на вкладке Ozon.',
+  ATTRIBUTE_IS_REQUIRED:
+    'Не заполнен обязательный атрибут.',
+  price_is_negative:
+    'Цена не может быть отрицательной. Проверьте цену товара в кабинете Ozon / выгрузку цен.',
+  PRICE_IS_NEGATIVE:
+    'Цена не может быть отрицательной.',
+  min_price_greater_than_price:
+    'Минимальная цена должна быть меньше цены продажи. Исправьте min_price или цену в кабинете Ozon.',
+  MIN_PRICE_GREATER_THAN_PRICE:
+    'Минимальная цена должна быть меньше цены продажи.',
+  warning_description_length:
+    'Слишком короткое или длинное описание. Проверьте текст описания на вкладке Ozon.',
+  warning_name_length:
+    'Слишком короткое или длинное название. Проверьте название на вкладке Ozon.',
+};
+
+function translateOzonErrorCode(code) {
+  const c = String(code || '').trim();
+  if (!c) return null;
+  if (OZON_ERROR_CODE_RU[c]) return OZON_ERROR_CODE_RU[c];
+  const lower = c.toLowerCase();
+  if (OZON_ERROR_CODE_RU[lower]) return OZON_ERROR_CODE_RU[lower];
+  if (/out_of_range/i.test(c)) {
+    return 'Значение характеристики вне допустимого диапазона (слишком большое или слишком маленькое).';
+  }
+  if (/dictionary|not_from_list|enum/i.test(c)) {
+    return 'Значение характеристики должно быть из списка Ozon, а не произвольный текст.';
+  }
+  if (/required/i.test(c)) {
+    return 'Не заполнен обязательный атрибут.';
+  }
+  if (/price/i.test(c) && /negativ|min/i.test(c)) {
+    return 'Проблема с ценой или минимальной ценой в кабинете Ozon.';
+  }
+  return null;
+}
+
+function extractOzonErrorTexts(err) {
+  if (!err || typeof err !== 'object') return {};
+  const texts = err.texts || err.human_texts || err.ErrorHumanTexts || null;
+  const fromTexts = texts && typeof texts === 'object'
+    ? {
+        attribute_name: texts.attribute_name,
+        description: texts.description || texts.short_description || texts.message,
+        message: texts.message,
+        hint_code: texts.hint_code,
+        params: texts.params,
+      }
+    : {};
+  return {
+    attribute_name: err.attribute_name || fromTexts.attribute_name || err.field || null,
+    attribute_id: err.attribute_id ?? err.attributeId ?? null,
+    description:
+      err.description ||
+      fromTexts.description ||
+      err.message ||
+      fromTexts.message ||
+      null,
+    code: err.code || fromTexts.hint_code || null,
+    level: err.level || null,
+    params: Array.isArray(err.params)
+      ? err.params
+      : Array.isArray(fromTexts.params)
+        ? fromTexts.params
+        : null,
+  };
+}
+
+/** Текст одной ошибки import/info / product info для показа пользователю. */
 function formatOzonImportErrorLine(err) {
   if (err == null) return null;
   if (typeof err === 'string') {
     const t = err.trim();
-    return t || null;
+    if (!t) return null;
+    const translated = translateOzonErrorCode(t);
+    return translated && translated !== t ? `${translated} (код: ${t})` : t;
   }
-  const attr = String(err.attribute_name || err.field || '').trim();
-  const desc = String(err.description || err.message || err.code || '').trim();
-  if (!attr && !desc) return null;
-  return attr && desc ? `${attr}: ${desc}` : attr || desc;
+
+  const parsed = extractOzonErrorTexts(err);
+  const attrParts = [];
+  if (parsed.attribute_name) attrParts.push(String(parsed.attribute_name).trim());
+  if (parsed.attribute_id != null && String(parsed.attribute_id).trim() !== '') {
+    attrParts.push(`id ${parsed.attribute_id}`);
+  }
+  const attrLabel = attrParts.filter(Boolean).join(', ');
+
+  let desc = String(parsed.description || '').trim();
+  const code = String(parsed.code || '').trim();
+  // Если description — это тот же технический code, переводим
+  if (!desc || desc === code || /^[a-z0-9_]+$/i.test(desc)) {
+    const translated = translateOzonErrorCode(desc || code);
+    if (translated) desc = translated;
+  } else if (code && translateOzonErrorCode(code) && desc === code) {
+    desc = translateOzonErrorCode(code);
+  }
+
+  if (Array.isArray(parsed.params) && parsed.params.length) {
+    const paramStr = parsed.params
+      .map((p) => {
+        if (p == null) return null;
+        if (typeof p === 'string') return p;
+        const n = String(p.name || p.key || '').trim();
+        const v = String(p.value ?? p.val ?? '').trim();
+        if (n && v) return `${n}=${v}`;
+        return v || n || null;
+      })
+      .filter(Boolean)
+      .join(', ');
+    if (paramStr) desc = desc ? `${desc} (${paramStr})` : paramStr;
+  }
+
+  if (!attrLabel && !desc && !code) return null;
+  if (attrLabel && desc) {
+    const withCode =
+      code && !desc.includes(code) && !/^[а-яё]/i.test(code) ? ` [${code}]` : '';
+    return `${attrLabel}: ${desc}${withCode}`;
+  }
+  if (desc) {
+    if (code && desc !== code && !desc.includes(code) && translateOzonErrorCode(code)) {
+      return `${desc} [${code}]`;
+    }
+    return desc;
+  }
+  const translated = translateOzonErrorCode(code);
+  return translated ? `${translated} (код: ${code})` : code;
 }
 
 function splitOzonImportErrors(errors) {
