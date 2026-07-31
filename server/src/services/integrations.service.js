@@ -2618,6 +2618,13 @@ class IntegrationsService {
       barcodes: normalizeIntegrationOfferBarcodes(offer.barcodes),
       parameterValues,
       weightDimensions,
+      pictures: Array.isArray(offer.pictures)
+        ? offer.pictures
+        : Array.isArray(offerCard?.pictures)
+          ? offerCard.pictures
+          : Array.isArray(offerCard?.offer?.pictures)
+            ? offerCard.offer.pictures
+            : [],
       contentRating: offerCard?.contentRating ?? null,
       cardStatus: offerCard?.cardStatus ?? null,
       raw: { mapping: hit, offerCard }

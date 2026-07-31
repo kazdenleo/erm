@@ -431,6 +431,14 @@ export const productsApi = {
     const response = await api.put(`/products/${id}/images`, { images });
     return response.data;
   },
+  /** Скачать изображения с МП в основные images (бейджи Oz/WB/ЯМ). Body: { urls } */
+  importImagesFromMarketplace: async (id, marketplace, urls = []) => {
+    const mp = encodeURIComponent(String(marketplace || '').toLowerCase());
+    const response = await api.post(`/products/${id}/images/from-marketplace/${mp}`, {
+      urls: Array.isArray(urls) ? urls : [],
+    });
+    return response.data;
+  },
   deleteImage: async (id, imageId) => {
     const response = await api.delete(`/products/${id}/images/${encodeURIComponent(String(imageId))}`);
     return response.data;

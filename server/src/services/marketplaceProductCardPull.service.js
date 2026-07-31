@@ -9,6 +9,11 @@ import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
 import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import {
+  barcodesFromWbSizes,
+  coerceBarcodeString,
+} from '../utils/productBarcodes.js';
+import { importImagesFromMarketplaceCard } from './marketplaceProductImages.service.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -67,22 +72,6 @@ function stripHtml(s) {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function barcodesFromWbSizes(sizes) {
-  if (!Array.isArray(sizes)) return [];
-  const skus = sizes.flatMap((s) => (Array.isArray(s?.skus) ? s.skus : []));
-  const seen = new Set();
-  const out = [];
-  for (const item of skus) {
-    const code = String(item ?? '')
-      .replace(/\D+/g, '')
-      .trim();
-    if (!code || seen.has(code)) continue;
-    seen.add(code);
-    out.push(code);
-  }
-  return out;
 }
 
 function mergeOzonAttrsFromCard(attrs, prev = {}) {
@@ -306,7 +295,7 @@ function mapWbCardToUpdates(product, data) {
   const prevBc = Array.isArray(product.barcodes) ? product.barcodes : [];
   const prevEmpty =
     prevBc.length === 0 ||
-    prevBc.every((b) => !String(b?.barcode ?? b ?? '').replace(/\D+/g, '').trim());
+    prevBc.every((b) => !coerceBarcodeString(b?.barcode ?? b));
   if (barcodes.length > 0 && prevEmpty) {
     updates.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
   }
@@ -577,11 +566,40 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
-  if (!updates || Object.keys(updates).length === 0) {
-    return { marketplace: mp, ok: true, updated: false, fields: [] };
+  const fields = updates && Object.keys(updates).length > 0 ? Object.keys(updates) : [];
+  if (fields.length > 0) {
+    await productsService.update(product.id, updates, { profileId: opts.profileId ?? null });
   }
-  await productsService.update(product.id, updates, { profileId: opts.profileId ?? null });
-  return { marketplace: mp, ok: true, updated: true, fields: Object.keys(updates) };
+
+  let imagesSync = null;
+  try {
+    imagesSync = await importImagesFromMarketplaceCard(product.id, mp, data);
+    if (imagesSync?.added > 0 || imagesSync?.enabled > 0) {
+      if (!fields.includes('images')) fields.push('images');
+    }
+  } catch (e) {
+    logger.warn('[CardPull] images sync failed', {
+      productId: product.id,
+      mp,
+      error: e?.message || String(e),
+    });
+    imagesSync = { error: e?.message || String(e) };
+  }
+
+  return {
+    marketplace: mp,
+    ok: true,
+    updated: fields.length > 0,
+    fields,
+    images: imagesSync
+      ? {
+          added: imagesSync.added ?? 0,
+          enabled: imagesSync.enabled ?? 0,
+          errors: imagesSync.errors || [],
+          error: imagesSync.error || null,
+        }
+      : null,
+  };
 }
 
 /**

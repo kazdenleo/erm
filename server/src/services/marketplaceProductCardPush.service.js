@@ -20,6 +20,7 @@ import {
   resolveDimensionsMmForPush,
   shouldPushDimensions,
 } from '../utils/productMpFieldLinks.js';
+import { getProductImageUrlsForMarketplace } from './marketplaceProductImages.service.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -763,6 +764,42 @@ async function pushOzonCard(product, categoryMm, ctx) {
       });
     }
 
+    // Картинки — отдельный метод; берём из основных images с бейджем Ozon
+    try {
+      const productIdForPics = item.product_id ?? ozonInfoBefore?.id ?? null;
+      const picUrls = getProductImageUrlsForMarketplace(product, 'ozon').slice(0, 15);
+      if (productIdForPics != null && Number(productIdForPics) > 0 && picUrls.length > 0) {
+        await integrationsService._ozonApiPost(
+          '/v1/product/pictures/import',
+          { product_id: Number(productIdForPics), images: picUrls },
+          apiOpts
+        );
+        result = {
+          ...result,
+          message: `${result.message || 'Ozon: карточка отправлена'}\nИзображения: ${picUrls.length} шт.`,
+          imagesPushed: picUrls.length,
+        };
+      } else if (picUrls.length > 0 && (productIdForPics == null || Number(productIdForPics) <= 0)) {
+        result = {
+          ...result,
+          warnings:
+            `${result.warnings ? `${result.warnings}\n` : ''}` +
+            'Изображения не отправлены: нет product_id Ozon (сохраните связь и повторите).',
+        };
+      }
+    } catch (e) {
+      logger.warn('[CardPush] Ozon pictures/import failed', {
+        offerId,
+        error: e?.message || String(e),
+      });
+      result = {
+        ...result,
+        warnings:
+          `${result.warnings ? `${result.warnings}\n` : ''}` +
+          `Изображения Ozon: ${e?.message || String(e)}`,
+      };
+    }
+
     if (!result.ok) {
       logger.warn('[CardPush] Ozon import finished with errors', {
         taskId,
@@ -873,6 +910,26 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       profileId: ctx.profileId,
       organizationId: ctx.organizationId
     });
+
+    let imagesNote = '';
+    const picUrls = getProductImageUrlsForMarketplace(product, 'wb');
+    if (picUrls.length > 0) {
+      try {
+        await integrationsService._wbContentApiPost(
+          '/content/v3/media/save',
+          { nmId, data: picUrls },
+          { profileId: ctx.profileId, organizationId: ctx.organizationId }
+        );
+        imagesNote = `; изображения: ${picUrls.length} шт.`;
+      } catch (imgErr) {
+        logger.warn('[CardPush] WB media/save failed', {
+          nmId,
+          error: imgErr?.message || String(imgErr),
+        });
+        imagesNote = `; изображения: ошибка (${imgErr?.message || String(imgErr)})`;
+      }
+    }
+
     const subjectNote =
       hasSubjectMapping &&
       existing?.subjectID != null &&
@@ -882,7 +939,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     return {
       marketplace: 'wb',
       ok: true,
-      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}`,
+      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}`,
+      imagesPushed: picUrls.length,
       subjectIdUnchanged:
         hasSubjectMapping &&
         existing?.subjectID != null &&
@@ -1014,6 +1072,11 @@ async function pushYandexCard(product, categoryMm, ctx) {
     if (country) {
       offer.manufacturerCountries = [country];
     }
+  }
+
+  const picUrls = getProductImageUrlsForMarketplace(product, 'ym');
+  if (picUrls.length > 0) {
+    offer.pictures = picUrls;
   }
 
   const fetch = (await import('node-fetch')).default;

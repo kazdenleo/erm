@@ -146,6 +146,11 @@ router.delete(
   validateProductId,
   wrapAsync(productsController.deleteImage.bind(productsController))
 );
+router.post(
+  '/:id/images/from-marketplace/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.importImagesFromMarketplace.bind(productsController))
+);
 
 // Добавить товар (с валидацией)
 router.post(

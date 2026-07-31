@@ -72,6 +72,15 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const filename = `${id}${ext}`;
   fs.writeFileSync(path.join(dir, filename), buf);
   const rel = `/uploads/products/${String(productId)}/${filename}`;
+  // Явные флаги из opts; иначе все МП включены (ручная загрузка / Excel).
+  const mp =
+    opts.marketplaces && typeof opts.marketplaces === 'object' && !Array.isArray(opts.marketplaces)
+      ? {
+          ozon: opts.marketplaces.ozon === true,
+          wb: opts.marketplaces.wb === true,
+          ym: opts.marketplaces.ym === true,
+        }
+      : { ozon: true, wb: true, ym: true };
   return {
     id: filename,
     url: rel,
@@ -79,7 +88,7 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
     originalname: trimmed.slice(0, 240),
     source_url: trimmed,
     primary: opts.primary === true,
-    marketplaces: { ozon: true, wb: true, ym: true },
+    marketplaces: mp,
     created_at: new Date().toISOString()
   };
 }

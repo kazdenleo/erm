@@ -805,6 +805,33 @@ class ProductsController {
       next(error);
     }
   }
+
+  /**
+   * Скачать изображения с МП в основные images (с бейджами).
+   * Body: { urls: string[] }
+   */
+  async importImagesFromMarketplace(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const urls = Array.isArray(req.body?.urls) ? req.body.urls : [];
+      if (urls.length === 0) {
+        return res.status(400).json({ ok: false, error: 'Укажите urls — список ссылок на изображения' });
+      }
+      const { importImagesFromMarketplaceCard } = await import(
+        '../services/marketplaceProductImages.service.js'
+      );
+      const result = await importImagesFromMarketplaceCard(id, marketplace, urls);
+      return res.status(200).json({
+        ok: true,
+        data: result.images,
+        added: result.added,
+        enabled: result.enabled,
+        errors: result.errors,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new ProductsController();

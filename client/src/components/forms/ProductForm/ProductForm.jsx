@@ -150,6 +150,61 @@ function extractImagesFromApiPayload(payload) {
   return [];
 }
 
+function pushUniqueHttpUrl(out, seen, raw) {
+  const u = String(raw || '').trim();
+  if (!/^https?:\/\//i.test(u)) return;
+  const key = u.split(/[?#]/)[0].toLowerCase();
+  if (!key || seen.has(key)) return;
+  seen.add(key);
+  out.push(u);
+}
+
+/** URL картинок из ответа Ozon (для загрузки в основные images). */
+function extractOzonImageUrlsClient(card) {
+  if (!card || typeof card !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  pushUniqueHttpUrl(out, seen, card.primary_image ?? card.primaryImage ?? card.image);
+  if (Array.isArray(card.images)) {
+    for (const item of card.images) {
+      if (typeof item === 'string') pushUniqueHttpUrl(out, seen, item);
+      else if (item && typeof item === 'object') {
+        pushUniqueHttpUrl(out, seen, item.url ?? item.file_name ?? item.fileName ?? item.src);
+      }
+    }
+  }
+  return out;
+}
+
+function extractWbImageUrlsClient(card) {
+  if (!card || typeof card !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  const pick = (p) => {
+    if (p == null) return '';
+    if (typeof p === 'string') return p;
+    if (typeof p !== 'object') return '';
+    return String(p.big || p.hqUrl || p.hq || p.c516x688 || p.c246x328 || p.square || p.tm || p.url || '').trim();
+  };
+  for (const p of card.photos || []) pushUniqueHttpUrl(out, seen, pick(p));
+  for (const p of card.mediaFiles || []) pushUniqueHttpUrl(out, seen, pick(p));
+  return out;
+}
+
+function extractYmImageUrlsClient(card) {
+  if (!card || typeof card !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  const pictures = card.pictures || card.offer?.pictures || [];
+  if (Array.isArray(pictures)) {
+    for (const p of pictures) {
+      if (typeof p === 'string') pushUniqueHttpUrl(out, seen, p);
+      else if (p && typeof p === 'object') pushUniqueHttpUrl(out, seen, p.url ?? p.src);
+    }
+  }
+  return out;
+}
+
 function filterDroppedImageFiles(fileList) {
   return Array.from(fileList || []).filter((f) => typeof f.type === 'string' && f.type.startsWith('image/'));
 }
@@ -2147,8 +2202,28 @@ export const ProductForm = React.forwardRef(function ProductForm({
         });
         setOzonAttributeValues((prev) => ({ ...prev, ...nextAttrs }));
       }
+      let imagesNote = '';
+      if (currentProduct?.id) {
+        const urls = extractOzonImageUrlsClient(data);
+        if (urls.length > 0) {
+          try {
+            const imgRes = await productsApi.importImagesFromMarketplace(currentProduct.id, 'ozon', urls);
+            const list = extractImagesFromApiPayload(imgRes);
+            if (list.length > 0) setProductImages(normalizeProductImagesOrder(list));
+            const added = Number(imgRes?.added) || 0;
+            const enabled = Number(imgRes?.enabled) || 0;
+            if (added > 0 || enabled > 0) {
+              imagesNote = ` Изображения: +${added}${enabled ? `, бейдж Ozon у ${enabled}` : ''}.`;
+            } else if (urls.length > 0) {
+              imagesNote = ' Изображения уже были в карточке.';
+            }
+          } catch (imgErr) {
+            imagesNote = ` Изображения не загружены: ${imgErr?.response?.data?.error || imgErr?.message || 'ошибка'}.`;
+          }
+        }
+      }
       setOzonSyncSuccess(
-        'Данные с Ozon загружены в поля вкладки (название, описание, бренд, атрибуты). Можно отредактировать и отправить обратно на Ozon.'
+        `Данные с Ozon загружены в поля вкладки (название, описание, бренд, атрибуты).${imagesNote} Можно отредактировать и отправить обратно на Ozon.`
       );
     } catch (err) {
       const msg =
@@ -2163,6 +2238,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [
     currentProduct?.ozon_product_id,
     currentProduct?.sku_ozon,
+    currentProduct?.id,
     formData.sku,
     formData.sku_ozon,
     formData.ozon_product_id,
@@ -2353,7 +2429,25 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (nmFromWb != null && String(nmFromWb).trim() !== '') {
         setFormData((prev) => ({ ...prev, sku_wb: String(nmFromWb).trim() }));
       }
-      setWbSyncSuccess('Данные с Wildberries загружены в поля WB. Сохраните товар.');
+      let imagesNote = '';
+      if (currentProduct?.id) {
+        const urls = extractWbImageUrlsClient(data);
+        if (urls.length > 0) {
+          try {
+            const imgRes = await productsApi.importImagesFromMarketplace(currentProduct.id, 'wb', urls);
+            const list = extractImagesFromApiPayload(imgRes);
+            if (list.length > 0) setProductImages(normalizeProductImagesOrder(list));
+            const added = Number(imgRes?.added) || 0;
+            const enabled = Number(imgRes?.enabled) || 0;
+            if (added > 0 || enabled > 0) {
+              imagesNote = ` Изображения: +${added}${enabled ? `, бейдж WB у ${enabled}` : ''}.`;
+            }
+          } catch (imgErr) {
+            imagesNote = ` Изображения не загружены: ${imgErr?.response?.data?.error || imgErr?.message || 'ошибка'}.`;
+          }
+        }
+      }
+      setWbSyncSuccess(`Данные с Wildberries загружены в поля WB.${imagesNote} Сохраните товар.`);
     } catch (err) {
       const msg =
         err.response?.data?.message ??
@@ -2372,6 +2466,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     productsListOrganizationId,
     currentProduct?.mp_wb_vendor_code,
     currentProduct?.sku_ozon,
+    currentProduct?.id,
     mergeWbFetchedIntoForm
   ]);
 
@@ -2512,14 +2607,41 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (attrCount > 0) parts.push(`характеристики (${attrCount})`);
       if (dimsErp) parts.push('габариты и вес');
       else if (data.weightDimensions) parts.push('габариты (не распознаны)');
-      setYmSyncSuccess(`Данные с Яндекс.Маркета загружены: ${parts.join(', ')}. Сохраните товар.`);
+      let imagesNote = '';
+      if (currentProduct?.id) {
+        const urls = extractYmImageUrlsClient(data);
+        if (urls.length > 0) {
+          try {
+            const imgRes = await productsApi.importImagesFromMarketplace(currentProduct.id, 'ym', urls);
+            const list = extractImagesFromApiPayload(imgRes);
+            if (list.length > 0) setProductImages(normalizeProductImagesOrder(list));
+            const added = Number(imgRes?.added) || 0;
+            const enabled = Number(imgRes?.enabled) || 0;
+            if (added > 0 || enabled > 0) {
+              imagesNote = ` Изображения: +${added}${enabled ? `, бейдж ЯМ у ${enabled}` : ''}.`;
+            }
+          } catch (imgErr) {
+            imagesNote = ` Изображения не загружены: ${imgErr?.response?.data?.error || imgErr?.message || 'ошибка'}.`;
+          }
+        }
+      }
+      setYmSyncSuccess(
+        `Данные с Яндекс.Маркета загружены: ${parts.join(', ')}.${imagesNote} Сохраните товар.`
+      );
     } catch (err) {
       const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Яндекс.Маркета.';
       setYmSyncError(msg);
     } finally {
       setYmSyncLoading(false);
     }
-  }, [formData.sku_ym, formData.sku, formData.organizationId, productsListOrganizationId, ymCategoryAttributes]);
+  }, [
+    formData.sku_ym,
+    formData.sku,
+    formData.organizationId,
+    productsListOrganizationId,
+    ymCategoryAttributes,
+    currentProduct?.id,
+  ]);
 
   // Синхронизация формы с данными из блока «Данные с Ozon»: при появлении ozonFetchedProduct подставляем все атрибуты в поля формы
   useEffect(() => {
