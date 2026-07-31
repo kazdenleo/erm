@@ -29,6 +29,7 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
 import marketplaceFboReportsService from './marketplaceFboReports.service.js';
 import marketplaceFbsReportsService from './marketplaceFbsReports.service.js';
+import marketplaceProductCardPull from './marketplaceProductCardPull.service.js';
 import {
   getSchedulerDbJobName,
   isSchedulerDbJobRunning,
@@ -261,6 +262,18 @@ function getMarketplaceFbsReportsDailyCron() {
 
 function isMarketplaceFbsReportsDailyEnabled() {
   const v = process.env.MP_FBS_REPORTS_DAILY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Ежедневный импорт карточек МП для org с daily_pull_marketplace_cards. По умолчанию 03:40 МСК. */
+function getMarketplaceCardPullDailyCron() {
+  const c = process.env.MP_CARD_PULL_DAILY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '40 3 * * *';
+}
+
+function isMarketplaceCardPullDailyEnabled() {
+  const v = process.env.MP_CARD_PULL_DAILY_ENABLED;
   if (v == null || String(v).trim() === '') return true;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
@@ -1203,6 +1216,39 @@ class SchedulerService {
         logger.info('[Scheduler] Marketplace FBS reports daily sync disabled (MP_FBS_REPORTS_DAILY_ENABLED)');
       }
 
+      let marketplaceCardPullDailyJob = null;
+      if (isMarketplaceCardPullDailyEnabled()) {
+        const cardPullCron = getMarketplaceCardPullDailyCron();
+        marketplaceCardPullDailyJob = cron.schedule(
+          cardPullCron,
+          async () => {
+            try {
+              logger.info('[Scheduler] Marketplace card pull daily...');
+              await marketplaceProductCardPull.pullDailyMarketplaceCardsForEnabledOrgs();
+            } catch (e) {
+              logger.error('[Scheduler] Marketplace card pull daily failed:', e?.message || e);
+              await addRuntimeNotification({
+                type: 'error',
+                severity: 'error',
+                source: 'marketplace_card_pull',
+                title: 'Ошибка ежедневного импорта карточек МП',
+                message: `Ошибка ежедневного импорта карточек с маркетплейсов: ${e?.message || e}`,
+              });
+            }
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+        this.jobs.push({
+          name: 'marketplace-card-pull-daily',
+          job: marketplaceCardPullDailyJob,
+          schedule: cardPullCron,
+          description:
+            'Ежедневный импорт карточек МП для org с daily_pull_marketplace_cards. MP_CARD_PULL_DAILY_CRON',
+        });
+      } else {
+        logger.info('[Scheduler] Marketplace card pull daily disabled (MP_CARD_PULL_DAILY_ENABLED)');
+      }
+
       if (reviewsSyncJob) {
         this.jobs.push({
           name: 'reviews-sync',
@@ -1346,6 +1392,9 @@ class SchedulerService {
       }
       if (marketplaceFbsReportsDailyJob) {
         marketplaceFbsReportsDailyJob.start();
+      }
+      if (marketplaceCardPullDailyJob) {
+        marketplaceCardPullDailyJob.start();
       }
       this.isRunning = true;
 

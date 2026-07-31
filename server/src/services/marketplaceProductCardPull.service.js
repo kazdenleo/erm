@@ -14,8 +14,127 @@ import {
   coerceBarcodeString,
 } from '../utils/productBarcodes.js';
 import { importImagesFromMarketplaceCard } from './marketplaceProductImages.service.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
+import { query } from '../config/database.js';
+import repositoryFactory from '../config/repository-factory.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
+
+const MP_TITLE = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
+
+const UPDATE_FIELD_LABELS = {
+  mp_ozon_name: 'название',
+  mp_ozon_description: 'описание',
+  mp_ozon_brand: 'бренд',
+  sku_ozon: 'артикул',
+  marketplace_ozon_product_id: 'product_id Ozon',
+  ozon_attributes: 'атрибуты',
+  ozon_draft: 'габариты/страна (черновик)',
+  mp_wb_name: 'название',
+  mp_wb_description: 'описание',
+  mp_wb_brand: 'бренд',
+  mp_wb_vendor_code: 'артикул (vendorCode)',
+  sku_wb: 'nmId',
+  wb_attributes: 'атрибуты',
+  wb_draft: 'габариты/страна (черновик)',
+  mp_ym_name: 'название',
+  mp_ym_description: 'описание',
+  sku_ym: 'артикул (offerId)',
+  ym_market_sku: 'marketSku',
+  ym_attributes: 'атрибуты',
+  ym_draft: 'габариты/страна (черновик)',
+  brand: 'бренд (Основное)',
+  country_of_origin: 'страна (Основное)',
+  length: 'длина упаковки',
+  width: 'ширина упаковки',
+  height: 'высота упаковки',
+  weight: 'вес упаковки',
+  barcodes: 'штрихкоды',
+  images: 'изображения',
+};
+
+function stableJson(v) {
+  try {
+    return JSON.stringify(v ?? null);
+  } catch {
+    return String(v);
+  }
+}
+
+function parseMaybeJson(v) {
+  if (v == null) return v;
+  if (typeof v === 'object') return v;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return v;
+    try {
+      return JSON.parse(s);
+    } catch {
+      return v;
+    }
+  }
+  return v;
+}
+
+function valuesEqual(a, b) {
+  if (a === b) return true;
+  if (a == null && b == null) return true;
+  const pa = parseMaybeJson(a);
+  const pb = parseMaybeJson(b);
+  if ((pa != null && typeof pa === 'object') || (pb != null && typeof pb === 'object')) {
+    return stableJson(pa) === stableJson(pb);
+  }
+  return String(a ?? '').trim() === String(b ?? '').trim();
+}
+
+/** Человекочитаемый список изменившихся полей карточки. */
+function describeCardFieldChanges(product, updates) {
+  if (!updates || typeof updates !== 'object') return [];
+  const labels = [];
+  for (const [key, nextVal] of Object.entries(updates)) {
+    if (valuesEqual(product?.[key], nextVal)) continue;
+    if (key === 'ozon_draft' || key === 'wb_draft' || key === 'ym_draft') {
+      const prev = parseMaybeJson(product?.[key]) || {};
+      const next = parseMaybeJson(nextVal) || {};
+      const prevDims = prev?.dimensions || prev?.weightDimensions || null;
+      const nextDims = next?.dimensions || next?.weightDimensions || null;
+      if (!valuesEqual(prevDims, nextDims)) labels.push('габариты/вес');
+      const prevCountry = prev?.country ?? prev?.manufacturerCountries ?? null;
+      const nextCountry = next?.country ?? next?.manufacturerCountries ?? null;
+      if (!valuesEqual(prevCountry, nextCountry)) labels.push('страна');
+      continue;
+    }
+    labels.push(UPDATE_FIELD_LABELS[key] || key);
+  }
+  return [...new Set(labels)];
+}
+
+async function notifyCardFieldChanges(product, mp, changedLabels) {
+  if (!Array.isArray(changedLabels) || changedLabels.length === 0) return;
+  const sku = trimStr(product?.sku) || `#${product?.id}`;
+  const name = trimStr(product?.name);
+  const mpTitle = MP_TITLE[mp] || String(mp || '').toUpperCase();
+  const fieldsText = changedLabels.join(', ');
+  await addRuntimeNotification({
+    type: 'mp_card_field_changed',
+    severity: 'warn',
+    source: 'marketplace_card_pull',
+    marketplace: mp,
+    title: `Изменения карточки на ${mpTitle}`,
+    message:
+      `${sku}${name ? ` «${name.slice(0, 80)}»` : ''}: обновились поля (${fieldsText}).`,
+    meta: {
+      product_id: Number(product.id),
+      marketplace: mp,
+      fields: changedLabels,
+      url: `/products?open=${product.id}`,
+    },
+  });
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || '').toLowerCase();
@@ -566,6 +685,7 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
+  const changedLabels = describeCardFieldChanges(product, updates);
   const fields = updates && Object.keys(updates).length > 0 ? Object.keys(updates) : [];
   if (fields.length > 0) {
     await productsService.update(product.id, updates, { profileId: opts.profileId ?? null });
@@ -576,6 +696,7 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     imagesSync = await importImagesFromMarketplaceCard(product.id, mp, data);
     if (imagesSync?.added > 0 || imagesSync?.enabled > 0) {
       if (!fields.includes('images')) fields.push('images');
+      if (!changedLabels.includes('изображения')) changedLabels.push('изображения');
     }
   } catch (e) {
     logger.warn('[CardPull] images sync failed', {
@@ -586,11 +707,16 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     imagesSync = { error: e?.message || String(e) };
   }
 
+  if (opts.notifyChanges && changedLabels.length > 0) {
+    await notifyCardFieldChanges(product, mp, changedLabels);
+  }
+
   return {
     marketplace: mp,
     ok: true,
-    updated: fields.length > 0,
+    updated: fields.length > 0 || changedLabels.length > 0,
     fields,
+    changedLabels,
     images: imagesSync
       ? {
           added: imagesSync.added ?? 0,
@@ -644,7 +770,7 @@ export async function pullProductCard(productId, marketplace, opts = {}) {
 
 /**
  * @param {{ productIds: Array<number|string>, marketplaces: string|string[] }} payload
- * @param {{ profileId?: number|string|null }} [opts]
+ * @param {{ profileId?: number|string|null, notifyChanges?: boolean }} [opts]
  */
 export async function pullProductCardsBulk(payload, opts = {}) {
   const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
@@ -700,7 +826,86 @@ export async function pullProductCardsBulk(payload, opts = {}) {
   };
 }
 
+/**
+ * Ежедневный импорт карточек для организаций с daily_pull_marketplace_cards=true.
+ * При реальных изменениях полей — runtime-уведомление по товару.
+ */
+export async function pullDailyMarketplaceCardsForEnabledOrgs(opts = {}) {
+  const delayMs = Math.max(
+    0,
+    Number(opts.delayMs ?? process.env.MP_CARD_PULL_DAILY_DELAY_MS ?? 250) || 250
+  );
+  const orgRepo = repositoryFactory.getOrganizationsRepository();
+  const orgs = (await orgRepo.findAll()).filter((o) => o.daily_pull_marketplace_cards === true);
+  if (orgs.length === 0) {
+    logger.info('[MP Card Pull Daily] нет организаций с daily_pull_marketplace_cards=true');
+    return { organizations: 0, products: 0, notified: 0, ok: 0, failed: 0 };
+  }
+
+  let productsTotal = 0;
+  let notified = 0;
+  let ok = 0;
+  let failed = 0;
+
+  for (const org of orgs) {
+    const res = await query(
+      `SELECT id, profile_id
+         FROM products
+        WHERE organization_id = $1
+          AND COALESCE(is_archived, false) = false
+        ORDER BY id`,
+      [org.id]
+    );
+    const rows = res.rows || [];
+    const profileId = org.profile_id ?? null;
+    logger.info('[MP Card Pull Daily] org start', {
+      organizationId: org.id,
+      name: org.name,
+      products: rows.length,
+    });
+
+    for (const row of rows) {
+      productsTotal += 1;
+      try {
+        const out = await pullProductCard(row.id, 'all', {
+          profileId: row.profile_id ?? profileId,
+          notifyChanges: true,
+        });
+        const changed = (out.results || []).some(
+          (r) => Array.isArray(r.changedLabels) && r.changedLabels.length > 0
+        );
+        if (changed) notified += 1;
+        if (out.ok) ok += 1;
+        else failed += 1;
+      } catch (e) {
+        failed += 1;
+        logger.warn('[MP Card Pull Daily] product failed', {
+          productId: row.id,
+          error: e?.message || String(e),
+        });
+      }
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  }
+
+  logger.info('[MP Card Pull Daily] done', {
+    organizations: orgs.length,
+    products: productsTotal,
+    notified,
+    ok,
+    failed,
+  });
+  return {
+    organizations: orgs.length,
+    products: productsTotal,
+    notified,
+    ok,
+    failed,
+  };
+}
+
 export default {
   pullProductCard,
-  pullProductCardsBulk
+  pullProductCardsBulk,
+  pullDailyMarketplaceCardsForEnabledOrgs,
 };

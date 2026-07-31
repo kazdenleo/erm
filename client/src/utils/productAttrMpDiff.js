@@ -2,7 +2,11 @@
  * Сравнение значений «Основное» ↔ атрибуты/поля МП (по нормализованному имени).
  */
 
-import { getMpDraftCountry, getYmDraftCountry } from './productMpFieldLinks.js';
+import {
+  getMpDraftCountry,
+  getMpDraftDimensionsMm,
+  getYmDraftCountry,
+} from './productMpFieldLinks.js';
 
 const MP_SHORT = { ozon: 'OZ', wb: 'WB', ym: 'ЯМ' };
 const MP_TITLE = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
@@ -11,7 +15,7 @@ export function normalizeAttrCompareName(s) {
   return String(s || '')
     .toLowerCase()
     .replace(/ё/g, 'е')
-    .replace(/[«»"'`]/g, '')
+    .replace(/[«»"'`']/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -117,8 +121,44 @@ export function getMainAttrMpDiffs(attrName, mainValue, byNameMap) {
   return out;
 }
 
+function fmtDimPart(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x) || x <= 0) return '—';
+  return String(Math.round(x));
+}
+
+function formatDimsMm(d) {
+  if (!d || typeof d !== 'object') return '';
+  const L = fmtDimPart(d.length);
+  const W = fmtDimPart(d.width);
+  const H = fmtDimPart(d.height);
+  const Wt = fmtDimPart(d.weight);
+  if (L === '—' && W === '—' && H === '—' && Wt === '—') return '';
+  return `${L}×${W}×${H} мм, ${Wt} г`;
+}
+
+function dimNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+/** Габариты/вес упаковки отличаются (мм / г). Пустой МП — не расхождение. */
+export function dimensionsDiffer(mainDims, mpDims) {
+  if (!mpDims || typeof mpDims !== 'object') return false;
+  const keys = ['length', 'width', 'height', 'weight'];
+  const mpHasAny = keys.some((k) => dimNum(mpDims[k]) != null);
+  if (!mpHasAny) return false;
+  for (const k of keys) {
+    const a = dimNum(mainDims?.[k]);
+    const b = dimNum(mpDims[k]);
+    if (b == null) continue;
+    if (a !== b) return true;
+  }
+  return false;
+}
+
 /**
- * Расхождения dedicated-полей карточки (название, бренд, описание, страна, артикул).
+ * Расхождения dedicated-полей карточки (название, бренд, описание, страна, артикул, габариты).
  * @returns {Record<string, { mp: string, label: string, title: string, value: string }[]>}
  */
 export function getMainCardFieldMpDiffs(formData = {}) {
@@ -127,6 +167,12 @@ export function getMainCardFieldMpDiffs(formData = {}) {
   const mainDesc = formData.description;
   const mainSku = formData.sku;
   const mainCountry = formData.country_of_origin;
+  const mainDims = {
+    length: formData.length,
+    width: formData.width,
+    height: formData.height,
+    weight: formData.weight,
+  };
 
   const pairs = {
     name: [
@@ -179,5 +225,21 @@ export function getMainCardFieldMpDiffs(formData = {}) {
     }
     out[field] = diffs;
   }
+
+  const dimDiffs = [];
+  const mainDimText = formatDimsMm(mainDims) || '—';
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const mpDims = getMpDraftDimensionsMm(formData, mp);
+    if (!dimensionsDiffer(mainDims, mpDims)) continue;
+    const text = formatDimsMm(mpDims);
+    dimDiffs.push({
+      mp,
+      label: MP_SHORT[mp],
+      title: `${MP_TITLE[mp]}: ${text || '—'} (в Основном: ${mainDimText})`,
+      value: text,
+    });
+  }
+  out.dimensions = dimDiffs;
+
   return out;
 }

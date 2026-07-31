@@ -33,6 +33,7 @@ function notificationOpenLabel(n) {
   if (n?.type === 'receipt_session_invite') return 'Открыть приёмку';
   if (n?.type === 'purchase_receipt_invite') return 'Открыть приёмку';
   if (n?.type === 'competitor_price_below_cost') return 'Открыть товар';
+  if (n?.type === 'mp_card_field_changed') return 'Открыть товар';
   if (n?.type === 'supplier_order_submit_failed') return 'Открыть заказы';
   return 'Открыть';
 }

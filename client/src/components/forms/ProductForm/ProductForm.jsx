@@ -4921,6 +4921,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             links={formData.mp_field_links}
             onToggle={handleMpFieldLinkToggle}
           />
+          <MpValueDiffBadges diffs={mainCardFieldMpDiffs.dimensions} />
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
           ERP: мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).

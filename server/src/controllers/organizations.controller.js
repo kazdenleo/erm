@@ -24,6 +24,14 @@ function normalizeOrganizationBody(body) {
     out.auto_push_marketplace_prices = v === true || v === 'true' || v === 1 || v === '1';
     delete out.autoPushMarketplacePrices;
   }
+  if (
+    out.daily_pull_marketplace_cards !== undefined ||
+    out.dailyPullMarketplaceCards !== undefined
+  ) {
+    const v = out.daily_pull_marketplace_cards ?? out.dailyPullMarketplaceCards;
+    out.daily_pull_marketplace_cards = v === true || v === 'true' || v === 1 || v === '1';
+    delete out.dailyPullMarketplaceCards;
+  }
   return out;
 }
 

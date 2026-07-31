@@ -17,7 +17,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
     article_prefix: '',
     profile_id: '',
     skip_marketplace_stock_sync: false,
-    auto_push_marketplace_prices: false
+    auto_push_marketplace_prices: false,
+    daily_pull_marketplace_cards: false
   });
   const [errors, setErrors] = useState({});
 
@@ -44,7 +45,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
         article_prefix: organization.article_prefix || '',
         profile_id: organization.profile_id != null ? String(organization.profile_id) : '',
         skip_marketplace_stock_sync: organization.skip_marketplace_stock_sync === true,
-        auto_push_marketplace_prices: organization.auto_push_marketplace_prices === true
+        auto_push_marketplace_prices: organization.auto_push_marketplace_prices === true,
+        daily_pull_marketplace_cards: organization.daily_pull_marketplace_cards === true
       }));
     }
   }, [organization]);
@@ -80,7 +82,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
       vat: formData.vat && formData.vat.trim() !== '' ? formData.vat : null,
       article_prefix: formData.article_prefix.trim() || null,
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
-      auto_push_marketplace_prices: formData.auto_push_marketplace_prices === true
+      auto_push_marketplace_prices: formData.auto_push_marketplace_prices === true,
+      daily_pull_marketplace_cards: formData.daily_pull_marketplace_cards === true
     };
     if (isAdmin && profiles.length > 0) {
       payload.profile_id = formData.profile_id ? Number(formData.profile_id) : null;
@@ -221,6 +224,25 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
           <p className="text-muted small mt-1 mb-0">
             Если выключено, система не меняет цены на Ozon, Wildberries и Яндекс.Маркет для товаров этой организации
             (ни при пересчёте минимума, ни по расписанию).
+          </p>
+        </div>
+        <div className="col-12">
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="orgDailyPullMpCards"
+              checked={formData.daily_pull_marketplace_cards === true}
+              onChange={(e) => handleChange('daily_pull_marketplace_cards', e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="orgDailyPullMpCards">
+              Импортировать карточки с маркетплейсов раз в сутки
+            </label>
+          </div>
+          <p className="text-muted small mt-1 mb-0">
+            Раз в сутки подтягиваем название, описание, бренд, артикул, габариты и атрибуты с Ozon, Wildberries и Яндекс.Маркет.
+            Если данные изменились — появится уведомление по товару; расхождения с «Основным» показываются в карточке.
           </p>
         </div>
       </div>

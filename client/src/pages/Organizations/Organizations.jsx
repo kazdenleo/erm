@@ -106,6 +106,11 @@ export function Organizations() {
                         Автоотправка цен на МП: <strong>вкл.</strong>
                       </div>
                     )}
+                    {org.daily_pull_marketplace_cards === true && (
+                      <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                        Импорт карточек МП раз в сутки: <strong>вкл.</strong>
+                      </div>
+                    )}
                     {org.address && <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>{org.address}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: '8px' }}>

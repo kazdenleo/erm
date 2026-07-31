@@ -64,11 +64,14 @@ export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, req
   );
 }
 
-/** Компактные OZ/WB/ЯМ, если значение на МП отличается от Основного. */
+/** Компактные OZ/WB/ЯМ + «!», если значение на МП отличается от Основного. */
 export function MpValueDiffBadges({ diffs }) {
   if (!Array.isArray(diffs) || diffs.length === 0) return null;
   return (
     <span className="mp-attr-diff-badges" aria-label="Отличается от маркетплейса">
+      <span className="mp-attr-diff-warn" title="Значение на маркетплейсе отличается от «Основного»">
+        !
+      </span>
       {diffs.map((d) => (
         <span
           key={d.mp}

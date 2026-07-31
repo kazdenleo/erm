@@ -287,8 +287,14 @@ export function getMpDraftCountry(formOrProduct, mp) {
   return String(getMpDraft(formOrProduct, mp).country || '').trim();
 }
 
-/** Габариты МП без связи — в draft.dimensions (всегда мм / г). */
+/** Габариты МП без связи — в draft.dimensions (всегда мм / г). YM: weightDimensions (см/кг) → мм/г. */
 export function getMpDraftDimensionsMm(formOrProduct, mp) {
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ym') {
+    const d = getMpDraft(formOrProduct, 'ym').dimensions;
+    if (d && typeof d === 'object') return d;
+    return ymWeightDimensionsToErp(getYmDraftWeightDimensions(formOrProduct));
+  }
   const d = getMpDraft(formOrProduct, mp).dimensions;
   if (!d || typeof d !== 'object') return null;
   return d;
