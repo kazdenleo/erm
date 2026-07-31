@@ -163,68 +163,76 @@
   position: -webkit-sticky;
   position: sticky;
   box-sizing: border-box;
-  background: #fff;
+  /* непрозрачный фон обязателен: иначе при горизонтальном скролле видны чужие столбцы */
+  background-color: #fff;
+  background-clip: padding-box;
   vertical-align: middle;
 }
 
 .products-bulk-table .sticky-col-pin-edge {
-  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.12);
+  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.22);
 }
 
 .products-bulk-table thead th.sticky-col-pin {
-  background: #f1f3f5;
+  background-color: #f1f3f5;
 }
 
 .products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin {
-  background: #e9ecef;
+  background-color: #e9ecef;
 }
 
+/* Opaque tint ≈ прежние rgba на белом/сером — иначе pinned МП «просвечивают» */
 .products-bulk-table thead th.sticky-col-pin.bulk-mp-ozon {
-  background: rgba(0, 91, 255, 0.12);
+  background-color: #d9e6fc;
 }
 .products-bulk-table thead th.sticky-col-pin.bulk-mp-wb {
-  background: rgba(203, 17, 171, 0.12);
+  background-color: #f3d9ef;
 }
 .products-bulk-table thead th.sticky-col-pin.bulk-mp-ym {
-  background: rgba(255, 204, 0, 0.14);
+  background-color: #f5efc8;
 }
 
 .products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-ozon {
-  background: rgba(0, 91, 255, 0.08);
+  background-color: #dce6f5;
 }
 .products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-wb {
-  background: rgba(203, 17, 171, 0.08);
+  background-color: #ebdce8;
 }
 .products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin.bulk-mp-ym {
-  background: rgba(255, 204, 0, 0.1);
+  background-color: #f0ebcc;
+}
+
+.products-bulk-table tbody td.sticky-col-pin {
+  background-color: #fff;
 }
 
 .products-bulk-table tbody td.sticky-col-pin.bulk-mp-ozon {
-  background: rgba(0, 91, 255, 0.06);
+  background-color: #f0f5ff;
 }
 .products-bulk-table tbody td.sticky-col-pin.bulk-mp-wb {
-  background: rgba(203, 17, 171, 0.06);
+  background-color: #fdf0fa;
 }
 .products-bulk-table tbody td.sticky-col-pin.bulk-mp-ym {
-  background: rgba(255, 204, 0, 0.08);
+  background-color: #fffcef;
 }
 
 .products-bulk-table tbody tr:hover td.sticky-col-pin {
-  background: #f8f9ff;
+  background-color: #f8f9ff;
 }
 .products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-ozon {
-  background: rgba(0, 91, 255, 0.1);
+  background-color: #e6efff;
 }
 .products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-wb {
-  background: rgba(203, 17, 171, 0.1);
+  background-color: #f9e6f5;
 }
 .products-bulk-table tbody tr:hover td.sticky-col-pin.bulk-mp-ym {
-  background: rgba(255, 204, 0, 0.14);
+  background-color: #fff9db;
 }
 
 .products-bulk-table .sticky-col-pin .products-bulk-cell-input {
   max-width: 100%;
   min-width: 0;
+  background-color: #fff;
 }
 
 .products-bulk-th-label {

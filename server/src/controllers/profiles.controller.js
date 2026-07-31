@@ -8,6 +8,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService from '../services/stockMovements.service.js';
 import { jsonSafeRow } from '../utils/profileId.js';
 import { clearProfileFeatureFlagsCache } from '../utils/profileFeatureFlags.js';
+import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
   formStateToNavSections,
@@ -86,6 +87,21 @@ function pickAccountOwnerProfilePayload(body) {
   ) {
     const v = b.allow_product_supplier_binding ?? b.allowProductSupplierBinding;
     out.allow_product_supplier_binding = v === true || v === '1' || v === 'true';
+  }
+  if (b.display_length_unit !== undefined || b.displayLengthUnit !== undefined) {
+    const v = String(b.display_length_unit ?? b.displayLengthUnit ?? 'mm')
+      .trim()
+      .toLowerCase();
+    out.display_length_unit = v === 'cm' ? 'cm' : 'mm';
+  }
+  if (b.display_weight_unit !== undefined || b.displayWeightUnit !== undefined) {
+    const v = String(b.display_weight_unit ?? b.displayWeightUnit ?? 'g')
+      .trim()
+      .toLowerCase();
+    out.display_weight_unit = v === 'kg' ? 'kg' : 'g';
+  }
+  if (b.timezone !== undefined || b.timeZone !== undefined) {
+    out.timezone = normalizeProfileTimezone(b.timezone ?? b.timeZone);
   }
   if (b.manual_orders_warehouse_id !== undefined || b.manualOrdersWarehouseId !== undefined) {
     const raw = b.manual_orders_warehouse_id ?? b.manualOrdersWarehouseId;

@@ -37,6 +37,19 @@ export function accountSettingsFromProfile(profile) {
     allow_product_supplier_binding: isProfileBoolFlag(
       profile.allow_product_supplier_binding ?? profile.allowProductSupplierBinding
     ),
+    display_length_unit:
+      String(profile.display_length_unit ?? profile.displayLengthUnit ?? 'mm')
+        .trim()
+        .toLowerCase() === 'cm'
+        ? 'cm'
+        : 'mm',
+    display_weight_unit:
+      String(profile.display_weight_unit ?? profile.displayWeightUnit ?? 'g')
+        .trim()
+        .toLowerCase() === 'kg'
+        ? 'kg'
+        : 'g',
+    timezone: String(profile.timezone ?? profile.timeZone ?? 'Europe/Moscow').trim() || 'Europe/Moscow',
   };
 }
 
@@ -88,4 +101,20 @@ export function isProfileProductSupplierBindingEnabled(profile) {
   return isProfileBoolFlag(
     profile.allow_product_supplier_binding ?? profile.allowProductSupplierBinding
   );
+}
+
+/** Единица длины в UI: mm (по умолчанию) или cm. */
+export function getProfileDisplayLengthUnit(profile) {
+  const v = String(profile?.display_length_unit ?? profile?.displayLengthUnit ?? 'mm')
+    .trim()
+    .toLowerCase();
+  return v === 'cm' ? 'cm' : 'mm';
+}
+
+/** Единица веса в UI: g (по умолчанию) или kg. */
+export function getProfileDisplayWeightUnit(profile) {
+  const v = String(profile?.display_weight_unit ?? profile?.displayWeightUnit ?? 'g')
+    .trim()
+    .toLowerCase();
+  return v === 'kg' ? 'kg' : 'g';
 }

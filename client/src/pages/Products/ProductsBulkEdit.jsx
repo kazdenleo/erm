@@ -17,9 +17,21 @@ import {
   getMpDraftDimensionsMm,
   getYmDraftWeightDimensions,
   ymWeightDimensionsToErp,
-  mmToCm,
   gramsToKg,
+  kgToGrams,
 } from '../../utils/productMpFieldLinks.js';
+import {
+  getProfileLengthUnit,
+  getProfileWeightUnit,
+  lengthMmToDisplay,
+  lengthDisplayToMm,
+  weightGToDisplay,
+  weightDisplayToG,
+  lengthUnitLabel,
+  weightUnitLabel,
+  lengthCmToDisplay,
+  lengthDisplayToCm,
+} from '../../utils/displayUnits.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import {
   FILTER_CATEGORY_NONE,
@@ -152,7 +164,8 @@ function buildStickyLeftMap(displayCols, pinnedKeys) {
     map.set(key, {
       left,
       width,
-      zIndex: 20 - i,
+      /* выше обычных ячеек (0) и thead без pin (3), левее — выше соседей */
+      zIndex: 40 - i,
       isLast: i === stickyKeys.length - 1,
       isBase: key === DEFAULT_STICKY_COL_KEY,
     });
@@ -177,10 +190,10 @@ const COLUMNS = [
   /* описание */
   { key: 'description', label: 'Описание', input: 'textarea', minW: 220 },
   /* габариты и вес */
-  { key: 'weight', label: 'Вес (г)', input: 'number', minW: 72 },
-  { key: 'length', label: 'Длина', input: 'number', minW: 64 },
-  { key: 'width', label: 'Ширина', input: 'number', minW: 64 },
-  { key: 'height', label: 'Высота', input: 'number', minW: 64 },
+  { key: 'weight', label: 'Вес', input: 'number', minW: 72, dimKind: 'weight' },
+  { key: 'length', label: 'Длина', input: 'number', minW: 64, dimKind: 'length' },
+  { key: 'width', label: 'Ширина', input: 'number', minW: 64, dimKind: 'length' },
+  { key: 'height', label: 'Высота', input: 'number', minW: 64, dimKind: 'length' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
@@ -196,26 +209,71 @@ const COLUMNS = [
   { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
-  { key: 'ozon_pack_length', label: 'Длина упаковки, мм', title: 'Ozon · Длина упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
-  { key: 'ozon_pack_width', label: 'Ширина упаковки, мм', title: 'Ozon · Ширина упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
-  { key: 'ozon_pack_height', label: 'Высота упаковки, мм', title: 'Ozon · Высота упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
-  { key: 'ozon_pack_weight', label: 'Вес с упаковкой, г', title: 'Ozon · Вес с упаковкой, г', input: 'number', minW: 96, mpBucket: 'ozon' },
+  { key: 'ozon_pack_length', label: 'Длина упаковки', title: 'Ozon · Длина упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_width', label: 'Ширина упаковки', title: 'Ozon · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_height', label: 'Высота упаковки', title: 'Ozon · Высота упаковки', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_weight', label: 'Вес с упаковкой', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'ozon', dimKind: 'weight' },
   { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 160, mpBucket: 'wb' },
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 200, mpBucket: 'wb' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 90, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Артикул продавца', title: 'Wildberries · Артикул продавца', input: 'text', minW: 110, mpBucket: 'wb' },
+  { key: 'wb_pack_length', label: 'Длина упаковки', title: 'Wildberries · Длина упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_width', label: 'Ширина упаковки', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_height', label: 'Высота упаковки', title: 'Wildberries · Высота упаковки', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_weight', label: 'Вес с упаковкой', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'wb', dimKind: 'weight' },
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 100, mpBucket: 'wb' },
   /* ——— Яндекс.Маркет ——— */
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 160, mpBucket: 'ym' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 100, mpBucket: 'ym' },
-  { key: 'ym_pack_length', label: 'Длина упаковки, см', title: 'Яндекс.Маркет · Длина упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
-  { key: 'ym_pack_width', label: 'Ширина упаковки, см', title: 'Яндекс.Маркет · Ширина упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
-  { key: 'ym_pack_height', label: 'Высота упаковки, см', title: 'Яндекс.Маркет · Высота упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
-  { key: 'ym_pack_weight', label: 'Вес с упаковкой, кг', title: 'Яндекс.Маркет · Вес с упаковкой, кг', input: 'number', minW: 96, mpBucket: 'ym' },
+  { key: 'ym_pack_length', label: 'Длина упаковки', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_width', label: 'Ширина упаковки', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_height', label: 'Высота упаковки', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_weight', label: 'Вес с упаковкой', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 96, mpBucket: 'ym', dimKind: 'weight' },
 ];
+
+function withDisplayUnitLabels(cols, lengthUnit, weightUnit) {
+  const L = lengthUnitLabel(lengthUnit);
+  const W = weightUnitLabel(weightUnit);
+  return (cols || []).map((c) => {
+    const strip = (s) =>
+      String(s || '')
+        .replace(/\s*\((мм|см|г|кг)\)\s*$/i, '')
+        .trim();
+    if (c.dimKind === 'length') {
+      const base = strip(c.label);
+      const baseTitle = strip(c.title || c.label);
+      return {
+        ...c,
+        label: `${base} (${L})`,
+        title: `${baseTitle} (${L})`,
+      };
+    }
+    if (c.dimKind === 'weight') {
+      const base = strip(c.label);
+      const baseTitle = strip(c.title || c.label);
+      return {
+        ...c,
+        label: `${base} (${W})`,
+        title: `${baseTitle} (${W})`,
+      };
+    }
+    // JSON-атрибуты габаритов/веса — тоже с единицами
+    const human = String(c._humanName || c.label || '');
+    const h = human.toLowerCase();
+    if (!c.mpAttr) return c;
+    const base = strip(c.label);
+    if (/(длина|ширина|высота|глубина)/.test(h) && !/вес/.test(h)) {
+      return { ...c, label: `${base} (${L})`, title: `${strip(c.title || base)} (${L})` };
+    }
+    if (/вес/.test(h)) {
+      return { ...c, label: `${base} (${W})`, title: `${strip(c.title || base)} (${W})` };
+    }
+    return c;
+  });
+}
 
 function str(v) {
   if (v == null) return '';
@@ -560,6 +618,9 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     if (h === 'бренд' || h.includes('бренд продавца') || h.includes('торговая марк')) return true;
     if (h === 'название' || (h.includes('наименование') && h.includes('товар'))) return true;
     if (h.includes('описание') && (h.includes('товар') || h.includes('продавца'))) return true;
+    // Габариты/вес упаковки — отдельные столбцы wb_pack_*
+    if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
+    if (/вес/.test(h) && /упаковк|брутто|brutto/.test(h)) return true;
     return false;
   }
 
@@ -578,6 +639,8 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
 
 /** Известные id атрибутов Ozon для габаритов/веса упаковки — не дублируем столбцами JSON */
 const OZON_PACK_DIM_ATTR_IDS = new Set(['9802', '6605', '6606', '4497', '4383', '9799', '6859']);
+/** charcID габаритов упаковки/товара WB — не дублируем (вес — в wb_pack_weight) */
+const WB_PACK_DIM_ATTR_IDS = new Set(['90849', '90745', '90846', '90652', '90673', '90630']);
 
 /** Столбцы по объединению ключей атрибутов по всем загруженным товарам */
 function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} }) {
@@ -603,6 +666,7 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     });
   }
   for (const id of sortAttrIdsWithLabels(wb, wbM)) {
+    if (WB_PACK_DIM_ATTR_IDS.has(String(id))) continue;
     const human = wbM[id] || wbM[String(id)];
     if (isDuplicateMpCardJsonAttr('wb', human)) continue;
     cols.push({
@@ -646,13 +710,6 @@ function volumeLitersFromMmDims(rowOrProduct) {
   return String(Number(liters.toFixed(3)));
 }
 
-function dimCellStr(v) {
-  if (v == null || v === '') return '';
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? String(n) : '';
-}
-
-/** Число из ozon_attributes: «252», «252->id» или { value }. */
 function ozonAttrPositiveNumber(attrs, ...ids) {
   const src = attrs && typeof attrs === 'object' ? attrs : {};
   for (const id of ids) {
@@ -665,7 +722,7 @@ function ozonAttrPositiveNumber(attrs, ...ids) {
   return null;
 }
 
-function readOzonPackDimsFromProduct(p) {
+function readOzonPackDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const d = getMpDraftDimensionsMm(p, 'ozon') || {};
   const attrs = normalizeJsonAttrs(p.ozon_attributes);
   const length = d.length ?? ozonAttrPositiveNumber(attrs, 9802);
@@ -673,21 +730,34 @@ function readOzonPackDimsFromProduct(p) {
   const height = d.height ?? ozonAttrPositiveNumber(attrs, 6606, 6859);
   const weight = d.weight ?? ozonAttrPositiveNumber(attrs, 4497, 4383);
   return {
-    ozon_pack_length: dimCellStr(length),
-    ozon_pack_width: dimCellStr(width),
-    ozon_pack_height: dimCellStr(height),
-    ozon_pack_weight: dimCellStr(weight),
+    ozon_pack_length: lengthMmToDisplay(length, lengthUnit),
+    ozon_pack_width: lengthMmToDisplay(width, lengthUnit),
+    ozon_pack_height: lengthMmToDisplay(height, lengthUnit),
+    ozon_pack_weight: weightGToDisplay(weight, weightUnit),
   };
 }
 
-function readYmPackDimsFromProduct(p) {
+function readWbPackDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
+  const d = getMpDraftDimensionsMm(p, 'wb') || {};
+  return {
+    wb_pack_length: lengthMmToDisplay(d.length, lengthUnit),
+    wb_pack_width: lengthMmToDisplay(d.width, lengthUnit),
+    wb_pack_height: lengthMmToDisplay(d.height, lengthUnit),
+    wb_pack_weight: weightGToDisplay(d.weight, weightUnit),
+  };
+}
+
+function readYmPackDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const wd = getYmDraftWeightDimensions(p);
   if (wd && typeof wd === 'object') {
     return {
-      ym_pack_length: dimCellStr(wd.length),
-      ym_pack_width: dimCellStr(wd.width),
-      ym_pack_height: dimCellStr(wd.height),
-      ym_pack_weight: dimCellStr(wd.weight),
+      ym_pack_length: lengthCmToDisplay(wd.length, lengthUnit),
+      ym_pack_width: lengthCmToDisplay(wd.width, lengthUnit),
+      ym_pack_height: lengthCmToDisplay(wd.height, lengthUnit),
+      ym_pack_weight: (() => {
+        const g = wd.weight != null ? kgToGrams(wd.weight) : null;
+        return g != null ? weightGToDisplay(g, weightUnit) : '';
+      })(),
     };
   }
   const mm = getMpDraftDimensionsMm(p, 'ym');
@@ -695,10 +765,10 @@ function readYmPackDimsFromProduct(p) {
     return { ym_pack_length: '', ym_pack_width: '', ym_pack_height: '', ym_pack_weight: '' };
   }
   return {
-    ym_pack_length: dimCellStr(mmToCm(mm.length)),
-    ym_pack_width: dimCellStr(mmToCm(mm.width)),
-    ym_pack_height: dimCellStr(mmToCm(mm.height)),
-    ym_pack_weight: dimCellStr(gramsToKg(mm.weight)),
+    ym_pack_length: lengthMmToDisplay(mm.length, lengthUnit),
+    ym_pack_width: lengthMmToDisplay(mm.width, lengthUnit),
+    ym_pack_height: lengthMmToDisplay(mm.height, lengthUnit),
+    ym_pack_weight: weightGToDisplay(mm.weight, weightUnit),
   };
 }
 
@@ -719,15 +789,16 @@ function parseDraftBaseline(raw) {
   return normalizeJsonAttrs(raw);
 }
 
-function productToRow(p, mpAttrColDefs = []) {
+function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g') {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
   const barcodes = barcodeStringsFromProduct(p.barcodes);
   const oz = normalizeJsonAttrs(p.ozon_attributes);
   const wb = normalizeJsonAttrs(p.wb_attributes);
   const ym = normalizeJsonAttrs(p.ym_attributes);
-  const ozPack = readOzonPackDimsFromProduct(p);
-  const ymPack = readYmPackDimsFromProduct(p);
+  const ozPack = readOzonPackDimsFromProduct(p, lengthUnit, weightUnit);
+  const wbPack = readWbPackDimsFromProduct(p, lengthUnit, weightUnit);
+  const ymPack = readYmPackDimsFromProduct(p, lengthUnit, weightUnit);
   const row = {
     id: str(p.id),
     name: str(p.name),
@@ -769,13 +840,15 @@ function productToRow(p, mpAttrColDefs = []) {
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
     ...ozPack,
+    ...wbPack,
     ...ymPack,
-    weight: p.weight != null && p.weight !== '' ? str(p.weight) : '',
-    length: p.length != null && p.length !== '' ? str(p.length) : '',
-    width: p.width != null && p.width !== '' ? str(p.width) : '',
-    height: p.height != null && p.height !== '' ? str(p.height) : '',
+    weight: weightGToDisplay(p.weight, weightUnit),
+    length: lengthMmToDisplay(p.length, lengthUnit),
+    width: lengthMmToDisplay(p.width, lengthUnit),
+    height: lengthMmToDisplay(p.height, lengthUnit),
     _mpAttrBaseline: { ozon: { ...oz }, wb: { ...wb }, ym: { ...ym } },
     _ozonDraftBaseline: parseDraftBaseline(p.ozon_draft),
+    _wbDraftBaseline: parseDraftBaseline(p.wb_draft),
     _ymDraftBaseline: parseDraftBaseline(p.ym_draft),
     _productRef: p,
   };
@@ -818,7 +891,7 @@ function parseBuyout(s) {
 }
 
 /** Собрать тело PUT только для изменённых полей */
-function buildUpdatePayload(original, current, mpAttrColDefs = []) {
+function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g') {
   const payload = {};
   const touch = (apiKey, value) => {
     payload[apiKey] = value;
@@ -896,12 +969,33 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
       original._ozonDraftBaseline ?? original._productRef?.ozon_draft
     );
     const dimensions = buildPositiveDimsObject(
-      current.ozon_pack_length,
-      current.ozon_pack_width,
-      current.ozon_pack_height,
-      current.ozon_pack_weight
+      lengthDisplayToMm(current.ozon_pack_length, lengthUnit),
+      lengthDisplayToMm(current.ozon_pack_width, lengthUnit),
+      lengthDisplayToMm(current.ozon_pack_height, lengthUnit),
+      weightDisplayToG(current.ozon_pack_weight, weightUnit)
     );
     touch('ozon_draft', {
+      ...prevDraft,
+      dimensions,
+    });
+  }
+
+  const wbPackChanged =
+    !eq(original.wb_pack_length, current.wb_pack_length) ||
+    !eq(original.wb_pack_width, current.wb_pack_width) ||
+    !eq(original.wb_pack_height, current.wb_pack_height) ||
+    !eq(original.wb_pack_weight, current.wb_pack_weight);
+  if (wbPackChanged) {
+    const prevDraft = parseDraftBaseline(
+      original._wbDraftBaseline ?? original._productRef?.wb_draft
+    );
+    const dimensions = buildPositiveDimsObject(
+      lengthDisplayToMm(current.wb_pack_length, lengthUnit),
+      lengthDisplayToMm(current.wb_pack_width, lengthUnit),
+      lengthDisplayToMm(current.wb_pack_height, lengthUnit),
+      weightDisplayToG(current.wb_pack_weight, weightUnit)
+    );
+    touch('wb_draft', {
       ...prevDraft,
       dimensions,
     });
@@ -914,12 +1008,16 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
     !eq(original.ym_pack_weight, current.ym_pack_weight);
   if (ymPackChanged) {
     const prevDraft = parseDraftBaseline(original._ymDraftBaseline ?? original._productRef?.ym_draft);
-    const weightDimensions = buildPositiveDimsObject(
-      current.ym_pack_length,
-      current.ym_pack_width,
-      current.ym_pack_height,
-      current.ym_pack_weight
-    );
+    const L = lengthDisplayToCm(current.ym_pack_length, lengthUnit);
+    const W = lengthDisplayToCm(current.ym_pack_width, lengthUnit);
+    const H = lengthDisplayToCm(current.ym_pack_height, lengthUnit);
+    const g = weightDisplayToG(current.ym_pack_weight, weightUnit);
+    const kg = g != null ? gramsToKg(g) : null;
+    const weightDimensions = {};
+    if (L != null && L > 0) weightDimensions.length = L;
+    if (W != null && W > 0) weightDimensions.width = W;
+    if (H != null && H > 0) weightDimensions.height = H;
+    if (kg != null && kg > 0) weightDimensions.weight = kg;
     const erpDims = ymWeightDimensionsToErp(weightDimensions);
     touch('ym_draft', {
       ...prevDraft,
@@ -928,16 +1026,29 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
     });
   }
 
-  if (!eq(original.weight, current.weight)) touch('weight', parseOptionalNumber(current.weight));
-  if (!eq(original.length, current.length)) touch('length', parseOptionalNumber(current.length));
-  if (!eq(original.width, current.width)) touch('width', parseOptionalNumber(current.width));
-  if (!eq(original.height, current.height)) touch('height', parseOptionalNumber(current.height));
+  if (!eq(original.weight, current.weight)) {
+    touch('weight', weightDisplayToG(current.weight, weightUnit));
+  }
+  if (!eq(original.length, current.length)) {
+    touch('length', lengthDisplayToMm(current.length, lengthUnit));
+  }
+  if (!eq(original.width, current.width)) {
+    touch('width', lengthDisplayToMm(current.width, lengthUnit));
+  }
+  if (!eq(original.height, current.height)) {
+    touch('height', lengthDisplayToMm(current.height, lengthUnit));
+  }
   const dimTouched =
     !eq(original.length, current.length) ||
     !eq(original.width, current.width) ||
     !eq(original.height, current.height);
   if (dimTouched) {
-    const vCalc = volumeLitersFromMmDims(current);
+    const mmRow = {
+      length: lengthDisplayToMm(current.length, lengthUnit),
+      width: lengthDisplayToMm(current.width, lengthUnit),
+      height: lengthDisplayToMm(current.height, lengthUnit),
+    };
+    const vCalc = volumeLitersFromMmDims(mmRow);
     touch('volume', vCalc === '' ? null : parseOptionalNumber(vCalc));
   }
 
@@ -958,7 +1069,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
 }
 
 function cloneRow(r) {
-  const { _productRef, _ozonDraftBaseline, _ymDraftBaseline, _mpAttrBaseline, ...rest } = r;
+  const { _productRef, _ozonDraftBaseline, _wbDraftBaseline, _ymDraftBaseline, _mpAttrBaseline, ...rest } = r;
   return {
     ...rest,
     _mpAttrBaseline: _mpAttrBaseline
@@ -969,6 +1080,7 @@ function cloneRow(r) {
         }
       : { ozon: {}, wb: {}, ym: {} },
     _ozonDraftBaseline: _ozonDraftBaseline ? { ..._ozonDraftBaseline } : {},
+    _wbDraftBaseline: _wbDraftBaseline ? { ..._wbDraftBaseline } : {},
     _ymDraftBaseline: _ymDraftBaseline ? { ..._ymDraftBaseline } : {},
     _productRef,
   };
@@ -998,6 +1110,8 @@ export function ProductsBulkEdit() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const lengthUnit = getProfileLengthUnit(profile);
+  const weightUnit = getProfileWeightUnit(profile);
   const { categories, loadCategories } = useCategories();
   const { organizations } = useOrganizations();
   const { brands } = useBrands();
@@ -1165,8 +1279,8 @@ export function ProductsBulkEdit() {
       const attrs = visibleMpAttrColumnDefs.filter((c) => c.mpAttr?.bucket === bucket);
       out.push(...sortMpSectionColumns(dedicated, attrs));
     }
-    return out;
-  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled]);
+    return withDisplayUnitLabels(out, lengthUnit, weightUnit);
+  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, lengthUnit, weightUnit]);
 
   const displayColumns = useMemo(
     () => orderColumnsWithPins(visibleColumns, pinnedColumnKeys),
@@ -1204,7 +1318,8 @@ export function ProductsBulkEdit() {
         width: meta.width,
         minWidth: meta.width,
         maxWidth: meta.width,
-        zIndex: header ? meta.zIndex + 30 : meta.zIndex,
+        /* шапка + pin: выше body-pin; body-pin выше прокручиваемых ячеек */
+        zIndex: header ? meta.zIndex + 40 : meta.zIndex,
       };
     },
     [stickyLeftMap]
@@ -1261,10 +1376,10 @@ export function ProductsBulkEdit() {
     for (const r of rows) {
       const orig = originals[r.id];
       if (!orig) continue;
-      if (Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs)).length > 0) return true;
+      if (Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0) return true;
     }
     return false;
-  }, [rows, originals, mpAttrColumnDefs]);
+  }, [rows, originals, mpAttrColumnDefs, lengthUnit, weightUnit]);
   hasUnsavedChangesRef.current = hasUnsavedChanges;
 
   const runPendingLeaveAction = useCallback(() => {
@@ -1452,7 +1567,7 @@ export function ProductsBulkEdit() {
       const mpColsInitial = buildMpAttrColumnDefs(list, { ozon: {}, wb: {}, ym: {} });
       if (gen !== loadGenRef.current) return;
       setMpAttrColumnDefs(mpColsInitial);
-      const nextRows = list.filter(Boolean).map((p) => productToRow(p, mpColsInitial));
+      const nextRows = list.filter(Boolean).map((p) => productToRow(p, mpColsInitial, lengthUnit, weightUnit));
       const orig = {};
       for (const r of nextRows) {
         orig[r.id] = cloneRow(r);
@@ -1492,6 +1607,8 @@ export function ProductsBulkEdit() {
     filterProductType,
     listSearch,
     appliedSelectedIds,
+    lengthUnit,
+    weightUnit,
   ]);
 
   useEffect(() => {
@@ -1685,12 +1802,12 @@ export function ProductsBulkEdit() {
       for (const r of rows) {
         const orig = originals[r.id];
         if (!orig) continue;
-        const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs);
+        const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit);
         if (Object.keys(payload).length === 0) continue;
         try {
           const wrap = await productsApi.update(r.id, payload);
           const u = wrap?.data !== undefined ? wrap.data : wrap;
-          const nextRow = productToRow(u, mpAttrColumnDefs);
+          const nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit);
           setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
           setRows((list) => list.map((row) => (row.id === r.id ? { ...nextRow, _productRef: u } : row)));
           ok += 1;

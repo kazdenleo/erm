@@ -4,6 +4,7 @@
 
 import { query } from '../config/database.js';
 import { parseRoleNavSections } from '../utils/userNavSections.js';
+import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 
 class ProfilesRepositoryPG {
   async findAll() {
@@ -164,6 +165,21 @@ class ProfilesRepositoryPG {
     ) {
       const v = updates.allow_product_supplier_binding ?? updates.allowProductSupplierBinding;
       set('allow_product_supplier_binding', v === true || v === '1' || v === 'true');
+    }
+    if (updates.display_length_unit !== undefined || updates.displayLengthUnit !== undefined) {
+      const v = String(updates.display_length_unit ?? updates.displayLengthUnit ?? 'mm')
+        .trim()
+        .toLowerCase();
+      set('display_length_unit', v === 'cm' ? 'cm' : 'mm');
+    }
+    if (updates.display_weight_unit !== undefined || updates.displayWeightUnit !== undefined) {
+      const v = String(updates.display_weight_unit ?? updates.displayWeightUnit ?? 'g')
+        .trim()
+        .toLowerCase();
+      set('display_weight_unit', v === 'kg' ? 'kg' : 'g');
+    }
+    if (updates.timezone !== undefined || updates.timeZone !== undefined) {
+      set('timezone', normalizeProfileTimezone(updates.timezone ?? updates.timeZone));
     }
     if (
       updates.manual_orders_warehouse_id !== undefined ||

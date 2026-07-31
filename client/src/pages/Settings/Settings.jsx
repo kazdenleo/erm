@@ -8,6 +8,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
+import { PROFILE_TIMEZONE_OPTIONS } from '../../constants/profileTimezones.js';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
 import {
@@ -47,6 +48,9 @@ export function Settings() {
     kits_enabled: true,
     production_enabled: true,
     allow_product_supplier_binding: false,
+    display_length_unit: 'mm',
+    display_weight_unit: 'g',
+    timezone: 'Europe/Moscow',
   });
 
   const loadAccount = useCallback(async () => {
@@ -112,6 +116,9 @@ export function Settings() {
         kits_enabled: form.kits_enabled,
         production_enabled: form.production_enabled,
         allow_product_supplier_binding: form.allow_product_supplier_binding,
+        display_length_unit: form.display_length_unit === 'cm' ? 'cm' : 'mm',
+        display_weight_unit: form.display_weight_unit === 'kg' ? 'kg' : 'g',
+        timezone: form.timezone || 'Europe/Moscow',
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -358,6 +365,28 @@ export function Settings() {
                 />
               </label>
               <label className="settings-account-label">
+                Часовой пояс
+                <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                  Ночные обновления (отчёты МП, архив заказов, карточки, остатки МП, проверка API) выполняются
+                  по этому поясу, а не по московскому времени сервера.
+                </span>
+                <select
+                  className="form-select mt-1"
+                  value={
+                    PROFILE_TIMEZONE_OPTIONS.some((o) => o.value === form.timezone)
+                      ? form.timezone
+                      : 'Europe/Moscow'
+                  }
+                  onChange={(e) => setForm((f) => ({ ...f, timezone: e.target.value }))}
+                >
+                  {PROFILE_TIMEZONE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-account-label">
                 Контактный email
                 <input
                   type="email"
@@ -440,6 +469,56 @@ export function Settings() {
                   </span>
                 </span>
               </label>
+
+              <div style={{ marginTop: 16, marginBottom: 8 }}>
+                <strong>Единицы измерения габаритов</strong>
+                <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                  В карточке товара и массовом редактировании поля длины/веса показываются в выбранных единицах.
+                  В базе по-прежнему мм и г. На маркетплейсы уходит в единицах кабинета МП (Ozon — мм/г, WB — см и г,
+                  Яндекс.Маркет — см/кг).
+                </span>
+                <div className="row g-2 mt-2" style={{ maxWidth: 420 }}>
+                  <div className="col-6">
+                    <label className="text-muted small mb-1 d-block" htmlFor="settings-display-length-unit">
+                      Длина / ширина / высота
+                    </label>
+                    <select
+                      id="settings-display-length-unit"
+                      className="form-select form-select-sm"
+                      value={form.display_length_unit === 'cm' ? 'cm' : 'mm'}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          display_length_unit: e.target.value === 'cm' ? 'cm' : 'mm',
+                        }))
+                      }
+                    >
+                      <option value="mm">мм</option>
+                      <option value="cm">см</option>
+                    </select>
+                  </div>
+                  <div className="col-6">
+                    <label className="text-muted small mb-1 d-block" htmlFor="settings-display-weight-unit">
+                      Вес
+                    </label>
+                    <select
+                      id="settings-display-weight-unit"
+                      className="form-select form-select-sm"
+                      value={form.display_weight_unit === 'kg' ? 'kg' : 'g'}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          display_weight_unit: e.target.value === 'kg' ? 'kg' : 'g',
+                        }))
+                      }
+                    >
+                      <option value="g">г</option>
+                      <option value="kg">кг</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <label className="settings-account-toggle">
                 <input
                   type="checkbox"

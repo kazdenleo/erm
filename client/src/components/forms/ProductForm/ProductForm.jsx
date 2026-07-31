@@ -43,6 +43,20 @@ import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceTog
 import { MpFieldLabel, MpFieldLinkToggles, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../../utils/profileFlags.js';
+import {
+  getProfileLengthUnit,
+  getProfileWeightUnit,
+  lengthMmToDisplay,
+  lengthDisplayToMm,
+  weightGToDisplay,
+  weightDisplayToG,
+  lengthUnitLabel,
+  weightUnitLabel,
+  lengthInputStep,
+  weightInputStep,
+  lengthCmToDisplay,
+  lengthDisplayToCm,
+} from '../../../utils/displayUnits.js';
 import { useSuppliers } from '../../../hooks/useSuppliers';
 import {
   buildMpBaseline,
@@ -59,7 +73,6 @@ import {
 } from '../../../utils/productAttrMpDiff.js';
 import {
   applyLinkedMpFieldsFromMain,
-  convertDimensionsForMarketplace,
   cmToMm,
   createMpFieldLinks,
   erpDimsToYmWeightDimensions,
@@ -68,6 +81,7 @@ import {
   getMpDraftDimensionsMm,
   getYmDraftCountry,
   getYmDraftWeightDimensions,
+  gramsToKg,
   isMpFieldLinked,
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
@@ -560,31 +574,52 @@ function MpApiResponseDump({ data, open, onToggle, label = 'Сырой отве�
   );
 }
 
-/** Поля габаритов/веса YM (см/кг). При связи — из ERP; без связи — только ym_draft. */
-function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' }) {
+/** Поля габаритов/веса YM. UI — в единицах настроек аккаунта; draft — см/кг. */
+function YmPackagingDimensionFields({
+  formData,
+  onChange,
+  idPrefix = 'ym-dim',
+  lengthUnit = 'mm',
+  weightUnit = 'g',
+}) {
   const linked = isMpFieldLinked(formData?.mp_field_links, 'dimensions', 'ym');
   const draftWd = getYmDraftWeightDimensions(formData) || {};
+  const L = lengthUnitLabel(lengthUnit);
+  const W = weightUnitLabel(weightUnit);
   const dimFields = [
-    { key: 'length', label: 'Длина упаковки', unit: 'см', step: '0.1', placeholder: '26' },
-    { key: 'width', label: 'Ширина упаковки', unit: 'см', step: '0.1', placeholder: '16.5' },
-    { key: 'height', label: 'Высота упаковки', unit: 'см', step: '0.1', placeholder: '6.7' },
+    { key: 'length', label: 'Длина упаковки', placeholder: lengthUnit === 'cm' ? '26' : '260' },
+    { key: 'width', label: 'Ширина упаковки', placeholder: lengthUnit === 'cm' ? '16.5' : '165' },
+    { key: 'height', label: 'Высота упаковки', placeholder: lengthUnit === 'cm' ? '6.7' : '67' },
   ];
 
-  const displayCm = (key) => {
-    if (linked) {
-      const mm = Number(formData?.[key]);
-      return Number.isFinite(mm) && mm > 0 ? String(Math.round(mm) / 10) : '';
-    }
+  const displayLen = (key) => {
+    if (linked) return lengthMmToDisplay(formData?.[key], lengthUnit);
     const cm = Number(draftWd[key]);
-    return Number.isFinite(cm) && cm > 0 ? String(cm) : '';
+    if (!Number.isFinite(cm) || cm <= 0) return '';
+    return lengthCmToDisplay(cm, lengthUnit);
   };
-  const displayWeightKg = () => {
-    if (linked) {
-      const g = Number(formData?.weight);
-      return Number.isFinite(g) && g > 0 ? String(Math.round(g) / 1000) : '';
-    }
+  const displayWeight = () => {
+    if (linked) return weightGToDisplay(formData?.weight, weightUnit);
     const kg = Number(draftWd.weight);
-    return Number.isFinite(kg) && kg > 0 ? String(kg) : '';
+    if (!Number.isFinite(kg) || kg <= 0) return '';
+    const g = kgToGrams(kg);
+    return g != null ? weightGToDisplay(g, weightUnit) : '';
+  };
+
+  const emitLen = (key, raw) => {
+    // onChange ожидает см (как раньше)
+    const cm = lengthDisplayToCm(raw, lengthUnit);
+    onChange(key, cm == null ? '' : String(cm));
+  };
+  const emitWeight = (raw) => {
+    // onChange ожидает кг
+    const g = weightDisplayToG(raw, weightUnit);
+    if (g == null) {
+      onChange('weight', '');
+      return;
+    }
+    const kg = gramsToKg(g);
+    onChange('weight', kg != null ? String(kg) : '');
   };
 
   return (
@@ -595,17 +630,17 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
           <div className="col-12 col-md-6 col-lg-4" key={f.key}>
             <label className="form-label" htmlFor={id}>
               {f.label}
-              <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>({f.unit})</span>
+              <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>({L})</span>
             </label>
             <input
               id={id}
               type="number"
               className="form-control form-control-sm"
-              step={f.step}
+              step={lengthInputStep(lengthUnit)}
               min="0"
               placeholder={f.placeholder}
-              value={displayCm(f.key)}
-              onChange={(e) => onChange(f.key, e.target.value)}
+              value={displayLen(f.key)}
+              onChange={(e) => emitLen(f.key, e.target.value)}
             />
           </div>
         );
@@ -613,25 +648,33 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
       <div className="col-12 col-md-6 col-lg-4">
         <label className="form-label" htmlFor={`${idPrefix}-weight`}>
           Вес с упаковкой
-          <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>(кг)</span>
+          <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>({W})</span>
         </label>
         <input
           id={`${idPrefix}-weight`}
           type="number"
           className="form-control form-control-sm"
-          step="0.001"
+          step={weightInputStep(weightUnit)}
           min="0"
-          placeholder="1.289"
-          value={displayWeightKg()}
-          onChange={(e) => onChange('weight', e.target.value)}
+          placeholder={weightUnit === 'kg' ? '1.289' : '1289'}
+          value={displayWeight()}
+          onChange={(e) => emitWeight(e.target.value)}
         />
       </div>
       <DimVolumeReadonly
         id={`${idPrefix}-volume`}
-        unit="cm"
-        length={displayCm('length')}
-        width={displayCm('width')}
-        height={displayCm('height')}
+        unit="mm"
+        length={
+          linked
+            ? formData?.length
+            : lengthDisplayToMm(displayLen('length'), lengthUnit)
+        }
+        width={
+          linked ? formData?.width : lengthDisplayToMm(displayLen('width'), lengthUnit)
+        }
+        height={
+          linked ? formData?.height : lengthDisplayToMm(displayLen('height'), lengthUnit)
+        }
       />
     </div>
   );
@@ -698,6 +741,8 @@ function MpSkuCountryDimsEditor({
   itemAttrLabels = null,
   productAttrFields = null,
   onLinkToggle = null,
+  lengthUnit = 'mm',
+  weightUnit = 'g',
 }) {
   const code = String(mp || '').toLowerCase();
   const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
@@ -721,17 +766,28 @@ function MpSkuCountryDimsEditor({
         weight: formData.weight,
       }
     : getMpDraftDimensionsMm(formData, code) || {};
-  const d = convertDimensionsForMarketplace(code, dimsMm);
-  const dimDisp = (key) => (d[key] != null ? String(d[key]) : '');
+  const L = lengthUnitLabel(lengthUnit);
+  const Wt = weightUnitLabel(weightUnit);
+  const dimDisp = (key) =>
+    key === 'weight'
+      ? weightGToDisplay(dimsMm.weight, weightUnit)
+      : lengthMmToDisplay(dimsMm[key], lengthUnit);
+  const emitDim = (key, raw) => {
+    // onDimChange всегда получает мм/г
+    if (key === 'weight') {
+      const g = weightDisplayToG(raw, weightUnit);
+      onDimChange(key, g == null ? '' : String(g));
+    } else {
+      const mm = lengthDisplayToMm(raw, lengthUnit);
+      onDimChange(key, mm == null ? '' : String(mm));
+    }
+  };
   const skuLabel = code === 'wb' ? 'vendorCode (WB)' : 'Артикул (Ozon)';
   const packDimFields = [
-    { key: 'length', label: `Длина упаковки (${d.lengthUnit})` },
-    { key: 'width', label: `Ширина упаковки (${d.lengthUnit})` },
-    { key: 'height', label: `Высота упаковки (${d.lengthUnit})` },
-    {
-      key: 'weight',
-      label: `Вес с упаковкой (${d.weightUnit})`,
-    },
+    { key: 'length', label: `Длина упаковки (${L})` },
+    { key: 'width', label: `Ширина упаковки (${L})` },
+    { key: 'height', label: `Высота упаковки (${L})` },
+    { key: 'weight', label: `Вес с упаковкой (${Wt})` },
   ];
   const showWbItemAttrs = code === 'wb' && typeof onItemAttrChange === 'function';
   const itemFields = [
@@ -740,10 +796,10 @@ function MpSkuCountryDimsEditor({
     { key: WB_ITEM_DIM_CHARC.height, fallback: 'Высота товара' },
   ];
   const mainProductFields = [
-    { key: 'product_length', label: 'Длина товара (мм)' },
-    { key: 'product_width', label: 'Ширина товара (мм)' },
-    { key: 'product_height', label: 'Высота товара (мм)' },
-    { key: 'product_weight', label: 'Вес товара (г)' },
+    { key: 'product_length', label: `Длина товара (${L})` },
+    { key: 'product_width', label: `Ширина товара (${L})` },
+    { key: 'product_height', label: `Высота товара (${L})` },
+    { key: 'product_weight', label: `Вес товара (${Wt})` },
   ];
   const showMainProductDims = code === 'ozon' && typeof onProductDimChange === 'function';
   const ozonYmProductFields = Array.isArray(productAttrFields) ? productAttrFields : [];
@@ -793,14 +849,15 @@ function MpSkuCountryDimsEditor({
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
           {code === 'wb'
-            ? 'Характеристики предмета WB (см), без упаковки.'
-            : 'Размеры и вес самого товара (без упаковки), как на вкладке «Основное».'}
+            ? `Характеристики предмета WB (в интерфейсе — ${L}; в кабинете WB хранятся в см).`
+            : `Размеры и вес самого товара (без упаковки), ${L} / ${Wt}.`}
         </div>
         {showWbItemAttrs ? (
           <div className="row g-2">
             {itemFields.map((f) => {
-              const label = (itemAttrLabels && itemAttrLabels[f.key]) || `${f.fallback} (см)`;
-              const val = itemAttrValues?.[f.key] ?? '';
+              const baseLabel = (itemAttrLabels && itemAttrLabels[f.key]) || f.fallback;
+              const label = `${baseLabel} (${L})`;
+              const val = lengthCmToDisplay(itemAttrValues?.[f.key], lengthUnit);
               return (
                 <div className="col-6 col-md-3" key={f.key}>
                   <label className="form-label" htmlFor={`wb-item-attr-${f.key}`}>
@@ -811,39 +868,66 @@ function MpSkuCountryDimsEditor({
                     type="number"
                     className="form-control form-control-sm"
                     min="0"
-                    step="0.1"
+                    step={lengthInputStep(lengthUnit)}
                     value={val}
-                    onChange={(e) => onItemAttrChange(f.key, e.target.value)}
+                    onChange={(e) => {
+                      const cm = lengthDisplayToCm(e.target.value, lengthUnit);
+                      onItemAttrChange(f.key, cm == null ? '' : String(cm));
+                    }}
                   />
                 </div>
               );
             })}
             <DimVolumeReadonly
               id={`${code}-product-volume`}
-              unit="cm"
-              length={itemAttrValues?.[WB_ITEM_DIM_CHARC.length]}
-              width={itemAttrValues?.[WB_ITEM_DIM_CHARC.width]}
-              height={itemAttrValues?.[WB_ITEM_DIM_CHARC.height]}
+              unit="mm"
+              length={lengthDisplayToMm(
+                lengthCmToDisplay(itemAttrValues?.[WB_ITEM_DIM_CHARC.length], lengthUnit),
+                lengthUnit
+              )}
+              width={lengthDisplayToMm(
+                lengthCmToDisplay(itemAttrValues?.[WB_ITEM_DIM_CHARC.width], lengthUnit),
+                lengthUnit
+              )}
+              height={lengthDisplayToMm(
+                lengthCmToDisplay(itemAttrValues?.[WB_ITEM_DIM_CHARC.height], lengthUnit),
+                lengthUnit
+              )}
             />
           </div>
         ) : showMainProductDims ? (
           <div className="row g-2">
-            {mainProductFields.map((f) => (
-              <div className="col-6 col-md-3" key={f.key}>
-                <label className="form-label" htmlFor={`${code}-${f.key}`}>
-                  {f.label}
-                </label>
-                <input
-                  id={`${code}-${f.key}`}
-                  type="number"
-                  className="form-control form-control-sm"
-                  min="0"
-                  step="1"
-                  value={formData[f.key] ?? ''}
-                  onChange={(e) => onProductDimChange(f.key, e.target.value)}
-                />
-              </div>
-            ))}
+            {mainProductFields.map((f) => {
+              const isWeight = f.key === 'product_weight';
+              const disp = isWeight
+                ? weightGToDisplay(formData[f.key], weightUnit)
+                : lengthMmToDisplay(formData[f.key], lengthUnit);
+              return (
+                <div className="col-6 col-md-3" key={f.key}>
+                  <label className="form-label" htmlFor={`${code}-${f.key}`}>
+                    {f.label}
+                  </label>
+                  <input
+                    id={`${code}-${f.key}`}
+                    type="number"
+                    className="form-control form-control-sm"
+                    min="0"
+                    step={isWeight ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
+                    value={disp}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (isWeight) {
+                        const g = weightDisplayToG(raw, weightUnit);
+                        onProductDimChange(f.key, g == null ? '' : String(g));
+                      } else {
+                        const mm = lengthDisplayToMm(raw, lengthUnit);
+                        onProductDimChange(f.key, mm == null ? '' : String(mm));
+                      }
+                    }}
+                  />
+                </div>
+              );
+            })}
             <DimVolumeReadonly
               id={`${code}-product-volume`}
               unit="mm"
@@ -923,11 +1007,12 @@ function MpSkuCountryDimsEditor({
         </div>
         {code === 'wb' ? (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            Как в кабинете WB (см / кг). Если габариты упаковки меньше фактических — возможен штраф.
+            В интерфейсе — {L} / {Wt}. На WB уходит в см и г (weightBrutto). Если габариты упаковки меньше
+            фактических — возможен штраф.
           </div>
         ) : (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            Габариты для логистики Ozon (мм / г).
+            В интерфейсе — {L} / {Wt}. На Ozon уходит в мм / г.
           </div>
         )}
         <div className="row g-2">
@@ -941,18 +1026,18 @@ function MpSkuCountryDimsEditor({
                 type="number"
                 className="form-control form-control-sm"
                 min="0"
-                step={code === 'wb' ? (f.key === 'weight' ? '0.001' : '0.1') : '1'}
+                step={f.key === 'weight' ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
                 value={dimDisp(f.key)}
-                onChange={(e) => onDimChange(f.key, e.target.value)}
+                onChange={(e) => emitDim(f.key, e.target.value)}
               />
             </div>
           ))}
           <DimVolumeReadonly
             id={`${code}-pack-volume`}
-            unit={code === 'wb' ? 'cm' : 'mm'}
-            length={dimDisp('length')}
-            width={dimDisp('width')}
-            height={dimDisp('height')}
+            unit="mm"
+            length={dimsMm.length}
+            width={dimsMm.width}
+            height={dimsMm.height}
           />
         </div>
       </div>
@@ -981,6 +1066,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const lengthUnit = getProfileLengthUnit(profile);
+  const weightUnit = getProfileWeightUnit(profile);
+  const lengthLbl = lengthUnitLabel(lengthUnit);
+  const weightLbl = weightUnitLabel(weightUnit);
   const { suppliers } = useSuppliers();
   const productFormDomId = useId();
   const mpBaselineRef = useRef(null);
@@ -3069,22 +3158,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
     });
   }, []);
 
-  /** Габариты Ozon/WB: в UI единицы МП; в форме/draft — мм/г. */
+  /** Габариты Ozon/WB: в UI — единицы настроек; в handler приходит уже мм/г. */
   const handleMpDimMetaChange = useCallback((mp, key, raw) => {
     const code = String(mp || '').toLowerCase();
     setFormData((prev) => {
       let mmVal = '';
       if (raw !== '' && raw != null) {
-        if (code === 'wb' && key === 'weight') {
-          const n = kgToGrams(raw);
-          mmVal = n != null ? String(n) : '';
-        } else if (code === 'wb' && key !== 'weight') {
-          const n = cmToMm(raw);
-          mmVal = n != null ? String(n) : '';
-        } else {
-          const n = Number(raw);
-          mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
-        }
+        const n = Number(raw);
+        mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
       }
       let next;
       if (isMpFieldLinked(prev.mp_field_links, 'dimensions', code)) {
@@ -3103,9 +3184,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
     if (code === 'wb' && key !== 'weight') {
       const charcId = WB_PACK_DIM_CHARC[key];
       if (charcId) {
+        const cm =
+          raw === '' || raw == null ? '' : mmToCm(raw) != null ? String(mmToCm(raw)) : '';
         setWbAttributeValues((prev) => ({
           ...prev,
-          [charcId]: raw === '' || raw == null ? '' : String(raw),
+          [charcId]: cm,
         }));
       }
     }
@@ -4902,55 +4985,67 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          Размеры самого товара без упаковки (мм / г). На WB зеркалятся в характеристики предмета.
+          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). На WB зеркалятся в характеристики предмета.
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_length">Длина товара (мм)</label>
+            <label className="form-label" htmlFor="product_length">Длина товара ({lengthLbl})</label>
             <input
               id="product_length"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              value={formData.product_length}
-              onChange={(e) => handleChange('product_length', e.target.value)}
+              value={lengthMmToDisplay(formData.product_length, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('product_length', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_width">Ширина товара (мм)</label>
+            <label className="form-label" htmlFor="product_width">Ширина товара ({lengthLbl})</label>
             <input
               id="product_width"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              value={formData.product_width}
-              onChange={(e) => handleChange('product_width', e.target.value)}
+              value={lengthMmToDisplay(formData.product_width, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('product_width', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_height">Высота товара (мм)</label>
+            <label className="form-label" htmlFor="product_height">Высота товара ({lengthLbl})</label>
             <input
               id="product_height"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              value={formData.product_height}
-              onChange={(e) => handleChange('product_height', e.target.value)}
+              value={lengthMmToDisplay(formData.product_height, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('product_height', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_weight">Вес товара (г)</label>
+            <label className="form-label" htmlFor="product_weight">Вес товара ({weightLbl})</label>
             <input
               id="product_weight"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={weightInputStep(weightUnit)}
               min="0"
-              value={formData.product_weight}
-              onChange={(e) => handleChange('product_weight', e.target.value)}
+              value={weightGToDisplay(formData.product_weight, weightUnit)}
+              onChange={(e) => {
+                const g = weightDisplayToG(e.target.value, weightUnit);
+                handleChange('product_weight', g == null ? '' : String(g));
+              }}
             />
           </div>
           <DimVolumeReadonly
@@ -4982,67 +5077,80 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <MpValueDiffBadges diffs={mainCardFieldMpDiffs.dimensions} />
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          ERP: мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).
+          В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).
+          На маркетплейсы уходит в единицах кабинета МП.
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="length">
-              Длина упаковки (мм)
+              Длина упаковки ({lengthLbl})
             </label>
             <input
               id="length"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              placeholder="150"
-              value={formData.length}
-              onChange={(e) => handleChange('length', e.target.value)}
+              placeholder={lengthUnit === 'cm' ? '15' : '150'}
+              value={lengthMmToDisplay(formData.length, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('length', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="width">
-              Ширина упаковки (мм)
+              Ширина упаковки ({lengthLbl})
             </label>
             <input
               id="width"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              placeholder="100"
-              value={formData.width}
-              onChange={(e) => handleChange('width', e.target.value)}
+              placeholder={lengthUnit === 'cm' ? '10' : '100'}
+              value={lengthMmToDisplay(formData.width, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('width', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="height">
-              Высота упаковки (мм)
+              Высота упаковки ({lengthLbl})
             </label>
             <input
               id="height"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={lengthInputStep(lengthUnit)}
               min="0"
-              placeholder="50"
-              value={formData.height}
-              onChange={(e) => handleChange('height', e.target.value)}
+              placeholder={lengthUnit === 'cm' ? '5' : '50'}
+              value={lengthMmToDisplay(formData.height, lengthUnit)}
+              onChange={(e) => {
+                const mm = lengthDisplayToMm(e.target.value, lengthUnit);
+                handleChange('height', mm == null ? '' : String(mm));
+              }}
             />
           </div>
           <div className="col-6 col-md-3">
             <label className="form-label" htmlFor="weight">
-              Вес с упаковкой (г)
+              Вес с упаковкой ({weightLbl})
             </label>
             <input
               id="weight"
               type="number"
               className="form-control form-control-sm"
-              step="1"
+              step={weightInputStep(weightUnit)}
               min="0"
-              placeholder="250"
-              value={formData.weight}
-              onChange={(e) => handleChange('weight', e.target.value)}
+              placeholder={weightUnit === 'kg' ? '0.25' : '250'}
+              value={weightGToDisplay(formData.weight, weightUnit)}
+              onChange={(e) => {
+                const g = weightDisplayToG(e.target.value, weightUnit);
+                handleChange('weight', g == null ? '' : String(g));
+              }}
             />
           </div>
           <div className="col-6 col-md-3">
@@ -5559,7 +5667,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Ozon)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты товара — из атрибутов категории; упаковка — мм / г для логистики.
+                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На Ozon уходит в мм / г.
               </p>
               <MpSkuCountryDimsEditor
                 mp="ozon"
@@ -5570,6 +5678,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onProductDimChange={(key, v) => handleChange(key, v)}
                 productAttrFields={[]}
                 onLinkToggle={handleMpFieldLinkToggle}
+                lengthUnit={lengthUnit}
+                weightUnit={weightUnit}
               />
             </div>
           </div>
@@ -6041,7 +6151,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Wildberries)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Товар — характеристики предмета (см); упаковка — см / кг.
+                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На WB уходит в см и г (weightBrutto).
               </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
@@ -6050,6 +6160,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
                 onLinkToggle={handleMpFieldLinkToggle}
+                lengthUnit={lengthUnit}
+                weightUnit={weightUnit}
                 itemAttrValues={wbAttributeValues}
                 onItemAttrChange={handleWbItemAttrChange}
                 itemAttrLabels={(() => {
@@ -6235,7 +6347,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты товара и упаковки (Яндекс.Маркет)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Товар — параметры категории; упаковка — см / кг (weightDimensions).
+                Товар — параметры категории; упаковка в интерфейсе — {lengthLbl} / {weightLbl}
+                (на Я.Маркет уходит в см/кг).
               </p>
               <div className="row g-3 mb-3">
                 <div className="col-12 col-md-6">
@@ -6277,7 +6390,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-                Как на вкладке «Основное» (мм / г). Параметры категории Маркета — ниже, если есть.
+                Как на вкладке «Основное» ({lengthLbl} / {weightLbl}). Параметры категории Маркета — ниже, если есть.
               </div>
               <div className="row g-2 mb-3">
                 {[
@@ -6364,6 +6477,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 formData={formData}
                 onChange={handleYmPackagingDimChange}
                 idPrefix="ym-pack"
+                lengthUnit={lengthUnit}
+                weightUnit={weightUnit}
               />
             </div>
           </div>
