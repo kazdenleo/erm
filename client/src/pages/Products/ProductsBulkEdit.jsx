@@ -1326,6 +1326,8 @@ export function ProductsBulkEdit() {
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
+  const [pushOfferOpen, setPushOfferOpen] = useState(false);
+  const [pushOfferSavedCount, setPushOfferSavedCount] = useState(0);
   const pendingLeaveActionRef = useRef(null);
   const leaveBypassRef = useRef(false);
   const hasUnsavedChangesRef = useRef(false);
@@ -1990,7 +1992,8 @@ export function ProductsBulkEdit() {
     );
   };
 
-  const handleSave = async () => {
+  const handleSave = async (opts = {}) => {
+    const offerPush = opts.offerPush === true;
     setSaving(true);
     setSaveMessage(null);
     const errors = [];
@@ -2022,6 +2025,10 @@ export function ProductsBulkEdit() {
             errors.slice(0, 5).map((e) => `#${e.id} (${e.sku}): ${e.msg}`).join('; ')
         );
       }
+      if (offerPush && ok > 0) {
+        setPushOfferSavedCount(ok);
+        setPushOfferOpen(true);
+      }
       return { ok, errorCount: errors.length };
     } finally {
       setSaving(false);
@@ -2034,7 +2041,7 @@ export function ProductsBulkEdit() {
   };
 
   const handleLeaveSaveAndContinue = async () => {
-    const result = await handleSave();
+    const result = await handleSave({ offerPush: false });
     if (result?.errorCount > 0) {
       // остаёмся на странице — показать ошибки
       pendingLeaveActionRef.current = null;
@@ -2048,7 +2055,8 @@ export function ProductsBulkEdit() {
     runPendingLeaveAction();
   };
 
-  const handlePushToMarketplaces = async (marketplaces) => {
+  const handlePushToMarketplaces = async (marketplaces, opts = {}) => {
+    const skipConfirm = opts.skipConfirm === true;
     const rowIdsOnPage = new Set(rows.map((r) => str(r.id)).filter(Boolean));
     const ids = new Set();
     for (const id of changedForPushIdsRef.current) {
@@ -2068,6 +2076,7 @@ export function ProductsBulkEdit() {
       setPushMpMessage(
         'Нет изменённых товаров для отправки. Отредактируйте карточки в таблице (и сохраните), затем повторите.'
       );
+      setPushOfferOpen(false);
       return;
     }
     const mpLabel =
@@ -2086,21 +2095,24 @@ export function ProductsBulkEdit() {
         Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
       );
     });
-    const okConfirm = window.confirm(
-      `Отправить на ${mpLabel} только изменённые карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
-        (dirtyAmong.length > 0
-          ? `Сначала будут сохранены несохранённые правки (${dirtyAmong.length}).\n\n`
-          : '') +
-        'На маркетплейсы уходят данные из базы ERP.'
-    );
-    if (!okConfirm) return;
+    if (!skipConfirm) {
+      const okConfirm = window.confirm(
+        `Отправить на ${mpLabel} только изменённые карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
+          (dirtyAmong.length > 0
+            ? `Сначала будут сохранены несохранённые правки (${dirtyAmong.length}).\n\n`
+            : '') +
+          'На маркетплейсы уходят данные из базы ERP.'
+      );
+      if (!okConfirm) return;
+    }
     if (dirtyAmong.length > 0) {
-      const saveResult = await handleSave();
+      const saveResult = await handleSave({ offerPush: false });
       if (saveResult?.errorCount > 0) {
         setPushMpMessage('Отправка отменена: не удалось сохранить все изменения в ERP.');
         return;
       }
     }
+    setPushOfferOpen(false);
     setPushMpLoading(marketplaces);
     setPushMpMessage(null);
     setPullMpMessage(null);
@@ -2952,6 +2964,70 @@ export function ProductsBulkEdit() {
         </div>
       </Modal>
 
+      <Modal
+        isOpen={pushOfferOpen}
+        onClose={() => setPushOfferOpen(false)}
+        title="Отправить на маркетплейсы?"
+        size="small"
+        closeOnBackdropClick={!pushMpLoading}
+        closeOnEscape={!pushMpLoading}
+      >
+        <p className="mb-3">
+          Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить эти изменения на
+          маркетплейсы?
+        </p>
+        <p className="text-muted small mb-3">
+          Уйдут только карточки, изменённые в этой сессии. Можно выбрать один МП или все сразу.
+        </p>
+        <div className="d-flex flex-wrap gap-2 justify-content-end">
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            onClick={() => setPushOfferOpen(false)}
+            disabled={!!pushMpLoading}
+          >
+            Не сейчас
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            disabled={!!pushMpLoading}
+            onClick={() => void handlePushToMarketplaces('ozon', { skipConfirm: true })}
+          >
+            {pushMpLoading === 'ozon' ? '…' : 'На Ozon'}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            disabled={!!pushMpLoading}
+            onClick={() => void handlePushToMarketplaces('wb', { skipConfirm: true })}
+          >
+            {pushMpLoading === 'wb' ? '…' : 'На WB'}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            disabled={!!pushMpLoading}
+            onClick={() => void handlePushToMarketplaces('ym', { skipConfirm: true })}
+          >
+            {pushMpLoading === 'ym' ? '…' : 'На Я.Маркет'}
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            size="small"
+            disabled={!!pushMpLoading}
+            onClick={() => void handlePushToMarketplaces('all', { skipConfirm: true })}
+          >
+            {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
+          </Button>
+        </div>
+      </Modal>
+
       {!loading && (rows.length > 0 || totalProducts > 0) ? renderBulkListPager('bottom') : null}
 
       {!loading && rows.length > 0 ? (
@@ -2968,7 +3044,7 @@ export function ProductsBulkEdit() {
               variant="primary"
               size="small"
               type="button"
-              onClick={handleSave}
+              onClick={() => void handleSave({ offerPush: true })}
               disabled={saving || !hasUnsavedChanges}
             >
               {saving ? 'Сохранение…' : 'Сохранить изменения'}
