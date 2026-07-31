@@ -1329,6 +1329,39 @@ export function ProductsBulkEdit() {
   const pendingLeaveActionRef = useRef(null);
   const leaveBypassRef = useRef(false);
   const hasUnsavedChangesRef = useRef(false);
+  /** id товаров, изменённых в этой сессии (для отправки на МП только их) */
+  const changedForPushIdsRef = useRef(new Set());
+  const [changedForPushCount, setChangedForPushCount] = useState(0);
+
+  const markChangedForPush = useCallback((ids) => {
+    const list = Array.isArray(ids) ? ids : [ids];
+    let added = 0;
+    for (const id of list) {
+      const sid = str(id);
+      if (!sid || changedForPushIdsRef.current.has(sid)) continue;
+      changedForPushIdsRef.current.add(sid);
+      added += 1;
+    }
+    if (added > 0) setChangedForPushCount(changedForPushIdsRef.current.size);
+  }, []);
+
+  const clearChangedForPush = useCallback(() => {
+    if (changedForPushIdsRef.current.size === 0) return;
+    changedForPushIdsRef.current = new Set();
+    setChangedForPushCount(0);
+  }, []);
+
+  const unmarkChangedForPush = useCallback((ids) => {
+    const list = Array.isArray(ids) ? ids : [ids];
+    let removed = 0;
+    for (const id of list) {
+      const sid = str(id);
+      if (!sid || !changedForPushIdsRef.current.has(sid)) continue;
+      changedForPushIdsRef.current.delete(sid);
+      removed += 1;
+    }
+    if (removed > 0) setChangedForPushCount(changedForPushIdsRef.current.size);
+  }, []);
 
   const [mpAttrColumnDefs, setMpAttrColumnDefs] = useState([]);
   const [showMpOzon, setShowMpOzon] = useState(() => readMpBucketVisibility().ozon);
@@ -1736,6 +1769,7 @@ export function ProductsBulkEdit() {
       }
       setRows(nextRows);
       setOriginals(orig);
+      clearChangedForPush();
 
       queueMicrotask(() => {
         fetchMpAttributeLabelMaps(list)
@@ -1754,6 +1788,7 @@ export function ProductsBulkEdit() {
       setRows([]);
       setOriginals({});
       setMpAttrColumnDefs([]);
+      clearChangedForPush();
       setShowUncategorizedCategoryOption(false);
       setTotalProducts(0);
     } finally {
@@ -1771,6 +1806,7 @@ export function ProductsBulkEdit() {
     appliedSelectedIds,
     lengthUnit,
     weightUnit,
+    clearChangedForPush,
   ]);
 
   useEffect(() => {
@@ -1942,13 +1978,13 @@ export function ProductsBulkEdit() {
     const col = bulkModal.column;
     if (!col) return;
     const key = col.key;
-    setRows((prev) =>
-      prev.map((r) => withSyncedProductDims(r, key, bulkDraft))
-    );
+    markChangedForPush(rows.map((r) => r.id));
+    setRows((prev) => prev.map((r) => withSyncedProductDims(r, key, bulkDraft)));
     setBulkModal({ open: false, column: null });
   };
 
   const updateCell = (id, key, value) => {
+    markChangedForPush(id);
     setRows((prev) =>
       prev.map((r) => (r.id === id ? withSyncedProductDims(r, key, value) : r))
     );
@@ -1971,6 +2007,7 @@ export function ProductsBulkEdit() {
           const nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit);
           setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
           setRows((list) => list.map((row) => (row.id === r.id ? { ...nextRow, _productRef: u } : row)));
+          markChangedForPush(r.id);
           ok += 1;
         } catch (e) {
           const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
@@ -2012,9 +2049,25 @@ export function ProductsBulkEdit() {
   };
 
   const handlePushToMarketplaces = async (marketplaces) => {
-    const productIds = rows.map((r) => r.id).filter(Boolean);
+    const rowIdsOnPage = new Set(rows.map((r) => str(r.id)).filter(Boolean));
+    const ids = new Set();
+    for (const id of changedForPushIdsRef.current) {
+      if (rowIdsOnPage.has(id)) ids.add(id);
+    }
+    for (const r of rows) {
+      const orig = originals[r.id];
+      if (!orig) continue;
+      if (
+        Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
+      ) {
+        ids.add(str(r.id));
+      }
+    }
+    const productIds = [...ids];
     if (productIds.length === 0) {
-      setPushMpMessage('Нет товаров в таблице');
+      setPushMpMessage(
+        'Нет изменённых товаров для отправки. Отредактируйте карточки в таблице (и сохраните), затем повторите.'
+      );
       return;
     }
     const mpLabel =
@@ -2025,11 +2078,29 @@ export function ProductsBulkEdit() {
           : marketplaces === 'wb'
             ? 'Wildberries'
             : 'Яндекс.Маркет';
+    const dirtyAmong = productIds.filter((id) => {
+      const r = rows.find((x) => str(x.id) === id);
+      const orig = r ? originals[r.id] : null;
+      if (!r || !orig) return false;
+      return (
+        Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
+      );
+    });
     const okConfirm = window.confirm(
-      `Отправить карточки ${productIds.length} товар(ов) на ${mpLabel}?\n\n` +
-        'На маркетплейсы уходят данные из базы ERP. Сначала сохраните правки в таблице, если они ещё не сохранены.'
+      `Отправить на ${mpLabel} только изменённые карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
+        (dirtyAmong.length > 0
+          ? `Сначала будут сохранены несохранённые правки (${dirtyAmong.length}).\n\n`
+          : '') +
+        'На маркетплейсы уходят данные из базы ERP.'
     );
     if (!okConfirm) return;
+    if (dirtyAmong.length > 0) {
+      const saveResult = await handleSave();
+      if (saveResult?.errorCount > 0) {
+        setPushMpMessage('Отправка отменена: не удалось сохранить все изменения в ERP.');
+        return;
+      }
+    }
     setPushMpLoading(marketplaces);
     setPushMpMessage(null);
     setPullMpMessage(null);
@@ -2050,8 +2121,15 @@ export function ProductsBulkEdit() {
               .join('; ')}`
           : '';
       setPushMpMessage(
-        `Отправка на МП: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
+        `Отправка на МП (только изменённые): успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
       );
+      const failedIdSet = new Set(
+        (Array.isArray(data?.items) ? data.items : [])
+          .filter((it) => !it?.ok)
+          .map((it) => str(it.productId))
+          .filter(Boolean)
+      );
+      unmarkChangedForPush(productIds.filter((id) => !failedIdSet.has(id)));
     } catch (e) {
       setPushMpMessage(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейсы');
     } finally {
@@ -2469,8 +2547,15 @@ export function ProductsBulkEdit() {
                     )}
                   </div>
                   <div className="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
-                    <span className="text-muted small text-nowrap me-1" title="Отправить данные карточек из ERP на маркетплейсы">
-                      На МП:
+                    <span
+                      className="text-muted small text-nowrap me-1"
+                      title={
+                        changedForPushCount > 0
+                          ? `Отправить на МП только изменённые в этой сессии (${changedForPushCount})`
+                          : 'Отправить на МП только товары, изменённые в таблице в этой сессии'
+                      }
+                    >
+                      На МП{changedForPushCount > 0 ? ` (${changedForPushCount})` : ''}:
                     </span>
                     <Button
                       type="button"
