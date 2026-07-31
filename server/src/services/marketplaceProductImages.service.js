@@ -229,12 +229,23 @@ async function ensureJpegUrlForOzon(absUrl) {
 export function getProductImageUrlsForMarketplace(product, marketplace) {
   const mp = normalizeMpKey(marketplace);
   if (!mp) return [];
-  const images = Array.isArray(product?.images) ? product.images : [];
+  let images = product?.images;
+  if (typeof images === 'string') {
+    try {
+      images = JSON.parse(images);
+    } catch {
+      images = [];
+    }
+  }
+  if (!Array.isArray(images)) images = [];
   const filtered = images.filter((img) => {
     if (!img || typeof img !== 'object') return false;
-    const flags = img.marketplaces && typeof img.marketplaces === 'object' ? img.marketplaces : {};
-    // Как в UI: undefined / отсутствует = включено
-    return flags[mp] !== false;
+    const flags = img.marketplaces && typeof img.marketplaces === 'object' ? img.marketplaces : null;
+    // Нет объекта marketplaces → как в UI: все МП включены
+    if (!flags) return true;
+    const v = flags[mp];
+    if (v === false || v === 0 || v === '0' || v === 'false') return false;
+    return true;
   });
   const primaryIdx = filtered.findIndex((img) => img.primary === true);
   const ordered =

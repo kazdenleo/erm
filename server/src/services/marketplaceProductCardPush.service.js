@@ -626,6 +626,28 @@ async function pushOzonCard(product, categoryMm, ctx) {
     });
   }
 
+  // JPEG URL заранее: и в /v3/product/import, и в pictures/import
+  let picUrls = [];
+  try {
+    picUrls = (await getProductImageUrlsForMarketplacePush(product, 'ozon')).slice(0, 15);
+  } catch (e) {
+    logger.warn('[CardPush] Ozon image URL resolve failed', {
+      offerId,
+      error: e?.message || String(e),
+    });
+  }
+  if (picUrls.length > 0) {
+    item.images = picUrls;
+    item.primary_image = picUrls[0];
+  }
+  logger.warn('[CardPush] Ozon pictures prepared', {
+    offerId,
+    product_id: item.product_id ?? null,
+    count: picUrls.length,
+    preview: picUrls.slice(0, 3),
+    publicBase: String(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || '').trim() || null,
+  });
+
   try {
     logger.info('[CardPush] Ozon import payload', {
       offerId,
@@ -635,6 +657,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
       weight: item.weight ?? null,
       price: item.price ?? null,
       min_price: item.min_price ?? null,
+      images: picUrls.length,
       nameLen: String(item.name || '').length,
     });
 
@@ -739,61 +762,28 @@ async function pushOzonCard(product, categoryMm, ctx) {
       }
     }
 
-    // Ошибки в кабинете (цена, min_price, «Количество») часто не приходят в import/info при skipped —
-    // читаем карточку после обработки задачи.
-    try {
-      await sleep(1500);
-      const ozonInfoAfter = await fetchOzonProductInfoItem(
-        offerId,
-        item.product_id ?? ozonInfoBefore?.id ?? null,
-        apiOpts
-      );
-      const cardErrors = collectOzonProductInfoErrors(ozonInfoAfter);
-      result = mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId: result.taskId || taskId });
-      if (cardErrors.length) {
-        logger.warn('[CardPush] Ozon card errors after import', {
-          offerId,
-          count: cardErrors.length,
-          preview: cardErrors
-            .slice(0, 5)
-            .map((e) => formatOzonImportErrorLine(e))
-            .filter(Boolean),
-        });
-      }
-    } catch (e) {
-      logger.warn('[CardPush] Ozon product/info/list (post-import) failed', {
-        offerId,
-        error: e?.message || String(e),
-      });
-    }
-
-    // Картинки — отдельный метод; берём из основных images с бейджем Ozon (WebP → JPEG)
+    // Картинки отдельным методом (на случай skipped у import без применения images)
+    let imagesPushed = 0;
     try {
       const productIdForPics = item.product_id ?? ozonInfoBefore?.id ?? null;
-      const picUrls = (await getProductImageUrlsForMarketplacePush(product, 'ozon')).slice(0, 15);
-      logger.info('[CardPush] Ozon pictures payload', {
-        offerId,
-        product_id: productIdForPics,
-        count: picUrls.length,
-        preview: picUrls.slice(0, 3),
-      });
       if (productIdForPics != null && Number(productIdForPics) > 0 && picUrls.length > 0) {
         await integrationsService._ozonApiPost(
           '/v1/product/pictures/import',
           { product_id: Number(productIdForPics), images: picUrls },
           apiOpts
         );
+        imagesPushed = picUrls.length;
         result = {
           ...result,
-          message: `${result.message || 'Ozon: карточка отправлена'}\nИзображения: ${picUrls.length} шт.`,
-          imagesPushed: picUrls.length,
+          message: `${result.message || 'Ozon: карточка отправлена'}\nИзображения: ${imagesPushed} шт.`,
+          imagesPushed,
         };
       } else if (picUrls.length === 0) {
         result = {
           ...result,
           warnings:
             `${result.warnings ? `${result.warnings}\n` : ''}` +
-            'Изображения не отправлены: нет фото с включённым бейджем Ozon (или URL не публичные).',
+            'Изображения не отправлены: нет фото с включённым бейджем Ozon (или URL не публичные JPEG/PNG).',
         };
       } else if (picUrls.length > 0 && (productIdForPics == null || Number(productIdForPics) <= 0)) {
         result = {
@@ -814,6 +804,40 @@ async function pushOzonCard(product, categoryMm, ctx) {
           `${result.warnings ? `${result.warnings}\n` : ''}` +
           `Изображения Ozon: ${e?.message || String(e)}`,
       };
+    }
+
+    // Ошибки карточки — ПОСЛЕ отправки фото (иначе висим на старом error_card_with_deleted_photos)
+    try {
+      await sleep(imagesPushed > 0 ? 3500 : 1500);
+      const ozonInfoAfter = await fetchOzonProductInfoItem(
+        offerId,
+        item.product_id ?? ozonInfoBefore?.id ?? null,
+        apiOpts
+      );
+      let cardErrors = collectOzonProductInfoErrors(ozonInfoAfter);
+      // Если только что отправили фото — «удалили все фото» ещё может висеть, пока Ozon качает URL
+      if (imagesPushed > 0) {
+        cardErrors = cardErrors.filter((e) => {
+          const code = String(e?.code || e?.message || e?.description || '').toLowerCase();
+          return !code.includes('error_card_with_deleted_photos') && !/удалили все фото/i.test(code);
+        });
+      }
+      result = mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId: result.taskId || taskId });
+      if (cardErrors.length) {
+        logger.warn('[CardPush] Ozon card errors after import', {
+          offerId,
+          count: cardErrors.length,
+          preview: cardErrors
+            .slice(0, 5)
+            .map((e) => formatOzonImportErrorLine(e))
+            .filter(Boolean),
+        });
+      }
+    } catch (e) {
+      logger.warn('[CardPush] Ozon product/info/list (post-import) failed', {
+        offerId,
+        error: e?.message || String(e),
+      });
     }
 
     if (!result.ok) {
