@@ -45,6 +45,8 @@ export const helmetMiddleware = helmet({
     },
   },
   crossOriginEmbedderPolicy: false, // Для API обычно не нужен
+  // Публичные /uploads должны отдаваться маркетплейсам (Ozon/WB качают картинки кросс-доменом)
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 });
 
 /**
