@@ -1078,17 +1078,34 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const ozonFilledFromProductIdRef = useRef(null);
   /** ID товара, для которого уже синхронизировали атрибуты из ozonFetchedProduct в форму */
   const ozonSyncedFromFetchedRef = useRef(null);
+  /** Предыдущий product.id — полный сброс галереи/fetch только при смене карточки */
+  const prevProductPropIdRef = useRef(null);
 
   // Синхронизация с пропом product: смена карточки или режим «Создать» (product === null)
   useEffect(() => {
     if (product) {
+      const nextId = product.id != null ? String(product.id) : '';
+      const prevId = prevProductPropIdRef.current;
+      const sameCard = prevId != null && prevId !== '' && prevId === nextId;
+      prevProductPropIdRef.current = nextId;
+
       console.log('[ProductForm] Product prop changed:', {
         product_id: product.id,
+        sameCard,
         buyout_rate: product.buyout_rate,
         buyout_rate_type: typeof product.buyout_rate,
-        full_product: product
       });
       setCurrentProduct(product);
+
+      if (sameCard) {
+        // После push/save родитель часто отдаёт новый объект с тем же id.
+        // Нельзя обнулять images/attrs — иначе галерея «исчезает», а id-effect не перезагрузит её.
+        if (Object.prototype.hasOwnProperty.call(product, 'images') && product.images != null) {
+          setProductImages(normalizeProductImagesOrder(Array.isArray(product.images) ? product.images : []));
+        }
+        return;
+      }
+
       setOzonFetchedProduct(null);
       setOzonShowAllFields(false);
       setOzonResolvedPair({ descId: null, typeId: 0 });
@@ -1104,6 +1121,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       ozonSyncedFromFetchedRef.current = null;
       minMarkupLastEditedRef.current = 'rub';
     } else {
+      prevProductPropIdRef.current = null;
       setCurrentProduct(null);
       setFormData({ ...EMPTY_PRODUCT_FORM_DATA });
       setOzonAttributeValues({});
@@ -3212,21 +3230,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
     try {
       const body = await productsApi.pushCard(currentProduct.id, marketplace, productPatch);
       const payload = body?.data ?? body;
-      const updated = payload?.product ?? body?.product;
-      if (updated?.id) {
-        setCurrentProduct(updated);
-        onProductUpdate?.(updated);
-      } else {
+      let updated = payload?.product ?? body?.product;
+      if (!updated?.id) {
         try {
           const fresh = await productsApi.getById(currentProduct.id);
-          const full = fresh?.data ?? fresh;
-          if (full?.id) {
-            setCurrentProduct(full);
-            onProductUpdate?.(full);
-          }
+          updated = fresh?.data ?? fresh;
         } catch {
-          /* push мог пройти без перечитывания */
+          updated = null;
         }
+      }
+      if (updated?.id) {
+        // Сохраняем локальную галерею, если ответ без images (или пустой по ошибке)
+        const withImages =
+          Array.isArray(updated.images) && updated.images.length > 0
+            ? updated
+            : { ...updated, images: productImages };
+        setCurrentProduct(withImages);
+        if (Array.isArray(withImages.images)) {
+          setProductImages(normalizeProductImagesOrder(withImages.images));
+        }
+        onProductUpdate?.(withImages);
       }
       const text = formatPushCardResults(payload);
       const results = Array.isArray(payload?.results) ? payload.results : [];
@@ -3971,6 +3994,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (cur != null && cur !== '' && /^\d+$/.test(String(cur))) return Number(cur);
         return null;
       })(),
+      // Галерея + бейджи МП — иначе save/push не пишут images и UI может расходиться с БД
+      images: Array.isArray(productImages) ? productImages : [],
     };
 
     return payload;
