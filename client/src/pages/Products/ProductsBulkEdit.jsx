@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
@@ -13,6 +13,13 @@ import { useOrganizations } from '../../hooks/useOrganizations';
 import { useBrands } from '../../hooks/useBrands';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
+import {
+  getMpDraftDimensionsMm,
+  getYmDraftWeightDimensions,
+  ymWeightDimensionsToErp,
+  mmToCm,
+  gramsToKg,
+} from '../../utils/productMpFieldLinks.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import {
   FILTER_CATEGORY_NONE,
@@ -189,6 +196,10 @@ const COLUMNS = [
   { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
+  { key: 'ozon_pack_length', label: 'Длина упаковки, мм', title: 'Ozon · Длина упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
+  { key: 'ozon_pack_width', label: 'Ширина упаковки, мм', title: 'Ozon · Ширина упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
+  { key: 'ozon_pack_height', label: 'Высота упаковки, мм', title: 'Ozon · Высота упаковки, мм', input: 'number', minW: 96, mpBucket: 'ozon' },
+  { key: 'ozon_pack_weight', label: 'Вес с упаковкой, г', title: 'Ozon · Вес с упаковкой, г', input: 'number', minW: 96, mpBucket: 'ozon' },
   { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 160, mpBucket: 'wb' },
@@ -200,6 +211,10 @@ const COLUMNS = [
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 160, mpBucket: 'ym' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 100, mpBucket: 'ym' },
+  { key: 'ym_pack_length', label: 'Длина упаковки, см', title: 'Яндекс.Маркет · Длина упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
+  { key: 'ym_pack_width', label: 'Ширина упаковки, см', title: 'Яндекс.Маркет · Ширина упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
+  { key: 'ym_pack_height', label: 'Высота упаковки, см', title: 'Яндекс.Маркет · Высота упаковки, см', input: 'number', minW: 96, mpBucket: 'ym' },
+  { key: 'ym_pack_weight', label: 'Вес с упаковкой, кг', title: 'Яндекс.Маркет · Вес с упаковкой, кг', input: 'number', minW: 96, mpBucket: 'ym' },
 ];
 
 function str(v) {
@@ -365,6 +380,7 @@ function dedicatedMpColSortRank(col) {
   if (/_name$/.test(k) || k.endsWith('_name')) return 0;
   if (/description/.test(k)) return 1;
   if (/^sku_|vendor_code|product_id|offer/.test(k) || k.includes('product_id')) return 2;
+  if (/_pack_/.test(k)) return 3;
   if (/_brand$/.test(k)) return 5;
   return 6;
 }
@@ -533,6 +549,9 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     }
     if (h.includes('аннотация') || (h.includes('описание') && h.includes('маркетинг'))) return true;
     if (h === 'бренд' || h.includes('торговая марк')) return true;
+    // Габариты/вес упаковки — отдельные столбцы ozon_pack_*
+    if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(h)) return true;
+    if (/^вес\s+(с\s+)?упаковк|^вес\s+товара\s+с\s+упаковк/.test(h)) return true;
     return false;
   }
 
@@ -549,11 +568,16 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
       return true;
     }
     if ((h.includes('описание') && (h.includes('товар') || h.includes('карточк'))) || h === 'описание товара') return true;
+    if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
+    if (/вес/.test(h) && /упаковк/.test(h)) return true;
     return false;
   }
 
   return false;
 }
+
+/** Известные id атрибутов Ozon для габаритов/веса упаковки — не дублируем столбцами JSON */
+const OZON_PACK_DIM_ATTR_IDS = new Set(['9802', '6605', '6606', '4497', '4383', '9799', '6859']);
 
 /** Столбцы по объединению ключей атрибутов по всем загруженным товарам */
 function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} }) {
@@ -563,6 +587,7 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   const ymM = labelMaps?.ym || {};
   const cols = [];
   for (const id of sortAttrIdsWithLabels(oz, ozM)) {
+    if (OZON_PACK_DIM_ATTR_IDS.has(String(id))) continue;
     const human = ozM[id] || ozM[String(id)];
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
     cols.push({
@@ -621,6 +646,79 @@ function volumeLitersFromMmDims(rowOrProduct) {
   return String(Number(liters.toFixed(3)));
 }
 
+function dimCellStr(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? String(n) : '';
+}
+
+/** Число из ozon_attributes: «252», «252->id» или { value }. */
+function ozonAttrPositiveNumber(attrs, ...ids) {
+  const src = attrs && typeof attrs === 'object' ? attrs : {};
+  for (const id of ids) {
+    const raw = src[id] ?? src[String(id)];
+    if (raw == null || raw === '') continue;
+    const text = stringifyMpAttrValue(raw);
+    const n = Number(String(text).replace(',', '.').replace(/[^\d.-]/g, ''));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function readOzonPackDimsFromProduct(p) {
+  const d = getMpDraftDimensionsMm(p, 'ozon') || {};
+  const attrs = normalizeJsonAttrs(p.ozon_attributes);
+  const length = d.length ?? ozonAttrPositiveNumber(attrs, 9802);
+  const width = d.width ?? ozonAttrPositiveNumber(attrs, 6605, 9799);
+  const height = d.height ?? ozonAttrPositiveNumber(attrs, 6606, 6859);
+  const weight = d.weight ?? ozonAttrPositiveNumber(attrs, 4497, 4383);
+  return {
+    ozon_pack_length: dimCellStr(length),
+    ozon_pack_width: dimCellStr(width),
+    ozon_pack_height: dimCellStr(height),
+    ozon_pack_weight: dimCellStr(weight),
+  };
+}
+
+function readYmPackDimsFromProduct(p) {
+  const wd = getYmDraftWeightDimensions(p);
+  if (wd && typeof wd === 'object') {
+    return {
+      ym_pack_length: dimCellStr(wd.length),
+      ym_pack_width: dimCellStr(wd.width),
+      ym_pack_height: dimCellStr(wd.height),
+      ym_pack_weight: dimCellStr(wd.weight),
+    };
+  }
+  const mm = getMpDraftDimensionsMm(p, 'ym');
+  if (!mm) {
+    return { ym_pack_length: '', ym_pack_width: '', ym_pack_height: '', ym_pack_weight: '' };
+  }
+  return {
+    ym_pack_length: dimCellStr(mmToCm(mm.length)),
+    ym_pack_width: dimCellStr(mmToCm(mm.width)),
+    ym_pack_height: dimCellStr(mmToCm(mm.height)),
+    ym_pack_weight: dimCellStr(gramsToKg(mm.weight)),
+  };
+}
+
+function buildPositiveDimsObject(length, width, height, weight) {
+  const out = {};
+  const L = parseOptionalNumber(length);
+  const W = parseOptionalNumber(width);
+  const H = parseOptionalNumber(height);
+  const Wt = parseOptionalNumber(weight);
+  if (L != null && L > 0) out.length = L;
+  if (W != null && W > 0) out.width = W;
+  if (H != null && H > 0) out.height = H;
+  if (Wt != null && Wt > 0) out.weight = Wt;
+  return out;
+}
+
+function parseDraftBaseline(raw) {
+  return normalizeJsonAttrs(raw);
+}
+
 function productToRow(p, mpAttrColDefs = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -628,6 +726,8 @@ function productToRow(p, mpAttrColDefs = []) {
   const oz = normalizeJsonAttrs(p.ozon_attributes);
   const wb = normalizeJsonAttrs(p.wb_attributes);
   const ym = normalizeJsonAttrs(p.ym_attributes);
+  const ozPack = readOzonPackDimsFromProduct(p);
+  const ymPack = readYmPackDimsFromProduct(p);
   const row = {
     id: str(p.id),
     name: str(p.name),
@@ -668,11 +768,15 @@ function productToRow(p, mpAttrColDefs = []) {
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
+    ...ozPack,
+    ...ymPack,
     weight: p.weight != null && p.weight !== '' ? str(p.weight) : '',
     length: p.length != null && p.length !== '' ? str(p.length) : '',
     width: p.width != null && p.width !== '' ? str(p.width) : '',
     height: p.height != null && p.height !== '' ? str(p.height) : '',
     _mpAttrBaseline: { ozon: { ...oz }, wb: { ...wb }, ym: { ...ym } },
+    _ozonDraftBaseline: parseDraftBaseline(p.ozon_draft),
+    _ymDraftBaseline: parseDraftBaseline(p.ym_draft),
     _productRef: p,
   };
   for (const c of mpAttrColDefs) {
@@ -782,6 +886,48 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
   mpText('mp_ym_name');
   mpText('mp_ym_description');
 
+  const ozPackChanged =
+    !eq(original.ozon_pack_length, current.ozon_pack_length) ||
+    !eq(original.ozon_pack_width, current.ozon_pack_width) ||
+    !eq(original.ozon_pack_height, current.ozon_pack_height) ||
+    !eq(original.ozon_pack_weight, current.ozon_pack_weight);
+  if (ozPackChanged) {
+    const prevDraft = parseDraftBaseline(
+      original._ozonDraftBaseline ?? original._productRef?.ozon_draft
+    );
+    const dimensions = buildPositiveDimsObject(
+      current.ozon_pack_length,
+      current.ozon_pack_width,
+      current.ozon_pack_height,
+      current.ozon_pack_weight
+    );
+    touch('ozon_draft', {
+      ...prevDraft,
+      dimensions,
+    });
+  }
+
+  const ymPackChanged =
+    !eq(original.ym_pack_length, current.ym_pack_length) ||
+    !eq(original.ym_pack_width, current.ym_pack_width) ||
+    !eq(original.ym_pack_height, current.ym_pack_height) ||
+    !eq(original.ym_pack_weight, current.ym_pack_weight);
+  if (ymPackChanged) {
+    const prevDraft = parseDraftBaseline(original._ymDraftBaseline ?? original._productRef?.ym_draft);
+    const weightDimensions = buildPositiveDimsObject(
+      current.ym_pack_length,
+      current.ym_pack_width,
+      current.ym_pack_height,
+      current.ym_pack_weight
+    );
+    const erpDims = ymWeightDimensionsToErp(weightDimensions);
+    touch('ym_draft', {
+      ...prevDraft,
+      weightDimensions,
+      ...(erpDims ? { dimensions: erpDims } : { dimensions: {} }),
+    });
+  }
+
   if (!eq(original.weight, current.weight)) touch('weight', parseOptionalNumber(current.weight));
   if (!eq(original.length, current.length)) touch('length', parseOptionalNumber(current.length));
   if (!eq(original.width, current.width)) touch('width', parseOptionalNumber(current.width));
@@ -812,8 +958,20 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
 }
 
 function cloneRow(r) {
-  const { _productRef, ...rest } = r;
-  return { ...rest };
+  const { _productRef, _ozonDraftBaseline, _ymDraftBaseline, _mpAttrBaseline, ...rest } = r;
+  return {
+    ...rest,
+    _mpAttrBaseline: _mpAttrBaseline
+      ? {
+          ozon: { ...(_mpAttrBaseline.ozon || {}) },
+          wb: { ...(_mpAttrBaseline.wb || {}) },
+          ym: { ...(_mpAttrBaseline.ym || {}) },
+        }
+      : { ozon: {}, wb: {}, ym: {} },
+    _ozonDraftBaseline: _ozonDraftBaseline ? { ..._ozonDraftBaseline } : {},
+    _ymDraftBaseline: _ymDraftBaseline ? { ..._ymDraftBaseline } : {},
+    _productRef,
+  };
 }
 
 function PinIcon({ locked = false }) {
@@ -920,6 +1078,10 @@ export function ProductsBulkEdit() {
 
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
+  const [leavePromptOpen, setLeavePromptOpen] = useState(false);
+  const pendingLeaveActionRef = useRef(null);
+  const leaveBypassRef = useRef(false);
+  const hasUnsavedChangesRef = useRef(false);
 
   const [mpAttrColumnDefs, setMpAttrColumnDefs] = useState([]);
   const [showMpOzon, setShowMpOzon] = useState(() => readMpBucketVisibility().ozon);
@@ -1095,15 +1257,94 @@ export function ProductsBulkEdit() {
     setPullMpMessage(null);
   };
 
+  const hasUnsavedChanges = useMemo(() => {
+    for (const r of rows) {
+      const orig = originals[r.id];
+      if (!orig) continue;
+      if (Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs)).length > 0) return true;
+    }
+    return false;
+  }, [rows, originals, mpAttrColumnDefs]);
+  hasUnsavedChangesRef.current = hasUnsavedChanges;
+
+  const runPendingLeaveAction = useCallback(() => {
+    const fn = pendingLeaveActionRef.current;
+    pendingLeaveActionRef.current = null;
+    setLeavePromptOpen(false);
+    if (typeof fn !== 'function') return;
+    leaveBypassRef.current = true;
+    try {
+      fn();
+    } finally {
+      queueMicrotask(() => {
+        leaveBypassRef.current = false;
+      });
+    }
+  }, []);
+
+  const requestLeaveGuard = useCallback((proceed) => {
+    if (typeof proceed !== 'function') return;
+    if (leaveBypassRef.current || !hasUnsavedChangesRef.current) {
+      proceed();
+      return;
+    }
+    pendingLeaveActionRef.current = proceed;
+    setLeavePromptOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return undefined;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    const onDocClick = (e) => {
+      if (leaveBypassRef.current || !hasUnsavedChangesRef.current) return;
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target?.closest?.('a[href]');
+      if (!a) return;
+      if (a.target && a.target !== '_self') return;
+      if (a.hasAttribute('download')) return;
+      const hrefAttr = a.getAttribute('href');
+      if (!hrefAttr || hrefAttr.startsWith('#') || hrefAttr.startsWith('mailto:') || hrefAttr.startsWith('tel:')) {
+        return;
+      }
+      let url;
+      try {
+        url = new URL(a.href);
+      } catch {
+        return;
+      }
+      if (url.origin !== window.location.origin) return;
+      const next = `${url.pathname}${url.search}${url.hash}`;
+      const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (next === cur) return;
+      e.preventDefault();
+      e.stopPropagation();
+      requestLeaveGuard(() => navigate(next));
+    };
+    document.addEventListener('click', onDocClick, true);
+    return () => document.removeEventListener('click', onDocClick, true);
+  }, [navigate, requestLeaveGuard]);
+
   const handleCategoryScopeChange = (e) => {
     const v = e.target.value;
     if (v === CATEGORY_SCOPE_UNSET) return;
-    // смена категории — сбрасываем таблицу до новой загрузки
-    setRows([]);
-    setOriginals({});
-    setMpAttrColumnDefs([]);
-    setTotalProducts(0);
-    applyCategoryScope(v);
+    requestLeaveGuard(() => {
+      // смена категории — сбрасываем таблицу до новой загрузки
+      setRows([]);
+      setOriginals({});
+      setMpAttrColumnDefs([]);
+      setTotalProducts(0);
+      applyCategoryScope(v);
+    });
   };
 
   const clearListFilters = () => {
@@ -1268,30 +1509,38 @@ export function ProductsBulkEdit() {
 
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
-    setFilterOrganizationId(v);
-    setCurrentPage(1);
-    void loadProducts({ organizationId: v, page: 1 });
+    requestLeaveGuard(() => {
+      setFilterOrganizationId(v);
+      setCurrentPage(1);
+      void loadProducts({ organizationId: v, page: 1 });
+    });
   };
 
   const handleFilterBrandChange = (e) => {
     const v = e.target.value;
-    setFilterBrandId(v);
-    setCurrentPage(1);
-    void loadProducts({ brandId: v, page: 1 });
+    requestLeaveGuard(() => {
+      setFilterBrandId(v);
+      setCurrentPage(1);
+      void loadProducts({ brandId: v, page: 1 });
+    });
   };
 
   const handleFilterCategoryChange = (e) => {
     const v = e.target.value;
-    setFilterCategoryId(v);
-    setCurrentPage(1);
-    void loadProducts({ categoryId: v, page: 1 });
+    requestLeaveGuard(() => {
+      setFilterCategoryId(v);
+      setCurrentPage(1);
+      void loadProducts({ categoryId: v, page: 1 });
+    });
   };
 
   const handleFilterProductTypeChange = (e) => {
     const v = e.target.value;
-    setFilterProductType(v);
-    setCurrentPage(1);
-    void loadProducts({ productType: v, page: 1 });
+    requestLeaveGuard(() => {
+      setFilterProductType(v);
+      setCurrentPage(1);
+      void loadProducts({ productType: v, page: 1 });
+    });
   };
 
   const handleListSearchChange = (e) => {
@@ -1299,20 +1548,24 @@ export function ProductsBulkEdit() {
     setListSearch(v);
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     listSearchDebounceRef.current = setTimeout(() => {
-      setCurrentPage(1);
-      void loadProducts({ search: v, page: 1 });
+      requestLeaveGuard(() => {
+        setCurrentPage(1);
+        void loadProducts({ search: v, page: 1 });
+      });
     }, 400);
   };
 
   const applyClearListFilters = () => {
-    clearListFilters();
-    void loadProducts({
-      organizationId: '',
-      brandId: '',
-      categoryId: '',
-      productType: '',
-      search: '',
-      page: 1,
+    requestLeaveGuard(() => {
+      clearListFilters();
+      void loadProducts({
+        organizationId: '',
+        brandId: '',
+        categoryId: '',
+        productType: '',
+        search: '',
+        page: 1,
+      });
     });
   };
 
@@ -1321,21 +1574,25 @@ export function ProductsBulkEdit() {
   const goToPage = (page) => {
     const next = Math.min(Math.max(1, page), totalPages);
     if (next === currentPage) return;
-    setCurrentPage(next);
-    void loadProducts({ page: next });
+    requestLeaveGuard(() => {
+      setCurrentPage(next);
+      void loadProducts({ page: next });
+    });
   };
 
   const handlePageSizeChange = (e) => {
     const next = parseInt(e.target.value, 10);
     if (!BULK_PAGE_SIZES.includes(next)) return;
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem(BULK_PAGE_SIZE_LS, String(next));
-    } catch {
-      /* ignore */
-    }
-    setPageSize(next);
-    setCurrentPage(1);
-    void loadProducts({ page: 1, limit: next });
+    requestLeaveGuard(() => {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(BULK_PAGE_SIZE_LS, String(next));
+      } catch {
+        /* ignore */
+      }
+      setPageSize(next);
+      setCurrentPage(1);
+      void loadProducts({ page: 1, limit: next });
+    });
   };
 
   const renderBulkListPager = (placement) => {
@@ -1450,9 +1707,30 @@ export function ProductsBulkEdit() {
             errors.slice(0, 5).map((e) => `#${e.id} (${e.sku}): ${e.msg}`).join('; ')
         );
       }
+      return { ok, errorCount: errors.length };
     } finally {
       setSaving(false);
     }
+  };
+
+  const closeLeavePrompt = () => {
+    pendingLeaveActionRef.current = null;
+    setLeavePromptOpen(false);
+  };
+
+  const handleLeaveSaveAndContinue = async () => {
+    const result = await handleSave();
+    if (result?.errorCount > 0) {
+      // остаёмся на странице — показать ошибки
+      pendingLeaveActionRef.current = null;
+      setLeavePromptOpen(false);
+      return;
+    }
+    runPendingLeaveAction();
+  };
+
+  const handleLeaveDiscard = () => {
+    runPendingLeaveAction();
   };
 
   const handlePushToMarketplaces = async (marketplaces) => {
@@ -1709,9 +1987,13 @@ export function ProductsBulkEdit() {
         title="Массовое редактирование"
         subtitle={subtitle}
         actions={(
-          <Link to="/products" className="btn btn-secondary btn-sm btn-shadow">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm btn-shadow"
+            onClick={() => requestLeaveGuard(() => navigate('/products'))}
+          >
             ← К списку товаров
-          </Link>
+          </button>
         )}
       />
 
@@ -2015,7 +2297,7 @@ export function ProductsBulkEdit() {
               <button
                 type="button"
                 className="btn btn-link btn-sm p-0 align-baseline"
-                onClick={() => navigate('/products')}
+                onClick={() => requestLeaveGuard(() => navigate('/products'))}
               >
                 Перейти в «Товары»
               </button>
@@ -2236,6 +2518,36 @@ export function ProductsBulkEdit() {
         ) : null}
       </Modal>
 
+      <Modal
+        isOpen={leavePromptOpen}
+        onClose={closeLeavePrompt}
+        title="Несохранённые изменения"
+        size="small"
+        closeOnBackdropClick={!saving}
+        closeOnEscape={!saving}
+      >
+        <p className="mb-3">
+          В таблице есть несохранённые изменения. Сохранить их перед продолжением?
+        </p>
+        <div className="d-flex flex-wrap gap-2 justify-content-end">
+          <Button type="button" variant="secondary" size="small" onClick={closeLeavePrompt} disabled={saving}>
+            Остаться
+          </Button>
+          <Button type="button" variant="secondary" size="small" onClick={handleLeaveDiscard} disabled={saving}>
+            Не сохранять
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            size="small"
+            onClick={handleLeaveSaveAndContinue}
+            disabled={saving}
+          >
+            {saving ? 'Сохранение…' : 'Сохранить'}
+          </Button>
+        </div>
+      </Modal>
+
       {!loading && (rows.length > 0 || totalProducts > 0) ? renderBulkListPager('bottom') : null}
 
       {!loading && rows.length > 0 ? (
@@ -2243,6 +2555,9 @@ export function ProductsBulkEdit() {
           <div className="products-bulk-floating-save-inner">
             <span className="text-muted small">
               Строк в таблице: <strong>{rows.length}</strong>
+              {hasUnsavedChanges ? (
+                <span className="text-warning ms-2">· есть несохранённые изменения</span>
+              ) : null}
             </span>
             <Button
               className="btn-shadow ms-auto"
@@ -2250,7 +2565,7 @@ export function ProductsBulkEdit() {
               size="small"
               type="button"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || !hasUnsavedChanges}
             >
               {saving ? 'Сохранение…' : 'Сохранить изменения'}
             </Button>
