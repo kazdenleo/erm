@@ -20,7 +20,10 @@ import {
   resolveDimensionsMmForPush,
   shouldPushDimensions,
 } from '../utils/productMpFieldLinks.js';
-import { getProductImageUrlsForMarketplace } from './marketplaceProductImages.service.js';
+import {
+  getProductImageUrlsForMarketplace,
+  getProductImageUrlsForMarketplacePush,
+} from './marketplaceProductImages.service.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -764,10 +767,16 @@ async function pushOzonCard(product, categoryMm, ctx) {
       });
     }
 
-    // Картинки — отдельный метод; берём из основных images с бейджем Ozon
+    // Картинки — отдельный метод; берём из основных images с бейджем Ozon (WebP → JPEG)
     try {
       const productIdForPics = item.product_id ?? ozonInfoBefore?.id ?? null;
-      const picUrls = getProductImageUrlsForMarketplace(product, 'ozon').slice(0, 15);
+      const picUrls = (await getProductImageUrlsForMarketplacePush(product, 'ozon')).slice(0, 15);
+      logger.info('[CardPush] Ozon pictures payload', {
+        offerId,
+        product_id: productIdForPics,
+        count: picUrls.length,
+        preview: picUrls.slice(0, 3),
+      });
       if (productIdForPics != null && Number(productIdForPics) > 0 && picUrls.length > 0) {
         await integrationsService._ozonApiPost(
           '/v1/product/pictures/import',
@@ -778,6 +787,13 @@ async function pushOzonCard(product, categoryMm, ctx) {
           ...result,
           message: `${result.message || 'Ozon: карточка отправлена'}\nИзображения: ${picUrls.length} шт.`,
           imagesPushed: picUrls.length,
+        };
+      } else if (picUrls.length === 0) {
+        result = {
+          ...result,
+          warnings:
+            `${result.warnings ? `${result.warnings}\n` : ''}` +
+            'Изображения не отправлены: нет фото с включённым бейджем Ozon (или URL не публичные).',
         };
       } else if (picUrls.length > 0 && (productIdForPics == null || Number(productIdForPics) <= 0)) {
         result = {

@@ -3,11 +3,19 @@
  * и products.images → МП при push (фильтр по бейджам).
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import sharp from 'sharp';
 import productsService from './products.service.js';
 import { downloadImageToProductFolder } from './productImagesImport.service.js';
 import logger from '../utils/logger.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const MP_KEYS = ['ozon', 'wb', 'ym'];
+const UPLOADS_PRODUCTS_ROOT = path.resolve(__dirname, '../../uploads/products');
 
 function normalizeMpKey(marketplace) {
   const m = String(marketplace || '').toLowerCase();
@@ -140,7 +148,9 @@ function ensurePrimary(images) {
 }
 
 function publicApiBase() {
-  return String(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || '').replace(/\/$/, '');
+  return String(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || '')
+    .trim()
+    .replace(/\/$/, '');
 }
 
 /** Абсолютный URL для отдачи на МП (они качают по HTTP). */
@@ -151,6 +161,65 @@ export function absoluteProductImageUrl(relativeOrAbsolute) {
   const base = publicApiBase();
   if (!base) return u;
   return u.startsWith('/') ? `${base}${u}` : `${base}/${u}`;
+}
+
+/**
+ * Локальный путь uploads по публичному/относительному URL.
+ * @returns {{ productId: string, filename: string, absPath: string }|null}
+ */
+function resolveLocalUploadPath(urlOrPath) {
+  const u = String(urlOrPath || '').trim();
+  const m = u.match(/\/uploads\/products\/([^/]+)\/([^/?#]+)/i);
+  if (!m) return null;
+  const productId = m[1];
+  const filename = m[2];
+  const absPath = path.join(UPLOADS_PRODUCTS_ROOT, productId, filename);
+  return { productId, filename, absPath };
+}
+
+function isOzonFriendlyImageUrl(url) {
+  const base = String(url || '')
+    .split(/[?#]/)[0]
+    .toLowerCase();
+  return base.endsWith('.jpg') || base.endsWith('.jpeg') || base.endsWith('.png');
+}
+
+/**
+ * Ozon не принимает WebP — конвертируем в JPEG рядом с исходником и отдаём публичный URL.
+ * @param {string} absUrl
+ * @returns {Promise<string>}
+ */
+async function ensureJpegUrlForOzon(absUrl) {
+  const abs = String(absUrl || '').trim();
+  if (!abs || !isHttpUrl(abs)) return '';
+  if (isOzonFriendlyImageUrl(abs)) return abs;
+
+  const local = resolveLocalUploadPath(abs);
+  if (!local || !fs.existsSync(local.absPath)) {
+    logger.warn('[MP Images] Ozon: нет локального файла для конвертации WebP', {
+      url: abs.slice(0, 160),
+    });
+    return abs;
+  }
+
+  const stem = local.filename.replace(/\.[^.]+$/, '');
+  const jpgName = `${stem}.ozon.jpg`;
+  const jpgPath = path.join(UPLOADS_PRODUCTS_ROOT, local.productId, jpgName);
+  try {
+    const srcStat = fs.statSync(local.absPath);
+    const need =
+      !fs.existsSync(jpgPath) || fs.statSync(jpgPath).mtimeMs < srcStat.mtimeMs;
+    if (need) {
+      await sharp(local.absPath).jpeg({ quality: 90, mozjpeg: true }).toFile(jpgPath);
+    }
+    return absoluteProductImageUrl(`/uploads/products/${local.productId}/${jpgName}`);
+  } catch (e) {
+    logger.warn('[MP Images] Ozon JPEG convert failed', {
+      file: local.filename,
+      error: e?.message || String(e),
+    });
+    return abs;
+  }
 }
 
 /**
@@ -181,6 +250,29 @@ export function getProductImageUrlsForMarketplace(product, marketplace) {
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(abs);
+  }
+  return out;
+}
+
+/**
+ * URL для push: для Ozon WebP/GIF → JPEG.
+ * @param {object} product
+ * @param {string} marketplace
+ * @returns {Promise<string[]>}
+ */
+export async function getProductImageUrlsForMarketplacePush(product, marketplace) {
+  const mp = normalizeMpKey(marketplace);
+  const urls = getProductImageUrlsForMarketplace(product, mp);
+  if (mp !== 'ozon' || urls.length === 0) return urls;
+  const out = [];
+  const seen = new Set();
+  for (const u of urls) {
+    const jpegUrl = await ensureJpegUrlForOzon(u);
+    if (!jpegUrl || !isHttpUrl(jpegUrl)) continue;
+    const k = urlKey(jpegUrl);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(jpegUrl);
   }
   return out;
 }

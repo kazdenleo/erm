@@ -7,6 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,9 +49,28 @@ function isHttpUrl(s) {
 }
 
 /**
+ * Ozon плохо принимает WebP/GIF — при сохранении конвертируем в JPEG.
+ * @param {Buffer} buf
+ * @param {string} ext
+ * @returns {Promise<{ buf: Buffer, ext: string }>}
+ */
+async function normalizeImageBufferForStorage(buf, ext) {
+  const e = String(ext || '').toLowerCase();
+  if (e === '.jpg' || e === '.jpeg' || e === '.png') {
+    return { buf, ext: e === '.jpeg' ? '.jpg' : e };
+  }
+  try {
+    const out = await sharp(buf).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+    return { buf: out, ext: '.jpg' };
+  } catch {
+    return { buf, ext: e || '.jpg' };
+  }
+}
+
+/**
  * @param {string|number} productId
  * @param {string} url
- * @param {{ primary?: boolean }} [opts]
+ * @param {{ primary?: boolean, marketplaces?: { ozon?: boolean, wb?: boolean, ym?: boolean } }} [opts]
  */
 export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const trimmed = String(url || '').trim();
@@ -62,9 +82,10 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const ct = res.headers.get('content-type') || '';
   if (!ct.toLowerCase().startsWith('image/')) throw new Error(`Не изображение: ${ct}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  let buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > MAX_BYTES) throw new Error('Файл слишком большой');
-  const ext = extFromContentType(ct, trimmed) || '.jpg';
+  let ext = extFromContentType(ct, trimmed) || '.jpg';
+  ({ buf, ext } = await normalizeImageBufferForStorage(buf, ext));
   const uploadsRoot = path.resolve(__dirname, '../../uploads/products');
   const dir = path.join(uploadsRoot, String(productId));
   ensureDirSync(dir);
@@ -72,7 +93,6 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const filename = `${id}${ext}`;
   fs.writeFileSync(path.join(dir, filename), buf);
   const rel = `/uploads/products/${String(productId)}/${filename}`;
-  // Явные флаги из opts; иначе все МП включены (ручная загрузка / Excel).
   const mp =
     opts.marketplaces && typeof opts.marketplaces === 'object' && !Array.isArray(opts.marketplaces)
       ? {
