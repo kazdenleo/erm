@@ -610,7 +610,14 @@ export function Products() {
     } catch (error) {
       console.error('Error saving product:', error);
       const message =
-        error.response?.data?.details?.map((d) => d.message || d.path?.join('.')).filter(Boolean).join('; ')
+        error.response?.data?.details
+          ?.map((d) => {
+            const path = Array.isArray(d.path) ? d.path.join('.') : '';
+            const msg = d.message || '';
+            return path ? `${path}: ${msg}` : msg;
+          })
+          .filter(Boolean)
+          .join('; ')
         || error.response?.data?.message
         || error.message
         || 'Неизвестная ошибка';

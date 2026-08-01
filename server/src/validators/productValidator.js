@@ -119,7 +119,24 @@ export const createProductSchema = z.object({
     z.string(),
     z.union([z.string(), z.number(), z.boolean()])
   ).optional().default({}),
-  ozon_attributes: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
+  // Карточка шлёт словарь Ozon как { dictionary_value_id } / { value }, bulk/Excel — скаляры
+  ozon_attributes: z
+    .record(
+      z.string(),
+      z.union([
+        z.string(),
+        z.number(),
+        z.boolean(),
+        z
+          .object({
+            value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+            dictionary_value_id: z.union([z.string(), z.number()]).optional(),
+            id: z.union([z.string(), z.number()]).optional(),
+          })
+          .passthrough(),
+      ])
+    )
+    .optional(),
   wb_attributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   ym_attributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   ozon_draft: z.any().optional().nullable(),

@@ -11,7 +11,9 @@ import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
 import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 import {
   barcodesFromWbSizes,
-  coerceBarcodeString,
+  barcodesFromOzonCard,
+  barcodesFromYmCard,
+  mergeBarcodesFromMarketplace,
 } from '../utils/productBarcodes.js';
 import { importImagesFromMarketplaceCard } from './marketplaceProductImages.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
@@ -444,6 +446,11 @@ function mapOzonCardToUpdates(product, data) {
   }
 
   enrichOzonUpdatesFromAttributes(updates, product, attrs);
+
+  const ozBarcodes = barcodesFromOzonCard(data);
+  const mergedBc = mergeBarcodesFromMarketplace(product.barcodes, ozBarcodes, 'ozon');
+  if (mergedBc) updates.barcodes = mergedBc;
+
   return updates;
 }
 
@@ -569,14 +576,9 @@ function mapWbCardToUpdates(product, data) {
     };
   }
 
-  const barcodes = barcodesFromWbSizes(data.sizes);
-  const prevBc = Array.isArray(product.barcodes) ? product.barcodes : [];
-  const prevEmpty =
-    prevBc.length === 0 ||
-    prevBc.every((b) => !coerceBarcodeString(b?.barcode ?? b));
-  if (barcodes.length > 0 && prevEmpty) {
-    updates.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
-  }
+  const wbBarcodes = barcodesFromWbSizes(data.sizes);
+  const mergedWbBc = mergeBarcodesFromMarketplace(product.barcodes, wbBarcodes, 'wb');
+  if (mergedWbBc) updates.barcodes = mergedWbBc;
 
   const prevAttrs = parseJsonObject(product.wb_attributes);
   let mergedAttrs = mergeWbAttrsFromCard(data.characteristics, prevAttrs);
@@ -647,6 +649,11 @@ function mapYmCardToUpdates(product, data) {
   if (Object.keys(mergedAttrs).length > 0) {
     updates.ym_attributes = mergedAttrs;
   }
+
+  const ymBarcodes = barcodesFromYmCard(data);
+  const mergedYmBc = mergeBarcodesFromMarketplace(product.barcodes, ymBarcodes, 'ym');
+  if (mergedYmBc) updates.barcodes = mergedYmBc;
+
   return updates;
 }
 
@@ -825,6 +832,45 @@ async function fetchYmCard(product, scope) {
   return data;
 }
 
+async function filterBarcodesOwnedByOthers(productId, rows, existingProductBarcodes) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const codes = rows.map((r) => r?.barcode).filter(Boolean);
+  if (!codes.length) return rows;
+  // Уже привязанные к этому товару (включая внутренние) никогда не выкидываем
+  const ownCodes = new Set(
+    (Array.isArray(existingProductBarcodes) ? existingProductBarcodes : [])
+      .map((r) => (typeof r === 'string' ? r : r?.barcode))
+      .map((c) => (c != null ? String(c).trim() : ''))
+      .filter(Boolean)
+  );
+  try {
+    const r = await query(
+      `SELECT barcode, product_id FROM barcodes WHERE barcode = ANY($1::text[])`,
+      [codes]
+    );
+    const blocked = new Set(
+      (r.rows || [])
+        .filter((row) => row?.product_id != null && String(row.product_id) !== String(productId))
+        .map((row) => String(row.barcode))
+    );
+    if (!blocked.size) return rows;
+    const kept = rows.filter(
+      (row) => ownCodes.has(String(row.barcode)) || !blocked.has(String(row.barcode))
+    );
+    const skipped = [...blocked].filter((bc) => !ownCodes.has(bc));
+    if (skipped.length) {
+      logger.warn('[CardPull] skip barcodes owned by other products', {
+        productId,
+        skipped,
+      });
+    }
+    return kept;
+  } catch (e) {
+    logger.warn('[CardPull] barcode ownership check failed', { error: e?.message || String(e) });
+    return rows;
+  }
+}
+
 async function pullOneMarketplace(product, mp, opts = {}) {
   const organizationId = productOrgId(product);
   const scope = { organizationId, profileId: opts.profileId ?? null };
@@ -844,6 +890,35 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
+
+  if (updates?.barcodes) {
+    const filtered = await filterBarcodesOwnedByOthers(
+      product.id,
+      updates.barcodes,
+      product.barcodes
+    );
+    if (!filtered.length) {
+      delete updates.barcodes;
+    } else {
+      updates.barcodes = filtered;
+      const nextNorm = JSON.stringify(
+        filtered.map((r) => ({
+          barcode: r.barcode,
+          marketplaces: [...(r.marketplaces || [])].sort(),
+        }))
+      );
+      const existingNorm = JSON.stringify(
+        (Array.isArray(product.barcodes) ? product.barcodes : [])
+          .map((r) => ({
+            barcode: typeof r === 'string' ? r : r?.barcode,
+            marketplaces: [...((typeof r === 'object' && r?.marketplaces) || [])].sort(),
+          }))
+          .filter((r) => r.barcode)
+      );
+      if (nextNorm === existingNorm) delete updates.barcodes;
+    }
+  }
+
   const changedLabels = describeCardFieldChanges(product, updates);
   const fields = updates && Object.keys(updates).length > 0 ? Object.keys(updates) : [];
   if (fields.length > 0) {

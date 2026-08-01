@@ -35,8 +35,11 @@ import {
   EMPTY_BARCODE_ROW,
   barcodesForForm,
   barcodesFromWbSizes,
+  barcodesFromOzonCard,
+  barcodesFromYmCard,
   coerceBarcodeString,
   isCorruptBarcodeString,
+  mergeBarcodesFromMarketplace,
   normalizeBarcodeRows,
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
@@ -2278,6 +2281,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (height != null) next.height = String(height);
         if (length != null) next.length = String(length);
       }
+      const mergedOzBc = mergeBarcodesFromMarketplace(
+        prev.barcodes,
+        barcodesFromOzonCard(data),
+        'ozon'
+      );
+      if (mergedOzBc) next.barcodes = mergedOzBc;
       return next;
     });
   }, []);
@@ -2476,12 +2485,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (wMm != null) next.width = String(wMm);
         if (hMm != null) next.height = String(hMm);
       }
-      const prevEmpty =
-        !Array.isArray(prev.barcodes) ||
-        prev.barcodes.every((b) => !coerceBarcodeString(b?.barcode ?? b));
-      if (barcodes.length > 0 && prevEmpty) {
-        next.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
-      }
+      const mergedBc = mergeBarcodesFromMarketplace(prev.barcodes, barcodes, 'wb');
+      if (mergedBc) next.barcodes = mergedBc;
       return next;
     });
 
@@ -2732,6 +2737,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
           if (dimsErp.height != null) next.height = String(dimsErp.height);
           if (dimsErp.weight != null) next.weight = String(dimsErp.weight);
         }
+        const mergedYmBc = mergeBarcodesFromMarketplace(
+          prev.barcodes,
+          barcodesFromYmCard(data),
+          'ym'
+        );
+        if (mergedYmBc) next.barcodes = mergedYmBc;
         return next;
       });
       if (Array.isArray(data.parameterValues) && data.parameterValues.length > 0) {

@@ -219,3 +219,76 @@ export function barcodesFromWbSizes(sizes) {
   }
   return out;
 }
+
+/**
+ * Разобрать сырые ШК (скалярры, массивы, «a;b» / «a,b»).
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function collectBarcodeStrings(raw) {
+  const items = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const parts =
+      typeof item === 'string' && /[;,]/.test(item) ? item.split(/[;,]/) : [item];
+    for (const part of parts) {
+      const code = coerceBarcodeString(part);
+      if (!code || isCorruptBarcodeString(code) || seen.has(code)) continue;
+      seen.add(code);
+      out.push(code);
+    }
+  }
+  return out;
+}
+
+/** @param {unknown} data — ответ getOzonProductInfo */
+export function barcodesFromOzonCard(data) {
+  if (!data || typeof data !== 'object') return [];
+  return collectBarcodeStrings([
+    data.barcode,
+    ...(Array.isArray(data.barcodes) ? data.barcodes : []),
+  ]);
+}
+
+/** @param {unknown} data — offer YM */
+export function barcodesFromYmCard(data) {
+  if (!data || typeof data !== 'object') return [];
+  return collectBarcodeStrings(data.barcodes);
+}
+
+/**
+ * Слить ШК с МП: не удаляет существующие (в т.ч. внутренние без иконок), не дублирует код —
+ * только добавляет иконку маркетплейса или новую строку.
+ * @param {unknown} existing
+ * @param {unknown} incomingCodes
+ * @param {unknown} marketplace
+ * @returns {{ barcode: string, marketplaces: MarketplaceCode[] }[]|null} null если изменений нет
+ */
+export function mergeBarcodesFromMarketplace(existing, incomingCodes, marketplace) {
+  const incoming = collectBarcodeStrings(incomingCodes);
+  if (!incoming.length) return null;
+  const mp = normalizeBarcodeMarketplace(marketplace);
+  /** @type {{ barcode: string, marketplaces: MarketplaceCode[] }[]} */
+  const rows = normalizeBarcodeRows(existing).map((r) => ({
+    barcode: r.barcode,
+    marketplaces: [...(r.marketplaces || [])],
+  }));
+  const byCode = new Map(rows.map((r) => [r.barcode, r]));
+  let changed = false;
+  for (const code of incoming) {
+    const row = byCode.get(code);
+    if (row) {
+      if (mp && !row.marketplaces.includes(mp)) {
+        row.marketplaces.push(mp);
+        changed = true;
+      }
+    } else {
+      const next = { barcode: code, marketplaces: mp ? [mp] : [] };
+      rows.push(next);
+      byCode.set(code, next);
+      changed = true;
+    }
+  }
+  return changed ? rows : null;
+}
