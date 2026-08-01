@@ -389,7 +389,7 @@ export function Sidebar({ onNavigate }) {
                   : showRBadge
                     ? 'Новых отзывов без ответа'
                     : showTBadge
-                      ? 'Открытых задач'
+                      ? 'Моих открытых задач'
                       : '';
                 return (
                   <li key={item.path}>
