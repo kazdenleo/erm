@@ -10,6 +10,15 @@ export const employeeTasksApi = {
     return response.data;
   },
 
+  async getStats() {
+    const response = await api.get('/employee-tasks/stats');
+    const payload = response.data?.data ?? response.data;
+    const n = payload?.openCount;
+    return {
+      openCount: typeof n === 'number' && Number.isFinite(n) ? n : 0,
+    };
+  },
+
   async create(data) {
     const response = await api.post('/employee-tasks', data);
     return response.data;

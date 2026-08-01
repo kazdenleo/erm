@@ -31,18 +31,21 @@ export function useEmployeeTasks() {
   const createTask = async (data) => {
     const response = await employeeTasksApi.create(data);
     setTasks((prev) => [response.data, ...prev]);
+    window.dispatchEvent(new Event('employee-tasks-stats-refresh'));
     return response.data;
   };
 
   const completeTask = async (id) => {
     const response = await employeeTasksApi.complete(id);
     setTasks((prev) => prev.map((t) => (t.id === id ? response.data : t)));
+    window.dispatchEvent(new Event('employee-tasks-stats-refresh'));
     return response.data;
   };
 
   const reassignTask = async (id, assigneeId) => {
     const response = await employeeTasksApi.reassign(id, assigneeId);
     setTasks((prev) => prev.map((t) => (t.id === id ? response.data : t)));
+    window.dispatchEvent(new Event('employee-tasks-stats-refresh'));
     return response.data;
   };
 

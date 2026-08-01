@@ -59,6 +59,22 @@ export const employeeTasksController = {
     }
   },
 
+  /** GET /employee-tasks/stats — openCount для бейджа в меню */
+  async getStats(req, res, next) {
+    try {
+      const profileId = requireProfile(req, res);
+      if (profileId == null) return;
+      const manage = canManageTasks(req.user) || isAccountAdminUser(req.user);
+      const openCount = await employeeTasksRepository.countOpen({
+        profileId,
+        assigneeId: manage ? undefined : req.user.id,
+      });
+      res.json({ ok: true, data: { openCount } });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async create(req, res, next) {
     try {
       const profileId = requireProfile(req, res);

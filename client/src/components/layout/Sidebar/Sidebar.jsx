@@ -15,6 +15,7 @@ import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
 import { reviewsApi } from '../../../services/reviews.api';
 import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api';
+import { employeeTasksApi } from '../../../services/employeeTasks.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
 /** Подпункты «Склад»: операции склада (?op=) + закупка */
@@ -147,6 +148,7 @@ export function Sidebar({ onNavigate }) {
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [reviewsNewCount, setReviewsNewCount] = useState(0);
   const [returnsWaitingCount, setReturnsWaitingCount] = useState(0);
+  const [tasksOpenCount, setTasksOpenCount] = useState(0);
 
   const onLeafClick = useCallback((item) => {
     if (!item?.path) return;
@@ -196,6 +198,19 @@ export function Sidebar({ onNavigate }) {
     }
   }, [user?.profileId]);
 
+  const loadTasksStats = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setTasksOpenCount(0);
+      return;
+    }
+    try {
+      const { openCount } = await employeeTasksApi.getStats();
+      setTasksOpenCount(typeof openCount === 'number' && Number.isFinite(openCount) ? openCount : 0);
+    } catch {
+      setTasksOpenCount(0);
+    }
+  }, [user?.profileId]);
+
   useEffect(() => {
     loadQuestionsStats();
     const t = setInterval(loadQuestionsStats, 60000);
@@ -207,6 +222,12 @@ export function Sidebar({ onNavigate }) {
     const t = setInterval(loadReviewsStats, 60000);
     return () => clearInterval(t);
   }, [loadReviewsStats]);
+
+  useEffect(() => {
+    loadTasksStats();
+    const t = setInterval(loadTasksStats, 60000);
+    return () => clearInterval(t);
+  }, [loadTasksStats]);
 
   useEffect(() => {
     if (user?.profileId == null || user?.profileId === '') return undefined;
@@ -246,12 +267,22 @@ export function Sidebar({ onNavigate }) {
   }, [loadReviewsStats]);
 
   useEffect(() => {
+    const onRefresh = () => loadTasksStats();
+    window.addEventListener('employee-tasks-stats-refresh', onRefresh);
+    return () => window.removeEventListener('employee-tasks-stats-refresh', onRefresh);
+  }, [loadTasksStats]);
+
+  useEffect(() => {
     if (location.pathname === '/questions') loadQuestionsStats();
   }, [location.pathname, loadQuestionsStats]);
 
   useEffect(() => {
     if (location.pathname === '/reviews') loadReviewsStats();
   }, [location.pathname, loadReviewsStats]);
+
+  useEffect(() => {
+    if (location.pathname === '/tasks') loadTasksStats();
+  }, [location.pathname, loadTasksStats]);
 
   /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; без ложного highlight родителя вроде /prices на /prices/strategies) */
   const childMatchesLocation = useCallback((sub, loc, siblings = []) => {
@@ -344,17 +375,22 @@ export function Sidebar({ onNavigate }) {
               if (!hasChildren) {
                 const showQBadge = item.path === '/questions' && questionsNewCount > 0;
                 const showRBadge = item.path === '/reviews' && reviewsNewCount > 0;
+                const showTBadge = item.path === '/tasks' && tasksOpenCount > 0;
                 const badgeCount = showQBadge
                   ? questionsNewCount
                   : showRBadge
                     ? reviewsNewCount
-                    : 0;
+                    : showTBadge
+                      ? tasksOpenCount
+                      : 0;
                 const badgeText = badgeCount > 99 ? '99+' : String(badgeCount);
                 const badgeTitle = showQBadge
                   ? 'Новых вопросов без ответа'
                   : showRBadge
                     ? 'Новых отзывов без ответа'
-                    : '';
+                    : showTBadge
+                      ? 'Открытых задач'
+                      : '';
                 return (
                   <li key={item.path}>
                     <Link
@@ -367,7 +403,7 @@ export function Sidebar({ onNavigate }) {
                     >
                       <i className={`metismenu-icon ${item.iconClass}`} />
                       <span className="sidebar-nav-label">{item.label}</span>
-                      {showQBadge || showRBadge ? (
+                      {showQBadge || showRBadge || showTBadge ? (
                         <span className="sidebar-menu-badge" title={badgeTitle}>
                           {badgeText}
                         </span>

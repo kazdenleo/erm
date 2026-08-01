@@ -12,6 +12,7 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', wrapAsync(employeeTasksController.getAll));
+router.get('/stats', wrapAsync(employeeTasksController.getStats));
 router.post('/', wrapAsync(employeeTasksController.create));
 router.post('/:id/complete', wrapAsync(employeeTasksController.complete));
 router.post('/:id/reassign', wrapAsync(employeeTasksController.reassign));

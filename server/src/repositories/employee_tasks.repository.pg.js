@@ -51,6 +51,25 @@ class EmployeeTasksRepositoryPG {
     return result.rows[0] || null;
   }
 
+  /**
+   * Число открытых задач для бейджа меню.
+   * @param {{ profileId: number|string, assigneeId?: number|string|null }} opts
+   *   Если assigneeId задан — только задачи этого исполнителя (и без исполнителя не считаем).
+   */
+  async countOpen({ profileId, assigneeId } = {}) {
+    const params = [profileId];
+    let sql = `SELECT COUNT(*)::int AS n
+               FROM employee_tasks t
+               WHERE t.profile_id = $1::bigint
+                 AND t.status = 'open'`;
+    if (assigneeId != null && assigneeId !== '') {
+      params.push(assigneeId);
+      sql += ` AND t.assignee_id = $${params.length}::bigint`;
+    }
+    const result = await query(sql, params);
+    return Number(result.rows[0]?.n) || 0;
+  }
+
   /** Одна открытая задача данного типа на аккаунт (для сводных задач вроде проверки габаритов). */
   async findOpenByType({ profileId, taskType }) {
     const result = await query(
