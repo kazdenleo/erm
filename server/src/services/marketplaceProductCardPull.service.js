@@ -20,6 +20,10 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { createDimensionsCheckTaskIfNeeded } from './employeeTasks.service.js';
+import {
+  detectOzonDimensionsLockedFromInfo,
+  withOzonDraftDimensionsLock,
+} from '../utils/ozonDimensionsLock.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -399,9 +403,6 @@ function mapOzonCardToUpdates(product, data) {
     if (Number.isFinite(n) && n > 0) updates.marketplace_ozon_product_id = n;
   }
 
-  if (data.weight != null && isEmptyVal(product.weight)) {
-    updates.weight = Number(data.weight);
-  }
   const dx = data.dimension_x ?? data.width;
   const dy = data.dimension_y ?? data.height;
   const dz = data.dimension_z ?? data.depth ?? data.length;
@@ -413,9 +414,13 @@ function mapOzonCardToUpdates(product, data) {
   const apiWidth = toPos(dx);
   const apiHeight = toPos(dy);
   const apiWeight = toPos(data.weight ?? data.weight_brutto);
-  if (apiWidth != null && isEmptyVal(product.width)) updates.width = apiWidth;
-  if (apiHeight != null && isEmptyVal(product.height)) updates.height = apiHeight;
-  if (apiLength != null && isEmptyVal(product.length)) updates.length = apiLength;
+
+  // Габариты с Ozon всегда пишем в ERP (ночная выгрузка / pull), даже если
+  // mp_field_links.dimensions связан с ozon — иначе после замера Ozon ERP остаётся со старыми мм.
+  if (apiWidth != null) updates.width = apiWidth;
+  if (apiHeight != null) updates.height = apiHeight;
+  if (apiLength != null) updates.length = apiLength;
+  if (apiWeight != null) updates.weight = apiWeight;
 
   // Как WB: габариты упаковки в ozon_draft (для мин. цен без связи dimensions↔ozon)
   const erpLength = toPos(product.length);
@@ -426,12 +431,14 @@ function mapOzonCardToUpdates(product, data) {
   const draftWidth = apiWidth ?? erpWidth;
   const draftHeight = apiHeight ?? erpHeight;
   const draftWeight = apiWeight ?? erpWeight;
+  const dimsLocked = detectOzonDimensionsLockedFromInfo(data);
+  const prevDraft = parseJsonObject(product.ozon_draft);
+  const prevDims =
+    prevDraft.dimensions && typeof prevDraft.dimensions === 'object' ? prevDraft.dimensions : {};
+  let nextDraft = { ...prevDraft };
   if (draftLength != null || draftWidth != null || draftHeight != null || draftWeight != null) {
-    const prevDraft = parseJsonObject(product.ozon_draft);
-    const prevDims =
-      prevDraft.dimensions && typeof prevDraft.dimensions === 'object' ? prevDraft.dimensions : {};
-    updates.ozon_draft = {
-      ...prevDraft,
+    nextDraft = {
+      ...nextDraft,
       dimensions: {
         ...prevDims,
         ...(draftLength != null ? { length: draftLength } : {}),
@@ -441,6 +448,8 @@ function mapOzonCardToUpdates(product, data) {
       },
     };
   }
+  nextDraft = withOzonDraftDimensionsLock(nextDraft, dimsLocked);
+  updates.ozon_draft = nextDraft;
 
   const prevAttrs = parseJsonObject(product.ozon_attributes);
   const mergedAttrs = mergeOzonAttrsFromCard(attrs, prevAttrs);
@@ -929,19 +938,21 @@ async function pullOneMarketplace(product, mp, opts = {}) {
   }
 
   let imagesSync = null;
-  try {
-    imagesSync = await importImagesFromMarketplaceCard(product.id, mp, data);
-    if (imagesSync?.added > 0 || imagesSync?.enabled > 0) {
-      if (!fields.includes('images')) fields.push('images');
-      if (!changedLabels.includes('изображения')) changedLabels.push('изображения');
+  if (opts.skipImages !== true) {
+    try {
+      imagesSync = await importImagesFromMarketplaceCard(product.id, mp, data);
+      if (imagesSync?.added > 0 || imagesSync?.enabled > 0) {
+        if (!fields.includes('images')) fields.push('images');
+        if (!changedLabels.includes('изображения')) changedLabels.push('изображения');
+      }
+    } catch (e) {
+      logger.warn('[CardPull] images sync failed', {
+        productId: product.id,
+        mp,
+        error: e?.message || String(e),
+      });
+      imagesSync = { error: e?.message || String(e) };
     }
-  } catch (e) {
-    logger.warn('[CardPull] images sync failed', {
-      productId: product.id,
-      mp,
-      error: e?.message || String(e),
-    });
-    imagesSync = { error: e?.message || String(e) };
   }
 
   if (opts.notifyChanges && changedLabels.length > 0) {
@@ -1026,8 +1037,74 @@ export async function pullProductCard(productId, marketplace, opts = {}) {
 }
 
 /**
+ * Только изображения с МП → products.images (без обновления полей карточки).
+ * @param {number|string} productId
+ * @param {string} marketplace ozon|wb|ym
+ * @param {{ profileId?: number|string|null }} [opts]
+ */
+export async function pullProductImagesOnly(productId, marketplace, opts = {}) {
+  const mps = normalizeMp(marketplace);
+  if (mps.length !== 1) {
+    const err = new Error('Укажите один маркетплейс: ozon, wb или ym.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const mp = mps[0];
+  const product = await productsService.getById(productId);
+  if (!product) {
+    const err = new Error('Товар не найден');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const organizationId = productOrgId(product);
+  const scope = { organizationId, profileId: opts.profileId ?? null };
+  let data;
+  try {
+    if (mp === 'ozon') data = await fetchOzonCard(product, scope);
+    else if (mp === 'wb') data = await fetchWbCard(product, scope);
+    else data = await fetchYmCard(product, scope);
+  } catch (e) {
+    return {
+      productId: product.id,
+      marketplace: mp,
+      ok: false,
+      skipped: e?.skipped === true || e?.code === 'NO_OZON_LINK',
+      error: e?.message || String(e),
+      added: 0,
+      enabled: 0,
+      images: Array.isArray(product.images) ? product.images : [],
+    };
+  }
+
+  try {
+    const imagesSync = await importImagesFromMarketplaceCard(product.id, mp, data);
+    return {
+      productId: product.id,
+      marketplace: mp,
+      ok: true,
+      added: imagesSync?.added ?? 0,
+      enabled: imagesSync?.enabled ?? 0,
+      collapsed: imagesSync?.collapsed ?? 0,
+      errors: imagesSync?.errors || [],
+      images: imagesSync?.images ?? [],
+    };
+  } catch (e) {
+    return {
+      productId: product.id,
+      marketplace: mp,
+      ok: false,
+      error: e?.message || String(e),
+      added: 0,
+      enabled: 0,
+      images: Array.isArray(product.images) ? product.images : [],
+    };
+  }
+}
+
+/**
  * @param {{ productIds: Array<number|string>, marketplaces: string|string[] }} payload
- * @param {{ profileId?: number|string|null, notifyChanges?: boolean }} [opts]
+ * @param {{ profileId?: number|string|null, notifyChanges?: boolean, skipImages?: boolean, concurrency?: number }} [opts]
  */
 export async function pullProductCardsBulk(payload, opts = {}) {
   const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
@@ -1045,23 +1122,42 @@ export async function pullProductCardsBulk(payload, opts = {}) {
   const mps = Array.isArray(mpRaw) ? mpRaw.flatMap((m) => normalizeMp(m)) : normalizeMp(mpRaw);
   const uniqueMps = [...new Set(mps)];
 
-  const items = [];
-  for (const productId of ids) {
-    try {
-      const out = await pullProductCard(productId, uniqueMps, opts);
-      items.push(out);
-    } catch (e) {
-      items.push({
-        productId,
-        ok: false,
-        results: uniqueMps.map((mp) => ({
-          marketplace: mp,
+  // Массовый UI-pull: по умолчанию без скачивания картинок (это главный тормоз).
+  // Ночная задача может явно передать skipImages: false.
+  const skipImages = opts.skipImages !== false;
+  const concurrency = Math.max(
+    1,
+    Math.min(12, Number(opts.concurrency ?? process.env.MP_CARD_PULL_BULK_CONCURRENCY ?? 6) || 6)
+  );
+
+  const pullOpts = { ...opts, skipImages };
+  const items = new Array(ids.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < ids.length) {
+      const i = cursor;
+      cursor += 1;
+      const productId = ids[i];
+      try {
+        items[i] = await pullProductCard(productId, uniqueMps, pullOpts);
+      } catch (e) {
+        items[i] = {
+          productId,
           ok: false,
-          error: e?.message || String(e)
-        }))
-      });
+          results: uniqueMps.map((mp) => ({
+            marketplace: mp,
+            ok: false,
+            error: e?.message || String(e),
+          })),
+        };
+      }
     }
   }
+
+  const workers = Array.from({ length: Math.min(concurrency, ids.length) }, () => worker());
+  await Promise.all(workers);
+
   const success = items.filter((i) => i.ok).length;
   const skipped = items.filter(
     (i) => !i.ok && Array.isArray(i.results) && i.results.every((r) => r.ok || r.skipped)
@@ -1072,14 +1168,16 @@ export async function pullProductCardsBulk(payload, opts = {}) {
     success,
     skipped,
     failed,
-    marketplaces: uniqueMps
+    marketplaces: uniqueMps,
+    concurrency,
+    skipImages,
   });
   return {
     total: items.length,
     success,
     skipped,
     failed,
-    items
+    items,
   };
 }
 
@@ -1175,5 +1273,6 @@ export { mapOzonCardToUpdates };
 export default {
   pullProductCard,
   pullProductCardsBulk,
+  pullProductImagesOnly,
   pullDailyMarketplaceCardsForEnabledOrgs,
 };

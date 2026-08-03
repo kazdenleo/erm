@@ -15,8 +15,9 @@ const MARKETPLACE_CARD_BULK_CHUNK = 25;
  * POST /products/push-card|pull-card с разбиением productIds на чанки.
  * @param {string} url
  * @param {{ productIds?: Array<number|string>, marketplaces?: string|string[], marketplace?: string }} payload
+ * @param {{ onChunkProgress?: (info: { chunkIndex: number, chunkTotal: number, doneIds: number, totalIds: number }) => void }} [opts]
  */
-async function postMarketplaceCardBulk(url, payload = {}) {
+async function postMarketplaceCardBulk(url, payload = {}, opts = {}) {
   const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
   if (ids.length === 0) {
     const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
@@ -26,14 +27,37 @@ async function postMarketplaceCardBulk(url, payload = {}) {
   for (let i = 0; i < ids.length; i += MARKETPLACE_CARD_BULK_CHUNK) {
     chunks.push(ids.slice(i, i + MARKETPLACE_CARD_BULK_CHUNK));
   }
+  const onChunkProgress =
+    typeof opts.onChunkProgress === 'function' ? opts.onChunkProgress : null;
   if (chunks.length === 1) {
+    onChunkProgress?.({
+      chunkIndex: 1,
+      chunkTotal: 1,
+      doneIds: 0,
+      totalIds: ids.length,
+    });
     const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
+    onChunkProgress?.({
+      chunkIndex: 1,
+      chunkTotal: 1,
+      doneIds: ids.length,
+      totalIds: ids.length,
+    });
     return response.data;
   }
   const allItems = [];
   let success = 0;
   let failed = 0;
-  for (const chunk of chunks) {
+  let skipped = 0;
+  let doneIds = 0;
+  for (let ci = 0; ci < chunks.length; ci += 1) {
+    const chunk = chunks[ci];
+    onChunkProgress?.({
+      chunkIndex: ci + 1,
+      chunkTotal: chunks.length,
+      doneIds,
+      totalIds: ids.length,
+    });
     const response = await api.post(
       url,
       { ...payload, productIds: chunk },
@@ -44,13 +68,22 @@ async function postMarketplaceCardBulk(url, payload = {}) {
     if (Array.isArray(data?.items)) allItems.push(...data.items);
     success += Number(data?.success) || 0;
     failed += Number(data?.failed) || 0;
+    skipped += Number(data?.skipped) || 0;
+    doneIds += chunk.length;
   }
+  onChunkProgress?.({
+    chunkIndex: chunks.length,
+    chunkTotal: chunks.length,
+    doneIds: ids.length,
+    totalIds: ids.length,
+  });
   return {
     ok: true,
     data: {
       total: allItems.length,
       success,
       failed,
+      skipped,
       items: allItems,
     },
   };
@@ -367,7 +400,7 @@ export const productsApi = {
    * Длинный timeout + чанки — иначе axios 90s / nginx рвут большой каталог.
    * @param {{ productIds: number[], marketplaces: string|string[] }} payload
    */
-  pushCardBulk: async (payload) => postMarketplaceCardBulk('/products/push-card', payload),
+  pushCardBulk: async (payload, opts) => postMarketplaceCardBulk('/products/push-card', payload, opts),
 
   /**
    * Обновить карточку ERP данными с маркетплейса (ozon | wb | ym | all).
@@ -380,10 +413,20 @@ export const productsApi = {
   },
 
   /**
+   * Только изображения с МП → галерея ERP (без обновления полей карточки).
+   */
+  pullImages: async (productId, marketplace) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.post(`/products/${id}/pull-images/${mp}`, null, { timeout: 120000 });
+    return response.data;
+  },
+
+  /**
    * Массовое обновление карточек ERP данными с маркетплейсов.
    * @param {{ productIds: number[], marketplaces: string|string[] }} payload
    */
-  pullCardBulk: async (payload) => postMarketplaceCardBulk('/products/pull-card', payload),
+  pullCardBulk: async (payload, opts) => postMarketplaceCardBulk('/products/pull-card', payload, opts),
 
   /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).

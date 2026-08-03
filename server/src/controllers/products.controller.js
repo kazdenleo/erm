@@ -603,13 +603,33 @@ class ProductsController {
     }
   }
 
+  /** Только изображения с МП в галерею ERP. */
+  async pullImages(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const result = await productsService.pullProductImagesFromMarketplace(id, marketplace, {
+        profileId,
+      });
+      const status = result?.ok === false && !result?.skipped ? 422 : 200;
+      return res.status(status).json({ ok: result?.ok !== false, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async pullCardBulk(req, res, next) {
     try {
       const profileId = req.user?.profileId ?? null;
-      const { productIds, marketplaces, marketplace } = req.body || {};
+      const { productIds, marketplaces, marketplace, skipImages, concurrency } = req.body || {};
       const result = await productsService.pullProductCardsBulk(
         { productIds, marketplaces: marketplaces ?? marketplace },
-        { profileId }
+        {
+          profileId,
+          // UI bulk: по умолчанию без картинок; явно skipImages:false — со скачиванием
+          skipImages: skipImages !== false,
+          concurrency,
+        }
       );
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {

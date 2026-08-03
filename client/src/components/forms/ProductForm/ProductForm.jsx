@@ -96,6 +96,10 @@ import {
   ymWeightDimensionsToErp,
 } from '../../../utils/productMpFieldLinks.js';
 import {
+  isOzonPackagingDimensionsLocked,
+  OZON_DIMS_LOCK_TITLE,
+} from '../../../utils/ozonDimensionsLock.js';
+import {
   WB_ITEM_DIM_CHARC,
   WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
@@ -732,6 +736,20 @@ function applyYmPackagingDimChange(prev, key, value) {
  * Артикул / страна / габариты на вкладке Ozon|WB — всегда редактируемые.
  * Связь с «Основным» — двусторонний синхрон; без связи — ozon_draft / wb_draft.
  */
+function OzonDimsLockMark({ locked }) {
+  if (!locked) return null;
+  return (
+    <span
+      className="text-warning ms-1"
+      style={{ fontWeight: 800, cursor: 'help' }}
+      title={OZON_DIMS_LOCK_TITLE}
+      aria-label="Габариты закреплены Ozon"
+    >
+      !
+    </span>
+  );
+}
+
 function MpSkuCountryDimsEditor({
   mp,
   formData,
@@ -748,6 +766,7 @@ function MpSkuCountryDimsEditor({
   weightUnit = 'g',
 }) {
   const code = String(mp || '').toLowerCase();
+  const ozonDimsLocked = code === 'ozon' && isOzonPackagingDimensionsLocked(formData);
   const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
   const linkedCountry = isMpFieldLinked(formData.mp_field_links, 'country', code);
   const linkedDims = isMpFieldLinked(formData.mp_field_links, 'dimensions', code);
@@ -995,6 +1014,7 @@ function MpSkuCountryDimsEditor({
           }}
         >
           <span>Габариты упаковки</span>
+          <OzonDimsLockMark locked={ozonDimsLocked} />
           {typeof onLinkToggle === 'function' ? (
             <MpFieldLinkToggles
               fieldKey="dimensions"
@@ -1008,7 +1028,9 @@ function MpSkuCountryDimsEditor({
             <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
           )}
         </div>
-        {code === 'wb' ? (
+        {ozonDimsLocked ? (
+          <div style={{ fontSize: 11, color: '#d97706', marginBottom: 8 }}>{OZON_DIMS_LOCK_TITLE}</div>
+        ) : code === 'wb' ? (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
             В интерфейсе — {L} / {Wt}. На WB уходит в см и кг (weightBrutto). Если габариты упаковки меньше
             фактических — возможен штраф.
@@ -1023,6 +1045,7 @@ function MpSkuCountryDimsEditor({
             <div className="col-6 col-md-3" key={f.key}>
               <label className="form-label" htmlFor={`${code}-dim-${f.key}`}>
                 {f.label}
+                <OzonDimsLockMark locked={ozonDimsLocked} />
               </label>
               <input
                 id={`${code}-dim-${f.key}`}
@@ -1032,6 +1055,7 @@ function MpSkuCountryDimsEditor({
                 step={f.key === 'weight' ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
                 value={dimDisp(f.key)}
                 onChange={(e) => emitDim(f.key, e.target.value)}
+                title={ozonDimsLocked ? OZON_DIMS_LOCK_TITLE : undefined}
               />
             </div>
           ))}
@@ -1138,6 +1162,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ozonSyncLoading, setOzonSyncLoading] = useState(false);
   const [ozonSyncError, setOzonSyncError] = useState('');
   const [ozonSyncSuccess, setOzonSyncSuccess] = useState('');
+  /** Загрузка только изображений с МП (ozon|wb|ym) */
+  const [mpImagesPullLoading, setMpImagesPullLoading] = useState(null);
   const [syncedOzonProductId, setSyncedOzonProductId] = useState(null);
   /** Полные данные товара с Ozon после «Обновить данные с Ozon» (отображаются во вкладке Ozon) */
   const [ozonFetchedProduct, setOzonFetchedProduct] = useState(null);
@@ -2845,6 +2871,66 @@ export const ProductForm = React.forwardRef(function ProductForm({
     ymCategoryAttributes,
     currentProduct?.id,
   ]);
+
+  const handlePullMarketplaceImages = useCallback(
+    async (marketplace) => {
+      const mp = String(marketplace || '').toLowerCase();
+      if (!currentProduct?.id) {
+        const msg = 'Сначала сохраните товар — затем можно загрузить изображения.';
+        if (mp === 'ozon') setOzonSyncError(msg);
+        else if (mp === 'wb') setWbSyncError(msg);
+        else setYmSyncError(msg);
+        return;
+      }
+      if (mp === 'ozon') {
+        setOzonSyncError('');
+        setOzonSyncSuccess('');
+      } else if (mp === 'wb') {
+        setWbSyncError('');
+        setWbSyncSuccess('');
+      } else {
+        setYmSyncError('');
+        setYmSyncSuccess('');
+      }
+      setMpImagesPullLoading(mp);
+      try {
+        const body = await productsApi.pullImages(currentProduct.id, mp);
+        const data = body?.data ?? body;
+        if (data?.ok === false) {
+          throw new Error(data?.error || 'Не удалось загрузить изображения');
+        }
+        const list = Array.isArray(data?.images)
+          ? data.images
+          : extractImagesFromApiPayload(body);
+        if (list.length > 0) setProductImages(normalizeProductImagesOrder(list));
+        const added = Number(data?.added) || 0;
+        const enabled = Number(data?.enabled) || 0;
+        const mpLabel = mp === 'ozon' ? 'Ozon' : mp === 'wb' ? 'WB' : 'Яндекс.Маркет';
+        let msg;
+        if (added > 0 || enabled > 0) {
+          msg = `Изображения с ${mpLabel}: +${added}${enabled ? `, бейдж у ${enabled}` : ''}.`;
+        } else {
+          msg = `Изображения с ${mpLabel}: новых нет (уже в карточке или в кабинете пусто).`;
+        }
+        if (mp === 'ozon') setOzonSyncSuccess(msg);
+        else if (mp === 'wb') setWbSyncSuccess(msg);
+        else setYmSyncSuccess(msg);
+      } catch (err) {
+        const msg =
+          err?.response?.data?.data?.error ||
+          err?.response?.data?.error ||
+          err?.response?.data?.message ||
+          err?.message ||
+          'Ошибка загрузки изображений';
+        if (mp === 'ozon') setOzonSyncError(msg);
+        else if (mp === 'wb') setWbSyncError(msg);
+        else setYmSyncError(msg);
+      } finally {
+        setMpImagesPullLoading(null);
+      }
+    },
+    [currentProduct?.id]
+  );
 
   // Синхронизация формы с данными из блока «Данные с Ozon»: при появлении ozonFetchedProduct подставляем все атрибуты в поля формы
   useEffect(() => {
@@ -5107,6 +5193,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           }}
         >
           <span>Габариты упаковки</span>
+          <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
           <MpFieldLinkToggles
             fieldKey="dimensions"
             links={formData.mp_field_links}
@@ -5114,14 +5201,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
           <MpValueDiffBadges diffs={mainCardFieldMpDiffs.dimensions} />
         </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).
-          На маркетплейсы уходит в единицах кабинета МП.
-        </div>
+        {isOzonPackagingDimensionsLocked(formData) ? (
+          <div style={{ fontSize: 11, color: '#d97706', marginBottom: 10 }}>{OZON_DIMS_LOCK_TITLE}</div>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
+            В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. OZ/WB/ЯМ — связь с вкладкой МП (не между МП).
+            На маркетплейсы уходит в единицах кабинета МП.
+          </div>
+        )}
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="length">
               Длина упаковки ({lengthLbl})
+              <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
               id="length"
@@ -5135,11 +5227,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 const mm = lengthDisplayToMm(e.target.value, lengthUnit);
                 handleChange('length', mm == null ? '' : String(mm));
               }}
+              title={
+                isOzonPackagingDimensionsLocked(formData) ? OZON_DIMS_LOCK_TITLE : undefined
+              }
             />
           </div>
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="width">
               Ширина упаковки ({lengthLbl})
+              <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
               id="width"
@@ -5153,11 +5249,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 const mm = lengthDisplayToMm(e.target.value, lengthUnit);
                 handleChange('width', mm == null ? '' : String(mm));
               }}
+              title={
+                isOzonPackagingDimensionsLocked(formData) ? OZON_DIMS_LOCK_TITLE : undefined
+              }
             />
           </div>
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="height">
               Высота упаковки ({lengthLbl})
+              <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
               id="height"
@@ -5171,11 +5271,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 const mm = lengthDisplayToMm(e.target.value, lengthUnit);
                 handleChange('height', mm == null ? '' : String(mm));
               }}
+              title={
+                isOzonPackagingDimensionsLocked(formData) ? OZON_DIMS_LOCK_TITLE : undefined
+              }
             />
           </div>
           <div className="col-6 col-md-3">
             <label className="form-label" htmlFor="weight">
               Вес с упаковкой ({weightLbl})
+              <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
               id="weight"
@@ -5189,6 +5293,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 const g = weightDisplayToG(e.target.value, weightUnit);
                 handleChange('weight', g == null ? '' : String(g));
               }}
+              title={
+                isOzonPackagingDimensionsLocked(formData) ? OZON_DIMS_LOCK_TITLE : undefined
+              }
             />
           </div>
           <div className="col-6 col-md-3">
@@ -5612,6 +5719,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               onClick={fetchOzonProductInfo}
               disabled={
                 ozonSyncLoading ||
+                !!mpImagesPullLoading ||
                 (
                   !String(formData.ozon_product_id || currentProduct?.ozon_product_id || '').trim() &&
                   !String(formData.sku_ozon || formData.sku || '').trim()
@@ -5619,6 +5727,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
             >
               {ozonSyncLoading ? 'Загрузка…' : 'Обновить данные с Ozon'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => handlePullMarketplaceImages('ozon')}
+              disabled={
+                ozonSyncLoading ||
+                !!mpImagesPullLoading ||
+                !currentProduct?.id ||
+                (
+                  !String(formData.ozon_product_id || currentProduct?.ozon_product_id || '').trim() &&
+                  !String(formData.sku_ozon || formData.sku || '').trim()
+                )
+              }
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Скачать только изображения с Ozon в галерею ERP'}
+            >
+              {mpImagesPullLoading === 'ozon' ? 'Изображения…' : 'Загрузка изображений'}
             </Button>
             <Button
               type="button"
@@ -5630,7 +5755,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'ozon' ? 'Ожидание ответа Ozon…' : 'Сохранить и отправить на Ozon'}
             </Button>
             <span className="text-muted small">
-              «Обновить с Ozon» — загрузка в ERP. «Сохранить и отправить» — запись в ERP, выгрузка и проверка ошибок в кабинете Ozon.
+              «Обновить с Ozon» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
             </span>
           </div>
           <div className="card mt-3 border-secondary">
@@ -6047,6 +6172,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               onClick={fetchWbProductInfo}
               disabled={
                 wbSyncLoading ||
+                !!mpImagesPullLoading ||
                 (
                   !String(formData.sku_wb || '').trim() &&
                   !String(
@@ -6063,6 +6189,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
+              variant="secondary"
+              onClick={() => handlePullMarketplaceImages('wb')}
+              disabled={
+                wbSyncLoading ||
+                !!mpImagesPullLoading ||
+                !currentProduct?.id ||
+                (
+                  !String(formData.sku_wb || '').trim() &&
+                  !String(
+                    formData.mp_wb_vendor_code ||
+                      currentProduct?.mp_wb_vendor_code ||
+                      formData.sku_ozon ||
+                      currentProduct?.sku_ozon ||
+                      ''
+                  ).trim()
+                )
+              }
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Скачать только изображения с WB в галерею ERP'}
+            >
+              {mpImagesPullLoading === 'wb' ? 'Изображения…' : 'Загрузка изображений'}
+            </Button>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('wb')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_wb?.trim()}
@@ -6070,7 +6219,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'wb' ? 'Отправка…' : 'Сохранить и отправить на WB'}
             </Button>
             <span className="text-muted small">
-              «Обновить с WB» — загрузка в ERP. «Сохранить и отправить» — запись в ERP и выгрузка в кабинет WB.
+              «Обновить с WB» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
             </span>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
@@ -6343,12 +6492,27 @@ export const ProductForm = React.forwardRef(function ProductForm({
               onClick={fetchYmProductInfo}
               disabled={
                 ymSyncLoading ||
+                !!mpImagesPullLoading ||
                 (
                   !String(formData.sku_ym || formData.sku || '').trim()
                 )
               }
             >
               {ymSyncLoading ? 'Загрузка…' : 'Обновить данные с Яндекс.Маркет'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => handlePullMarketplaceImages('ym')}
+              disabled={
+                ymSyncLoading ||
+                !!mpImagesPullLoading ||
+                !currentProduct?.id ||
+                !String(formData.sku_ym || formData.sku || '').trim()
+              }
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Скачать только изображения с Я.Маркета в галерею ERP'}
+            >
+              {mpImagesPullLoading === 'ym' ? 'Изображения…' : 'Загрузка изображений'}
             </Button>
             <Button
               type="button"
@@ -6367,7 +6531,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'all' ? 'Отправка…' : 'Сохранить и отправить на все МП'}
             </Button>
             <span className="text-muted small">
-              Подтянуть с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).
+              Подтянуть данные/изображения с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).
             </span>
             </div>
           {ymSyncError && (

@@ -191,6 +191,13 @@ router.post(
   wrapAsync(productsController.pullCard.bind(productsController))
 );
 
+// Только изображения с МП → галерея ERP
+router.post(
+  '/:id/pull-images/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.pullImages.bind(productsController))
+);
+
 router.get(
   '/:id/participation',
   validateProductId,

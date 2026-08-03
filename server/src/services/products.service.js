@@ -1980,7 +1980,17 @@ class ProductsService {
   async pullProductCardFromMarketplace(productId, marketplace, options = {}) {
     const marketplaceProductCardPull = (await import('./marketplaceProductCardPull.service.js')).default;
     return marketplaceProductCardPull.pullProductCard(productId, marketplace, {
-      profileId: options.profileId ?? null
+      profileId: options.profileId ?? null,
+      skipImages: options.skipImages,
+      notifyChanges: options.notifyChanges,
+    });
+  }
+
+  /** Только изображения с маркетплейса → галерея ERP. */
+  async pullProductImagesFromMarketplace(productId, marketplace, options = {}) {
+    const marketplaceProductCardPull = (await import('./marketplaceProductCardPull.service.js')).default;
+    return marketplaceProductCardPull.pullProductImagesOnly(productId, marketplace, {
+      profileId: options.profileId ?? null,
     });
   }
 
@@ -1991,7 +2001,10 @@ class ProductsService {
   async pullProductCardsBulk(payload, options = {}) {
     const marketplaceProductCardPull = (await import('./marketplaceProductCardPull.service.js')).default;
     return marketplaceProductCardPull.pullProductCardsBulk(payload, {
-      profileId: options.profileId ?? null
+      profileId: options.profileId ?? null,
+      skipImages: options.skipImages,
+      concurrency: options.concurrency,
+      notifyChanges: options.notifyChanges,
     });
   }
 }
