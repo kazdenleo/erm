@@ -77,13 +77,45 @@
   background: #fff;
 }
 
-.products-bulk-table {
-  width: max-content;
-  min-width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 12px;
+.products-bulk-dim-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
 }
+
+.products-bulk-dim-cell .products-bulk-cell-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.products-bulk-dim-lock {
+  color: #d97706;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  flex: 0 0 auto;
+  cursor: help;
+}
+
+.products-bulk-dim-dirty,
+.products-bulk-cell-input.products-bulk-dim-dirty {
+  font-weight: 700 !important;
+}
+
+
+.products-bulk-table tbody tr.is-row-selected td {
+  background: rgba(13, 110, 253, 0.06);
+}
+
+.products-bulk-table tbody tr.is-row-selected td.sticky-col-pin {
+  background: #eef5ff;
+}
+
+.products-bulk-table tbody tr.is-row-selected:hover td {
+  background: rgba(13, 110, 253, 0.09);
+}
+
 
 .products-bulk-table thead th {
   position: sticky;

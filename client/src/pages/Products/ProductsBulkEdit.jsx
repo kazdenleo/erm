@@ -23,6 +23,10 @@ import {
   isMpFieldLinked,
   setMpFieldLink,
 } from '../../utils/productMpFieldLinks.js';
+import {
+  isOzonPackagingDimensionsLocked,
+  OZON_DIMS_LOCK_TITLE,
+} from '../../utils/ozonDimensionsLock.js';
 import { MpFieldLinkToggles } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
@@ -275,6 +279,31 @@ const SESSION_MP_YM = 'productsBulkShowMpYm';
 const SESSION_PINNED_COLS = 'productsBulkPinnedCols';
 /** Базовый sticky-столбец — всегда слева, пользовательские пины не левее него */
 const DEFAULT_STICKY_COL_KEY = 'sku';
+/** Выбор строк для выгрузки/загрузки с МП (всегда первый sticky) */
+const SELECT_COL_KEY = '_select';
+const SELECT_COL = {
+  key: SELECT_COL_KEY,
+  label: '',
+  readonly: true,
+  noBulk: true,
+  width: 42,
+  minW: 42,
+  headerClass: 'products-bulk-select-col',
+};
+const PACK_DIM_COL_KEYS = new Set([
+  'length',
+  'width',
+  'height',
+  'weight',
+  'ozon_pack_length',
+  'ozon_pack_width',
+  'ozon_pack_height',
+  'ozon_pack_weight',
+]);
+
+function isPackDimColumnKey(key) {
+  return PACK_DIM_COL_KEYS.has(String(key || ''));
+}
 /** Старый один тумблер — мигрируем в три флага по МП */
 const SESSION_SHOW_MP_ATTRS_LEGACY = 'productsBulkShowMpAttrs';
 /** Стартовый выбор категории: ещё не выбрано / все категории */
@@ -329,7 +358,7 @@ function readPinnedColumnKeys() {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .map((k) => String(k || '').trim())
-      .filter((k) => k && k !== DEFAULT_STICKY_COL_KEY);
+      .filter((k) => k && k !== DEFAULT_STICKY_COL_KEY && k !== SELECT_COL_KEY);
   } catch {
     return [];
   }
@@ -369,14 +398,18 @@ function orderColumnsWithPins(cols, pinnedKeys) {
 
 function buildStickyLeftMap(displayCols, pinnedKeys) {
   const pinnedSet = new Set(
-    (pinnedKeys || []).filter((k) => k && k !== DEFAULT_STICKY_COL_KEY)
+    (pinnedKeys || []).filter((k) => k && k !== DEFAULT_STICKY_COL_KEY && k !== SELECT_COL_KEY)
   );
   const stickyKeys = [];
   for (const col of displayCols || []) {
-    if (col.key === DEFAULT_STICKY_COL_KEY || pinnedSet.has(col.key)) {
+    if (
+      col.key === SELECT_COL_KEY ||
+      col.key === DEFAULT_STICKY_COL_KEY ||
+      pinnedSet.has(col.key)
+    ) {
       stickyKeys.push(col.key);
     } else {
-      break; // sticky-блок всегда префикс: артикул + пины
+      break; // sticky-блок всегда префикс: галочка + артикул + пины
     }
   }
   const map = new Map();
@@ -1121,6 +1154,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     _ozonDraftBaseline: parseDraftBaseline(p.ozon_draft),
     _wbDraftBaseline: parseDraftBaseline(p.wb_draft),
     _ymDraftBaseline: parseDraftBaseline(p.ym_draft),
+    _ozonDimsLocked: isOzonPackagingDimensionsLocked(p),
     _productRef: p,
   };
   for (const c of mpAttrColDefs) {
@@ -1656,42 +1690,95 @@ export function ProductsBulkEdit() {
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [pushOfferOpen, setPushOfferOpen] = useState(false);
   const [pushOfferSavedCount, setPushOfferSavedCount] = useState(0);
+  /** id, успешно сохранённые перед предложением «На МП» (если галочки не стоят) */
+  const [pushOfferProductIds, setPushOfferProductIds] = useState([]);
   const pendingLeaveActionRef = useRef(null);
   const leaveBypassRef = useRef(false);
   const hasUnsavedChangesRef = useRef(false);
-  /** id товаров, изменённых в этой сессии (для отправки на МП только их) */
+  /** id товаров, изменённых в этой сессии (после успешного push снимаются) */
   const changedForPushIdsRef = useRef(new Set());
-  const [changedForPushCount, setChangedForPushCount] = useState(0);
+  /** Выбранные на текущей странице строки (галочки) — scope для На МП / Из МП */
+  const [selectedRowIds, setSelectedRowIds] = useState(() => new Set());
+  const selectAllCheckboxRef = useRef(null);
 
   const markChangedForPush = useCallback((ids) => {
     const list = Array.isArray(ids) ? ids : [ids];
-    let added = 0;
     for (const id of list) {
       const sid = str(id);
-      if (!sid || changedForPushIdsRef.current.has(sid)) continue;
+      if (!sid) continue;
       changedForPushIdsRef.current.add(sid);
-      added += 1;
     }
-    if (added > 0) setChangedForPushCount(changedForPushIdsRef.current.size);
   }, []);
 
   const clearChangedForPush = useCallback(() => {
-    if (changedForPushIdsRef.current.size === 0) return;
     changedForPushIdsRef.current = new Set();
-    setChangedForPushCount(0);
   }, []);
 
   const unmarkChangedForPush = useCallback((ids) => {
     const list = Array.isArray(ids) ? ids : [ids];
-    let removed = 0;
     for (const id of list) {
       const sid = str(id);
-      if (!sid || !changedForPushIdsRef.current.has(sid)) continue;
+      if (!sid) continue;
       changedForPushIdsRef.current.delete(sid);
-      removed += 1;
     }
-    if (removed > 0) setChangedForPushCount(changedForPushIdsRef.current.size);
   }, []);
+  /** Убираем галочки строк, которых больше нет на странице (смена страницы/фильтров). */
+  useEffect(() => {
+    const pageIds = new Set(rows.map((r) => str(r.id)).filter(Boolean));
+    setSelectedRowIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (pageIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [rows]);
+
+  const pageRowIds = useMemo(
+    () => rows.map((r) => str(r.id)).filter(Boolean),
+    [rows]
+  );
+  const selectedCount = selectedRowIds.size;
+  const allPageSelected =
+    pageRowIds.length > 0 && pageRowIds.every((id) => selectedRowIds.has(id));
+  const somePageSelected = pageRowIds.some((id) => selectedRowIds.has(id));
+
+  useEffect(() => {
+    const el = selectAllCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate = somePageSelected && !allPageSelected;
+  }, [somePageSelected, allPageSelected]);
+
+  const toggleSelectRow = useCallback((id, checked) => {
+    const sid = str(id);
+    if (!sid) return;
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(sid);
+      else next.delete(sid);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllVisible = useCallback(
+    (e) => {
+      const checked = !!e?.target?.checked;
+      setSelectedRowIds((prev) => {
+        const next = new Set(prev);
+        for (const id of pageRowIds) {
+          if (checked) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    [pageRowIds]
+  );
+
+  const getSelectedProductIds = useCallback(() => [...selectedRowIds].filter(Boolean), [selectedRowIds]);
 
   useEffect(() => {
     if (!pushOfferOpen) return undefined;
@@ -1819,7 +1906,7 @@ export function ProductsBulkEdit() {
   }, [pinnedColumnKeys, visibleColumns]);
 
   const displayColumns = useMemo(
-    () => orderColumnsWithPins(visibleColumns, pinnedColumnKeys),
+    () => [SELECT_COL, ...orderColumnsWithPins(visibleColumns, pinnedColumnKeys)],
     [visibleColumns, pinnedColumnKeys]
   );
 
@@ -1864,7 +1951,6 @@ export function ProductsBulkEdit() {
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
     (filterBrandId ? 1 : 0) +
-    (filterCategoryId ? 1 : 0) +
     (filterProductType ? 1 : 0);
 
   useEffect(() => {
@@ -2001,7 +2087,6 @@ export function ProductsBulkEdit() {
   const clearListFilters = () => {
     setFilterOrganizationId('');
     setFilterBrandId('');
-    setFilterCategoryId('');
     setFilterProductType('');
     setListSearch('');
     setCurrentPage(1);
@@ -2155,11 +2240,10 @@ export function ProductsBulkEdit() {
     loadProducts();
   }, [loadProducts, categoryScopeReady]);
 
-  const showNoneCategoryOption = showUncategorizedCategoryOption === true;
-
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
       setFilterCategoryId('');
+      setCategoryPickDraft(CATEGORY_SCOPE_ALL);
     }
   }, [showUncategorizedCategoryOption, filterCategoryId]);
 
@@ -2178,15 +2262,6 @@ export function ProductsBulkEdit() {
       setFilterBrandId(v);
       setCurrentPage(1);
       void loadProducts({ brandId: v, page: 1 });
-    });
-  };
-
-  const handleFilterCategoryChange = (e) => {
-    const v = e.target.value;
-    requestLeaveGuard(() => {
-      setFilterCategoryId(v);
-      setCurrentPage(1);
-      void loadProducts({ categoryId: v, page: 1 });
     });
   };
 
@@ -2217,7 +2292,6 @@ export function ProductsBulkEdit() {
       void loadProducts({
         organizationId: '',
         brandId: '',
-        categoryId: '',
         productType: '',
         search: '',
         page: 1,
@@ -2374,6 +2448,7 @@ export function ProductsBulkEdit() {
     setSaving(true);
     setSaveMessage(null);
     const errors = [];
+    const savedIds = [];
     let ok = 0;
     try {
       for (const r of rows) {
@@ -2390,6 +2465,7 @@ export function ProductsBulkEdit() {
           setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
           setRows((list) => list.map((row) => (row.id === r.id ? { ...nextRow, _productRef: u } : row)));
           markChangedForPush(r.id);
+          savedIds.push(str(r.id));
           ok += 1;
         } catch (e) {
           const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
@@ -2406,6 +2482,7 @@ export function ProductsBulkEdit() {
       }
       if (!suppressPushOffer && ok > 0) {
         setPushOfferSavedCount(ok);
+        setPushOfferProductIds(savedIds);
         // после async-сохранения открываем на следующем тике — иначе клик/фокус могут сразу закрыть модалку
         window.setTimeout(() => setPushOfferOpen(true), 0);
       }
@@ -2442,51 +2519,22 @@ export function ProductsBulkEdit() {
   const handlePushToMarketplaces = async (marketplaces, opts = {}) => {
     const skipConfirm = opts.skipConfirm === true;
     const rowIdsOnPage = new Set(rows.map((r) => str(r.id)).filter(Boolean));
-    const ids = new Set();
-    for (const id of changedForPushIdsRef.current) {
-      if (rowIdsOnPage.has(id)) ids.add(id);
+    const selectedOnPage = getSelectedProductIds().filter((id) => rowIdsOnPage.has(id));
+    let productIds = Array.isArray(opts.productIds)
+      ? [...new Set(opts.productIds.map((x) => str(x)).filter(Boolean))]
+      : selectedOnPage;
+
+    // После «Сохранить» — если галочек нет, шлём только что сохранённые карточки.
+    if (productIds.length === 0 && skipConfirm && Array.isArray(pushOfferProductIds)) {
+      productIds = pushOfferProductIds.filter((id) => rowIdsOnPage.has(id));
     }
-    for (const r of rows) {
-      const orig = originals[r.id];
-      if (!orig) continue;
-      if (
-        Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
-      ) {
-        ids.add(str(r.id));
-      }
-    }
-    const productIds = [...ids];
-    let forceResendAllOnPage = false;
+
     if (productIds.length === 0) {
-      const pageIds = rows.map((r) => str(r.id)).filter(Boolean);
-      if (pageIds.length === 0) {
-        setPushMpMessage('Нет товаров на странице для отправки.');
-        setPushOfferOpen(false);
-        return;
-      }
-      const mpLabelEmpty =
-        marketplaces === 'all'
-          ? 'все маркетплейсы'
-          : marketplaces === 'ozon'
-            ? 'Ozon'
-            : marketplaces === 'wb'
-              ? 'Wildberries'
-              : 'Яндекс.Маркет';
-      const forceOk = window.confirm(
-        `Нет изменений в этой сессии.\n\n` +
-          `Отправить на ${mpLabelEmpty} все товары на странице (${pageIds.length}) повторно?\n` +
-          `Нужно, если кабинет МП ещё показывает старые габариты/поля после прошлой отправки.`
-      );
-      if (!forceOk) {
-        setPushMpMessage(
-          'Нет изменённых товаров для отправки. Отредактируйте карточки в таблице (и сохраните), затем повторите — или подтвердите повторную отправку всех на странице.'
-        );
-        setPushOfferOpen(false);
-        return;
-      }
-      productIds.push(...pageIds);
-      forceResendAllOnPage = true;
+      setPushMpMessage('Отметьте товары галочками в таблице — отправка идёт только по выделенным.');
+      setPushOfferOpen(false);
+      return;
     }
+
     const mpLabel =
       marketplaces === 'all'
         ? 'все маркетплейсы'
@@ -2503,9 +2551,9 @@ export function ProductsBulkEdit() {
         Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
       );
     });
-    if (!skipConfirm && !forceResendAllOnPage) {
+    if (!skipConfirm) {
       const okConfirm = window.confirm(
-        `Отправить на ${mpLabel} только изменённые карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
+        `Отправить на ${mpLabel} выделенные карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
           (dirtyAmong.length > 0
             ? `Сначала будут сохранены несохранённые правки (${dirtyAmong.length}).\n\n`
             : '') +
@@ -2541,7 +2589,7 @@ export function ProductsBulkEdit() {
               .join('; ')}`
           : '';
       setPushMpMessage(
-        `Отправка на МП (только изменённые): успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
+        `Отправка на МП (выделенные): успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
       );
       const failedIdSet = new Set(
         (Array.isArray(data?.items) ? data.items : [])
@@ -2558,9 +2606,10 @@ export function ProductsBulkEdit() {
   };
 
   const handlePullFromMarketplaces = async (marketplaces) => {
-    const productIds = rows.map((r) => r.id).filter(Boolean);
+    const rowIdsOnPage = new Set(rows.map((r) => str(r.id)).filter(Boolean));
+    const productIds = getSelectedProductIds().filter((id) => rowIdsOnPage.has(id));
     if (productIds.length === 0) {
-      setPullMpMessage('Нет товаров в таблице');
+      setPullMpMessage('Отметьте товары галочками в таблице — загрузка идёт только по выделенным.');
       return;
     }
     const mpLabel =
@@ -2572,16 +2621,30 @@ export function ProductsBulkEdit() {
             ? 'Wildberries'
             : 'Яндекс.Маркет';
     const okConfirm = window.confirm(
-      `Обновить в ERP карточки ${productIds.length} товар(ов) данными с ${mpLabel}?\n\n` +
+      `Обновить в ERP выделенные карточки (${productIds.length}) данными с ${mpLabel}?\n\n` +
         'Поля маркетплейса (названия, описания, атрибуты, артикулы МП) будут перезаписаны из кабинета. ' +
-        'Несохранённые правки в таблице по этим полям могут быть потеряны после обновления списка.'
+        'Несохранённые правки в таблице по этим полям могут быть потеряны после обновления списка.\n\n' +
+        'Картинки при массовой загрузке не скачиваются (быстрее). При большом числе товаров это всё равно может занять несколько минут.'
     );
     if (!okConfirm) return;
     setPullMpLoading(marketplaces);
-    setPullMpMessage(null);
+    setPullMpMessage(
+      `Загрузка с ${mpLabel}: 0 / ${productIds.length}… Не закрывайте вкладку.`
+    );
     setPushMpMessage(null);
     try {
-      const body = await productsApi.pullCardBulk({ productIds, marketplaces });
+      const body = await productsApi.pullCardBulk(
+        { productIds, marketplaces, skipImages: true },
+        {
+          onChunkProgress: ({ doneIds, totalIds, chunkIndex, chunkTotal }) => {
+            setPullMpMessage(
+              `Загрузка с ${mpLabel}: ${doneIds} / ${totalIds}` +
+                (chunkTotal > 1 ? ` (пакет ${chunkIndex}/${chunkTotal})` : '') +
+                '… Не закрывайте вкладку.'
+            );
+          },
+        }
+      );
       const data = body?.data ?? body;
       const failedItems = Array.isArray(data?.items)
         ? data.items.filter((it) => !it?.ok).slice(0, 5)
@@ -2603,7 +2666,7 @@ export function ProductsBulkEdit() {
       ];
       if (skippedN > 0) parts.push(`без привязки к МП (пропуск): ${skippedN}`);
       if (failedN > 0) parts.push(`ошибок: ${failedN}`);
-      setPullMpMessage(`Обновление из МП: ${parts.join(', ')}.${failHint}`);
+      setPullMpMessage(`Обновление из МП (выделенные): ${parts.join(', ')}.${failHint}`);
       await loadProducts();
     } catch (e) {
       setPullMpMessage(
@@ -2666,34 +2729,61 @@ export function ProductsBulkEdit() {
   );
 
   const renderInput = (col, row) => {
+    const orig = originals[row.id];
+    const isDimCol = isPackDimColumnKey(col.key);
+    const dimLocked = isDimCol && !!row._ozonDimsLocked;
+    const dimDirty =
+      isDimCol && orig != null && str(orig[col.key]) !== str(row[col.key]);
+    const lockMark = dimLocked ? (
+      <span className="products-bulk-dim-lock" title={OZON_DIMS_LOCK_TITLE} aria-label="Габариты закреплены Ozon">
+        !
+      </span>
+    ) : null;
+
     if (col.readonly || isBulkLinkedMpReadonly(row, col.key)) {
       const text = str(row[col.key]).trim();
       const linked = isBulkLinkedMpReadonly(row, col.key);
       return (
         <span
-          className={`text-muted small text-nowrap d-block${linked ? ' products-bulk-cell-linked' : ''}`}
+          className={`text-muted small text-nowrap d-block${linked ? ' products-bulk-cell-linked' : ''}${
+            dimDirty ? ' products-bulk-dim-dirty' : ''
+          }`}
           title={
-            linked
-              ? 'Связано с «Основным» — правьте колонку Основное'
-              : col.hint || undefined
+            dimLocked
+              ? OZON_DIMS_LOCK_TITLE
+              : linked
+                ? 'Связано с «Основным» — правьте колонку Основное'
+                : col.hint || undefined
           }
         >
           {text !== '' ? text : '—'}
+          {lockMark}
         </span>
       );
     }
     const v = row[col.key];
     const common = {
-      className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}`,
+      className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}${
+        dimDirty ? ' products-bulk-dim-dirty' : ''
+      }`,
       value: v,
       onChange: (e) => updateCell(row.id, col.key, e.target.value),
+      title: dimLocked ? OZON_DIMS_LOCK_TITLE : undefined,
     };
 
     if (col.input === 'textarea' || col.mpAttr) {
       return <textarea {...common} rows={2} />;
     }
     if (col.input === 'number') {
-      return <input {...common} type="text" inputMode="decimal" autoComplete="off" />;
+      if (!isDimCol) {
+        return <input {...common} type="text" inputMode="decimal" autoComplete="off" />;
+      }
+      return (
+        <span className="products-bulk-dim-cell">
+          <input {...common} type="text" inputMode="decimal" autoComplete="off" />
+          {lockMark}
+        </span>
+      );
     }
     if (col.input === 'select_type') {
       return (
@@ -2796,8 +2886,11 @@ export function ProductsBulkEdit() {
         <div className="alert alert-info products-bulk-push-offer mb-2" role="dialog" aria-label="Отправить на маркетплейсы">
           <div className="d-flex flex-wrap align-items-center gap-2">
             <span className="me-auto">
-              Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить изменения на
-              маркетплейсы?
+              Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить
+              {selectedCount > 0
+                ? ` выделенные (${selectedCount})`
+                : ` сохранённые (${pushOfferProductIds.length || pushOfferSavedCount})`}{' '}
+              на маркетплейсы?
             </span>
             <Button
               type="button"
@@ -2880,7 +2973,7 @@ export function ProductsBulkEdit() {
                         className="btn-shadow"
                         onClick={() => setFiltersOpen((o) => !o)}
                         aria-expanded={filtersOpen}
-                        title="Организация, бренд, категория, тип товара"
+                        title="Организация, бренд, тип товара"
                       >
                         {filtersOpen ? '▼ Фильтры' : '▶ Фильтры'}
                         {activeFiltersCount > 0 ? (
@@ -2892,7 +2985,7 @@ export function ProductsBulkEdit() {
                   {filtersOpen ? (
                     <div className="products-filters-panel">
                       <div className="row g-2 g-md-3 align-items-end">
-                        <div className="col-12 col-md-6 col-lg-3">
+                        <div className="col-12 col-md-6 col-lg-4">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-org">
                             Организация
                           </label>
@@ -2910,7 +3003,7 @@ export function ProductsBulkEdit() {
                             ))}
                           </select>
                         </div>
-                        <div className="col-12 col-md-6 col-lg-3">
+                        <div className="col-12 col-md-6 col-lg-4">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-brand">
                             Бренд
                           </label>
@@ -2931,28 +3024,7 @@ export function ProductsBulkEdit() {
                               ))}
                           </select>
                         </div>
-                        <div className="col-12 col-md-6 col-lg-3">
-                          <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-cat">
-                            Категория
-                          </label>
-                          <select
-                            id="bulk-filter-cat"
-                            className="form-select form-select-sm"
-                            value={filterCategoryId}
-                            onChange={handleFilterCategoryChange}
-                          >
-                            <option value="">Все категории</option>
-                            {showNoneCategoryOption ? (
-                              <option value={FILTER_CATEGORY_NONE}>Без категории</option>
-                            ) : null}
-                            {categories.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="col-12 col-md-6 col-lg-3">
+                        <div className="col-12 col-md-6 col-lg-4">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-type">
                             Тип товара
                           </label>
@@ -3034,18 +3106,18 @@ export function ProductsBulkEdit() {
                     <span
                       className="text-muted small text-nowrap me-1"
                       title={
-                        changedForPushCount > 0
-                          ? `Отправить на МП только изменённые в этой сессии (${changedForPushCount})`
-                          : 'Отправить на МП только товары, изменённые в таблице в этой сессии'
+                        selectedCount > 0
+                          ? `Отправить на МП только выделенные товары (${selectedCount})`
+                          : 'Сначала отметьте товары галочками в таблице'
                       }
                     >
-                      На МП{changedForPushCount > 0 ? ` (${changedForPushCount})` : ''}:
+                      На МП{selectedCount > 0 ? ` (${selectedCount})` : ''}:
                     </span>
                     <Button
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePushToMarketplaces('ozon')}
                     >
                       {pushMpLoading === 'ozon' ? '…' : 'На Ozon'}
@@ -3054,7 +3126,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePushToMarketplaces('wb')}
                     >
                       {pushMpLoading === 'wb' ? '…' : 'На WB'}
@@ -3063,7 +3135,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePushToMarketplaces('ym')}
                     >
                       {pushMpLoading === 'ym' ? '…' : 'На Я.Маркет'}
@@ -3072,19 +3144,26 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="primary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePushToMarketplaces('all')}
                     >
                       {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
                     </Button>
-                    <span className="text-muted small text-nowrap ms-2 me-1" title="Загрузить данные карточек из кабинетов МП в ERP">
-                      Из МП:
+                    <span
+                      className="text-muted small text-nowrap ms-2 me-1"
+                      title={
+                        selectedCount > 0
+                          ? `Загрузить данные с МП только для выделенных (${selectedCount})`
+                          : 'Сначала отметьте товары галочками в таблице'
+                      }
+                    >
+                      Из МП{selectedCount > 0 ? ` (${selectedCount})` : ''}:
                     </span>
                     <Button
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePullFromMarketplaces('ozon')}
                     >
                       {pullMpLoading === 'ozon' ? '…' : 'С Ozon'}
@@ -3093,7 +3172,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePullFromMarketplaces('wb')}
                     >
                       {pullMpLoading === 'wb' ? '…' : 'С WB'}
@@ -3102,7 +3181,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePullFromMarketplaces('ym')}
                     >
                       {pullMpLoading === 'ym' ? '…' : 'С Я.Маркет'}
@@ -3111,7 +3190,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="primary"
                       size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0 || selectedCount === 0}
                       onClick={() => handlePullFromMarketplaces('all')}
                     >
                       {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
@@ -3157,6 +3236,27 @@ export function ProductsBulkEdit() {
             <thead>
               <tr>
                 {displayColumns.map((col) => {
+                  if (col.key === SELECT_COL_KEY) {
+                    return (
+                      <th
+                        key={col.key}
+                        className={`${colStickyClass(col)} products-bulk-select-col`.trim()}
+                        style={colStickyStyle(col, { header: true })}
+                        scope="col"
+                      >
+                        <input
+                          ref={selectAllCheckboxRef}
+                          type="checkbox"
+                          className="form-check-input m-0"
+                          checked={allPageSelected}
+                          onChange={toggleSelectAllVisible}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Выбрать все товары на странице"
+                          title="Выбрать все на странице"
+                        />
+                      </th>
+                    );
+                  }
                   const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
                   const isPinned = pinnedColumnKeys.includes(col.key);
                   const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
@@ -3274,8 +3374,27 @@ export function ProductsBulkEdit() {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id}>
+                <tr key={row.id} className={selectedRowIds.has(str(row.id)) ? 'is-row-selected' : undefined}>
                   {displayColumns.map((col) => {
+                    if (col.key === SELECT_COL_KEY) {
+                      const sid = str(row.id);
+                      return (
+                        <td
+                          key={col.key}
+                          className={`${colStickyClass(col)} products-bulk-select-col`.trim()}
+                          style={colStickyStyle(col)}
+                        >
+                          <input
+                            type="checkbox"
+                            className="form-check-input m-0"
+                            checked={selectedRowIds.has(sid)}
+                            onChange={(e) => toggleSelectRow(sid, e.target.checked)}
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Выбрать товар ${row.sku || sid}`}
+                          />
+                        </td>
+                      );
+                    }
                     if (col.key === 'id') {
                       return (
                         <td
@@ -3453,11 +3572,15 @@ export function ProductsBulkEdit() {
         closeOnEscape={!pushMpLoading}
       >
         <p className="mb-3">
-          Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить эти изменения на
-          маркетплейсы?
+          Сохранено в ERP: <strong>{pushOfferSavedCount}</strong> товар(ов). Отправить
+          {selectedCount > 0
+            ? ` выделенные (${selectedCount})`
+            : ` сохранённые (${pushOfferProductIds.length || pushOfferSavedCount})`}{' '}
+          на маркетплейсы?
         </p>
         <p className="text-muted small mb-3">
-          Уйдут только карточки, изменённые в этой сессии. Можно выбрать один МП или все сразу.
+          Уйдут только отмеченные галочками карточки (или только что сохранённые, если галочек нет).
+          Можно выбрать один МП или все сразу.
         </p>
         <div className="d-flex flex-wrap gap-2 justify-content-end">
           <Button
@@ -3515,6 +3638,11 @@ export function ProductsBulkEdit() {
           <div className="products-bulk-floating-save-inner">
             <span className="text-muted small">
               Строк в таблице: <strong>{rows.length}</strong>
+              {selectedCount > 0 ? (
+                <span className="ms-2">
+                  · выделено: <strong>{selectedCount}</strong>
+                </span>
+              ) : null}
               {hasUnsavedChanges ? (
                 <span className="text-warning ms-2">· есть несохранённые изменения</span>
               ) : null}
