@@ -78,11 +78,85 @@ export function IntegrationLogo({ type, size = 56 }) {
         <div className="int-logo int-logo--mparts" style={style} aria-hidden>
           <svg viewBox="0 0 56 56" width={size} height={size}>
             <rect width="56" height="56" rx="12" fill="#2C3E50" />
-            <text x="28" y="26" textAnchor="middle" fill="#F39C12" fontSize="14" fontWeight="800" fontFamily="system-ui,sans-serif">
-              М
+            <text x="28" y="34" textAnchor="middle" fill="#F39C12" fontSize="13" fontWeight="800" fontFamily="system-ui,sans-serif">
+              М-П
             </text>
-            <text x="28" y="42" textAnchor="middle" fill="#ECF0F1" fontSize="9" fontWeight="600" fontFamily="system-ui,sans-serif">
-              PARTS
+          </svg>
+        </div>
+      );
+    case 'partkom':
+      return (
+        <div className="int-logo int-logo--partkom" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#E67E22" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="700" fontFamily="system-ui,sans-serif">
+              ПК
+            </text>
+          </svg>
+        </div>
+      );
+    case 'forum_auto':
+      return (
+        <div className="int-logo int-logo--forum-auto" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#1A5276" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="700" fontFamily="system-ui,sans-serif">
+              ФА
+            </text>
+          </svg>
+        </div>
+      );
+    case 'autopiter':
+      return (
+        <div className="int-logo int-logo--autopiter" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#117A65" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="700" fontFamily="system-ui,sans-serif">
+              АП
+            </text>
+          </svg>
+        </div>
+      );
+    case 'ixora':
+      return (
+        <div className="int-logo int-logo--ixora" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#6C3483" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="11" fontWeight="700" fontFamily="system-ui,sans-serif">
+              IX
+            </text>
+          </svg>
+        </div>
+      );
+    case 'avtotrade':
+      return (
+        <div className="int-logo int-logo--avtotrade" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#922B21" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="700" fontFamily="system-ui,sans-serif">
+              АТ
+            </text>
+          </svg>
+        </div>
+      );
+    case 'armtek':
+      return (
+        <div className="int-logo int-logo--armtek" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#1F618D" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="11" fontWeight="700" fontFamily="system-ui,sans-serif">
+              АРМ
+            </text>
+          </svg>
+        </div>
+      );
+    case 'rossko':
+      return (
+        <div className="int-logo int-logo--rossko" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#B03A2E" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="11" fontWeight="700" fontFamily="system-ui,sans-serif">
+              РСК
             </text>
           </svg>
         </div>

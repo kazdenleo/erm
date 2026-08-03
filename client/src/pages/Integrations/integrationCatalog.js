@@ -20,6 +20,13 @@ export const INTEGRATION_CATALOG = {
     { id: 'mikado', name: 'Mikado', ready: true },
     { id: 'moskvorechie', name: 'Moskvorechie', ready: true },
     { id: 'mparts', name: 'М-Партс', ready: false },
+    { id: 'partkom', name: 'ПартКом', ready: false },
+    { id: 'forum_auto', name: 'Форум Авто', ready: false },
+    { id: 'autopiter', name: 'АвтоПитер', ready: false },
+    { id: 'ixora', name: 'IXORA', ready: false },
+    { id: 'avtotrade', name: 'Автотрэйд', ready: false },
+    { id: 'armtek', name: 'Армтек', ready: false },
+    { id: 'rossko', name: 'Росско', ready: false },
   ],
   other: [
     { id: '1c', name: '1С', ready: false },
