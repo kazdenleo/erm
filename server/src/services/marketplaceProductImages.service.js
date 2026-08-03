@@ -12,6 +12,10 @@ import productsService from './products.service.js';
 import {
   fetchAndNormalizeImageBuffer,
   saveNormalizedImageToProductFolder,
+  computeImagePerceptualHash,
+  perceptualHashDistance,
+  PERCEPTUAL_HASH_MATCH_THRESHOLD,
+  isWeakPerceptualHash,
 } from './productImagesImport.service.js';
 import logger from '../utils/logger.js';
 
@@ -248,6 +252,125 @@ function buildSourceAndHashIndexes(existing) {
   return { bySource, byHash };
 }
 
+/**
+ * Найти уже сохранённое фото с близким perceptual hash (одна картинка, разный CDN/сжатие).
+ * @param {string} phash
+ * @param {object[]} existing
+ * @param {number} [threshold]
+ * @returns {object|null}
+ */
+function findByPerceptualHash(phash, existing, threshold = PERCEPTUAL_HASH_MATCH_THRESHOLD) {
+  const needle = String(phash || '')
+    .trim()
+    .toLowerCase();
+  if (isWeakPerceptualHash(needle)) return null;
+  let best = null;
+  let bestDist = threshold + 1;
+  for (const img of existing) {
+    if (!img || typeof img !== 'object') continue;
+    const h = String(img.perceptual_hash || '')
+      .trim()
+      .toLowerCase();
+    if (isWeakPerceptualHash(h)) continue;
+    const d = perceptualHashDistance(needle, h);
+    if (d < bestDist) {
+      bestDist = d;
+      best = img;
+    }
+  }
+  return bestDist <= threshold ? best : null;
+}
+
+function mergeImageMetaInto(target, donor, bySource) {
+  if (!target || !donor) return false;
+  let changed = false;
+  for (const mp of MP_KEYS) {
+    if (readMarketplacesFlags(donor)[mp] && enableMarketplaceBadge(target, mp)) changed = true;
+  }
+  if (donor.primary === true && target.primary !== true) {
+    target.primary = true;
+    changed = true;
+  }
+  if (donor.source_url) {
+    rememberSourceUrl(target, donor.source_url, bySource);
+    changed = true;
+  }
+  if (Array.isArray(donor.source_urls)) {
+    for (const u of donor.source_urls) {
+      rememberSourceUrl(target, u, bySource);
+      changed = true;
+    }
+  }
+  if (!target.perceptual_hash && donor.perceptual_hash) {
+    target.perceptual_hash = donor.perceptual_hash;
+    changed = true;
+  }
+  if (!target.content_hash && donor.content_hash) {
+    target.content_hash = donor.content_hash;
+    changed = true;
+  }
+  return changed;
+}
+
+function unlinkLocalImageFile(img) {
+  const local = resolveLocalUploadPath(img?.url ?? img?.href ?? img?.src);
+  if (!local?.absPath) return;
+  try {
+    if (fs.existsSync(local.absPath)) fs.unlinkSync(local.absPath);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Досчитать perceptual_hash с диска и схлопнуть визуальные дубликаты
+ * (OZON+YM и отдельный WB одной картинки → одна запись с тремя бейджами).
+ * @returns {Promise<{ images: object[], changed: boolean, collapsed: number }>}
+ */
+async function backfillAndCollapseVisualDuplicates(existing) {
+  const images = Array.isArray(existing) ? existing : [];
+  let changed = false;
+  for (const img of images) {
+    if (!img || typeof img !== 'object') continue;
+    if (img.perceptual_hash) continue;
+    const local = resolveLocalUploadPath(img.url ?? img.href ?? img.src);
+    if (!local?.absPath || !fs.existsSync(local.absPath)) continue;
+    try {
+      const buf = fs.readFileSync(local.absPath);
+      const ph = await computeImagePerceptualHash(buf);
+      if (ph) {
+        img.perceptual_hash = ph;
+        changed = true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const bySource = new Map();
+  const keep = [];
+  let collapsed = 0;
+  for (const img of images) {
+    if (!img || typeof img !== 'object') continue;
+    const match = img.perceptual_hash
+      ? findByPerceptualHash(img.perceptual_hash, keep)
+      : null;
+    if (match) {
+      if (mergeImageMetaInto(match, img, bySource)) changed = true;
+      unlinkLocalImageFile(img);
+      collapsed += 1;
+      changed = true;
+      continue;
+    }
+    keep.push(img);
+    if (img.source_url) rememberSourceUrl(img, img.source_url, bySource);
+    if (Array.isArray(img.source_urls)) {
+      for (const u of img.source_urls) rememberSourceUrl(img, u, bySource);
+    }
+  }
+  return { images: keep, changed, collapsed };
+}
+
 function isOzonFriendlyImageUrl(url) {
   const base = String(url || '')
     .split(/[?#]/)[0]
@@ -361,9 +484,10 @@ export async function getProductImageUrlsForMarketplacePush(product, marketplace
 
 /**
  * Скачать URL с МП в products.images, проставить бейдж источника.
- * Уже известные source_url / тот же файл (content_hash) не дублируем — только включаем бейдж МП.
+ * Не дублируем: тот же source_url, content_hash или близкий perceptual hash
+ * (одна картинка с разных CDN) — только включаем бейдж МП.
  *
- * @returns {Promise<{ images: array, added: number, enabled: number, errors: array }>}
+ * @returns {Promise<{ images: array, added: number, enabled: number, collapsed: number, errors: array }>}
  */
 export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, urls) {
   const mp = normalizeMpKey(marketplace);
@@ -375,15 +499,6 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
   const list = Array.isArray(urls)
     ? [...new Set(urls.map((u) => String(u || '').trim()).filter(isHttpUrl))]
     : [];
-  if (list.length === 0) {
-    const product = await productsService.getById(productId);
-    return {
-      images: Array.isArray(product?.images) ? product.images : [],
-      added: 0,
-      enabled: 0,
-      errors: [],
-    };
-  }
 
   const product = await productsService.getById(productId);
   if (!product) {
@@ -392,7 +507,26 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
     throw err;
   }
 
-  const existing = Array.isArray(product.images) ? product.images.map((x) => ({ ...x })) : [];
+  let existing = Array.isArray(product.images) ? product.images.map((x) => ({ ...x })) : [];
+  const collapsedState = await backfillAndCollapseVisualDuplicates(existing);
+  existing = collapsedState.images;
+  const collapsed = collapsedState.collapsed || 0;
+
+  if (list.length === 0) {
+    if (collapsedState.changed) {
+      const next = ensurePrimary(existing);
+      await productsService.update(String(productId), { images: next });
+      return { images: next, added: 0, enabled: 0, collapsed, errors: [] };
+    }
+    return {
+      images: existing,
+      added: 0,
+      enabled: 0,
+      collapsed,
+      errors: [],
+    };
+  }
+
   const { bySource, byHash } = buildSourceAndHashIndexes(existing);
 
   let added = 0;
@@ -410,12 +544,31 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
     }
 
     try {
-      const { buf, ext, contentHash } = await fetchAndNormalizeImageBuffer(url);
+      const { buf, ext, contentHash, perceptualHash } = await fetchAndNormalizeImageBuffer(url);
       const foundByHash = contentHash ? byHash.get(String(contentHash).toLowerCase()) : null;
       if (foundByHash) {
         if (enableMarketplaceBadge(foundByHash, mp)) enabled += 1;
         rememberSourceUrl(foundByHash, url, bySource);
         if (!foundByHash.content_hash) foundByHash.content_hash = contentHash;
+        if (!foundByHash.perceptual_hash && perceptualHash) {
+          foundByHash.perceptual_hash = perceptualHash;
+        }
+        continue;
+      }
+
+      const foundByVisual = perceptualHash
+        ? findByPerceptualHash(perceptualHash, existing)
+        : null;
+      if (foundByVisual) {
+        if (enableMarketplaceBadge(foundByVisual, mp)) enabled += 1;
+        rememberSourceUrl(foundByVisual, url, bySource);
+        if (!foundByVisual.perceptual_hash && perceptualHash) {
+          foundByVisual.perceptual_hash = perceptualHash;
+        }
+        if (!foundByVisual.content_hash && contentHash) {
+          foundByVisual.content_hash = contentHash;
+          byHash.set(String(contentHash).toLowerCase(), foundByVisual);
+        }
         continue;
       }
 
@@ -423,6 +576,7 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
         primary: !hadImages && added === 0,
         marketplaces: badgesForSourceMp(mp),
         contentHash,
+        perceptualHash,
       });
       if (rec) {
         existing.push(rec);
@@ -442,10 +596,10 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
   }
 
   const next = ensurePrimary(existing);
-  if (added > 0 || enabled > 0) {
+  if (added > 0 || enabled > 0 || collapsedState.changed) {
     await productsService.update(String(productId), { images: next });
   }
-  return { images: next, added, enabled, errors };
+  return { images: next, added, enabled, collapsed, errors };
 }
 
 /**
@@ -462,4 +616,33 @@ export async function importImagesFromMarketplaceCard(productId, marketplace, ca
     urls = extractMarketplaceImageUrls(mp, cardOrUrls);
   }
   return mergeMarketplaceImagesIntoProduct(productId, mp, urls);
+}
+
+/**
+ * Схлопнуть уже сохранённые визуальные дубликаты галереи (бейджи МП объединяются).
+ * Можно вызвать без нового импорта с МП.
+ */
+export async function collapseProductImageDuplicates(productId) {
+  const product = await productsService.getById(productId);
+  if (!product) {
+    const err = new Error('Товар не найден');
+    err.statusCode = 404;
+    throw err;
+  }
+  const existing = Array.isArray(product.images) ? product.images.map((x) => ({ ...x })) : [];
+  const collapsedState = await backfillAndCollapseVisualDuplicates(existing);
+  if (!collapsedState.changed) {
+    return {
+      images: existing,
+      collapsed: 0,
+      changed: false,
+    };
+  }
+  const next = ensurePrimary(collapsedState.images);
+  await productsService.update(String(productId), { images: next });
+  return {
+    images: next,
+    collapsed: collapsedState.collapsed || 0,
+    changed: true,
+  };
 }

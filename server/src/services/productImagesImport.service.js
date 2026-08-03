@@ -68,6 +68,81 @@ async function normalizeImageBufferForStorage(buf, ext) {
 }
 
 /**
+ * Difference hash (64 bit) — устойчив к перекодированию/разному CDN (WB vs Ozon/YM).
+ * Перед хешем берём центральный квадрат, чтобы портретный кроп WB и ландшафт Ozon
+ * чаще сходились на одном визуале.
+ * @param {Buffer} buf
+ * @returns {Promise<string>} hex 16 символов
+ */
+export async function computeImagePerceptualHash(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return '';
+  try {
+    const meta = await sharp(buf).metadata();
+    const w = Number(meta.width) || 0;
+    const h = Number(meta.height) || 0;
+    let pipeline = sharp(buf);
+    if (w >= 8 && h >= 8) {
+      const side = Math.min(w, h);
+      const left = Math.max(0, Math.floor((w - side) / 2));
+      const top = Math.max(0, Math.floor((h - side) / 2));
+      pipeline = pipeline.extract({ left, top, width: side, height: side });
+    }
+    const { data } = await pipeline
+      .greyscale()
+      .resize(9, 8, { fit: 'fill' })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let hash = 0n;
+    for (let y = 0; y < 8; y += 1) {
+      for (let x = 0; x < 8; x += 1) {
+        const leftPx = data[y * 9 + x];
+        const rightPx = data[y * 9 + x + 1];
+        hash = (hash << 1n) | (leftPx < rightPx ? 1n : 0n);
+      }
+    }
+    return hash.toString(16).padStart(16, '0');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Hamming distance между двумя 64-bit hex dHash.
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {number}
+ */
+export function perceptualHashDistance(a, b) {
+  const aa = String(a || '')
+    .trim()
+    .toLowerCase()
+    .padStart(16, '0');
+  const bb = String(b || '')
+    .trim()
+    .toLowerCase()
+    .padStart(16, '0');
+  if (!/^[0-9a-f]{16}$/.test(aa) || !/^[0-9a-f]{16}$/.test(bb)) return 64;
+  let x = BigInt(`0x${aa}`) ^ BigInt(`0x${bb}`);
+  let dist = 0;
+  while (x > 0n) {
+    dist += Number(x & 1n);
+    x >>= 1n;
+  }
+  return dist;
+}
+
+/** Порог «одна и та же картинка» после сжатия МП (из 64 бит). */
+export const PERCEPTUAL_HASH_MATCH_THRESHOLD = 12;
+
+/** Однотонные/пустые кадры дают вырожденный dHash — по нему не мержим. */
+export function isWeakPerceptualHash(hash) {
+  const h = String(hash || '')
+    .trim()
+    .toLowerCase();
+  return !/^[0-9a-f]{16}$/.test(h) || h === '0000000000000000' || h === 'ffffffffffffffff';
+}
+
+/**
  * @param {string|number} productId
  * @param {string} url
  * @param {{ primary?: boolean, marketplaces?: { ozon?: boolean, wb?: boolean, ym?: boolean } }} [opts]
@@ -75,13 +150,17 @@ async function normalizeImageBufferForStorage(buf, ext) {
 export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const trimmed = String(url || '').trim();
   if (!isHttpUrl(trimmed)) return null;
-  const { buf, ext } = await fetchAndNormalizeImageBuffer(trimmed);
-  return saveNormalizedImageToProductFolder(productId, trimmed, buf, ext, opts);
+  const { buf, ext, contentHash, perceptualHash } = await fetchAndNormalizeImageBuffer(trimmed);
+  return saveNormalizedImageToProductFolder(productId, trimmed, buf, ext, {
+    ...opts,
+    contentHash,
+    perceptualHash,
+  });
 }
 
 /**
  * Скачать и нормализовать буфер изображения (без записи на диск).
- * @returns {Promise<{ buf: Buffer, ext: string, contentHash: string }>}
+ * @returns {Promise<{ buf: Buffer, ext: string, contentHash: string, perceptualHash: string }>}
  */
 export async function fetchAndNormalizeImageBuffer(url) {
   const trimmed = String(url || '').trim();
@@ -98,7 +177,8 @@ export async function fetchAndNormalizeImageBuffer(url) {
   let ext = extFromContentType(ct, trimmed) || '.jpg';
   ({ buf, ext } = await normalizeImageBufferForStorage(buf, ext));
   const contentHash = crypto.createHash('sha256').update(buf).digest('hex');
-  return { buf, ext, contentHash };
+  const perceptualHash = await computeImagePerceptualHash(buf);
+  return { buf, ext, contentHash, perceptualHash };
 }
 
 /**
@@ -124,6 +204,10 @@ export function saveNormalizedImageToProductFolder(productId, sourceUrl, buf, ex
   const contentHash =
     opts.contentHash ||
     (Buffer.isBuffer(buf) ? crypto.createHash('sha256').update(buf).digest('hex') : undefined);
+  const perceptualHash =
+    opts.perceptualHash != null && String(opts.perceptualHash).trim() !== ''
+      ? String(opts.perceptualHash).trim().toLowerCase()
+      : undefined;
   return {
     id: filename,
     url: rel,
@@ -131,6 +215,7 @@ export function saveNormalizedImageToProductFolder(productId, sourceUrl, buf, ex
     originalname: trimmed.slice(0, 240),
     source_url: trimmed,
     content_hash: contentHash || undefined,
+    perceptual_hash: perceptualHash || undefined,
     primary: opts.primary === true,
     marketplaces: mp,
     created_at: new Date().toISOString(),

@@ -1531,6 +1531,33 @@ export const ProductForm = React.forwardRef(function ProductForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно только id, не весь объект currentProduct
   }, [currentProduct?.id]);
 
+  // Схлопнуть визуальные дубликаты галереи (OZ+ЯМ и отдельный WB одной картинки)
+  useEffect(() => {
+    const pid = currentProduct?.id;
+    if (!pid) return undefined;
+    const imgs = Array.isArray(currentProduct?.images) ? currentProduct.images : [];
+    if (imgs.length < 2) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await productsApi.collapseImageDuplicates(pid);
+        if (cancelled || !res?.changed) return;
+        const list = res?.data ?? res?.images;
+        if (Array.isArray(list)) {
+          setProductImages(normalizeProductImagesOrder(list));
+          setCurrentProduct((prev) =>
+            prev && String(prev.id) === String(pid) ? { ...prev, images: list } : prev
+          );
+        }
+      } catch {
+        /* не блокируем карточку */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProduct?.id]);
+
   // Загрузка списка атрибутов для выбора по категории
   useEffect(() => {
     let cancelled = false;

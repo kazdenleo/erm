@@ -832,7 +832,29 @@ class ProductsController {
         data: result.images,
         added: result.added,
         enabled: result.enabled,
+        collapsed: result.collapsed ?? 0,
         errors: result.errors,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Схлопнуть визуальные дубликаты в галерее (одна картинка — несколько бейджей МП).
+   */
+  async collapseImageDuplicates(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { collapseProductImageDuplicates } = await import(
+        '../services/marketplaceProductImages.service.js'
+      );
+      const result = await collapseProductImageDuplicates(id);
+      return res.status(200).json({
+        ok: true,
+        data: result.images,
+        collapsed: result.collapsed ?? 0,
+        changed: result.changed === true,
       });
     } catch (error) {
       next(error);

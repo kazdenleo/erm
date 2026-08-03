@@ -446,6 +446,11 @@ export const productsApi = {
     });
     return response.data;
   },
+  /** Схлопнуть визуальные дубликаты галереи (одна картинка — бейджи нескольких МП). */
+  collapseImageDuplicates: async (id) => {
+    const response = await api.post(`/products/${id}/images/collapse-duplicates`);
+    return response.data;
+  },
   deleteImage: async (id, imageId) => {
     const response = await api.delete(`/products/${id}/images/${encodeURIComponent(String(imageId))}`);
     return response.data;

@@ -151,6 +151,11 @@ router.post(
   validateProductId,
   wrapAsync(productsController.importImagesFromMarketplace.bind(productsController))
 );
+router.post(
+  '/:id/images/collapse-duplicates',
+  validateProductId,
+  wrapAsync(productsController.collapseImageDuplicates.bind(productsController))
+);
 
 // Добавить товар (с валидацией)
 router.post(
