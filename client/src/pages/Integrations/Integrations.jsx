@@ -14,13 +14,16 @@ import { FboPackingLimitFields } from '../../components/integrations/FboPackingL
 import { OzonAutoPromotionsFields } from '../../components/integrations/OzonAutoPromotionsFields.jsx';
 import { pricesApi } from '../../services/prices.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
+import { INTEGRATION_CATALOG, INTEGRATION_TABS, findIntegration } from './integrationCatalog';
+import { IntegrationLogo } from './IntegrationLogo';
 import './Integrations.css';
 
 export function Integrations() {
   const { selectedOrganizationId, setSelectedOrganizationId, profile } = useAuth();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const [activeTab, setActiveTab] = useState('marketplaces');
-  const [loading, setLoading] = useState(true);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [configs, setConfigs] = useState({
     marketplaces: { ozon: {}, wildberries: {}, yandex: {} },
@@ -30,6 +33,14 @@ export function Integrations() {
   const selectedOrgId = selectedOrganizationId ? Number(selectedOrganizationId) : null;
   const [cabinets, setCabinets] = useState([]);
   const [cabinetsLoading, setCabinetsLoading] = useState(false);
+
+  const visibleTabs = INTEGRATION_TABS.filter(
+    (tab) => !tab.requiresSupplierSync || supplierSyncEnabled
+  );
+  const catalogItems = INTEGRATION_CATALOG[activeTab] || [];
+  const selectedIntegration = selectedIntegrationId
+    ? findIntegration(activeTab, selectedIntegrationId)
+    : null;
 
   const loadConfigs = useCallback(async () => {
     try {
@@ -61,6 +72,7 @@ export function Integrations() {
   useEffect(() => {
     if (!supplierSyncEnabled && activeTab === 'suppliers') {
       setActiveTab('marketplaces');
+      setSelectedIntegrationId(null);
     }
   }, [supplierSyncEnabled, activeTab]);
 
@@ -137,53 +149,26 @@ export function Integrations() {
     }
   };
 
-  if (loading) {
+  if (loading && selectedIntegration?.ready) {
     return <div className="loading">Загрузка настроек интеграций...</div>;
   }
 
-  return (
-    <div className="card">
-      <h1 className="title">Интеграции</h1>
-      <p className="subtitle">
-        Настройка подключений к маркетплейсам
-        {supplierSyncEnabled ? ' и поставщикам' : ''}
-      </p>
-      <p className="subtitle small text-muted mb-3" style={{ marginTop: '-0.25rem' }}>
-        <a
-          href="/api/help/marketplace-product-identifiers"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Справочник: идентификаторы товара на маркетплейсах
-        </a>
-        {' — открывается в браузере (новая вкладка).'}
-      </p>
+  const handleSelectTab = (tabId) => {
+    setActiveTab(tabId);
+    setSelectedIntegrationId(null);
+  };
 
-      {error && (
-        <div className="error" style={{ marginBottom: '16px' }}>
-          {error}
-        </div>
-      )}
+  const renderIntegrationDetail = () => {
+    if (!selectedIntegration) return null;
 
-      <div className="tabs">
-        <button
-          className={`tab-btn ${activeTab === 'marketplaces' ? 'active' : ''}`}
-          onClick={() => setActiveTab('marketplaces')}
-        >
-          Маркетплейсы
-        </button>
-        {supplierSyncEnabled ? (
-          <button
-            className={`tab-btn ${activeTab === 'suppliers' ? 'active' : ''}`}
-            onClick={() => setActiveTab('suppliers')}
-          >
-            Поставщики
-          </button>
-        ) : null}
-      </div>
+    if (!selectedIntegration.ready) {
+      return <IntegrationComingSoon name={selectedIntegration.name} />;
+    }
 
-      {activeTab === 'marketplaces' && (
+    if (activeTab === 'marketplaces') {
+      return (
         <MarketplacesTab
+          marketplaceType={selectedIntegration.id}
           organizations={organizations}
           selectedOrgId={selectedOrgId}
           onSelectOrg={(id) => setSelectedOrganizationId(id != null && id !== '' ? String(id) : null)}
@@ -210,21 +195,114 @@ export function Integrations() {
           onTest={handleTest}
           onSaveLegacy={handleSaveMarketplace}
         />
-      )}
+      );
+    }
 
-      {activeTab === 'suppliers' && (
+    if (activeTab === 'suppliers') {
+      return (
         <SuppliersTab
+          supplierType={selectedIntegration.id}
           configs={configs.suppliers}
           onSave={handleSaveSupplier}
           onTest={handleTest}
         />
+      );
+    }
+
+    return <IntegrationComingSoon name={selectedIntegration.name} />;
+  };
+
+  return (
+    <div className="card">
+      <h1 className="title">Интеграции</h1>
+      <p className="subtitle">
+        Настройка подключений к маркетплейсам
+        {supplierSyncEnabled ? ', поставщикам' : ''}
+        {' и другим сервисам'}
+      </p>
+      <p className="subtitle small text-muted mb-3" style={{ marginTop: '-0.25rem' }}>
+        <a
+          href="/api/help/marketplace-product-identifiers"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Справочник: идентификаторы товара на маркетплейсах
+        </a>
+        {' — открывается в браузере (новая вкладка).'}
+      </p>
+
+      {error && (
+        <div className="error" style={{ marginBottom: '16px' }}>
+          {error}
+        </div>
       )}
+
+      <div className="tabs">
+        {visibleTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => handleSelectTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {selectedIntegration ? (
+        <div className="integration-detail">
+          <div className="integration-detail__header">
+            <button
+              type="button"
+              className="integration-back-btn"
+              onClick={() => setSelectedIntegrationId(null)}
+            >
+              ← Назад к списку
+            </button>
+            <div className="integration-detail__title">
+              <IntegrationLogo type={selectedIntegration.id} size={40} />
+              <h2>{selectedIntegration.name}</h2>
+              {!selectedIntegration.ready && (
+                <span className="integration-badge integration-badge--soon">В разработке</span>
+              )}
+            </div>
+          </div>
+          {renderIntegrationDetail()}
+        </div>
+      ) : (
+        <div className="integration-cards">
+          {catalogItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="integration-card"
+              onClick={() => setSelectedIntegrationId(item.id)}
+            >
+              <IntegrationLogo type={item.id} size={56} />
+              <span className="integration-card__name">{item.name}</span>
+              {!item.ready && (
+                <span className="integration-badge integration-badge--soon">В разработке</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IntegrationComingSoon({ name }) {
+  return (
+    <div className="integration-coming-soon">
+      <p>Интеграция «{name}» в разработке. Настройка станет доступна позже.</p>
     </div>
   );
 }
 
 // Компонент для вкладки маркетплейсов (по организациям: Озон/Яндекс — несколько кабинетов, ВБ — один)
 function MarketplacesTab({
+  marketplaceType = 'ozon',
   organizations,
   selectedOrgId,
   onSelectOrg,
@@ -235,9 +313,9 @@ function MarketplacesTab({
   onTest,
   onSaveLegacy
 }) {
-  const [activeMarketplace, setActiveMarketplace] = useState('ozon');
   const [addingCabinetType, setAddingCabinetType] = useState(null);
   const onSave = onSaveLegacy || (() => {});
+  const activeMarketplace = marketplaceType;
 
   const MarketplaceForm = ({ type, config, onSave: onSaveForm, onTest: onTestForm, cabinetId, onDelete }) => {
     const [formData, setFormData] = useState(config || {});
@@ -1370,29 +1448,7 @@ function MarketplacesTab({
       ) : cabinetsLoading ? (
         <div style={{ padding: '24px', textAlign: 'center' }}>Загрузка кабинетов...</div>
       ) : (
-        <>
-          <div className="marketplace-tabs">
-            <button
-              className={`marketplace-tab-btn ${activeMarketplace === 'ozon' ? 'active' : ''}`}
-              onClick={() => setActiveMarketplace('ozon')}
-            >
-              Ozon {ozonCabinets.length > 0 && `(${ozonCabinets.length})`}
-            </button>
-            <button
-              className={`marketplace-tab-btn ${activeMarketplace === 'wildberries' ? 'active' : ''}`}
-              onClick={() => setActiveMarketplace('wildberries')}
-            >
-              Wildberries {wbCabinets.length > 0 && `(${wbCabinets.length})`}
-            </button>
-            <button
-              className={`marketplace-tab-btn ${activeMarketplace === 'yandex' ? 'active' : ''}`}
-              onClick={() => setActiveMarketplace('yandex')}
-            >
-              Yandex Market {ymCabinets.length > 0 && `(${ymCabinets.length})`}
-            </button>
-          </div>
-
-          <div className="marketplace-content">
+        <div className="marketplace-content">
             {activeMarketplace === 'ozon' && (
               <div className="cabinets-section">
                 {ozonCabinets.map((cab) => (
@@ -1496,16 +1552,15 @@ function MarketplacesTab({
                 <Button type="button" variant="secondary" onClick={() => setAddingCabinetType('yandex')} disabled={addingCabinetType !== null} style={{ marginTop: '8px' }}>+ Добавить кабинет Яндекс.Маркет</Button>
               </div>
             )}
-          </div>
-        </>
+        </div>
       )}
     </div>
   );
 }
 
 // Компонент для вкладки поставщиков
-function SuppliersTab({ configs, onSave, onTest }) {
-  const [activeSupplier, setActiveSupplier] = useState('mikado');
+function SuppliersTab({ supplierType = 'mikado', configs, onSave, onTest }) {
+  const activeSupplier = supplierType;
 
   const SupplierForm = ({ type, config, onSave, onTest }) => {
     const [formData, setFormData] = useState(config || {});
@@ -1637,21 +1692,6 @@ function SuppliersTab({ configs, onSave, onTest }) {
 
   return (
     <div className="suppliers-tab">
-      <div className="supplier-tabs">
-        <button
-          className={`supplier-tab-btn ${activeSupplier === 'mikado' ? 'active' : ''}`}
-          onClick={() => setActiveSupplier('mikado')}
-        >
-          Mikado
-        </button>
-        <button
-          className={`supplier-tab-btn ${activeSupplier === 'moskvorechie' ? 'active' : ''}`}
-          onClick={() => setActiveSupplier('moskvorechie')}
-        >
-          Moskvorechie
-        </button>
-      </div>
-
       <div className="supplier-content">
         {activeSupplier === 'mikado' && (
           <SupplierForm
