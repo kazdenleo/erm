@@ -38,6 +38,7 @@ import {
 } from '../../utils/displayUnits.js';
 import {
   WB_ITEM_DIM_CHARC,
+  WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
 } from '../../utils/marketplaceDimensions.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
@@ -1300,6 +1301,60 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     });
   }
 
+  // Если связь dimensions↔МП вкл. и правили «Основное» — обновим draft из Main
+  // (иначе UI мог показать зеркало, а draft остался старым, напр. 12×6 см на WB).
+  {
+    const links = normalizeMpFieldLinks(current.mp_field_links);
+    const mainPackTouched =
+      !eq(original.length, current.length) ||
+      !eq(original.width, current.width) ||
+      !eq(original.height, current.height) ||
+      !eq(original.weight, current.weight);
+    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'wb') && !wbPackChanged) {
+      const prevDraft = parseDraftBaseline(
+        original._wbDraftBaseline ?? original._productRef?.wb_draft
+      );
+      const dimensions = buildPositiveDimsObject(
+        lengthDisplayToMm(current.length, lengthUnit),
+        lengthDisplayToMm(current.width, lengthUnit),
+        lengthDisplayToMm(current.height, lengthUnit),
+        weightDisplayToG(current.weight, weightUnit)
+      );
+      touch('wb_draft', { ...prevDraft, dimensions });
+    }
+    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'ozon') && !ozPackChanged) {
+      const prevDraft = parseDraftBaseline(
+        original._ozonDraftBaseline ?? original._productRef?.ozon_draft
+      );
+      const dimensions = buildPositiveDimsObject(
+        lengthDisplayToMm(current.length, lengthUnit),
+        lengthDisplayToMm(current.width, lengthUnit),
+        lengthDisplayToMm(current.height, lengthUnit),
+        weightDisplayToG(current.weight, weightUnit)
+      );
+      touch('ozon_draft', { ...prevDraft, dimensions });
+    }
+    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'ym') && !ymPackChanged) {
+      const prevDraft = parseDraftBaseline(original._ymDraftBaseline ?? original._productRef?.ym_draft);
+      const L = lengthDisplayToCm(current.length, lengthUnit);
+      const W = lengthDisplayToCm(current.width, lengthUnit);
+      const H = lengthDisplayToCm(current.height, lengthUnit);
+      const g = weightDisplayToG(current.weight, weightUnit);
+      const kg = g != null ? gramsToKg(g) : null;
+      const weightDimensions = {};
+      if (L != null && L > 0) weightDimensions.length = L;
+      if (W != null && W > 0) weightDimensions.width = W;
+      if (H != null && H > 0) weightDimensions.height = H;
+      if (kg != null && kg > 0) weightDimensions.weight = kg;
+      const erpDims = ymWeightDimensionsToErp(weightDimensions);
+      touch('ym_draft', {
+        ...prevDraft,
+        weightDimensions,
+        ...(erpDims ? { dimensions: erpDims } : { dimensions: {} }),
+      });
+    }
+  }
+
   if (!eq(original.weight, current.weight)) {
     touch('weight', weightDisplayToG(current.weight, weightUnit));
   }
@@ -1372,6 +1427,37 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     if (cmW != null && Number(cmW) > 0) nextWb[WB_ITEM_DIM_CHARC.width] = String(cmW);
     if (cmH != null && Number(cmH) > 0) nextWb[WB_ITEM_DIM_CHARC.height] = String(cmH);
     touch('wb_attributes', nextWb);
+  }
+
+  // WB характеристики упаковки (см) — иначе push/кабинет оставляют старые 90849/90745/90846
+  {
+    const links = normalizeMpFieldLinks(current.mp_field_links);
+    const wbPackSource =
+      wbPackChanged || (isMpFieldLinked(links, 'dimensions', 'wb') && (
+        !eq(original.length, current.length) ||
+        !eq(original.width, current.width) ||
+        !eq(original.height, current.height)
+      ));
+    if (wbPackSource) {
+      const prevWb = {
+        ...normalizeJsonAttrs(original._productRef?.wb_attributes),
+        ...normalizeJsonAttrs(original._mpAttrBaseline?.wb),
+        ...(payload.wb_attributes && typeof payload.wb_attributes === 'object'
+          ? payload.wb_attributes
+          : {}),
+      };
+      const nextWb = sanitizeMpAttrsForApi(prevWb);
+      const srcL = wbPackChanged ? current.wb_pack_length : current.length;
+      const srcW = wbPackChanged ? current.wb_pack_width : current.width;
+      const srcH = wbPackChanged ? current.wb_pack_height : current.height;
+      const cmL = lengthDisplayToCm(srcL, lengthUnit);
+      const cmW = lengthDisplayToCm(srcW, lengthUnit);
+      const cmH = lengthDisplayToCm(srcH, lengthUnit);
+      if (cmL != null && Number(cmL) > 0) nextWb[WB_PACK_DIM_CHARC.length] = String(cmL);
+      if (cmW != null && Number(cmW) > 0) nextWb[WB_PACK_DIM_CHARC.width] = String(cmW);
+      if (cmH != null && Number(cmH) > 0) nextWb[WB_PACK_DIM_CHARC.height] = String(cmH);
+      touch('wb_attributes', nextWb);
+    }
   }
 
   // Не даём объектам/массивам из ячеек атрибутов уронить весь PUT (габариты тоже откатятся)
@@ -2370,12 +2456,36 @@ export function ProductsBulkEdit() {
       }
     }
     const productIds = [...ids];
+    let forceResendAllOnPage = false;
     if (productIds.length === 0) {
-      setPushMpMessage(
-        'Нет изменённых товаров для отправки. Отредактируйте карточки в таблице (и сохраните), затем повторите.'
+      const pageIds = rows.map((r) => str(r.id)).filter(Boolean);
+      if (pageIds.length === 0) {
+        setPushMpMessage('Нет товаров на странице для отправки.');
+        setPushOfferOpen(false);
+        return;
+      }
+      const mpLabelEmpty =
+        marketplaces === 'all'
+          ? 'все маркетплейсы'
+          : marketplaces === 'ozon'
+            ? 'Ozon'
+            : marketplaces === 'wb'
+              ? 'Wildberries'
+              : 'Яндекс.Маркет';
+      const forceOk = window.confirm(
+        `Нет изменений в этой сессии.\n\n` +
+          `Отправить на ${mpLabelEmpty} все товары на странице (${pageIds.length}) повторно?\n` +
+          `Нужно, если кабинет МП ещё показывает старые габариты/поля после прошлой отправки.`
       );
-      setPushOfferOpen(false);
-      return;
+      if (!forceOk) {
+        setPushMpMessage(
+          'Нет изменённых товаров для отправки. Отредактируйте карточки в таблице (и сохраните), затем повторите — или подтвердите повторную отправку всех на странице.'
+        );
+        setPushOfferOpen(false);
+        return;
+      }
+      productIds.push(...pageIds);
+      forceResendAllOnPage = true;
     }
     const mpLabel =
       marketplaces === 'all'
@@ -2393,7 +2503,7 @@ export function ProductsBulkEdit() {
         Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
       );
     });
-    if (!skipConfirm) {
+    if (!skipConfirm && !forceResendAllOnPage) {
       const okConfirm = window.confirm(
         `Отправить на ${mpLabel} только изменённые карточки: ${productIds.length} из ${rows.length} на странице?\n\n` +
           (dirtyAmong.length > 0

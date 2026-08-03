@@ -24,6 +24,7 @@ import {
   getProductImageUrlsForMarketplace,
   getProductImageUrlsForMarketplacePush,
 } from './marketplaceProductImages.service.js';
+import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -936,23 +937,43 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   }
 
   // ERP: мм / г; WB Content API: габариты в см (целые), weightBrutto в килограммах (до 3 знаков).
+  // Важно: кабинет WB часто показывает charc 90849/90745/90846 — синхронизируем их с card.dimensions,
+  // иначе в characteristics остаются старые см после pull и кабинет «не обновляется».
   if (shouldPushDimensions(product, 'wb')) {
     const dims = resolveDimensionsMmForPush(product, 'wb') || {};
     const L = Number(dims.length);
     const W = Number(dims.width);
     const H = Number(dims.height);
     if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
+      const lengthCm = mmToCm(L);
+      const widthCm = mmToCm(W);
+      const heightCm = mmToCm(H);
       const weightKg = dims.weight != null && Number(dims.weight) > 0 ? gramsToKg(dims.weight) : null;
       card.dimensions = {
-        length: mmToCm(L),
-        width: mmToCm(W),
-        height: mmToCm(H),
+        length: lengthCm,
+        width: widthCm,
+        height: heightCm,
         ...(weightKg != null
           ? { weightBrutto: weightKg }
           : existing?.dimensions?.weightBrutto != null
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
             : {})
       };
+      const packCharcById = {
+        [Number(WB_PACK_DIM_CHARC.length)]: String(lengthCm),
+        [Number(WB_PACK_DIM_CHARC.width)]: String(widthCm),
+        [Number(WB_PACK_DIM_CHARC.height)]: String(heightCm),
+      };
+      const packIds = new Set(Object.keys(packCharcById).map(Number));
+      const baseChars = Array.isArray(card.characteristics) ? card.characteristics : [];
+      const withoutPack = baseChars.filter((c) => !packIds.has(Number(c.id)));
+      card.characteristics = [
+        ...withoutPack,
+        ...Object.entries(packCharcById).map(([id, value]) => ({
+          id: Number(id),
+          value: String(value),
+        })),
+      ];
     } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
       card.dimensions = existing.dimensions;
     }
