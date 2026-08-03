@@ -112,17 +112,19 @@ function describeCardFieldChanges(product, updates) {
   return [...new Set(labels)];
 }
 
-async function notifyCardFieldChanges(product, mp, changedLabels) {
+async function notifyCardFieldChanges(product, mp, changedLabels, opts = {}) {
   if (!Array.isArray(changedLabels) || changedLabels.length === 0) return;
   const sku = trimStr(product?.sku) || `#${product?.id}`;
   const name = trimStr(product?.name);
   const mpTitle = MP_TITLE[mp] || String(mp || '').toUpperCase();
   const fieldsText = changedLabels.join(', ');
+  const profileId = opts.profileId ?? product?.profile_id ?? product?.profileId ?? null;
   await addRuntimeNotification({
     type: 'mp_card_field_changed',
     severity: 'warn',
     source: 'marketplace_card_pull',
     marketplace: mp,
+    profileId,
     title: `Изменения карточки на ${mpTitle}`,
     message:
       `${sku}${name ? ` «${name.slice(0, 80)}»` : ''}: обновились поля (${fieldsText}).`,
@@ -131,6 +133,7 @@ async function notifyCardFieldChanges(product, mp, changedLabels) {
       marketplace: mp,
       fields: changedLabels,
       url: `/products?open=${product.id}`,
+      ...(profileId != null ? { profile_id: Number(profileId) } : {}),
     },
   });
 }
@@ -942,7 +945,9 @@ async function pullOneMarketplace(product, mp, opts = {}) {
   }
 
   if (opts.notifyChanges && changedLabels.length > 0) {
-    await notifyCardFieldChanges(product, mp, changedLabels);
+    await notifyCardFieldChanges(product, mp, changedLabels, {
+      profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
+    });
   }
 
   const profileIdForTask = opts.profileId ?? product.profile_id ?? product.profileId ?? null;

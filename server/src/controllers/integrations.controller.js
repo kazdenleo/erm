@@ -381,7 +381,14 @@ class IntegrationsController {
    */
   async clearRuntimeNotifications(req, res, next) {
     try {
-      const out = await clearRuntimeNotifications();
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      // tid === null — супер-админ без профиля: полная очистка; иначе только свой аккаунт
+      const out = await clearRuntimeNotifications(
+        tid == null ? {} : { profileId: tid }
+      );
       if (!out?.ok) {
         return res.status(500).json({ ok: false, message: out?.error || 'Не удалось очистить уведомления' });
       }

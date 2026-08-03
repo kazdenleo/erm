@@ -690,7 +690,10 @@ class IntegrationsService {
 
     // Runtime notifications (фоновые задачи, ошибки интеграций и т.д.)
     try {
-      const runtime = await (await import('../utils/runtime-notifications.js')).getRuntimeNotifications();
+      const { getRuntimeNotifications, isRuntimeNotificationForProfile } = await import(
+        '../utils/runtime-notifications.js'
+      );
+      const runtime = await getRuntimeNotifications();
       if (Array.isArray(runtime) && runtime.length) {
         // Не показываем "залипшие" старые ошибки по маркетплейсам, если последняя проверка токена успешна.
         // Иначе после обновления ключа/токена пользователь будет видеть исторические ошибки как будто они актуальны.
@@ -711,6 +714,7 @@ class IntegrationsService {
           return false;
         };
         const isForThisUser = (n) => {
+          if (!isRuntimeNotificationForProfile(n, profileId)) return false;
           const target = n?.meta?.target_user_id ?? n?.meta?.targetUserId ?? null;
           if (target == null || target === '') return true;
           if (userId == null || Number.isNaN(userId)) return false;
