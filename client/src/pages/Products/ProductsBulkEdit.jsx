@@ -418,9 +418,9 @@ const COLUMNS = [
   { key: 'product_weight', label: 'Основное · Вес товара', title: 'Основное · Вес товара', input: 'number', minW: 110, dimKind: 'weight' },
   /* габариты упаковки — связь с МП через тумблеры OZ/WB/ЯМ в заголовке */
   { key: 'length', label: 'Основное · Длина упаковки', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'width', label: 'Основное · Ширина упаковки', title: 'Основное · Ширина упаковки', input: 'number', minW: 120, dimKind: 'length' },
-  { key: 'height', label: 'Основное · Высота упаковки', title: 'Основное · Высота упаковки', input: 'number', minW: 120, dimKind: 'length' },
-  { key: 'weight', label: 'Основное · Вес с упаковкой', title: 'Основное · Вес с упаковкой', input: 'number', minW: 120, dimKind: 'weight' },
+  { key: 'width', label: 'Основное · Ширина упаковки', title: 'Основное · Ширина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'height', label: 'Основное · Высота упаковки', title: 'Основное · Высота упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'weight', label: 'Основное · Вес с упаковкой', title: 'Основное · Вес с упаковкой. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'weight', linkFieldKey: 'dimensions' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
