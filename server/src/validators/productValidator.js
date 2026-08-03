@@ -83,6 +83,15 @@ export const createProductSchema = z.object({
   length: optionalNum(),
   width: optionalNum(),
   height: optionalNum(),
+  /** Габариты самого товара (не упаковки), мм / г */
+  product_length: optionalNum(),
+  product_width: optionalNum(),
+  product_height: optionalNum(),
+  product_weight: optionalNum(),
+  productLength: optionalNum(),
+  productWidth: optionalNum(),
+  productHeight: optionalNum(),
+  productWeight: optionalNum(),
   barcodes: z.array(
     z.union([
       z.string(),
@@ -137,8 +146,41 @@ export const createProductSchema = z.object({
       ])
     )
     .optional(),
-  wb_attributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-  ym_attributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  // Как ozon: допускаем объекты (иначе bulk PUT с габаритами товара падает целиком)
+  wb_attributes: z
+    .record(
+      z.string(),
+      z.union([
+        z.string(),
+        z.number(),
+        z.boolean(),
+        z
+          .object({
+            value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+            dictionary_value_id: z.union([z.string(), z.number()]).optional(),
+            id: z.union([z.string(), z.number()]).optional(),
+          })
+          .passthrough(),
+      ])
+    )
+    .optional(),
+  ym_attributes: z
+    .record(
+      z.string(),
+      z.union([
+        z.string(),
+        z.number(),
+        z.boolean(),
+        z
+          .object({
+            value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+            dictionary_value_id: z.union([z.string(), z.number()]).optional(),
+            id: z.union([z.string(), z.number()]).optional(),
+          })
+          .passthrough(),
+      ])
+    )
+    .optional(),
   ozon_draft: z.any().optional().nullable(),
   wb_draft: z.any().optional().nullable(),
   ym_draft: z.any().optional().nullable(),

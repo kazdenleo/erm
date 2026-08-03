@@ -412,15 +412,15 @@ const COLUMNS = [
   /* описание */
   { key: 'description', label: 'Описание', input: 'textarea', minW: 220, linkFieldKey: 'description' },
   /* габариты товара (без упаковки) — вкладка «Основное» */
-  { key: 'product_length', label: 'Основное · Длина товара', title: 'Основное · Длина товара', input: 'number', minW: 110, dimKind: 'length' },
-  { key: 'product_width', label: 'Основное · Ширина товара', title: 'Основное · Ширина товара', input: 'number', minW: 110, dimKind: 'length' },
-  { key: 'product_height', label: 'Основное · Высота товара', title: 'Основное · Высота товара', input: 'number', minW: 110, dimKind: 'length' },
-  { key: 'product_weight', label: 'Основное · Вес товара', title: 'Основное · Вес товара', input: 'number', minW: 110, dimKind: 'weight' },
+  { key: 'product_length', label: 'Длина товара', title: 'Основное · Длина товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_width', label: 'Ширина товара', title: 'Основное · Ширина товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_height', label: 'Высота товара', title: 'Основное · Высота товара', input: 'number', minW: 110, dimKind: 'length' },
+  { key: 'product_weight', label: 'Вес товара', title: 'Основное · Вес товара', input: 'number', minW: 110, dimKind: 'weight' },
   /* габариты упаковки — связь с МП через тумблеры OZ/WB/ЯМ в заголовке */
-  { key: 'length', label: 'Основное · Длина упаковки', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'width', label: 'Основное · Ширина упаковки', title: 'Основное · Ширина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'height', label: 'Основное · Высота упаковки', title: 'Основное · Высота упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'weight', label: 'Основное · Вес с упаковкой', title: 'Основное · Вес с упаковкой. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'length', label: 'Длина упаковки', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'width', label: 'Ширина упаковки', title: 'Основное · Ширина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'height', label: 'Высота упаковки', title: 'Основное · Высота упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'weight', label: 'Вес с упаковкой', title: 'Основное · Вес с упаковкой. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 120, dimKind: 'weight', linkFieldKey: 'dimensions' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
@@ -436,41 +436,41 @@ const COLUMNS = [
   { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 200, mpBucket: 'ozon' },
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 100, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 100, mpBucket: 'ozon' },
-  { key: 'ozon_product_length', label: 'Ozon · Длина товара', title: 'Ozon · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_product_width', label: 'Ozon · Ширина товара', title: 'Ozon · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_product_height', label: 'Ozon · Высота товара', title: 'Ozon · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_product_weight', label: 'Ozon · Вес товара', title: 'Ozon · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
-  { key: 'ozon_pack_length', label: 'Ozon · Длина упаковки', title: 'Ozon · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_width', label: 'Ozon · Ширина упаковки', title: 'Ozon · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_height', label: 'Ozon · Высота упаковки', title: 'Ozon · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_weight', label: 'Ozon · Вес с упаковкой', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
+  { key: 'ozon_product_length', label: 'Длина товара', title: 'Ozon · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_width', label: 'Ширина товара', title: 'Ozon · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_height', label: 'Высота товара', title: 'Ozon · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_product_weight', label: 'Вес товара', title: 'Ozon · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
+  { key: 'ozon_pack_length', label: 'Длина упаковки', title: 'Ozon · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_width', label: 'Ширина упаковки', title: 'Ozon · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_height', label: 'Высота упаковки', title: 'Ozon · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_weight', label: 'Вес с упаковкой', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ozon', dimKind: 'weight' },
   { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 100, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 160, mpBucket: 'wb' },
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 200, mpBucket: 'wb' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 90, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Артикул продавца', title: 'Wildberries · Артикул продавца', input: 'text', minW: 110, mpBucket: 'wb' },
-  { key: 'wb_product_length', label: 'WB · Длина товара', title: 'Wildberries · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_product_width', label: 'WB · Ширина товара', title: 'Wildberries · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_product_height', label: 'WB · Высота товара', title: 'Wildberries · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_product_weight', label: 'WB · Вес товара', title: 'Wildberries · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
-  { key: 'wb_pack_length', label: 'WB · Длина упаковки', title: 'Wildberries · Длина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_width', label: 'WB · Ширина упаковки', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_height', label: 'WB · Высота упаковки', title: 'Wildberries · Высота упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_weight', label: 'WB · Вес с упаковкой', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
+  { key: 'wb_product_length', label: 'Длина товара', title: 'Wildberries · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_width', label: 'Ширина товара', title: 'Wildberries · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_height', label: 'Высота товара', title: 'Wildberries · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_product_weight', label: 'Вес товара', title: 'Wildberries · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
+  { key: 'wb_pack_length', label: 'Длина упаковки', title: 'Wildberries · Длина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_width', label: 'Ширина упаковки', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_height', label: 'Высота упаковки', title: 'Wildberries · Высота упаковки', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_weight', label: 'Вес с упаковкой', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'wb', dimKind: 'weight' },
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 100, mpBucket: 'wb' },
   /* ——— Яндекс.Маркет ——— */
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 160, mpBucket: 'ym' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 200, mpBucket: 'ym' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 100, mpBucket: 'ym' },
-  { key: 'ym_product_length', label: 'ЯМ · Длина товара', title: 'Яндекс.Маркет · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_width', label: 'ЯМ · Ширина товара', title: 'Яндекс.Маркет · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_height', label: 'ЯМ · Высота товара', title: 'Яндекс.Маркет · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_weight', label: 'ЯМ · Вес товара', title: 'Яндекс.Маркет · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
-  { key: 'ym_pack_length', label: 'ЯМ · Длина упаковки', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_width', label: 'ЯМ · Ширина упаковки', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_height', label: 'ЯМ · Высота упаковки', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_weight', label: 'ЯМ · Вес с упаковкой', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
+  { key: 'ym_product_length', label: 'Длина товара', title: 'Яндекс.Маркет · Длина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_width', label: 'Ширина товара', title: 'Яндекс.Маркет · Ширина товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_height', label: 'Высота товара', title: 'Яндекс.Маркет · Высота товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_weight', label: 'Вес товара', title: 'Яндекс.Маркет · Вес товара (= Основное)', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
+  { key: 'ym_pack_length', label: 'Длина упаковки', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_width', label: 'Ширина упаковки', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_height', label: 'Высота упаковки', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_weight', label: 'Вес с упаковкой', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 110, mpBucket: 'ym', dimKind: 'weight' },
 ];
 
 function withDisplayUnitLabels(cols, lengthUnit, weightUnit) {
@@ -1364,7 +1364,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         ? payload.wb_attributes
         : {}),
     };
-    const nextWb = { ...prevWb };
+    const nextWb = sanitizeMpAttrsForApi(prevWb);
     const cmL = lengthDisplayToCm(current.product_length, lengthUnit);
     const cmW = lengthDisplayToCm(current.product_width, lengthUnit);
     const cmH = lengthDisplayToCm(current.product_height, lengthUnit);
@@ -1374,7 +1374,72 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     touch('wb_attributes', nextWb);
   }
 
+  // Не даём объектам/массивам из ячеек атрибутов уронить весь PUT (габариты тоже откатятся)
+  for (const key of ['ozon_attributes', 'wb_attributes', 'ym_attributes']) {
+    if (payload[key] && typeof payload[key] === 'object') {
+      payload[key] = sanitizeMpAttrsForApi(payload[key]);
+    }
+  }
+
   return payload;
+}
+
+/** Скаляры для JSON-атрибутов МП — Zod на PUT не принимает вложенные объекты в wb/ym. */
+function sanitizeMpAttrsForApi(obj) {
+  const out = {};
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out[k] = v;
+      continue;
+    }
+    if (typeof v === 'object') {
+      const text = stringifyMpAttrValue(v);
+      if (text !== '') out[k] = text;
+    }
+  }
+  return out;
+}
+
+/**
+ * После PUT: если в ответе пустые габариты, а в payload/текущей строке они были — оставляем введённые.
+ */
+function preserveBulkDimFieldsAfterSave(nextRow, currentRow, payload, lengthUnit, weightUnit) {
+  const row = { ...nextRow };
+  const fillProduct = (apiKey, rowKey, toDisplay) => {
+    if (!Object.prototype.hasOwnProperty.call(payload, apiKey)) return;
+    const cur = str(row[rowKey]).trim();
+    if (cur !== '') return;
+    const fromPayload = toDisplay(payload[apiKey]);
+    const fromCurrent = str(currentRow?.[rowKey]).trim();
+    const v = fromPayload !== '' ? fromPayload : fromCurrent;
+    if (v === '') return;
+    const base = productDimBaseKey(rowKey) || rowKey;
+    if (PRODUCT_DIM_ALIAS[base]) {
+      for (const alias of PRODUCT_DIM_ALIAS[base]) row[alias] = v;
+    } else {
+      row[rowKey] = v;
+    }
+  };
+  fillProduct('product_length', 'product_length', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillProduct('product_width', 'product_width', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillProduct('product_height', 'product_height', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillProduct('product_weight', 'product_weight', (n) => weightGToDisplay(n, weightUnit));
+
+  const fillPack = (apiKey, rowKey, toDisplay) => {
+    if (!Object.prototype.hasOwnProperty.call(payload, apiKey)) return;
+    if (str(row[rowKey]).trim() !== '') return;
+    const fromPayload = toDisplay(payload[apiKey]);
+    const fromCurrent = str(currentRow?.[rowKey]).trim();
+    const v = fromPayload !== '' ? fromPayload : fromCurrent;
+    if (v !== '') row[rowKey] = v;
+  };
+  fillPack('length', 'length', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillPack('width', 'width', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillPack('height', 'height', (n) => lengthMmToDisplay(n, lengthUnit));
+  fillPack('weight', 'weight', (n) => weightGToDisplay(n, weightUnit));
+  return row;
 }
 
 function cloneRow(r) {
@@ -2233,7 +2298,9 @@ export function ProductsBulkEdit() {
         try {
           const wrap = await productsApi.update(r.id, payload);
           const u = wrap?.data !== undefined ? wrap.data : wrap;
-          const nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit);
+          let nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit);
+          // Если API по какой-то причине не вернул габариты — не затираем только что сохранённые значения в таблице
+          nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, payload, lengthUnit, weightUnit);
           setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
           setRows((list) => list.map((row) => (row.id === r.id ? { ...nextRow, _productRef: u } : row)));
           markChangedForPush(r.id);
