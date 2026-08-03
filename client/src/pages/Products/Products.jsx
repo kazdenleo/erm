@@ -948,6 +948,8 @@ export function Products() {
           categoryId: filterCategoryId,
           productType: filterProductType,
           search: listSearch,
+          linkedMp: [...filterLinkedMp],
+          unlinkedMp: [...filterUnlinkedMp],
         },
         selectedIds: [...selectedProductIds],
       },

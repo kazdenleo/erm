@@ -53,8 +53,32 @@ import {
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
+import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './ProductsBulkEdit.css';
 import './Products.css';
+
+/** Тумблеры фильтра связи с МП (как на странице «Товары»). */
+const MP_LINK_FILTER_TOGGLES = [
+  { code: 'ozon', label: 'OZ', name: 'Ozon', color: '#005bff' },
+  { code: 'wb', label: 'WB', name: 'Wildberries', color: '#cb11ab' },
+  { code: 'ym', label: 'ЯМ', name: 'Яндекс.Маркет', color: '#fc3f1d' },
+];
+
+function mpFilterSetFromState(raw) {
+  if (raw instanceof Set) return new Set([...raw].map((x) => String(x).toLowerCase()));
+  if (Array.isArray(raw)) {
+    return new Set(raw.map((x) => String(x).trim().toLowerCase()).filter(Boolean));
+  }
+  if (raw != null && String(raw).trim() !== '') {
+    return new Set(
+      String(raw)
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    );
+  }
+  return new Set();
+}
 
 /** Алиасы габаритов товара (ERP + зеркала во вкладках МП) — одно значение на все. */
 const PRODUCT_DIM_ALIAS = {
@@ -1665,6 +1689,12 @@ export function ProductsBulkEdit() {
     const f = location.state?.filters;
     return f?.productType != null && String(f.productType).trim() !== '' ? String(f.productType).trim() : '';
   });
+  const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() =>
+    mpFilterSetFromState(location.state?.filters?.unlinkedMp)
+  );
+  const [filterLinkedMp, setFilterLinkedMp] = useState(() =>
+    mpFilterSetFromState(location.state?.filters?.linkedMp)
+  );
   const [listSearch, setListSearch] = useState(() => {
     const f = location.state?.filters;
     return f?.search != null ? String(f.search) : '';
@@ -1951,7 +1981,9 @@ export function ProductsBulkEdit() {
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
     (filterBrandId ? 1 : 0) +
-    (filterProductType ? 1 : 0);
+    (filterProductType ? 1 : 0) +
+    filterUnlinkedMp.size +
+    filterLinkedMp.size;
 
   useEffect(() => {
     return () => {
@@ -2088,6 +2120,8 @@ export function ProductsBulkEdit() {
     setFilterOrganizationId('');
     setFilterBrandId('');
     setFilterProductType('');
+    setFilterUnlinkedMp(new Set());
+    setFilterLinkedMp(new Set());
     setListSearch('');
     setCurrentPage(1);
   };
@@ -2104,9 +2138,14 @@ export function ProductsBulkEdit() {
       const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
       const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
       const pt = partial.productType !== undefined ? partial.productType : filterProductType;
+      const unlinked =
+        partial.unlinkedMp !== undefined ? partial.unlinkedMp : filterUnlinkedMp;
+      const linked = partial.linkedMp !== undefined ? partial.linkedMp : filterLinkedMp;
       const searchRaw = partial.search !== undefined ? partial.search : listSearch;
       const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
       const ptTrim = typeof pt === 'string' ? pt.trim() : '';
+      const unlinkedArr = [...mpFilterSetFromState(unlinked)];
+      const linkedArr = [...mpFilterSetFromState(linked)];
       const page = partial.page !== undefined ? Number(partial.page) : currentPageRef.current;
       const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSizeRef.current;
       const limit = BULK_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 100;
@@ -2119,6 +2158,8 @@ export function ProductsBulkEdit() {
         categoryId: cat || undefined,
         productType: ptTrim || undefined,
         search: search || undefined,
+        unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
+        linkedMp: linkedArr.length ? linkedArr : undefined,
         cacheBust: true,
       };
 
@@ -2228,6 +2269,8 @@ export function ProductsBulkEdit() {
     filterBrandId,
     filterCategoryId,
     filterProductType,
+    filterUnlinkedMp,
+    filterLinkedMp,
     listSearch,
     appliedSelectedIds,
     lengthUnit,
@@ -2274,6 +2317,36 @@ export function ProductsBulkEdit() {
     });
   };
 
+  const toggleUnlinkedMpFilter = (mpCode) => {
+    requestLeaveGuard(() => {
+      const code = String(mpCode || '').toLowerCase();
+      const nextUnlinked = new Set(filterUnlinkedMp);
+      if (nextUnlinked.has(code)) nextUnlinked.delete(code);
+      else nextUnlinked.add(code);
+      const nextLinked = new Set(filterLinkedMp);
+      nextLinked.delete(code);
+      setFilterUnlinkedMp(nextUnlinked);
+      setFilterLinkedMp(nextLinked);
+      setCurrentPage(1);
+      void loadProducts({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
+    });
+  };
+
+  const toggleLinkedMpFilter = (mpCode) => {
+    requestLeaveGuard(() => {
+      const code = String(mpCode || '').toLowerCase();
+      const nextLinked = new Set(filterLinkedMp);
+      if (nextLinked.has(code)) nextLinked.delete(code);
+      else nextLinked.add(code);
+      const nextUnlinked = new Set(filterUnlinkedMp);
+      nextUnlinked.delete(code);
+      setFilterLinkedMp(nextLinked);
+      setFilterUnlinkedMp(nextUnlinked);
+      setCurrentPage(1);
+      void loadProducts({ linkedMp: nextLinked, unlinkedMp: nextUnlinked, page: 1 });
+    });
+  };
+
   const handleListSearchChange = (e) => {
     const v = e.target.value;
     setListSearch(v);
@@ -2293,6 +2366,8 @@ export function ProductsBulkEdit() {
         organizationId: '',
         brandId: '',
         productType: '',
+        unlinkedMp: [],
+        linkedMp: [],
         search: '',
         page: 1,
       });
@@ -2973,7 +3048,7 @@ export function ProductsBulkEdit() {
                         className="btn-shadow"
                         onClick={() => setFiltersOpen((o) => !o)}
                         aria-expanded={filtersOpen}
-                        title="Организация, бренд, тип товара"
+                        title="Организация, бренд, тип, связь с МП"
                       >
                         {filtersOpen ? '▼ Фильтры' : '▶ Фильтры'}
                         {activeFiltersCount > 0 ? (
@@ -2984,8 +3059,8 @@ export function ProductsBulkEdit() {
                   </div>
                   {filtersOpen ? (
                     <div className="products-filters-panel">
-                      <div className="row g-2 g-md-3 align-items-end">
-                        <div className="col-12 col-md-6 col-lg-4">
+                      <div className="products-bulk-filters-row">
+                        <div className="products-bulk-filter-item">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-org">
                             Организация
                           </label>
@@ -3003,7 +3078,7 @@ export function ProductsBulkEdit() {
                             ))}
                           </select>
                         </div>
-                        <div className="col-12 col-md-6 col-lg-4">
+                        <div className="products-bulk-filter-item">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-brand">
                             Бренд
                           </label>
@@ -3024,7 +3099,7 @@ export function ProductsBulkEdit() {
                               ))}
                           </select>
                         </div>
-                        <div className="col-12 col-md-6 col-lg-4">
+                        <div className="products-bulk-filter-item">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-type">
                             Тип товара
                           </label>
@@ -3038,6 +3113,60 @@ export function ProductsBulkEdit() {
                             <option value="product">Товар</option>
                             {kitsEnabled ? <option value="kit">Комплект</option> : null}
                           </select>
+                        </div>
+                        <div
+                          className="products-bulk-filter-item products-bulk-filter-item--mp"
+                          title="Показать товары со связью с маркетплейсом"
+                        >
+                          <span className="text-muted small d-block mb-1">Связан</span>
+                          <div className="d-flex align-items-center gap-1">
+                            {MP_LINK_FILTER_TOGGLES.map((mp) => {
+                              const active = filterLinkedMp.has(mp.code);
+                              return (
+                                <MarketplaceToggle
+                                  key={`linked-${mp.code}`}
+                                  active={active}
+                                  size={28}
+                                  color={mp.color}
+                                  title={
+                                    active
+                                      ? `Показаны товары со связью с ${mp.name}`
+                                      : `Показать товары со связью с ${mp.name}`
+                                  }
+                                  onToggle={() => toggleLinkedMpFilter(mp.code)}
+                                >
+                                  {mp.label}
+                                </MarketplaceToggle>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div
+                          className="products-bulk-filter-item products-bulk-filter-item--mp"
+                          title="Показать товары без связи с маркетплейсом"
+                        >
+                          <span className="text-muted small d-block mb-1">Не связан</span>
+                          <div className="d-flex align-items-center gap-1">
+                            {MP_LINK_FILTER_TOGGLES.map((mp) => {
+                              const active = filterUnlinkedMp.has(mp.code);
+                              return (
+                                <MarketplaceToggle
+                                  key={`unlinked-${mp.code}`}
+                                  active={active}
+                                  size={28}
+                                  color={mp.color}
+                                  title={
+                                    active
+                                      ? `Показаны товары без связи с ${mp.name}`
+                                      : `Показать товары без связи с ${mp.name}`
+                                  }
+                                  onToggle={() => toggleUnlinkedMpFilter(mp.code)}
+                                >
+                                  {mp.label}
+                                </MarketplaceToggle>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
                       {activeFiltersCount > 0 ? (
