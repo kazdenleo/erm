@@ -38,10 +38,34 @@ function formatDate(v) {
   }
 }
 
+function formatDateShort(v) {
+  if (!v) return '—';
+  try {
+    return new Date(v).toLocaleDateString('ru-RU');
+  } catch {
+    return String(v);
+  }
+}
+
+function dimItemsOf(task) {
+  return Array.isArray(task?.meta?.items) ? task.meta.items : [];
+}
+
+function taskPreviewMeta(task) {
+  const isDimensions = task.task_type === 'dimensions_check';
+  const dimItems = dimItemsOf(task);
+  if (isDimensions && dimItems.length > 0) {
+    const n = dimItems.length;
+    return `${n} ${n === 1 ? 'артикул' : n < 5 ? 'артикула' : 'артикулов'}`;
+  }
+  return null;
+}
+
 export function Tasks() {
   const { user, accountRole, isAccountAdmin } = useAuth();
   const { tasks, loading, error, createTask, completeTask, reassignTask } = useEmployeeTasks();
   const [statusFilter, setStatusFilter] = useState('open');
+  const [selectedId, setSelectedId] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -75,6 +99,18 @@ export function Tasks() {
     return tasks.filter((t) => t.status === statusFilter);
   }, [tasks, statusFilter]);
 
+  const selectedTask = useMemo(() => {
+    if (selectedId == null) return null;
+    return tasks.find((t) => Number(t.id) === Number(selectedId)) || null;
+  }, [tasks, selectedId]);
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    if (!tasks.some((t) => Number(t.id) === Number(selectedId))) {
+      setSelectedId(null);
+    }
+  }, [tasks, selectedId]);
+
   const openCreate = () => {
     setTitle('');
     setDescription('');
@@ -93,12 +129,13 @@ export function Tasks() {
     }
     try {
       setSaving(true);
-      await createTask({
+      const created = await createTask({
         title: title.trim(),
         description: description.trim() || null,
         assigneeId: assigneeId ? Number(assigneeId) : null,
       });
       setIsModalOpen(false);
+      if (created?.id != null) setSelectedId(created.id);
     } catch (err) {
       alert('Ошибка создания задачи: ' + (err.message || String(err)));
     } finally {
@@ -138,13 +175,170 @@ export function Tasks() {
     return <div className="error">Ошибка: {error}</div>;
   }
 
+  if (selectedTask) {
+    const task = selectedTask;
+    const isOpen = task.status === 'open';
+    const isAssignee =
+      task.assignee_id != null && Number(task.assignee_id) === Number(user?.id);
+    const dimItems = dimItemsOf(task);
+    const isDimensions = task.task_type === 'dimensions_check';
+    const productUrl =
+      task.meta?.url ||
+      (task.product_id ? `/products?open=${task.product_id}` : null) ||
+      (dimItems[0]?.product_id ? `/products?open=${dimItems[0].product_id}` : null);
+
+    return (
+      <div className="card">
+        <div className="tasks-detail-top">
+          <Button
+            size="small"
+            variant="secondary"
+            onClick={() => setSelectedId(null)}
+          >
+            ← К списку
+          </Button>
+        </div>
+
+        <h1 className="title">{task.title}</h1>
+        <div className="task-meta" style={{ marginTop: 8 }}>
+          <span className={`task-badge ${isOpen ? 'open' : 'done'}`}>
+            {isOpen ? 'Открыта' : 'Выполнена'}
+          </span>
+          {isDimensions && <span className="task-badge">Габариты</span>}
+          <span>Исполнитель: {taskAssigneeLabel(task)}</span>
+          <span>Создана: {formatDate(task.created_at)}</span>
+          {task.updated_at && task.updated_at !== task.created_at && (
+            <span>Обновлена: {formatDate(task.updated_at)}</span>
+          )}
+        </div>
+
+        {isDimensions && dimItems.length > 0 ? (
+          <div className="task-desc">
+            <div style={{ marginBottom: 8 }}>
+              После обновления с маркетплейсов изменились габариты/вес. Проверьте товары:
+            </div>
+            <ul className="task-sku-list">
+              {dimItems.map((it) => {
+                const sku = it.sku || `#${it.product_id}`;
+                const href = it.product_id ? `/products?open=${it.product_id}` : null;
+                const mps = Array.isArray(it.marketplaces)
+                  ? it.marketplaces
+                  : it.marketplace
+                    ? [it.marketplace]
+                    : [];
+                return (
+                  <li key={String(it.product_id)}>
+                    {href ? <Link to={href}>{sku}</Link> : sku}
+                    {it.name ? ` — ${it.name}` : ''}
+                    {mps.length
+                      ? ` [${mps.map((m) => String(m).toUpperCase()).join(', ')}]`
+                      : ''}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : (
+          task.description && <div className="task-desc">{task.description}</div>
+        )}
+
+        {!isDimensions && task.product_sku && (
+          <div className="task-meta" style={{ marginTop: 12 }}>
+            <span>
+              Товар:{' '}
+              {productUrl ? (
+                <Link to={productUrl}>{task.product_sku}</Link>
+              ) : (
+                task.product_sku
+              )}
+            </span>
+          </div>
+        )}
+
+        {isOpen && (
+          <div className="task-actions">
+            {(canManage || isAssignee) && (
+              <Button
+                size="small"
+                variant="success"
+                onClick={() => handleComplete(task)}
+              >
+                Выполнить
+              </Button>
+            )}
+            {canManage && (
+              <Button
+                size="small"
+                variant="secondary"
+                onClick={() => {
+                  setReassignFor(task);
+                  setReassignId(
+                    task.assignee_id != null ? String(task.assignee_id) : ''
+                  );
+                }}
+              >
+                Переадресовать
+              </Button>
+            )}
+            {!isDimensions && productUrl && (
+              <Link to={productUrl}>
+                <Button size="small" variant="secondary">
+                  Открыть товар
+                </Button>
+              </Link>
+            )}
+          </div>
+        )}
+
+        <Modal
+          isOpen={!!reassignFor}
+          onClose={() => setReassignFor(null)}
+          title="Переадресовать задачу"
+          size="md"
+        >
+          <form className="task-form" onSubmit={handleReassign}>
+            <p style={{ margin: 0, fontSize: 13 }}>{reassignFor?.title}</p>
+            <label>
+              Новый исполнитель
+              <select
+                value={reassignId}
+                onChange={(e) => setReassignId(e.target.value)}
+                required
+              >
+                <option value="" disabled>
+                  Выберите сотрудника
+                </option>
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {userDisplayName(c)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="task-form-actions">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setReassignFor(null)}
+                disabled={saving}
+              >
+                Отмена
+              </Button>
+              <Button type="submit" variant="primary" disabled={saving || !reassignId}>
+                {saving ? 'Сохранение…' : 'Переадресовать'}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      </div>
+    );
+  }
+
   return (
     <div className="card">
       <h1 className="title">Задачи</h1>
       <p className="subtitle">
-        Текстовые задачи сотрудникам. По умолчанию назначаются на руководителя склада.
-        Изменения габаритов с маркетплейсов собираются в одну открытую задачу — новые артикулы
-        дописываются в неё, пока задача не выполнена.
+        Выберите задачу, чтобы открыть подробности. По умолчанию назначаются на руководителя склада.
       </p>
 
       <div className="tasks-toolbar">
@@ -185,115 +379,31 @@ export function Tasks() {
         ) : (
           filtered.map((task) => {
             const isOpen = task.status === 'open';
-            const isAssignee =
-              task.assignee_id != null && Number(task.assignee_id) === Number(user?.id);
-            const dimItems = Array.isArray(task.meta?.items) ? task.meta.items : [];
             const isDimensions = task.task_type === 'dimensions_check';
-            const productUrl =
-              task.meta?.url ||
-              (task.product_id ? `/products?open=${task.product_id}` : null) ||
-              (dimItems[0]?.product_id ? `/products?open=${dimItems[0].product_id}` : null);
+            const preview = taskPreviewMeta(task);
             return (
-              <div
+              <button
+                type="button"
                 key={task.id}
-                className={`task-item${isOpen ? '' : ' is-done'}`}
+                className={`task-item task-item--row${isOpen ? '' : ' is-done'}`}
+                onClick={() => setSelectedId(task.id)}
               >
-                <div className="task-item-header">
-                  <div>
-                    <div className="task-title">{task.title}</div>
-                    <div className="task-meta">
-                      <span
-                        className={`task-badge ${isOpen ? 'open' : 'done'}`}
-                      >
-                        {isOpen ? 'Открыта' : 'Выполнена'}
-                      </span>
-                      {isDimensions && (
-                        <span className="task-badge">Габариты</span>
-                      )}
-                      <span>Исполнитель: {taskAssigneeLabel(task)}</span>
-                      <span>Создана: {formatDate(task.created_at)}</span>
-                      {task.updated_at && task.updated_at !== task.created_at && (
-                        <span>Обновлена: {formatDate(task.updated_at)}</span>
-                      )}
-                      {!isDimensions && task.product_sku && (
-                        <span>
-                          Товар:{' '}
-                          {productUrl ? (
-                            <Link to={productUrl}>{task.product_sku}</Link>
-                          ) : (
-                            task.product_sku
-                          )}
-                        </span>
-                      )}
-                    </div>
+                <div className="task-row-main">
+                  <div className="task-title">{task.title}</div>
+                  <div className="task-meta">
+                    <span className={`task-badge ${isOpen ? 'open' : 'done'}`}>
+                      {isOpen ? 'Открыта' : 'Выполнена'}
+                    </span>
+                    {isDimensions && <span className="task-badge">Габариты</span>}
+                    {preview && <span>{preview}</span>}
+                    <span>{taskAssigneeLabel(task)}</span>
+                    <span>{formatDateShort(task.created_at)}</span>
                   </div>
                 </div>
-                {isDimensions && dimItems.length > 0 ? (
-                  <div className="task-desc">
-                    <div style={{ marginBottom: 8 }}>
-                      После обновления с маркетплейсов изменились габариты/вес. Проверьте товары:
-                    </div>
-                    <ul className="task-sku-list">
-                      {dimItems.map((it) => {
-                        const sku = it.sku || `#${it.product_id}`;
-                        const href = it.product_id ? `/products?open=${it.product_id}` : null;
-                        const mps = Array.isArray(it.marketplaces)
-                          ? it.marketplaces
-                          : it.marketplace
-                            ? [it.marketplace]
-                            : [];
-                        return (
-                          <li key={String(it.product_id)}>
-                            {href ? <Link to={href}>{sku}</Link> : sku}
-                            {it.name ? ` — ${it.name}` : ''}
-                            {mps.length
-                              ? ` [${mps.map((m) => String(m).toUpperCase()).join(', ')}]`
-                              : ''}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                ) : (
-                  task.description && (
-                    <div className="task-desc">{task.description}</div>
-                  )
-                )}
-                {isOpen && (
-                  <div className="task-actions">
-                    {(canManage || isAssignee) && (
-                      <Button
-                        size="small"
-                        variant="success"
-                        onClick={() => handleComplete(task)}
-                      >
-                        Выполнить
-                      </Button>
-                    )}
-                    {canManage && (
-                      <Button
-                        size="small"
-                        variant="secondary"
-                        onClick={() => {
-                          setReassignFor(task);
-                          setReassignId(
-                            task.assignee_id != null ? String(task.assignee_id) : ''
-                          );
-                        }}
-                      >
-                        Переадресовать
-                      </Button>
-                    )}
-                    {!isDimensions && productUrl && (
-                      <Link to={productUrl}>
-                        <Button size="small" variant="secondary">
-                          Открыть товар
-                        </Button>
-                      </Link>
-                    )}
-                  </div>
-                )}
-              </div>
+                <span className="task-row-chevron" aria-hidden>
+                  ›
+                </span>
+              </button>
             );
           })
         )}
@@ -350,49 +460,6 @@ export function Tasks() {
             </Button>
             <Button type="submit" variant="primary" disabled={saving}>
               {saving ? 'Сохранение…' : 'Создать'}
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      <Modal
-        isOpen={!!reassignFor}
-        onClose={() => setReassignFor(null)}
-        title="Переадресовать задачу"
-        size="md"
-      >
-        <form className="task-form" onSubmit={handleReassign}>
-          <p style={{ margin: 0, fontSize: 13 }}>
-            {reassignFor?.title}
-          </p>
-          <label>
-            Новый исполнитель
-            <select
-              value={reassignId}
-              onChange={(e) => setReassignId(e.target.value)}
-              required
-            >
-              <option value="" disabled>
-                Выберите сотрудника
-              </option>
-              {candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {userDisplayName(c)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="task-form-actions">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setReassignFor(null)}
-              disabled={saving}
-            >
-              Отмена
-            </Button>
-            <Button type="submit" variant="primary" disabled={saving || !reassignId}>
-              {saving ? 'Сохранение…' : 'Переадресовать'}
             </Button>
           </div>
         </form>
