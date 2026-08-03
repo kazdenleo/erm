@@ -72,6 +72,42 @@ class WarehousesController {
       next(error);
     }
   }
+
+  async listStockSyncExclusions(req, res, next) {
+    try {
+      const { id } = req.params;
+      const data = await warehousesService.listStockSyncExclusions(id, {
+        profileId: req.user?.profileId ?? null,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async addStockSyncExclusion(req, res, next) {
+    try {
+      const { id } = req.params;
+      const row = await warehousesService.addStockSyncExclusion(id, req.body, {
+        profileId: req.user?.profileId ?? null,
+      });
+      return res.status(200).json({ ok: true, data: row });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async removeStockSyncExclusion(req, res, next) {
+    try {
+      const { id, exclusionId } = req.params;
+      const row = await warehousesService.removeStockSyncExclusion(id, exclusionId, {
+        profileId: req.user?.profileId ?? null,
+      });
+      return res.status(200).json({ ok: true, data: row });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new WarehousesController();

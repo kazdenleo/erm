@@ -48,6 +48,7 @@ describe('parseSourceOrdersEntries', () => {
       {
         marketplace: 'wb',
         orderId: '1',
+        quantity: null,
         supplierSubmittedAt: '2026-01-01',
         supplierBasketItemId: null,
       },
@@ -103,6 +104,28 @@ describe('quantityForOrderScopeLine', () => {
       expected_quantity: 3,
       source_orders: [
         { marketplace: 'wb', orderId: '5262142663' },
+        { marketplace: 'wb', orderId: '5262142663' },
+        { marketplace: 'wb', orderId: '111', supplierSubmittedAt: '2026-01-01' },
+      ],
+    };
+    expect(quantityForOrderScopeLine(line, scopeWb)).toBe(2);
+  });
+
+  test('заказ qty=2 одной записью — шлёт 2, не 1', () => {
+    const line = {
+      expected_quantity: 3,
+      source_orders: [
+        { marketplace: 'wb', orderId: '5262142663', quantity: 2 },
+        { marketplace: 'wb', orderId: '111', quantity: 1, supplierSubmittedAt: '2026-01-01' },
+      ],
+    };
+    expect(quantityForOrderScopeLine(line, scopeWb)).toBe(2);
+  });
+
+  test('legacy без quantity: остаток expected после чужих submitted', () => {
+    const line = {
+      expected_quantity: 3,
+      source_orders: [
         { marketplace: 'wb', orderId: '5262142663' },
         { marketplace: 'wb', orderId: '111', supplierSubmittedAt: '2026-01-01' },
       ],

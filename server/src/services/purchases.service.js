@@ -303,8 +303,8 @@ async function getDefaultWarehouseIdForTx(client, profileId = null) {
         [pid]
       )
     : await client.query(
-        `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
-      );
+    `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
+  );
   return r.rows?.[0]?.id ?? null;
 }
 
@@ -374,6 +374,11 @@ function normalizeSourceOrderList(arr) {
     const orderId = String(x.orderId).trim();
     if (!marketplace || !orderId) continue;
     const entry = { marketplace, orderId };
+    const qtyRaw = x.quantity ?? x.qty ?? null;
+    if (qtyRaw != null && String(qtyRaw).trim() !== '') {
+      const q = Math.max(1, Math.floor(Number(qtyRaw)) || 1);
+      entry.quantity = q;
+    }
     const submittedAt = x.supplierSubmittedAt ?? x.supplier_submitted_at ?? null;
     if (submittedAt != null && String(submittedAt).trim() !== '') {
       entry.supplierSubmittedAt = submittedAt;
@@ -629,9 +634,17 @@ async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
     const k = key(o);
     const prev = map.get(k);
     if (prev) {
+      const prevQty =
+        prev.quantity != null ? Math.max(1, Math.floor(Number(prev.quantity)) || 1) : null;
+      const nextQty =
+        o.quantity != null ? Math.max(1, Math.floor(Number(o.quantity)) || 1) : null;
       map.set(k, {
         ...prev,
         ...o,
+        quantity:
+          nextQty != null || prevQty != null
+            ? Math.max(prevQty || 0, nextQty || 0)
+            : undefined,
         // Не затираем факт отправки поставщику при дозаполнении закупки
         supplierSubmittedAt: prev.supplierSubmittedAt ?? o.supplierSubmittedAt ?? null,
         supplierBasketItemId: prev.supplierBasketItemId ?? o.supplierBasketItemId ?? null,
@@ -642,6 +655,9 @@ async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
   }
   const merged = [...map.values()].map((o) => {
     const entry = { marketplace: o.marketplace, orderId: String(o.orderId) };
+    if (o.quantity != null) {
+      entry.quantity = Math.max(1, Math.floor(Number(o.quantity)) || 1);
+    }
     if (o.supplierSubmittedAt != null && String(o.supplierSubmittedAt).trim() !== '') {
       entry.supplierSubmittedAt = o.supplierSubmittedAt;
     }
@@ -1126,11 +1142,11 @@ async function createWarehouseReceiptHeaderInTx(
         );
         warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
       } catch {
-        const docIns = await client.query(
-          `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING id`,
-          [supplierId]
-        );
-        warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
+      const docIns = await client.query(
+        `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING id`,
+        [supplierId]
+      );
+      warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
       }
     } else {
       throw e;
@@ -1847,6 +1863,12 @@ async function applyPurchaseReceiptStockByProductInTx(
     if (newIncoming < 0) newIncoming = 0;
 
     if (dwId && stockQty > 0) {
+      const pwsBefore = await client.query(
+        `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
+        [productId, dwId]
+      );
+      const whBefore = pwsBefore.rows?.[0] ? Number(pwsBefore.rows[0].quantity) : 0;
+      const whAfter = whBefore + stockQty;
       await client.query(
         `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
          VALUES ($1, $2, GREATEST(0, COALESCE((SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE), 0) + $3::int))
@@ -1861,17 +1883,21 @@ async function applyPurchaseReceiptStockByProductInTx(
          WHERE id = $1`,
         [productId, newIncoming]
       );
+      const receiptReasonBase =
+        extraQty > 0
+          ? `Приёмка №${rid} по закупке №${purchaseId} (в т.ч. +${extraQty} сверх заказа)${suffix}`
+          : `Приёмка №${rid} по закупке №${purchaseId}${suffix}`;
       await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
         productId,
         type: 'receipt',
         quantityChange: stockQty,
-        reason:
-          extraQty > 0
-            ? `Приёмка по закупке №${purchaseId} (в т.ч. +${extraQty} сверх заказа)${suffix}`
-            : `Приёмка по закупке №${purchaseId}${suffix}`,
+        reason: receiptReasonBase,
         meta: {
           purchase_id: purchaseId,
           purchase_receipt_id: rid,
+          warehouse_id: dwId,
+          warehouse_balance_before: whBefore,
+          warehouse_balance_after: whAfter,
           over_delivery_qty: extraQty > 0 ? extraQty : undefined,
           ...(isReceiptEdit ? { receipt_edit: true } : {}),
         },
@@ -1887,6 +1913,7 @@ async function applyPurchaseReceiptStockByProductInTx(
           meta: {
             purchase_id: purchaseId,
             purchase_receipt_id: rid,
+            warehouse_id: dwId,
             ...(isReceiptEdit ? { receipt_edit: true } : {}),
           },
           warehouseId: dwId || null,
@@ -1907,7 +1934,7 @@ async function applyPurchaseReceiptStockByProductInTx(
           productId,
           type: 'receipt',
           quantityChange: stockQty,
-          reason: `Приёмка по закупке №${purchaseId}${suffix}`,
+          reason: `Приёмка №${rid} по закупке №${purchaseId}${suffix}`,
           meta: {
             purchase_id: purchaseId,
             purchase_receipt_id: rid,
@@ -2013,17 +2040,17 @@ class PurchasesService {
     let paramIdx = 2;
 
     if (supplierId !== undefined) {
-      const supplier =
+    const supplier =
         supplierId === '' || supplierId == null
-          ? null
+        ? null
           : Number.isNaN(Number(supplierId))
-            ? null
+          ? null
             : Number(supplierId);
       if (!Number.isFinite(supplier) || supplier < 1) {
-        const err = new Error('Выберите поставщика');
-        err.statusCode = 400;
-        throw err;
-      }
+      const err = new Error('Выберите поставщика');
+      err.statusCode = 400;
+      throw err;
+    }
       sets.push(`supplier_id = $${paramIdx++}`);
       params.push(supplier);
     }
@@ -2035,10 +2062,10 @@ class PurchasesService {
             ? null
             : Number(organizationId);
       if (!Number.isFinite(org) || org < 1) {
-        const err = new Error('Выберите организацию');
-        err.statusCode = 400;
-        throw err;
-      }
+      const err = new Error('Выберите организацию');
+      err.statusCode = 400;
+      throw err;
+    }
       sets.push(`organization_id = $${paramIdx++}`);
       params.push(org);
     }
@@ -2050,9 +2077,9 @@ class PurchasesService {
             ? null
             : Number(warehouseId);
       if (!Number.isFinite(wid) || wid < 1) {
-        const err = new Error('Выберите склад назначения');
-        err.statusCode = 400;
-        throw err;
+      const err = new Error('Выберите склад назначения');
+      err.statusCode = 400;
+      throw err;
       }
       sets.push(`warehouse_id = $${paramIdx++}`);
       params.push(wid);
@@ -2519,7 +2546,13 @@ class PurchasesService {
         const expected = Math.max(0, Math.floor(Number(row.expected_quantity) || 0));
         const received = Math.max(0, Math.floor(Number(row.received_quantity) || 0));
         const maxReduce = Math.max(0, expected - received);
-        const reduceBy = Math.min(removed.length, maxReduce);
+        const reduceBy = Math.min(
+          removed.reduce((s, e) => {
+            const q = e.quantity != null ? Math.max(1, Math.floor(Number(e.quantity)) || 1) : 1;
+            return s + q;
+          }, 0),
+          maxReduce
+        );
         if (reduceBy <= 0) continue;
 
         const newExpected = expected - reduceBy;
@@ -2661,8 +2694,8 @@ class PurchasesService {
     { userId, profileId, submitToSupplier = false, syncReserveReapply = true } = {}
   ) {
     const initialItems = Array.isArray(items) ? items : [];
-    let resolvedSupplierId =
-      supplierId != null && supplierId !== '' ? Number(supplierId) : null;
+      let resolvedSupplierId =
+        supplierId != null && supplierId !== '' ? Number(supplierId) : null;
     let warehouseNameForSubmit = supplierWarehouseName || null;
     const createdNew =
       existingPurchaseId == null || String(existingPurchaseId).trim() === '';
@@ -2795,14 +2828,14 @@ class PurchasesService {
           const pre = await supplierPreSubmitRequired(resolvedSupplierId, profileId);
           apiSubmitRequired = Boolean(pre.required);
           if (!postSubmitCompleted) {
-            supplierSubmit = await trySubmitPurchaseToSupplier({
-              purchaseId,
-              supplierId: resolvedSupplierId,
-              profileId,
-            }).catch((e) => ({
-              submitted: false,
-              reason: 'submit_error',
-              message: e?.message || String(e),
+          supplierSubmit = await trySubmitPurchaseToSupplier({
+            purchaseId,
+            supplierId: resolvedSupplierId,
+            profileId,
+          }).catch((e) => ({
+            submitted: false,
+            reason: 'submit_error',
+            message: e?.message || String(e),
               supplierName: pre.supplierName || pre.supplier?.name,
             }));
             cachedPostSubmit = supplierSubmit;
@@ -4187,7 +4220,7 @@ class PurchasesService {
       const { deltas, extras } = await applyPurchaseReceiptStockByProductInTx(client, {
         purchaseReceiptId: rid,
         purchaseId,
-        profileId: pid,
+            profileId: pid,
         receiptWarehouseId,
         byProduct,
       });

@@ -938,6 +938,15 @@ class StockMovementsService {
       }
     }
 
+    // Дубль «целый комплект + комплектующие» сверх qty заказа — снять при открытии модалки.
+    if (!_skipStaleCleanup) {
+      try {
+        await this._reconcileKitReserveForProductModal(idNum);
+      } catch (_) {
+        /* не блокируем список резерва */
+      }
+    }
+
     const tid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'

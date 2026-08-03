@@ -61,7 +61,22 @@ export const warehousesApi = {
   delete: async (id) => {
     const response = await api.delete(`/warehouses/${id}`);
     return response.data;
-  }
+  },
+
+  listStockSyncExclusions: async (id) => {
+    const response = await api.get(`/warehouses/${id}/stock-sync-exclusions`);
+    return response.data?.data ?? response.data;
+  },
+
+  addStockSyncExclusion: async (id, payload) => {
+    const response = await api.post(`/warehouses/${id}/stock-sync-exclusions`, payload);
+    return response.data?.data ?? response.data;
+  },
+
+  removeStockSyncExclusion: async (id, exclusionId) => {
+    const response = await api.delete(`/warehouses/${id}/stock-sync-exclusions/${exclusionId}`);
+    return response.data?.data ?? response.data;
+  },
 };
 
 

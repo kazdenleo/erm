@@ -676,12 +676,12 @@ class AutoProcurementService {
         const existing = g.items.find((it) => it.productId === line.productId);
         if (existing) {
           existing.quantity += deficit;
-          existing.sourceOrders.push({ marketplace: mp, orderId });
+          existing.sourceOrders.push({ marketplace: mp, orderId, quantity: deficit });
         } else {
           g.items.push({
             productId: line.productId,
             quantity: deficit,
-            sourceOrders: [{ marketplace: mp, orderId }],
+            sourceOrders: [{ marketplace: mp, orderId, quantity: deficit }],
           });
         }
         anyAdded = true;
@@ -913,12 +913,12 @@ class AutoProcurementService {
         const existing = items.find((it) => it.productId === productId);
         if (existing) {
           existing.quantity += qty;
-          existing.sourceOrders.push({ marketplace: mp, orderId: oid });
+          existing.sourceOrders.push({ marketplace: mp, orderId: oid, quantity: qty });
         } else {
           items.push({
             productId,
             quantity: qty,
-            sourceOrders: [{ marketplace: mp, orderId: oid }],
+            sourceOrders: [{ marketplace: mp, orderId: oid, quantity: qty }],
           });
         }
       }

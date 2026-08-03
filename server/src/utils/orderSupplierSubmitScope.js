@@ -23,9 +23,15 @@ export function parseSourceOrdersEntries(raw) {
       const marketplace = String(x.marketplace ?? '').trim();
       const orderId = String(x.orderId ?? x.order_id ?? '').trim();
       if (!marketplace || !orderId) return null;
+      const qtyRaw = x.quantity ?? x.qty ?? null;
+      const quantity =
+        qtyRaw != null && String(qtyRaw).trim() !== ''
+          ? Math.max(1, Math.floor(Number(qtyRaw)) || 1)
+          : null;
       return {
         marketplace,
         orderId,
+        quantity,
         supplierSubmittedAt: x.supplierSubmittedAt ?? x.supplier_submitted_at ?? null,
         supplierBasketItemId: x.supplierBasketItemId ?? x.supplier_basket_item_id ?? null,
       };
@@ -33,9 +39,46 @@ export function parseSourceOrdersEntries(raw) {
     .filter(Boolean);
 }
 
+/** Сколько единиц даёт запись source_orders (без quantity — 1, для старых данных). */
+export function sourceEntryUnitQty(entry) {
+  if (entry?.quantity != null && Number.isFinite(Number(entry.quantity))) {
+    return Math.max(1, Math.floor(Number(entry.quantity)) || 1);
+  }
+  return 1;
+}
+
+export function sumSourceEntriesUnitQty(entries) {
+  return (entries || []).reduce((s, e) => s + sourceEntryUnitQty(e), 0);
+}
+
 export function isSourceEntrySupplierSubmitted(entry) {
   const at = entry?.supplierSubmittedAt ?? entry?.supplier_submitted_at;
   return at != null && String(at).trim() !== '';
+}
+
+/**
+ * Сколько шт. ещё отправить поставщику по строке закупки.
+ * С quantity в source_orders — сумма pending; иначе остаток expected − уже отправленные (legacy 1 шт./запись).
+ */
+export function pendingSupplierSubmitQuantity(line, pendingEntries = null) {
+  const entries = parseSourceOrdersEntries(line?.source_orders);
+  const pending =
+    pendingEntries != null
+      ? pendingEntries
+      : entries.filter((e) => !isSourceEntrySupplierSubmitted(e));
+  if (!pending.length) return 0;
+  const expected = Math.max(1, parseInt(line?.expected_quantity, 10) || 1);
+  if (pending.length >= entries.length && entries.length > 0) {
+    return expected;
+  }
+  const submitted = entries.filter((e) => isSourceEntrySupplierSubmitted(e));
+  const hasExplicitQty =
+    pending.some((e) => e.quantity != null) || submitted.some((e) => e.quantity != null);
+  if (hasExplicitQty) {
+    return Math.min(expected, Math.max(1, sumSourceEntriesUnitQty(pending)));
+  }
+  const residual = Math.max(0, expected - sumSourceEntriesUnitQty(submitted));
+  return Math.min(expected, Math.max(1, residual || pending.length));
 }
 
 function marketplaceEntryMatchesVariants(entryMarketplace, variants) {
@@ -67,14 +110,29 @@ export function orderScopeHasPendingSupplierLines(lines, scope) {
 
 /** Количество для отправки по одной строке закупки в рамках заказа. */
 export function quantityForOrderScopeLine(line, scope) {
-  const pendingCount = countPendingSourceEntriesForScope(line, scope);
-  if (pendingCount <= 0) return 0;
-  const allEntries = parseSourceOrdersEntries(line?.source_orders);
+  const entries = parseSourceOrdersEntries(line?.source_orders);
+  const pendingForScope = entries.filter(
+    (ent) => sourceEntryMatchesOrderScope(ent, scope) && !isSourceEntrySupplierSubmitted(ent)
+  );
+  if (!pendingForScope.length) return 0;
   const expected = Math.max(1, parseInt(line?.expected_quantity, 10) || 1);
-  if (pendingCount === 1 && allEntries.length === 1) {
+  const scopeOnly = entries.filter((ent) => sourceEntryMatchesOrderScope(ent, scope));
+  if (scopeOnly.length === 1 && entries.length === 1) {
     return expected;
   }
-  return pendingCount;
+  const hasExplicitQty = pendingForScope.some((e) => e.quantity != null);
+  if (hasExplicitQty) {
+    return Math.min(expected, Math.max(1, sumSourceEntriesUnitQty(pendingForScope)));
+  }
+  // Один заказ в строке с несколькими source — остаток expected после чужих submitted.
+  if (pendingForScope.length === 1 && scopeOnly.length === 1) {
+    const othersSubmitted = entries.filter(
+      (e) => !sourceEntryMatchesOrderScope(e, scope) && isSourceEntrySupplierSubmitted(e)
+    );
+    const residual = Math.max(0, expected - sumSourceEntriesUnitQty(othersSubmitted));
+    return Math.min(expected, Math.max(1, residual || 1));
+  }
+  return Math.min(expected, Math.max(1, sumSourceEntriesUnitQty(pendingForScope)));
 }
 
 /** Строки закупки → позиции для API поставщика только по выбранному заказу. */
@@ -90,6 +148,22 @@ export function selectLinesForOrderSupplierSubmit(lines, scope, { force = false 
       expected_quantity: qty,
       purchase_item_id: line.purchase_item_id ?? line.purchaseItemId,
     });
+  }
+  return out;
+}
+
+function serializeSourceEntry(ent, overrides = {}) {
+  const merged = { ...ent, ...overrides };
+  const out = {
+    marketplace: merged.marketplace,
+    orderId: merged.orderId,
+  };
+  if (merged.quantity != null) out.quantity = sourceEntryUnitQty(merged);
+  if (merged.supplierSubmittedAt != null && String(merged.supplierSubmittedAt).trim() !== '') {
+    out.supplierSubmittedAt = merged.supplierSubmittedAt;
+  }
+  if (merged.supplierBasketItemId != null && String(merged.supplierBasketItemId).trim() !== '') {
+    out.supplierBasketItemId = merged.supplierBasketItemId;
   }
   return out;
 }
@@ -121,14 +195,12 @@ export async function markOrderSourceOrdersSubmitted(purchaseId, scope, submitte
     const next = sources.map((ent) => {
       if (sourceEntryMatchesOrderScope(ent, scope) && !isSourceEntrySupplierSubmitted(ent)) {
         changed = true;
-        return {
-          marketplace: ent.marketplace,
-          orderId: ent.orderId,
+        return serializeSourceEntry(ent, {
           supplierSubmittedAt: now,
           ...(basketId != null ? { supplierBasketItemId: basketId } : {}),
-        };
+        });
       }
-      return ent;
+      return serializeSourceEntry(ent);
     });
     if (changed) {
       await query(
@@ -183,14 +255,12 @@ export async function markPurchaseLinesSourceOrdersSubmitted(purchaseId, lines =
     const basketId = byProduct.get(productId);
     let changed = false;
     const next = sources.map((ent) => {
-      if (isSourceEntrySupplierSubmitted(ent)) return ent;
+      if (isSourceEntrySupplierSubmitted(ent)) return serializeSourceEntry(ent);
       changed = true;
-      return {
-        marketplace: ent.marketplace,
-        orderId: ent.orderId,
+      return serializeSourceEntry(ent, {
         supplierSubmittedAt: now,
         ...(basketId != null ? { supplierBasketItemId: basketId } : {}),
-      };
+      });
     });
     if (changed) {
       await query(

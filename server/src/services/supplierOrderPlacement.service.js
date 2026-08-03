@@ -16,6 +16,7 @@ import {
   selectLinesForOrderSupplierSubmit,
   parseSourceOrdersEntries,
   isSourceEntrySupplierSubmitted,
+  pendingSupplierSubmitQuantity,
 } from '../utils/orderSupplierSubmitScope.js';
 
 function parseApiConfig(raw) {
@@ -112,12 +113,9 @@ export function filterPendingSupplierSubmitLines(purchase, lines) {
     const pendingEntries = entries.filter((e) => !isSourceEntrySupplierSubmitted(e));
 
     // Дописали заказ в уже существующую строку (created_at строки старый) — шлём только pending qty.
+    // Не pendingEntries.length: одна запись source_orders может закрывать qty>1 (заказ на 2 шт.).
     if (pendingEntries.length > 0) {
-      const expected = Math.max(1, parseInt(line?.expected_quantity, 10) || 1);
-      const qty =
-        pendingEntries.length >= entries.length && entries.length > 0
-          ? expected
-          : Math.max(1, pendingEntries.length);
+      const qty = pendingSupplierSubmitQuantity(line, pendingEntries);
       out.push({
         ...line,
         expected_quantity: qty,

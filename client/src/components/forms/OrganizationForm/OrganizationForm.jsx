@@ -16,7 +16,6 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
     vat: '',
     article_prefix: '',
     profile_id: '',
-    skip_marketplace_stock_sync: false,
     auto_push_marketplace_prices: false,
     daily_pull_marketplace_cards: false
   });
@@ -44,7 +43,6 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
         vat: organization.vat || '',
         article_prefix: organization.article_prefix || '',
         profile_id: organization.profile_id != null ? String(organization.profile_id) : '',
-        skip_marketplace_stock_sync: organization.skip_marketplace_stock_sync === true,
         auto_push_marketplace_prices: organization.auto_push_marketplace_prices === true,
         daily_pull_marketplace_cards: organization.daily_pull_marketplace_cards === true
       }));
@@ -81,7 +79,6 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
       tax_system: formData.tax_system && formData.tax_system.trim() !== '' ? formData.tax_system : null,
       vat: formData.vat && formData.vat.trim() !== '' ? formData.vat : null,
       article_prefix: formData.article_prefix.trim() || null,
-      skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       auto_push_marketplace_prices: formData.auto_push_marketplace_prices === true,
       daily_pull_marketplace_cards: formData.daily_pull_marketplace_cards === true
     };
@@ -187,25 +184,6 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
             <option key={opt.value || 'empty'} value={opt.value}>{opt.label}</option>
           ))}
         </select>
-        </div>
-        <div className="col-12">
-          <div className="form-check form-switch mb-0">
-            <input
-              className="form-check-input"
-              type="checkbox"
-              role="switch"
-              id="orgSkipMpStock"
-              checked={formData.skip_marketplace_stock_sync === true}
-              onChange={(e) => handleChange('skip_marketplace_stock_sync', e.target.checked)}
-            />
-            <label className="form-check-label" htmlFor="orgSkipMpStock">
-              Не передавать остатки на маркетплейс
-            </label>
-          </div>
-          <p className="text-muted small mt-1 mb-0">
-            При включении остатки со склада организации не отправляются на Ozon, Wildberries и Яндекс.Маркет.
-            Импорт остатков с маркетплейсов и другие операции не затрагиваются.
-          </p>
         </div>
         <div className="col-12">
           <div className="form-check form-switch mb-0">

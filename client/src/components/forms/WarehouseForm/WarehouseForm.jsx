@@ -3,10 +3,13 @@
  * Форма создания/редактирования склада
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '../../common/Button/Button';
+import { Modal } from '../../common/Modal/Modal';
 import { integrationsApi } from '../../../services/integrations.api';
 import { warehouseMappingsApi } from '../../../services/warehouseMappings.api';
+import { warehousesApi } from '../../../services/warehouses.api';
+import { searchProductsRemote } from '../../../utils/productSearch';
 import {
   buildYandexWarehouseMapping,
   formatYandexWarehouseMappingLabel,
@@ -18,6 +21,13 @@ import {
   workDaysToWeekendDays,
   normalizeWeekendDays,
 } from '../../../utils/warehouseWeekendDays.js';
+import '../../../styles/mp-badges.css';
+
+const MP_STOCK_CHANNELS = [
+  { key: 'pushStockOzon', marketplace: 'ozon', label: 'OZ', badgeClass: 'ozon', title: 'Ozon' },
+  { key: 'pushStockWb', marketplace: 'wb', label: 'WB', badgeClass: 'wb', title: 'Wildberries' },
+  { key: 'pushStockYm', marketplace: 'ym', label: 'YM', badgeClass: 'ym', title: 'Яндекс.Маркет' },
+];
 
 export function WarehouseForm({
   warehouse,
@@ -36,11 +46,24 @@ export function WarehouseForm({
     mainWarehouseId: '',
     wbWarehouseName: '',
     isFboStock: false,
+    pushMarketplaceStock: true,
+    pushStockOzon: true,
+    pushStockWb: true,
+    pushStockYm: true,
     // UI: отмеченные = рабочие дни; в API уходит weekend_days = дополнение
     workDays: [...ALL_WEEKDAYS],
   });
   
   const [errors, setErrors] = useState({});
+  const [exclusionCount, setExclusionCount] = useState(0);
+  const [exclusionsOpen, setExclusionsOpen] = useState(false);
+  const [exclusions, setExclusions] = useState([]);
+  const [exclusionsLoading, setExclusionsLoading] = useState(false);
+  const [exclusionSearch, setExclusionSearch] = useState('');
+  const [exclusionSuggestions, setExclusionSuggestions] = useState([]);
+  const [exclusionMp, setExclusionMp] = useState('ozon');
+  const [exclusionBusy, setExclusionBusy] = useState(false);
+  const [exclusionError, setExclusionError] = useState(null);
   const [wbWarehouses, setWbWarehouses] = useState([]);
   const [loadingWbWarehouses, setLoadingWbWarehouses] = useState(false);
   const [wbWarehouseToBind, setWbWarehouseToBind] = useState('');
@@ -283,8 +306,14 @@ export function WarehouseForm({
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
         wbWarehouseName: warehouse.wbWarehouseName || '',
         isFboStock: warehouse.isFboStock === true || warehouse.is_fbo_stock === true,
+        pushMarketplaceStock:
+          warehouse.pushMarketplaceStock !== false && warehouse.push_marketplace_stock !== false,
+        pushStockOzon: warehouse.pushStockOzon !== false && warehouse.push_stock_ozon !== false,
+        pushStockWb: warehouse.pushStockWb !== false && warehouse.push_stock_wb !== false,
+        pushStockYm: warehouse.pushStockYm !== false && warehouse.push_stock_ym !== false,
         workDays: weekendDaysToWorkDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
+      setExclusionCount(Number(warehouse.stockSyncExclusionCount) || 0);
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
       setYmCampaignId('');
@@ -299,8 +328,13 @@ export function WarehouseForm({
         mainWarehouseId: '',
         wbWarehouseName: '',
         isFboStock: false,
+        pushMarketplaceStock: true,
+        pushStockOzon: true,
+        pushStockWb: true,
+        pushStockYm: true,
         workDays: [...ALL_WEEKDAYS],
       });
+      setExclusionCount(0);
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
       setYmCampaignId('');
@@ -454,6 +488,91 @@ export function WarehouseForm({
     return warehouse?.id ?? null;
   };
 
+  const reloadExclusions = useCallback(async (warehouseId) => {
+    const wid = warehouseId ?? warehouse?.id;
+    if (!wid) {
+      setExclusions([]);
+      setExclusionCount(0);
+      return;
+    }
+    setExclusionsLoading(true);
+    setExclusionError(null);
+    try {
+      const data = await warehousesApi.listStockSyncExclusions(wid);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      setExclusions(items);
+      setExclusionCount(Number(data?.count) || items.length);
+    } catch (e) {
+      setExclusions([]);
+      setExclusionError(e?.response?.data?.message || e?.message || 'Не удалось загрузить исключения');
+    } finally {
+      setExclusionsLoading(false);
+    }
+  }, [warehouse?.id]);
+
+  const openExclusionsModal = async () => {
+    if (!warehouse?.id) return;
+    setExclusionsOpen(true);
+    setExclusionSearch('');
+    setExclusionSuggestions([]);
+    await reloadExclusions(warehouse.id);
+  };
+
+  useEffect(() => {
+    if (!exclusionsOpen) return undefined;
+    const q = exclusionSearch.trim();
+    if (q.length < 2) {
+      setExclusionSuggestions([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const list = await searchProductsRemote(q, { limit: 20 });
+        if (!cancelled) setExclusionSuggestions(Array.isArray(list) ? list : []);
+      } catch {
+        if (!cancelled) setExclusionSuggestions([]);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [exclusionSearch, exclusionsOpen]);
+
+  const handleAddExclusion = async (product) => {
+    if (!warehouse?.id || !product?.id || exclusionBusy) return;
+    setExclusionBusy(true);
+    setExclusionError(null);
+    try {
+      await warehousesApi.addStockSyncExclusion(warehouse.id, {
+        productId: product.id,
+        marketplace: exclusionMp,
+      });
+      setExclusionSearch('');
+      setExclusionSuggestions([]);
+      await reloadExclusions(warehouse.id);
+    } catch (e) {
+      setExclusionError(e?.response?.data?.message || e?.message || 'Не удалось добавить');
+    } finally {
+      setExclusionBusy(false);
+    }
+  };
+
+  const handleRemoveExclusion = async (exclusionId) => {
+    if (!warehouse?.id || !exclusionId || exclusionBusy) return;
+    setExclusionBusy(true);
+    setExclusionError(null);
+    try {
+      await warehousesApi.removeStockSyncExclusion(warehouse.id, exclusionId);
+      await reloadExclusions(warehouse.id);
+    } catch (e) {
+      setExclusionError(e?.response?.data?.message || e?.message || 'Не удалось удалить');
+    } finally {
+      setExclusionBusy(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -475,6 +594,10 @@ export function WarehouseForm({
             : null
           : null,
       isFboStock: formData.type === 'warehouse' ? !!formData.isFboStock : false,
+      pushMarketplaceStock: formData.type === 'warehouse' ? !!formData.pushMarketplaceStock : true,
+      pushStockOzon: formData.type === 'warehouse' ? !!formData.pushStockOzon : true,
+      pushStockWb: formData.type === 'warehouse' ? !!formData.pushStockWb : true,
+      pushStockYm: formData.type === 'warehouse' ? !!formData.pushStockYm : true,
       weekendDays:
         formData.type === 'warehouse'
           ? workDaysToWeekendDays(formData.workDays)
@@ -590,6 +713,70 @@ export function WarehouseForm({
               Склад FBO — для расчёта закупки по поставкам (остатки «наличие» в расчёте)
             </span>
           </label>
+        </div>
+      )}
+
+      {formData.type === 'warehouse' && (
+        <div className="col-12 mt-3 p-3 border rounded bg-light">
+          <div className="d-flex flex-wrap align-items-center gap-3">
+            <div className="form-check form-switch mb-0">
+              <input
+                className="form-check-input"
+                type="checkbox"
+                role="switch"
+                id="whPushMpStock"
+                checked={!!formData.pushMarketplaceStock}
+                onChange={(e) => handleChange('pushMarketplaceStock', e.target.checked)}
+              />
+              <label className="form-check-label" htmlFor="whPushMpStock">
+                Передавать остатки на маркетплейс
+              </label>
+            </div>
+            <div className="d-flex align-items-center gap-2">
+              {MP_STOCK_CHANNELS.map((ch) => {
+                const on = !!formData.pushMarketplaceStock && !!formData[ch.key];
+                return (
+                  <button
+                    key={ch.key}
+                    type="button"
+                    className={`mp-badge ${ch.badgeClass}`}
+                    title={
+                      on
+                        ? `${ch.title}: остатки передаются`
+                        : `${ch.title}: остатки обнуляются и не передаются`
+                    }
+                    disabled={!formData.pushMarketplaceStock}
+                    onClick={() => handleChange(ch.key, !formData[ch.key])}
+                    style={{
+                      opacity: on ? 1 : 0.35,
+                      border: 'none',
+                      cursor: formData.pushMarketplaceStock ? 'pointer' : 'not-allowed',
+                      filter: on ? 'none' : 'grayscale(1)',
+                    }}
+                  >
+                    {ch.label}
+                  </button>
+                );
+              })}
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={!warehouse?.id}
+              onClick={openExclusionsModal}
+            >
+              Исключения
+              {exclusionCount > 0 ? (
+                <span className="badge bg-primary ms-2">{exclusionCount}</span>
+              ) : null}
+            </Button>
+          </div>
+          <p className="text-muted small mt-2 mb-0">
+            Горящая иконка — остатки уходят на маркетплейс. Потухшая — на МП уходит 0, факт не
+            передаётся. Исключения обнуляют остатки выбранных товаров на выбранном МП.
+            {!warehouse?.id ? ' Сохраните склад, чтобы настроить исключения.' : ''}
+          </p>
         </div>
       )}
 
@@ -1056,6 +1243,90 @@ export function WarehouseForm({
           {mappingBusy ? 'Сохранение…' : 'Сохранить'}
         </Button>
       </div>
+
+      <Modal
+        isOpen={exclusionsOpen}
+        onClose={() => setExclusionsOpen(false)}
+        title="Исключения передачи остатков"
+        size="large"
+        usePortal
+      >
+        <p className="text-muted small">
+          Выберите товар (поиск по штрихкоду, артикулу или названию) и маркетплейс — на нём остаток
+          будет обнулён и не будет передаваться.
+        </p>
+        <div className="d-flex flex-wrap gap-2 align-items-end mb-3">
+          <div className="flex-grow-1" style={{ minWidth: 220 }}>
+            <label className="form-label small mb-1">Товар</label>
+            <input
+              className="form-control form-control-sm"
+              value={exclusionSearch}
+              onChange={(e) => setExclusionSearch(e.target.value)}
+              placeholder="ШК / артикул / название"
+            />
+          </div>
+          <div style={{ minWidth: 140 }}>
+            <label className="form-label small mb-1">Маркетплейс</label>
+            <select
+              className="form-select form-select-sm"
+              value={exclusionMp}
+              onChange={(e) => setExclusionMp(e.target.value)}
+            >
+              <option value="ozon">Ozon</option>
+              <option value="wb">Wildberries</option>
+              <option value="ym">Яндекс.Маркет</option>
+            </select>
+          </div>
+        </div>
+        {exclusionSuggestions.length > 0 && (
+          <ul className="list-group mb-3" style={{ maxHeight: 200, overflow: 'auto' }}>
+            {exclusionSuggestions.map((p) => (
+              <li
+                key={p.id}
+                className="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2"
+                style={{ cursor: exclusionBusy ? 'wait' : 'pointer' }}
+                onClick={() => handleAddExclusion(p)}
+              >
+                <span>
+                  <strong>{p.sku || '—'}</strong> · {p.name || 'Без названия'}
+                </span>
+                <span className="badge bg-secondary">Добавить</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {exclusionError && <p className="text-danger small">{exclusionError}</p>}
+        {exclusionsLoading ? (
+          <p className="text-muted small">Загрузка…</p>
+        ) : exclusions.length === 0 ? (
+          <p className="text-muted small mb-0">Исключений пока нет.</p>
+        ) : (
+          <ul className="list-group">
+            {exclusions.map((ex) => (
+              <li
+                key={ex.id}
+                className="list-group-item d-flex justify-content-between align-items-center gap-2"
+              >
+                <span>
+                  <span className={`mp-badge ${ex.marketplace === 'ozon' ? 'ozon' : ex.marketplace === 'wb' ? 'wb' : 'ym'} me-2`}>
+                    {ex.marketplace === 'ozon' ? 'OZ' : ex.marketplace === 'wb' ? 'WB' : 'YM'}
+                  </span>
+                  <strong>{ex.sku || '—'}</strong> · {ex.name || 'Без названия'}
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  disabled={exclusionBusy}
+                  onClick={() => handleRemoveExclusion(ex.id)}
+                >
+                  Удалить
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
     </form>
   );
 }

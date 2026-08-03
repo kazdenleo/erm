@@ -77,6 +77,50 @@ describe('filterPendingSupplierSubmitLines', () => {
     expect(pending[0].product_id).toBe(57);
     expect(pending[0].expected_quantity).toBe(1);
   });
+
+  test('доотправка: заказ на 2 шт. одной записью source_orders — шлём остаток 2, не 1', () => {
+    const purchase = { supplier_submitted_at: '2026-08-01T10:00:00.000Z' };
+    const lines = [
+      {
+        product_id: 10,
+        created_at: '2026-08-01T09:00:00.000Z',
+        expected_quantity: 3,
+        source_orders: [
+          {
+            orderId: 'order-qty1',
+            marketplace: 'ozon',
+            quantity: 1,
+            supplierSubmittedAt: '2026-08-01T10:00:00.000Z',
+          },
+          { orderId: 'order-qty2', marketplace: 'ozon', quantity: 2 },
+        ],
+      },
+    ];
+    const pending = filterPendingSupplierSubmitLines(purchase, lines);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].expected_quantity).toBe(2);
+  });
+
+  test('доотправка legacy без quantity: остаток expected − отправленные записи', () => {
+    const purchase = { supplier_submitted_at: '2026-08-01T10:00:00.000Z' };
+    const lines = [
+      {
+        product_id: 11,
+        created_at: '2026-08-01T09:00:00.000Z',
+        expected_quantity: 3,
+        source_orders: [
+          {
+            orderId: 'a',
+            marketplace: 'ozon',
+            supplierSubmittedAt: '2026-08-01T10:00:00.000Z',
+          },
+          { orderId: 'b', marketplace: 'ozon' },
+        ],
+      },
+    ];
+    const pending = filterPendingSupplierSubmitLines(purchase, lines);
+    expect(pending[0].expected_quantity).toBe(2);
+  });
 });
 
 describe('mergeProcurementItemsByProductId', () => {

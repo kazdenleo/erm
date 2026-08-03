@@ -7,6 +7,53 @@ import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
 import { normalizeWeekendDays } from '../utils/warehouseWorkingCalendar.js';
 
+function parseBoolFlag(raw, fallback = true) {
+  if (raw === undefined || raw === null) return fallback;
+  if (raw === true || raw === 'true' || raw === 1 || raw === '1') return true;
+  if (raw === false || raw === 'false' || raw === 0 || raw === '0') return false;
+  return fallback;
+}
+
+function parseStockSyncPayload(data, existing = null) {
+  const ex = existing || {};
+  const has = (a, b) => data?.hasOwnProperty(a) || data?.hasOwnProperty(b);
+  const read = (camel, snake, fallback) => {
+    if (has(camel, snake)) return parseBoolFlag(data[camel] ?? data[snake], fallback);
+    return parseBoolFlag(ex[camel] ?? ex[snake], fallback);
+  };
+  return {
+    push_marketplace_stock: read('pushMarketplaceStock', 'push_marketplace_stock', true),
+    push_stock_ozon: read('pushStockOzon', 'push_stock_ozon', true),
+    push_stock_wb: read('pushStockWb', 'push_stock_wb', true),
+    push_stock_ym: read('pushStockYm', 'push_stock_ym', true),
+  };
+}
+
+async function scheduleWarehouseMarketplaceStockResync(warehouse, marketplaces) {
+  const orgId = warehouse?.organization_id ?? warehouse?.organizationId ?? null;
+  const wid = warehouse?.id;
+  if (orgId == null || wid == null) return;
+  const mps = Array.isArray(marketplaces) ? marketplaces.filter(Boolean) : [];
+  if (!mps.length) return;
+  try {
+    const { syncOrganizationWarehouseStockToMarketplaces } = await import(
+      './marketplaceWarehouseStockSync.service.js'
+    );
+    setImmediate(() => {
+      syncOrganizationWarehouseStockToMarketplaces(orgId, {
+        warehouseId: wid,
+        warehouseScoped: true,
+        marketplaces: mps,
+        source: 'warehouse_stock_sync_settings',
+      }).catch((e) => {
+        console.warn('[Warehouses] stock resync failed:', e?.message || e);
+      });
+    });
+  } catch (e) {
+    console.warn('[Warehouses] stock resync schedule failed:', e?.message || e);
+  }
+}
+
 async function applyFboStockExclusive(warehouseId, isFbo, profileId) {
   const wid = Number(warehouseId);
   const pid = profileId != null ? Number(profileId) : null;
@@ -124,6 +171,7 @@ class WarehousesService {
       payload.is_fbo_stock = isFbo;
       if (type === 'warehouse') {
         payload.weekend_days = parseWeekendDaysPayload(data);
+        Object.assign(payload, parseStockSyncPayload(data));
       }
     }
 
@@ -296,11 +344,17 @@ class WarehousesService {
       } else {
         payload.weekend_days = parseWeekendDaysPayload({}, existing);
       }
+      const beforeFlags = parseStockSyncPayload({}, existing);
+      const afterFlags = parseStockSyncPayload(data, existing);
+      Object.assign(payload, afterFlags);
+      payload._stockSyncBefore = beforeFlags;
+      payload._stockSyncAfter = afterFlags;
     } else if (repositoryFactory.isUsingPostgreSQL()) {
       payload.weekend_days = null;
     }
 
-    const updated = await this.repository.update(id, payload, profileId);
+    const { _stockSyncBefore, _stockSyncAfter, ...dbPayload } = payload;
+    const updated = await this.repository.update(id, dbPayload, profileId);
     if (!updated) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;
@@ -308,6 +362,15 @@ class WarehousesService {
     }
     if (payload.is_fbo_stock !== undefined) {
       await applyFboStockExclusive(id, !!payload.is_fbo_stock, profileId ?? existing.profile_id);
+    }
+    if (type === 'warehouse' && _stockSyncBefore && _stockSyncAfter) {
+      const { marketplacesNeedingStockResync } = await import(
+        '../utils/warehouseMarketplaceStockSyncPolicy.js'
+      );
+      const mps = marketplacesNeedingStockResync(_stockSyncBefore, _stockSyncAfter);
+      if (mps.length) {
+        await scheduleWarehouseMarketplaceStockResync(updated, mps);
+      }
     }
     console.log('[WarehousesService] Updated warehouse returned:', JSON.stringify(updated, null, 2));
     console.log('[WarehousesService] Updated warehouse wbWarehouseName:', updated.wbWarehouseName);
@@ -322,6 +385,82 @@ class WarehousesService {
       throw error;
     }
     return deleted;
+  }
+
+  async listStockSyncExclusions(id, { profileId = null } = {}) {
+    await this.getById(id, { profileId });
+    const {
+      listWarehouseStockSyncExclusions,
+      countWarehouseStockSyncExclusions,
+    } = await import('../utils/warehouseMarketplaceStockSyncPolicy.js');
+    const items = await listWarehouseStockSyncExclusions(id);
+    const count = await countWarehouseStockSyncExclusions(id);
+    return { items, count };
+  }
+
+  async addStockSyncExclusion(id, body, { profileId = null } = {}) {
+    const warehouse = await this.getById(id, { profileId });
+    const {
+      addWarehouseStockSyncExclusion,
+      normalizeStockSyncMarketplace,
+    } = await import('../utils/warehouseMarketplaceStockSyncPolicy.js');
+    const productId = body?.productId ?? body?.product_id;
+    const marketplace = body?.marketplace;
+    const row = await addWarehouseStockSyncExclusion(id, productId, marketplace);
+    const mp = normalizeStockSyncMarketplace(marketplace);
+    const orgId = warehouse.organization_id ?? warehouse.organizationId;
+    if (orgId != null && mp) {
+      try {
+        const { syncWarehouseStockToMarketplaces } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        setImmediate(() => {
+          syncWarehouseStockToMarketplaces(productId, {
+            organizationId: orgId,
+            warehouseId: id,
+            marketplaces: [mp],
+            source: 'warehouse_stock_exclusion_add',
+          }).catch(() => {});
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    return row;
+  }
+
+  async removeStockSyncExclusion(id, exclusionId, { profileId = null } = {}) {
+    const warehouse = await this.getById(id, { profileId });
+    const { removeWarehouseStockSyncExclusion } = await import(
+      '../utils/warehouseMarketplaceStockSyncPolicy.js'
+    );
+    const removed = await removeWarehouseStockSyncExclusion(id, exclusionId);
+    if (!removed) {
+      const error = new Error('Исключение не найдено');
+      error.statusCode = 404;
+      throw error;
+    }
+    const orgId = warehouse.organization_id ?? warehouse.organizationId;
+    const productId = removed.product_id ?? removed.productId;
+    const mp = removed.marketplace;
+    if (orgId != null && productId != null && mp) {
+      try {
+        const { syncWarehouseStockToMarketplaces } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        setImmediate(() => {
+          syncWarehouseStockToMarketplaces(productId, {
+            organizationId: orgId,
+            warehouseId: id,
+            marketplaces: [mp],
+            source: 'warehouse_stock_exclusion_remove',
+          }).catch(() => {});
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    return removed;
   }
 }
 

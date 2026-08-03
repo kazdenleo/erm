@@ -329,6 +329,12 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
 
   for (const mapping of mappings) {
     const mp = normalizeMpKey(mapping.marketplace);
+    if (Array.isArray(opts.marketplaces) && opts.marketplaces.length > 0) {
+      const allow = new Set(
+        opts.marketplaces.map((x) => normalizeMpKey(x)).filter(Boolean)
+      );
+      if (!allow.has(mp)) continue;
+    }
     if (!isMarketplaceLinked(mp, ctx)) {
       results.push({ marketplace: mp, ok: false, skipped: true, reason: 'not_linked' });
       continue;
@@ -346,6 +352,17 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       }
     );
 
+    const { resolveWarehouseMarketplacePushQuantity } = await import(
+      '../utils/warehouseMarketplaceStockSyncPolicy.js'
+    );
+    const qtyPolicy = await resolveWarehouseMarketplacePushQuantity({
+      warehouseId: whForStock,
+      productId,
+      marketplace: mp,
+      available
+    });
+    const pushQuantity = qtyPolicy.quantity;
+
     logger.info('[MP Stock Push] qty breakdown', {
       productId,
       sku: ctx.product?.sku,
@@ -354,7 +371,9 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       onHand,
       suppliers,
       reserved,
-      pushQuantity: available
+      available,
+      pushQuantity,
+      qtyPolicyReason: qtyPolicy.reason || null
     });
 
     try {
@@ -363,7 +382,7 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
         product: ctx.product,
         productSkus: ctx.productSkus,
         mapping,
-        quantity: available,
+        quantity: pushQuantity,
         organizationId,
         profileId: profileIdFromProduct
       });
@@ -373,7 +392,10 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
         available,
         onHand,
         suppliers,
-        reserved
+        reserved,
+        pushQuantity,
+        forceZero: qtyPolicy.forceZero === true,
+        qtyPolicyReason: qtyPolicy.reason || null
       });
     } catch (e) {
       logger.warn(`[MP Stock Push] ${mp} failed for product ${productId}:`, e?.message || e);
@@ -457,7 +479,12 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
       };
     }
     const mps = [...new Set(whMappings.map((m) => normalizeMpKey(m.marketplace)).filter(Boolean))];
-    opts._warehouseMarketplaces = mps;
+    const filterMps = Array.isArray(opts.marketplaces)
+      ? opts.marketplaces.map((x) => normalizeMpKey(x)).filter(Boolean)
+      : null;
+    const syncMps =
+      filterMps && filterMps.length > 0 ? filterMps.filter((mp) => mps.includes(mp)) : mps;
+    opts._warehouseMarketplaces = syncMps;
     opts._warehouseMappingsCount = whMappings.length;
 
     const explicitIds = Array.isArray(opts.productIds)
@@ -487,15 +514,15 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
   }
 
   if (productIds && productIds.length > 0) {
+    const mpKeys = opts._warehouseMarketplaces || null;
     return runBulkWarehouseStockSync(productIds, organizationId, {
       warehouseId: warehouseScoped ? resolvedWarehouseId : warehouseId,
       strictWarehouse,
       warehouseScoped,
       profileId: opts.profileId ?? null,
       source: opts.source || (warehouseScoped ? 'bulk_org_warehouse' : 'bulk'),
-      marketplaces: opts._warehouseMarketplaces
-        ? opts._warehouseMarketplaces.map((mp) => MP_LABELS[mp] || mp)
-        : undefined,
+      marketplaceFilter: mpKeys,
+      marketplaces: mpKeys ? mpKeys.map((mp) => MP_LABELS[mp] || mp) : undefined,
       includeDetails: opts.includeDetails === true
     });
   }
@@ -570,7 +597,8 @@ export async function runBulkWarehouseStockSync(productIds, organizationId, opts
           warehouseId: opts.warehouseId ?? null,
           profileId: opts.profileId ?? null,
           strictWarehouse: opts.strictWarehouse === true,
-          warehouseScoped: opts.warehouseScoped === true
+          warehouseScoped: opts.warehouseScoped === true,
+          marketplaces: opts.marketplaceFilter ?? null
         });
         tallySyncResult(summary, r);
         if (opts.includeDetails === true && Array.isArray(summary.results)) {

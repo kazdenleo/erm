@@ -1695,7 +1695,11 @@ export async function getReservedKitUnitsFromComponentsForOrder(kitProductId, or
     kitId,
     ...(components || []).map((c) => Number(c.component_product_id)).filter((id) => id > 0)
   ];
-  const whId = await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
+  // globalNet: без фильтра склада — иначе дубль «целый + детали» на разных WH не виден сверке.
+  const whId =
+    opts.globalNet === true
+      ? null
+      : await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
 
   const compIds = (components || [])
     .map((c) => Number(c.component_product_id))
@@ -1874,7 +1878,10 @@ export async function getReservedKitUnitsForOrderValidation(kitProductId, orderD
     kitId,
     ...(components || []).map((c) => Number(c.component_product_id)).filter((id) => id > 0)
   ];
-  const whId = await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
+  const whId =
+    opts.globalNet === true
+      ? null
+      : await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
   const nets = await batchNetReservedForOrderProducts(oid, productIds, mpLabel, whId);
   const onKit = nets.get(kitId) ?? 0;
   const fromComp =
@@ -2387,148 +2394,170 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   const kitId = Number(kitProductId);
   let wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
   const orderDbId = Number(meta?.order_id ?? meta?.orderId);
-  let reservedBeforeKit = null;
-  let onKitForAlloc = 0;
-  let fromCompBefore = 0;
-  if (Number.isFinite(orderDbId) && orderDbId > 0) {
-    reservedBeforeKit = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
-    const already = reservedBeforeKit;
-    const orderQtyCap =
-      meta?.order_qty != null
-        ? Math.max(1, parseInt(meta.order_qty, 10) || 1)
-        : null;
-    if (orderQtyCap != null && already >= orderQtyCap) return 0;
-    if (orderQtyCap != null) {
-      wanted = Math.min(wanted, Math.max(0, orderQtyCap - already));
-    }
-    if (wanted <= 0) return 0;
-
-    const onKit = await getNetReservedForOrderProduct(
-      orderDbId,
+  const useOrderLock = Number.isFinite(orderDbId) && orderDbId > 0;
+  // applyChange лочит product_id по отдельности — параллельный резерв целого SKU и деталей
+  // может оба увидеть already=0. Сериализуем по (комплект, заказ).
+  if (useOrderLock) {
+    await query(`SELECT pg_advisory_lock(hashtext('kit-ord-rsv:' || $1::text || ':' || $2::text))`, [
       kitId,
-      meta?.orderId != null ? String(meta.orderId).trim() : null,
-      meta?.warehouse_id ?? meta?.warehouseId ?? null
-    );
-    onKitForAlloc = onKit;
-    fromCompBefore = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
-    const fromComp = fromCompBefore;
-    if (onKit > 0 && fromComp > 0) {
-      if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
-        return 0;
-      }
-      // Комплементарный резерв: wanted уже ограничен validation (orderQtyCap - already).
-      // Не блокируем по warehouse onKit+fromComp — scoped onKit может быть завышен дублями движений.
-    }
+      orderDbId
+    ]);
   }
-  const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;
-  const strictWarehouse =
-    meta?.strict_warehouse === true ||
-    meta?.strictWarehouse === true ||
-    meta?.fbs_strict_warehouse === true;
-  const reserveOpts =
-    whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
-  // Согласовано с orderRowAllowsIncomingReserve (orders.service):
-  // new / in_procurement / in_assembly / wb_assembly и manual — можно «с пути».
-  // Раньше здесь был только manual → WB-комплекты с наличием только в комплектующих «в пути» не резервировались.
-  const allowIncomingReserve =
-    meta?.allow_incoming_reserve === true ||
-    meta?.allowIncomingReserve === true ||
-    kitOrderRowAllowsIncomingReserve(meta?.order_row);
-  let breakdown = await computeKitReservableBreakdown(kitId, {
-    ...reserveOpts,
-    allowIncomingReserve,
-  });
-  const manualComponentsOnly =
-    meta?.manual_reserve === true &&
-    (onKitForAlloc > 0 || (breakdown.wholeReserveAvail || 0) <= 0) &&
-    meta?.reconcile_kit_to_components !== true &&
-    meta?.reconcile_force_mixed !== true;
-  if (manualComponentsOnly) {
-    breakdown = {
-      ...breakdown,
-      wholeReserveAvail: 0,
-      wholeIncomingAvail: 0,
-      wholeAvail: 0
-    };
-  }
-  let alloc = allocateKitReservePriority(wanted, breakdown, { allowIncoming: allowIncomingReserve });
-  if (alloc.kitsToReserve <= 0) return 0;
-
-  if (alloc.fromWhole > 0) {
-    const wholeUnits = alloc.fromWhole;
-    if (wholeUnits > 0) {
-      await applyReserveFn(kitId, wholeUnits, orderIdLabel, {
-        ...meta,
-        kit_reserve_preallocated: wholeUnits,
-        kit_reserve_from_whole: wholeUnits,
-        kit_reserve_from_components: 0,
-        kit_reserve_scope: 'whole'
+  try {
+    let reservedBeforeKit = null;
+    let onKitForAlloc = 0;
+    let fromCompBefore = 0;
+    if (useOrderLock) {
+      reservedBeforeKit = await getReservedKitUnitsForOrderValidation(kitId, orderDbId, {
+        globalNet: true
       });
-    }
-  }
+      const already = reservedBeforeKit;
+      const orderQtyCap =
+        meta?.order_qty != null
+          ? Math.max(1, parseInt(meta.order_qty, 10) || 1)
+          : null;
+      if (orderQtyCap != null && already >= orderQtyCap) return 0;
+      if (orderQtyCap != null) {
+        wanted = Math.min(wanted, Math.max(0, orderQtyCap - already));
+      }
+      if (wanted <= 0) return 0;
 
-  if (alloc.fromComponents > 0) {
-    const assemblable = await computeAssemblableFromComponents(kitId, reserveOpts);
-    if (assemblable < alloc.fromComponents) {
-      alloc = {
-        kitsToReserve: alloc.fromWhole,
-        fromWhole: alloc.fromWhole,
-        fromComponents: 0
+      const onKit = await getNetReservedForOrderProduct(
+        orderDbId,
+        kitId,
+        meta?.orderId != null ? String(meta.orderId).trim() : null,
+        meta?.warehouse_id ?? meta?.warehouseId ?? null
+      );
+      onKitForAlloc = onKit;
+      fromCompBefore = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId, {
+        globalNet: true
+      });
+      const fromComp = fromCompBefore;
+      if (onKit > 0 && fromComp > 0) {
+        if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
+          return 0;
+        }
+        // Комплементарный резерв: wanted уже ограничен validation (orderQtyCap - already).
+        // Не блокируем по warehouse onKit+fromComp — scoped onKit может быть завышен дублями движений.
+      }
+    }
+    const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+    const reserveOpts =
+      whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
+    // Согласовано с orderRowAllowsIncomingReserve (orders.service):
+    // new / in_procurement / in_assembly / wb_assembly и manual — можно «с пути».
+    // Раньше здесь был только manual → WB-комплекты с наличием только в комплектующих «в пути» не резервировались.
+    const allowIncomingReserve =
+      meta?.allow_incoming_reserve === true ||
+      meta?.allowIncomingReserve === true ||
+      kitOrderRowAllowsIncomingReserve(meta?.order_row);
+    let breakdown = await computeKitReservableBreakdown(kitId, {
+      ...reserveOpts,
+      allowIncomingReserve,
+    });
+    const manualComponentsOnly =
+      meta?.manual_reserve === true &&
+      (onKitForAlloc > 0 || (breakdown.wholeReserveAvail || 0) <= 0) &&
+      meta?.reconcile_kit_to_components !== true &&
+      meta?.reconcile_force_mixed !== true;
+    if (manualComponentsOnly) {
+      breakdown = {
+        ...breakdown,
+        wholeReserveAvail: 0,
+        wholeIncomingAvail: 0,
+        wholeAvail: 0
       };
     }
-  }
+    let alloc = allocateKitReservePriority(wanted, breakdown, { allowIncoming: allowIncomingReserve });
+    if (alloc.kitsToReserve <= 0) return 0;
 
-  if (alloc.fromComponents > 0) {
-    const components = await getKitComponents(kitId);
-    const compQtyMap = buildKitComponentQtyMap(components, alloc.fromComponents);
-    for (const [compId, compQty] of compQtyMap) {
-      await applyReserveFn(compId, compQty, orderIdLabel, {
-        ...meta,
-        kit_product_id: kitId,
-        kit_reserve_batch: true,
-        kit_reserve_from_whole: 0,
-        kit_reserve_from_components: alloc.fromComponents,
-        kit_reserve_scope: 'component',
-        kit_units: alloc.fromComponents
-      });
-    }
-    if (Number.isFinite(orderDbId) && orderDbId > 0) {
-      const fromCompAfter = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
-      const expectedFromComp = fromCompBefore + alloc.fromComponents;
-      if (fromCompAfter < expectedFromComp) {
-        logger.error('[kitReserve] неполный пакетный резерв комплектующих', {
-          kitProductId: kitId,
-          orderDbId,
-          fromCompBefore,
-          fromCompAfter,
-          expectedFromComp,
-          allocFromComponents: alloc.fromComponents
+    if (alloc.fromWhole > 0) {
+      const wholeUnits = alloc.fromWhole;
+      if (wholeUnits > 0) {
+        await applyReserveFn(kitId, wholeUnits, orderIdLabel, {
+          ...meta,
+          kit_reserve_preallocated: wholeUnits,
+          kit_reserve_from_whole: wholeUnits,
+          kit_reserve_from_components: 0,
+          kit_reserve_scope: 'whole'
         });
       }
     }
-    for (const c of components) {
-      scheduleMarketplaceSyncForParentKits(c.component_product_id, {
-        source: 'kit_order_reserve',
-        organizationId: meta?.organizationId ?? null,
-        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+
+    if (alloc.fromComponents > 0) {
+      const assemblable = await computeAssemblableFromComponents(kitId, reserveOpts);
+      if (assemblable < alloc.fromComponents) {
+        alloc = {
+          kitsToReserve: alloc.fromWhole,
+          fromWhole: alloc.fromWhole,
+          fromComponents: 0
+        };
+      }
+    }
+
+    if (alloc.fromComponents > 0) {
+      const components = await getKitComponents(kitId);
+      const compQtyMap = buildKitComponentQtyMap(components, alloc.fromComponents);
+      for (const [compId, compQty] of compQtyMap) {
+        await applyReserveFn(compId, compQty, orderIdLabel, {
+          ...meta,
+          kit_product_id: kitId,
+          kit_reserve_batch: true,
+          kit_reserve_from_whole: 0,
+          kit_reserve_from_components: alloc.fromComponents,
+          kit_reserve_scope: 'component',
+          kit_units: alloc.fromComponents
+        });
+      }
+      if (useOrderLock) {
+        const fromCompAfter = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId, {
+          globalNet: true
+        });
+        const expectedFromComp = fromCompBefore + alloc.fromComponents;
+        if (fromCompAfter < expectedFromComp) {
+          logger.error('[kitReserve] неполный пакетный резерв комплектующих', {
+            kitProductId: kitId,
+            orderDbId,
+            fromCompBefore,
+            fromCompAfter,
+            expectedFromComp,
+            allocFromComponents: alloc.fromComponents
+          });
+        }
+      }
+      for (const c of components) {
+        scheduleMarketplaceSyncForParentKits(c.component_product_id, {
+          source: 'kit_order_reserve',
+          organizationId: meta?.organizationId ?? null,
+          warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+        });
+      }
+    }
+
+    scheduleWarehouseStockMarketplaceSync(kitId, {
+      source: 'kit_order_reserve',
+      organizationId: meta?.organizationId ?? null,
+      warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+      strictWarehouse:
+        (meta?.warehouse_id ?? meta?.warehouseId) != null &&
+        String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
+    });
+
+    if (useOrderLock && reservedBeforeKit != null) {
+      const reservedAfter = await getReservedKitUnitsForOrderValidation(kitId, orderDbId, {
+        globalNet: true
       });
+      return Math.max(0, reservedAfter - reservedBeforeKit);
+    }
+    return alloc.kitsToReserve;
+  } finally {
+    if (useOrderLock) {
+      await query(
+        `SELECT pg_advisory_unlock(hashtext('kit-ord-rsv:' || $1::text || ':' || $2::text))`,
+        [kitId, orderDbId]
+      ).catch(() => {});
     }
   }
-
-  scheduleWarehouseStockMarketplaceSync(kitId, {
-    source: 'kit_order_reserve',
-    organizationId: meta?.organizationId ?? null,
-    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
-    strictWarehouse:
-      (meta?.warehouse_id ?? meta?.warehouseId) != null &&
-      String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
-  });
-
-  if (Number.isFinite(orderDbId) && orderDbId > 0 && reservedBeforeKit != null) {
-    const reservedAfter = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
-    return Math.max(0, reservedAfter - reservedBeforeKit);
-  }
-  return alloc.kitsToReserve;
 }
 
 /**
@@ -2574,8 +2603,8 @@ export async function reconcileMisplacedKitWholeReserve(
 }
 
 /**
- * Дублирующий резерв (и на SKU, и на комплектующих сверх кол-ва заказа) — снять с комплектующих.
- * Комплементарный резерв (1 целый + N из деталей) не трогаем.
+ * Дублирующий резерв (и на SKU, и на комплектующих сверх кол-ва заказа) — снять избыток с комплектующих.
+ * Комплементарный резерв (1 целый + N из деталей в пределах qty заказа) не трогаем.
  */
 export async function reconcileMixedKitOrderReservePaths(
   kitProductId,
@@ -2592,7 +2621,7 @@ export async function reconcileMixedKitOrderReservePaths(
   const mpLabel =
     orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
   const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
-  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid, { globalNet: true });
   if (onKit <= 0 || fromComp <= 0) return 0;
 
   let orderQty = null;
@@ -2606,14 +2635,22 @@ export async function reconcileMixedKitOrderReservePaths(
   }
   if (orderQty != null && onKit + fromComp <= orderQty) return 0;
 
+  const kitsToDrop =
+    orderQty != null ? Math.min(fromComp, Math.max(0, onKit + fromComp - orderQty)) : fromComp;
+  if (kitsToDrop <= 0) return 0;
+
   let changed = 0;
   const components = await getKitComponents(kitId);
+  const dropMap = buildKitComponentQtyMap(components, kitsToDrop);
   for (const c of components) {
     const pid = Number(c.component_product_id);
     if (!Number.isFinite(pid) || pid < 1) continue;
+    const need = Math.max(0, Number(dropMap.get(pid)) || 0);
+    if (need <= 0) continue;
     const net = await getNetReservedForOrderProduct(oid, pid, mpLabel);
-    if (net <= 0) continue;
-    await unreserveProduct(pid, net, orderIdLabel, {
+    const release = Math.min(net, need);
+    if (release <= 0) continue;
+    await unreserveProduct(pid, release, orderIdLabel, {
       ...meta,
       order_id: oid,
       orderId: orderIdLabel,
@@ -2715,7 +2752,9 @@ export async function reconcileAllMixedKitReservesForProduct(productId, hooks) {
       const oid = Number(row.oid);
       if (!Number.isFinite(oid) || oid < 1) continue;
       const onKit = await getNetReservedForOrderProduct(oid, kitId);
-      const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+      const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid, {
+        globalNet: true
+      });
       const ord = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
       const label = ord.rows[0]?.order_id != null ? String(ord.rows[0].order_id) : String(oid);
       const meta = { source: 'reserve_modal_reconcile' };

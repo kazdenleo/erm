@@ -17,6 +17,24 @@ const router = express.Router();
 // Получить все склады
 router.get('/', wrapAsync(warehousesController.getAll.bind(warehousesController)));
 
+router.get(
+  '/:id/stock-sync-exclusions',
+  validateWarehouseId,
+  wrapAsync(warehousesController.listStockSyncExclusions.bind(warehousesController))
+);
+
+router.post(
+  '/:id/stock-sync-exclusions',
+  validateWarehouseId,
+  wrapAsync(warehousesController.addStockSyncExclusion.bind(warehousesController))
+);
+
+router.delete(
+  '/:id/stock-sync-exclusions/:exclusionId',
+  validateWarehouseId,
+  wrapAsync(warehousesController.removeStockSyncExclusion.bind(warehousesController))
+);
+
 // Создать новый склад (с валидацией)
 router.post(
   '/',

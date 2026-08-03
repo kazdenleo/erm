@@ -11,6 +11,28 @@ function normalizeProfileId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function mapWarehouseRow(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    supplierId: row.supplier_id,
+    mainWarehouseId: row.main_warehouse_id,
+    organizationId: row.organization_id,
+    supplierName: row.supplier_name,
+    supplierCode: row.supplier_code,
+    mainWarehouseAddress: row.main_warehouse_address,
+    orderAcceptanceTime: row.order_acceptance_time,
+    wbWarehouseName: row.wb_warehouse_name,
+    isFboStock: row.is_fbo_stock === true,
+    weekendDays: row.weekend_days ?? null,
+    pushMarketplaceStock: row.push_marketplace_stock !== false,
+    pushStockOzon: row.push_stock_ozon !== false,
+    pushStockWb: row.push_stock_wb !== false,
+    pushStockYm: row.push_stock_ym !== false,
+    stockSyncExclusionCount: Number(row.stock_sync_exclusion_count) || 0,
+  };
+}
+
 class WarehousesRepositoryPG {
   /**
    * Получить все склады
@@ -24,10 +46,16 @@ class WarehousesRepositoryPG {
         w.*,
         s.name as supplier_name,
         s.code as supplier_code,
-        mw.address as main_warehouse_address
+        mw.address as main_warehouse_address,
+        COALESCE(ex.cnt, 0)::int AS stock_sync_exclusion_count
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS cnt
+        FROM warehouse_marketplace_stock_exclusions e
+        WHERE e.warehouse_id = w.id
+      ) ex ON true
       WHERE 1=1
     `;
     const params = [];
@@ -61,20 +89,7 @@ class WarehousesRepositoryPG {
     sql += ' ORDER BY w.type, w.address';
     
     const result = await query(sql, params);
-    // Маппинг полей из snake_case в camelCase для фронтенда
-    return result.rows.map(row => ({
-      ...row,
-      supplierId: row.supplier_id,
-      mainWarehouseId: row.main_warehouse_id,
-      organizationId: row.organization_id,
-      supplierName: row.supplier_name,
-      supplierCode: row.supplier_code,
-      mainWarehouseAddress: row.main_warehouse_address,
-      orderAcceptanceTime: row.order_acceptance_time,
-      wbWarehouseName: row.wb_warehouse_name,
-      isFboStock: row.is_fbo_stock === true,
-      weekendDays: row.weekend_days ?? null,
-    }));
+    return result.rows.map((row) => mapWarehouseRow(row));
   }
 
   /** @deprecated Используйте profiles.manual_orders_warehouse_id; оставлено для обратной совместимости. */
@@ -104,7 +119,10 @@ class WarehousesRepositoryPG {
         w.*,
         s.name as supplier_name,
         s.code as supplier_code,
-        mw.address as main_warehouse_address
+        mw.address as main_warehouse_address,
+        COALESCE((
+          SELECT COUNT(*)::int FROM warehouse_marketplace_stock_exclusions e WHERE e.warehouse_id = w.id
+        ), 0) AS stock_sync_exclusion_count
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
@@ -115,7 +133,10 @@ class WarehousesRepositoryPG {
         w.*,
         s.name as supplier_name,
         s.code as supplier_code,
-        mw.address as main_warehouse_address
+        mw.address as main_warehouse_address,
+        COALESCE((
+          SELECT COUNT(*)::int FROM warehouse_marketplace_stock_exclusions e WHERE e.warehouse_id = w.id
+        ), 0) AS stock_sync_exclusion_count
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
@@ -126,21 +147,7 @@ class WarehousesRepositoryPG {
       return null;
     }
     
-    const row = result.rows[0];
-    // Маппинг полей из snake_case в camelCase для фронтенда
-    return {
-      ...row,
-      supplierId: row.supplier_id,
-      mainWarehouseId: row.main_warehouse_id,
-      organizationId: row.organization_id,
-      supplierName: row.supplier_name,
-      supplierCode: row.supplier_code,
-      mainWarehouseAddress: row.main_warehouse_address,
-      orderAcceptanceTime: row.order_acceptance_time,
-      wbWarehouseName: row.wb_warehouse_name,
-      isFboStock: row.is_fbo_stock === true,
-      weekendDays: row.weekend_days ?? null,
-    };
+    return mapWarehouseRow(result.rows[0]);
   }
   
   /**
@@ -178,8 +185,8 @@ class WarehousesRepositoryPG {
     // Пытаемся вставить с полем wb_warehouse_name и organization_id
     try {
       const result = await query(`
-        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock, weekend_days)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock, weekend_days, push_marketplace_stock, push_stock_ozon, push_stock_wb, push_stock_ym)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING *
       `, [
         warehouseData.type || 'warehouse',
@@ -192,19 +199,13 @@ class WarehousesRepositoryPG {
         profId,
         warehouseData.is_fbo_stock === true,
         warehouseData.weekend_days ?? null,
+        warehouseData.push_marketplace_stock !== false,
+        warehouseData.push_stock_ozon !== false,
+        warehouseData.push_stock_wb !== false,
+        warehouseData.push_stock_ym !== false,
       ]);
       
-      const row = result.rows[0];
-      return {
-        ...row,
-        supplierId: row.supplier_id,
-        mainWarehouseId: row.main_warehouse_id,
-        organizationId: row.organization_id,
-        orderAcceptanceTime: row.order_acceptance_time,
-        wbWarehouseName: row.wb_warehouse_name || null,
-        isFboStock: row.is_fbo_stock === true,
-        weekendDays: row.weekend_days ?? null,
-      };
+      return mapWarehouseRow(result.rows[0]);
     } catch (error) {
       if (error.message && error.message.includes('organization_id')) {
         try {
@@ -275,8 +276,8 @@ class WarehousesRepositoryPG {
       let paramIndex = 1;
       
       const allowedFields = includeWbWarehouseName 
-        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock', 'weekend_days']
-        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock', 'weekend_days'];
+        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym']
+        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym'];
       
       for (const field of allowedFields) {
         if (updates.hasOwnProperty(field)) {
@@ -341,13 +342,8 @@ class WarehousesRepositoryPG {
       console.log('[WarehousesRepository] Updated row from DB:', JSON.stringify(row, null, 2));
       console.log('[WarehousesRepository] wb_warehouse_name from DB:', row.wb_warehouse_name);
       console.log('[WarehousesRepository] wb_warehouse_name from DB type:', typeof row.wb_warehouse_name);
-      // Маппинг полей из snake_case в camelCase для фронтенда
       const mapped = {
-        ...row,
-        supplierId: row.supplier_id,
-        mainWarehouseId: row.main_warehouse_id,
-        organizationId: row.organization_id,
-        orderAcceptanceTime: row.order_acceptance_time,
+        ...mapWarehouseRow(row),
         wbWarehouseName: row.wb_warehouse_name || null,
         isFboStock: row.is_fbo_stock === true,
         weekendDays: row.weekend_days ?? null,

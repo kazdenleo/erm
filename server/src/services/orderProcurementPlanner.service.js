@@ -596,7 +596,11 @@ async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, 
   return touched;
 }
 
-/** Сверка quantity_purchased с реальными открытыми закупками; сброс устаревших записей. */
+/**
+ * Сколько единиц товара уже покрыто закупками под этот заказ.
+ * Важно: считаем и archived — иначе после приёмки/архива сбрасывается purchased
+ * и автозакупка заказывает те же source_orders повторно (как CN1009 в №224→№227).
+ */
 async function effectivePurchasedQty(
   profileId,
   orderDbId,
@@ -605,7 +609,31 @@ async function effectivePurchasedQty(
   { resetStale = false, lineKey = null } = {}
 ) {
   const recorded = Math.max(0, Math.floor(Number(recordedPurchased) || 0));
-  if (!recorded) return 0;
+
+  const linked = await query(
+    `SELECT
+       COALESCE(COUNT(*), 0)::int AS linked_qty,
+       COALESCE(SUM(CASE WHEN p.status = 'open' THEN 1 ELSE 0 END), 0)::int AS open_links
+     FROM purchase_items pi
+     INNER JOIN purchases p ON p.id = pi.purchase_id
+     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+     INNER JOIN orders o ON o.id = $2
+     WHERE p.profile_id = $1
+       AND pi.product_id = $3
+       AND p.status IN ('open', 'archived')
+       AND (
+         LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+         OR (
+           o.order_group_id IS NOT NULL
+           AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+         )
+       )`,
+    [profileId, orderDbId, productId]
+  );
+  const fromLinked = Number(linked.rows?.[0]?.linked_qty) || 0;
+  if (fromLinked > 0) {
+    return Math.max(recorded, fromLinked);
+  }
 
   const r = await query(
     `SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int AS qty
@@ -626,9 +654,12 @@ async function effectivePurchasedQty(
     [profileId, orderDbId, productId]
   );
   const fromOpen = Number(r.rows?.[0]?.qty) || 0;
-  if (fromOpen >= recorded) return Math.min(recorded, fromOpen);
+  if (fromOpen > 0) {
+    return Math.max(recorded, fromOpen);
+  }
 
-  if (resetStale && recorded > 0 && fromOpen === 0) {
+  // Нет привязки ни к одной закупке — устаревший quantity_purchased можно сбросить.
+  if (resetStale && recorded > 0) {
     const params = [profileId, orderDbId, productId];
     let whereExtra = '';
     if (lineKey) {
@@ -647,7 +678,7 @@ async function effectivePurchasedQty(
        WHERE fl.profile_id = $1 AND fl.order_db_id = $2 AND fl.product_id = $3${whereExtra}`,
       params
     );
-    logger.info('[OrderProcurement] reset stale purchased qty (no open purchase)', {
+    logger.info('[OrderProcurement] reset stale purchased qty (no purchase link)', {
       orderDbId,
       productId,
       lineKey,
@@ -656,7 +687,7 @@ async function effectivePurchasedQty(
     return 0;
   }
 
-  return fromOpen;
+  return recorded;
 }
 
 /** Перевести заказ(ы) в статус «В закупке» после оформления закупки или отправки поставщику. */
@@ -1001,12 +1032,19 @@ class OrderProcurementPlannerService {
           });
         }
         const g = purchaseGroups.get(gKey);
-        const sourceOrders = [{ marketplace: line.marketplace, orderId: line.orderId }];
+        const sourceOrders = [
+          {
+            marketplace: line.marketplace,
+            orderId: line.orderId,
+            quantity: coverage.deficit,
+          },
+        ];
         const existingItem = g.items.find(
           (it) => it.productId === line.productId && it.lineKey === line.lineKey
         );
         if (existingItem) {
           existingItem.quantity += coverage.deficit;
+          existingItem.sourceOrders.push(...sourceOrders);
         } else {
           g.items.push({
             lineKey: line.lineKey,
@@ -1514,7 +1552,7 @@ class OrderProcurementPlannerService {
       purchaseItems.push({
         productId: line.productId,
         quantity: qty,
-        sourceOrders: [{ marketplace: line.marketplace, orderId: line.orderId }],
+        sourceOrders: [{ marketplace: line.marketplace, orderId: line.orderId, quantity: qty }],
         purchasePrice: price > 0 ? price : null,
         lineKey,
         line,

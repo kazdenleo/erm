@@ -1162,11 +1162,19 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       } else if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
       return out;
     }
-    if (t === 'receipt' && /при[её]мка\s+по\s+закупке/i.test(reason)) {
+    const purchaseReceiptMeta = t === 'receipt' ? parseMovementMeta(m) : null;
+    if (
+      t === 'receipt' &&
+      (/при[её]мка(?:\s+№\s*\d+)?\s+по\s+закупке/i.test(reason) ||
+        ((purchaseReceiptMeta?.purchase_receipt_id != null ||
+          purchaseReceiptMeta?.purchaseReceiptId != null) &&
+          /закупк/i.test(reason)))
+    ) {
       const moveQty = Math.max(0, Number(m.quantity_change) || 0);
       const dbInc = movementNum(m, 'incoming_after');
       const dbRes = movementNum(m, 'reserved_after');
       const dbBal = movementNum(m, 'balance_after');
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
       if (prevLineBelow?.inc != null && moveQty > 0) {
         out.inc = Math.max(0, Number(prevLineBelow.inc) - moveQty);
       } else if (dbInc != null) out.inc = dbInc;
@@ -1175,18 +1183,31 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))
           ? Number(prevLineBelow.res)
           : null;
-      // При приёмке резерв не снимается — только перенос из «в пути» в наличие (старые снимки могли писать reserved_after=0).
-      if (prevRes != null && prevRes > 0) {
-        out.res = dbRes != null && dbRes >= prevRes ? dbRes : prevRes;
-      } else if (dbRes != null) {
-        out.res = dbRes;
-      } else if (prevRes != null) {
+      // Приёмка сама по себе резерв не меняет. Не подставляем глобальный reserved_after:
+      // при фильтре по складу он часто «прыгает» из‑за резервов на других складах / вне видимой истории.
+      if (prevRes != null) {
         out.res = prevRes;
+      } else if (dbRes != null && !warehouseFilterId) {
+        out.res = dbRes;
+      } else {
+        out.res = 0;
       }
-      if (dbBal != null) {
+      // Наличие: при фильтре склада — остаток склада (meta) или prev + qty; не products.quantity (все склады).
+      if (whBal != null) {
+        out.bal = whBal;
+      } else if (
+        warehouseFilterId != null &&
+        String(warehouseFilterId).trim() !== '' &&
+        prevLineBelow?.bal != null &&
+        moveQty > 0
+      ) {
+        out.bal = Number(prevLineBelow.bal) + moveQty;
+      } else if (dbBal != null && !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')) {
         out.bal = dbBal;
       } else if (prevLineBelow?.bal != null && moveQty > 0) {
         out.bal = Number(prevLineBelow.bal) + moveQty;
+      } else if (dbBal != null) {
+        out.bal = dbBal;
       }
     }
     if (t === 'inventory') {
@@ -1499,6 +1520,21 @@ function formatMovementReason(m) {
     if (/^сторно:\s*/i.test(reason)) {
       return reason.replace(/^сторно:\s*/i, 'Отмена: ');
     }
+    // В reason раньше было «Приёмка по закупке №229» (ID закупки), сейчас — «Приёмка №266 по закупке №229».
+    // Всегда показываем оба номера из meta, чтобы клик совпадал с подписью.
+    const purchaseId = meta.purchase_id ?? meta.purchaseId;
+    const purchaseReceiptId = meta.purchase_receipt_id ?? meta.purchaseReceiptId;
+    if (
+      purchaseId != null &&
+      String(purchaseId).trim() !== '' &&
+      purchaseReceiptId != null &&
+      String(purchaseReceiptId).trim() !== '' &&
+      (/при[её]мка/i.test(reason) && /закупк/i.test(reason))
+    ) {
+      const extra = /\(в\s*т\.?\s*ч\./i.exec(reason);
+      const extraTail = extra ? reason.slice(extra.index) : '';
+      return `Приёмка №${purchaseReceiptId} по закупке №${purchaseId}${extraTail ? ` ${extraTail}` : ''}`;
+    }
     return reason;
   }
   const typeLabel = (MOVEMENT_TYPE_LABELS[movementTypeLower(m)] || movementTypeLower(m)) || '—';
@@ -1511,16 +1547,7 @@ function getMovementLink(m) {
   const meta = parseMovementMeta(m);
   const reasonText = formatMovementReason(m);
   const t = movementTypeLower(m);
-  if (meta.receipt_id != null) {
-    let op = 'receipts_list';
-    if (t === 'customer_return') op = 'return_customer';
-    else if (t === 'return_to_supplier') op = 'return_supplier';
-    return {
-      to: { pathname: '/stock-levels/warehouse', search: `?op=${op}` },
-      state: { openReceiptId: meta.receipt_id, openTab: op },
-      label: reasonText
-    };
-  }
+  // Сначала приёмка по закупке: иначе meta.receipt_id (складской ПТ) перехватывает клик.
   const purchaseReceiptId = meta.purchase_receipt_id ?? meta.purchaseReceiptId;
   const purchaseId = meta.purchase_id ?? meta.purchaseId;
   if (
@@ -1536,6 +1563,16 @@ function getMovementLink(m) {
       },
       state: null,
       label: reasonText,
+    };
+  }
+  if (meta.receipt_id != null) {
+    let op = 'receipts_list';
+    if (t === 'customer_return') op = 'return_customer';
+    else if (t === 'return_to_supplier') op = 'return_supplier';
+    return {
+      to: { pathname: '/stock-levels/warehouse', search: `?op=${op}` },
+      state: { openReceiptId: meta.receipt_id, openTab: op },
+      label: reasonText
     };
   }
   if (t === 'reserve' && meta.orderId != null && String(meta.orderId).trim() !== '') {
@@ -2349,7 +2386,7 @@ export function WarehouseStocks() {
     const failed = data?.failed ?? 0;
     const skipped = data?.skipped ?? 0;
     if (data?.skipped && data?.reason === 'skip_marketplace_stock_sync') {
-      return 'Отправка отключена в настройках организации или категории товара.';
+      return 'Отправка отключена в настройках категории товара или склада.';
     }
     const total = data?.productsTotal;
     let details = `Успешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
@@ -2981,7 +3018,8 @@ export function WarehouseStocks() {
   const handleReleaseAllReservesFromStock = useCallback(async () => {
     const pid = reserveModalProduct?.id;
     if (!pid || reserveBulkReleasing) return;
-    const confirmMsg = `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`;
+    const unit = reserveModalIsKit ? 'компл.' : 'шт.';
+    const confirmMsg = `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} ${unit})?`;
     if (!window.confirm(confirmMsg)) {
       return;
     }
@@ -3003,6 +3041,7 @@ export function WarehouseStocks() {
     reserveBulkReleasing,
     reserveOrders.length,
     reserveModalTotalQty,
+    reserveModalIsKit,
     reloadReserveOrdersList,
     currentPage,
     stockWarehouseId
@@ -4072,7 +4111,8 @@ export function WarehouseStocks() {
               {reserveOrders.length > 0 ? (
                 <>
                   {' '}
-                  · по заказам: <strong>{reserveModalTotalQty}</strong> компл. ({reserveOrders.length}{' '}
+                  · по заказам: <strong>{reserveModalTotalQty}</strong>
+                  {reserveModalIsKit ? ' компл.' : ' шт.'} ({reserveOrders.length}{' '}
                   зак.)
                 </>
               ) : null}
@@ -4136,7 +4176,10 @@ export function WarehouseStocks() {
                       ) : null}
                     </div>
                     <div className="d-flex align-items-center gap-2 flex-shrink-0">
-                      <span className="badge bg-secondary rounded-pill">{o.reservedQty} компл.</span>
+                      <span className="badge bg-secondary rounded-pill">
+                        {o.reservedQty}
+                        {reserveModalIsKit ? ' компл.' : ' шт.'}
+                      </span>
                       <Button
                         type="button"
                         variant="secondary"
