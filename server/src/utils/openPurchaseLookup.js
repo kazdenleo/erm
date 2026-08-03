@@ -33,7 +33,7 @@ export async function findOpenAutoPurchaseId(
   { profileId, supplierId, arrivalBucket, now = new Date(), warehouseWeekendDays = null }
 ) {
   const bucket = normalizeArrivalBucket(arrivalBucket);
-  if (!isProcurementBucketOpenForNewOrders(bucket, now)) {
+  if (!isProcurementBucketOpenForNewOrders(bucket, now, warehouseWeekendDays)) {
     return null;
   }
 

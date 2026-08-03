@@ -117,17 +117,44 @@ function timeToMinutes(value, fallback = 0) {
   return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
 }
 
+/**
+ * До какой даты (включительно) открыто окно bucket с учётом выходных нашего склада.
+ * Пример: cutoff сб 21:00 + выходной вс → окно открыто до вс 21:00.
+ */
+export function getProcurementBucketOpenUntilYmd(bucket, warehouseWeekendDays = null, now = new Date()) {
+  const cutoff = parseCutoffBucket(normalizeArrivalBucket(bucket));
+  if (!cutoff) return null;
+  const weekends = normalizeWeekendDays(warehouseWeekendDays);
+  if (!weekends.length) return cutoff.date;
+
+  const nextDay = addDaysToYmd(cutoff.date, 1);
+  if (isWeekendWeekday(weekdayForYmd(nextDay, now), weekends)) {
+    return findLastConsecutiveWeekendDay(nextDay, weekends, now);
+  }
+  // Bucket на выходном дне (legacy/сб+вс: cutoff=вс) — открыт до этой даты
+  if (isWeekendWeekday(weekdayForYmd(cutoff.date, now), weekends)) {
+    return findLastConsecutiveWeekendDay(cutoff.date, weekends, now);
+  }
+  return cutoff.date;
+}
+
 /** Отсечка bucket ещё не наступила — в эту закупку можно добавлять заказы. */
-export function isProcurementBucketOpenForNewOrders(bucket, now = new Date()) {
+export function isProcurementBucketOpenForNewOrders(
+  bucket,
+  now = new Date(),
+  warehouseWeekendDays = null
+) {
   const normalized = normalizeArrivalBucket(bucket);
   const cutoff = parseCutoffBucket(normalized);
   if (cutoff) {
     const today = getMoscowDateParts(now, 0).ymd;
     const mins = getMoscowMinutesOfDay(now);
     const cutMins = timeToMinutes(cutoff.time);
-    if (cutoff.date < today) return false;
-    if (cutoff.date === today && mins > cutMins) return false;
-    return true;
+    const openUntil = getProcurementBucketOpenUntilYmd(normalized, warehouseWeekendDays, now);
+    if (openUntil == null) return false;
+    if (today < openUntil) return true;
+    if (today === openUntil && mins <= cutMins) return true;
+    return false;
   }
   // Старые bucket today/tomorrow не используем для автослияния
   if (normalized === SUPPLIER_ARRIVAL_TODAY || normalized === SUPPLIER_ARRIVAL_TOMORROW) {
@@ -361,6 +388,10 @@ export function resolveProcurementArrivalBucket(warehouses, now = new Date()) {
 /**
  * Bucket с учётом выходных нашего склада.
  * Заказы до одной отсечки — одна открытая закупка; после отсечки — новая.
+ *
+ * Выходные:
+ * - сб+вс: после пятничной отсечки → одно окно до вс (bucket = последний выходной);
+ * - только вс: субботняя закупка остаётся открытой в воскресенье (bucket = сб).
  */
 export function resolveProcurementArrivalBucketWithCalendar(
   warehouses,
@@ -379,9 +410,62 @@ export function resolveProcurementArrivalBucketWithCalendar(
   );
   if (!w) return SUPPLIER_ARRIVAL_TODAY;
 
+  const until = normalizeWarehouseTime(w.time, '18:00');
+  const cutMins = timeToMinutes(until);
+  const mins = getMoscowMinutesOfDay(now);
+  const today = getMoscowDateParts(now, 0);
+  const weekends = normalizeWeekendDays(warehouseWeekendDays);
+
+  if (weekends.length) {
+    // Сегодня выходной → до отсечки в последний выходной копим в закупку предыдущего рабочего дня
+    if (isWeekendWeekday(today.weekday, weekends)) {
+      const stretchEnd = findLastConsecutiveWeekendDay(today.ymd, weekends, now);
+      let stretchStart = today.ymd;
+      for (let guard = 0; guard < 14; guard += 1) {
+        const prev = addDaysToYmd(stretchStart, -1);
+        if (!isWeekendWeekday(weekdayForYmd(prev, now), weekends)) break;
+        stretchStart = prev;
+      }
+      const stretchLen =
+        Math.round(
+          (Date.parse(`${stretchEnd}T12:00:00Z`) - Date.parse(`${stretchStart}T12:00:00Z`)) /
+            (24 * 60 * 60 * 1000)
+        ) + 1;
+
+      if (today.ymd < stretchEnd || (today.ymd === stretchEnd && mins <= cutMins)) {
+        if (stretchLen > 1) {
+          return cutoffBucketFromParts(stretchEnd, until);
+        }
+        let prevWork = addDaysToYmd(stretchStart, -1);
+        for (let guard = 0; guard < 14; guard += 1) {
+          if (!isWeekendWeekday(weekdayForYmd(prevWork, now), weekends)) break;
+          prevWork = addDaysToYmd(prevWork, -1);
+        }
+        return cutoffBucketFromParts(prevWork, until);
+      }
+    }
+
+    // Рабочий день после отсечки, дальше идут выходные → не открываем «завтра»,
+    // а держим окно до конца выходных (bucket = последний выходной при stretch>1, иначе сегодня).
+    if (mins > cutMins) {
+      const tomorrow = addDaysToYmd(today.ymd, 1);
+      if (isWeekendWeekday(weekdayForYmd(tomorrow, now), weekends)) {
+        const stretchEnd = findLastConsecutiveWeekendDay(tomorrow, weekends, now);
+        const stretchLen =
+          Math.round(
+            (Date.parse(`${stretchEnd}T12:00:00Z`) - Date.parse(`${tomorrow}T12:00:00Z`)) /
+              (24 * 60 * 60 * 1000)
+          ) + 1;
+        if (stretchLen > 1) {
+          return cutoffBucketFromParts(stretchEnd, until);
+        }
+        return cutoffBucketFromParts(today.ymd, until);
+      }
+    }
+  }
+
   let bucket = computeClosingCutoffBucket(w, now);
   const parsed = parseCutoffBucket(bucket);
-  const weekends = normalizeWeekendDays(warehouseWeekendDays);
 
   if (parsed && weekends.length) {
     const closeWd = weekdayForYmd(parsed.date, now);

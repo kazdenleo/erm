@@ -115,6 +115,7 @@ describe('resolveProcurementArrivalBucketFromApiConfig', () => {
 
 describe('Mikado procurement buckets with warehouse weekends', () => {
   const WEEKENDS = [6, 0];
+  const SUNDAY_ONLY = [0];
 
   test('Friday after 21:00, Sat/Sun before 21:00 — одна закупка; Sun after 21:00 — новая', () => {
     const friLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
@@ -143,6 +144,41 @@ describe('Mikado procurement buckets with warehouse weekends', () => {
     expect(sun).toBe(friLate);
     expect(sunLate).toBe('cutoff:2026-06-01:21:00');
     expect(sunLate).not.toBe(friLate);
+  });
+
+  test('только вс: сб после 21:00 и вс до 21:00 — та же субботняя закупка', () => {
+    // 2026-08-01 = суббота, 2026-08-02 = воскресенье
+    const satBefore = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 8, 1, 20, 0),
+      warehouseWeekendDays: SUNDAY_ONLY,
+      supplierCode: 'mikado',
+    });
+    const satAfter = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 8, 1, 22, 0),
+      warehouseWeekendDays: SUNDAY_ONLY,
+      supplierCode: 'mikado',
+    });
+    const sun = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 8, 2, 12, 0),
+      warehouseWeekendDays: SUNDAY_ONLY,
+      supplierCode: 'mikado',
+    });
+    const sunLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 8, 2, 22, 0),
+      warehouseWeekendDays: SUNDAY_ONLY,
+      supplierCode: 'mikado',
+    });
+
+    expect(satBefore).toBe('cutoff:2026-08-01:21:00');
+    expect(satAfter).toBe(satBefore);
+    expect(sun).toBe(satBefore);
+    expect(sunLate).toBe('cutoff:2026-08-03:21:00');
+    expect(isProcurementBucketOpenForNewOrders(satBefore, moscowDate(2026, 8, 2, 12, 0), SUNDAY_ONLY)).toBe(
+      true
+    );
+    expect(isProcurementBucketOpenForNewOrders(satBefore, moscowDate(2026, 8, 2, 22, 0), SUNDAY_ONLY)).toBe(
+      false
+    );
   });
 });
 
