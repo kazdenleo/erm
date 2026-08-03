@@ -122,6 +122,25 @@ export function toggleMpFieldLink(links, fieldKey, mp) {
   return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
 }
 
+/**
+ * Явно включить/выключить связь поля с МП (для массового редактирования).
+ * @param {Record<string, string[]>} links
+ * @param {string} fieldKey
+ * @param {string} mp
+ * @param {boolean} enabled
+ * @returns {Record<string, string[]>}
+ */
+export function setMpFieldLink(links, fieldKey, mp, enabled) {
+  const normalized = normalizeMpFieldLinks(links);
+  const code = String(mp || '').toLowerCase();
+  const supported = MP_FIELD_LINK_SUPPORT[fieldKey] || [];
+  if (!supported.includes(code)) return normalized;
+  const set = new Set(normalized[fieldKey] || []);
+  if (enabled) set.add(code);
+  else set.delete(code);
+  return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
+}
+
 /** мм → см для WB / YM */
 export function mmToCm(mm) {
   const n = Number(mm);

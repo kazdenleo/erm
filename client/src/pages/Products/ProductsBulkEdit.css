@@ -240,6 +240,17 @@
   align-items: flex-start;
   gap: 4px;
   max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.products-bulk-th-label .mp-field-link-toggles {
+  margin-left: 2px !important;
+  flex: 0 0 auto;
+}
+
+.products-bulk-cell-linked {
+  opacity: 0.9;
+  font-style: italic;
 }
 
 .products-bulk-th-text {

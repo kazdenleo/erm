@@ -19,7 +19,11 @@ import {
   ymWeightDimensionsToErp,
   gramsToKg,
   kgToGrams,
+  normalizeMpFieldLinks,
+  isMpFieldLinked,
+  setMpFieldLink,
 } from '../../utils/productMpFieldLinks.js';
+import { MpFieldLinkToggles } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -92,6 +96,173 @@ function withSyncedProductDims(row, key, value) {
     next[alias] = value;
   }
   return next;
+}
+
+/** Колонки «Основное» ↔ МП для связанных полей (как в карточке). */
+const BULK_NAME_COLS = {
+  main: 'name',
+  ozon: 'mp_ozon_name',
+  wb: 'mp_wb_name',
+  ym: 'mp_ym_name',
+};
+const BULK_DESC_COLS = {
+  main: 'description',
+  ozon: 'mp_ozon_description',
+  wb: 'mp_wb_description',
+  ym: 'mp_ym_description',
+};
+const BULK_DIM_KEYS = ['length', 'width', 'height', 'weight'];
+const BULK_PACK_COLS = {
+  ozon: {
+    length: 'ozon_pack_length',
+    width: 'ozon_pack_width',
+    height: 'ozon_pack_height',
+    weight: 'ozon_pack_weight',
+  },
+  wb: {
+    length: 'wb_pack_length',
+    width: 'wb_pack_width',
+    height: 'wb_pack_height',
+    weight: 'wb_pack_weight',
+  },
+  ym: {
+    length: 'ym_pack_length',
+    width: 'ym_pack_width',
+    height: 'ym_pack_height',
+    weight: 'ym_pack_weight',
+  },
+};
+
+function bulkLinkFieldForColumn(colKey) {
+  const k = String(colKey || '');
+  if (k === 'name' || k === 'mp_ozon_name' || k === 'mp_wb_name' || k === 'mp_ym_name') return 'name';
+  if (
+    k === 'description' ||
+    k === 'mp_ozon_description' ||
+    k === 'mp_wb_description' ||
+    k === 'mp_ym_description'
+  ) {
+    return 'description';
+  }
+  if (BULK_DIM_KEYS.includes(k)) return 'dimensions';
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const pack = BULK_PACK_COLS[mp];
+    if (Object.values(pack).includes(k)) return 'dimensions';
+  }
+  return null;
+}
+
+function bulkMpCodeForColumn(colKey) {
+  const k = String(colKey || '');
+  if (k.startsWith('mp_ozon_') || k.startsWith('ozon_pack_')) return 'ozon';
+  if (k.startsWith('mp_wb_') || k.startsWith('wb_pack_')) return 'wb';
+  if (k.startsWith('mp_ym_') || k.startsWith('ym_pack_')) return 'ym';
+  return null;
+}
+
+/** Ячейка МП только для чтения, если поле связано с «Основным». */
+function isBulkLinkedMpReadonly(row, colKey) {
+  const fieldKey = bulkLinkFieldForColumn(colKey);
+  const mp = bulkMpCodeForColumn(colKey);
+  if (!fieldKey || !mp) return false;
+  return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp);
+}
+
+function copyMainNameToMp(row, mp) {
+  const col = BULK_NAME_COLS[mp];
+  if (!col) return row;
+  return { ...row, [col]: row.name ?? '' };
+}
+
+function copyMainDescToMp(row, mp) {
+  const col = BULK_DESC_COLS[mp];
+  if (!col) return row;
+  return { ...row, [col]: row.description ?? '' };
+}
+
+function copyMainDimsToMp(row, mp) {
+  const pack = BULK_PACK_COLS[mp];
+  if (!pack) return row;
+  const next = { ...row };
+  for (const dim of BULK_DIM_KEYS) {
+    next[pack[dim]] = row[dim] ?? '';
+  }
+  return next;
+}
+
+function copyMainFieldToMp(row, fieldKey, mp) {
+  if (fieldKey === 'name') return copyMainNameToMp(row, mp);
+  if (fieldKey === 'description') return copyMainDescToMp(row, mp);
+  if (fieldKey === 'dimensions') return copyMainDimsToMp(row, mp);
+  return row;
+}
+
+/**
+ * После правки ячейки: при активной связи копируем значение в «Основное» и связанные МП.
+ * Единицы в таблице уже display — ozon/wb/ym pack совпадают с ERP-колонками.
+ */
+function withSyncedLinkedFields(row, key, value) {
+  let next = withSyncedProductDims(row, key, value);
+  const fieldKey = bulkLinkFieldForColumn(key);
+  if (!fieldKey) return next;
+  const links = normalizeMpFieldLinks(next.mp_field_links);
+  const editedMp = bulkMpCodeForColumn(key);
+
+  if (fieldKey === 'name') {
+    if (!editedMp) {
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (isMpFieldLinked(links, 'name', mp)) next[BULK_NAME_COLS[mp]] = value;
+      }
+    } else if (isMpFieldLinked(links, 'name', editedMp)) {
+      next.name = value;
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (mp !== editedMp && isMpFieldLinked(links, 'name', mp)) {
+          next[BULK_NAME_COLS[mp]] = value;
+        }
+      }
+    }
+    return next;
+  }
+
+  if (fieldKey === 'description') {
+    if (!editedMp) {
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (isMpFieldLinked(links, 'description', mp)) next[BULK_DESC_COLS[mp]] = value;
+      }
+    } else if (isMpFieldLinked(links, 'description', editedMp)) {
+      next.description = value;
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (mp !== editedMp && isMpFieldLinked(links, 'description', mp)) {
+          next[BULK_DESC_COLS[mp]] = value;
+        }
+      }
+    }
+    return next;
+  }
+
+  if (fieldKey === 'dimensions') {
+    const dimKey = BULK_DIM_KEYS.find((d) => key === d || key.endsWith(`_pack_${d}`));
+    if (!dimKey) return next;
+    if (!editedMp) {
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (isMpFieldLinked(links, 'dimensions', mp)) {
+          next[BULK_PACK_COLS[mp][dimKey]] = value;
+        }
+      }
+    } else if (isMpFieldLinked(links, 'dimensions', editedMp)) {
+      next[dimKey] = value;
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        if (mp !== editedMp && isMpFieldLinked(links, 'dimensions', mp)) {
+          next[BULK_PACK_COLS[mp][dimKey]] = value;
+        }
+      }
+    }
+  }
+  return next;
+}
+
+function linksSignature(links) {
+  return JSON.stringify(normalizeMpFieldLinks(links));
 }
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
@@ -236,17 +407,17 @@ const COLUMNS = [
   { key: 'id', label: 'ID', readonly: true, noBulk: true, width: 56, minW: 56 },
   { key: '_photo', label: 'Фото', readonly: true, noBulk: true, width: 52, minW: 52 },
   /* названия */
-  { key: 'name', label: 'Название', input: 'textarea', minW: 200 },
+  { key: 'name', label: 'Название', input: 'textarea', minW: 200, linkFieldKey: 'name' },
   { key: 'brand', label: 'Бренд', input: 'text', minW: 100 },
   /* описание */
-  { key: 'description', label: 'Описание', input: 'textarea', minW: 220 },
+  { key: 'description', label: 'Описание', input: 'textarea', minW: 220, linkFieldKey: 'description' },
   /* габариты товара (без упаковки) — вкладка «Основное» */
   { key: 'product_length', label: 'Основное · Длина товара', title: 'Основное · Длина товара', input: 'number', minW: 110, dimKind: 'length' },
   { key: 'product_width', label: 'Основное · Ширина товара', title: 'Основное · Ширина товара', input: 'number', minW: 110, dimKind: 'length' },
   { key: 'product_height', label: 'Основное · Высота товара', title: 'Основное · Высота товара', input: 'number', minW: 110, dimKind: 'length' },
   { key: 'product_weight', label: 'Основное · Вес товара', title: 'Основное · Вес товара', input: 'number', minW: 110, dimKind: 'weight' },
-  /* габариты упаковки (ERP / «Основное») — общие, связь с МП через тумблеры в карточке */
-  { key: 'length', label: 'Основное · Длина упаковки', title: 'Основное · Длина упаковки', input: 'number', minW: 120, dimKind: 'length' },
+  /* габариты упаковки — связь с МП через тумблеры OZ/WB/ЯМ в заголовке */
+  { key: 'length', label: 'Основное · Длина упаковки', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 120, dimKind: 'length', linkFieldKey: 'dimensions' },
   { key: 'width', label: 'Основное · Ширина упаковки', title: 'Основное · Ширина упаковки', input: 'number', minW: 120, dimKind: 'length' },
   { key: 'height', label: 'Основное · Высота упаковки', title: 'Основное · Высота упаковки', input: 'number', minW: 120, dimKind: 'length' },
   { key: 'weight', label: 'Основное · Вес с упаковкой', title: 'Основное · Вес с упаковкой', input: 'number', minW: 120, dimKind: 'weight' },
@@ -936,6 +1107,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
+    mp_field_links: normalizeMpFieldLinks(p.mp_field_links),
     ...ozPack,
     ...wbPack,
     ...ymPack,
@@ -1029,6 +1201,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   if (!eq(original.description, current.description)) touch('description', normTextOrNull(current.description));
   if (!eq(original.country_of_origin, current.country_of_origin)) {
     touch('country_of_origin', normTextOrNull(current.country_of_origin));
+  }
+
+  if (linksSignature(original.mp_field_links) !== linksSignature(current.mp_field_links)) {
+    touch('mp_field_links', normalizeMpFieldLinks(current.mp_field_links));
   }
 
   const ob = parseBarcodesCell(original.barcodes).join('\u0001');
@@ -1205,6 +1381,7 @@ function cloneRow(r) {
   const { _productRef, _ozonDraftBaseline, _wbDraftBaseline, _ymDraftBaseline, _mpAttrBaseline, ...rest } = r;
   return {
     ...rest,
+    mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
     _mpAttrBaseline: _mpAttrBaseline
       ? {
           ozon: { ...(_mpAttrBaseline.ozon || {}) },
@@ -1992,16 +2169,54 @@ export function ProductsBulkEdit() {
     if (!col) return;
     const key = col.key;
     markChangedForPush(rows.map((r) => r.id));
-    setRows((prev) => prev.map((r) => withSyncedProductDims(r, key, bulkDraft)));
+    setRows((prev) => prev.map((r) => withSyncedLinkedFields(r, key, bulkDraft)));
     setBulkModal({ open: false, column: null });
   };
 
   const updateCell = (id, key, value) => {
     markChangedForPush(id);
     setRows((prev) =>
-      prev.map((r) => (r.id === id ? withSyncedProductDims(r, key, value) : r))
+      prev.map((r) => (r.id === id ? withSyncedLinkedFields(r, key, value) : r))
     );
   };
+
+  /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
+  const toggleBulkHeaderFieldLink = useCallback(
+    (fieldKey, mp) => {
+      if (!rows.length) return;
+      const allOn = rows.every((r) =>
+        isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
+      );
+      const enable = !allOn;
+      markChangedForPush(rows.map((r) => r.id));
+      setRows((prev) =>
+        prev.map((r) => {
+          let next = {
+            ...r,
+            mp_field_links: setMpFieldLink(r.mp_field_links, fieldKey, mp, enable),
+          };
+          if (enable) next = copyMainFieldToMp(next, fieldKey, mp);
+          return next;
+        })
+      );
+    },
+    [rows, markChangedForPush]
+  );
+
+  const headerLinksForField = useCallback(
+    (fieldKey) => {
+      const base = normalizeMpFieldLinks(null);
+      if (!rows.length) return base;
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        const on = rows.every((r) =>
+          isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
+        );
+        if (on) base[fieldKey] = [...(base[fieldKey] || []), mp];
+      }
+      return base;
+    },
+    [rows]
+  );
 
   const handleSave = async (opts = {}) => {
     const suppressPushOffer = opts?.suppressPushOffer === true;
@@ -2274,10 +2489,18 @@ export function ProductsBulkEdit() {
   );
 
   const renderInput = (col, row) => {
-    if (col.readonly) {
+    if (col.readonly || isBulkLinkedMpReadonly(row, col.key)) {
       const text = str(row[col.key]).trim();
+      const linked = isBulkLinkedMpReadonly(row, col.key);
       return (
-        <span className="text-muted small text-nowrap d-block" title={col.hint || undefined}>
+        <span
+          className={`text-muted small text-nowrap d-block${linked ? ' products-bulk-cell-linked' : ''}`}
+          title={
+            linked
+              ? 'Связано с «Основным» — правьте колонку Основное'
+              : col.hint || undefined
+          }
+        >
           {text !== '' ? text : '—'}
         </span>
       );
@@ -2771,6 +2994,14 @@ export function ProductsBulkEdit() {
                     >
                       <div className="products-bulk-th-label">
                         <span className="products-bulk-th-text">{col.label}</span>
+                        {col.linkFieldKey ? (
+                          <MpFieldLinkToggles
+                            fieldKey={col.linkFieldKey}
+                            links={headerLinksForField(col.linkFieldKey)}
+                            onToggle={toggleBulkHeaderFieldLink}
+                            size={18}
+                          />
+                        ) : null}
                         {isBaseSticky ? (
                           <span
                             className="products-bulk-pin-btn products-bulk-pin-btn--locked"
