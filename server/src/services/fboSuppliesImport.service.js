@@ -1615,15 +1615,24 @@ function wbExternalShipmentNumber(row) {
 
 function mapYmStateToStatus(status) {
   const s = String(status ?? '').toUpperCase();
-  if (s.includes('CANCEL') || s.includes('REJECT')) return 'return';
-  if (s.includes('FINISH') || s.includes('COMPLET')) return 'closed';
-  if (s.includes('TRANSIT') || s.includes('DELIVER') || s.includes('SHIPPED')) return 'shipped';
-  // ACCEPTED_BY_WAREHOUSE_* — активная поставка, не путать с общим «ACCEPT»
-  if (s.includes('ACCEPTED_BY_WAREHOUSE') || s.includes('READY') || s.includes('PREPAR')) {
-    return 'ready_for_supply';
+  if (s.includes('CANCEL') || s.includes('REJECT') || s === 'INVALID') return 'return';
+  if (s.includes('FINISH') || s.includes('COMPLET') || s.includes('WAREHOUSE_SIGNED_ACT')) {
+    return 'closed';
   }
+  if (
+    s.includes('TRANSIT') ||
+    s.includes('DELIVER') ||
+    s.includes('SHIPPED') ||
+    s.includes('ARRIVED_TO') ||
+    s.includes('WAREHOUSE_HANDLING')
+  ) {
+    return 'shipped';
+  }
+  // READY_TO_WITHDRAW — вывоз; для поставки явного READY_TO_SUPPLY в enum нет
+  if (s.includes('READY_TO_WITHDRAW') || s.includes('READY_TO_SUPPLY')) return 'ready_for_supply';
   if (s.includes('PACK')) return 'packed';
-  if (s.includes('ACCEPT')) return 'closed';
+  // CREATED / ACCEPTED_BY_WAREHOUSE_SYSTEM / NEED_PREPARATION / VALIDATED / … —
+  // заявка на Маркете есть, у нас ещё сборка и резерв → «Новая»
   return 'new';
 }
 
