@@ -260,6 +260,8 @@ export function barcodesFromYmCard(data) {
 /**
  * Слить ШК с МП: не удаляет существующие (в т.ч. внутренние без иконок), не дублирует код —
  * только добавляет иконку маркетплейса или новую строку.
+ * Важно: `existing` должен быть актуальным списком из БД (не undefined) —
+ * иначе merge вернёт только коды МП, а products.update сделает DELETE+INSERT и затрёт локальные ШК.
  * @param {unknown} existing
  * @param {unknown} incomingCodes
  * @param {unknown} marketplace
@@ -268,6 +270,10 @@ export function barcodesFromYmCard(data) {
 export function mergeBarcodesFromMarketplace(existing, incomingCodes, marketplace) {
   const incoming = collectBarcodeStrings(incomingCodes);
   if (!incoming.length) return null;
+  // Явно пустой массив OK (у товара нет ШК); undefined/null — ошибка вызова, не затираем.
+  if (existing == null) {
+    return null;
+  }
   const mp = normalizeBarcodeMarketplace(marketplace);
   /** @type {{ barcode: string, marketplaces: MarketplaceCode[] }[]} */
   const rows = normalizeBarcodeRows(existing).map((r) => ({

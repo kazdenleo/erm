@@ -1007,19 +1007,27 @@ export async function pullProductCard(productId, marketplace, opts = {}) {
     ? marketplace.flatMap((m) => normalizeMp(m))
     : normalizeMp(marketplace);
   const uniqueMps = [...new Set(mps)];
-  const product = await productsService.getById(productId);
+  // Важно: WithDetails — иначе product.barcodes = undefined и merge с МП
+  // делает DELETE+INSERT только кодов с МП, затирая ШК с приёмки.
+  const product = await productsService.getByIdWithDetails(productId);
   if (!product) {
     const err = new Error('Товар не найден');
     err.statusCode = 404;
     throw err;
+  }
+  if (!Array.isArray(product.barcodes)) {
+    product.barcodes = [];
   }
   const results = [];
   for (const mp of uniqueMps) {
     try {
       results.push(await pullOneMarketplace(product, mp, opts));
       // после успешного апдейта подтягиваем свежий product для следующего МП
-      const refreshed = await productsService.getById(productId);
-      if (refreshed) Object.assign(product, refreshed);
+      const refreshed = await productsService.getByIdWithDetails(productId);
+      if (refreshed) {
+        Object.assign(product, refreshed);
+        if (!Array.isArray(product.barcodes)) product.barcodes = [];
+      }
     } catch (e) {
       results.push({
         marketplace: mp,
