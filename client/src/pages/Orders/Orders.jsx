@@ -103,9 +103,8 @@ function OrderQuantityWithReserve({
   }
   return (
     <span className="orders-qty-with-reserve">
-      <span className="orders-qty-value">{displayQty}</span>
       <span
-        className={reserveBadgeClassName(coverageKind)}
+        className={reserveBadgeClassName(coverageKind, { reservedQty: r, needQty: n })}
         title={formatOrderReserveBadgeTitle({
           reservedQty: r,
           needQty: n,
@@ -114,7 +113,7 @@ function OrderQuantityWithReserve({
           coverageKind,
         })}
       >
-        {r}/{n}
+        {displayQty}
       </span>
     </span>
   );
@@ -810,6 +809,8 @@ export function Orders() {
     },
     [buildOrdersListParams, currentPage, loadOrders]
   );
+  const reloadOrdersRef = useRef(reloadOrders);
+  reloadOrdersRef.current = reloadOrders;
 
   const beginListFilterChange = useCallback(() => {
     listFilterChangeRef.current = true;
@@ -841,36 +842,46 @@ export function Orders() {
     pendingListKeyRef.current = requestKey;
     setListRefreshing(true);
     // Silent: не прячем таблицу через loading — иначе при медленном API кажется, что заказов нет.
-    void reloadOrders({ silent: true })
-      .then((result) => {
-        if (cancelled || result?.stale) return;
-        if (pendingListKeyRef.current !== requestKey) return;
-        setLoadedListKey(requestKey);
-        if (!ordersHydratedRef.current) {
-          ordersHydratedRef.current = true;
-          setOrdersHydrateTick((n) => n + 1);
+    const settleOk = () => {
+      if (cancelled || pendingListKeyRef.current !== requestKey) return;
+      setLoadedListKey(requestKey);
+      if (!ordersHydratedRef.current) {
+        ordersHydratedRef.current = true;
+        setOrdersHydrateTick((n) => n + 1);
+      }
+      listFilterChangeRef.current = false;
+      setListRefreshing(false);
+    };
+    // Страховка: не держим opacity 0.55, если запрос завис / эффект пересоздался.
+    const safetyTimer = window.setTimeout(() => {
+      settleOk();
+    }, 20000);
+    void (async () => {
+      try {
+        let result = await reloadOrdersRef.current({ silent: true });
+        if (cancelled || pendingListKeyRef.current !== requestKey) return;
+        // Перебит другим loadOrders — один повтор (фоновые ephemeral больше не сбивают seq).
+        if (result?.stale) {
+          result = await reloadOrdersRef.current({ silent: true });
+          if (cancelled || pendingListKeyRef.current !== requestKey) return;
         }
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        if (pendingListKeyRef.current !== requestKey) return;
-        setLoadedListKey(requestKey);
-        if (!ordersHydratedRef.current) {
-          ordersHydratedRef.current = true;
-          setOrdersHydrateTick((n) => n + 1);
+        if (result?.stale) {
+          // Не держим opacity навсегда: данные уже мог применить победивший запрос.
+          settleOk();
+          return;
         }
+        settleOk();
+      } catch (e) {
+        if (cancelled || pendingListKeyRef.current !== requestKey) return;
         setRefreshError(e?.message || 'Не удалось загрузить заказы');
-      })
-      .finally(() => {
-        if (cancelled) return;
-        if (pendingListKeyRef.current !== requestKey) return;
-        listFilterChangeRef.current = false;
-        setListRefreshing(false);
-      });
+        settleOk();
+      }
+    })();
     return () => {
       cancelled = true;
+      window.clearTimeout(safetyTimer);
     };
-  }, [reloadOrders, currentListKey]);
+  }, [currentListKey]);
 
   const loadStatusCounts = useCallback(
     async ({ silent = false } = {}) => {
@@ -900,7 +911,7 @@ export function Orders() {
 
   /** Обновление списка и счётчиков без блокировки UI (после отправки поставщику). */
   const refreshOrdersInBackground = useCallback(() => {
-    void reloadOrders({ silent: true });
+    void reloadOrders({ silent: true, ephemeral: true });
     void loadStatusCounts({ silent: true });
   }, [reloadOrders, loadStatusCounts]);
 
@@ -1202,7 +1213,7 @@ export function Orders() {
         : POLL_VISIBLE_MS;
 
     const refreshListAndCounts = () =>
-      void reloadOrders({ silent: true })
+      void reloadOrders({ silent: true, ephemeral: true })
         .finally(() => {
           // Список обновляется с сервера, но бейджи статусов («Новый» и т.д.) — отдельный API.
           // Без этого после cron/импорта заказ уже в таблице, а «Новый» остаётся 0.
@@ -3228,7 +3239,7 @@ export function Orders() {
                     orders={detailModalRow.orders}
                     marketplace={detailModalRow.first.marketplace}
                     reserve={detailModalData?.reserve}
-                    onReserveChange={() => reloadOrders({ silent: true })}
+                    onReserveChange={() => reloadOrders({ silent: true, ephemeral: true })}
                   />
                 </>
               )}
@@ -3369,7 +3380,7 @@ export function Orders() {
 
         {renderOrdersListPager('top')}
 
-        <div className={`orders-list${listRefreshing || !listFiltersSettled ? ' orders-list--refreshing' : ''}`}>
+        <div className={`orders-list${listRefreshing ? ' orders-list--refreshing' : ''}`}>
         {!loading && listFiltersSettled && sortedGroupedDisplayRows.length === 0 ? (
           <div className="empty-state">
             <p>Заказы не найдены</p>
@@ -3426,7 +3437,7 @@ export function Orders() {
                     {sortByArticle === 'desc' ? ' ↓' : ''}
                   </button>
                 </th>
-                <th>Количество</th>
+                <th className="orders-col-qty">Количество</th>
                 <th>Цена</th>
                 {showStickerColumn ? <th>Стикер</th> : null}
                 {showShipmentColumn ? <th>Отгрузка</th> : null}
@@ -3676,18 +3687,14 @@ export function Orders() {
                           const lineNeed = Number(line.needQty) || line.quantity || 1;
                           return (
                             <div key={i} className="orders-stacked-line orders-stacked-line--qty-row">
-                              {lineReserved > 0 ? (
-                                <OrderQuantityWithReserve
-                                  qty={line.quantity}
-                                  reservedQty={lineReserved}
-                                  needQty={lineNeed}
-                                  coverageKind={line.coverageKind}
-                                  groupOrders={line.orders}
-                                  isGroup={(line.orders || []).length > 1}
-                                />
-                              ) : (
-                                <span className="orders-qty-value">{line.quantity}</span>
-                              )}
+                              <OrderQuantityWithReserve
+                                qty={line.quantity}
+                                reservedQty={lineReserved}
+                                needQty={lineNeed}
+                                coverageKind={line.coverageKind}
+                                groupOrders={line.orders}
+                                isGroup={(line.orders || []).length > 1}
+                              />
                             </div>
                           );
                         })}

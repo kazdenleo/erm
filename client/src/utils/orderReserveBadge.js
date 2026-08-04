@@ -1,4 +1,4 @@
-/** Плашка резерва: зелёная — со склада, серая — с участием «в пути». */
+/** Плашка резерва: зелёная только при полном покрытии со склада; иначе серая (в пути / частично). */
 
 /**
  * Числа для плашки «зарезервировано/нужно» в единицах строки заказа (комплект = 1 шт заказа).
@@ -26,8 +26,26 @@ export function groupReserveCoverageKind(ordersOrLines) {
   return 'none';
 }
 
-export function reserveBadgeClassName(coverageKind) {
-  if (coverageKind === 'on_hand') return 'orders-reserve-badge orders-reserve-badge--on-hand';
+/**
+ * Визуальный вид плашки количества:
+ * — зелёный: полный резерв со склада;
+ * — серый: есть резерв с «в пути» или частичный;
+ * — none: резерва нет (в UI — просто цифра без плашки).
+ */
+export function reserveBadgeVisualKind(coverageKind, { reservedQty = 0, needQty = 0 } = {}) {
+  const r = Math.max(0, Number(reservedQty) || 0);
+  const n = Math.max(0, Number(needQty) || 0);
+  const fully = n > 0 && r >= n;
+  if (coverageKind === 'on_hand' && fully) return 'on_hand';
+  if (r > 0) return 'incoming';
+  return 'none';
+}
+
+export function reserveBadgeClassName(coverageKind, counts = null) {
+  const kind =
+    counts != null ? reserveBadgeVisualKind(coverageKind, counts) : coverageKind === 'on_hand' ? 'on_hand' : 'incoming';
+  if (kind === 'on_hand') return 'orders-reserve-badge orders-reserve-badge--on-hand';
+  if (kind === 'none') return 'orders-reserve-badge orders-reserve-badge--uncovered';
   return 'orders-reserve-badge orders-reserve-badge--incoming';
 }
 
@@ -39,11 +57,14 @@ export function formatOrderReserveBadgeTitle({
   isGroup,
   coverageKind
 }) {
-  const fully = needQty > 0 && reservedQty >= needQty ? ' (полностью)' : '';
+  const visual = reserveBadgeVisualKind(coverageKind, { reservedQty, needQty });
+  const fully = needQty > 0 && reservedQty >= needQty ? ' (полностью)' : ' (частично)';
   const sourceHint =
-    coverageKind === 'on_hand'
+    visual === 'on_hand'
       ? '\nПокрытие: со склада (в наличии).'
-      : '\nПокрытие: с участием товара в пути.';
+      : coverageKind === 'on_hand' && reservedQty < needQty
+        ? '\nПокрытие: со склада, но резерв неполный.'
+        : '\nПокрытие: с участием товара в пути или резерв неполный.';
   const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}${sourceHint}`;
   const pool = [];
   if (Array.isArray(lines) && lines.length) pool.push(...lines);

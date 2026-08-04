@@ -123,8 +123,10 @@
 }
 
 .orders-qty-with-reserve {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -135,10 +137,14 @@
 
 .orders-stacked-line--qty-row {
   min-height: 1.6em;
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  align-items: center;
 }
 
 .orders-stacked-line--qty-row .orders-qty-with-reserve {
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .orders-reserve-badge {
@@ -228,7 +234,8 @@
   min-width: 0;
 }
 .orders-stacked-lines--qty {
-  align-items: flex-end;
+  width: 100%;
+  align-items: center;
 }
 .orders-stacked-line {
   line-height: 1.35;
@@ -256,13 +263,17 @@
   white-space: nowrap;
 }
 
-.orders-col-qty {
+.orders-page .orders-table th.orders-col-qty,
+.orders-page .orders-table td.orders-col-qty {
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: center;
   white-space: nowrap;
+  vertical-align: middle;
 }
-.orders-col-qty .orders-stacked-lines {
+.orders-page .orders-table td.orders-col-qty .orders-stacked-lines {
+  width: 100%;
   white-space: normal;
+  align-items: center;
 }
 .orders-row-multi td {
   vertical-align: top;

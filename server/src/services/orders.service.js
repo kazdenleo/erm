@@ -6842,7 +6842,23 @@ class OrdersService {
         profileId
       });
     }
-    return enrichReserveSummaryCoverage(summary, { light: lightCoverage });
+    const enriched = enrichReserveSummaryCoverage(summary, { light: lightCoverage });
+    // Карточка считает живо — синхронизируем снимок, чтобы список не показывал устаревшую зелёную плашку.
+    try {
+      const seen = new Set();
+      for (const row of rows) {
+        const oid = orderRowDbId(row);
+        if (!oid || seen.has(oid)) continue;
+        seen.add(oid);
+        await this.refreshOrderReserveSnapshot(oid);
+      }
+    } catch (e) {
+      logger.warn('[Orders] persist reserve snapshot after summary failed', {
+        orderId,
+        message: e?.message || String(e),
+      });
+    }
+    return enriched;
   }
 
   /**

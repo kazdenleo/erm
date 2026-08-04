@@ -618,15 +618,31 @@ class StockMovementsService {
     }
 
     // Снимок резерва на заказе — для быстрого списка без пересчёта журнала.
+    // Откладываем: иначе при циклическом import orders↔stockMovements refresh может
+    // тихо не выполниться / увидеть незавершённый стек applyChange.
     if (Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) {
-      try {
-        const ordersService = (await import('./orders.service.js')).default;
-        if (typeof ordersService.refreshOrderReserveSnapshot === 'function') {
-          await ordersService.refreshOrderReserveSnapshot(orderDbIdNum);
-        }
-      } catch {
-        /* ignore — список подтянется при следующем бэкфилле/резерве */
-      }
+      const oidForSnap = orderDbIdNum;
+      setImmediate(() => {
+        import('./orders.service.js')
+          .then((mod) => {
+            const svc = mod?.default;
+            if (typeof svc?.refreshOrderReserveSnapshot === 'function') {
+              return svc.refreshOrderReserveSnapshot(oidForSnap);
+            }
+            return null;
+          })
+          .catch((e) => {
+            try {
+              // eslint-disable-next-line no-console
+              console.warn('[StockMovements] refreshOrderReserveSnapshot failed', {
+                orderId: oidForSnap,
+                message: e?.message || String(e),
+              });
+            } catch {
+              /* ignore */
+            }
+          });
+      });
     }
 
     // После reserve не вызываем trimExcessReservesForProduct: перерезерв нужно отклонять,
