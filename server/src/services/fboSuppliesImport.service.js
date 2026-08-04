@@ -1313,6 +1313,105 @@ async function ymRequest(path, { apiKey, method = 'GET', body = null } = {}) {
   return response.json().catch(() => ({}));
 }
 
+/** supply-requests API Яндекса принимает только FBY и LAAS (не FBS/DBS). */
+const YM_SUPPLY_CAMPAIGN_TYPES = new Set(['FBY', 'LAAS']);
+
+function ymCampaignNumericId(camp) {
+  const id = camp?.id ?? camp?.campaignId;
+  const n = Number(id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function ymIsSupplyCapableCampaign(camp) {
+  const t = String(camp?.placementType ?? camp?.placement_type ?? '')
+    .trim()
+    .toUpperCase();
+  return YM_SUPPLY_CAMPAIGN_TYPES.has(t);
+}
+
+/**
+ * В интеграции часто сохранён FBS campaign_id (заказы/этикетки).
+ * Для заявок на поставку берём FBY/LAAS из GET /v2/campaigns.
+ * @returns {Promise<number[]>}
+ */
+async function resolveYmSupplyCampaignIds(apiKey, preferredCampaignId = null) {
+  const data = await ymRequest('/v2/campaigns', { apiKey, method: 'GET' });
+  const campaigns = data?.campaigns ?? data?.result?.campaigns ?? [];
+  const supplyCapable = campaigns.filter(ymIsSupplyCapableCampaign);
+  const ids = [];
+  const seen = new Set();
+  const preferRaw =
+    preferredCampaignId != null && String(preferredCampaignId).trim() !== ''
+      ? Number(preferredCampaignId)
+      : NaN;
+
+  const push = (id) => {
+    if (!Number.isFinite(id) || id < 1 || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+
+  if (Number.isFinite(preferRaw) && preferRaw > 0) {
+    const preferCamp = campaigns.find((c) => ymCampaignNumericId(c) === preferRaw);
+    if (preferCamp && ymIsSupplyCapableCampaign(preferCamp)) push(preferRaw);
+  }
+  for (const c of supplyCapable) push(ymCampaignNumericId(c));
+
+  if (!ids.length) {
+    const available = campaigns
+      .map((c) => {
+        const id = ymCampaignNumericId(c);
+        const t = String(c?.placementType ?? '').trim() || '?';
+        return id != null ? `${id}(${t})` : null;
+      })
+      .filter(Boolean)
+      .join(', ');
+    const err = new Error(
+      'Не найдена кампания FBY/LAAS для поставок Яндекс.Маркета. ' +
+        'В настройках интеграции указан кабинет FBS — поставки доступны только у FBO-магазина (FBY). ' +
+        (available ? `Доступные кампании: ${available}.` : 'Проверьте Api-Key и доступ к кабинету FBY.')
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return ids;
+}
+
+/** Дата заявки для локального фильтра (API date-фильтр смотрит на requestedDate и часто пуст у VDC). */
+function ymSupplyRequestActivityAt(req) {
+  const raw =
+    req?.updatedAt ??
+    req?.plannedDate ??
+    req?.createdAt ??
+    req?.targetLocation?.requestedDate ??
+    req?.transitLocation?.requestedDate ??
+    null;
+  if (raw == null || raw === '') return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function ymSupplyRequestWithinDaysBack(req, daysBack) {
+  const n = Number(daysBack);
+  if (!Number.isFinite(n) || n <= 0) return true;
+  const at = ymSupplyRequestActivityAt(req);
+  if (!at) return true;
+  const sinceMs = Date.now() - Math.max(1, Math.min(365, n)) * 24 * 60 * 60 * 1000;
+  return at.getTime() >= sinceMs;
+}
+
+/**
+ * Родительские VDC-заявки без номера отгрузки в кабинете дублируют child —
+ * для импорта берём child (с warehouseRequestId / marketplaceRequestId).
+ */
+function ymSupplyRequestIsImportable(req) {
+  const subtype = String(req?.subtype ?? '').trim().toUpperCase();
+  if (subtype !== 'VIRTUAL_DISTRIBUTION_CENTER') return true;
+  const mpId = req?.id?.marketplaceRequestId ?? req?.marketplaceRequestId;
+  const whId = req?.id?.warehouseRequestId ?? req?.warehouseRequestId;
+  return (mpId != null && String(mpId).trim() !== '') || (whId != null && String(whId).trim() !== '');
+}
+
 function mapWbStateToStatus(status) {
   const n = Number(status);
   if (Number.isFinite(n)) {
@@ -1517,10 +1616,14 @@ function wbExternalShipmentNumber(row) {
 function mapYmStateToStatus(status) {
   const s = String(status ?? '').toUpperCase();
   if (s.includes('CANCEL') || s.includes('REJECT')) return 'return';
-  if (s.includes('FINISH') || s.includes('COMPLET') || s.includes('ACCEPT')) return 'closed';
+  if (s.includes('FINISH') || s.includes('COMPLET')) return 'closed';
   if (s.includes('TRANSIT') || s.includes('DELIVER') || s.includes('SHIPPED')) return 'shipped';
-  if (s.includes('READY') || s.includes('PREPAR')) return 'ready_for_supply';
+  // ACCEPTED_BY_WAREHOUSE_* — активная поставка, не путать с общим «ACCEPT»
+  if (s.includes('ACCEPTED_BY_WAREHOUSE') || s.includes('READY') || s.includes('PREPAR')) {
+    return 'ready_for_supply';
+  }
   if (s.includes('PACK')) return 'packed';
+  if (s.includes('ACCEPT')) return 'closed';
   return 'new';
 }
 
@@ -2047,35 +2150,52 @@ async function resolveYmSupplyRequestForErmSupply(supply, { profileId } = {}) {
     organizationId: supply.organizationId ?? null,
   });
   const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
-  const campaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
-  if (!apiKey || !ymApiKeyHeader(apiKey) || !campaignId) return null;
+  const preferredCampaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
+  if (!apiKey || !ymApiKeyHeader(apiKey)) return null;
 
   const targetId = supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
   const targetNum =
     supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
   if (!targetId && !targetNum) return null;
 
-  const since = new Date();
-  since.setDate(since.getDate() - 365);
-  const listData = await ymRequest(
-    `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests?limit=100`,
-    {
-      apiKey,
-      method: 'POST',
-      body: {
-        requestTypes: ['SUPPLY'],
-        requestDateFrom: since.toISOString(),
-        requestDateTo: new Date().toISOString(),
-      },
+  let campaignIds;
+  try {
+    campaignIds = await resolveYmSupplyCampaignIds(apiKey, preferredCampaignId);
+  } catch {
+    return null;
+  }
+
+  for (const campaignId of campaignIds) {
+    let listData;
+    try {
+      // Без requestDateFrom/To: API фильтрует по requestedDate, у VDC-поставок она часто пустая.
+      listData = await ymRequest(
+        `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests?limit=100`,
+        {
+          apiKey,
+          method: 'POST',
+          body: { requestTypes: ['SUPPLY'] },
+        }
+      );
+    } catch {
+      continue;
     }
-  );
-  const requests = listData?.result?.requests ?? listData?.requests ?? [];
-  for (const req of requests) {
-    const reqId = req.id?.id ?? req.id ?? req.requestId;
-    const reqIdStr = reqId != null ? String(reqId).trim() : '';
-    const extNum = String(req.id?.warehouseRequestId ?? req.warehouseRequestId ?? reqIdStr ?? '').trim();
-    if (targetId && reqIdStr === targetId) return req;
-    if (targetNum && (extNum === targetNum || reqIdStr === targetNum)) return req;
+    const requests = listData?.result?.requests ?? listData?.requests ?? [];
+    for (const req of requests) {
+      if (!ymSupplyRequestIsImportable(req)) continue;
+      if (!ymSupplyRequestWithinDaysBack(req, 365)) continue;
+      const reqId = req.id?.id ?? req.id ?? req.requestId;
+      const reqIdStr = reqId != null ? String(reqId).trim() : '';
+      const extNum = String(
+        req.id?.warehouseRequestId ?? req.warehouseRequestId ?? reqIdStr ?? ''
+      ).trim();
+      if (targetId && reqIdStr === targetId) return { req, campaignId };
+      if (targetNum && (extNum === targetNum || reqIdStr === targetNum)) {
+        return { req, campaignId };
+      }
+      const mpNum = String(req.id?.marketplaceRequestId ?? req.marketplaceRequestId ?? '').trim();
+      if (targetNum && mpNum && mpNum === targetNum) return { req, campaignId };
+    }
   }
   return null;
 }
@@ -2123,13 +2243,13 @@ async function fetchMarketplaceStatusForSupply(supply, { profileId, ozonOrdersCa
   }
 
   if (mp === 'ym' || mp.includes('yandex')) {
-    const req = await resolveYmSupplyRequestForErmSupply(supply, { profileId });
-    if (!req) {
+    const hit = await resolveYmSupplyRequestForErmSupply(supply, { profileId });
+    if (!hit?.req) {
       const err = new Error('Заявка не найдена в Яндекс.Маркете по номеру отгрузки');
       err.statusCode = 404;
       throw err;
     }
-    const rawState = req.status ?? null;
+    const rawState = hit.req.status ?? null;
     return {
       status: mapYmStateToStatus(rawState),
       rawState: rawState != null ? String(rawState) : null,
@@ -2182,14 +2302,9 @@ async function fetchYmMpItemsForSupply(supply, { profileId } = {}) {
     organizationId: supply.organizationId ?? null,
   });
   const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
-  const campaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
+  const preferredCampaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
   if (!apiKey || !ymApiKeyHeader(apiKey)) {
     const err = new Error('Не настроен API-ключ Яндекс Маркета в «Интеграции».');
-    err.statusCode = 400;
-    throw err;
-  }
-  if (!campaignId) {
-    const err = new Error('Укажите campaign_id в интеграции Яндекс Маркета');
     err.statusCode = 400;
     throw err;
   }
@@ -2203,15 +2318,31 @@ async function fetchYmMpItemsForSupply(supply, { profileId } = {}) {
   }
   const requestId = Number.isFinite(Number(requestIdRaw)) ? Number(requestIdRaw) : requestIdRaw;
 
-  const itemsData = await ymRequest(
-    `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests/items?limit=500`,
-    {
-      apiKey,
-      method: 'POST',
-      body: { requestId, supplyRequestId: requestId },
+  const hit = await resolveYmSupplyRequestForErmSupply(supply, { profileId });
+  const campaignIds = hit?.campaignId
+    ? [hit.campaignId]
+    : await resolveYmSupplyCampaignIds(apiKey, preferredCampaignId);
+
+  let rows = [];
+  let lastErr = null;
+  for (const campaignId of campaignIds) {
+    try {
+      const itemsData = await ymRequest(
+        `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests/items?limit=500`,
+        {
+          apiKey,
+          method: 'POST',
+          body: { requestId, supplyRequestId: requestId },
+        }
+      );
+      rows = itemsData?.result?.items ?? itemsData?.items ?? [];
+      if (rows.length) break;
+    } catch (e) {
+      lastErr = e;
     }
-  );
-  const rows = itemsData?.result?.items ?? itemsData?.items ?? [];
+  }
+  if (!rows.length && lastErr) throw lastErr;
+
   const items = [];
   for (const row of rows) {
     const counters = row.counters ?? {};
@@ -2734,7 +2865,7 @@ class FboSuppliesImportService {
           order,
           supply,
           ozonApiOpts,
-          profileId,
+              profileId,
           orderDetails,
           {
             warehousesById: ozonWarehousesById,
@@ -2889,8 +3020,8 @@ class FboSuppliesImportService {
       try {
         const [goodsData, detailsData] = await Promise.all([
           wbFbwRequest(
-            `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
-            { apiKey, method: 'GET', timeoutMs: 30000 }
+          `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
+          { apiKey, method: 'GET', timeoutMs: 30000 }
           ),
           fetchWbSupplyDetails(apiKey, goodsApiId),
         ]);
@@ -2970,7 +3101,7 @@ class FboSuppliesImportService {
       organizationId,
     });
     const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
-    const campaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
+    const preferredCampaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
     if (!apiKey || !ymApiKeyHeader(apiKey)) {
       const err = new Error(
         'Не настроен API-ключ Яндекс.Маркета (формат ACMA:...). Укажите токен в «Интеграции» для выбранной организации с доступом «Заявки на поставку».'
@@ -2978,92 +3109,104 @@ class FboSuppliesImportService {
       err.statusCode = 400;
       throw err;
     }
-    if (!campaignId) {
-      const err = new Error('Укажите campaign_id в интеграции Яндекс.Маркета');
-      err.statusCode = 400;
-      throw err;
-    }
 
-    const since = new Date();
-    since.setDate(since.getDate() - Math.max(1, Math.min(365, Number(daysBack) || 90)));
+    const campaignIds = await resolveYmSupplyCampaignIds(apiKey, preferredCampaignId);
+    const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
 
-    const listData = await ymRequest(
-      `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests?limit=100`,
-      {
-        apiKey,
-        method: 'POST',
-        body: {
-          requestTypes: ['SUPPLY'],
-          requestDateFrom: since.toISOString(),
-          requestDateTo: new Date().toISOString(),
-        },
-      }
-    );
-
-    const requests = listData?.result?.requests ?? listData?.requests ?? [];
     const candidates = [];
+    const seenExt = new Set();
 
-    for (const req of requests) {
-      const reqId = req.id?.id ?? req.id ?? req.requestId;
-      const externalNumber = String(
-        req.id?.warehouseRequestId ?? req.warehouseRequestId ?? reqId ?? ''
-      ).trim();
-      if (!externalNumber && reqId == null) continue;
-      const extNum = externalNumber || String(reqId);
-
-      let items = [];
+    for (const campaignId of campaignIds) {
+      let listData;
       try {
-        const itemsData = await ymRequest(
-          `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests/items?limit=500`,
+        // Без requestDateFrom/To: API фильтрует по requestedDate, у VDC-поставок она часто пустая → 0 строк.
+        listData = await ymRequest(
+          `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests?limit=100`,
           {
             apiKey,
             method: 'POST',
-            body: { requestId: reqId, supplyRequestId: reqId },
+            body: { requestTypes: ['SUPPLY'] },
           }
         );
-        const rows = itemsData?.result?.items ?? itemsData?.items ?? [];
-        for (const row of rows) {
-          const counters = row.counters ?? {};
-          const qty = parseInt(
-            counters.planCount ?? counters.factCount ?? counters.quantity ?? row.quantity ?? 0,
-            10
-          );
-          if (!qty || qty <= 0) continue;
-          const offerId = row.offerId ?? row.shopSku ?? null;
-          const productId = await resolveProductId({ sku: offerId, barcode: null, profileId });
-          items.push({
-            productId,
-            quantity: qty,
-            sku: offerId,
-            barcode: null,
-            mpOfferId: offerId,
-            name: row.name ?? null,
-            unresolved: productId == null,
-          });
-        }
-      } catch {
-        items = [];
+      } catch (e) {
+        if (campaignIds.length === 1) throw e;
+        continue;
       }
 
-      const target = req.targetLocation ?? req.targetWarehouse ?? {};
-      candidates.push({
-        importKey: `ym:${extNum}`,
-        marketplace: 'ym',
-        name: null,
-        readyAt: parseDateOnly(req.updatedAt ?? req.plannedDate ?? req.createdAt),
-        marketplaceWarehouseName: target.name ?? target.warehouseName ?? null,
-        marketplaceWarehouseId: target.id != null ? String(target.id) : null,
-        shippingCluster: resolveYmPlacementCluster(req, target),
-        externalShipmentNumber: extNum,
-        externalSupplyId: reqId != null ? String(reqId) : null,
-        deductionWarehouseId: null,
-        organizationId: organizationId != null ? Number(organizationId) : null,
-        deductStock: true,
-        status: mapYmStateToStatus(req.status),
-        items,
-        itemCount: sumSupplyItemsQuantity(items),
-        alreadyImported: false,
-      });
+      const requests = listData?.result?.requests ?? listData?.requests ?? [];
+
+      for (const req of requests) {
+        if (!ymSupplyRequestIsImportable(req)) continue;
+        if (!ymSupplyRequestWithinDaysBack(req, days)) continue;
+
+        const reqId = req.id?.id ?? req.id ?? req.requestId;
+        const externalNumber = String(
+          req.id?.warehouseRequestId ??
+            req.warehouseRequestId ??
+            req.id?.marketplaceRequestId ??
+            req.marketplaceRequestId ??
+            reqId ??
+            ''
+        ).trim();
+        if (!externalNumber && reqId == null) continue;
+        const extNum = externalNumber || String(reqId);
+        if (seenExt.has(extNum)) continue;
+        seenExt.add(extNum);
+
+        let items = [];
+        try {
+          const itemsData = await ymRequest(
+            `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests/items?limit=500`,
+            {
+              apiKey,
+              method: 'POST',
+              body: { requestId: reqId, supplyRequestId: reqId },
+            }
+          );
+          const rows = itemsData?.result?.items ?? itemsData?.items ?? [];
+          for (const row of rows) {
+            const counters = row.counters ?? {};
+            const qty = parseInt(
+              counters.planCount ?? counters.factCount ?? counters.quantity ?? row.quantity ?? 0,
+              10
+            );
+            if (!qty || qty <= 0) continue;
+            const offerId = row.offerId ?? row.shopSku ?? null;
+            const productId = await resolveProductId({ sku: offerId, barcode: null, profileId });
+            items.push({
+              productId,
+              quantity: qty,
+              sku: offerId,
+              barcode: null,
+              mpOfferId: offerId,
+              name: row.name ?? null,
+              unresolved: productId == null,
+            });
+          }
+        } catch {
+          items = [];
+        }
+
+        const target = req.targetLocation ?? req.targetWarehouse ?? {};
+        candidates.push({
+          importKey: `ym:${extNum}`,
+          marketplace: 'ym',
+          name: null,
+          readyAt: parseDateOnly(req.updatedAt ?? req.plannedDate ?? req.createdAt),
+          marketplaceWarehouseName: target.name ?? target.warehouseName ?? null,
+          marketplaceWarehouseId: target.id != null ? String(target.id) : null,
+          shippingCluster: resolveYmPlacementCluster(req, target),
+          externalShipmentNumber: extNum,
+          externalSupplyId: reqId != null ? String(reqId) : null,
+          deductionWarehouseId: null,
+          organizationId: organizationId != null ? Number(organizationId) : null,
+          deductStock: true,
+          status: mapYmStateToStatus(req.status),
+          items,
+          itemCount: sumSupplyItemsQuantity(items),
+          alreadyImported: false,
+        });
+      }
     }
 
     const existing = await fboSuppliesService.findExistingExternalNumbers(
@@ -3098,23 +3241,23 @@ class FboSuppliesImportService {
 
     const result = await runWithDbRetry(
       async () => {
-        const created = [];
-        const skipped = [];
+    const created = [];
+    const skipped = [];
 
-        for (const row of supplies) {
-          if (row.alreadyImported) {
-            skipped.push({ externalShipmentNumber: row.externalShipmentNumber, reason: 'already_imported' });
-            continue;
-          }
-          try {
+    for (const row of supplies) {
+      if (row.alreadyImported) {
+        skipped.push({ externalShipmentNumber: row.externalShipmentNumber, reason: 'already_imported' });
+        continue;
+      }
+      try {
             const mp = String(row.marketplace || '').trim().toLowerCase();
             const ozonCtx = mp === 'ozon' ? ozonContexts.get(ozonImportOrgKey(row.organizationId)) ?? null : null;
             const importRow =
               mp === 'ozon' && needsOzonHydrate(row)
                 ? await hydrateOzonImportRow(row, { profileId, ozonCtx })
                 : row;
-            const doc = await fboSuppliesService.create(
-              {
+        const doc = await fboSuppliesService.create(
+          {
                 marketplace: importRow.marketplace,
                 name: importRow.name,
                 readyAt: importRow.readyAt,
@@ -3129,37 +3272,37 @@ class FboSuppliesImportService {
                 status: importRow.status || 'new',
                 source: importRow.source || 'api',
                 items: (importRow.items || []).map((it) => ({
-                  productId: it.productId,
-                  quantity: it.quantity,
-                  barcode: it.barcode,
-                  sku: it.sku,
-                  mpOfferId: it.mpOfferId,
-                  mpProductId: it.mpProductId,
-                  name: it.name,
+              productId: it.productId,
+              quantity: it.quantity,
+              barcode: it.barcode,
+              sku: it.sku,
+              mpOfferId: it.mpOfferId,
+              mpProductId: it.mpProductId,
+              name: it.name,
                   placementZone: it.placementZone ?? null,
                   ozonTags: it.ozonTags ?? [],
-                })),
-              },
+            })),
+          },
               { profileId, userId, skipReserveRebalance: true, lightReturn: true }
-            );
-            created.push(doc);
+        );
+        created.push(doc);
             for (const it of importRow.items || []) {
               const pid = it.productId != null ? Number(it.productId) : NaN;
               if (Number.isFinite(pid) && pid > 0) productIdsToRebalance.add(pid);
             }
-          } catch (e) {
-            if (e.code === 'DUPLICATE_SUPPLY') {
-              skipped.push({
-                externalShipmentNumber: row.externalShipmentNumber,
-                reason: 'duplicate',
-              });
-            } else {
-              throw e;
-            }
-          }
+      } catch (e) {
+        if (e.code === 'DUPLICATE_SUPPLY') {
+          skipped.push({
+            externalShipmentNumber: row.externalShipmentNumber,
+            reason: 'duplicate',
+          });
+        } else {
+          throw e;
         }
+      }
+    }
 
-        return { created, skipped };
+    return { created, skipped };
       },
       { label: 'fbo-import-confirm', attempts: 3, delayMs: 5000 }
     );
