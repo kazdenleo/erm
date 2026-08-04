@@ -7,8 +7,11 @@ import {
   MIKADO_BASKET_BASE,
   MIKADO_STOCK_BASE,
   buildQueryUrl,
+  encodeQueryValueWindows1251,
   fetchWithTimeout,
+  formatSupplierPurchaseComment,
   pickWarehouseLine,
+  sourceOrderIdsFromPurchaseLine,
   xmlTag,
 } from './shared.js';
 
@@ -65,16 +68,24 @@ async function addToMikadoBasket({
   deliveryType,
   expressId,
 }) {
-  const url = buildQueryUrl(`${MIKADO_BASKET_BASE}/Basket_Add`, {
-    ZakazCode: zakazCode,
-    QTY: Math.max(1, parseInt(quantity, 10) || 1),
-    DeliveryType: deliveryType ?? 0,
-    ExpressID: expressId ?? 0,
-    StockID: stockId ?? 0,
-    Notes: notes || '',
-    ClientID: config.user_id,
-    Password: config.password,
-  });
+  const url = buildQueryUrl(
+    `${MIKADO_BASKET_BASE}/Basket_Add`,
+    {
+      ZakazCode: zakazCode,
+      QTY: Math.max(1, parseInt(quantity, 10) || 1),
+      DeliveryType: deliveryType ?? 0,
+      ExpressID: expressId ?? 0,
+      StockID: stockId ?? 0,
+      Notes: notes || '',
+      ClientID: config.user_id,
+      Password: config.password,
+    },
+    {
+      // Notes с кириллицей: Mikado читает query как windows-1251.
+      encodeValue: (key, value) =>
+        key === 'Notes' ? encodeQueryValueWindows1251(value) : encodeURIComponent(value),
+    }
+  );
   const response = await fetchWithTimeout(url, {
     method: 'GET',
     headers: { Accept: 'application/xml, text/xml, */*' },
@@ -111,7 +122,6 @@ export async function submitMikadoPurchase(ctx) {
   const deliveryType = integrationConfig.deliveryType ?? integrationConfig.delivery_type ?? 0;
   const expressId = integrationConfig.expressId ?? integrationConfig.express_id ?? 0;
   const warehouseName = purchase?.supplier_warehouse_name || null;
-  const notePrefix = purchase?.id ? `ERM закупка №${purchase.id}` : 'ERM';
 
   const submittedLines = [];
   const failedLines = [];
@@ -180,7 +190,14 @@ export async function submitMikadoPurchase(ctx) {
     }
 
     const orderQty = Math.max(qty, offer.minQty || 1);
-    const notes = `${notePrefix} · ${sku}${brand ? ` ${brand}` : ''}`;
+    const notes = formatSupplierPurchaseComment({
+      purchaseId: purchase?.id,
+      orderIds: sourceOrderIdsFromPurchaseLine(line),
+      sku,
+      brand,
+      // ASCII: номер заказа МП читается даже если сайт снова сломает кодировку.
+      ascii: true,
+    });
 
     try {
       const add = await addToMikadoBasket({

@@ -6,7 +6,9 @@ import logger from '../../utils/logger.js';
 import {
   MOSKVORECHIE_API_BASE,
   fetchWithTimeout,
+  formatSupplierPurchaseComment,
   pickWarehouseLine,
+  sourceOrderIdsFromPurchaseLine,
   warehouseNameMatches,
   xmlTag,
 } from './shared.js';
@@ -516,7 +518,10 @@ export async function submitMoskvorechiePurchase(ctx) {
     };
   }
 
-  const comment = purchase?.id ? `ERM закупка №${purchase.id}` : 'ERM';
+  const comment = formatSupplierPurchaseComment({
+    purchaseId: purchase?.id,
+    orderIds: (lines || []).flatMap((line) => sourceOrderIdsFromPurchaseLine(line)),
+  });
 
   try {
     const result = await submitMoskvorechieOrder({
