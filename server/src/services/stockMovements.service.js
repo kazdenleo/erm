@@ -617,6 +617,18 @@ class StockMovementsService {
       /* ignore */
     }
 
+    // Снимок резерва на заказе — для быстрого списка без пересчёта журнала.
+    if (Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) {
+      try {
+        const ordersService = (await import('./orders.service.js')).default;
+        if (typeof ordersService.refreshOrderReserveSnapshot === 'function') {
+          await ordersService.refreshOrderReserveSnapshot(orderDbIdNum);
+        }
+      } catch {
+        /* ignore — список подтянется при следующем бэкфилле/резерве */
+      }
+    }
+
     // После reserve не вызываем trimExcessReservesForProduct: перерезерв нужно отклонять,
     // а не снимать резерв у других заказов (trim остаётся только на приёмку/отгрузку и т.п.).
 

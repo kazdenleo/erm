@@ -555,12 +555,18 @@ async function buildReserveCoverageFifoMap(productIds) {
 
 /**
  * Покрытие резерва по заказам: все product_id в движениях (в т.ч. комплектующие комплекта).
+ * @param {number[]} orderDbIds
+ * @param {{ skipFifo?: boolean, skipMeta?: boolean }} [opts]
+ *   Для списка заказов передают skipMeta:true (исторически) или skipFifo:true —
+ *   тогда не строим FIFO по всем статусам (дорого); цвет берём из meta движений.
  * @returns {Map<number, 'on_hand'|'incoming'>}
  */
 async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
   const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const map = new Map();
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+  // Список заказов: skipMeta:true означал «облегчённый путь» — FIFO там не нужен (meta важнее).
+  const skipFifo = opts.skipFifo === true || opts.skipMeta === true;
 
   const r = await query(
     `SELECT o.id AS order_db_id,
@@ -588,16 +594,18 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     byOrder.get(oid).push({ pid, reserved });
   }
 
-  const orderStatusById = await batchOrderStatusMap(ids);
-  // Meta всегда: иначе список красит резерв «с пути» на FBS в зелёный из‑за наличия на другом складе.
-  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
+  const [orderStatusById, metaMap] = await Promise.all([
+    batchOrderStatusMap(ids),
+    // Meta всегда: иначе список красит резерв «с пути» на FBS в зелёный из‑за наличия на другом складе.
+    buildReserveCoverageMetaMap({ orderDbIds: ids }),
+  ]);
   if (!byOrder.size) {
     if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap, orderStatusById);
     return map;
   }
 
   const supplyMap = await batchProductReserveSupplyMap(movementPids);
-  const fifoMap = await buildReserveCoverageFifoMap(movementPids);
+  const fifoMap = skipFifo ? null : await buildReserveCoverageFifoMap(movementPids);
 
   for (const [oid, lines] of byOrder) {
     let anyIncoming = false;
@@ -3383,17 +3391,70 @@ class OrdersService {
   async getAll(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const items = await this.repository.findAll(options);
-      const light =
-        options.lightReserveEnrich === true ||
-        (options.limit != null && Number(options.limit) > 0);
-      const listOnly = light && options.limit != null && Number(options.limit) > 0;
-      await this.enrichOrdersReserveMetrics(items, { light, listOnly });
+      // Список: снимок резерва уже в строках БД (без тяжёлого enrich).
+      if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
+        await enrichOrdersAssemblyCompositionLines(items, this);
+      }
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       return items;
     } else {
       // Старое хранилище
       return await this.repository.findAll();
     }
+  }
+
+  /**
+   * Пересчитать и сохранить снимок резерва на заказе (reserved_qty / need / coverage).
+   * Вызывается после reserve/unreserve и при бэкфилле.
+   */
+  async refreshOrderReserveSnapshot(orderId) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return null;
+    const oid = Number(orderId);
+    if (!Number.isFinite(oid) || oid < 1) return null;
+    if (typeof this.repository.findById !== 'function') return null;
+    const order = await this.repository.findById(oid);
+    if (!order) return null;
+    await this._enrichOrdersReserveMetricsListOnly([order]);
+    const snapshot = {
+      reservedQty: Number(order.reservedQty) || 0,
+      needQty:
+        Number(order.needQty) ||
+        Math.max(1, parseInt(order.quantity, 10) || Number(order.quantity) || 1),
+      reserveCoverage: order.reserveCoverage || 'none',
+    };
+    if (typeof this.repository.updateReserveSnapshot === 'function') {
+      await this.repository.updateReserveSnapshot(oid, snapshot);
+    }
+    return snapshot;
+  }
+
+  /**
+   * Сохранить снимок из уже обогащённых строк (после редкого re-enrich на списке).
+   */
+  async persistReserveSnapshotsFromEnriched(orders) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return 0;
+    if (typeof this.repository.updateReserveSnapshot !== 'function') return 0;
+    let n = 0;
+    for (const o of orders) {
+      const oid = orderRowDbId(o);
+      if (!oid) continue;
+      try {
+        await this.repository.updateReserveSnapshot(oid, {
+          reservedQty: Number(o.reservedQty ?? o.reserved_qty) || 0,
+          needQty:
+            Number(o.needQty ?? o.need_qty) ||
+            Math.max(1, parseInt(o.quantity, 10) || Number(o.quantity) || 1),
+          reserveCoverage: o.reserveCoverage || o.reserve_coverage || 'none',
+        });
+        n += 1;
+      } catch (e) {
+        logger.warn('[Orders] persistReserveSnapshotsFromEnriched failed', {
+          orderId: oid,
+          message: e?.message || String(e),
+        });
+      }
+    }
+    return n;
   }
 
   /**
@@ -3576,6 +3637,7 @@ class OrdersService {
       .filter((x) => x.reserved > 0 && x.oid)
       .map((x) => x.oid);
     const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve, {
+      skipFifo: true,
       skipMeta: true,
     });
 
@@ -3876,7 +3938,8 @@ class OrdersService {
     }
     const rows = await this.repository.findOrdersForAutoReserve({ profileId, limit });
     if (!rows.length) return { checked: 0, reapplied: 0 };
-    await this.enrichOrdersReserveMetrics(rows, { light: true });
+    await this.enrichOrdersReserveMetrics(rows, { light: true, listOnly: true });
+    await this.persistReserveSnapshotsFromEnriched(rows);
     const reapplied = await this._ensureReservesForUnderReservedOrders(rows);
     return { checked: rows.length, reapplied };
   }
@@ -3898,18 +3961,21 @@ class OrdersService {
 
   async getPage(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const lightReserve = options.lightReserveEnrich !== false;
       const countPromise =
         typeof this.repository.countAll === 'function'
           ? this.repository.countAll(options)
           : Promise.resolve(null);
       const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
-      await this.enrichOrdersReserveMetrics(items, { light: lightReserve, listOnly: true });
+      // Снимок резерва уже в колонках orders.*; тяжёлый enrich только если авторезерв что-то дозаполнил.
+      if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
+        await enrichOrdersAssemblyCompositionLines(items, this);
+      }
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       if (!options.skipAutoReserve) {
         const reapplied = await this._ensureReservesForUnderReservedOrders(items);
         if (reapplied > 0) {
-          await this.enrichOrdersReserveMetrics(items, { light: lightReserve, listOnly: true });
+          await this.enrichOrdersReserveMetrics(items, { light: true, listOnly: true });
+          await this.persistReserveSnapshotsFromEnriched(items);
         }
       }
       return { items, total: total ?? items.length };

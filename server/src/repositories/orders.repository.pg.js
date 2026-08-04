@@ -78,8 +78,38 @@ function rowToCamel(row) {
     archivedAt: row.archived_at ?? null,
     warehouseId:
       row.warehouse_id != null && row.warehouse_id !== '' ? Number(row.warehouse_id) : null,
-    hasReserve: row.has_reserve ?? row.hasReserve ?? false,
-    reservedQty: row.reserved_qty != null ? Number(row.reserved_qty) : (row.reservedQty != null ? Number(row.reservedQty) : 0)
+    hasReserve: Boolean(row.has_reserve ?? row.hasReserve ?? false),
+    reservedQty:
+      row.reserved_qty != null
+        ? Number(row.reserved_qty)
+        : row.reservedQty != null
+          ? Number(row.reservedQty)
+          : 0,
+    needQty:
+      row.reserve_need_qty != null
+        ? Number(row.reserve_need_qty)
+        : row.need_qty != null
+          ? Number(row.need_qty)
+          : row.needQty != null
+            ? Number(row.needQty)
+            : Math.max(1, Number(row.quantity) || 1),
+    reserveCoverage: String(row.reserve_coverage ?? row.reserveCoverage ?? 'none').trim() || 'none',
+    fullyReserved: (() => {
+      const r =
+        row.reserved_qty != null
+          ? Number(row.reserved_qty)
+          : row.reservedQty != null
+            ? Number(row.reservedQty)
+            : 0;
+      const n =
+        row.reserve_need_qty != null
+          ? Number(row.reserve_need_qty)
+          : row.need_qty != null
+            ? Number(row.need_qty)
+            : Math.max(1, Number(row.quantity) || 1);
+      return n > 0 && r >= n;
+    })(),
+    reserveSnapshotAt: row.reserve_snapshot_at ?? row.reserveSnapshotAt ?? null,
   };
 }
 
@@ -191,8 +221,14 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        false AS has_reserve,
-        0 AS reserved_qty
+        COALESCE(o.reserved_qty, 0) AS reserved_qty,
+        CASE
+          WHEN COALESCE(o.reserve_need_qty, 0) > 0 THEN o.reserve_need_qty
+          ELSE GREATEST(1, COALESCE(o.quantity, 1))
+        END AS reserve_need_qty,
+        COALESCE(NULLIF(TRIM(o.reserve_coverage), ''), 'none') AS reserve_coverage,
+        o.reserve_snapshot_at,
+        (COALESCE(o.reserved_qty, 0) > 0) AS has_reserve
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -220,8 +256,14 @@ class OrdersRepositoryPG {
             assembler.email AS assembled_by_email,
             assembler.full_name AS assembled_by_full_name,
             p.sku AS product_sku,
-            false AS has_reserve,
-            0 AS reserved_qty
+            COALESCE(o.reserved_qty, 0) AS reserved_qty,
+            CASE
+              WHEN COALESCE(o.reserve_need_qty, 0) > 0 THEN o.reserve_need_qty
+              ELSE GREATEST(1, COALESCE(o.quantity, 1))
+            END AS reserve_need_qty,
+            COALESCE(NULLIF(TRIM(o.reserve_coverage), ''), 'none') AS reserve_coverage,
+            o.reserve_snapshot_at,
+            (COALESCE(o.reserved_qty, 0) > 0) AS has_reserve
           FROM orders o
           LEFT JOIN products p ON o.product_id = p.id
           LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -400,7 +442,14 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve
+        COALESCE(o.reserved_qty, 0) AS reserved_qty,
+        CASE
+          WHEN COALESCE(o.reserve_need_qty, 0) > 0 THEN o.reserve_need_qty
+          ELSE GREATEST(1, COALESCE(o.quantity, 1))
+        END AS reserve_need_qty,
+        COALESCE(NULLIF(TRIM(o.reserve_coverage), ''), 'none') AS reserve_coverage,
+        o.reserve_snapshot_at,
+        (COALESCE(o.reserved_qty, 0) > 0) AS has_reserve
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -410,6 +459,33 @@ class OrdersRepositoryPG {
       WHERE o.id = $1
     `, [id]);
     return rowToCamel(result.rows[0]) || null;
+  }
+
+  /**
+   * Записать снимок резерва (после reserve/unreserve / бэкфилла).
+   */
+  async updateReserveSnapshot(id, { reservedQty = 0, needQty = 0, reserveCoverage = 'none' } = {}) {
+    const oid = Number(id);
+    if (!Number.isFinite(oid) || oid < 1) return null;
+    const reserved = Math.max(0, Math.floor(Number(reservedQty) || 0));
+    const need = Math.max(0, Math.floor(Number(needQty) || 0));
+    let coverage = String(reserveCoverage || 'none').trim().toLowerCase();
+    if (!['none', 'on_hand', 'incoming'].includes(coverage)) {
+      coverage = reserved > 0 ? 'incoming' : 'none';
+    }
+    if (reserved <= 0) coverage = 'none';
+    const result = await query(
+      `UPDATE orders SET
+         reserved_qty = $2,
+         reserve_need_qty = $3,
+         reserve_coverage = $4,
+         reserve_snapshot_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+       RETURNING id`,
+      [oid, reserved, need, coverage]
+    );
+    return result.rows[0] || null;
   }
 
   /**
