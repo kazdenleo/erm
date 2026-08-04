@@ -404,6 +404,11 @@ class StockMovementsService {
     const metaOut = { ...meta, warehouse_id: warehouseId };
     const profId = product.profile_id ?? product.profileId ?? null;
     const orgId = product.organization_id ?? product.organizationId ?? null;
+    const orderDbIdNum = metaOut.order_id != null ? Number(metaOut.order_id) : NaN;
+    const mpOrderId =
+      metaOut.orderId != null && String(metaOut.orderId).trim() !== ''
+        ? String(metaOut.orderId).trim()
+        : null;
 
     const client = await getClient();
     let movement = null;
@@ -420,11 +425,6 @@ class StockMovementsService {
         getRawReservedQuantityFromMovementsWithClient,
         getReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
-      const orderDbIdNum = metaOut.order_id != null ? Number(metaOut.order_id) : NaN;
-      const mpOrderId =
-        metaOut.orderId != null && String(metaOut.orderId).trim() !== ''
-          ? String(metaOut.orderId).trim()
-          : null;
       let netForOrder = null;
       if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
         const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
