@@ -143,12 +143,14 @@ export async function searchProductsRemote(
   if (!q || q.length < 1) return [];
   try {
     const wh = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
+    // typeahead / привязка ШК: только лёгкий listView=stock (без images, цен МП, supplier_stocks).
+    // full тянет p.* + цены/остатки поставщиков и заметно тормозит приёмку.
     const res = await productsApi.getAll({
       search: q,
       organizationId: organizationId || undefined,
       warehouseId: wh || undefined,
       limit,
-      listView: wh ? 'stock' : 'full',
+      listView: 'stock',
     });
     return Array.isArray(res?.data) ? res.data.filter(Boolean) : [];
   } catch {
