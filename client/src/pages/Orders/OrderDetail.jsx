@@ -20,7 +20,8 @@ import { marketplaceOrderIdForApi, marketplaceRouteSegment } from '../../utils/o
 import {
   groupReserveCoverageKind,
   orderReserveBadgeCounts,
-  reserveBadgeClassName
+  reserveBadgeClassName,
+  reserveBadgeVisualKind,
 } from '../../utils/orderReserveBadge.js';
 import {
   orderCanShowCancel,
@@ -541,13 +542,18 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             {summaryCoverage === 'incoming' ? 'Резерв (в пути)' : 'Резерв'}
             {needQty > 0 && reservedQty > 0 ? (
               <span
-                className={reserveBadgeClassName(summaryCoverage)}
+                className={reserveBadgeClassName(summaryCoverage, {
+                  reservedQty,
+                  needQty,
+                })}
                 title={
-                  summaryCoverage === 'on_hand'
-                    ? 'Со склада (в наличии)'
-                    : summaryCoverage === 'incoming'
-                      ? 'С участием товара в пути'
-                      : 'Резерв без покрытия остатком'
+                  summaryCoverage === 'on_hand' && reservedQty >= needQty
+                    ? 'Со склада (в наличии), полностью'
+                    : summaryCoverage === 'on_hand'
+                      ? 'Со склада, но резерв неполный'
+                      : summaryCoverage === 'incoming'
+                        ? 'С участием товара в пути'
+                        : 'Резерв без покрытия остатком'
                 }
               >
                 {reservedQty}/{needQty}
@@ -563,11 +569,22 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
           </p>
           {needQty > 0 && reservedQty > 0 ? (
             <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
-              {summaryCoverage === 'on_hand'
-                ? 'Плашка зелёная — резерв покрыт наличием на складе.'
-                : summaryCoverage === 'incoming'
-                  ? 'Плашка серая — в резерве есть товар «в пути».'
-                  : 'Плашка жёлтая — резерв есть, но на складе и в закупках товара нет; снимите резерв или добавьте поставку.'}
+              {(() => {
+                const visual = reserveBadgeVisualKind(summaryCoverage, {
+                  reservedQty,
+                  needQty,
+                });
+                if (visual === 'on_hand') {
+                  return 'Плашка зелёная — резерв полностью покрыт наличием на складе.';
+                }
+                if (summaryCoverage === 'on_hand' && reservedQty < needQty) {
+                  return 'Плашка серая — часть резерва со склада, но заказ закрыт не полностью.';
+                }
+                if (summaryCoverage === 'incoming') {
+                  return 'Плашка серая — в резерве есть товар «в пути» (ещё не весь объём лежит на складе).';
+                }
+                return 'Плашка серая — резерв есть, но покрытие складом неполное.';
+              })()}
             </p>
           ) : null}
           <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
@@ -656,7 +673,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 <span className="order-reserve-line__title">
                   {title}:{' '}
                   {badgeReserved > 0 ? (
-                    <span className={reserveBadgeClassName(lineCoverage)} style={{ marginRight: 4 }}>
+                    <span
+                      className={reserveBadgeClassName(lineCoverage, {
+                        reservedQty: badgeReserved,
+                        needQty: badgeNeed,
+                      })}
+                      style={{ marginRight: 4 }}
+                    >
                       {badgeReserved}/{badgeNeed}
                     </span>
                   ) : (
