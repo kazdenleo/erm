@@ -117,7 +117,13 @@ export function Tasks() {
     const defaultManager = candidates.find(
       (c) => String(c.account_role || '').toLowerCase() === 'warehouse_manager'
     );
-    setAssigneeId(defaultManager ? String(defaultManager.id) : '');
+    const defaultAdmin = candidates.find(
+      (c) =>
+        String(c.account_role || '').toLowerCase() === 'admin' ||
+        c.is_profile_admin === true
+    );
+    const fallback = defaultManager || defaultAdmin;
+    setAssigneeId(fallback ? String(fallback.id) : '');
     setIsModalOpen(true);
   };
 
@@ -441,7 +447,7 @@ export function Tasks() {
               value={assigneeId}
               onChange={(e) => setAssigneeId(e.target.value)}
             >
-              <option value="">Руководитель склада (по умолчанию)</option>
+              <option value="">Руководитель склада, иначе администратор</option>
               {candidates.map((c) => (
                 <option key={c.id} value={c.id}>
                   {userDisplayName(c)}
