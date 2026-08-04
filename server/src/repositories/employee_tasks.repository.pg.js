@@ -156,6 +156,26 @@ class EmployeeTasksRepositoryPG {
     );
     return result.rows[0] || null;
   }
+
+  /** Администратор аккаунта: account_role=admin или is_profile_admin. */
+  async findFirstAccountAdmin(profileId) {
+    const result = await query(
+      `SELECT id, email, full_name, account_role, is_profile_admin
+       FROM users
+       WHERE profile_id = $1::bigint
+         AND role <> 'admin'
+         AND (
+           LOWER(TRIM(COALESCE(account_role, ''))) = 'admin'
+           OR is_profile_admin IS TRUE
+         )
+       ORDER BY
+         CASE WHEN LOWER(TRIM(COALESCE(account_role, ''))) = 'admin' THEN 0 ELSE 1 END,
+         id ASC
+       LIMIT 1`,
+      [profileId]
+    );
+    return result.rows[0] || null;
+  }
 }
 
 export default new EmployeeTasksRepositoryPG();

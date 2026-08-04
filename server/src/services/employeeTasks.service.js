@@ -33,11 +33,14 @@ export function canManageTasks(user) {
 
 export async function resolveDefaultAssigneeId(profileId) {
   const manager = await employeeTasksRepository.findFirstWarehouseManager(profileId);
-  return manager?.id ?? null;
+  if (manager?.id) return manager.id;
+  const admin = await employeeTasksRepository.findFirstAccountAdmin(profileId);
+  return admin?.id ?? null;
 }
 
 /**
- * Создать текстовую задачу. По умолчанию — на руководителя склада.
+ * Создать текстовую задачу.
+ * По умолчанию — на руководителя склада, если его нет — на администратора аккаунта.
  */
 export async function createTextTask({
   profileId,
