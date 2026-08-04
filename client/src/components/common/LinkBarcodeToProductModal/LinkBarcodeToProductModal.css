@@ -73,3 +73,53 @@
   gap: 10px;
   margin-top: 8px;
 }
+
+.link-barcode-modal__dims-needed {
+  color: #c47a00;
+  font-weight: 600;
+}
+
+.link-barcode-modal--dims {
+  gap: 16px;
+}
+
+.link-barcode-modal__dim-block {
+  margin: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  min-inline-size: 0;
+}
+
+.link-barcode-modal__dim-block legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.link-barcode-modal__req {
+  color: #c0392b;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.link-barcode-modal__dim-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px 12px;
+  margin-top: 8px;
+}
+
+.link-barcode-modal__dim-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.link-barcode-modal__dim-input {
+  width: 100%;
+  max-width: none;
+}
+
