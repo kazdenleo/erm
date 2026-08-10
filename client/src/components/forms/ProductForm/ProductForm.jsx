@@ -24,12 +24,17 @@ import { resolveApiBaseUrl } from '../../../services/api.js';
 import { createAsyncQueue } from '../../../utils/asyncQueue.js';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
 import { certificatesApi } from '../../../services/certificates.api.js';
+import { tnVedApi } from '../../../services/tnVed.api.js';
 import { brandsApi } from '../../../services/brands.api.js';
 import {
   applyCertAutofillToAttributes,
   certSourceHasAnyDocument,
   filterBrandCertsForCategory,
 } from '../../../utils/productCertAttributeAutofill.js';
+import {
+  applyTnVedAutofillToAttributes,
+  filterTnVedBindingsForCategory,
+} from '../../../utils/productTnVedAttributeAutofill.js';
 import {
   BARCODE_MP_TOGGLES,
   EMPTY_BARCODE_ROW,
@@ -45,7 +50,10 @@ import {
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { MpFieldLabel, MpFieldLinkToggles, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import { useAuth } from '../../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../../utils/profileFlags.js';
+import {
+  isProfileKitsEnabled,
+  isProfileProductSupplierBindingEnabled,
+} from '../../../utils/profileFlags.js';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -1202,6 +1210,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [imageDropActive, setImageDropActive] = useState(false);
   const imageFileInputRef = useRef(null);
   const [brandCategoryCerts, setBrandCategoryCerts] = useState([]);
+  const [brandCategoryTnVed, setBrandCategoryTnVed] = useState([]);
   /** Для каких товаров уже подставили вес/габариты из карточки */
   const ozonFilledFromProductIdRef = useRef(null);
   /** ID товара, для которого уже синхронизировали атрибуты из ozonFetchedProduct в форму */
@@ -1623,6 +1632,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const catId = String(formData.categoryId || '').trim();
     if (!br?.id || !catId) {
       setBrandCategoryCerts([]);
+      setBrandCategoryTnVed([]);
       return;
     }
     let cancelled = false;
@@ -1636,10 +1646,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
       .catch(() => {
         if (!cancelled) setBrandCategoryCerts([]);
       });
+    tnVedApi
+      .getBindings({ brandId: br.id })
+      .then((res) => {
+        if (cancelled) return;
+        const all = Array.isArray(res?.data) ? res.data : [];
+        setBrandCategoryTnVed(filterTnVedBindingsForCategory(all, catId));
+      })
+      .catch(() => {
+        if (!cancelled) setBrandCategoryTnVed([]);
+      });
     return () => {
       cancelled = true;
     };
   }, [selectedBrandForCert?.id, formData.categoryId]);
+
+  const tnVedCode = useMemo(() => {
+    const fromBinding = brandCategoryTnVed?.[0]?.tn_ved_code;
+    if (fromBinding) return String(fromBinding).replace(/\D/g, '');
+    const cat = selectedCategoryForCert || {};
+    const br = selectedBrandForCert || {};
+    const fallback = cat.tn_ved_code || cat.tnVedCode || br.tn_ved_code || br.tnVedCode || '';
+    return String(fallback).replace(/\D/g, '');
+  }, [brandCategoryTnVed, selectedCategoryForCert, selectedBrandForCert]);
 
   const mpMappingByMarketplace = useMemo(() => {
     const br = selectedBrandForCert;
@@ -1947,6 +1976,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
     );
   }, [ozonAttributes, certSource, resolveOzonEnumValue]);
 
+  // Автоподстановка ТН ВЭД в Ozon-атрибуты
+  useEffect(() => {
+    if (!ozonAttributes?.length || !tnVedCode) return;
+    setOzonAttributeValues((prev) =>
+      applyTnVedAutofillToAttributes(ozonAttributes, tnVedCode, prev, {
+        getAttrKey: (attr) => String(attr.id),
+        getAttrName: (attr) => attr?.name ?? '',
+        resolveEnumValue: resolveOzonEnumValue,
+      })
+    );
+  }, [ozonAttributes, tnVedCode, resolveOzonEnumValue]);
+
   // Автоподстановка НДС в Ozon-атрибуты (по названию поля)
   useEffect(() => {
     if (!ozonAttributes?.length) return;
@@ -2064,6 +2105,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
     );
   }, [wbCategoryAttributes, certSource, wbAttrKey, wbAttrName]);
 
+  // Автоподстановка ТН ВЭД в WB-атрибуты
+  useEffect(() => {
+    if (!wbCategoryAttributes?.length || !tnVedCode) return;
+    setWbAttributeValues((prev) =>
+      applyTnVedAutofillToAttributes(wbCategoryAttributes, tnVedCode, prev, {
+        getAttrKey: wbAttrKey,
+        getAttrName: wbAttrName,
+      })
+    );
+  }, [wbCategoryAttributes, tnVedCode, wbAttrKey, wbAttrName]);
+
   // Автоподстановка НДС в WB-атрибуты (по названию поля)
   useEffect(() => {
     if (!wbCategoryAttributes?.length) return;
@@ -2177,6 +2229,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
     );
   }, [ymCategoryAttributes, certSource]);
 
+  // Автоподстановка ТН ВЭД в YM-атрибуты
+  useEffect(() => {
+    if (!ymCategoryAttributes?.length || !tnVedCode) return;
+    setYmAttributeValues((prev) =>
+      applyTnVedAutofillToAttributes(ymCategoryAttributes, tnVedCode, prev, {
+        getAttrKey: (a) => String(a.id),
+        getAttrName: (a) => a?.name ?? '',
+      })
+    );
+  }, [ymCategoryAttributes, tnVedCode]);
+
   // Автоподстановка сертификата в атрибуты категории (основная вкладка)
   useEffect(() => {
     if (!categoryAttributes?.length) return;
@@ -2195,6 +2258,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
       return { ...prev, attributeValues: nextAttrs };
     });
   }, [categoryAttributes, certSource]);
+
+  // Автоподстановка ТН ВЭД в атрибуты категории (основная вкладка)
+  useEffect(() => {
+    if (!categoryAttributes?.length || !tnVedCode) return;
+    setFormData((prev) => {
+      const nextAttrs = applyTnVedAutofillToAttributes(
+        categoryAttributes,
+        tnVedCode,
+        prev.attributeValues || {},
+        {
+          getAttrKey: (attr) => String(attr.id),
+          getAttrName: (attr) => attr?.name ?? '',
+        }
+      );
+      if (nextAttrs === prev.attributeValues) return prev;
+      return { ...prev, attributeValues: nextAttrs };
+    });
+  }, [categoryAttributes, tnVedCode]);
 
   // Автоподстановка НДС в YM-атрибуты (по названию параметра)
   useEffect(() => {

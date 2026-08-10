@@ -33,16 +33,40 @@ class CertificatesService {
     }
 
     const brand_id = data.brand_id ?? data.brandId ?? null;
+    if (brand_id == null || brand_id === '') {
+      const err = new Error('Бренд обязателен');
+      err.statusCode = 400;
+      throw err;
+    }
+
     const user_category_id = data.user_category_id ?? data.userCategoryId ?? null;
     const user_category_ids = Array.isArray(data.user_category_ids)
       ? data.user_category_ids
       : (Array.isArray(data.userCategoryIds) ? data.userCategoryIds : (user_category_id != null ? [user_category_id] : []));
+    const normalizedCategoryIds = user_category_ids
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (normalizedCategoryIds.length === 0) {
+      const err = new Error('Нужна хотя бы одна категория (бренд и категория указываются только вместе)');
+      err.statusCode = 400;
+      throw err;
+    }
+
     const document_type = data.document_type ?? data.documentType ?? 'certificate';
     const photo_url = data.photo_url ?? data.photoUrl ?? null;
     const valid_from = data.valid_from ?? data.validFrom ?? null;
     const valid_to = data.valid_to ?? data.validTo ?? null;
 
-    return { certificate_number, brand_id, user_category_id, user_category_ids, document_type, photo_url, valid_from, valid_to };
+    return {
+      certificate_number,
+      brand_id,
+      user_category_id: normalizedCategoryIds[0],
+      user_category_ids: normalizedCategoryIds,
+      document_type,
+      photo_url,
+      valid_from,
+      valid_to,
+    };
   }
 
   async create(data) {
@@ -86,6 +110,45 @@ class CertificatesService {
           updates[field] = data[k] === '' ? null : data[k];
           break;
         }
+      }
+    }
+
+    // Бренд и категории — только вместе (проверяем при изменении привязки)
+    const touchingBinding =
+      updates.hasOwnProperty('brand_id') ||
+      updates.hasOwnProperty('user_category_id') ||
+      updates.hasOwnProperty('user_category_ids');
+
+    if (touchingBinding) {
+      const nextBrandId = updates.hasOwnProperty('brand_id')
+        ? updates.brand_id
+        : (existing.brand_id ?? null);
+      let nextCategoryIds;
+      if (updates.hasOwnProperty('user_category_ids')) {
+        const raw = Array.isArray(updates.user_category_ids) ? updates.user_category_ids : [];
+        nextCategoryIds = raw.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+        updates.user_category_ids = nextCategoryIds;
+        updates.user_category_id = nextCategoryIds[0] ?? null;
+      } else if (updates.hasOwnProperty('user_category_id')) {
+        nextCategoryIds = updates.user_category_id != null
+          ? [Number(updates.user_category_id)].filter((n) => Number.isFinite(n) && n > 0)
+          : [];
+        updates.user_category_ids = nextCategoryIds;
+      } else {
+        nextCategoryIds = Array.isArray(existing.user_category_ids)
+          ? existing.user_category_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+          : (existing.user_category_id != null ? [Number(existing.user_category_id)] : []);
+      }
+
+      if (nextBrandId == null || nextBrandId === '') {
+        const err = new Error('Бренд обязателен');
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!nextCategoryIds.length) {
+        const err = new Error('Нужна хотя бы одна категория (бренд и категория указываются только вместе)');
+        err.statusCode = 400;
+        throw err;
       }
     }
 

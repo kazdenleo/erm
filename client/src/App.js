@@ -50,6 +50,7 @@ import { PricingStrategies } from './pages/Prices/PricingStrategies';
 import { PricePromotions } from './pages/Prices/PricePromotions';
 import { Settings } from './pages/Settings/Settings';
 import { Attributes } from './pages/Settings/Attributes';
+import { Certificates } from './pages/Settings/Certificates';
 import { Labels } from './pages/Settings/Labels';
 import { Organizations } from './pages/Organizations/Organizations';
 import { SettingsUsers } from './pages/Settings/Users/Users';
@@ -167,6 +168,7 @@ function App() {
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
+          <Route path="/settings/certificates" element={<ProtectedRoute><Layout><Certificates /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
           <Route path="/settings/users" element={<ProtectedRoute><Layout><SettingsUsers /></Layout></ProtectedRoute>} />
           <Route path="/settings/roles" element={<Navigate to="/settings/users?tab=roles" replace />} />

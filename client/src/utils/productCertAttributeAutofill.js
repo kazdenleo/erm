@@ -175,15 +175,16 @@ export function applyCertAutofillToAttributes(attributes, certSource, prevValues
 }
 
 /**
- * Сертификаты бренда, подходящие для категории товара (явная привязка или без категорий = на все).
+ * Сертификаты бренда, подходящие для категории товара.
+ * Нужна явная привязка к категории (бренд + категория только вместе).
  */
 export function filterBrandCertsForCategory(certs, categoryId) {
   const list = Array.isArray(certs) ? certs : [];
   const cid = categoryId != null ? String(categoryId).trim() : '';
-  if (!cid) return list;
+  if (!cid) return [];
   return list.filter((c) => {
     const ids = c.user_category_ids ?? c.userCategoryIds ?? [];
-    if (!Array.isArray(ids) || ids.length === 0) return true;
+    if (!Array.isArray(ids) || ids.length === 0) return false;
     return ids.some((id) => String(id) === cid);
   });
 }

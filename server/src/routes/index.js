@@ -44,6 +44,7 @@ import fboSuppliesRoutes from './fboSupplies.routes.js';
 import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
+import tnVedRoutes from './tnVed.routes.js';
 import globalSearchController from '../controllers/globalSearch.controller.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
@@ -309,6 +310,9 @@ router.use('/product-attributes', productAttributesRoutes);
 
 // Сертификаты (настройки → сертификаты)
 router.use('/certificates', certificatesRoutes);
+
+// ТН ВЭД (настройки → сертификаты → ТН ВЭД)
+router.use('/tn-ved', tnVedRoutes);
 
 // Приёмки на склад
 router.use('/receipts', warehouseReceiptsRoutes);

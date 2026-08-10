@@ -4,6 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
 import { Modal } from '../../common/Modal/Modal';
 import { certificatesApi } from '../../../services/certificates.api';
@@ -338,13 +339,18 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
   const saveCert = async (e) => {
     e.preventDefault();
     if (!brand?.id) return;
+    const categoryIds = (certForm.user_category_ids || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+    if (categoryIds.length === 0) {
+      alert('Выберите хотя бы одну категорию (бренд и категория указываются только вместе)');
+      return;
+    }
     setCertSaving(true);
     try {
       const payload = {
         certificate_number: String(certForm.certificate_number || '').trim(),
         document_type: certForm.document_type || 'certificate',
         brand_id: brand.id,
-        user_category_ids: (certForm.user_category_ids || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0),
+        user_category_ids: categoryIds,
         valid_from: certForm.valid_from || null,
         valid_to: certForm.valid_to || null,
       };
@@ -550,6 +556,10 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
             </Button>
           </div>
         </div>
+        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
+          Полный реестр — в <Link to="/settings/certificates">Настройки → Сертификаты</Link>.
+          К каждому документу нужна категория (бренд + категория только вместе).
+        </div>
 
         {!brand?.id && (
           <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
@@ -680,7 +690,10 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               </select>
             </div>
             <div className="col-12">
-              <label className="form-label">Категории товаров</label>
+              <label className="form-label">Категории товаров <span style={{ color: '#ef4444' }}>*</span></label>
+              <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>
+                Обязательно: бренд и категория указываются только вместе.
+              </div>
               <input
                 className="form-control form-control-sm"
                 placeholder="Поиск категории..."

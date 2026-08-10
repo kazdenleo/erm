@@ -21,6 +21,7 @@ import suppliersRepositoryPG from '../repositories/suppliers.repository.pg.js';
 import warehousesRepositoryPG from '../repositories/warehouses.repository.pg.js';
 import integrationsRepositoryPG from '../repositories/integrations.repository.pg.js';
 import certificatesRepositoryPG from '../repositories/certificates.repository.pg.js';
+import tnVedBindingsRepositoryPG from '../repositories/tnVedBindings.repository.pg.js';
 import supplierStocksRepositoryPG from '../repositories/supplier_stocks.repository.pg.js';
 import brandsRepositoryPG from '../repositories/brands.repository.pg.js';
 import categoriesRepositoryPG from '../repositories/categories.repository.pg.js';
@@ -87,6 +88,13 @@ class RepositoryFactory {
    */
   getCertificatesRepository() {
     return this.usePostgreSQL ? certificatesRepositoryPG : certificatesRepositoryOld;
+  }
+
+  getTnVedBindingsRepository() {
+    if (!this.usePostgreSQL) {
+      throw new Error('TN VED bindings repository is only available with PostgreSQL');
+    }
+    return tnVedBindingsRepositoryPG;
   }
   
   /**

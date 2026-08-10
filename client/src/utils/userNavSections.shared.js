@@ -26,6 +26,7 @@ export const NAV_SECTION_KEYS = [
   'prices',
   'settings_general',
   'settings_attributes',
+  'settings_certificates',
   'settings_labels',
   'settings_users',
   'settings_roles',
@@ -61,6 +62,7 @@ export const NAV_SECTION_LABELS = {
   prices: 'Цены',
   settings_general: 'Настройки — общие',
   settings_attributes: 'Настройки — атрибуты',
+  settings_certificates: 'Настройки — сертификаты',
   settings_labels: 'Настройки — этикетки',
   settings_users: 'Настройки — пользователи',
   settings_roles: 'Настройки — роли',
@@ -101,6 +103,7 @@ export const NAV_SECTION_GROUPS = [
     keys: [
       'settings_general',
       'settings_attributes',
+      'settings_certificates',
       'settings_labels',
       'settings_users',
       'settings_roles',
@@ -127,6 +130,7 @@ export const ROLE_NAV_PRESETS = {
     wb_returns: false,
     settings_general: false,
     settings_attributes: false,
+    settings_certificates: false,
     settings_labels: false,
     settings_users: false,
     settings_roles: false,
@@ -309,6 +313,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/settings/users')) return 'settings_users';
   if (path.startsWith('/settings/roles')) return 'settings_users';
   if (path.startsWith('/settings/attributes')) return 'settings_attributes';
+  if (path.startsWith('/settings/certificates')) return 'settings_certificates';
   if (path.startsWith('/settings/labels')) return 'settings_labels';
   if (path.startsWith('/settings')) return 'settings_general';
   if (path.startsWith('/organizations')) return 'organizations';
