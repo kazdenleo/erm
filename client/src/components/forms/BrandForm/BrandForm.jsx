@@ -731,17 +731,20 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               )}
             </div>
             <div className="col-md-6">
-              <label className="form-label">Фото</label>
+              <label className="form-label">Файл (фото / PDF)</label>
               <input
                 className="form-control form-control-sm"
                 type="file"
-                accept="image/*"
+                accept="image/*,.pdf,application/pdf"
                 onChange={(e) => setCertPhotoFile(e.target.files?.[0] || null)}
               />
+              <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                Изображение или PDF (до 20 МБ).
+              </div>
               {(editingCert?.photo_url || editingCert?.photoUrl) && (
                 <div style={{ marginTop: '8px' }}>
                   <a href={editingCert.photo_url || editingCert.photoUrl} target="_blank" rel="noreferrer" style={{ fontSize: '12px' }}>
-                    Открыть текущее фото
+                    Открыть текущий файл
                   </a>
                 </div>
               )}

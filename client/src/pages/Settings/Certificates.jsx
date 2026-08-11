@@ -181,19 +181,20 @@ function CertificateForm({
       </div>
 
       <div className="form-group">
-        <label>Фото / скан</label>
+        <label>Файл (фото / PDF)</label>
         <input
           type="file"
-          accept="image/*"
+          accept="image/*,.pdf,application/pdf"
           onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
         />
+        <p className="form-hint">Можно загрузить изображение или PDF (до 20 МБ).</p>
         {photoFile && (
           <p className="form-hint">Выбран файл: {photoFile.name}</p>
         )}
         {!photoFile && (editing?.photo_url || editing?.photoUrl) && (
           <p className="form-hint">
             <a href={editing.photo_url || editing.photoUrl} target="_blank" rel="noreferrer">
-              Открыть текущее фото
+              Открыть текущий файл
             </a>
           </p>
         )}

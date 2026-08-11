@@ -18,6 +18,12 @@ function safeExt(originalName) {
   return '';
 }
 
+function certificateFileExt(originalName) {
+  const ext = path.extname(originalName || '').toLowerCase();
+  if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.pdf'].includes(ext)) return ext;
+  return '';
+}
+
 export function createProductImageUpload() {
   const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -75,7 +81,7 @@ export function createCertificatePhotoUpload() {
       cb(null, dir);
     },
     filename: (_req, file, cb) => {
-      const ext = safeExt(file?.originalname || '');
+      const ext = certificateFileExt(file?.originalname || '');
       const id = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
       cb(null, `${id}${ext}`);
     }
@@ -83,12 +89,14 @@ export function createCertificatePhotoUpload() {
 
   return multer({
     storage,
-    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+    limits: { fileSize: 20 * 1024 * 1024, files: 1 },
     fileFilter: (_req, file, cb) => {
       const mime = String(file?.mimetype || '').toLowerCase();
-      const ext = safeExt(file?.originalname || '');
-      const ok = mime.startsWith('image/') && !!ext;
-      cb(ok ? null : new Error('Разрешены только изображения (jpg/png/webp/gif).'), ok);
+      const ext = certificateFileExt(file?.originalname || '');
+      const isImage = mime.startsWith('image/') && !!ext && ext !== '.pdf';
+      const isPdf = (mime === 'application/pdf' || ext === '.pdf') && ext === '.pdf';
+      const ok = isImage || isPdf;
+      cb(ok ? null : new Error('Разрешены изображения (jpg/png/webp/gif) или PDF.'), ok);
     }
   });
 }
