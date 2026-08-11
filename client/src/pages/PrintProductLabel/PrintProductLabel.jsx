@@ -1,4 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+/**
+ * Печать этикетки одного товара (несколько копий = несколько листов).
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import api from '../../services/api';
 
@@ -16,6 +20,28 @@ function readMmHeader(headers, name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+async function messageFromLabelError(err) {
+  const status = err?.response?.status || 0;
+  const data = err?.response?.data;
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    try {
+      const text = await data.text();
+      try {
+        const j = text ? JSON.parse(text) : null;
+        if (j?.message) return String(j.message);
+      } catch {
+        if (text?.trim()) return text.trim();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (data?.message) return String(data.message);
+  if (status === 400) return 'У товара нет категории или шаблона этикетки.';
+  if (status === 404) return 'Товар не найден.';
+  return err?.message || 'Не удалось загрузить этикетку';
+}
+
 export function PrintProductLabel() {
   const { productId } = useParams();
   const [searchParams] = useSearchParams();
@@ -29,7 +55,7 @@ export function PrintProductLabel() {
   const [widthMm, setWidthMm] = useState(58);
   const [heightMm, setHeightMm] = useState(40);
   const [error, setError] = useState('');
-  const imagesLoadedRef = useRef(0);
+  const loadedKeysRef = useRef(new Set());
   const printCalledRef = useRef(false);
 
   const widthPx = Math.round(widthMm * MM_TO_PX);
@@ -45,7 +71,7 @@ export function PrintProductLabel() {
   }, []);
 
   useEffect(() => {
-    imagesLoadedRef.current = 0;
+    loadedKeysRef.current = new Set();
     printCalledRef.current = false;
   }, [id, copies, marketplace]);
 
@@ -68,14 +94,24 @@ export function PrintProductLabel() {
           headers: { Accept: 'image/png' },
         });
         if (cancelled) return;
+        if (res.data?.type && String(res.data.type).includes('json')) {
+          const text = await res.data.text();
+          let msg = 'Не удалось загрузить этикетку';
+          try {
+            msg = JSON.parse(text)?.message || msg;
+          } catch {
+            if (text?.trim()) msg = text.trim();
+          }
+          setError(String(msg));
+          return;
+        }
         setWidthMm(readMmHeader(res.headers, 'x-label-width-mm', 58));
         setHeightMm(readMmHeader(res.headers, 'x-label-height-mm', 40));
         url = URL.createObjectURL(res.data);
         setBlobUrl(url);
       } catch (e) {
         if (cancelled) return;
-        const msg = e?.response?.data?.message || e?.message || 'Не удалось загрузить этикетку';
-        setError(String(msg));
+        setError(await messageFromLabelError(e));
       }
     })();
 
@@ -89,22 +125,25 @@ export function PrintProductLabel() {
     };
   }, [id, copies, marketplace]);
 
-  const schedulePrintWhenReady = () => {
-    imagesLoadedRef.current += 1;
-    if (printCalledRef.current) return;
-    if (imagesLoadedRef.current < copies) return;
-    printCalledRef.current = true;
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        try {
-          window.focus();
-          window.print();
-        } catch {
-          /* ignore */
-        }
-      }, 200);
-    });
-  };
+  const markSheetReady = useCallback(
+    (key) => {
+      if (printCalledRef.current) return;
+      loadedKeysRef.current.add(key);
+      if (loadedKeysRef.current.size < copies) return;
+      printCalledRef.current = true;
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try {
+            window.focus();
+            window.print();
+          } catch {
+            /* ignore */
+          }
+        }, 200);
+      });
+    },
+    [copies]
+  );
 
   if (!id) return <p>Не указан товар</p>;
   if (error) return <p style={{ padding: 24, color: '#b00' }}>{error}</p>;
@@ -189,21 +228,24 @@ export function PrintProductLabel() {
         }
       `}</style>
       {blobUrl ? (
-        Array.from({ length: copies }, (_, i) => (
-          <div key={i} className="product-label-print-sheet">
-            <img
-              src={blobUrl}
-              alt={`Этикетка ${i + 1}`}
-              width={widthPx}
-              height={heightPx}
-              onLoad={schedulePrintWhenReady}
-              onError={() => setError('Не удалось отобразить этикетку')}
-              ref={(el) => {
-                if (el?.complete) schedulePrintWhenReady();
-              }}
-            />
-          </div>
-        ))
+        Array.from({ length: copies }, (_, i) => {
+          const key = `c-${i}`;
+          return (
+            <div key={key} className="product-label-print-sheet">
+              <img
+                src={blobUrl}
+                alt={`Этикетка ${i + 1}`}
+                width={widthPx}
+                height={heightPx}
+                onLoad={() => markSheetReady(key)}
+                onError={() => {
+                  setError('Не удалось отобразить этикетку');
+                  markSheetReady(key);
+                }}
+              />
+            </div>
+          );
+        })
       ) : (
         <p className="product-label-print-loading">Загрузка этикетки…</p>
       )}

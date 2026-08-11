@@ -3,11 +3,12 @@
  * Данные передаются через localStorage (см. openProductLabelsBatchPrintTab).
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../../services/api';
 import { readProductLabelsBatchPayload } from '../../hooks/useProductLabelPrint.js';
 
 const MM_TO_PX = 8;
+const FETCH_CONCURRENCY = 4;
 
 function readMmHeader(headers, name, fallback) {
   const raw = headers?.[name] ?? headers?.[name.toLowerCase()];
@@ -21,14 +22,52 @@ function normalizeCopies(v) {
   return Math.min(99, n);
 }
 
+async function messageFromLabelError(err) {
+  const status = err?.response?.status || 0;
+  const data = err?.response?.data;
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    try {
+      const text = await data.text();
+      try {
+        const j = text ? JSON.parse(text) : null;
+        if (j?.message) return String(j.message);
+      } catch {
+        if (text?.trim()) return text.trim();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (data?.message) return String(data.message);
+  if (status === 400) return 'У товара нет категории или шаблона этикетки.';
+  if (status === 404) return 'Товар не найден.';
+  return err?.message || 'ошибка загрузки';
+}
+
+async function mapPool(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const idx = next;
+      next += 1;
+      results[idx] = await mapper(items[idx], idx);
+    }
+  }
+  const n = Math.max(1, Math.min(limit, items.length || 1));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
+
 export function PrintProductLabelsBatch() {
   const payload = useMemo(() => readProductLabelsBatchPayload(), []);
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const imagesLoadedRef = useRef(0);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const loadedKeysRef = useRef(new Set());
   const printCalledRef = useRef(false);
-  const expectedImagesRef = useRef(0);
+  const expectedKeysRef = useRef(new Set());
 
   const sheets = useMemo(() => {
     const list = [];
@@ -58,10 +97,10 @@ export function PrintProductLabelsBatch() {
   }, []);
 
   useEffect(() => {
-    imagesLoadedRef.current = 0;
+    loadedKeysRef.current = new Set();
     printCalledRef.current = false;
-    expectedImagesRef.current = 0;
-  }, [entries]);
+    expectedKeysRef.current = new Set(sheets.map((s) => s.key));
+  }, [sheets]);
 
   useEffect(() => {
     const items = payload?.items || [];
@@ -77,12 +116,16 @@ export function PrintProductLabelsBatch() {
     (async () => {
       setLoading(true);
       setError('');
-      const loaded = [];
-      const errors = [];
+      setProgress({ done: 0, total: items.length });
+      let done = 0;
 
-      for (const raw of items) {
+      const settled = await mapPool(items, FETCH_CONCURRENCY, async (raw) => {
         const productId = raw?.productId != null ? String(raw.productId).trim() : '';
-        if (!productId) continue;
+        if (!productId) {
+          done += 1;
+          if (!cancelled) setProgress({ done, total: items.length });
+          return { ok: false, skip: true };
+        }
         const copies = normalizeCopies(raw.copies);
         const marketplace = raw?.marketplace != null ? String(raw.marketplace).trim() : '';
         try {
@@ -95,24 +138,58 @@ export function PrintProductLabelsBatch() {
             timeout: 60000,
             headers: { Accept: 'image/png' },
           });
-          if (cancelled) return;
+          if (cancelled) return { ok: false, cancelled: true };
+          if (res.data?.type && String(res.data.type).includes('json')) {
+            const text = await res.data.text();
+            let msg = 'ошибка загрузки';
+            try {
+              msg = JSON.parse(text)?.message || msg;
+            } catch {
+              if (text?.trim()) msg = text.trim();
+            }
+            done += 1;
+            if (!cancelled) setProgress({ done, total: items.length });
+            return {
+              ok: false,
+              productId,
+              title: raw.title || productId,
+              error: String(msg),
+            };
+          }
           const blobUrl = URL.createObjectURL(res.data);
           urlsToRevoke.push(blobUrl);
-          loaded.push({
+          done += 1;
+          if (!cancelled) setProgress({ done, total: items.length });
+          return {
+            ok: true,
             productId,
             copies,
             title: raw.title || '',
             blobUrl,
             widthMm: readMmHeader(res.headers, 'x-label-width-mm', 58),
             heightMm: readMmHeader(res.headers, 'x-label-height-mm', 40),
-          });
+          };
         } catch (e) {
-          const msg = e?.response?.data?.message || e?.message || 'ошибка загрузки';
-          errors.push(`${raw.title || productId}: ${msg}`);
+          done += 1;
+          if (!cancelled) setProgress({ done, total: items.length });
+          return {
+            ok: false,
+            productId,
+            title: raw.title || productId,
+            error: await messageFromLabelError(e),
+          };
         }
-      }
+      });
 
       if (cancelled) return;
+
+      const loaded = [];
+      const errors = [];
+      for (const row of settled) {
+        if (!row || row.skip || row.cancelled) continue;
+        if (row.ok) loaded.push(row);
+        else if (row.error) errors.push(`${row.title || row.productId}: ${row.error}`);
+      }
 
       if (!loaded.length) {
         setEntries([]);
@@ -142,15 +219,11 @@ export function PrintProductLabelsBatch() {
     };
   }, [payload]);
 
-  useEffect(() => {
-    expectedImagesRef.current = sheets.length;
-  }, [sheets.length]);
-
-  const schedulePrintWhenReady = () => {
-    imagesLoadedRef.current += 1;
+  const tryPrint = useCallback(() => {
     if (printCalledRef.current) return;
-    if (expectedImagesRef.current === 0) return;
-    if (imagesLoadedRef.current < expectedImagesRef.current) return;
+    const expected = expectedKeysRef.current;
+    if (!expected.size) return;
+    if (loadedKeysRef.current.size < expected.size) return;
     printCalledRef.current = true;
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -162,19 +235,38 @@ export function PrintProductLabelsBatch() {
         }
       }, 250);
     });
-  };
+  }, []);
+
+  const markSheetReady = useCallback(
+    (key) => {
+      loadedKeysRef.current.add(key);
+      tryPrint();
+    },
+    [tryPrint]
+  );
 
   if (loading) {
-    return <p style={{ padding: 24 }}>Загрузка этикеток…</p>;
+    return (
+      <p style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
+        Загрузка этикеток… {progress.total ? `${progress.done} / ${progress.total}` : ''}
+      </p>
+    );
   }
 
   if (!sheets.length && error) {
     return <p style={{ padding: 24, color: '#b00', whiteSpace: 'pre-wrap' }}>{error}</p>;
   }
 
+  const pageSizeCss =
+    sheets[0] != null ? `${sheets[0].widthMm}mm ${sheets[0].heightMm}mm` : '58mm 40mm';
+
   return (
     <>
       <style>{`
+        @page {
+          size: ${pageSizeCss};
+          margin: 0;
+        }
         html, body, #root {
           margin: 0 !important;
           padding: 0 !important;
@@ -258,10 +350,10 @@ export function PrintProductLabelsBatch() {
               width: `${sh.widthMm}mm`,
               height: `${sh.heightMm}mm`,
             }}
-            onLoad={schedulePrintWhenReady}
-            onError={() => setError((prev) => prev || 'Не удалось отобразить этикетку')}
-            ref={(el) => {
-              if (el?.complete) schedulePrintWhenReady();
+            onLoad={() => markSheetReady(sh.key)}
+            onError={() => {
+              setError((prev) => prev || 'Не удалось отобразить часть этикеток');
+              markSheetReady(sh.key);
             }}
           />
         </div>

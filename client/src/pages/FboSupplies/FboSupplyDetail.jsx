@@ -780,6 +780,13 @@ export function FboSupplyDetail() {
       setPrintMsg('Отметьте одну или несколько строк в таблице (или «Выбрать все»).');
       return;
     }
+    if (totalLabelsToPrint > 150) {
+      const ok = window.confirm(
+        `Будет напечатано ${totalLabelsToPrint} этикеток (${selectedPrintableItems.length} позиций). ` +
+          'Это может занять время. Продолжить?'
+      );
+      if (!ok) return;
+    }
     setPrintMsg(null);
     setLabelPrintError(null);
     const batchItems = buildBatchPrintItems(selectedPrintableItems);
@@ -790,7 +797,7 @@ export function FboSupplyDetail() {
       return;
     }
     setPrintMsg(
-      `Открыта печать: ${selectedPrintableItems.length} поз., всего ${totalLabelsToPrint} этикет. (по колонке «Кол-во»)`
+      `Открыта печать: ${selectedPrintableItems.length} поз., всего ${totalLabelsToPrint} этикет. Загрузка идёт во вкладке — дождитесь диалога печати.`
     );
   };
 
