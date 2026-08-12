@@ -28,7 +28,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.is_fbo_stock
       FROM warehouse_mappings wm
       INNER JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE w.profile_id = $${paramIndex++}
@@ -39,7 +40,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.is_fbo_stock
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE 1=1
@@ -105,6 +107,7 @@ class WarehouseMappingsRepositoryPG {
         wm.*,
         w.address as warehouse_address,
         w.type as warehouse_type,
+        w.is_fbo_stock,
         w.profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id

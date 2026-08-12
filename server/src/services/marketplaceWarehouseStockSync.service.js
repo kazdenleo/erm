@@ -135,15 +135,26 @@ async function loadMappingsForSync({ warehouseId, profileId, strictWarehouse = f
   const wid =
     warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
 
+  /** Сопоставления складов продавца (FBS); склады FBO не пушим остатками. */
+  const onlyFbsMappings = (rows) =>
+    (rows || []).filter((m) => {
+      if (m?.is_fbo_stock === true || m?.isFboStock === true) return false;
+      const t = String(m?.warehouse_type || m?.warehouseType || '')
+        .toLowerCase()
+        .trim();
+      if (t === 'supplier' || t === 'fbo') return false;
+      return true;
+    });
+
   if (wid) {
-    const byWh = (await repo.findByWarehouse(wid)) || [];
+    const byWh = onlyFbsMappings((await repo.findByWarehouse(wid)) || []);
     if (byWh.length > 0) {
       return { rows: byWh, mappingFallback: false };
     }
     if (strictWarehouse) {
       return { rows: [], mappingFallback: false };
     }
-    const all = (await repo.findAll({ profileId: profileId ?? null })) || [];
+    const all = onlyFbsMappings((await repo.findAll({ profileId: profileId ?? null })) || []);
     if (all.length > 0) {
       logger.info('[MP Stock Push] для выбранного склада нет маппинга МП — используем все сопоставления профиля', {
         warehouseId: wid,
@@ -156,7 +167,7 @@ async function loadMappingsForSync({ warehouseId, profileId, strictWarehouse = f
   }
 
   return {
-    rows: (await repo.findAll({ profileId: profileId ?? null })) || [],
+    rows: onlyFbsMappings((await repo.findAll({ profileId: profileId ?? null })) || []),
     mappingFallback: false
   };
 }

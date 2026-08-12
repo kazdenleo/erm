@@ -1487,17 +1487,26 @@ class ProductsService {
           ? updates.block_stock_ym === true
           : stockBlockBefore.block_stock_ym,
       };
-      const changed =
-        after.block_stock_ozon !== stockBlockBefore.block_stock_ozon ||
-        after.block_stock_wb !== stockBlockBefore.block_stock_wb ||
-        after.block_stock_ym !== stockBlockBefore.block_stock_ym;
-      if (changed) {
+      const changedMarketplaces = [];
+      for (const mp of ['ozon', 'wb', 'ym']) {
+        const key = `block_stock_${mp}`;
+        if (after[key] !== stockBlockBefore[key]) changedMarketplaces.push(mp);
+      }
+      if (changedMarketplaces.length > 0) {
         try {
-          const { scheduleWarehouseStockMarketplaceSync } = await import(
+          // Сразу пушим на FBS выбранных МП (без debounce): при block=true уходит 0.
+          const { syncWarehouseStockToMarketplaces } = await import(
             './marketplaceWarehouseStockSync.service.js'
           );
-          scheduleWarehouseStockMarketplaceSync(updated.id, {
+          void syncWarehouseStockToMarketplaces(updated.id, {
+            source: 'product_stock_block_changed',
+            marketplaces: changedMarketplaces,
             reason: 'product_stock_block_changed',
+          }).catch((e) => {
+            console.warn(
+              '[Products Service] FBS stock sync after block flags failed:',
+              e?.message || e
+            );
           });
         } catch (e) {
           console.warn(

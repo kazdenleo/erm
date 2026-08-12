@@ -3463,7 +3463,6 @@ export function WarehouseStocks() {
                   <th>Наличие</th>
                   <th>Резерв</th>
                   <th>Доступно</th>
-                  {allowStockHistoryReset ? <th style={{ width: 88 }}>Сброс</th> : null}
                   <th className="stock-mp-block-col" title="Передача остатков на маркетплейсы">
                     Остатки МП
                   </th>
@@ -3476,7 +3475,7 @@ export function WarehouseStocks() {
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => openHistoryForRow(row), {
                       ignoreClosest:
-                        'input, textarea, select, label, button, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, .stock-mp-block-toggles, [data-no-nav-click]',
+                        'input, textarea, select, label, button, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-mp-block-toggles, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -3542,18 +3541,6 @@ export function WarehouseStocks() {
                     >
                       {row.availableDisplay ?? row.available}
                     </td>
-                    {allowStockHistoryReset ? (
-                      <td className="stock-history-reset-cell" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="stock-history-reset-btn"
-                          title="Очистить историю и задать текущие остатки"
-                          onClick={() => openStockResetModal(row)}
-                        >
-                          ⟲
-                        </button>
-                      </td>
-                    ) : null}
                     <td
                       className="stock-mp-block-cell"
                       onClick={(e) => e.stopPropagation()}
@@ -3582,7 +3569,7 @@ export function WarehouseStocks() {
 
           <p className="stock-levels-history-hint">
             Нажмите на строку — история остатков; на число в колонке «Резерв» — заказы с резервом и снятие резерва.
-            В колонке «МП» горящий бейдж — остатки уходят на маркетплейс; потухший — на МП уходит 0.
+            В колонке «Остатки МП» горящий бейдж — остатки уходят на FBS маркетплейса; потухший — на FBS уходит 0.
             {allowManualStockEdit ? (
               <>
                 {' '}
@@ -3594,12 +3581,6 @@ export function WarehouseStocks() {
                 Ручное изменение «Наличия» отключено — включите в настройках аккаунта.
               </>
             )}
-            {allowStockHistoryReset ? (
-              <>
-                {' '}
-                Кнопка «⟲» очищает историю движений по товару и задаёт текущие «В пути», «Наличие» и «Резерв» (нужен выбранный склад).
-              </>
-            ) : null}
           </p>
 
           {mpStockPushBanner ? (
@@ -3768,28 +3749,6 @@ export function WarehouseStocks() {
         }
         size="large"
       >
-        {allowStockHistoryReset && historyProduct ? (
-          <div className="stock-history-reset-toolbar">
-            <Button
-              type="button"
-              variant="outline-danger"
-              size="small"
-              onClick={openStockResetFromHistory}
-            >
-              Сбросить историю и задать остатки
-            </Button>
-            {!stockWarehouseId ? (
-              <span className="text-muted small">
-                Для сброса выберите склад в фильтре над таблицей.
-              </span>
-            ) : null}
-          </div>
-        ) : historyProduct && canManageAccountStockReset && !stockResetSettingOn ? (
-          <p className="text-muted small mb-2">
-            Сброс истории отключён. Включите «Сброс истории остатков по товару» в{' '}
-            <Link to="/settings">настройках аккаунта</Link> (нужны права администратора).
-          </p>
-        ) : null}
         {historyLoading ? (
           <div className="loading">Загрузка истории…</div>
         ) : historyError ? (
