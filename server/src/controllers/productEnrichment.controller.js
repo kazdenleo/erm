@@ -79,6 +79,34 @@ class ProductEnrichmentController {
       next(error);
     }
   }
+
+  async createFromEnrichment(req, res, next) {
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (!items.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Передайте items для создания',
+          message: 'Передайте items для создания',
+        });
+      }
+      const data = await productEnrichmentService.createProductsFromEnrichmentItems(items, {
+        profileId,
+      });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error('[productEnrichment] createFromEnrichment:', error?.message || error, error?.stack);
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
 }
 
 export default new ProductEnrichmentController();

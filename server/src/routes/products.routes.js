@@ -41,6 +41,10 @@ router.post(
   '/enrichment/bulk',
   wrapAsync(productEnrichmentController.enrichBulk.bind(productEnrichmentController))
 );
+router.post(
+  '/enrichment/create',
+  wrapAsync(productEnrichmentController.createFromEnrichment.bind(productEnrichmentController))
+);
 
 // Обновить все товары (массовое обновление)
 router.put(

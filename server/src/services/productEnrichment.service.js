@@ -1262,8 +1262,128 @@ export async function enrichProductsByBrandSkuList(items, opts = {}) {
   };
 }
 
+/**
+ * Создать карточки товаров из собранного контента PartsIndex.
+ * @param {Array<object>} items
+ * @param {{ profileId: number|string }} opts
+ */
+export async function createProductsFromEnrichmentItems(items, opts = {}) {
+  await ensureEnrichmentAllowed(opts.profileId);
+  const productsService = (await import('./products.service.js')).default;
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    const e = new Error('Нет позиций для создания');
+    e.statusCode = 400;
+    throw e;
+  }
+  if (list.length > 200) {
+    const e = new Error('За один раз не больше 200 товаров');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const results = [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i] || {};
+    const brandName = String(raw.brand || raw.matchedBrand || '').trim();
+    const sku = String(raw.sku || raw.matchedNumber || '').trim();
+    const name = String(raw.name || '').trim() || sku;
+    const row = { index: i + 1, brand: brandName, sku, ok: false };
+
+    if (!sku || !name) {
+      row.error = 'Нужны артикул и название';
+      results.push(row);
+      continue;
+    }
+
+    try {
+      const payload = {
+        profileId: opts.profileId,
+        name,
+        sku,
+        brand: brandName || undefined,
+        brand_id:
+          raw.brandId != null && raw.brandId !== ''
+            ? Number(raw.brandId)
+            : raw.brand_id != null && raw.brand_id !== ''
+              ? Number(raw.brand_id)
+              : undefined,
+        categoryId:
+          raw.categoryId != null && raw.categoryId !== ''
+            ? raw.categoryId
+            : raw.user_category_id != null && raw.user_category_id !== ''
+              ? raw.user_category_id
+              : null,
+        organizationId:
+          raw.organizationId != null && raw.organizationId !== ''
+            ? raw.organizationId
+            : raw.organization_id != null && raw.organization_id !== ''
+              ? raw.organization_id
+              : null,
+        description: raw.description != null ? String(raw.description) : null,
+        weight: raw.weight != null && raw.weight !== '' ? Number(raw.weight) : null,
+        length: raw.length != null && raw.length !== '' ? Number(raw.length) : null,
+        width: raw.width != null && raw.width !== '' ? Number(raw.width) : null,
+        height: raw.height != null && raw.height !== '' ? Number(raw.height) : null,
+        barcodes: Array.isArray(raw.barcodes)
+          ? raw.barcodes.map((b) => (typeof b === 'string' ? { barcode: b, marketplaces: [] } : b))
+          : [],
+      };
+      if (payload.brand_id != null && !Number.isFinite(payload.brand_id)) {
+        delete payload.brand_id;
+      }
+
+      const product = await productsService.create(payload);
+      const productId = product?.id;
+      let imagesAdded = 0;
+      const imageUrls = (raw.imageUrls || raw.images || [])
+        .map((x) => (typeof x === 'string' ? x : x?.url))
+        .filter(Boolean)
+        .slice(0, 8);
+
+      if (productId != null && imageUrls.length) {
+        const downloaded = [];
+        for (let imgIdx = 0; imgIdx < imageUrls.length; imgIdx++) {
+          try {
+            const rec = await downloadImageToProductFolder(productId, imageUrls[imgIdx], {
+              primary: imgIdx === 0,
+              marketplaces: { ozon: true, wb: true, ym: true },
+            });
+            if (rec) downloaded.push(rec);
+          } catch (imgErr) {
+            row.imageWarning = row.imageWarning
+              ? `${row.imageWarning}; ${imgErr?.message || imgErr}`
+              : String(imgErr?.message || imgErr);
+          }
+        }
+        if (downloaded.length) {
+          await productsRepo().update(productId, { images: downloaded });
+          imagesAdded = downloaded.length;
+        }
+      }
+
+      row.ok = true;
+      row.productId = productId;
+      row.imagesAdded = imagesAdded;
+      row.name = product?.name || name;
+    } catch (err) {
+      row.error = err?.message || String(err);
+      row.statusCode = err?.statusCode || null;
+    }
+    results.push(row);
+  }
+
+  return {
+    total: results.length,
+    ok: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    results,
+  };
+}
+
 export default {
   enrichProductById,
   enrichProductsByBrandSkuList,
+  createProductsFromEnrichmentItems,
   getEnrichmentStatusForProfile,
 };

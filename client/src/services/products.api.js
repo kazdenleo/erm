@@ -458,6 +458,16 @@ export const productsApi = {
     return response.data;
   },
 
+  /** Создать товары из собранного контента обогащения */
+  enrichCreate: async (items) => {
+    const response = await api.post(
+      '/products/enrichment/create',
+      { items },
+      { timeout: 600000 }
+    );
+    return response.data;
+  },
+
   /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */
