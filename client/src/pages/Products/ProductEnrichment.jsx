@@ -163,7 +163,7 @@ export function ProductEnrichment() {
   const navigate = useNavigate();
   const { profile, isTenantAccountAdmin, refreshUser } = useAuth();
   const { brands, createBrand, loadBrands } = useBrands();
-  const { categories } = useCategories();
+  const { categories, createCategory } = useCategories();
   const { organizations } = useOrganizations();
 
   const flagEnabled = isProfileProductEnrichmentEnabled(profile);
@@ -190,6 +190,14 @@ export function ProductEnrichment() {
   const [draftRows, setDraftRows] = useState([]);
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
+  const [categoryCreateModal, setCategoryCreateModal] = useState({
+    open: false,
+    applyMode: 'row',
+    rowKey: null,
+  });
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [categoryCreating, setCategoryCreating] = useState(false);
+  const [categoryCreateError, setCategoryCreateError] = useState('');
   const [creating, setCreating] = useState(false);
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
@@ -363,6 +371,49 @@ export function ProductEnrichment() {
     if (!col) return;
     setBulkDraft('');
     setBulkModal({ open: true, column: col });
+  };
+
+  const openCategoryCreate = (applyMode, rowKey = null) => {
+    setNewCategoryName('');
+    setCategoryCreateError('');
+    setCategoryCreateModal({ open: true, applyMode, rowKey });
+  };
+
+  const closeCategoryCreate = () => {
+    setCategoryCreateModal({ open: false, applyMode: 'row', rowKey: null });
+    setNewCategoryName('');
+    setCategoryCreateError('');
+  };
+
+  const submitCategoryCreate = async () => {
+    const name = String(newCategoryName || '').trim();
+    if (!name) {
+      setCategoryCreateError('Укажите название категории');
+      return;
+    }
+    setCategoryCreating(true);
+    setCategoryCreateError('');
+    try {
+      const created = await createCategory({ name });
+      const id = created?.id != null ? String(created.id) : '';
+      if (!id) throw new Error('Категория создана без id');
+      if (categoryCreateModal.applyMode === 'all') {
+        setDraftRows((prev) =>
+          prev.map((r) => (r.productId ? r : { ...r, categoryId: id }))
+        );
+        setBulkModal({ open: false, column: null });
+        setBulkDraft('');
+      } else if (categoryCreateModal.applyMode === 'row' && categoryCreateModal.rowKey) {
+        updateRow(categoryCreateModal.rowKey, { categoryId: id });
+      }
+      closeCategoryCreate();
+    } catch (err) {
+      setCategoryCreateError(
+        err?.response?.data?.message || err?.message || 'Не удалось создать категорию'
+      );
+    } finally {
+      setCategoryCreating(false);
+    }
   };
 
   const applyBulk = () => {
@@ -766,21 +817,33 @@ export function ProductEnrichment() {
                               </select>
                             </td>
                             <td>
-                              <select
-                                className="form-control form-control-sm"
-                                value={row.categoryId}
-                                disabled={!!row.productId}
-                                onChange={(e) =>
-                                  updateRow(row.key, { categoryId: e.target.value })
-                                }
-                              >
-                                <option value="">—</option>
-                                {(categories || []).map((c) => (
-                                  <option key={c.id} value={String(c.id)}>
-                                    {c.name}
-                                  </option>
-                                ))}
-                              </select>
+                              <div className="product-enrichment-select-with-action">
+                                <select
+                                  className="form-control form-control-sm"
+                                  value={row.categoryId}
+                                  disabled={!!row.productId}
+                                  onChange={(e) =>
+                                    updateRow(row.key, { categoryId: e.target.value })
+                                  }
+                                >
+                                  <option value="">—</option>
+                                  {(categories || []).map((c) => (
+                                    <option key={c.id} value={String(c.id)}>
+                                      {c.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                {!row.productId ? (
+                                  <button
+                                    type="button"
+                                    className="product-enrichment-create-cat-btn"
+                                    title="Создать категорию"
+                                    onClick={() => openCategoryCreate('row', row.key)}
+                                  >
+                                    +
+                                  </button>
+                                ) : null}
+                              </div>
                             </td>
                             <td>
                               <select
@@ -895,6 +958,20 @@ export function ProductEnrichment() {
                 </option>
               ))}
             </select>
+            {bulkModal.column.key === 'categoryId' ? (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  className="btn btn-link btn-sm p-0"
+                  onClick={() => {
+                    setBulkModal({ open: false, column: null });
+                    openCategoryCreate('all');
+                  }}
+                >
+                  Создать новую категорию…
+                </button>
+              </div>
+            ) : null}
             <div className="d-flex justify-content-end gap-2 mt-3">
               <Button
                 type="button"
@@ -913,6 +990,63 @@ export function ProductEnrichment() {
             </div>
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        isOpen={categoryCreateModal.open}
+        onClose={closeCategoryCreate}
+        title="Новая категория"
+        size="small"
+      >
+        <div>
+          <p className="text-muted small mb-2">
+            {categoryCreateModal.applyMode === 'all'
+              ? 'Категория будет создана и проставлена во все строки без созданного товара.'
+              : 'Категория будет создана и подставлена в выбранную строку.'}
+          </p>
+          <label className="form-label small mb-1" htmlFor="enrichment-new-category-name">
+            Название
+          </label>
+          <input
+            id="enrichment-new-category-name"
+            className="form-control"
+            type="text"
+            value={newCategoryName}
+            onChange={(e) => setNewCategoryName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitCategoryCreate();
+              }
+            }}
+            placeholder="Например: Опоры шаровые"
+            autoFocus
+            disabled={categoryCreating}
+          />
+          {categoryCreateError ? (
+            <div className="error mt-2 mb-0">{categoryCreateError}</div>
+          ) : null}
+          <div className="d-flex justify-content-end gap-2 mt-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              onClick={closeCategoryCreate}
+              disabled={categoryCreating}
+            >
+              Отмена
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              onClick={submitCategoryCreate}
+              disabled={categoryCreating || !String(newCategoryName || '').trim()}
+            >
+              {categoryCreating ? 'Создание…' : 'Создать'}
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

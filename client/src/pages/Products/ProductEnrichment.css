@@ -125,9 +125,35 @@
   font-variant-numeric: tabular-nums;
 }
 
-.product-enrichment-table .form-control-sm {
-  min-width: 120px;
-  max-width: 180px;
+.product-enrichment-select-with-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.product-enrichment-select-with-action .form-control {
+  flex: 1;
+  min-width: 0;
+}
+
+.product-enrichment-create-cat-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  background: #d8e8f8;
+  color: #111;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.product-enrichment-create-cat-btn:hover {
+  background: #c5daf3;
 }
 
 .product-enrichment-images--table {
