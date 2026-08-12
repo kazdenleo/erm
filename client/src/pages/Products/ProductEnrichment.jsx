@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../components/common/Button/Button';
+import { Modal } from '../../components/common/Modal/Modal';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useBrands } from '../../hooks/useBrands';
 import { useCategories } from '../../hooks/useCategories';
@@ -27,6 +28,16 @@ import {
   partsIndexKeysFromProfile,
 } from '../../constants/partsindexKeys.js';
 import './ProductEnrichment.css';
+
+const FILLABLE_COLUMNS = {
+  brandId: { key: 'brandId', label: 'Бренд', optionsKey: 'brands' },
+  categoryId: { key: 'categoryId', label: 'Категория', optionsKey: 'categories' },
+  organizationId: {
+    key: 'organizationId',
+    label: 'Организация',
+    optionsKey: 'organizations',
+  },
+};
 
 /** Вес/габариты из БД (г / мм) → подпись в единицах аккаунта. */
 function formatWeightDims(row, lengthUnit, weightUnit) {
@@ -171,9 +182,8 @@ export function ProductEnrichment() {
   const [runError, setRunError] = useState('');
   const [reportMeta, setReportMeta] = useState(null);
   const [draftRows, setDraftRows] = useState([]);
-  const [bulkBrandId, setBulkBrandId] = useState('');
-  const [bulkCategoryId, setBulkCategoryId] = useState('');
-  const [bulkOrganizationId, setBulkOrganizationId] = useState('');
+  const [bulkModal, setBulkModal] = useState({ open: false, column: null });
+  const [bulkDraft, setBulkDraft] = useState('');
   const [creating, setCreating] = useState(false);
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
@@ -305,10 +315,21 @@ export function ProductEnrichment() {
     setDraftRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   };
 
-  const applyBulkToSelected = (field, value) => {
+  const openBulk = (columnKey) => {
+    const col = FILLABLE_COLUMNS[columnKey];
+    if (!col) return;
+    setBulkDraft('');
+    setBulkModal({ open: true, column: col });
+  };
+
+  const applyBulk = () => {
+    const col = bulkModal.column;
+    if (!col) return;
     setDraftRows((prev) =>
-      prev.map((r) => (r.selected && !r.productId ? { ...r, [field]: value } : r))
+      prev.map((r) => (r.productId ? r : { ...r, [col.key]: bulkDraft }))
     );
+    setBulkModal({ open: false, column: null });
+    setBulkDraft('');
   };
 
   const createSelected = async () => {
@@ -530,55 +551,6 @@ export function ProductEnrichment() {
             ) : (
               <>
                 <div className="product-enrichment-bulk-bar">
-                  <span className="text-muted small">Для выбранных:</span>
-                  <select
-                    className="form-control form-control-sm"
-                    value={bulkBrandId}
-                    onChange={(e) => {
-                      setBulkBrandId(e.target.value);
-                      applyBulkToSelected('brandId', e.target.value);
-                    }}
-                    title="Бренд"
-                  >
-                    <option value="">Бренд…</option>
-                    {(brands || []).map((b) => (
-                      <option key={b.id} value={String(b.id)}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="form-control form-control-sm"
-                    value={bulkCategoryId}
-                    onChange={(e) => {
-                      setBulkCategoryId(e.target.value);
-                      applyBulkToSelected('categoryId', e.target.value);
-                    }}
-                    title="Категория"
-                  >
-                    <option value="">Категория…</option>
-                    {(categories || []).map((c) => (
-                      <option key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="form-control form-control-sm"
-                    value={bulkOrganizationId}
-                    onChange={(e) => {
-                      setBulkOrganizationId(e.target.value);
-                      applyBulkToSelected('organizationId', e.target.value);
-                    }}
-                    title="Организация"
-                  >
-                    <option value="">Организация…</option>
-                    {(organizations || []).map((o) => (
-                      <option key={o.id} value={String(o.id)}>
-                        {o.name}
-                      </option>
-                    ))}
-                  </select>
                   <Button
                     type="button"
                     variant="primary"
@@ -617,6 +589,45 @@ export function ProductEnrichment() {
                         <th>Применимость</th>
                         <th>Описание</th>
                         <th>Статус</th>
+                      </tr>
+                      <tr className="bulk-actions-row">
+                        <th colSpan={4}>
+                          <span className="text-muted" style={{ fontSize: 10 }}>
+                            —
+                          </span>
+                        </th>
+                        <th>
+                          <button
+                            type="button"
+                            className="product-enrichment-fill-btn"
+                            onClick={() => openBulk('brandId')}
+                          >
+                            Заполнить
+                          </button>
+                        </th>
+                        <th>
+                          <button
+                            type="button"
+                            className="product-enrichment-fill-btn"
+                            onClick={() => openBulk('categoryId')}
+                          >
+                            Заполнить
+                          </button>
+                        </th>
+                        <th>
+                          <button
+                            type="button"
+                            className="product-enrichment-fill-btn"
+                            onClick={() => openBulk('organizationId')}
+                          >
+                            Заполнить
+                          </button>
+                        </th>
+                        <th colSpan={6}>
+                          <span className="text-muted" style={{ fontSize: 10 }}>
+                            —
+                          </span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -809,6 +820,62 @@ export function ProductEnrichment() {
           </section>
         )}
       </div>
+
+      <Modal
+        isOpen={bulkModal.open && bulkModal.column != null}
+        onClose={() => {
+          setBulkModal({ open: false, column: null });
+          setBulkDraft('');
+        }}
+        title={
+          bulkModal.column
+            ? `Массово: ${bulkModal.column.label}`
+            : 'Массовое заполнение'
+        }
+        size="small"
+      >
+        {bulkModal.column ? (
+          <div>
+            <p className="text-muted small mb-2">
+              Значение будет записано во все строки, которые ещё не созданы как товары.
+            </p>
+            <select
+              className="form-control"
+              value={bulkDraft}
+              onChange={(e) => setBulkDraft(e.target.value)}
+              autoFocus
+            >
+              <option value="">—</option>
+              {(bulkModal.column.optionsKey === 'brands'
+                ? brands
+                : bulkModal.column.optionsKey === 'categories'
+                  ? categories
+                  : organizations || []
+              ).map((item) => (
+                <option key={item.id} value={String(item.id)}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            <div className="d-flex justify-content-end gap-2 mt-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="small"
+                onClick={() => {
+                  setBulkModal({ open: false, column: null });
+                  setBulkDraft('');
+                }}
+              >
+                Отмена
+              </Button>
+              <Button type="button" variant="primary" size="small" onClick={applyBulk}>
+                Применить ко всем строкам
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

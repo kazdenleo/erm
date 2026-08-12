@@ -54,10 +54,35 @@
   margin-bottom: 12px;
 }
 
-.product-enrichment-bulk-bar .form-control {
-  width: auto;
-  min-width: 140px;
-  max-width: 220px;
+.product-enrichment-table thead tr.bulk-actions-row th {
+  padding: 4px 6px;
+  background: #e9ecef;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  vertical-align: middle;
+}
+
+.product-enrichment-fill-btn {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: #d8e8f8;
+  color: #111;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.product-enrichment-fill-btn:hover:not(:disabled) {
+  background: #c5daf3;
+}
+
+.product-enrichment-fill-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .product-enrichment-table-wrap {
