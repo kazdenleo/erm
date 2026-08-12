@@ -76,11 +76,34 @@ export async function runWithProductStockLock(productId, fn) {
   await acquireStockLockSlot();
   const client = await getClient();
   try {
-    await client.query('SELECT pg_advisory_lock($1::bigint)', [pid]);
+    await client.query(`SET lock_timeout = '20s'`);
+    try {
+      await client.query('SELECT pg_advisory_lock($1::bigint)', [pid]);
+    } catch (e) {
+      const msg = String(e?.message || e || '');
+      if (/lock_timeout|canceling statement due to lock timeout/i.test(msg)) {
+        const err = new Error(
+          'Складская операция по товару временно занята. Повторите через несколько секунд.'
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+      throw e;
+    }
+    try {
+      await client.query(`SET lock_timeout = DEFAULT`);
+    } catch {
+      /* ignore */
+    }
     return await fn();
   } finally {
     try {
-      await client.query('SELECT pg_advisory_unlock($1::bigint)', [pid]);
+      await client.query('SELECT pg_advisory_unlock_all()');
+    } catch {
+      /* ignore */
+    }
+    try {
+      await client.query(`SET lock_timeout = DEFAULT`);
     } catch {
       /* ignore */
     }
@@ -485,6 +508,7 @@ class StockMovementsService {
         const warehouseScopedReserve = snapshotOpts.warehouseId != null;
         const reservedBefore = warehouseScopedReserve ? supply.reserved : supply.reservedRaw;
         const journalBeforeRaw = supply.reservedRaw;
+        let reserveAddFinal = reserveAdd;
         if (!journalReconcile) {
           const availableForReserve = Math.max(0, Math.floor(supply.available));
           if (availableForReserve <= 0) {
@@ -497,24 +521,58 @@ class StockMovementsService {
             err.statusCode = 400;
             throw err;
           }
-          if (reserveAdd > availableForReserve) {
+          if (reserveAddFinal > availableForReserve) {
             const whHint =
               warehouseId != null ? ` (склад #${warehouseId})` : '';
             const err = new Error(
               `Недостаточно остатка для резерва${whHint}: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-                `уже зарезервировано ${reservedBefore}, запрошено ${reserveAdd} ` +
+                `уже зарезервировано ${reservedBefore}, запрошено ${reserveAddFinal} ` +
                 `(доступно без поставщиков: ${availableForReserve})`
             );
             err.statusCode = 400;
             throw err;
           }
+
+          // Не даём двум заказам занять больше свободного «в пути», чем есть по supply.
+          const wantInc = Math.max(0, Math.floor(Number(metaOut.reserve_from_incoming) || 0));
+          if (wantInc > 0) {
+            const { clampReserveSplitToFreeIncoming, freeIncomingFromSupply, onHandHeadroomFromSnapshot } =
+              await import('./orders.service.js');
+            const freeIncoming = freeIncomingFromSupply({
+              onHand: supply.onHand,
+              incoming: supply.incoming,
+              reserved: reservedBefore,
+            });
+            const clamped = clampReserveSplitToFreeIncoming(reserveAddFinal, {
+              reserveFromOnHand: Math.max(
+                0,
+                Math.floor(Number(metaOut.reserve_from_on_hand) || 0)
+              ),
+              reserveFromIncoming: wantInc,
+              freeIncoming,
+              onHandHeadroom: onHandHeadroomFromSnapshot(supply, snapshotOpts),
+            });
+            if (clamped.qty < 1) {
+              const whHint =
+                warehouseId != null ? ` (склад #${warehouseId})` : '';
+              const err = new Error(
+                `Недостаточно свободного «в пути» для резерва${whHint}: в пути ${supply.incoming}, ` +
+                  `уже занято резервом сверх наличия ${Math.max(0, reservedBefore - Math.floor(Number(supply.onHand) || 0))}`
+              );
+              err.statusCode = 400;
+              throw err;
+            }
+            reserveAddFinal = clamped.qty;
+            metaOut.reserve_from_on_hand = clamped.reserveFromOnHand;
+            metaOut.reserve_from_incoming = clamped.reserveFromIncoming;
+          }
         }
-        const journalAfter = journalBeforeRaw + reserveAdd;
+        const journalAfter = journalBeforeRaw + reserveAddFinal;
         await client.query(
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]
         );
-        quantityChange = -reserveAdd;
+        quantityChange = -reserveAddFinal;
         if (quantityChange === 0) {
           const err = new Error('Нулевой объём резерва — запись в журнал не создаётся');
           err.statusCode = 400;

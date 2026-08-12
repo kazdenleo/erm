@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
 import productsService from './products.service.js';
+import repositoryFactory from '../config/repository-factory.js';
 import { pickBarcodeForMarketplace, shouldUseBarcodeDigitFallback } from '../utils/productBarcodes.js';
 import {
   getProductFieldDisplayValue,
@@ -25,6 +26,53 @@ const SIZE_PRESETS = {
 };
 
 const MM_TO_PX = 8;
+
+/** Кэш PNG этикеток: повторная печать / пакетный print helper не гоняют sharp заново. */
+const LABEL_PNG_CACHE_TTL_MS = 15 * 60 * 1000;
+const LABEL_PNG_CACHE_MAX = 300;
+/** @type {Map<string, { at: number, buffer: Buffer, contentType: string, widthMm: number, heightMm: number, pngBuffer?: Buffer }>} */
+const labelRenderCache = new Map();
+
+function labelRenderCacheKey(productId, marketplace, format, template) {
+  const tplId = template?.id != null ? String(template.id) : 'default';
+  const updated =
+    template?.updated_at != null
+      ? String(template.updated_at)
+      : template?.updatedAt != null
+        ? String(template.updatedAt)
+        : '';
+  const preset = template?.size_preset ?? template?.sizePreset ?? '';
+  return `${String(productId)}|${String(marketplace || '')}|${format}|${tplId}|${updated}|${preset}`;
+}
+
+function getCachedLabelRender(key) {
+  const hit = labelRenderCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > LABEL_PNG_CACHE_TTL_MS) {
+    labelRenderCache.delete(key);
+    return null;
+  }
+  labelRenderCache.delete(key);
+  labelRenderCache.set(key, hit);
+  return hit;
+}
+
+function setCachedLabelRender(key, value) {
+  while (labelRenderCache.size >= LABEL_PNG_CACHE_MAX) {
+    const oldest = labelRenderCache.keys().next().value;
+    labelRenderCache.delete(oldest);
+  }
+  labelRenderCache.set(key, { ...value, at: Date.now() });
+}
+
+/** Товар для этикетки без participation-флагов (тяжёлые EXISTS по orders/movements). */
+async function loadProductForLabel(productId) {
+  if (repositoryFactory.isUsingPostgreSQL()) {
+    const repo = repositoryFactory.getProductsRepository();
+    return repo.findByIdWithDetails(productId);
+  }
+  return productsService.getByIdWithDetails(productId);
+}
 
 function resolveMmToPx(previewScale) {
   const s = Number(previewScale);
@@ -884,7 +932,7 @@ export const productLabelsService = {
   },
 
   async renderProductLabel(productId, { profileId = null, format = 'png', copies = 1, marketplace = null } = {}) {
-    const product = await productsService.getByIdWithDetails(productId);
+    const product = await loadProductForLabel(productId);
     if (!product) {
       const err = new Error('Товар не найден');
       err.statusCode = 404;
@@ -898,13 +946,37 @@ export const productLabelsService = {
       throw err;
     }
 
+    const outFormat = format === 'pdf' ? 'pdf' : 'png';
     const copyCount = Math.min(99, Math.max(1, parseInt(copies, 10) || 1));
-    const rendered = await renderWithTemplate(template, product, format === 'pdf' ? 'pdf' : 'png', {
-      marketplace,
-    });
+    const cacheKey = labelRenderCacheKey(productId, marketplace, outFormat, template);
+    let rendered = null;
+    const cached = getCachedLabelRender(cacheKey);
+    if (cached?.buffer) {
+      rendered = {
+        buffer: cached.buffer,
+        contentType: cached.contentType,
+        widthMm: cached.widthMm,
+        heightMm: cached.heightMm,
+        pngBuffer: cached.pngBuffer,
+      };
+    } else {
+      rendered = await renderWithTemplate(template, product, outFormat, {
+        marketplace,
+      });
+      setCachedLabelRender(cacheKey, {
+        buffer: rendered.buffer,
+        contentType: rendered.contentType,
+        widthMm: rendered.widthMm,
+        heightMm: rendered.heightMm,
+        pngBuffer: rendered.pngBuffer,
+      });
+    }
 
-    if (format === 'pdf' && copyCount > 1) {
-      rendered.buffer = await duplicateLabelPdf(rendered.buffer, copyCount);
+    if (outFormat === 'pdf' && copyCount > 1) {
+      rendered = {
+        ...rendered,
+        buffer: await duplicateLabelPdf(rendered.buffer, copyCount),
+      };
     }
 
     return rendered;

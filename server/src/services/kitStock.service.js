@@ -4,7 +4,7 @@
  * Собираемость из комплектующих — для «Доступно», без записи в product_warehouse_stock комплекта.
  */
 
-import { query } from '../config/database.js';
+import { getClient, query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
@@ -2395,13 +2395,45 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   let wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
   const orderDbId = Number(meta?.order_id ?? meta?.orderId);
   const useOrderLock = Number.isFinite(orderDbId) && orderDbId > 0;
-  // applyChange лочит product_id по отдельности — параллельный резерв целого SKU и деталей
-  // может оба увидеть already=0. Сериализуем по (комплект, заказ).
+  // Session advisory lock MUST stay on one pooled client: query()+unlock on another
+  // connection never releases the lock and blocks kit reserves until that backend dies.
+  let lockClient = null;
   if (useOrderLock) {
-    await query(`SELECT pg_advisory_lock(hashtext('kit-ord-rsv:' || $1::text || ':' || $2::text))`, [
-      kitId,
-      orderDbId
-    ]);
+    lockClient = await getClient();
+    // Нельзя ждать advisory lock бесконечно: иначе исчерпывается пул PG и тормозит весь API (в т.ч. этикетки).
+    await lockClient.query(`SET lock_timeout = '20s'`);
+    try {
+      await lockClient.query(
+        `SELECT pg_advisory_lock(hashtext('kit-ord-rsv:' || $1::text || ':' || $2::text))`,
+        [kitId, orderDbId]
+      );
+    } catch (e) {
+      try {
+        await lockClient.query(`SET lock_timeout = DEFAULT`);
+      } catch {
+        /* ignore */
+      }
+      try {
+        lockClient.release();
+      } catch {
+        /* ignore */
+      }
+      lockClient = null;
+      const msg = String(e?.message || e || '');
+      if (/lock_timeout|canceling statement due to lock timeout/i.test(msg)) {
+        const err = new Error(
+          'Резерв комплекта временно занят другим процессом. Повторите через несколько секунд.'
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+      throw e;
+    }
+    try {
+      await lockClient.query(`SET lock_timeout = DEFAULT`);
+    } catch {
+      /* ignore */
+    }
   }
   try {
     let reservedBeforeKit = null;
@@ -2551,11 +2583,24 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
     }
     return alloc.kitsToReserve;
   } finally {
-    if (useOrderLock) {
-      await query(
-        `SELECT pg_advisory_unlock(hashtext('kit-ord-rsv:' || $1::text || ':' || $2::text))`,
-        [kitId, orderDbId]
-      ).catch(() => {});
+    if (lockClient) {
+      try {
+        // unlock_all: если unlock по ключу не сработал, соединение не уйдёт в пул с «вечным» локом
+        await lockClient.query(`SELECT pg_advisory_unlock_all()`);
+      } catch {
+        /* ignore */
+      }
+      try {
+        await lockClient.query(`SET lock_timeout = DEFAULT`);
+      } catch {
+        /* ignore */
+      }
+      try {
+        lockClient.release();
+      } catch {
+        /* ignore */
+      }
+      lockClient = null;
     }
   }
 }
@@ -2980,7 +3025,7 @@ async function batchKitJournalBalanceMap(kitIds) {
   );
 }
 
-/** Непринятое ожидание и нетто incoming по закупкам на складе (для согласования «в пути»). */
+/** Непринятое ожидание и нетто incoming только по открытым закупкам на складе. */
 async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
   const wid = parseWarehouseIdFromOpts({ warehouseId });
@@ -3008,13 +3053,16 @@ async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
       [ids, wid]
     ),
     query(
-      `SELECT product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND LOWER(TRIM(type::text)) = 'incoming'
-         AND warehouse_id = $2
-         AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'
-       GROUP BY product_id`,
+      `SELECT sm.product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+       FROM stock_movements sm
+       INNER JOIN purchases p
+         ON p.id = (NULLIF(TRIM(sm.meta->>'purchase_id'), ''))::bigint
+        AND p.status = 'open'
+        AND p.warehouse_id = $2
+       WHERE sm.product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(sm.type::text)) = 'incoming'
+         AND COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'
+       GROUP BY sm.product_id`,
       [ids, wid]
     ),
   ]);
@@ -3425,7 +3473,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const supplierSyncOn = options.supplierSyncEnabled !== false;
     const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
-    const onSkuReserved = await readKitSkuNetReserved(kitId, options);
+    const onSkuReserved = kitSkuReservedFromContext(kitId, ctx);
     const comps = ctx.componentsByKit?.get(kitId) || [];
     const reservedFromComponents = comps.length
       ? minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid) ?? 0)
