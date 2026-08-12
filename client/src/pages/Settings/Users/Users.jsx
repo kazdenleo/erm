@@ -68,7 +68,6 @@ export function SettingsUsers() {
 
   const canManage = isTenantAccountAdmin;
   const showSystemAdminRoleOption = false;
-  const accessRestricted = !form.isProfileAdmin;
 
   const setTab = (nextTab) => {
     if (nextTab === 'list') {
@@ -101,9 +100,13 @@ export function SettingsUsers() {
         warehousesApi.getAll(),
       ]);
       setOrganizations(Array.isArray(orgRes?.data) ? orgRes.data : []);
-      const whList = Array.isArray(whRes?.data) ? whRes.data : [];
+      const whList = Array.isArray(whRes?.data) ? whRes.data : Array.isArray(whRes) ? whRes : [];
+      // Показываем физические склады (type=warehouse); если type пустой — тоже включаем
       setWarehouses(
-        whList.filter((w) => String(w.type || '').toLowerCase() === 'warehouse' || !w.type)
+        whList.filter((w) => {
+          const t = String(w.type || '').trim().toLowerCase();
+          return !t || t === 'warehouse';
+        })
       );
     } catch {
       setOrganizations([]);
@@ -288,9 +291,9 @@ export function SettingsUsers() {
             isOpen={modalOpen}
             onClose={() => setModalOpen(false)}
             title={editing ? 'Редактировать пользователя' : 'Добавить пользователя'}
-            size="medium"
+            size="large"
           >
-            <div className="settings-users-form">
+            <div className="settings-users-form settings-users-form--scroll">
               <label>
                 Логин (email) <span style={{ color: 'var(--error)' }}>*</span>
                 <input
@@ -377,76 +380,82 @@ export function SettingsUsers() {
                 </div>
               </label>
 
-              {accessRestricted && (
-                <div className="settings-users-access-block">
-                  <div className="settings-users-access-title">Доступ к данным</div>
+              <div className={`settings-users-access-block${form.isProfileAdmin ? ' settings-users-access-block--disabled' : ''}`}>
+                <div className="settings-users-access-title">Доступ к организациям и складам</div>
+                {form.isProfileAdmin ? (
+                  <p className="text-muted small settings-users-access-hint">
+                    У администратора полный доступ ко всем организациям и складам. Ограничения не применяются.
+                  </p>
+                ) : (
                   <p className="text-muted small settings-users-access-hint">
                     Если ничего не отмечено — доступ ко всем организациям и складам аккаунта.
                     Отметьте нужные, чтобы ограничить видимость данных.
                   </p>
+                )}
 
-                  <div className="settings-users-access-group">
-                    <div className="settings-users-access-group-title">Организации</div>
-                    {organizations.length === 0 ? (
-                      <div className="text-muted small">Организаций пока нет</div>
-                    ) : (
-                      <div className="settings-users-access-toggles">
-                        {organizations.map((org) => {
-                          const id = Number(org.id);
-                          const checked = form.organizationIds.includes(id);
-                          return (
-                            <label key={org.id} className="settings-users-nav-toggle">
-                              <input
-                                type="checkbox"
-                                className="form-check-input"
-                                checked={checked}
-                                onChange={() =>
-                                  setForm((f) => ({
-                                    ...f,
-                                    organizationIds: toggleId(f.organizationIds, id),
-                                  }))
-                                }
-                              />
-                              <span className="form-check-label">{org.name || `Организация #${org.id}`}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="settings-users-access-group">
-                    <div className="settings-users-access-group-title">Склады</div>
-                    {warehouses.length === 0 ? (
-                      <div className="text-muted small">Складов пока нет</div>
-                    ) : (
-                      <div className="settings-users-access-toggles">
-                        {warehouses.map((wh) => {
-                          const id = Number(wh.id);
-                          const checked = form.warehouseIds.includes(id);
-                          const label = wh.address || wh.name || `Склад #${wh.id}`;
-                          return (
-                            <label key={wh.id} className="settings-users-nav-toggle">
-                              <input
-                                type="checkbox"
-                                className="form-check-input"
-                                checked={checked}
-                                onChange={() =>
-                                  setForm((f) => ({
-                                    ...f,
-                                    warehouseIds: toggleId(f.warehouseIds, id),
-                                  }))
-                                }
-                              />
-                              <span className="form-check-label">{label}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                <div className="settings-users-access-group">
+                  <div className="settings-users-access-group-title">Организации</div>
+                  {organizations.length === 0 ? (
+                    <div className="text-muted small">Организаций пока нет</div>
+                  ) : (
+                    <div className="settings-users-access-toggles">
+                      {organizations.map((org) => {
+                        const id = Number(org.id);
+                        const checked = form.organizationIds.includes(id);
+                        return (
+                          <label key={org.id} className="settings-users-nav-toggle">
+                            <input
+                              type="checkbox"
+                              className="form-check-input"
+                              checked={checked}
+                              disabled={form.isProfileAdmin}
+                              onChange={() =>
+                                setForm((f) => ({
+                                  ...f,
+                                  organizationIds: toggleId(f.organizationIds, id),
+                                }))
+                              }
+                            />
+                            <span className="form-check-label">{org.name || `Организация #${org.id}`}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
+
+                <div className="settings-users-access-group">
+                  <div className="settings-users-access-group-title">Склады</div>
+                  {warehouses.length === 0 ? (
+                    <div className="text-muted small">Складов пока нет</div>
+                  ) : (
+                    <div className="settings-users-access-toggles">
+                      {warehouses.map((wh) => {
+                        const id = Number(wh.id);
+                        const checked = form.warehouseIds.includes(id);
+                        const label = wh.address || wh.name || `Склад #${wh.id}`;
+                        return (
+                          <label key={wh.id} className="settings-users-nav-toggle">
+                            <input
+                              type="checkbox"
+                              className="form-check-input"
+                              checked={checked}
+                              disabled={form.isProfileAdmin}
+                              onChange={() =>
+                                setForm((f) => ({
+                                  ...f,
+                                  warehouseIds: toggleId(f.warehouseIds, id),
+                                }))
+                              }
+                            />
+                            <span className="form-check-label">{label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
 
               {showSystemAdminRoleOption && (
                 <label>

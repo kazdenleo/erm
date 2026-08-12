@@ -56,6 +56,9 @@
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.settings-users-access-block--disabled {
+  opacity: 0.72;
+}
 .settings-users-access-title {
   font-weight: 600;
   font-size: 0.9rem;
@@ -80,6 +83,11 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0.35rem 1rem;
+}
+.settings-users-form--scroll {
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .settings-users-actions { display: flex; gap: 0.5rem; }
