@@ -1410,24 +1410,24 @@ class ProductsRepositoryPG {
         // product.quantity = остаток на нашем складе (из БД). supplierStockTotal = сумма остатков у поставщиков.
         const productIdKey = String(product.id);
         const stockData = stocksByProduct[productIdKey];
-        const oldCost = product.cost;
         const isKit = product.product_type === 'kit';
         if (product.quantity === null || product.quantity === undefined) {
           product.quantity = 0;
         }
         if (stockData) {
           product.supplierStockTotal = stockData.totalStock;
-          // Себестоимость: у комплектов — только из БД (уже посчитана по комплектующим); у обычных — приоритет supplier_stocks
-          const costFromSuppliers = stockData.minCost != null && !isNaN(Number(stockData.minCost)) ? Number(stockData.minCost) : null;
-          if (!isKit && costFromSuppliers !== null) {
-            product.cost = costFromSuppliers;
-            product.avg_cost = stockData.avgCost;
-            product.max_cost = stockData.maxCost;
-            // Не вызываем updateCostFromSupplierStocks здесь: на списке из сотен товаров это
-            // запускает сотни параллельных запросов и исчерпывает пул PostgreSQL → 500 / timeout.
-            // Себестоимость для ответа уже взята из stockData; синхронизацию в БД — отдельным сценарием (getById / фон).
-          } else if (costFromDb !== null) {
+          const costFromSuppliers =
+            stockData.minCost != null && !isNaN(Number(stockData.minCost))
+              ? Number(stockData.minCost)
+              : null;
+          product.supplier_min_cost = costFromSuppliers;
+          product.avg_cost = stockData.avgCost;
+          product.max_cost = stockData.maxCost;
+          // Канон — products.cost (ручное сохранение). Цена поставщика только как fallback, без записи в БД.
+          if (costFromDb !== null) {
             product.cost = costFromDb;
+          } else if (!isKit && costFromSuppliers !== null) {
+            product.cost = costFromSuppliers;
           } else {
             product.cost = null;
           }
@@ -1896,22 +1896,18 @@ class ProductsRepositoryPG {
 
     if (stocksResult.rows.length > 0) {
       const stockData = stocksResult.rows[0];
-      const costFromSuppliers = stockData.min_cost != null && !isNaN(parseFloat(stockData.min_cost)) ? parseFloat(stockData.min_cost) : null;
-      // У комплектов себестоимость только из БД (сумма по комплектующим)
-      if (!isKit && costFromSuppliers !== null) {
-        product.cost = costFromSuppliers;
-        product.avg_cost = stockData.avg_cost != null ? parseFloat(stockData.avg_cost) : null;
-        product.max_cost = stockData.max_cost != null ? parseFloat(stockData.max_cost) : null;
-        if (costFromDb === null || Math.abs(costFromSuppliers - costFromDb) > 0.009) {
-          this.updateCostFromSupplierStocks(numericId).catch((err) => {
-            console.error(
-              `[Products Repository] Error updating cost in DB for product ${numericId}:`,
-              err.message
-            );
-          });
-        }
-      } else if (costFromDb !== null) {
+      const costFromSuppliers =
+        stockData.min_cost != null && !isNaN(parseFloat(stockData.min_cost))
+          ? parseFloat(stockData.min_cost)
+          : null;
+      product.supplier_min_cost = costFromSuppliers;
+      product.avg_cost = stockData.avg_cost != null ? parseFloat(stockData.avg_cost) : null;
+      product.max_cost = stockData.max_cost != null ? parseFloat(stockData.max_cost) : null;
+      // Не перезаписываем ручную себестоимость ценой поставщика при чтении карточки.
+      if (costFromDb !== null) {
         product.cost = costFromDb;
+      } else if (!isKit && costFromSuppliers !== null) {
+        product.cost = costFromSuppliers;
       } else {
         product.cost = null;
       }

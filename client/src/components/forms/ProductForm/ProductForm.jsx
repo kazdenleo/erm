@@ -4305,7 +4305,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : {}),
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
-      cost: formData.cost ? parseFloat(formData.cost) : null,
+      cost:
+        formData.cost !== '' && formData.cost != null && !isNaN(parseFloat(formData.cost))
+          ? parseFloat(formData.cost)
+          : null,
       additionalExpenses:
         formData.additionalExpenses !== '' && formData.additionalExpenses != null && !isNaN(parseFloat(formData.additionalExpenses))
           ? parseFloat(formData.additionalExpenses)
@@ -5713,7 +5716,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           onChange={(e) => handleChange('cost', e.target.value)}
         />
         <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Обновляется при синхронизации с поставщиками
+            Сохраняется вручную. При синхронизации остатков поставщиков может обновиться.
         </div>
         {errors.cost && <div className="error">{errors.cost}</div>}
       </div>
