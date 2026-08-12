@@ -95,6 +95,7 @@ function buildDraftRows(reportResults, brands) {
       return {
         key: rowKey(r, idx),
         selected: true,
+        expanded: false,
         sourceIndex: r.index,
         brandName,
         sku: r.matchedNumber || r.sku || '',
@@ -105,11 +106,12 @@ function buildDraftRows(reportResults, brands) {
         width: c.width ?? null,
         height: c.height ?? null,
         barcodes: Array.isArray(c.barcodes) ? c.barcodes : [],
+        attributes: Array.isArray(c.attributes) ? c.attributes : [],
+        analogs: Array.isArray(c.analogs) ? c.analogs : [],
+        applicability: Array.isArray(c.applicability) ? c.applicability : [],
         imageUrls: (c.images || [])
           .map((x) => (typeof x === 'string' ? x : x?.url))
           .filter(Boolean),
-        analogsCount: Array.isArray(c.analogs) ? c.analogs.length : 0,
-        applicabilityCount: Array.isArray(c.applicability) ? c.applicability.length : 0,
         brandId: findBrandIdByName(brands, brandName),
         categoryId: '',
         organizationId: '',
@@ -575,114 +577,275 @@ export function ProductEnrichment() {
                             aria-label="Выбрать все"
                           />
                         </th>
+                        <th>Фото</th>
                         <th>Артикул</th>
                         <th>Название</th>
                         <th>Бренд</th>
                         <th>Категория</th>
                         <th>Организация</th>
-                        <th>Данные</th>
+                        <th>Сводка</th>
                         <th>Статус</th>
                       </tr>
                     </thead>
                     <tbody>
                       {draftRows.map((row) => (
-                        <tr
-                          key={row.key}
-                          className={row.productId ? 'is-created' : row.createStatus === 'error' ? 'is-error' : ''}
-                        >
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={!!row.selected}
-                              disabled={!!row.productId}
-                              onChange={(e) => updateRow(row.key, { selected: e.target.checked })}
-                              aria-label={`Выбрать ${row.sku}`}
-                            />
-                          </td>
-                          <td>
-                            <div className="small fw-semibold">{row.sku || '—'}</div>
-                            {row.brandName ? (
-                              <div className="text-muted small">{row.brandName}</div>
-                            ) : null}
-                          </td>
-                          <td>
-                            <div className="product-enrichment-name-cell">{row.name || '—'}</div>
-                            {row.imageUrls?.length ? (
-                              <div className="text-muted small">фото: {row.imageUrls.length}</div>
-                            ) : null}
-                          </td>
-                          <td>
-                            <select
-                              className="form-control form-control-sm"
-                              value={row.brandId}
-                              disabled={!!row.productId}
-                              onChange={(e) => updateRow(row.key, { brandId: e.target.value })}
-                            >
-                              <option value="">—</option>
-                              {(brands || []).map((b) => (
-                                <option key={b.id} value={String(b.id)}>
-                                  {b.name}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td>
-                            <select
-                              className="form-control form-control-sm"
-                              value={row.categoryId}
-                              disabled={!!row.productId}
-                              onChange={(e) => updateRow(row.key, { categoryId: e.target.value })}
-                            >
-                              <option value="">—</option>
-                              {(categories || []).map((c) => (
-                                <option key={c.id} value={String(c.id)}>
-                                  {c.name}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td>
-                            <select
-                              className="form-control form-control-sm"
-                              value={row.organizationId}
-                              disabled={!!row.productId}
-                              onChange={(e) =>
-                                updateRow(row.key, { organizationId: e.target.value })
-                              }
-                            >
-                              <option value="">—</option>
-                              {(organizations || []).map((o) => (
-                                <option key={o.id} value={String(o.id)}>
-                                  {o.name}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="small text-muted">
-                            {[
-                              row.weight != null ? `${row.weight} г` : null,
-                              [row.length, row.width, row.height].every((v) => v == null)
-                                ? null
-                                : `${row.length ?? '—'}×${row.width ?? '—'}×${row.height ?? '—'}`,
-                              row.barcodes?.length ? `ШК ${row.barcodes.length}` : null,
-                              row.analogsCount ? `аналоги ${row.analogsCount}` : null,
-                              row.applicabilityCount
-                                ? `авто ${row.applicabilityCount}`
-                                : null,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ') || '—'}
-                          </td>
-                          <td className="small">
-                            {row.productId ? (
-                              <span className="text-success">создан #{row.productId}</span>
-                            ) : row.createStatus === 'error' ? (
-                              <span className="text-danger">{row.createError || 'ошибка'}</span>
-                            ) : (
-                              <span className="text-muted">готов</span>
-                            )}
-                          </td>
-                        </tr>
+                        <React.Fragment key={row.key}>
+                          <tr
+                            className={
+                              row.productId
+                                ? 'is-created'
+                                : row.createStatus === 'error'
+                                  ? 'is-error'
+                                  : ''
+                            }
+                          >
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={!!row.selected}
+                                disabled={!!row.productId}
+                                onChange={(e) =>
+                                  updateRow(row.key, { selected: e.target.checked })
+                                }
+                                aria-label={`Выбрать ${row.sku}`}
+                              />
+                            </td>
+                            <td>
+                              {row.imageUrls?.length ? (
+                                <div className="product-enrichment-thumbs">
+                                  {row.imageUrls.slice(0, 3).map((url) => (
+                                    <a
+                                      key={url}
+                                      href={url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title="Открыть фото"
+                                    >
+                                      <img src={url} alt="" loading="lazy" />
+                                    </a>
+                                  ))}
+                                  {row.imageUrls.length > 3 ? (
+                                    <span className="small text-muted">
+                                      +{row.imageUrls.length - 3}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <span className="text-muted small">—</span>
+                              )}
+                            </td>
+                            <td>
+                              <div className="small fw-semibold">{row.sku || '—'}</div>
+                              {row.brandName ? (
+                                <div className="text-muted small">{row.brandName}</div>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn btn-link btn-sm p-0 product-enrichment-expand-btn"
+                                onClick={() =>
+                                  updateRow(row.key, { expanded: !row.expanded })
+                                }
+                              >
+                                {row.expanded ? 'Скрыть детали' : 'Показать детали'}
+                              </button>
+                            </td>
+                            <td>
+                              <div className="product-enrichment-name-cell">
+                                {row.name || '—'}
+                              </div>
+                            </td>
+                            <td>
+                              <select
+                                className="form-control form-control-sm"
+                                value={row.brandId}
+                                disabled={!!row.productId}
+                                onChange={(e) =>
+                                  updateRow(row.key, { brandId: e.target.value })
+                                }
+                              >
+                                <option value="">—</option>
+                                {(brands || []).map((b) => (
+                                  <option key={b.id} value={String(b.id)}>
+                                    {b.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                className="form-control form-control-sm"
+                                value={row.categoryId}
+                                disabled={!!row.productId}
+                                onChange={(e) =>
+                                  updateRow(row.key, { categoryId: e.target.value })
+                                }
+                              >
+                                <option value="">—</option>
+                                {(categories || []).map((c) => (
+                                  <option key={c.id} value={String(c.id)}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                className="form-control form-control-sm"
+                                value={row.organizationId}
+                                disabled={!!row.productId}
+                                onChange={(e) =>
+                                  updateRow(row.key, { organizationId: e.target.value })
+                                }
+                              >
+                                <option value="">—</option>
+                                {(organizations || []).map((o) => (
+                                  <option key={o.id} value={String(o.id)}>
+                                    {o.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="small text-muted">
+                              {[
+                                row.weight != null ? `${row.weight} г` : null,
+                                [row.length, row.width, row.height].every((v) => v == null)
+                                  ? null
+                                  : `${row.length ?? '—'}×${row.width ?? '—'}×${row.height ?? '—'}`,
+                                row.barcodes?.length ? `ШК ${row.barcodes.length}` : null,
+                                row.analogs?.length ? `аналоги ${row.analogs.length}` : null,
+                                row.applicability?.length
+                                  ? `авто ${row.applicability.length}`
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ') || '—'}
+                            </td>
+                            <td className="small">
+                              {row.productId ? (
+                                <span className="text-success">создан #{row.productId}</span>
+                              ) : row.createStatus === 'error' ? (
+                                <span className="text-danger">
+                                  {row.createError || 'ошибка'}
+                                </span>
+                              ) : (
+                                <span className="text-muted">готов</span>
+                              )}
+                            </td>
+                          </tr>
+                          {row.expanded ? (
+                            <tr className="product-enrichment-detail-row">
+                              <td colSpan={9}>
+                                <div className="product-enrichment-detail">
+                                  {row.imageUrls?.length ? (
+                                    <div>
+                                      <div className="text-muted small mb-1">
+                                        Фото ({row.imageUrls.length})
+                                      </div>
+                                      <div className="product-enrichment-images">
+                                        {row.imageUrls.map((url) => (
+                                          <a
+                                            key={url}
+                                            href={url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                          >
+                                            <img src={url} alt="" loading="lazy" />
+                                          </a>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+
+                                  <div className="product-enrichment-detail__grid">
+                                    <div>
+                                      <div className="text-muted small">Вес / габариты</div>
+                                      <div className="small">
+                                        {row.weight != null ? `${row.weight} г` : '—'}
+                                        {' · '}
+                                        {[row.length, row.width, row.height].every(
+                                          (v) => v == null
+                                        )
+                                          ? '—'
+                                          : `${row.length ?? '—'} × ${row.width ?? '—'} × ${row.height ?? '—'} мм`}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-muted small">Штрихкоды</div>
+                                      <div className="small">
+                                        {row.barcodes?.length ? row.barcodes.join(', ') : '—'}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div className="text-muted small">
+                                      Аналоги ({row.analogs?.length || 0})
+                                    </div>
+                                    {row.analogs?.length ? (
+                                      <ul className="mb-0 small ps-3">
+                                        {row.analogs.slice(0, 40).map((a, idx) => (
+                                          <li key={`${a.id || a.code || idx}-${a.brand || ''}`}>
+                                            {[a.brand, a.code].filter(Boolean).join(' ')}
+                                            {a.relation ? (
+                                              <span className="text-muted"> · {a.relation}</span>
+                                            ) : null}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <div className="small text-muted">Нет данных</div>
+                                    )}
+                                  </div>
+
+                                  <div>
+                                    <div className="text-muted small">
+                                      Применимость ({row.applicability?.length || 0})
+                                    </div>
+                                    {row.applicability?.length ? (
+                                      <ul className="mb-0 small ps-3">
+                                        {row.applicability.slice(0, 50).map((a, idx) => (
+                                          <li key={`${a.brand}-${a.model}-${idx}`}>
+                                            {[a.brand, a.model, a.modif, a.years]
+                                              .filter(Boolean)
+                                              .join(' ')}
+                                            {a.body ? (
+                                              <span className="text-muted"> · {a.body}</span>
+                                            ) : null}
+                                            {a.engCode ? (
+                                              <span className="text-muted">
+                                                {' '}
+                                                · дв. {a.engCode}
+                                              </span>
+                                            ) : null}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <div className="small text-muted">Нет данных</div>
+                                    )}
+                                  </div>
+
+                                  <div>
+                                    <div className="text-muted small">
+                                      Описание / характеристики
+                                      {row.attributes?.length
+                                        ? ` (${row.attributes.length})`
+                                        : ''}
+                                    </div>
+                                    <pre className="product-enrichment-desc mb-0">
+                                      {row.description ||
+                                        (row.attributes?.length
+                                          ? row.attributes
+                                              .map((a) => `${a.name}: ${a.value}`)
+                                              .join('\n')
+                                          : '—')}
+                                    </pre>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
