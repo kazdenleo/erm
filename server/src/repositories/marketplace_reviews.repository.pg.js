@@ -41,16 +41,8 @@ class MarketplaceReviewsRepositoryPG {
   async updateAnswerFields(id, profileId, answerText, rawPayload = undefined) {
     const nid = Number(id);
     if (!Number.isFinite(nid) || nid < 1) return null;
-    if (rawPayload !== undefined) {
-      const result = await query(
-        `UPDATE marketplace_reviews
-         SET answer_text = $3, raw_payload = $4::jsonb, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND profile_id = $2
-         RETURNING *`,
-        [nid, profileId, answerText, JSON.stringify(rawPayload)]
-      );
-      return rowToApi(result.rows[0]);
-    }
+    // rawPayload намеренно не сохраняем: ответ на МП идёт по external_id, payload только раздувал TOAST.
+    void rawPayload;
     const result = await query(
       `UPDATE marketplace_reviews
        SET answer_text = $3, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
@@ -125,13 +117,12 @@ class MarketplaceReviewsRepositoryPG {
       status,
       sku_or_offer,
       source_created_at,
-      raw_payload,
     } = row;
     const result = await query(
       `INSERT INTO marketplace_reviews (
         profile_id, marketplace, external_id, rating, body, has_text, answer_text, status,
         sku_or_offer, source_created_at, raw_payload, synced_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT (profile_id, marketplace, external_id) DO UPDATE SET
         rating = EXCLUDED.rating,
         body = EXCLUDED.body,
@@ -145,7 +136,7 @@ class MarketplaceReviewsRepositoryPG {
         status = EXCLUDED.status,
         sku_or_offer = EXCLUDED.sku_or_offer,
         source_created_at = EXCLUDED.source_created_at,
-        raw_payload = EXCLUDED.raw_payload,
+        raw_payload = NULL,
         synced_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
       RETURNING *`,
@@ -160,7 +151,6 @@ class MarketplaceReviewsRepositoryPG {
         status ?? null,
         sku_or_offer ?? null,
         source_created_at ?? null,
-        raw_payload != null ? JSON.stringify(raw_payload) : null,
       ]
     );
     return rowToApi(result.rows[0]);

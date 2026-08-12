@@ -88,7 +88,7 @@ function mapOzonReview(r, profileId) {
     status: status != null ? String(status) : null,
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
-    raw_payload: r,
+    raw_payload: null,
   };
 }
 
@@ -181,7 +181,7 @@ function mapWbFeedback(fb, profileId) {
     status: status != null ? String(status) : null,
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
-    raw_payload: fb,
+    raw_payload: null,
   };
 }
 
@@ -267,7 +267,7 @@ function mapYandexFeedback(fb, profileId) {
     status: fb.needReaction === false ? 'READ' : 'NEED_REACTION',
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
-    raw_payload: fb,
+    raw_payload: null,
   };
 }
 
