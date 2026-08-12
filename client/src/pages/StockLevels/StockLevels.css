@@ -157,23 +157,28 @@
 .total-stock-cell,
 .main-warehouse-cell {
   font-weight: 600;
+  white-space: nowrap;
+  min-width: 7.5rem;
 }
 
 .stock-manual-onhand-edit {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  max-width: 100%;
+  gap: 4px;
+  flex-wrap: nowrap;
+  max-width: none;
+  vertical-align: middle;
 }
 
 .stock-manual-onhand-input {
-  width: 4.5rem;
+  width: 4.25rem;
+  min-width: 3.5rem;
   padding: 2px 6px;
   font: inherit;
   font-weight: 600;
   border: 1px solid var(--border, #dee2e6);
   border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .stock-manual-onhand-save-btn {
