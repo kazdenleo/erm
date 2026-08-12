@@ -143,7 +143,7 @@ function normalizeProfileId(profileId) {
 
 class OrdersRepositoryPG {
   buildFindAllFilters(options = {}) {
-    const { marketplace, status, productId, search, profileId, excludeManual, includeArchived } = options;
+    const { marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
@@ -157,6 +157,13 @@ class OrdersRepositoryPG {
     }
     if (excludeManual === true) {
       whereSql += ` AND o.marketplace <> 'manual'`;
+    }
+    if (Array.isArray(warehouseIds) && warehouseIds.length > 0) {
+      const ids = warehouseIds.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+      if (ids.length > 0) {
+        whereSql += ` AND o.warehouse_id = ANY($${paramIndex++}::bigint[])`;
+        params.push(ids);
+      }
     }
     if (marketplace) {
       whereSql += ` AND o.marketplace = $${paramIndex++}`;
@@ -196,9 +203,9 @@ class OrdersRepositoryPG {
    * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
    */
   async findAll(options = {}) {
-    const { limit, offset, marketplace, status, productId, search, profileId, excludeManual } = options;
+    const { limit, offset, marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds } = options;
     const { whereSql, params, paramIndex: startParamIndex } = this.buildFindAllFilters({
-      marketplace, status, productId, search, profileId, excludeManual
+      marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds
     });
     let paramIndex = startParamIndex;
     let limitOffsetSql = ' ORDER BY o.created_at DESC, o.in_process_at DESC';
@@ -351,7 +358,7 @@ class OrdersRepositoryPG {
    * Для WB техстатусы до резолва считаем как `new`, чтобы соответствовать UI-логике.
    */
   async countGroupsByStatus(options = {}) {
-    const { marketplace, search, profileId, excludeManual } = options;
+    const { marketplace, search, profileId, excludeManual, warehouseIds } = options;
     const { whereSql, params } = this.buildFindAllFilters({
       marketplace,
       status: null,
@@ -359,6 +366,7 @@ class OrdersRepositoryPG {
       search,
       profileId,
       excludeManual,
+      warehouseIds,
     });
 
     const sql = `
@@ -398,7 +406,7 @@ class OrdersRepositoryPG {
    * Та же логика группировки и фильтра «new», что в findAll со status=new.
    */
   async countNewGroups(options = {}) {
-    const { profileId, excludeManual } = options;
+    const { profileId, excludeManual, warehouseIds } = options;
     const { whereSql, params } = this.buildFindAllFilters({
       marketplace: null,
       status: 'new',
@@ -406,6 +414,7 @@ class OrdersRepositoryPG {
       search: null,
       profileId,
       excludeManual,
+      warehouseIds,
     });
 
     const result = await query(
@@ -1283,15 +1292,22 @@ class OrdersRepositoryPG {
       profileSql = ` AND o.profile_id = $2`;
       params.push(pid);
     }
+    // Снимок reserved_qty / reserve_need_qty — только недорезервированные.
+    // need_qty колонки нет; для комплектов need хранится в reserve_need_qty (шт. комплекта).
+    const needExpr = `COALESCE(NULLIF(o.reserve_need_qty, 0), GREATEST(1, COALESCE(o.quantity, 1)))`;
     const result = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         o.profile_id,
-        (${ORDER_RESERVED_QTY_SQL})::int AS reserved_qty
+        COALESCE(o.reserved_qty, 0)::int AS reserved_qty,
+        (${needExpr})::int AS need_qty,
+        COALESCE(NULLIF(TRIM(o.reserve_coverage), ''), 'none') AS reserve_coverage
        FROM orders o
        WHERE o.status IN ('new', 'in_procurement', 'in_assembly', 'wb_assembly', 'assembled')
+         AND o.product_id IS NOT NULL
+         AND COALESCE(o.reserved_qty, 0) < (${needExpr})
          ${profileSql}
        ORDER BY
          CASE o.status
@@ -1300,7 +1316,7 @@ class OrdersRepositoryPG {
            WHEN 'wb_assembly' THEN 1
            ELSE 2
          END,
-         CASE WHEN (${ORDER_RESERVED_QTY_SQL})::int = 0 THEN 0 ELSE 1 END,
+         CASE WHEN COALESCE(o.reserved_qty, 0) = 0 THEN 0 ELSE 1 END,
          o.created_at ASC NULLS LAST,
          o.id ASC
        LIMIT $1`,

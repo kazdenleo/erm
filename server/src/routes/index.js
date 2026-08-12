@@ -52,6 +52,7 @@ import * as platformMarketplaceNotificationsController from '../controllers/plat
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
+import marketplaceReturnClaimsRoutes from './marketplaceReturnClaims.routes.js';
 import downloadsRoutes from './downloads.routes.js';
 import categoryLabelTemplatesRoutes from './categoryLabelTemplates.routes.js';
 import productLabelsController from '../controllers/productLabels.controller.js';
@@ -177,6 +178,15 @@ router.use(async (req, res, next) => {
           message: 'Неверный контекст организации (X-Organization-Id). Перезайдите в систему.',
         });
       }
+      const { getRequestAccessScope, isOrganizationAllowed } = await import('../utils/userAccessScope.js');
+      const scope = await getRequestAccessScope(req);
+      if (!isOrganizationAllowed(scope, orgId)) {
+        return res.status(403).json({
+          ok: false,
+          code: 'ORGANIZATION_ACCESS_DENIED',
+          message: 'Нет доступа к выбранной организации.',
+        });
+      }
     }
 
     return next();
@@ -262,6 +272,7 @@ router.post(
 router.use('/orders', ordersRoutes);
 router.use('/questions', questionsRoutes);
 router.use('/marketplace-returns', marketplaceReturnsRoutes);
+router.use('/marketplace-return-claims', marketplaceReturnClaimsRoutes);
 router.use('/wb-returns', marketplaceReturnsRoutes);
 router.use('/supplier-stocks', supplierStocksRoutes);
 

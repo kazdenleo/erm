@@ -6,6 +6,11 @@
 import bcrypt from 'bcrypt';
 import repositoryFactory from '../config/repository-factory.js';
 import { buildFullName, normalizeUserNameFields } from '../utils/userName.js';
+import {
+  loadUserAccessGrants,
+  replaceUserAccessGrants,
+  isAccountAdminLike,
+} from '../utils/userAccessScope.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 
@@ -20,18 +25,39 @@ function normalizeAccountRole(v) {
 }
 
 function isAccountAdmin(user) {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  if (user.isProfileAdmin === true || user.is_profile_admin === true) return true;
-  // Как в AuthContext: account_role сравниваем после trim+lower — в БД могли попасть пробелы/регистр
-  const ar = normalizeAccountRole(user.accountRole ?? user.account_role ?? null);
-  return ar === 'admin';
+  return isAccountAdminLike(user);
 }
 
 function safeUserRow(row) {
   if (!row) return null;
   const { password_hash, ...rest } = row;
   return rest;
+}
+
+async function withAccess(row) {
+  if (!row) return null;
+  const safe = safeUserRow(row);
+  const grants = await loadUserAccessGrants(safe.id);
+  return {
+    ...safe,
+    organization_ids: grants.organizationIds,
+    warehouse_ids: grants.warehouseIds,
+  };
+}
+
+function accessPayloadFromBody(body) {
+  if (!body || typeof body !== 'object') return null;
+  const hasOrgs =
+    body.organizationIds !== undefined ||
+    body.organization_ids !== undefined;
+  const hasWh =
+    body.warehouseIds !== undefined ||
+    body.warehouse_ids !== undefined;
+  if (!hasOrgs && !hasWh) return null;
+  return {
+    organizationIds: body.organizationIds ?? body.organization_ids,
+    warehouseIds: body.warehouseIds ?? body.warehouse_ids,
+  };
 }
 
 export const usersController = {
@@ -93,7 +119,8 @@ export const usersController = {
       }
       const filter = req.user.role === 'admin' ? { profileId } : { profileId: req.user.profileId };
       const list = await usersRepo.findAll(filter);
-      res.json({ ok: true, data: list });
+      const withGrants = await Promise.all((list || []).map((row) => withAccess(row)));
+      res.json({ ok: true, data: withGrants });
     } catch (error) {
       next(error);
     }
@@ -146,7 +173,8 @@ export const usersController = {
         return res.status(403).json({ ok: false, message: 'Нет доступа' });
       }
       const { password_hash, ...safe } = item;
-      res.json({ ok: true, data: safe });
+      const data = await withAccess(safe);
+      res.json({ ok: true, data });
     } catch (error) {
       next(error);
     }
@@ -218,7 +246,21 @@ export const usersController = {
         isProfileAdmin: effectiveIsProfileAdmin,
         accountRole: effectiveAccountRole,
       });
-      res.status(201).json({ ok: true, data: item });
+      const access = accessPayloadFromBody(req.body);
+      if (access && effectiveProfileId != null && !effectiveIsProfileAdmin && effectiveAccountRole !== 'admin') {
+        try {
+          await replaceUserAccessGrants(item.id, {
+            ...access,
+            profileId: effectiveProfileId,
+          });
+        } catch (e) {
+          if (e?.status === 400) {
+            return res.status(400).json({ ok: false, message: e.message });
+          }
+          throw e;
+        }
+      }
+      res.status(201).json({ ok: true, data: await withAccess(item) });
     } catch (error) {
       next(error);
     }
@@ -325,8 +367,46 @@ export const usersController = {
         updates.is_profile_admin = updates.account_role === 'admin';
       }
 
+      // Поля доступа обрабатываем отдельно (не колонки users)
+      const access = accessPayloadFromBody(updates);
+      delete updates.organizationIds;
+      delete updates.organization_ids;
+      delete updates.warehouseIds;
+      delete updates.warehouse_ids;
+
       const item = await usersRepo.update(id, updates);
-      res.json({ ok: true, data: item });
+      const mergedAccountRole =
+        updates.account_role !== undefined ? updates.account_role : existing.account_role;
+      const mergedIsAdmin =
+        updates.is_profile_admin !== undefined
+          ? !!updates.is_profile_admin
+          : !!existing.is_profile_admin;
+      const isFullAccessUser =
+        mergedIsAdmin || normalizeAccountRole(mergedAccountRole) === 'admin';
+      const targetProfileId =
+        updates.profile_id !== undefined ? updates.profile_id : existing.profile_id;
+
+      if (isFullAccessUser) {
+        await replaceUserAccessGrants(id, {
+          organizationIds: [],
+          warehouseIds: [],
+          profileId: targetProfileId,
+        });
+      } else if (access) {
+        try {
+          await replaceUserAccessGrants(id, {
+            ...access,
+            profileId: targetProfileId,
+          });
+        } catch (e) {
+          if (e?.status === 400) {
+            return res.status(400).json({ ok: false, message: e.message });
+          }
+          throw e;
+        }
+      }
+
+      res.json({ ok: true, data: await withAccess(item) });
     } catch (error) {
       next(error);
     }

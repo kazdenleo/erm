@@ -108,7 +108,7 @@ export function AuthProvider({ children }) {
         applyOrganizationId(null);
       } else if (status === 403) {
         const code = err?.response?.data?.code;
-        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH' || code === 'ORGANIZATION_ACCESS_DENIED') {
           applyOrganizationId(null);
           try {
             const res = await authApi.me();
@@ -208,7 +208,7 @@ export function AuthProvider({ children }) {
       const status = err?.response?.status;
       if (status === 403) {
         const code = err?.response?.data?.code;
-        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH' || code === 'ORGANIZATION_ACCESS_DENIED') {
           applyOrganizationId(null);
           clearStoredOrganizationId();
           try {

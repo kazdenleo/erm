@@ -273,6 +273,19 @@ export const authController = {
             : null,
           features: buildUserNavFeatures(resolveNavSectionsForUser(user, profile)),
           limits: {},
+          access: await (async () => {
+            const { resolveUserAccessScope } = await import('../utils/userAccessScope.js');
+            const scope = await resolveUserAccessScope({
+              id: user.id,
+              role: user.role,
+              is_profile_admin: user.is_profile_admin,
+              account_role: user.account_role,
+            });
+            return {
+              organizationIds: scope.organizationIds,
+              warehouseIds: scope.warehouseIds,
+            };
+          })(),
         },
       });
     } catch (error) {

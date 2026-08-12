@@ -5,6 +5,10 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import {
+  getRequestAccessScope,
+  isOrganizationAllowed,
+} from '../utils/userAccessScope.js';
 
 const repo = repositoryFactory.getOrganizationsRepository();
 
@@ -46,7 +50,12 @@ export const organizationsController = {
         }
         filters.profileId = tid;
       }
-      const list = await repo.findAll(filters);
+      let list = await repo.findAll(filters);
+      const scope = await getRequestAccessScope(req);
+      if (scope.organizationIds != null) {
+        const allowed = new Set(scope.organizationIds.map(Number));
+        list = (list || []).filter((o) => allowed.has(Number(o.id)));
+      }
       res.json({ ok: true, data: list });
     } catch (error) {
       next(error);
@@ -61,6 +70,10 @@ export const organizationsController = {
         return res.status(404).json({ ok: false, message: 'Организация не найдена' });
       }
       if (req.user && req.user.role !== 'admin' && item.profile_id != null && Number(item.profile_id) !== req.user.profileId) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа к этой организации' });
+      }
+      const scope = await getRequestAccessScope(req);
+      if (!isOrganizationAllowed(scope, id)) {
         return res.status(403).json({ ok: false, message: 'Нет доступа к этой организации' });
       }
       res.json({ ok: true, data: item });

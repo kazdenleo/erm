@@ -5,6 +5,10 @@
 
 import warehousesService from '../services/warehouses.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import {
+  getRequestAccessScope,
+  isOrganizationAllowed,
+} from '../utils/userAccessScope.js';
 
 class WarehousesController {
   async getAll(req, res, next) {
@@ -18,14 +22,24 @@ class WarehousesController {
       if (req.query.type != null && req.query.type !== '') options.type = req.query.type;
       if (req.query.supplierId != null && req.query.supplierId !== '') options.supplierId = req.query.supplierId;
       if (tid != null) options.profileId = tid;
-      const warehouses = await warehousesService.getAll(options);
-      console.log('[WarehousesController] getAll - warehouses count:', warehouses.length);
-      if (warehouses.length > 0) {
-        const firstWarehouse = warehouses[0];
-        console.log('[WarehousesController] First warehouse sample:', {
-          id: firstWarehouse.id,
-          type: firstWarehouse.type,
-          wbWarehouseName: firstWarehouse.wbWarehouseName
+      const scope = await getRequestAccessScope(req);
+      if (options.organizationId != null && !isOrganizationAllowed(scope, options.organizationId)) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      if (scope.warehouseIds != null) {
+        options.warehouseIds = scope.warehouseIds;
+      }
+      let warehouses = await warehousesService.getAll(options);
+      if (scope.warehouseIds != null) {
+        const allowed = new Set(scope.warehouseIds.map(Number));
+        warehouses = (warehouses || []).filter((w) => allowed.has(Number(w.id)));
+      }
+      if (scope.organizationIds != null) {
+        const allowedOrgs = new Set(scope.organizationIds.map(Number));
+        warehouses = (warehouses || []).filter((w) => {
+          const oid = w.organization_id ?? w.organizationId;
+          if (oid == null || oid === '') return true;
+          return allowedOrgs.has(Number(oid));
         });
       }
       return res.status(200).json({ ok: true, data: warehouses });

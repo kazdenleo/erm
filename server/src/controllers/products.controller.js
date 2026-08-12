@@ -12,6 +12,11 @@ import fs from 'fs';
 import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
+import {
+  getRequestAccessScope,
+  isOrganizationAllowed,
+  isWarehouseAllowed,
+} from '../utils/userAccessScope.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 /** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
@@ -237,6 +242,19 @@ class ProductsController {
       }
       if (req.query.warehouseId != null && String(req.query.warehouseId).trim() !== '') {
         options.warehouseId = String(req.query.warehouseId).trim();
+      }
+      const accessScope = await getRequestAccessScope(req);
+      if (options.organizationId != null && !isOrganizationAllowed(accessScope, options.organizationId)) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      if (options.warehouseId != null && !isWarehouseAllowed(accessScope, options.warehouseId)) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      if (accessScope.organizationIds != null && options.organizationId == null) {
+        options.organizationIds = accessScope.organizationIds;
+      }
+      if (accessScope.warehouseIds != null && options.warehouseId == null) {
+        options.allowedWarehouseIds = accessScope.warehouseIds;
       }
       const inStockQuery = firstQueryParam(req.query?.inStockOnly);
       if (inStockQuery === 'true' || inStockQuery === '1' || inStockQuery === 1) {

@@ -407,6 +407,7 @@ function buildFindAllFilters(options = {}) {
     brandId,
     categoryId,
     organizationId,
+    organizationIds,
     search,
     profileId,
     productType,
@@ -483,6 +484,15 @@ function buildFindAllFilters(options = {}) {
     } else {
       whereSql += ` AND p.organization_id = $${paramIndex++}`;
       params.push(orgVal);
+    }
+  } else if (Array.isArray(organizationIds) && organizationIds.length > 0) {
+    const ids = organizationIds
+      .map((v) => Number(v))
+      .filter((n) => Number.isFinite(n));
+    if (ids.length > 0) {
+      whereSql += ` AND (p.organization_id = ANY($${paramIndex}::bigint[]) OR p.organization_id IS NULL)`;
+      params.push(ids);
+      paramIndex += 1;
     }
   }
 

@@ -20,11 +20,23 @@ import logger from '../utils/logger.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import orderSupplierOrderService from '../services/orderSupplierOrder.service.js';
 import { processAssemblyShipmentsInBackground } from '../services/orderAssemblyBackground.service.js';
+import {
+  getRequestAccessScope,
+  isWarehouseAllowed,
+} from '../utils/userAccessScope.js';
 
 const profilesRepo = repositoryFactory.getProfilesRepository();
 const warehousesRepo = repositoryFactory.getWarehousesRepository();
 
-async function validateManualOrderWarehouseId(profileId, warehouseId) {
+async function applyAccessScopeToOrderOptions(req, options) {
+  const scope = await getRequestAccessScope(req);
+  if (scope.warehouseIds != null) {
+    options.warehouseIds = scope.warehouseIds;
+  }
+  return scope;
+}
+
+async function validateManualOrderWarehouseId(profileId, warehouseId, accessScope = null) {
   const wid = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : NaN;
   if (!Number.isFinite(wid) || wid < 1) {
     return 'Укажите склад списания для ручного заказа.';
@@ -36,6 +48,9 @@ async function validateManualOrderWarehouseId(profileId, warehouseId) {
   const whProfile = wh.profile_id ?? wh.profileId ?? null;
   if (profileId != null && whProfile != null && Number(whProfile) !== Number(profileId)) {
     return 'Склад не принадлежит вашему аккаунту.';
+  }
+  if (accessScope && !isWarehouseAllowed(accessScope, wid)) {
+    return 'Нет доступа к выбранному складу.';
   }
   return null;
 }
@@ -85,6 +100,7 @@ class OrdersController {
         limit,
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
+      await applyAccessScopeToOrderOptions(req, options);
       const fullReserveEnrich = req.query?.enrichReserve === 'full';
       const listOptions = {
         ...options,
@@ -166,6 +182,7 @@ class OrdersController {
         ...(marketplace ? { marketplace } : {}),
         ...(search ? { search } : {}),
       };
+      await applyAccessScopeToOrderOptions(req, options);
 
       const data = await ordersService.getStatusCounts(options);
       res.setHeader('Cache-Control', 'no-store');
@@ -197,6 +214,7 @@ class OrdersController {
         ...(tid != null ? { profileId: tid } : {}),
         ...(excludeManual ? { excludeManual: true } : {}),
       };
+      await applyAccessScopeToOrderOptions(req, options);
 
       const count = await ordersService.getNewCount(options);
       res.setHeader('Cache-Control', 'no-store');
@@ -239,7 +257,8 @@ class OrdersController {
         const profWh = prof?.manual_orders_warehouse_id ?? prof?.manualOrdersWarehouseId ?? null;
         if (profWh != null && profWh !== '') resolvedWarehouseId = profWh;
       }
-      const warehouseError = await validateManualOrderWarehouseId(pid, resolvedWarehouseId);
+      const accessScope = await getRequestAccessScope(req);
+      const warehouseError = await validateManualOrderWarehouseId(pid, resolvedWarehouseId, accessScope);
       if (warehouseError) {
         return res.status(400).json({ ok: false, message: warehouseError });
       }
@@ -357,7 +376,8 @@ class OrdersController {
         const profWh = prof?.manual_orders_warehouse_id ?? prof?.manualOrdersWarehouseId ?? null;
         if (profWh != null && profWh !== '') resolvedWarehouseId = profWh;
       }
-      const warehouseError = await validateManualOrderWarehouseId(pid, resolvedWarehouseId);
+      const accessScope = await getRequestAccessScope(req);
+      const warehouseError = await validateManualOrderWarehouseId(pid, resolvedWarehouseId, accessScope);
       if (warehouseError) {
         return res.status(400).json({ ok: false, message: warehouseError });
       }

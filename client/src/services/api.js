@@ -147,7 +147,7 @@ api.interceptors.response.use(
     const status = error.response?.status;
     const code = error.response?.data?.code;
 
-    if (status === 403 && (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH')) {
+    if (status === 403 && (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH' || code === 'ORGANIZATION_ACCESS_DENIED')) {
       clearStoredOrganizationId();
       if (code === 'ACCOUNT_CONTEXT_MISMATCH') {
         setApiSessionContext({ accountId: null, organizationId: null });
@@ -161,7 +161,7 @@ api.interceptors.response.use(
       if (cfg && !cfg._contextMismatchRetry) {
         cfg._contextMismatchRetry = true;
         if (cfg.headers) {
-          if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+          if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH' || code === 'ORGANIZATION_ACCESS_DENIED') {
             delete cfg.headers['X-Organization-Id'];
           }
           if (code === 'ACCOUNT_CONTEXT_MISMATCH') {

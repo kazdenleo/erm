@@ -7,6 +7,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { usersApi } from '../../../services/users.api.js';
+import { organizationsApi } from '../../../services/organizations.api.js';
+import { warehousesApi } from '../../../services/warehouses.api.js';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
 import { buildFullName } from '../../../utils/userName.js';
@@ -38,11 +40,20 @@ function emptyUserForm() {
     role: 'user',
     isProfileAdmin: false,
     accountRole: 'editor',
+    organizationIds: [],
+    warehouseIds: [],
   };
 }
 
+function toggleId(list, id) {
+  const n = Number(id);
+  if (!Number.isFinite(n)) return list;
+  if (list.includes(n)) return list.filter((x) => x !== n);
+  return [...list, n];
+}
+
 export function SettingsUsers() {
-  const { user, isTenantAccountAdmin, profileId } = useAuth();
+  const { isTenantAccountAdmin, profileId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab') === 'roles' ? 'roles' : 'list';
 
@@ -52,9 +63,12 @@ export function SettingsUsers() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyUserForm);
+  const [organizations, setOrganizations] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
 
   const canManage = isTenantAccountAdmin;
   const showSystemAdminRoleOption = false;
+  const accessRestricted = !form.isProfileAdmin;
 
   const setTab = (nextTab) => {
     if (nextTab === 'list') {
@@ -79,11 +93,30 @@ export function SettingsUsers() {
     }
   }, [canManage, profileId]);
 
+  const loadAccessOptions = useCallback(async () => {
+    if (!canManage) return;
+    try {
+      const [orgRes, whRes] = await Promise.all([
+        organizationsApi.getAll(),
+        warehousesApi.getAll(),
+      ]);
+      setOrganizations(Array.isArray(orgRes?.data) ? orgRes.data : []);
+      const whList = Array.isArray(whRes?.data) ? whRes.data : [];
+      setWarehouses(
+        whList.filter((w) => String(w.type || '').toLowerCase() === 'warehouse' || !w.type)
+      );
+    } catch {
+      setOrganizations([]);
+      setWarehouses([]);
+    }
+  }, [canManage]);
+
   useEffect(() => {
     if (tab === 'list') {
       load();
+      loadAccessOptions();
     }
-  }, [load, tab]);
+  }, [load, loadAccessOptions, tab]);
 
   const openCreate = () => {
     setEditing(null);
@@ -102,6 +135,12 @@ export function SettingsUsers() {
       role: u.role ?? 'user',
       isProfileAdmin: !!u.is_profile_admin,
       accountRole: String(u.account_role ?? (u.is_profile_admin ? 'admin' : 'editor')).trim().toLowerCase() || 'editor',
+      organizationIds: Array.isArray(u.organization_ids)
+        ? u.organization_ids.map(Number).filter((n) => Number.isFinite(n))
+        : [],
+      warehouseIds: Array.isArray(u.warehouse_ids)
+        ? u.warehouse_ids.map(Number).filter((n) => Number.isFinite(n))
+        : [],
     });
     setModalOpen(true);
   };
@@ -126,6 +165,13 @@ export function SettingsUsers() {
       if (form.password) payload.password = form.password;
       payload.isProfileAdmin = !!form.isProfileAdmin;
       payload.accountRole = form.isProfileAdmin ? 'admin' : form.accountRole;
+      if (form.isProfileAdmin) {
+        payload.organizationIds = [];
+        payload.warehouseIds = [];
+      } else {
+        payload.organizationIds = form.organizationIds;
+        payload.warehouseIds = form.warehouseIds;
+      }
       if (editing) {
         await usersApi.update(editing.id, payload);
       } else {
@@ -164,6 +210,21 @@ export function SettingsUsers() {
       middleName: u.middle_name ?? '',
     }) || u.full_name || '';
 
+  const accessSummary = (u) => {
+    if (u.is_profile_admin || String(u.account_role || '').toLowerCase() === 'admin') {
+      return 'полный доступ';
+    }
+    const orgN = Array.isArray(u.organization_ids) ? u.organization_ids.length : 0;
+    const whN = Array.isArray(u.warehouse_ids) ? u.warehouse_ids.length : 0;
+    if (orgN === 0 && whN === 0) return 'все орг. и склады';
+    const parts = [];
+    if (orgN > 0) parts.push(`орг.: ${orgN}`);
+    else parts.push('все орг.');
+    if (whN > 0) parts.push(`склады: ${whN}`);
+    else parts.push('все склады');
+    return parts.join(', ');
+  };
+
   return (
     <div className="card settings-users-page">
       <h1 className="title">Пользователи</h1>
@@ -186,7 +247,8 @@ export function SettingsUsers() {
       ) : (
         <>
           <p className="subtitle">
-            Добавление пользователей аккаунта: логин (email), пароль и роль. Видимые разделы — на вкладке «Роли».
+            Добавление пользователей аккаунта: логин (email), пароль, роль и доступ к организациям/складам.
+            Видимые разделы — на вкладке «Роли».
           </p>
           {loading && <div className="settings-users-loading">Загрузка...</div>}
           {error && <div className="settings-users-error">Ошибка: {error}</div>}
@@ -205,6 +267,7 @@ export function SettingsUsers() {
                         <span className="settings-users-email">{u.email}</span>
                         {userDisplayName(u) && <span className="settings-users-name"> — {userDisplayName(u)}</span>}
                         <span className="settings-users-role">{accountRoleLabel(u)}</span>
+                        <span className="settings-users-access">{accessSummary(u)}</span>
                       </div>
                       <div className="settings-users-actions">
                         <Button variant="secondary" size="small" onClick={() => openEdit(u)}>Изменить</Button>
@@ -292,6 +355,9 @@ export function SettingsUsers() {
                       ...f,
                       isProfileAdmin: e.target.value === 'admin',
                       accountRole: e.target.value === 'admin' ? 'admin' : e.target.value,
+                      ...(e.target.value === 'admin'
+                        ? { organizationIds: [], warehouseIds: [] }
+                        : null),
                     }))
                   }
                   className="login-input"
@@ -304,14 +370,84 @@ export function SettingsUsers() {
                 </select>
                 <div className="text-muted small" style={{ marginTop: 8, lineHeight: 1.35 }}>
                   {form.isProfileAdmin ? (
-                    <div>
-                      <div>Администратор аккаунта — полный доступ, управление пользователями и ролями.</div>
-                    </div>
+                    <div>Администратор аккаунта — полный доступ, управление пользователями и ролями.</div>
                   ) : (
                     <div>Видимые разделы для этой роли настраиваются на вкладке «Роли».</div>
                   )}
                 </div>
               </label>
+
+              {accessRestricted && (
+                <div className="settings-users-access-block">
+                  <div className="settings-users-access-title">Доступ к данным</div>
+                  <p className="text-muted small settings-users-access-hint">
+                    Если ничего не отмечено — доступ ко всем организациям и складам аккаунта.
+                    Отметьте нужные, чтобы ограничить видимость данных.
+                  </p>
+
+                  <div className="settings-users-access-group">
+                    <div className="settings-users-access-group-title">Организации</div>
+                    {organizations.length === 0 ? (
+                      <div className="text-muted small">Организаций пока нет</div>
+                    ) : (
+                      <div className="settings-users-access-toggles">
+                        {organizations.map((org) => {
+                          const id = Number(org.id);
+                          const checked = form.organizationIds.includes(id);
+                          return (
+                            <label key={org.id} className="settings-users-nav-toggle">
+                              <input
+                                type="checkbox"
+                                className="form-check-input"
+                                checked={checked}
+                                onChange={() =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    organizationIds: toggleId(f.organizationIds, id),
+                                  }))
+                                }
+                              />
+                              <span className="form-check-label">{org.name || `Организация #${org.id}`}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="settings-users-access-group">
+                    <div className="settings-users-access-group-title">Склады</div>
+                    {warehouses.length === 0 ? (
+                      <div className="text-muted small">Складов пока нет</div>
+                    ) : (
+                      <div className="settings-users-access-toggles">
+                        {warehouses.map((wh) => {
+                          const id = Number(wh.id);
+                          const checked = form.warehouseIds.includes(id);
+                          const label = wh.address || wh.name || `Склад #${wh.id}`;
+                          return (
+                            <label key={wh.id} className="settings-users-nav-toggle">
+                              <input
+                                type="checkbox"
+                                className="form-check-input"
+                                checked={checked}
+                                onChange={() =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    warehouseIds: toggleId(f.warehouseIds, id),
+                                  }))
+                                }
+                              />
+                              <span className="form-check-label">{label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {showSystemAdminRoleOption && (
                 <label>
                   Роль для входа
