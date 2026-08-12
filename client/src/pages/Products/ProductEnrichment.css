@@ -119,8 +119,10 @@
   background: rgba(220, 53, 69, 0.05);
 }
 
-.product-enrichment-name-cell {
-  max-width: 260px;
+.product-enrichment-dim-cell {
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .product-enrichment-table .form-control-sm {

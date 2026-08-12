@@ -39,19 +39,23 @@ const FILLABLE_COLUMNS = {
   },
 };
 
-/** Вес/габариты из БД (г / мм) → подпись в единицах аккаунта. */
-function formatWeightDims(row, lengthUnit, weightUnit) {
-  const wLabel = weightUnitLabel(weightUnit);
-  const lLabel = lengthUnitLabel(lengthUnit);
-  const weightStr =
-    row.weight != null ? `${weightGToDisplay(row.weight, weightUnit) || '—'} ${wLabel}` : null;
-  const hasDims = ![row.length, row.width, row.height].every((v) => v == null);
-  const dimsStr = hasDims
-    ? `${lengthMmToDisplay(row.length, lengthUnit) || '—'} × ${
-        lengthMmToDisplay(row.width, lengthUnit) || '—'
-      } × ${lengthMmToDisplay(row.height, lengthUnit) || '—'} ${lLabel}`
-    : null;
-  return { weightStr, dimsStr };
+/** Вес/габариты из БД (г / мм) → отображение в единицах аккаунта. */
+function formatDimCell(mm, lengthUnit) {
+  if (mm == null) return '—';
+  return lengthMmToDisplay(mm, lengthUnit) || '—';
+}
+
+function formatWeightCell(g, weightUnit) {
+  if (g == null) return '—';
+  return weightGToDisplay(g, weightUnit) || '—';
+}
+
+/** Только артикулы аналогов через запятую. */
+function formatAnalogsCodes(analogs) {
+  const codes = (analogs || [])
+    .map((a) => String(a?.code || '').trim())
+    .filter(Boolean);
+  return [...new Set(codes)].join(', ');
 }
 
 /**
@@ -158,13 +162,15 @@ function buildDraftRows(reportResults, brands) {
 export function ProductEnrichment() {
   const navigate = useNavigate();
   const { profile, isTenantAccountAdmin, refreshUser } = useAuth();
-  const { brands } = useBrands();
+  const { brands, createBrand, loadBrands } = useBrands();
   const { categories } = useCategories();
   const { organizations } = useOrganizations();
 
   const flagEnabled = isProfileProductEnrichmentEnabled(profile);
   const lengthUnit = getProfileLengthUnit(profile);
   const weightUnit = getProfileWeightUnit(profile);
+  const lengthLbl = lengthUnitLabel(lengthUnit);
+  const weightLbl = weightUnitLabel(weightUnit);
   const [statusEnabled, setStatusEnabled] = useState(null);
   const enabled = statusEnabled === true || (statusEnabled == null && flagEnabled);
   const canEditKeys = isTenantAccountAdmin;
@@ -245,14 +251,50 @@ export function ProductEnrichment() {
   // Подставить brandId, когда бренды догрузились после сбора
   useEffect(() => {
     if (!brands?.length || !draftRows.length) return;
-    setDraftRows((prev) =>
-      prev.map((row) => {
+    setDraftRows((prev) => {
+      let changed = false;
+      const next = prev.map((row) => {
         if (row.brandId || !row.brandName) return row;
         const id = findBrandIdByName(brands, row.brandName);
-        return id ? { ...row, brandId: id } : row;
-      })
-    );
-  }, [brands]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (!id) return row;
+        changed = true;
+        return { ...row, brandId: id };
+      });
+      return changed ? next : prev;
+    });
+  }, [brands, draftRows.length]);
+
+  /** Найти бренд в каталоге или создать по имени из PartsIndex. */
+  const ensureBrandIdsForRows = useCallback(
+    async (rows) => {
+      let list = brands || [];
+      const result = [];
+      for (const row of rows) {
+        if (row.brandId || !row.brandName) {
+          result.push(row);
+          continue;
+        }
+        let id = findBrandIdByName(list, row.brandName);
+        if (!id) {
+          try {
+            const created = await createBrand({ name: row.brandName });
+            if (created?.id != null) {
+              id = String(created.id);
+              list = [...list, created];
+            }
+          } catch {
+            /* оставляем пустым — пользователь выберет вручную */
+          }
+        }
+        result.push(id ? { ...row, brandId: id } : row);
+      }
+      if (list !== brands) {
+        await loadBrands?.();
+      }
+      return result;
+    },
+    [brands, createBrand, loadBrands]
+  );
 
   const saveKeys = async () => {
     if (!canEditKeys) return;
@@ -295,7 +337,8 @@ export function ProductEnrichment() {
         ok: data?.ok ?? 0,
         failed: data?.failed ?? 0,
       });
-      setDraftRows(buildDraftRows(data?.results || [], brands));
+      const rows = buildDraftRows(data?.results || [], brands);
+      setDraftRows(await ensureBrandIdsForRows(rows));
       await reloadStatus();
     } catch (err) {
       setRunError(err?.response?.data?.message || err?.message || 'Ошибка обогащения');
@@ -583,12 +626,14 @@ export function ProductEnrichment() {
                         <th>Бренд</th>
                         <th>Категория</th>
                         <th>Организация</th>
-                        <th>Вес / габариты</th>
+                        <th>Длина, {lengthLbl}</th>
+                        <th>Ширина, {lengthLbl}</th>
+                        <th>Высота, {lengthLbl}</th>
+                        <th>Вес, {weightLbl}</th>
                         <th>Штрихкоды</th>
                         <th>Аналоги</th>
                         <th>Применимость</th>
                         <th>Описание</th>
-                        <th>Статус</th>
                       </tr>
                       <tr className="bulk-actions-row">
                         <th colSpan={4}>
@@ -623,7 +668,7 @@ export function ProductEnrichment() {
                             Заполнить
                           </button>
                         </th>
-                        <th colSpan={6}>
+                        <th colSpan={8}>
                           <span className="text-muted" style={{ fontSize: 10 }}>
                             —
                           </span>
@@ -632,16 +677,12 @@ export function ProductEnrichment() {
                     </thead>
                     <tbody>
                       {draftRows.map((row) => {
-                        const { weightStr, dimsStr } = formatWeightDims(
-                          row,
-                          lengthUnit,
-                          weightUnit
-                        );
                         const descText =
                           row.description ||
                           (row.attributes?.length
                             ? row.attributes.map((a) => `${a.name}: ${a.value}`).join('\n')
                             : '');
+                        const analogsText = formatAnalogsCodes(row.analogs);
                         return (
                           <tr
                             key={row.key}
@@ -685,8 +726,12 @@ export function ProductEnrichment() {
                             </td>
                             <td>
                               <div className="small fw-semibold">{row.sku || '—'}</div>
-                              {row.brandName ? (
-                                <div className="text-muted small">{row.brandName}</div>
+                              {row.productId ? (
+                                <div className="text-success small">#{row.productId}</div>
+                              ) : row.createStatus === 'error' ? (
+                                <div className="text-danger small">
+                                  {row.createError || 'ошибка'}
+                                </div>
                               ) : null}
                             </td>
                             <td>
@@ -703,7 +748,9 @@ export function ProductEnrichment() {
                                   updateRow(row.key, { brandId: e.target.value })
                                 }
                               >
-                                <option value="">—</option>
+                                <option value="">
+                                  {row.brandName ? `${row.brandName}…` : '—'}
+                                </option>
                                 {(brands || []).map((b) => (
                                   <option key={b.id} value={String(b.id)}>
                                     {b.name}
@@ -745,28 +792,23 @@ export function ProductEnrichment() {
                                 ))}
                               </select>
                             </td>
-                            <td className="small">
-                              <div>{weightStr || '—'}</div>
-                              <div className="text-muted">{dimsStr || '—'}</div>
+                            <td className="small product-enrichment-dim-cell">
+                              {formatDimCell(row.length, lengthUnit)}
+                            </td>
+                            <td className="small product-enrichment-dim-cell">
+                              {formatDimCell(row.width, lengthUnit)}
+                            </td>
+                            <td className="small product-enrichment-dim-cell">
+                              {formatDimCell(row.height, lengthUnit)}
+                            </td>
+                            <td className="small product-enrichment-dim-cell">
+                              {formatWeightCell(row.weight, weightUnit)}
                             </td>
                             <td className="small product-enrichment-cell-scroll">
                               {row.barcodes?.length ? row.barcodes.join('\n') : '—'}
                             </td>
-                            <td className="product-enrichment-cell-scroll">
-                              {row.analogs?.length ? (
-                                <ul className="product-enrichment-cell-list">
-                                  {row.analogs.map((a, idx) => (
-                                    <li key={`${a.id || a.code || idx}-${a.brand || ''}`}>
-                                      {[a.brand, a.code].filter(Boolean).join(' ')}
-                                      {a.relation ? (
-                                        <span className="text-muted"> · {a.relation}</span>
-                                      ) : null}
-                                    </li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <span className="text-muted small">—</span>
-                              )}
+                            <td className="small product-enrichment-cell-scroll">
+                              {analogsText || '—'}
                             </td>
                             <td className="product-enrichment-cell-scroll">
                               {row.applicability?.length ? (
@@ -796,17 +838,6 @@ export function ProductEnrichment() {
                                 </pre>
                               ) : (
                                 <span className="text-muted small">—</span>
-                              )}
-                            </td>
-                            <td className="small">
-                              {row.productId ? (
-                                <span className="text-success">создан #{row.productId}</span>
-                              ) : row.createStatus === 'error' ? (
-                                <span className="text-danger">
-                                  {row.createError || 'ошибка'}
-                                </span>
-                              ) : (
-                                <span className="text-muted">готов</span>
                               )}
                             </td>
                           </tr>
