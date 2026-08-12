@@ -54,7 +54,24 @@ export async function resolveWarehouseMarketplacePushQuantity({
   if (!mp) {
     return { forceZero: true, reason: 'unknown_marketplace', quantity: 0, flags: null };
   }
+
+  const isProductStockBlocked = async () => {
+    if (!pid) return false;
+    const prod = await query(
+      `SELECT block_stock_ozon, block_stock_wb, block_stock_ym
+       FROM products WHERE id = $1 LIMIT 1`,
+      [pid]
+    );
+    const prow = prod.rows?.[0] || {};
+    if (mp === 'ozon') return prow.block_stock_ozon === true;
+    if (mp === 'wb') return prow.block_stock_wb === true;
+    return prow.block_stock_ym === true;
+  };
+
   if (!wid) {
+    if (await isProductStockBlocked()) {
+      return { forceZero: true, reason: 'product_marketplace_block', quantity: 0, flags: null };
+    }
     return { forceZero: false, reason: null, quantity: avail, flags: null };
   }
 
@@ -84,6 +101,9 @@ export async function resolveWarehouseMarketplacePushQuantity({
     );
     if (excl.rows?.length) {
       return { forceZero: true, reason: 'warehouse_product_exclusion', quantity: 0, flags };
+    }
+    if (await isProductStockBlocked()) {
+      return { forceZero: true, reason: 'product_marketplace_block', quantity: 0, flags };
     }
   }
 

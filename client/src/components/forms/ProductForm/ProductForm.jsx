@@ -367,6 +367,62 @@ function normalizeWbAttributeScalar(v) {
   return String(v);
 }
 
+/**
+ * Справочник значений характеристики WB из схемы категории
+ * (charcValues / values / allowedValues — уже приходят с Content API).
+ * В ERP храним подпись (как при pull с WB), не id варианта.
+ * @returns {{ value: string, label: string, id: string|null }[]|null}
+ */
+function getWbCharcDictionaryOptions(attr) {
+  if (!attr || typeof attr !== 'object') return null;
+  const raw =
+    (Array.isArray(attr.charcValues) && attr.charcValues) ||
+    (Array.isArray(attr.values) && attr.values) ||
+    (Array.isArray(attr.allowedValues) && attr.allowedValues) ||
+    null;
+  if (!raw || raw.length === 0) return null;
+  const out = [];
+  const seen = new Set();
+  for (const x of raw) {
+    if (x == null) continue;
+    let id = null;
+    let label = '';
+    if (typeof x === 'string' || typeof x === 'number') {
+      label = String(x).trim();
+    } else if (typeof x === 'object') {
+      id = x.id ?? x.valueId ?? x.charcValueId ?? x.charcValueID ?? x.charc_value_id ?? null;
+      if (id != null) id = String(id).trim();
+      let lab = x.value ?? x.name ?? x.wbName ?? x.objectName ?? x.valueName;
+      if (lab != null && typeof lab === 'object') {
+        lab = lab.name ?? lab.value ?? lab.text;
+      }
+      label = lab != null ? String(lab).trim() : '';
+      if (!label && id) label = id;
+    }
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ value: label, label, id: id || null });
+  }
+  return out.length ? out : null;
+}
+
+/** Сопоставить сохранённое значение WB с опцией справочника (подпись или id). */
+function resolveWbDictSelectValue(stored, options) {
+  if (!Array.isArray(options) || options.length === 0) return '';
+  const s = String(stored ?? '').trim();
+  if (!s) return '';
+  const byLabel = options.find((o) => o.value === s || o.label === s);
+  if (byLabel) return byLabel.value;
+  const norm = s.toLowerCase();
+  const byLabelCi = options.find((o) => o.label.toLowerCase() === norm || o.value.toLowerCase() === norm);
+  if (byLabelCi) return byLabelCi.value;
+  const byId = options.find((o) => o.id != null && String(o.id) === s);
+  if (byId) return byId.value;
+  return '';
+}
+
 function mergeWbCharacteristicsIntoValues(characteristics, prev = {}) {
   const next = { ...prev };
   if (!Array.isArray(characteristics)) return next;
@@ -522,6 +578,10 @@ const EMPTY_PRODUCT_FORM_DATA = {
   mp_ozon_description: '',
   mp_ozon_brand: '',
   mp_field_links: createMpFieldLinks(),
+  /** false = передаём остатки; true = обнуляем на МП и не передаём факт */
+  block_stock_ozon: false,
+  block_stock_wb: false,
+  block_stock_ym: false,
   ozon_draft: {},
   wb_draft: {},
   ym_draft: {},
@@ -1472,6 +1532,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_ozon_description: currentProduct.mp_ozon_description || '',
         mp_ozon_brand: currentProduct.mp_ozon_brand || '',
         mp_field_links: normalizeMpFieldLinks(currentProduct.mp_field_links),
+        block_stock_ozon: currentProduct.block_stock_ozon === true,
+        block_stock_wb: currentProduct.block_stock_wb === true,
+        block_stock_ym: currentProduct.block_stock_ym === true,
         ozon_draft:
           currentProduct.ozon_draft && typeof currentProduct.ozon_draft === 'object' && !Array.isArray(currentProduct.ozon_draft)
             ? currentProduct.ozon_draft
@@ -4277,6 +4340,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
       mp_ym_name: trimOrNull(formData.mp_ym_name),
       mp_ym_description: trimOrNull(formData.mp_ym_description),
       mp_field_links: normalizeMpFieldLinks(formData.mp_field_links),
+      block_stock_ozon: formData.block_stock_ozon === true,
+      block_stock_wb: formData.block_stock_wb === true,
+      block_stock_ym: formData.block_stock_ym === true,
       ozon_draft:
         formData.ozon_draft && typeof formData.ozon_draft === 'object' && !Array.isArray(formData.ozon_draft)
           ? formData.ozon_draft
@@ -5105,6 +5171,46 @@ export const ProductForm = React.forwardRef(function ProductForm({
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="col-12">
+          <div className="d-flex flex-wrap align-items-center gap-2">
+            <span className="form-label mb-0 me-1">Остатки на МП</span>
+            {[
+              { key: 'block_stock_ozon', label: 'OZ', badgeClass: 'ozon', title: 'Ozon' },
+              { key: 'block_stock_wb', label: 'WB', badgeClass: 'wb', title: 'Wildberries' },
+              { key: 'block_stock_ym', label: 'ЯМ', badgeClass: 'ym', title: 'Яндекс.Маркет' },
+            ].map((ch) => {
+              const blocked = formData[ch.key] === true;
+              const transmit = !blocked;
+              return (
+                <button
+                  key={ch.key}
+                  type="button"
+                  className={`mp-badge ${ch.badgeClass}`}
+                  title={
+                    transmit
+                      ? `${ch.title}: остатки передаются`
+                      : `${ch.title}: остатки обнуляются и не передаются`
+                  }
+                  aria-pressed={blocked}
+                  onClick={() => handleChange(ch.key, !blocked)}
+                  style={{
+                    opacity: transmit ? 1 : 0.35,
+                    border: 'none',
+                    cursor: 'pointer',
+                    filter: transmit ? 'none' : 'grayscale(1)',
+                  }}
+                >
+                  {ch.label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Горящая иконка — остатки уходят на маркетплейс. Потухшая — на МП уходит 0, факт не передаётся.
+            После сохранения товар пересинхронизируется.
+          </div>
         </div>
 
         {supplierBindingEnabled ? (
@@ -6487,19 +6593,52 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? (key ? `ID ${key}` : 'Характеристика');
                         const required = Boolean(a?.required ?? a?.isRequired ?? a?.is_required);
                         const value = wbAttributeValues[key] ?? '';
+                        const valueStr = value === undefined || value === null ? '' : String(value);
+                        const dictOpts = getWbCharcDictionaryOptions(a);
+                        const selectValue = dictOpts ? resolveWbDictSelectValue(valueStr, dictOpts) : '';
+                        const needsFallback =
+                          Boolean(dictOpts) &&
+                          valueStr.trim() !== '' &&
+                          selectValue === '';
                         return (
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-cat-attr-${key}`}>
                               {name}
                               {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                              {dictOpts ? (
+                                <span style={{ fontSize: '11px', color: 'var(--muted)' }}> (справочник)</span>
+                              ) : null}
                             </label>
-                            <input
-                              id={`wb-cat-attr-${key}`}
-                              type="text"
-                              className={mpAttrClass('form-control form-control-sm', 'wb', key, value)}
-                              value={value}
-                              onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
-                            />
+                            {dictOpts ? (
+                              <select
+                                id={`wb-cat-attr-${key}`}
+                                className={mpAttrClass('form-select form-select-sm', 'wb', key, valueStr)}
+                                value={needsFallback ? valueStr : selectValue}
+                                onChange={(e) =>
+                                  setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                              >
+                                <option value="">— Выберите —</option>
+                                {dictOpts.map((opt) => (
+                                  <option key={opt.id || opt.value} value={opt.value}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                                {needsFallback ? (
+                                  <option value={valueStr}>{valueStr}</option>
+                                ) : null}
+                              </select>
+                            ) : (
+                              <input
+                                id={`wb-cat-attr-${key}`}
+                                type="text"
+                                className={mpAttrClass('form-control form-control-sm', 'wb', key, valueStr)}
+                                value={valueStr}
+                                onChange={(e) =>
+                                  setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                              />
+                            )}
                           </div>
                         );
                       })}

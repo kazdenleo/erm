@@ -200,6 +200,10 @@ export const createProductSchema = z.object({
     .optional()
     .nullable()
     .transform((v) => (v == null || v === '' ? undefined : normalizeMpFieldLinks(v))),
+  /** true — на МП уходит 0, фактический остаток не передаётся */
+  block_stock_ozon: z.boolean().optional(),
+  block_stock_wb: z.boolean().optional(),
+  block_stock_ym: z.boolean().optional(),
 });
 
 /**

@@ -1322,6 +1322,34 @@ class ProductsService {
       updates.supplier_id =
         raw != null && raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : null;
     }
+    const mapBlockStock = (camel, snake) => {
+      if (Object.prototype.hasOwnProperty.call(updates, camel)) {
+        updates[snake] =
+          updates[camel] === true || updates[camel] === 'true' || updates[camel] === 1 || updates[camel] === '1';
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, snake)) {
+        updates[snake] =
+          updates[snake] === true ||
+          updates[snake] === 'true' ||
+          updates[snake] === 1 ||
+          updates[snake] === '1';
+      }
+    };
+    mapBlockStock('blockStockOzon', 'block_stock_ozon');
+    mapBlockStock('blockStockWb', 'block_stock_wb');
+    mapBlockStock('blockStockYm', 'block_stock_ym');
+    const stockBlockTouched =
+      Object.prototype.hasOwnProperty.call(updates, 'block_stock_ozon') ||
+      Object.prototype.hasOwnProperty.call(updates, 'block_stock_wb') ||
+      Object.prototype.hasOwnProperty.call(updates, 'block_stock_ym');
+    let stockBlockBefore = null;
+    if (stockBlockTouched) {
+      stockBlockBefore = {
+        block_stock_ozon: existingForKits?.block_stock_ozon === true,
+        block_stock_wb: existingForKits?.block_stock_wb === true,
+        block_stock_ym: existingForKits?.block_stock_ym === true,
+      };
+    }
     let existingForBrand = null;
     if (updates.brand && !updates.brand_id) {
       existingForBrand = await this.repository.findById(id);
@@ -1445,6 +1473,39 @@ class ProductsService {
       const error = new Error('Товар не найден');
       error.statusCode = 404;
       throw error;
+    }
+
+    if (stockBlockTouched && stockBlockBefore) {
+      const after = {
+        block_stock_ozon: Object.prototype.hasOwnProperty.call(updates, 'block_stock_ozon')
+          ? updates.block_stock_ozon === true
+          : stockBlockBefore.block_stock_ozon,
+        block_stock_wb: Object.prototype.hasOwnProperty.call(updates, 'block_stock_wb')
+          ? updates.block_stock_wb === true
+          : stockBlockBefore.block_stock_wb,
+        block_stock_ym: Object.prototype.hasOwnProperty.call(updates, 'block_stock_ym')
+          ? updates.block_stock_ym === true
+          : stockBlockBefore.block_stock_ym,
+      };
+      const changed =
+        after.block_stock_ozon !== stockBlockBefore.block_stock_ozon ||
+        after.block_stock_wb !== stockBlockBefore.block_stock_wb ||
+        after.block_stock_ym !== stockBlockBefore.block_stock_ym;
+      if (changed) {
+        try {
+          const { scheduleWarehouseStockMarketplaceSync } = await import(
+            './marketplaceWarehouseStockSync.service.js'
+          );
+          scheduleWarehouseStockMarketplaceSync(updated.id, {
+            reason: 'product_stock_block_changed',
+          });
+        } catch (e) {
+          console.warn(
+            '[Products Service] schedule stock sync after block flags failed:',
+            e?.message || e
+          );
+        }
+      }
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, 'kit_components')) {

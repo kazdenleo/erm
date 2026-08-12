@@ -2730,6 +2730,7 @@ class ProductsRepositoryPG {
         'mp_wb_vendor_code', 'mp_wb_name', 'mp_wb_description', 'mp_wb_brand',
         'mp_ym_name', 'mp_ym_description',
         'mp_field_links',
+        'block_stock_ozon', 'block_stock_wb', 'block_stock_ym',
         'ozon_attributes', 'wb_attributes', 'ym_attributes',
         'ozon_draft', 'wb_draft', 'ym_draft',
         'images'
