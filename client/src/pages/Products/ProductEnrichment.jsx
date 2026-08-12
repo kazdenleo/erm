@@ -12,6 +12,14 @@ import { useBrands } from '../../hooks/useBrands';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { isProfileProductEnrichmentEnabled } from '../../utils/profileFlags.js';
+import {
+  getProfileLengthUnit,
+  getProfileWeightUnit,
+  lengthMmToDisplay,
+  lengthUnitLabel,
+  weightGToDisplay,
+  weightUnitLabel,
+} from '../../utils/displayUnits.js';
 import { productsApi } from '../../services/products.api.js';
 import { profilesApi } from '../../services/profiles.api.js';
 import {
@@ -19,6 +27,29 @@ import {
   partsIndexKeysFromProfile,
 } from '../../constants/partsindexKeys.js';
 import './ProductEnrichment.css';
+
+/** Вес/габариты из БД (г / мм) → подпись в единицах аккаунта. */
+function formatWeightDims(row, lengthUnit, weightUnit) {
+  const wLabel = weightUnitLabel(weightUnit);
+  const lLabel = lengthUnitLabel(lengthUnit);
+  const weightStr =
+    row.weight != null ? `${weightGToDisplay(row.weight, weightUnit) || '—'} ${wLabel}` : null;
+  const hasDims = ![row.length, row.width, row.height].every((v) => v == null);
+  const dimsStr = hasDims
+    ? `${lengthMmToDisplay(row.length, lengthUnit) || '—'} × ${
+        lengthMmToDisplay(row.width, lengthUnit) || '—'
+      } × ${lengthMmToDisplay(row.height, lengthUnit) || '—'} ${lLabel}`
+    : null;
+  return {
+    weightStr,
+    dimsStr,
+    compactDims: hasDims
+      ? `${lengthMmToDisplay(row.length, lengthUnit) || '—'}×${
+          lengthMmToDisplay(row.width, lengthUnit) || '—'
+        }×${lengthMmToDisplay(row.height, lengthUnit) || '—'} ${lLabel}`
+      : null,
+  };
+}
 
 /**
  * Разбор строк: brand;sku | brand\tsku | brand,sku | brand sku
@@ -130,6 +161,8 @@ export function ProductEnrichment() {
   const { organizations } = useOrganizations();
 
   const flagEnabled = isProfileProductEnrichmentEnabled(profile);
+  const lengthUnit = getProfileLengthUnit(profile);
+  const weightUnit = getProfileWeightUnit(profile);
   const [statusEnabled, setStatusEnabled] = useState(null);
   const enabled = statusEnabled === true || (statusEnabled == null && flagEnabled);
   const canEditKeys = isTenantAccountAdmin;
@@ -178,6 +211,10 @@ export function ProductEnrichment() {
   useEffect(() => {
     reloadStatus();
   }, [reloadStatus]);
+
+  useEffect(() => {
+    refreshUser?.();
+  }, [refreshUser]);
 
   useEffect(() => {
     if (!canEditKeys || !settingsOpen) return;
@@ -588,7 +625,13 @@ export function ProductEnrichment() {
                       </tr>
                     </thead>
                     <tbody>
-                      {draftRows.map((row) => (
+                      {draftRows.map((row) => {
+                        const { weightStr, dimsStr, compactDims } = formatWeightDims(
+                          row,
+                          lengthUnit,
+                          weightUnit
+                        );
+                        return (
                         <React.Fragment key={row.key}>
                           <tr
                             className={
@@ -707,10 +750,8 @@ export function ProductEnrichment() {
                             </td>
                             <td className="small text-muted">
                               {[
-                                row.weight != null ? `${row.weight} г` : null,
-                                [row.length, row.width, row.height].every((v) => v == null)
-                                  ? null
-                                  : `${row.length ?? '—'}×${row.width ?? '—'}×${row.height ?? '—'}`,
+                                weightStr,
+                                compactDims,
                                 row.barcodes?.length ? `ШК ${row.barcodes.length}` : null,
                                 row.analogs?.length ? `аналоги ${row.analogs.length}` : null,
                                 row.applicability?.length
@@ -760,13 +801,7 @@ export function ProductEnrichment() {
                                     <div>
                                       <div className="text-muted small">Вес / габариты</div>
                                       <div className="small">
-                                        {row.weight != null ? `${row.weight} г` : '—'}
-                                        {' · '}
-                                        {[row.length, row.width, row.height].every(
-                                          (v) => v == null
-                                        )
-                                          ? '—'
-                                          : `${row.length ?? '—'} × ${row.width ?? '—'} × ${row.height ?? '—'} мм`}
+                                        {[weightStr || '—', dimsStr || '—'].join(' · ')}
                                       </div>
                                     </div>
                                     <div>
@@ -846,7 +881,8 @@ export function ProductEnrichment() {
                             </tr>
                           ) : null}
                         </React.Fragment>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

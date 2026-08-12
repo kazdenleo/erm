@@ -261,6 +261,14 @@ export const authController = {
                   profile.manual_orders_warehouse_id != null
                     ? Number(profile.manual_orders_warehouse_id)
                     : null,
+                display_length_unit:
+                  String(profile.display_length_unit || 'mm').trim().toLowerCase() === 'cm'
+                    ? 'cm'
+                    : 'mm',
+                display_weight_unit:
+                  String(profile.display_weight_unit || 'g').trim().toLowerCase() === 'kg'
+                    ? 'kg'
+                    : 'g',
               }
             : null,
           features: buildUserNavFeatures(resolveNavSectionsForUser(user, profile)),
