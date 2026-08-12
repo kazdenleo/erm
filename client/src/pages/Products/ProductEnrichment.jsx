@@ -40,15 +40,7 @@ function formatWeightDims(row, lengthUnit, weightUnit) {
         lengthMmToDisplay(row.width, lengthUnit) || '—'
       } × ${lengthMmToDisplay(row.height, lengthUnit) || '—'} ${lLabel}`
     : null;
-  return {
-    weightStr,
-    dimsStr,
-    compactDims: hasDims
-      ? `${lengthMmToDisplay(row.length, lengthUnit) || '—'}×${
-          lengthMmToDisplay(row.width, lengthUnit) || '—'
-        }×${lengthMmToDisplay(row.height, lengthUnit) || '—'} ${lLabel}`
-      : null,
-  };
+  return { weightStr, dimsStr };
 }
 
 /**
@@ -126,7 +118,6 @@ function buildDraftRows(reportResults, brands) {
       return {
         key: rowKey(r, idx),
         selected: true,
-        expanded: false,
         sourceIndex: r.index,
         brandName,
         sku: r.matchedNumber || r.sku || '',
@@ -620,20 +611,29 @@ export function ProductEnrichment() {
                         <th>Бренд</th>
                         <th>Категория</th>
                         <th>Организация</th>
-                        <th>Сводка</th>
+                        <th>Вес / габариты</th>
+                        <th>Штрихкоды</th>
+                        <th>Аналоги</th>
+                        <th>Применимость</th>
+                        <th>Описание</th>
                         <th>Статус</th>
                       </tr>
                     </thead>
                     <tbody>
                       {draftRows.map((row) => {
-                        const { weightStr, dimsStr, compactDims } = formatWeightDims(
+                        const { weightStr, dimsStr } = formatWeightDims(
                           row,
                           lengthUnit,
                           weightUnit
                         );
+                        const descText =
+                          row.description ||
+                          (row.attributes?.length
+                            ? row.attributes.map((a) => `${a.name}: ${a.value}`).join('\n')
+                            : '');
                         return (
-                        <React.Fragment key={row.key}>
                           <tr
+                            key={row.key}
                             className={
                               row.productId
                                 ? 'is-created'
@@ -655,8 +655,8 @@ export function ProductEnrichment() {
                             </td>
                             <td>
                               {row.imageUrls?.length ? (
-                                <div className="product-enrichment-thumbs">
-                                  {row.imageUrls.slice(0, 3).map((url) => (
+                                <div className="product-enrichment-images product-enrichment-images--table">
+                                  {row.imageUrls.map((url) => (
                                     <a
                                       key={url}
                                       href={url}
@@ -667,11 +667,6 @@ export function ProductEnrichment() {
                                       <img src={url} alt="" loading="lazy" />
                                     </a>
                                   ))}
-                                  {row.imageUrls.length > 3 ? (
-                                    <span className="small text-muted">
-                                      +{row.imageUrls.length - 3}
-                                    </span>
-                                  ) : null}
                                 </div>
                               ) : (
                                 <span className="text-muted small">—</span>
@@ -682,15 +677,6 @@ export function ProductEnrichment() {
                               {row.brandName ? (
                                 <div className="text-muted small">{row.brandName}</div>
                               ) : null}
-                              <button
-                                type="button"
-                                className="btn btn-link btn-sm p-0 product-enrichment-expand-btn"
-                                onClick={() =>
-                                  updateRow(row.key, { expanded: !row.expanded })
-                                }
-                              >
-                                {row.expanded ? 'Скрыть детали' : 'Показать детали'}
-                              </button>
                             </td>
                             <td>
                               <div className="product-enrichment-name-cell">
@@ -748,18 +734,58 @@ export function ProductEnrichment() {
                                 ))}
                               </select>
                             </td>
-                            <td className="small text-muted">
-                              {[
-                                weightStr,
-                                compactDims,
-                                row.barcodes?.length ? `ШК ${row.barcodes.length}` : null,
-                                row.analogs?.length ? `аналоги ${row.analogs.length}` : null,
-                                row.applicability?.length
-                                  ? `авто ${row.applicability.length}`
-                                  : null,
-                              ]
-                                .filter(Boolean)
-                                .join(' · ') || '—'}
+                            <td className="small">
+                              <div>{weightStr || '—'}</div>
+                              <div className="text-muted">{dimsStr || '—'}</div>
+                            </td>
+                            <td className="small product-enrichment-cell-scroll">
+                              {row.barcodes?.length ? row.barcodes.join('\n') : '—'}
+                            </td>
+                            <td className="product-enrichment-cell-scroll">
+                              {row.analogs?.length ? (
+                                <ul className="product-enrichment-cell-list">
+                                  {row.analogs.map((a, idx) => (
+                                    <li key={`${a.id || a.code || idx}-${a.brand || ''}`}>
+                                      {[a.brand, a.code].filter(Boolean).join(' ')}
+                                      {a.relation ? (
+                                        <span className="text-muted"> · {a.relation}</span>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <span className="text-muted small">—</span>
+                              )}
+                            </td>
+                            <td className="product-enrichment-cell-scroll">
+                              {row.applicability?.length ? (
+                                <ul className="product-enrichment-cell-list">
+                                  {row.applicability.map((a, idx) => (
+                                    <li key={`${a.brand}-${a.model}-${idx}`}>
+                                      {[a.brand, a.model, a.modif, a.years]
+                                        .filter(Boolean)
+                                        .join(' ')}
+                                      {a.body ? (
+                                        <span className="text-muted"> · {a.body}</span>
+                                      ) : null}
+                                      {a.engCode ? (
+                                        <span className="text-muted"> · дв. {a.engCode}</span>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <span className="text-muted small">—</span>
+                              )}
+                            </td>
+                            <td className="product-enrichment-cell-scroll">
+                              {descText ? (
+                                <pre className="product-enrichment-desc product-enrichment-desc--cell">
+                                  {descText}
+                                </pre>
+                              ) : (
+                                <span className="text-muted small">—</span>
+                              )}
                             </td>
                             <td className="small">
                               {row.productId ? (
@@ -773,114 +799,6 @@ export function ProductEnrichment() {
                               )}
                             </td>
                           </tr>
-                          {row.expanded ? (
-                            <tr className="product-enrichment-detail-row">
-                              <td colSpan={9}>
-                                <div className="product-enrichment-detail">
-                                  {row.imageUrls?.length ? (
-                                    <div>
-                                      <div className="text-muted small mb-1">
-                                        Фото ({row.imageUrls.length})
-                                      </div>
-                                      <div className="product-enrichment-images">
-                                        {row.imageUrls.map((url) => (
-                                          <a
-                                            key={url}
-                                            href={url}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                          >
-                                            <img src={url} alt="" loading="lazy" />
-                                          </a>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  ) : null}
-
-                                  <div className="product-enrichment-detail__grid">
-                                    <div>
-                                      <div className="text-muted small">Вес / габариты</div>
-                                      <div className="small">
-                                        {[weightStr || '—', dimsStr || '—'].join(' · ')}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <div className="text-muted small">Штрихкоды</div>
-                                      <div className="small">
-                                        {row.barcodes?.length ? row.barcodes.join(', ') : '—'}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div>
-                                    <div className="text-muted small">
-                                      Аналоги ({row.analogs?.length || 0})
-                                    </div>
-                                    {row.analogs?.length ? (
-                                      <ul className="mb-0 small ps-3">
-                                        {row.analogs.slice(0, 40).map((a, idx) => (
-                                          <li key={`${a.id || a.code || idx}-${a.brand || ''}`}>
-                                            {[a.brand, a.code].filter(Boolean).join(' ')}
-                                            {a.relation ? (
-                                              <span className="text-muted"> · {a.relation}</span>
-                                            ) : null}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                      <div className="small text-muted">Нет данных</div>
-                                    )}
-                                  </div>
-
-                                  <div>
-                                    <div className="text-muted small">
-                                      Применимость ({row.applicability?.length || 0})
-                                    </div>
-                                    {row.applicability?.length ? (
-                                      <ul className="mb-0 small ps-3">
-                                        {row.applicability.slice(0, 50).map((a, idx) => (
-                                          <li key={`${a.brand}-${a.model}-${idx}`}>
-                                            {[a.brand, a.model, a.modif, a.years]
-                                              .filter(Boolean)
-                                              .join(' ')}
-                                            {a.body ? (
-                                              <span className="text-muted"> · {a.body}</span>
-                                            ) : null}
-                                            {a.engCode ? (
-                                              <span className="text-muted">
-                                                {' '}
-                                                · дв. {a.engCode}
-                                              </span>
-                                            ) : null}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                      <div className="small text-muted">Нет данных</div>
-                                    )}
-                                  </div>
-
-                                  <div>
-                                    <div className="text-muted small">
-                                      Описание / характеристики
-                                      {row.attributes?.length
-                                        ? ` (${row.attributes.length})`
-                                        : ''}
-                                    </div>
-                                    <pre className="product-enrichment-desc mb-0">
-                                      {row.description ||
-                                        (row.attributes?.length
-                                          ? row.attributes
-                                              .map((a) => `${a.name}: ${a.value}`)
-                                              .join('\n')
-                                          : '—')}
-                                    </pre>
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          ) : null}
-                        </React.Fragment>
                         );
                       })}
                     </tbody>
