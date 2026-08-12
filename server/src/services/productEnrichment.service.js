@@ -1296,6 +1296,24 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
       continue;
     }
 
+    const categoryId =
+      raw.categoryId != null && raw.categoryId !== ''
+        ? raw.categoryId
+        : raw.user_category_id != null && raw.user_category_id !== ''
+          ? raw.user_category_id
+          : null;
+    const organizationId =
+      raw.organizationId != null && raw.organizationId !== ''
+        ? raw.organizationId
+        : raw.organization_id != null && raw.organization_id !== ''
+          ? raw.organization_id
+          : null;
+    if (categoryId == null || organizationId == null) {
+      row.error = 'Нужны категория и организация';
+      results.push(row);
+      continue;
+    }
+
     try {
       const payload = {
         profileId: opts.profileId,
@@ -1308,18 +1326,8 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
             : raw.brand_id != null && raw.brand_id !== ''
               ? Number(raw.brand_id)
               : undefined,
-        categoryId:
-          raw.categoryId != null && raw.categoryId !== ''
-            ? raw.categoryId
-            : raw.user_category_id != null && raw.user_category_id !== ''
-              ? raw.user_category_id
-              : null,
-        organizationId:
-          raw.organizationId != null && raw.organizationId !== ''
-            ? raw.organizationId
-            : raw.organization_id != null && raw.organization_id !== ''
-              ? raw.organization_id
-              : null,
+        categoryId,
+        organizationId,
         description: raw.description != null ? String(raw.description) : null,
         weight: raw.weight != null && raw.weight !== '' ? Number(raw.weight) : null,
         length: raw.length != null && raw.length !== '' ? Number(raw.length) : null,

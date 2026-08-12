@@ -381,6 +381,13 @@ export function ProductEnrichment() {
       setCreateError('Выберите хотя бы один товар');
       return;
     }
+    const missing = toCreate.filter((r) => !r.categoryId || !r.organizationId);
+    if (missing.length) {
+      setCreateError(
+        `Укажите категорию и организацию для всех выбранных товаров (без них: ${missing.length})`
+      );
+      return;
+    }
     setCreating(true);
     setCreateError('');
     setCreateMessage('');
