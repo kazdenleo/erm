@@ -16,6 +16,55 @@
   font-weight: 500;
 }
 
+.admin-storage-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary, #0d6efd);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.admin-storage-link.badge {
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.admin-storage-breakdown {
+  max-height: 75vh;
+  overflow: auto;
+}
+
+.admin-storage-category {
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.admin-storage-category:last-of-type {
+  border-bottom: none;
+}
+
+.admin-storage-category-head {
+  margin-bottom: 0.5rem;
+}
+
+.admin-storage-bar {
+  margin-top: 0.35rem;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--primary-50, #eef2ff);
+  overflow: hidden;
+}
+
+.admin-storage-bar-fill {
+  height: 100%;
+  background: var(--primary, #0d6efd);
+  border-radius: 999px;
+}
+
 .admin-page .title { margin-bottom: 0.25rem; }
 .admin-page .subtitle { margin-bottom: 1.5rem; color: var(--muted); }
 

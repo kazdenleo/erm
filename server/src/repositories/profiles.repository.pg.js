@@ -50,11 +50,127 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
   'wb_fbo_forecast_snapshots',
 ]);
 
+/** Русские названия таблиц для разбивки размера. */
+const TABLE_LABELS_RU = Object.freeze({
+  brands: 'Бренды',
+  category_label_templates: 'Шаблоны этикеток категорий',
+  employee_tasks: 'Задачи сотрудников',
+  fbo_purchase_calc_sessions: 'Расчёты закупок FBO',
+  fbo_supplies: 'Поставки FBO',
+  integrations: 'Интеграции',
+  inventory_sessions: 'Инвентаризации',
+  marketplace_fbo_report_lines: 'Отчёты FBO (строки)',
+  marketplace_fbo_report_syncs: 'Отчёты FBO (синхронизации)',
+  marketplace_fbs_report_lines: 'Отчёты FBS (строки)',
+  marketplace_fbs_report_syncs: 'Отчёты FBS (синхронизации)',
+  marketplace_inventory_snapshots: 'Снимки остатков МП',
+  marketplace_price_changes: 'Изменения цен МП',
+  marketplace_questions: 'Вопросы покупателей',
+  marketplace_return_claims: 'Претензии по возвратам',
+  marketplace_reviews: 'Отзывы',
+  order_fulfillment_lines: 'Строки исполнения заказов',
+  orders: 'Заказы',
+  organizations: 'Организации',
+  ozon_ads_sku_stats: 'Реклама Ozon (статистика SKU)',
+  pricing_strategies: 'Стратегии ценообразования',
+  products: 'Товары',
+  purchases: 'Закупки',
+  question_answer_templates: 'Шаблоны ответов на вопросы',
+  review_auto_reply_rules: 'Правила автоответов на отзывы',
+  review_reply_templates: 'Шаблоны ответов на отзывы',
+  stock_movements: 'Движения остатков',
+  supplier_returns: 'Возвраты поставщикам',
+  suppliers: 'Поставщики',
+  support_inquiries: 'Обращения в поддержку',
+  user_categories: 'Категории пользователей',
+  users: 'Пользователи',
+  warehouse_suppliers: 'Связи склад–поставщик',
+  warehouses: 'Склады',
+  wb_fbo_forecast_snapshots: 'Прогнозы WB FBO',
+});
+
+/** Группы для понятной разбивки в UI. */
+const TABLE_CATEGORIES = Object.freeze([
+  {
+    key: 'products',
+    label: 'Товары',
+    tables: ['products', 'brands', 'pricing_strategies', 'category_label_templates'],
+  },
+  {
+    key: 'orders',
+    label: 'Заказы',
+    tables: ['orders', 'order_fulfillment_lines'],
+  },
+  {
+    key: 'stock',
+    label: 'Остатки и склады',
+    tables: ['stock_movements', 'warehouses', 'warehouse_suppliers', 'inventory_sessions'],
+  },
+  {
+    key: 'marketplace',
+    label: 'Маркетплейсы',
+    tables: [
+      'marketplace_fbo_report_lines',
+      'marketplace_fbo_report_syncs',
+      'marketplace_fbs_report_lines',
+      'marketplace_fbs_report_syncs',
+      'marketplace_inventory_snapshots',
+      'marketplace_price_changes',
+      'ozon_ads_sku_stats',
+      'wb_fbo_forecast_snapshots',
+      'integrations',
+    ],
+  },
+  {
+    key: 'procurement',
+    label: 'Закупки и FBO',
+    tables: [
+      'purchases',
+      'fbo_supplies',
+      'fbo_purchase_calc_sessions',
+      'supplier_returns',
+      'marketplace_return_claims',
+    ],
+  },
+  {
+    key: 'suppliers',
+    label: 'Поставщики',
+    tables: ['suppliers'],
+  },
+  {
+    key: 'reviews',
+    label: 'Отзывы и вопросы',
+    tables: [
+      'marketplace_reviews',
+      'marketplace_questions',
+      'review_reply_templates',
+      'review_auto_reply_rules',
+      'question_answer_templates',
+    ],
+  },
+  {
+    key: 'account',
+    label: 'Аккаунт',
+    tables: ['users', 'organizations', 'user_categories', 'employee_tasks', 'support_inquiries'],
+  },
+]);
+
 function quoteIdent(name) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(name)) {
     throw new Error(`Недопустимое имя таблицы: ${name}`);
   }
   return `"${name}"`;
+}
+
+function tableLabel(table) {
+  return TABLE_LABELS_RU[table] || table;
+}
+
+function categoryForTable(table) {
+  for (const cat of TABLE_CATEGORIES) {
+    if (cat.tables.includes(table)) return cat;
+  }
+  return { key: 'other', label: 'Прочее' };
 }
 
 class ProfilesRepositoryPG {
@@ -76,11 +192,11 @@ class ProfilesRepositoryPG {
   }
 
   /**
-   * Оценка объёма данных по аккаунтам (байты): доля строк × размер таблицы.
-   * @param {number|null} [onlyProfileId] — если задан, считает только этот профиль
-   * @returns {Promise<Map<number, number>>}
+   * Построчная оценка объёма по таблицам (доля строк × размер таблицы).
+   * @param {number|null} [onlyProfileId]
+   * @returns {Promise<Array<{profile_id:number, table_name:string, rows:number, bytes:number, table_rows:number, table_bytes:number}>>}
    */
-  async getStorageBytesByProfile(onlyProfileId = null) {
+  async getStorageTableStats(onlyProfileId = null) {
     const filterId = onlyProfileId != null && onlyProfileId !== '' ? Number(onlyProfileId) : null;
     const params = filterId != null && Number.isFinite(filterId) ? [filterId] : [];
     const profileFilter = params.length ? 'AND t.profile_id = $1' : '';
@@ -90,6 +206,10 @@ class ProfilesRepositoryPG {
       return `
         SELECT
           profile_id::bigint AS profile_id,
+          '${table}'::text AS table_name,
+          cnt::bigint AS row_cnt,
+          total_cnt::bigint AS table_rows,
+          rel_size::bigint AS table_bytes,
           CASE
             WHEN total_cnt <= 0 THEN 0::float8
             ELSE (cnt::float8 / total_cnt) * rel_size
@@ -110,20 +230,93 @@ class ProfilesRepositoryPG {
 
     const result = await query(
       `
-      SELECT profile_id, ROUND(COALESCE(SUM(bytes), 0))::bigint AS storage_bytes
+      SELECT
+        profile_id,
+        table_name,
+        row_cnt,
+        table_rows,
+        table_bytes,
+        ROUND(COALESCE(bytes, 0))::bigint AS bytes
       FROM (
         ${parts.join('\nUNION ALL\n')}
       ) u
-      GROUP BY profile_id
+      WHERE COALESCE(bytes, 0) > 0 OR COALESCE(row_cnt, 0) > 0
+      ORDER BY profile_id, bytes DESC
     `,
       params
     );
 
+    return result.rows.map((row) => ({
+      profile_id: Number(row.profile_id),
+      table_name: String(row.table_name),
+      rows: Number(row.row_cnt) || 0,
+      table_rows: Number(row.table_rows) || 0,
+      table_bytes: Number(row.table_bytes) || 0,
+      bytes: Number(row.bytes) || 0,
+    }));
+  }
+
+  /**
+   * Оценка объёма данных по аккаунтам (байты): доля строк × размер таблицы.
+   * @param {number|null} [onlyProfileId] — если задан, считает только этот профиль
+   * @returns {Promise<Map<number, number>>}
+   */
+  async getStorageBytesByProfile(onlyProfileId = null) {
+    const rows = await this.getStorageTableStats(onlyProfileId);
     const map = new Map();
-    for (const row of result.rows) {
-      map.set(Number(row.profile_id), Number(row.storage_bytes) || 0);
+    for (const row of rows) {
+      map.set(row.profile_id, (map.get(row.profile_id) || 0) + row.bytes);
     }
     return map;
+  }
+
+  /**
+   * Подробная разбивка размера данных аккаунта по категориям и таблицам.
+   */
+  async getStorageBreakdown(profileId) {
+    const id = Number(profileId);
+    const rows = await this.getStorageTableStats(id);
+    const totalBytes = rows.reduce((sum, r) => sum + r.bytes, 0);
+    const byKey = new Map();
+
+    for (const row of rows) {
+      const cat = categoryForTable(row.table_name);
+      if (!byKey.has(cat.key)) {
+        byKey.set(cat.key, {
+          key: cat.key,
+          label: cat.label,
+          bytes: 0,
+          rows: 0,
+          tables: [],
+        });
+      }
+      const bucket = byKey.get(cat.key);
+      bucket.bytes += row.bytes;
+      bucket.rows += row.rows;
+      bucket.tables.push({
+        table: row.table_name,
+        label: tableLabel(row.table_name),
+        bytes: row.bytes,
+        rows: row.rows,
+        tableRows: row.table_rows,
+        tableBytes: row.table_bytes,
+        percent: totalBytes > 0 ? Math.round((row.bytes / totalBytes) * 1000) / 10 : 0,
+      });
+    }
+
+    const categories = [...byKey.values()]
+      .map((cat) => ({
+        ...cat,
+        percent: totalBytes > 0 ? Math.round((cat.bytes / totalBytes) * 1000) / 10 : 0,
+        tables: cat.tables.sort((a, b) => b.bytes - a.bytes),
+      }))
+      .sort((a, b) => b.bytes - a.bytes);
+
+    return {
+      profile_id: id,
+      total_bytes: totalBytes,
+      categories,
+    };
   }
 
   /**

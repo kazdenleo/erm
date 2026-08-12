@@ -48,6 +48,12 @@ export const profilesApi = {
     return response.data;
   },
 
+  /** Разбивка размера данных аккаунта по категориям/таблицам */
+  async getStorageBreakdown(id) {
+    const response = await api.get(`/profiles/${id}/storage`);
+    return response.data;
+  },
+
   async create(data) {
     const response = await api.post('/profiles', data);
     return response.data;

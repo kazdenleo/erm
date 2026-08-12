@@ -28,6 +28,7 @@ router.use(requireAdmin);
 
 router.get('/', wrapAsync(profilesController.getAll));
 router.get('/:id/cabinet', wrapAsync(profilesController.getCabinet));
+router.get('/:id/storage', wrapAsync(profilesController.getStorageBreakdown));
 router.get('/:id', wrapAsync(profilesController.getById));
 router.post('/', wrapAsync(profilesController.create));
 router.put('/:id', wrapAsync(profilesController.update));

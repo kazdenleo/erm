@@ -51,6 +51,11 @@ function formatStorageSize(bytes) {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
+function formatRows(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString('ru-RU');
+}
+
 export function Admin() {
   const { isAdmin } = useAuth();
   const [profiles, setProfiles] = useState([]);
@@ -64,6 +69,11 @@ export function Admin() {
   const [cabinetLoading, setCabinetLoading] = useState(false);
   const [cabinetBundle, setCabinetBundle] = useState(null);
   const [cabinetForm, setCabinetForm] = useState(emptyProfileForm());
+
+  const [storageTarget, setStorageTarget] = useState(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState('');
+  const [storageBreakdown, setStorageBreakdown] = useState(null);
 
   const loadData = useCallback(async () => {
     if (!isAdmin) return;
@@ -119,6 +129,43 @@ export function Admin() {
       product_enrichment_enabled: p.product_enrichment_enabled === true,
     });
   }, [cabinetBundle]);
+
+  useEffect(() => {
+    if (!storageTarget?.id) {
+      setStorageBreakdown(null);
+      setStorageError('');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setStorageLoading(true);
+      setStorageError('');
+      setStorageBreakdown(null);
+      try {
+        const res = await profilesApi.getStorageBreakdown(storageTarget.id);
+        if (cancelled) return;
+        if (!res?.ok) {
+          setStorageError(res?.message || 'Не удалось загрузить разбивку');
+          return;
+        }
+        setStorageBreakdown(res.data);
+      } catch (err) {
+        if (!cancelled) {
+          setStorageError(err?.response?.data?.message || err?.message || 'Ошибка загрузки');
+        }
+      } finally {
+        if (!cancelled) setStorageLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storageTarget]);
+
+  const openStorageBreakdown = (profileId, profileName) => {
+    if (profileId == null) return;
+    setStorageTarget({ id: profileId, name: profileName || '' });
+  };
 
   const openProfileForm = (profile = null) => {
     setEditingProfile(profile);
@@ -279,7 +326,16 @@ export function Admin() {
                     <td>{p.users_count ?? p.usersCount ?? 0}</td>
                     <td>{p.organizations_count ?? p.organizationsCount ?? 0}</td>
                     <td>{p.products_count ?? p.productsCount ?? 0}</td>
-                    <td>{formatStorageSize(p.storage_bytes ?? p.storageBytes)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="admin-storage-link"
+                        title="Подробная разбивка размера данных"
+                        onClick={() => openStorageBreakdown(p.id, p.name)}
+                      >
+                        {formatStorageSize(p.storage_bytes ?? p.storageBytes)}
+                      </button>
+                    </td>
                     <td>
                       {p.supplier_sync_enabled !== false ? (
                         <span className="badge bg-success">вкл</span>
@@ -529,12 +585,16 @@ export function Admin() {
               <span className="badge bg-light text-dark me-2">
                 Товаров: {cabinetBundle.productsCount ?? 0}
               </span>
-              <span
-                className="badge bg-light text-dark"
-                title="Оценка объёма данных аккаунта в общей БД"
+              <button
+                type="button"
+                className="badge bg-light text-dark border-0 admin-storage-link"
+                title="Подробная разбивка размера данных"
+                onClick={() =>
+                  openStorageBreakdown(cabinetBundle.profile?.id, cabinetBundle.profile?.name)
+                }
               >
                 Размер данных: {formatStorageSize(cabinetBundle.storageBytes)}
-              </span>
+              </button>
             </div>
 
             <h3 className="h6 text-muted mb-2">История обращений</h3>
@@ -572,6 +632,80 @@ export function Admin() {
                 </table>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={storageTarget != null}
+        onClose={() => setStorageTarget(null)}
+        title={
+          storageTarget?.name
+            ? `Размер данных: ${storageTarget.name}`
+            : 'Размер данных аккаунта'
+        }
+        size="large"
+      >
+        {storageLoading && <p>Загрузка разбивки...</p>}
+        {!storageLoading && storageError && <p className="text-danger">{storageError}</p>}
+        {!storageLoading && !storageError && storageBreakdown && (
+          <div className="admin-storage-breakdown">
+            <p className="admin-muted mb-3">
+              Оценка доли аккаунта в общей БД. Итого:{' '}
+              <strong>{formatStorageSize(storageBreakdown.totalBytes)}</strong>
+            </p>
+            {(storageBreakdown.categories || []).length === 0 ? (
+              <p className="text-muted">Данных по аккаунту пока нет.</p>
+            ) : (
+              (storageBreakdown.categories || []).map((cat) => (
+                <div key={cat.key} className="admin-storage-category">
+                  <div className="admin-storage-category-head">
+                    <div>
+                      <strong>{cat.label}</strong>
+                      <span className="admin-muted ms-2">
+                        {formatStorageSize(cat.bytes)} · {cat.percent}% · {formatRows(cat.rows)} стр.
+                      </span>
+                    </div>
+                    <div className="admin-storage-bar" aria-hidden="true">
+                      <div
+                        className="admin-storage-bar-fill"
+                        style={{ width: `${Math.min(100, Number(cat.percent) || 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="table-responsive">
+                    <table className="table table-sm align-middle mb-0">
+                      <thead>
+                        <tr>
+                          <th>Раздел</th>
+                          <th className="text-end">Размер</th>
+                          <th className="text-end">Доля</th>
+                          <th className="text-end">Строк</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(cat.tables || []).map((t) => (
+                          <tr key={t.table}>
+                            <td>
+                              {t.label}
+                              <div className="admin-muted small">{t.table}</div>
+                            </td>
+                            <td className="text-end text-nowrap">{formatStorageSize(t.bytes)}</td>
+                            <td className="text-end text-nowrap">{t.percent}%</td>
+                            <td className="text-end text-nowrap">{formatRows(t.rows)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))
+            )}
+            <div className="admin-form-actions">
+              <Button variant="secondary" onClick={() => setStorageTarget(null)}>
+                Закрыть
+              </Button>
+            </div>
           </div>
         )}
       </Modal>

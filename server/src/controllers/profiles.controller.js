@@ -406,6 +406,29 @@ export const profilesController = {
     }
   },
 
+  /** Подробная разбивка размера данных аккаунта */
+  async getStorageBreakdown(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profile = await repo.findById(id);
+      if (!profile) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const breakdown = await repo.getStorageBreakdown(id);
+      res.json({
+        ok: true,
+        data: {
+          profileId: Number(profile.id),
+          profileName: profile.name,
+          totalBytes: breakdown.total_bytes,
+          categories: breakdown.categories,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getById(req, res, next) {
     try {
       const { id } = req.params;
