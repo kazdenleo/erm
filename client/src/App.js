@@ -6,7 +6,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductionEnabled, isProfileProductEnrichmentEnabled } from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
 import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';
@@ -20,6 +20,7 @@ import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics
 import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
+import { ProductEnrichment } from './pages/Products/ProductEnrichment';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
@@ -79,6 +80,18 @@ function ProductionRoute() {
   );
 }
 
+function ProductEnrichmentRoute() {
+  const { profile } = useAuth();
+  if (!isProfileProductEnrichmentEnabled(profile)) {
+    return <Navigate to="/products" replace />;
+  }
+  return (
+    <Layout>
+      <ProductEnrichment />
+    </Layout>
+  );
+}
+
 /** Редирект со старых URL /fbo-supplies → /stock-levels/fbo-supplies */
 function RedirectFboLegacy() {
   const { pathname, search, hash } = useLocation();
@@ -129,8 +142,9 @@ function App() {
           </Route>
           <Route path="/cabinet" element={<ProtectedRoute><Layout><Cabinet /></Layout></ProtectedRoute>} />
           <Route path="/support" element={<ProtectedRoute><Layout><Support /></Layout></ProtectedRoute>} />
-          <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
+          <Route path="/products/enrichment" element={<ProtectedRoute><ProductEnrichmentRoute /></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
+          <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
           <Route path="/stock-levels" element={<ProtectedRoute><Layout><StockLevelsLayout /></Layout></ProtectedRoute>}>
             <Route index element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="suppliers" element={<Navigate to="/stock-levels/warehouse" replace />} />

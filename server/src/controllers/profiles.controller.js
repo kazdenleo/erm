@@ -9,6 +9,8 @@ import stockMovementsService from '../services/stockMovements.service.js';
 import { jsonSafeRow } from '../utils/profileId.js';
 import { clearProfileFeatureFlagsCache } from '../utils/profileFeatureFlags.js';
 import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
+import { normalizePartsApiKeys } from '../config/partsapi.config.js';
+import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
   formStateToNavSections,
@@ -119,6 +121,12 @@ function pickAccountOwnerProfilePayload(body) {
   if (b.fbo_enabled !== undefined || b.fboEnabled !== undefined) {
     const v = b.fbo_enabled ?? b.fboEnabled;
     out.fbo_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.partsapi_keys !== undefined || b.partsapiKeys !== undefined) {
+    out.partsapi_keys = normalizePartsApiKeys(b.partsapi_keys ?? b.partsapiKeys);
+  }
+  if (b.partsindex_keys !== undefined || b.partsindexKeys !== undefined) {
+    out.partsindex_keys = normalizePartsIndexKeys(b.partsindex_keys ?? b.partsindexKeys);
   }
   if (b.fbo_deduction_warehouse_id !== undefined || b.fboDeductionWarehouseId !== undefined) {
     const raw = b.fbo_deduction_warehouse_id ?? b.fboDeductionWarehouseId;
@@ -298,6 +306,16 @@ export const profilesController = {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const payload = pickAccountOwnerProfilePayload(req.body);
+      // Ключи PartsIndex/PartsAPI — только администратор аккаунта, не системный admin платформы.
+      if (
+        (payload.partsapi_keys !== undefined || payload.partsindex_keys !== undefined) &&
+        req.user?.role === 'admin'
+      ) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Ключи обогащения задаёт администратор аккаунта, не системный администратор',
+        });
+      }
       if (payload.name !== undefined && String(payload.name).trim() === '') {
         return res.status(400).json({ ok: false, message: 'Укажите название аккаунта' });
       }

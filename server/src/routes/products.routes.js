@@ -7,6 +7,7 @@ import express from 'express';
 import productsController from '../controllers/products.controller.js';
 import stockMovementsController from '../controllers/stockMovements.controller.js';
 import productCompetitorsController from '../controllers/productCompetitors.controller.js';
+import productEnrichmentController from '../controllers/productEnrichment.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { requireAuth, requireProfileAdmin } from '../middleware/auth.js';
 import { createProductImageUpload, createProductExcelImportUpload } from '../middleware/uploads.js';
@@ -29,6 +30,16 @@ router.post(
 router.get(
   '/refresh-supplier-stocks/status',
   wrapAsync(productsController.refreshSupplierStocksStatus.bind(productsController))
+);
+
+// Статус модуля обогащения (до /:id)
+router.get(
+  '/enrichment/status',
+  wrapAsync(productEnrichmentController.status.bind(productEnrichmentController))
+);
+router.post(
+  '/enrichment/bulk',
+  wrapAsync(productEnrichmentController.enrichBulk.bind(productEnrichmentController))
 );
 
 // Обновить все товары (массовое обновление)
@@ -155,6 +166,13 @@ router.post(
   '/:id/images/collapse-duplicates',
   validateProductId,
   wrapAsync(productsController.collapseImageDuplicates.bind(productsController))
+);
+
+// Обогащение карточки (PartsAPI) — до PUT /:id
+router.post(
+  '/:id/enrich',
+  validateProductId,
+  wrapAsync(productEnrichmentController.enrich.bind(productEnrichmentController))
 );
 
 // Добавить товар (с валидацией)

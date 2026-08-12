@@ -17,6 +17,7 @@ function emptyProfileForm() {
     contact_phone: '',
     tariff: '',
     supplier_sync_enabled: true,
+    product_enrichment_enabled: false,
   };
 }
 
@@ -100,6 +101,7 @@ export function Admin() {
       contact_phone: p.contact_phone || '',
       tariff: p.tariff || '',
       supplier_sync_enabled: p.supplier_sync_enabled !== false,
+      product_enrichment_enabled: p.product_enrichment_enabled === true,
     });
   }, [cabinetBundle]);
 
@@ -113,6 +115,7 @@ export function Admin() {
         contact_phone: profile.contact_phone ?? '',
         tariff: profile.tariff ?? '',
         supplier_sync_enabled: profile.supplier_sync_enabled !== false,
+        product_enrichment_enabled: profile.product_enrichment_enabled === true,
       });
     } else {
       setProfileForm(emptyProfileForm());
@@ -129,6 +132,7 @@ export function Admin() {
         contact_phone: profileForm.contact_phone.trim() || null,
         tariff: profileForm.tariff.trim() || null,
         supplier_sync_enabled: profileForm.supplier_sync_enabled === true,
+        product_enrichment_enabled: profileForm.product_enrichment_enabled === true,
       };
       if (!payload.name) {
         alert('Укажите название аккаунта');
@@ -155,6 +159,7 @@ export function Admin() {
         contact_phone: cabinetForm.contact_phone.trim() || null,
         tariff: cabinetForm.tariff.trim() || null,
         supplier_sync_enabled: cabinetForm.supplier_sync_enabled === true,
+        product_enrichment_enabled: cabinetForm.product_enrichment_enabled === true,
       };
       if (!payload.name) {
         alert('Укажите название');
@@ -175,6 +180,20 @@ export function Admin() {
       loadData();
     } catch (err) {
       alert(err?.response?.data?.message || err?.message || 'Ошибка удаления');
+    }
+  };
+
+  const toggleEnrichment = async (profile) => {
+    const next = profile.product_enrichment_enabled !== true;
+    try {
+      await profilesApi.update(profile.id, { product_enrichment_enabled: next });
+      setProfiles((list) =>
+        list.map((p) =>
+          p.id === profile.id ? { ...p, product_enrichment_enabled: next } : p
+        )
+      );
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Не удалось изменить обогащение');
     }
   };
 
@@ -214,13 +233,14 @@ export function Admin() {
                 <th>Пользователей</th>
                 <th>Организаций</th>
                 <th>Поставщики</th>
+                <th>Обогащение</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="empty-state">
+                  <td colSpan={7} className="empty-state">
                     Нет аккаунтов
                   </td>
                 </tr>
@@ -247,6 +267,19 @@ export function Admin() {
                       ) : (
                         <span className="badge bg-secondary">выкл</span>
                       )}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={`badge border-0 ${
+                          p.product_enrichment_enabled === true ? 'bg-success' : 'bg-secondary'
+                        }`}
+                        style={{ cursor: 'pointer' }}
+                        title="Нажмите, чтобы включить/выключить"
+                        onClick={() => toggleEnrichment(p)}
+                      >
+                        {p.product_enrichment_enabled === true ? 'вкл' : 'выкл'}
+                      </button>
                     </td>
                     <td className="text-nowrap">
                       <Button type="button" variant="primary" size="small" onClick={() => setCabinetId(p.id)}>
@@ -345,6 +378,20 @@ export function Admin() {
             Если выключено: в аккаунте скрывается вкладка «Поставщики» в «Интеграциях», колонка поставщиков в остатках
             и фоновая синхронизация остатков для этого аккаунта.
           </p>
+          <label className="d-flex align-items-center gap-2 mt-2 mb-0" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={profileForm.product_enrichment_enabled === true}
+              onChange={(e) =>
+                setProfileForm((f) => ({ ...f, product_enrichment_enabled: e.target.checked }))
+              }
+            />
+            <span>Обогащение карточек (PartsIndex)</span>
+          </label>
+          <p className="text-muted small mb-0">
+            Если включено: на карточке товара появляется блок обогащения; ключ PartsIndex задаётся в настройках
+            этого блока.
+          </p>
           <div className="admin-form-actions">
             <Button variant="secondary" onClick={() => setProfileModal(false)}>
               Отмена
@@ -429,6 +476,19 @@ export function Admin() {
               </label>
               <p className="text-muted small mb-0">
                 Если выключено: вкладка «Поставщики» в «Интеграциях» скрыта, фоновая синхронизация для аккаунта не выполняется.
+              </p>
+              <label className="d-flex align-items-center gap-2 mt-2 mb-0" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={cabinetForm.product_enrichment_enabled === true}
+                  onChange={(e) =>
+                    setCabinetForm((f) => ({ ...f, product_enrichment_enabled: e.target.checked }))
+                  }
+                />
+                <span>Обогащение карточек (PartsIndex)</span>
+              </label>
+              <p className="text-muted small mb-0">
+                Включает модуль обогащения для аккаунта: блок на карточке товара и ключи в его настройках.
               </p>
               <div className="admin-form-actions">
                 <Button variant="secondary" onClick={() => setCabinetId(null)}>

@@ -28,7 +28,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled, isProfileProductEnrichmentEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './Products.css';
@@ -101,6 +101,7 @@ export function Products() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const enrichmentEnabled = isProfileProductEnrichmentEnabled(profile);
   const { suppliers } = useSuppliers();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -406,6 +407,12 @@ export function Products() {
       if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!kitsEnabled && filterProductType) {
+      setFilterProductType('');
+    }
+  }, [kitsEnabled, filterProductType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -982,6 +989,17 @@ export function Products() {
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
               + Добавить
             </Button>
+            {enrichmentEnabled ? (
+              <Button
+                className="btn-shadow me-2"
+                variant="secondary"
+                size="small"
+                onClick={() => navigate('/products/enrichment')}
+                title="Сбор контента карточек по бренду и артикулу (PartsIndex)"
+              >
+                Обогащение
+              </Button>
+            ) : null}
             <Button
               className="btn-shadow me-2"
               variant="secondary"
@@ -1172,6 +1190,7 @@ export function Products() {
                       ))}
                     </select>
                   </div>
+                  {kitsEnabled ? (
                   <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-type">
                       Тип товара
@@ -1184,9 +1203,10 @@ export function Products() {
                     >
                       <option value="">Все типы</option>
                       <option value="product">Товар</option>
-                      {kitsEnabled ? <option value="kit">Комплект</option> : null}
+                      <option value="kit">Комплект</option>
                     </select>
                   </div>
+                  ) : null}
                   <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-archive">
                       Архив
@@ -1294,7 +1314,7 @@ export function Products() {
                           />
                         </th>
                         <th className="product-thumb-cell">Фото</th>
-                        <th>Тип</th>
+                        {kitsEnabled ? <th>Тип</th> : null}
                         <th>Название</th>
                         <th>Артикул</th>
                         <th>
@@ -1427,6 +1447,7 @@ export function Products() {
                           </div>
                         </div>
                       </td>
+                      {kitsEnabled ? (
                       <td>
                         <span
                           className={`badge ${typeBadgeClass}`}
@@ -1436,6 +1457,7 @@ export function Products() {
                           {productTypeLabel}
                         </span>
                       </td>
+                      ) : null}
                       <td>
                         <div className="product-name">{product.name || 'Без названия'}</div>
                         <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center'}}>
@@ -1608,7 +1630,8 @@ export function Products() {
             ))}
           </select>
           <p className="text-muted small mt-1 mb-0">
-            Если выбрать одну категорию, в выпадающем списке колонки «Категория» будет только она — удобно для массового ввода в одной категории. Тип товара — колонка F на листе «Словари».
+            Если выбрать одну категорию, в выпадающем списке колонки «Категория» будет только она — удобно для массового ввода в одной категории.
+            {kitsEnabled ? ' Тип товара — колонка F на листе «Словари».' : ''}
           </p>
         </div>
         <div className="mb-3 p-2 border rounded bg-light">

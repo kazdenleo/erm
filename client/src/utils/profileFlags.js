@@ -103,6 +103,14 @@ export function isProfileProductSupplierBindingEnabled(profile) {
   );
 }
 
+/** Модуль обогащения карточек (системный админ включает на аккаунте). */
+export function isProfileProductEnrichmentEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(
+    profile.product_enrichment_enabled ?? profile.productEnrichmentEnabled
+  );
+}
+
 /** Единица длины в UI: mm (по умолчанию) или cm. */
 export function getProfileDisplayLengthUnit(profile) {
   const v = String(profile?.display_length_unit ?? profile?.displayLengthUnit ?? 'mm')

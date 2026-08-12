@@ -5,6 +5,8 @@
 import { query } from '../config/database.js';
 import { parseRoleNavSections } from '../utils/userNavSections.js';
 import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
+import { normalizePartsApiKeys } from '../config/partsapi.config.js';
+import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 
 class ProfilesRepositoryPG {
   async findAll() {
@@ -124,6 +126,13 @@ class ProfilesRepositoryPG {
       set('supplier_sync_enabled', v === true || v === '1' || v === 'true');
     }
     if (
+      updates.product_enrichment_enabled !== undefined ||
+      updates.productEnrichmentEnabled !== undefined
+    ) {
+      const v = updates.product_enrichment_enabled ?? updates.productEnrichmentEnabled;
+      set('product_enrichment_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (
       updates.allow_manual_warehouse_stock_edit !== undefined ||
       updates.allowManualWarehouseStockEdit !== undefined
     ) {
@@ -200,6 +209,14 @@ class ProfilesRepositoryPG {
     if (updates.fbo_enabled !== undefined || updates.fboEnabled !== undefined) {
       const v = updates.fbo_enabled ?? updates.fboEnabled;
       set('fbo_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.partsapi_keys !== undefined || updates.partsapiKeys !== undefined) {
+      const raw = updates.partsapi_keys ?? updates.partsapiKeys;
+      set('partsapi_keys', JSON.stringify(normalizePartsApiKeys(raw)));
+    }
+    if (updates.partsindex_keys !== undefined || updates.partsindexKeys !== undefined) {
+      const raw = updates.partsindex_keys ?? updates.partsindexKeys;
+      set('partsindex_keys', JSON.stringify(normalizePartsIndexKeys(raw)));
     }
     if (
       updates.fbo_deduction_warehouse_id !== undefined ||

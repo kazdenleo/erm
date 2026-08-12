@@ -428,6 +428,29 @@ export const productsApi = {
    */
   pullCardBulk: async (payload, opts) => postMarketplaceCardBulk('/products/pull-card', payload, opts),
 
+  /** Статус модуля обогащения для текущего аккаунта */
+  enrichmentStatus: async () => {
+    const response = await api.get('/products/enrichment/status');
+    return response.data;
+  },
+
+  /** Обогатить карточку из PartsIndex */
+  enrich: async (productId, body = {}) => {
+    const id = encodeURIComponent(String(productId));
+    const response = await api.post(`/products/${id}/enrich`, body, { timeout: 120000 });
+    return response.data;
+  },
+
+  /** Массовое обогащение по списку { brand, sku } */
+  enrichBulk: async (items, body = {}) => {
+    const response = await api.post(
+      '/products/enrichment/bulk',
+      { items, ...body },
+      { timeout: 600000 }
+    );
+    return response.data;
+  },
+
   /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */
