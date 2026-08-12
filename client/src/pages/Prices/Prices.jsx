@@ -604,6 +604,12 @@ export function Prices() {
   }, []);
 
   useEffect(() => {
+    if (!kitsEnabled && filterProductType) {
+      setFilterProductType('');
+    }
+  }, [kitsEnabled, filterProductType]);
+
+  useEffect(() => {
     let cancelled = false;
     const delay = typeof listSearch === 'string' && listSearch.trim() !== '' ? 400 : 0;
     const t = setTimeout(async () => {
@@ -1044,6 +1050,7 @@ export function Prices() {
                       ))}
                     </select>
                   </div>
+                  {kitsEnabled ? (
                   <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-type">
                       Тип товара
@@ -1056,9 +1063,10 @@ export function Prices() {
                     >
                       <option value="">Все типы</option>
                       <option value="product">Товар</option>
-                      {kitsEnabled ? <option value="kit">Комплект</option> : null}
+                      <option value="kit">Комплект</option>
                     </select>
                   </div>
+                  ) : null}
                   <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-archive">
                       Архив

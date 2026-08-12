@@ -1689,6 +1689,11 @@ export function ProductsBulkEdit() {
     const f = location.state?.filters;
     return f?.productType != null && String(f.productType).trim() !== '' ? String(f.productType).trim() : '';
   });
+  useEffect(() => {
+    if (!kitsEnabled && filterProductType) {
+      setFilterProductType('');
+    }
+  }, [kitsEnabled, filterProductType]);
   const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() =>
     mpFilterSetFromState(location.state?.filters?.unlinkedMp)
   );
@@ -1888,6 +1893,7 @@ export function ProductsBulkEdit() {
   const visibleColumns = useMemo(() => {
     const erp = COLUMNS.filter((c) => {
       if (c.key === 'supplierId' && !supplierBindingEnabled) return false;
+      if (c.key === 'product_type' && !kitsEnabled) return false;
       return c.mpBucket == null;
     });
     const bucketVisible = (b) => {
@@ -1904,7 +1910,7 @@ export function ProductsBulkEdit() {
       out.push(...sortMpSectionColumns(dedicated, attrs));
     }
     return withDisplayUnitLabels(out, lengthUnit, weightUnit);
-  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, lengthUnit, weightUnit]);
+  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, kitsEnabled, lengthUnit, weightUnit]);
 
   /** Сдвиг закреплённого столбца среди пинов (артикул всегда левее). dir: -1 влево, +1 вправо */
   const movePinnedColumn = useCallback(
@@ -3099,6 +3105,7 @@ export function ProductsBulkEdit() {
                               ))}
                           </select>
                         </div>
+                        {kitsEnabled ? (
                         <div className="products-bulk-filter-item">
                           <label className="text-muted small mb-1 d-block" htmlFor="bulk-filter-type">
                             Тип товара
@@ -3111,9 +3118,10 @@ export function ProductsBulkEdit() {
                           >
                             <option value="">Все типы</option>
                             <option value="product">Товар</option>
-                            {kitsEnabled ? <option value="kit">Комплект</option> : null}
+                            <option value="kit">Комплект</option>
                           </select>
                         </div>
+                        ) : null}
                         <div
                           className="products-bulk-filter-item products-bulk-filter-item--mp"
                           title="Показать товары со связью с маркетплейсом"

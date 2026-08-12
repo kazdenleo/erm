@@ -1946,6 +1946,11 @@ export function WarehouseStocks() {
   });
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [filterProductType, setFilterProductType] = useState('');
+  useEffect(() => {
+    if (!kitsEnabled && filterProductType) {
+      setFilterProductType('');
+    }
+  }, [kitsEnabled, filterProductType]);
   const [filterSearch, setFilterSearch] = useState('');
   const [filterSearchDebounced, setFilterSearchDebounced] = useState('');
   const [filterInStockOnly, setFilterInStockOnly] = useState(() => {
@@ -3308,6 +3313,7 @@ export function WarehouseStocks() {
                 ))}
               </select>
             </label>
+            {kitsEnabled ? (
             <label className="stock-levels-filter-label">
               <span>Тип:</span>
               <select
@@ -3317,9 +3323,10 @@ export function WarehouseStocks() {
               >
                 <option value="">Все</option>
                 <option value="product">Товар</option>
-                {kitsEnabled ? <option value="kit">Комплект</option> : null}
+                <option value="kit">Комплект</option>
               </select>
             </label>
+            ) : null}
             <div className="stock-levels-filters-toggles">
             <label className="stock-levels-filter-label stock-levels-filter-toggle">
               <span>Наличие:</span>

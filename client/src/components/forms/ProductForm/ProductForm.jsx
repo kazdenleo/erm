@@ -4982,47 +4982,45 @@ export const ProductForm = React.forwardRef(function ProductForm({
         )}
       </div>
 
+      {kitsEnabled ? (
       <div className="row g-3 mt-1 align-items-end">
-        <div className="col-12 col-md-3">
-          <label className="form-label" htmlFor="productType">
-          Тип товара
-        </label>
-        {!kitsEnabled && formData.product_type === 'kit' ? (
-          <div className="form-control form-control-sm bg-light" id="productType">
-            Комплект (отключено в настройках аккаунта)
-          </div>
-        ) : (
-        <select
-          id="productType"
-            className="form-select form-select-sm"
-          value={formData.product_type}
-          onChange={(e) => handleChange('product_type', e.target.value)}
-        >
-          <option value="product">Товар</option>
-          {kitsEnabled ? <option value="kit">Комплект</option> : null}
-        </select>
-        )}
+            <div className="col-12 col-md-3">
+              <label className="form-label" htmlFor="productType">
+                Тип товара
+              </label>
+              <select
+                id="productType"
+                className="form-select form-select-sm"
+                value={formData.product_type}
+                onChange={(e) => handleChange('product_type', e.target.value)}
+              >
+                <option value="product">Товар</option>
+                <option value="kit">Комплект</option>
+              </select>
+            </div>
+            <div className="col-12 col-md-auto">
+              {formData.product_type === 'kit' ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    setFormData((prev) => {
+                      if (prev.product_type !== 'kit') return prev;
+                      if (prev.kit_components?.length > 0) return prev;
+                      return { ...prev, kit_components: [{ productId: '', quantity: 1 }] };
+                    });
+                    setKitModalOpen(true);
+                  }}
+                  style={{ whiteSpace: 'nowrap' }}
+                >
+                  {formData.kit_components?.length
+                    ? `Комплектующие (${formData.kit_components.length})`
+                    : 'Указать комплектующие'}
+                </Button>
+              ) : null}
+            </div>
       </div>
-        <div className="col-12 col-md-auto">
-      {kitsEnabled && formData.product_type === 'kit' && (
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                setFormData((prev) => {
-                  if (prev.product_type !== 'kit') return prev;
-                  if (prev.kit_components?.length > 0) return prev;
-                  return { ...prev, kit_components: [{ productId: '', quantity: 1 }] };
-                });
-                setKitModalOpen(true);
-              }}
-              style={{ whiteSpace: 'nowrap' }}
-            >
-              {formData.kit_components?.length ? `Комплектующие (${formData.kit_components.length})` : 'Указать комплектующие'}
-            </Button>
-          )}
-        </div>
-      </div>
+      ) : null}
 
       <Modal
         isOpen={kitModalOpen}

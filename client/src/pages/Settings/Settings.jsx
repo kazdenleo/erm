@@ -22,7 +22,9 @@ import {
 import './Settings.css';
 
 export function Settings() {
-  const { isProfileAdmin, isTenantAccountAdmin, profileId, refreshUser } = useAuth();
+  const { isProfileAdmin, isTenantAccountAdmin, isAccountAdmin, profileId, refreshUser } = useAuth();
+  const canEditAccount =
+    profileId != null && (isProfileAdmin || isTenantAccountAdmin || isAccountAdmin);
   const { warehouses, loadWarehouses } = useWarehouses();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -54,7 +56,7 @@ export function Settings() {
   });
 
   const loadAccount = useCallback(async () => {
-    if (!isProfileAdmin || profileId == null) return;
+    if (!canEditAccount) return;
     setLoading(true);
     setError('');
     try {
@@ -66,17 +68,17 @@ export function Settings() {
     } finally {
       setLoading(false);
     }
-  }, [isProfileAdmin, profileId]);
+  }, [canEditAccount]);
 
   useEffect(() => {
     loadAccount();
   }, [loadAccount]);
 
   useEffect(() => {
-    if (isProfileAdmin && profileId != null) {
+    if (canEditAccount) {
       loadWarehouses();
     }
-  }, [isProfileAdmin, profileId, loadWarehouses]);
+  }, [canEditAccount, loadWarehouses]);
 
   const ownWarehouses = warehouses.filter((w) => w.type === 'warehouse');
 
@@ -344,7 +346,7 @@ export function Settings() {
         })}
       </section>
 
-      {isProfileAdmin && profileId != null && (
+      {canEditAccount && (
         <section className="settings-account-section">
           <h2 className="h5">Аккаунт</h2>
           <p className="text-muted small mb-3">
@@ -431,10 +433,10 @@ export function Settings() {
                   }
                 />
                 <span>
-                  <strong>Комплекты</strong>
+                  <strong>Работать с комплектами</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
-                    Если выключено — движение товара только по отдельным SKU, без логики комплектов и состава.
-                    Создание и редактирование комплектов недоступно.
+                    Если выключено — в товарах скрывается поле «Тип товара», создание и редактирование
+                    комплектов недоступны. Движение только по отдельным SKU.
                   </span>
                 </span>
               </label>
