@@ -8,6 +8,55 @@ import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 
+/**
+ * Таблицы с profile_id (shared DB). Оценка размера аккаунта =
+ * доля строк профиля × pg_total_relation_size(таблица).
+ */
+const PROFILE_SCOPED_TABLES = Object.freeze([
+  'brands',
+  'category_label_templates',
+  'employee_tasks',
+  'fbo_purchase_calc_sessions',
+  'fbo_supplies',
+  'integrations',
+  'inventory_sessions',
+  'marketplace_fbo_report_lines',
+  'marketplace_fbo_report_syncs',
+  'marketplace_fbs_report_lines',
+  'marketplace_fbs_report_syncs',
+  'marketplace_inventory_snapshots',
+  'marketplace_price_changes',
+  'marketplace_questions',
+  'marketplace_return_claims',
+  'marketplace_reviews',
+  'order_fulfillment_lines',
+  'orders',
+  'organizations',
+  'ozon_ads_sku_stats',
+  'pricing_strategies',
+  'products',
+  'purchases',
+  'question_answer_templates',
+  'review_auto_reply_rules',
+  'review_reply_templates',
+  'stock_movements',
+  'supplier_returns',
+  'suppliers',
+  'support_inquiries',
+  'user_categories',
+  'users',
+  'warehouse_suppliers',
+  'warehouses',
+  'wb_fbo_forecast_snapshots',
+]);
+
+function quoteIdent(name) {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(name)) {
+    throw new Error(`Недопустимое имя таблицы: ${name}`);
+  }
+  return `"${name}"`;
+}
+
 class ProfilesRepositoryPG {
   async findAll() {
     const result = await query(
@@ -27,7 +76,58 @@ class ProfilesRepositoryPG {
   }
 
   /**
-   * Список профилей с количеством пользователей и организаций (админка продукта)
+   * Оценка объёма данных по аккаунтам (байты): доля строк × размер таблицы.
+   * @param {number|null} [onlyProfileId] — если задан, считает только этот профиль
+   * @returns {Promise<Map<number, number>>}
+   */
+  async getStorageBytesByProfile(onlyProfileId = null) {
+    const filterId = onlyProfileId != null && onlyProfileId !== '' ? Number(onlyProfileId) : null;
+    const params = filterId != null && Number.isFinite(filterId) ? [filterId] : [];
+    const profileFilter = params.length ? 'AND t.profile_id = $1' : '';
+
+    const parts = PROFILE_SCOPED_TABLES.map((table) => {
+      const q = quoteIdent(table);
+      return `
+        SELECT
+          profile_id::bigint AS profile_id,
+          CASE
+            WHEN total_cnt <= 0 THEN 0::float8
+            ELSE (cnt::float8 / total_cnt) * rel_size
+          END AS bytes
+        FROM (
+          SELECT
+            t.profile_id,
+            COUNT(*)::bigint AS cnt,
+            (SELECT COUNT(*)::bigint FROM ${q}) AS total_cnt,
+            pg_total_relation_size('${table}'::regclass) AS rel_size
+          FROM ${q} t
+          WHERE t.profile_id IS NOT NULL
+            ${profileFilter}
+          GROUP BY t.profile_id
+        ) s
+      `;
+    });
+
+    const result = await query(
+      `
+      SELECT profile_id, ROUND(COALESCE(SUM(bytes), 0))::bigint AS storage_bytes
+      FROM (
+        ${parts.join('\nUNION ALL\n')}
+      ) u
+      GROUP BY profile_id
+    `,
+      params
+    );
+
+    const map = new Map();
+    for (const row of result.rows) {
+      map.set(Number(row.profile_id), Number(row.storage_bytes) || 0);
+    }
+    return map;
+  }
+
+  /**
+   * Список профилей с количеством пользователей, организаций, товаров и объёмом данных
    */
   async findAllWithStats() {
     const result = await query(`
@@ -43,11 +143,53 @@ class ProfilesRepositoryPG {
               AND (SELECT COUNT(*)::int FROM profiles) = 1
               AND p.id = (SELECT id FROM profiles ORDER BY id LIMIT 1)
             )
-        ) AS organizations_count
+        ) AS organizations_count,
+        (
+          SELECT COUNT(*)::int
+          FROM products pr
+          WHERE pr.profile_id = p.id
+            AND COALESCE(pr.is_archived, false) = false
+        ) AS products_count
       FROM profiles p
       ORDER BY p.name
     `);
-    return result.rows;
+    const storageMap = await this.getStorageBytesByProfile();
+    return result.rows.map((row) => ({
+      ...row,
+      storage_bytes: storageMap.get(Number(row.id)) || 0,
+    }));
+  }
+
+  /** Счётчики для карточки аккаунта (кабинет системного админа) */
+  async getCabinetStats(profileId) {
+    const id = Number(profileId);
+    const stats = await query(
+      `SELECT
+        (SELECT COUNT(*)::int FROM users WHERE profile_id = $1 AND role <> 'admin') AS users_count,
+        (
+          SELECT COUNT(*)::int
+          FROM organizations o
+          WHERE o.profile_id = $1
+            OR (
+              o.profile_id IS NULL
+              AND (SELECT COUNT(*)::int FROM profiles) = 1
+              AND $1::bigint = (SELECT id FROM profiles ORDER BY id LIMIT 1)
+            )
+        ) AS organizations_count,
+        (
+          SELECT COUNT(*)::int
+          FROM products pr
+          WHERE pr.profile_id = $1
+            AND COALESCE(pr.is_archived, false) = false
+        ) AS products_count`,
+      [id]
+    );
+    const storageMap = await this.getStorageBytesByProfile(id);
+    const row = stats.rows[0] || {};
+    return {
+      ...row,
+      storage_bytes: storageMap.get(id) || 0,
+    };
   }
 
   async findById(id) {

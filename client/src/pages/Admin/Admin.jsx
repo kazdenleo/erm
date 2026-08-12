@@ -36,6 +36,21 @@ function formatDt(iso) {
   }
 }
 
+/** Человекочитаемый размер данных аккаунта (оценка по shared DB). */
+function formatStorageSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return '0 Б';
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  const digits = i === 0 ? 0 : v >= 10 ? 1 : 2;
+  return `${v.toFixed(digits)} ${units[i]}`;
+}
+
 export function Admin() {
   const { isAdmin } = useAuth();
   const [profiles, setProfiles] = useState([]);
@@ -232,6 +247,8 @@ export function Admin() {
                 <th>Контакт</th>
                 <th>Пользователей</th>
                 <th>Организаций</th>
+                <th>Товаров</th>
+                <th title="Оценка объёма данных аккаунта в общей БД">Размер данных</th>
                 <th>Поставщики</th>
                 <th>Обогащение</th>
                 <th />
@@ -240,7 +257,7 @@ export function Admin() {
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="empty-state">
+                  <td colSpan={9} className="empty-state">
                     Нет аккаунтов
                   </td>
                 </tr>
@@ -261,6 +278,8 @@ export function Admin() {
                     </td>
                     <td>{p.users_count ?? p.usersCount ?? 0}</td>
                     <td>{p.organizations_count ?? p.organizationsCount ?? 0}</td>
+                    <td>{p.products_count ?? p.productsCount ?? 0}</td>
+                    <td>{formatStorageSize(p.storage_bytes ?? p.storageBytes)}</td>
                     <td>
                       {p.supplier_sync_enabled !== false ? (
                         <span className="badge bg-success">вкл</span>
@@ -504,8 +523,17 @@ export function Admin() {
               <span className="badge bg-light text-dark me-2">
                 Пользователей: {cabinetBundle.usersCount ?? 0}
               </span>
-              <span className="badge bg-light text-dark">
+              <span className="badge bg-light text-dark me-2">
                 Организаций: {cabinetBundle.organizationsCount ?? 0}
+              </span>
+              <span className="badge bg-light text-dark me-2">
+                Товаров: {cabinetBundle.productsCount ?? 0}
+              </span>
+              <span
+                className="badge bg-light text-dark"
+                title="Оценка объёма данных аккаунта в общей БД"
+              >
+                Размер данных: {formatStorageSize(cabinetBundle.storageBytes)}
               </span>
             </div>
 

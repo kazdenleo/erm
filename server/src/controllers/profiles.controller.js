@@ -207,14 +207,22 @@ async function validateManualOrdersWarehouse(profileId, payload, currentProfile)
 function normalizeProfileStatsRow(row) {
   const u = row.users_count ?? row.usersCount;
   const o = row.organizations_count ?? row.organizationsCount;
+  const pr = row.products_count ?? row.productsCount;
+  const sb = row.storage_bytes ?? row.storageBytes;
   const users = u != null && u !== '' ? Number(u) : 0;
   const orgs = o != null && o !== '' ? Number(o) : 0;
+  const products = pr != null && pr !== '' ? Number(pr) : 0;
+  const storageBytes = sb != null && sb !== '' ? Number(sb) : 0;
   return {
     ...row,
     users_count: users,
     organizations_count: orgs,
+    products_count: products,
+    storage_bytes: storageBytes,
     usersCount: users,
     organizationsCount: orgs,
+    productsCount: products,
+    storageBytes,
   };
 }
 
@@ -379,23 +387,8 @@ export const profilesController = {
       if (!profile) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
-      const stats = await query(
-        `SELECT
-          (SELECT COUNT(*)::int FROM users WHERE profile_id = $1 AND role <> 'admin') AS users_count,
-          (
-            SELECT COUNT(*)::int
-            FROM organizations o
-            WHERE o.profile_id = $1
-              OR (
-                o.profile_id IS NULL
-                AND (SELECT COUNT(*)::int FROM profiles) = 1
-                AND $1::bigint = (SELECT id FROM profiles ORDER BY id LIMIT 1)
-              )
-          ) AS organizations_count`,
-        [id]
-      );
+      const row = await repo.getCabinetStats(id);
       const inquiries = await inquiriesRepo.findAll({ profileId: id });
-      const row = stats.rows[0] || {};
       const normalized = normalizeProfileStatsRow(jsonSafeRow(row));
       res.json({
         ok: true,
@@ -403,6 +396,8 @@ export const profilesController = {
           profile: jsonSafeRow(profile),
           usersCount: normalized.usersCount,
           organizationsCount: normalized.organizationsCount,
+          productsCount: normalized.productsCount,
+          storageBytes: normalized.storageBytes,
           inquiries: Array.isArray(inquiries) ? inquiries.map((r) => jsonSafeRow(r)) : inquiries,
         },
       });
