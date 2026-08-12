@@ -147,17 +147,18 @@ export async function parseBrand(query, opts = {}) {
 
 /**
  * Аналоги / связанные детали.
- * GET /v1/relations?code=&brand= или ?id=
+ * GET /v1/relations?code=&brand=&types=  (types обязателен; «all» — все типы связей)
  */
 export async function getRelations({ id, code, brand, types } = {}, opts = {}) {
   const cfg = getPartsIndexConfig(opts.apiKey ? { apiKey: opts.apiKey } : null);
+  const typesParam = String(types || 'all').trim() || 'all';
   const raw = await partsIndexGet(
     '/v1/relations',
     {
       id: id || undefined,
       code: code || undefined,
       brand: brand || undefined,
-      types: types || undefined,
+      types: typesParam,
     },
     { apiKey: opts.apiKey || cfg.apiKey }
   );

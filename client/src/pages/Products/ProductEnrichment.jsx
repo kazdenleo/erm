@@ -285,9 +285,8 @@ export function ProductEnrichment() {
               style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}
             >
               Одна позиция на строку: <code>бренд;артикул</code> (также таб, запятая или пробел).
-              Собираем PartsIndex: карточка (<code>/v1/entities</code>), аналоги (
-              <code>/v1/relations</code>), применимость (<code>/v1/cars</code>) — и при
-              необходимости дополняем с Ozon / Wildberries / Яндекс.Маркет. Нужны scopes ключа:{' '}
+              Собираем только PartsIndex: карточка (<code>/v1/entities</code>), аналоги (
+              <code>/v1/relations</code>), применимость (<code>/v1/cars</code>). Нужны scopes:{' '}
               <code>access</code>, <code>info</code>, <code>relations</code>,{' '}
               <code>old-apply</code>. Карточки ERP не создаются — только просмотр.
             </span>
@@ -338,17 +337,8 @@ export function ProductEnrichment() {
                     ? { url: x, source: 'partsindex' }
                     : { ...x, source: x.source || 'partsindex' }
                 );
-                const mpImages = (c.marketplaceImages || []).map((x) =>
-                  typeof x === 'string' ? { url: x } : x
-                );
-                const mp = c.marketplace || {};
-                const mpKeys = ['ozon', 'wb', 'ym'];
-                const mpTitles = {
-                  ozon: 'Ozon',
-                  wb: 'Wildberries',
-                  ym: 'Яндекс.Маркет',
-                  erp: 'ERP',
-                };
+                const carsStep = (row.steps || []).find((s) => s.method === 'cars');
+                const relStep = (row.steps || []).find((s) => s.method === 'relations');
                 return (
                   <article key={`${row.index}-${row.sku}`} className="product-enrichment-item">
                     <header className="product-enrichment-item__head">
@@ -363,11 +353,6 @@ export function ProductEnrichment() {
                             {row.entityId || row.artId
                               ? ` · id ${row.entityId || row.artId}`
                               : ''}
-                          </span>
-                        ) : null}
-                        {row.erpProductId ? (
-                          <span className="text-muted small" style={{ marginLeft: 8 }}>
-                            ERP #{row.erpProductId}
                           </span>
                         ) : null}
                       </div>
@@ -417,34 +402,6 @@ export function ProductEnrichment() {
                           </div>
                         ) : null}
 
-                        {mpImages.length ? (
-                          <div>
-                            <div className="text-muted small mb-1">
-                              Фото маркетплейсов ({mpImages.length})
-                            </div>
-                            <div className="product-enrichment-images">
-                              {mpImages.map((img) => (
-                                <a
-                                  key={`m-${img.source || 'x'}-${img.url}`}
-                                  href={img.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={mpTitles[img.source] || img.kind || img.source || ''}
-                                  className="product-enrichment-images__mp"
-                                  data-mp={img.source || ''}
-                                >
-                                  <img src={img.url} alt="" loading="lazy" />
-                                  {(img.source || img.kind) && (
-                                    <span className="product-enrichment-images__badge">
-                                      {mpTitles[img.source] || img.kind || img.source}
-                                    </span>
-                                  )}
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-
                         <div className="product-enrichment-fields">
                           <div>
                             <div className="text-muted small">Название</div>
@@ -474,11 +431,14 @@ export function ProductEnrichment() {
                               <div className="small">{c.oemNumbers.join(', ')}</div>
                             </div>
                           ) : null}
-                          {c.analogs?.length ? (
-                            <div>
-                              <div className="text-muted small">
-                                Аналоги / связи PartsIndex · /v1/relations ({c.analogs.length})
-                              </div>
+
+                          <div>
+                            <div className="text-muted small">
+                              Аналоги / связи · /v1/relations
+                              {c.analogs?.length ? ` (${c.analogs.length})` : ''}
+                              {relStep && !relStep.ok ? ' · ошибка' : ''}
+                            </div>
+                            {c.analogs?.length ? (
                               <ul className="mb-0 small ps-3">
                                 {c.analogs.slice(0, 40).map((a, idx) => (
                                   <li key={`${a.id || a.code || idx}-${a.brand || ''}`}>
@@ -489,16 +449,25 @@ export function ProductEnrichment() {
                                   </li>
                                 ))}
                               </ul>
-                              {c.analogs.length > 40 ? (
-                                <div className="small text-muted">…ещё {c.analogs.length - 40}</div>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {c.applicability?.length ? (
-                            <div>
-                              <div className="text-muted small">
-                                Применимость · /v1/cars ({c.applicability.length})
+                            ) : (
+                              <div className="small text-muted">
+                                {relStep && !relStep.ok
+                                  ? relStep.error || 'Не удалось загрузить'
+                                  : 'В PartsIndex связей нет'}
                               </div>
+                            )}
+                            {c.analogs?.length > 40 ? (
+                              <div className="small text-muted">…ещё {c.analogs.length - 40}</div>
+                            ) : null}
+                          </div>
+
+                          <div>
+                            <div className="text-muted small">
+                              Применимость · /v1/cars
+                              {c.applicability?.length ? ` (${c.applicability.length})` : ''}
+                              {carsStep && !carsStep.ok ? ' · ошибка' : ''}
+                            </div>
+                            {c.applicability?.length ? (
                               <ul className="mb-0 small ps-3">
                                 {c.applicability.slice(0, 50).map((a, idx) => {
                                   const power = [
@@ -527,13 +496,20 @@ export function ProductEnrichment() {
                                   );
                                 })}
                               </ul>
-                              {c.applicability.length > 50 ? (
-                                <div className="small text-muted">
-                                  …ещё {c.applicability.length - 50}
-                                </div>
-                              ) : null}
-                            </div>
-                          ) : null}
+                            ) : (
+                              <div className="small text-muted">
+                                {carsStep && !carsStep.ok
+                                  ? carsStep.error || 'Не удалось загрузить'
+                                  : 'В PartsIndex применимости нет'}
+                              </div>
+                            )}
+                            {c.applicability?.length > 50 ? (
+                              <div className="small text-muted">
+                                …ещё {c.applicability.length - 50}
+                              </div>
+                            ) : null}
+                          </div>
+
                           <div>
                             <div className="text-muted small">
                               Описание / характеристики
@@ -546,45 +522,6 @@ export function ProductEnrichment() {
                                   : '—')}
                             </pre>
                           </div>
-
-                          {mpKeys.some(
-                            (k) => mp[k]?.ok || mp[k]?.name || mp[k]?.description || mp[k]?.error
-                          ) ? (
-                            <div className="product-enrichment-mp">
-                              <div className="text-muted small mb-1">Карточки маркетплейсов</div>
-                              <div className="product-enrichment-mp__grid">
-                                {mpKeys.map((k) => {
-                                  const block = mp[k] || {};
-                                  return (
-                                    <div key={k} className="product-enrichment-mp__card">
-                                      <div className="product-enrichment-mp__title">
-                                        {mpTitles[k]}
-                                        {block.source ? (
-                                          <span className="text-muted"> · {block.source}</span>
-                                        ) : null}
-                                        {!block.ok && block.error ? (
-                                          <span className="text-danger"> · нет данных</span>
-                                        ) : null}
-                                      </div>
-                                      {block.name ? (
-                                        <div className="small">
-                                          <strong>Название:</strong> {block.name}
-                                        </div>
-                                      ) : null}
-                                      {block.description ? (
-                                        <pre className="product-enrichment-desc">
-                                          {block.description}
-                                        </pre>
-                                      ) : null}
-                                      {!block.name && !block.description && block.error ? (
-                                        <div className="small text-muted">{block.error}</div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ) : null}
 
                           {row.warnings?.length ? (
                             <div className="small text-muted">

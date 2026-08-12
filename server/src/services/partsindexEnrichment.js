@@ -275,10 +275,10 @@ export async function collectPartsIndexContent(brand, sku, profileKeys) {
   matchedBrand = pickFirstNonEmpty(entity.brand?.name, matchedBrand, brand);
   matchedNumber = pickFirstNonEmpty(entity.code, matchedNumber, sku);
 
-  // Аналоги / связанные детали — GET /v1/relations (scope: access + relations)
+  // Аналоги / связанные детали — GET /v1/relations (scope: access + relations; types обязателен)
   try {
     const rel = await getRelations(
-      { id: entityId || undefined, code: matchedNumber, brand: matchedBrand },
+      { id: entityId || undefined, code: matchedNumber, brand: matchedBrand, types: 'all' },
       opts
     );
     content.rawByMethod.relations = rel.raw;

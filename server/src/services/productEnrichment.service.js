@@ -1164,7 +1164,7 @@ function safeJsonString(value) {
 
 /**
  * Массовый сбор контента по списку { brand, sku }:
- * PartsIndex + карточки Ozon/WB/YM (live или сохранённые в ERP).
+ * только PartsIndex (entities / relations / cars).
  * Товары в ERP не создаются и не обновляются — только превью.
  * @param {Array<{ brand?: string, sku?: string }>} items
  * @param {{ profileId: number|string }} opts
@@ -1195,22 +1195,6 @@ export async function enrichProductsByBrandSkuList(items, opts = {}) {
       partsError = err?.message || String(err);
     }
 
-    let mp = null;
-    try {
-      mp = await collectMarketplaceContent(brand, sku, opts.profileId);
-    } catch (err) {
-      mp = {
-        ok: false,
-        productId: null,
-        marketplace: { ozon: emptyMpBucket(), wb: emptyMpBucket(), ym: emptyMpBucket() },
-        marketplaceImages: [],
-        filled: [],
-        warnings: [`marketplace: ${err?.message || err}`],
-        steps: [],
-        status: 'not_found',
-      };
-    }
-
     const content = parts?.content
       ? { ...parts.content }
       : {
@@ -1238,64 +1222,33 @@ export async function enrichProductsByBrandSkuList(items, opts = {}) {
           rawByMethod: {},
         };
 
-    content.marketplace = mp?.marketplace || null;
-    content.marketplaceImages = mp?.marketplaceImages || [];
-    content.erpProductId = mp?.productId ?? null;
-
-    // Fallback: пустые поля PartsIndex заполняем контентом МП
-    const mpMerge = applyMarketplaceFallbackToContent(content, mp?.marketplace);
-    const filled = [
-      ...new Set([...(parts?.filled || []), ...(mp?.filled || []), ...(mpMerge.filled || [])]),
-    ];
-    const warnings = [...(parts?.warnings || []), ...(mp?.warnings || [])];
+    const filled = [...new Set([...(parts?.filled || [])])];
+    const warnings = [...(parts?.warnings || [])];
     if (partsError) warnings.push(`PartsIndex: ${partsError}`);
-    if (!parts && mpMerge.filled?.length) {
-      warnings.push('PartsIndex недоступен/пуст — поля заполнены с маркетплейсов');
-    }
 
-    const methodsUsed = [
-      ...(parts?.methodsUsed || []),
-      ...((mp?.steps || []).filter((s) => s.ok).map((s) => s.method)),
-    ];
-    const steps = [...(parts?.steps || []), ...(mp?.steps || [])];
+    const methodsUsed = [...(parts?.methodsUsed || [])];
+    const steps = [...(parts?.steps || [])];
 
-    const hasParts = !!parts;
-    const hasMp = !!mp?.ok;
-    row.ok = hasParts || hasMp;
-
+    row.ok = !!parts;
     row.filled = filled;
     row.warnings = warnings;
     row.matchedBrand = parts?.matchedBrand ?? null;
     row.matchedNumber = parts?.matchedNumber ?? null;
     row.entityId = parts?.entityId ?? null;
     row.artId = parts?.entityId ?? null;
-    row.erpProductId = mp?.productId ?? null;
     row.methodsUsed = methodsUsed;
     row.steps = jsonSafe(steps);
-    row.name =
-      content.name ||
-      mp?.marketplace?.ozon?.name ||
-      mp?.marketplace?.wb?.name ||
-      mp?.marketplace?.ym?.name ||
-      null;
-    if (!content.name && row.name) content.name = row.name;
+    row.name = content.name || null;
     row.content = jsonSafe(content);
 
     if (!row.ok) {
-      const mpHint = (mp?.warnings || []).filter(Boolean).join(' · ');
-      const partsHint = partsError ? `PartsIndex: ${partsError}` : null;
-      row.error = [partsHint, mpHint || 'С маркетплейсов тоже нет данных (нужны привязки/ключи организации)']
-        .filter(Boolean)
-        .join(' · ');
+      row.error = partsError || 'Не найдено в PartsIndex';
       row.status = 'error';
       results.push(row);
       continue;
     }
 
-    if (hasParts && hasMp) row.status = parts.status === 'full' ? 'full' : 'partial';
-    else if (hasParts) row.status = parts.status;
-    else row.status = 'mp_only';
-
+    row.status = parts.status;
     results.push(row);
   }
 
