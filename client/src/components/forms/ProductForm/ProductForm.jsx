@@ -5171,46 +5171,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </select>
         </div>
 
-        <div className="col-12">
-          <div className="d-flex flex-wrap align-items-center gap-2">
-            <span className="form-label mb-0 me-1">Остатки на МП</span>
-            {[
-              { key: 'block_stock_ozon', label: 'OZ', badgeClass: 'ozon', title: 'Ozon' },
-              { key: 'block_stock_wb', label: 'WB', badgeClass: 'wb', title: 'Wildberries' },
-              { key: 'block_stock_ym', label: 'ЯМ', badgeClass: 'ym', title: 'Яндекс.Маркет' },
-            ].map((ch) => {
-              const blocked = formData[ch.key] === true;
-              const transmit = !blocked;
-              return (
-                <button
-                  key={ch.key}
-                  type="button"
-                  className={`mp-badge ${ch.badgeClass}`}
-                  title={
-                    transmit
-                      ? `${ch.title}: остатки передаются`
-                      : `${ch.title}: остатки обнуляются и не передаются`
-                  }
-                  aria-pressed={blocked}
-                  onClick={() => handleChange(ch.key, !blocked)}
-                  style={{
-                    opacity: transmit ? 1 : 0.35,
-                    border: 'none',
-                    cursor: 'pointer',
-                    filter: transmit ? 'none' : 'grayscale(1)',
-                  }}
-                >
-                  {ch.label}
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Горящая иконка — остатки уходят на маркетплейс. Потухшая — на МП уходит 0, факт не передаётся.
-            После сохранения товар пересинхронизируется.
-          </div>
-        </div>
-
         {supplierBindingEnabled ? (
           <div className="col-md-6">
             <label className="form-label" htmlFor="productSupplier">Поставщик</label>

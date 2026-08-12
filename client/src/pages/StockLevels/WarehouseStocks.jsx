@@ -1616,6 +1616,53 @@ function getMovementLink(m) {
 
 const STOCK_WAREHOUSE_LS = 'stockLevelsWarehouseId';
 
+const MP_STOCK_BLOCK_CHANNELS = [
+  { key: 'block_stock_ozon', label: 'OZ', badgeClass: 'ozon', title: 'Ozon' },
+  { key: 'block_stock_wb', label: 'WB', badgeClass: 'wb', title: 'Wildberries' },
+  { key: 'block_stock_ym', label: 'ЯМ', badgeClass: 'ym', title: 'Яндекс.Маркет' },
+];
+
+/** Тумблеры передачи остатков на МП (горящий бейдж = передаём, потухший = 0 на МП). */
+function MpStockBlockCell({ product, busyKey, onToggle }) {
+  if (!product?.id) return null;
+  return (
+    <div className="stock-mp-block-toggles" data-no-nav-click>
+      {MP_STOCK_BLOCK_CHANNELS.map((ch) => {
+        const blocked = product[ch.key] === true;
+        const transmit = !blocked;
+        const busy = busyKey === `${product.id}:${ch.key}`;
+        return (
+          <button
+            key={ch.key}
+            type="button"
+            className={`mp-badge ${ch.badgeClass}`}
+            disabled={busy}
+            title={
+              transmit
+                ? `${ch.title}: остатки передаются`
+                : `${ch.title}: остатки обнуляются и не передаются`
+            }
+            aria-pressed={blocked}
+            aria-busy={busy || undefined}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle(product, ch.key, !blocked);
+            }}
+            style={{
+              opacity: busy ? 0.55 : transmit ? 1 : 0.35,
+              border: 'none',
+              cursor: busy ? 'wait' : 'pointer',
+              filter: transmit ? 'none' : 'grayscale(1)',
+            }}
+          >
+            {ch.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** ERP-склад с привязками warehouse_mappings (для экспорта остатков на МП). */
 function pickPrimaryMarketplaceStockWarehouseId(mappings) {
   if (!Array.isArray(mappings) || mappings.length === 0) return '';
@@ -1914,8 +1961,35 @@ export function WarehouseStocks() {
     loading: productsLoading,
     listRefreshing,
     error: productsError,
-    loadProducts
+    loadProducts,
   } = useProducts({ autoLoad: false });
+  const [mpBlockBusyKey, setMpBlockBusyKey] = useState(null);
+  const [mpBlockError, setMpBlockError] = useState('');
+  /** Локальные оверрайды block_stock_* после клика (не трогаем qty из listView=stock). */
+  const [mpBlockOverrides, setMpBlockOverrides] = useState({});
+
+  const toggleMpStockBlock = useCallback(async (product, fieldKey, nextBlocked) => {
+    if (!product?.id || !fieldKey) return;
+    const idStr = String(product.id);
+    const busy = `${idStr}:${fieldKey}`;
+    setMpBlockBusyKey(busy);
+    setMpBlockError('');
+    try {
+      await productsApi.update(product.id, { [fieldKey]: nextBlocked === true });
+      setMpBlockOverrides((prev) => ({
+        ...prev,
+        [idStr]: {
+          ...(prev[idStr] || {}),
+          [fieldKey]: nextBlocked === true,
+        },
+      }));
+    } catch (err) {
+      console.error('[WarehouseStocks] block_stock toggle failed:', err);
+      setMpBlockError(err?.message || 'Не удалось изменить передачу остатков на МП');
+    } finally {
+      setMpBlockBusyKey(null);
+    }
+  }, []);
   const { warehouses, loading: warehousesLoading, error: warehousesError } = useWarehouses();
   const [stockWarehouseId, setStockWarehouseId] = useState(() => {
     try {
@@ -3390,6 +3464,9 @@ export function WarehouseStocks() {
                   <th>Резерв</th>
                   <th>Доступно</th>
                   {allowStockHistoryReset ? <th style={{ width: 88 }}>Сброс</th> : null}
+                  <th className="stock-mp-block-col" title="Передача остатков на маркетплейсы">
+                    Остатки МП
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -3399,7 +3476,7 @@ export function WarehouseStocks() {
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => openHistoryForRow(row), {
                       ignoreClosest:
-                        'input, textarea, select, label, button, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, [data-no-nav-click]',
+                        'input, textarea, select, label, button, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, .stock-mp-block-toggles, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -3477,6 +3554,19 @@ export function WarehouseStocks() {
                         </button>
                       </td>
                     ) : null}
+                    <td
+                      className="stock-mp-block-cell"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MpStockBlockCell
+                        product={{
+                          ...row.product,
+                          ...(mpBlockOverrides[String(row.product.id)] || {}),
+                        }}
+                        busyKey={mpBlockBusyKey}
+                        onToggle={toggleMpStockBlock}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3484,8 +3574,15 @@ export function WarehouseStocks() {
           </div>
           {renderStockListPager('bottom')}
 
+          {mpBlockError ? (
+            <div className="alert alert-danger py-2 mt-2" role="alert">
+              {mpBlockError}
+            </div>
+          ) : null}
+
           <p className="stock-levels-history-hint">
             Нажмите на строку — история остатков; на число в колонке «Резерв» — заказы с резервом и снятие резерва.
+            В колонке «МП» горящий бейдж — остатки уходят на маркетплейс; потухший — на МП уходит 0.
             {allowManualStockEdit ? (
               <>
                 {' '}
