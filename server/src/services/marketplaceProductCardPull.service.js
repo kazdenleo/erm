@@ -1276,7 +1276,7 @@ export async function pullDailyMarketplaceCardsForEnabledOrgs(opts = {}) {
   };
 }
 
-export { mapOzonCardToUpdates };
+export { mapOzonCardToUpdates, mapWbCardToUpdates, mapYmCardToUpdates };
 
 export default {
   pullProductCard,
