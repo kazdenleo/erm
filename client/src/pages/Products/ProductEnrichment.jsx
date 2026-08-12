@@ -27,6 +27,7 @@ import {
   emptyPartsIndexKeysForm,
   partsIndexKeysFromProfile,
 } from '../../constants/partsindexKeys.js';
+import { pickSingleEntityId } from '../../utils/stockDestinationDefaults.js';
 import './ProductEnrichment.css';
 
 const FILLABLE_COLUMNS = {
@@ -124,7 +125,8 @@ function rowKey(row, idx) {
   return `${row.index ?? idx}-${row.sku || ''}-${row.brand || ''}`;
 }
 
-function buildDraftRows(reportResults, brands) {
+function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
+  const orgId = defaultOrganizationId ? String(defaultOrganizationId) : '';
   return (reportResults || [])
     .filter((r) => r.ok)
     .map((r, idx) => {
@@ -151,7 +153,7 @@ function buildDraftRows(reportResults, brands) {
           .filter(Boolean),
         brandId: findBrandIdByName(brands, brandName),
         categoryId: '',
-        organizationId: '',
+        organizationId: orgId,
         createStatus: null,
         createError: null,
         productId: null,
@@ -165,6 +167,10 @@ export function ProductEnrichment() {
   const { brands, createBrand, loadBrands } = useBrands();
   const { categories, createCategory } = useCategories();
   const { organizations } = useOrganizations();
+  const singleOrganizationId = useMemo(
+    () => pickSingleEntityId(organizations),
+    [organizations]
+  );
 
   const flagEnabled = isProfileProductEnrichmentEnabled(profile);
   const lengthUnit = getProfileLengthUnit(profile);
@@ -272,6 +278,20 @@ export function ProductEnrichment() {
     });
   }, [brands, draftRows.length]);
 
+  // Одна организация в аккаунте — подставляем по умолчанию
+  useEffect(() => {
+    if (!singleOrganizationId || !draftRows.length) return;
+    setDraftRows((prev) => {
+      let changed = false;
+      const next = prev.map((row) => {
+        if (row.productId || row.organizationId) return row;
+        changed = true;
+        return { ...row, organizationId: singleOrganizationId };
+      });
+      return changed ? next : prev;
+    });
+  }, [singleOrganizationId, draftRows.length]);
+
   /** Найти бренд в каталоге или создать по имени из PartsIndex. */
   const ensureBrandIdsForRows = useCallback(
     async (rows) => {
@@ -345,7 +365,7 @@ export function ProductEnrichment() {
         ok: data?.ok ?? 0,
         failed: data?.failed ?? 0,
       });
-      const rows = buildDraftRows(data?.results || [], brands);
+      const rows = buildDraftRows(data?.results || [], brands, singleOrganizationId);
       setDraftRows(await ensureBrandIdsForRows(rows));
       await reloadStatus();
     } catch (err) {
