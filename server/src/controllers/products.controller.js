@@ -250,6 +250,14 @@ class ProductsController {
       if (availableOnlyQuery === 'true' || availableOnlyQuery === '1' || availableOnlyQuery === 1) {
         options.availableOnly = true;
       }
+      const mpStockBlockedOnlyQuery = firstQueryParam(req.query?.mpStockBlockedOnly);
+      if (
+        mpStockBlockedOnlyQuery === 'true' ||
+        mpStockBlockedOnlyQuery === '1' ||
+        mpStockBlockedOnlyQuery === 1
+      ) {
+        options.mpStockBlockedOnly = true;
+      }
       if (req.query.includeArchived === 'true' || req.query.includeArchived === '1') {
         options.includeArchived = true;
       }

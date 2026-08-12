@@ -173,6 +173,13 @@ export const productsApi = {
     ) {
       params.availableOnly = '1';
     }
+    if (
+      options.mpStockBlockedOnly === true ||
+      options.mpStockBlockedOnly === '1' ||
+      options.mpStockBlockedOnly === 1
+    ) {
+      params.mpStockBlockedOnly = '1';
+    }
     const response = await api.get('/products', {
       params: Object.keys(params).length ? params : undefined,
       ...axiosConfig

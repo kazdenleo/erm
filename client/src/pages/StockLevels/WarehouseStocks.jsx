@@ -44,6 +44,7 @@ const STOCK_LIST_PAGE_SIZE_LS = 'stockListPageSize';
 const STOCK_IN_STOCK_ONLY_LS = 'stockListInStockOnly';
 const STOCK_RESERVED_ONLY_LS = 'stockListReservedOnly';
 const STOCK_AVAILABLE_ONLY_LS = 'stockListAvailableOnly';
+const STOCK_MP_BLOCKED_ONLY_LS = 'stockListMpStockBlockedOnly';
 
 function isStockResetFlagEnabled(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -2048,6 +2049,13 @@ export function WarehouseStocks() {
       return false;
     }
   });
+  const [filterMpStockBlockedOnly, setFilterMpStockBlockedOnly] = useState(() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(STOCK_MP_BLOCKED_ONLY_LS) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [filterBrandId, setFilterBrandId] = useState('');
   const [filterSupplierId, setFilterSupplierId] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -2186,6 +2194,7 @@ export function WarehouseStocks() {
         inStockOnly: inStockFlag,
         reservedOnly: reservedFlag,
         availableOnly: availableFlag,
+        mpStockBlockedOnly: mpBlockedFlag,
         ...rest
       } = extra;
       const wantInStock =
@@ -2194,6 +2203,8 @@ export function WarehouseStocks() {
         reservedFlag === true || (reservedFlag !== false && filterReservedOnly);
       const wantAvailable =
         availableFlag === true || (availableFlag !== false && filterAvailableOnly);
+      const wantMpBlocked =
+        mpBlockedFlag === true || (mpBlockedFlag !== false && filterMpStockBlockedOnly);
       return {
         ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
         ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
@@ -2205,7 +2216,8 @@ export function WarehouseStocks() {
         ...rest,
         ...(wantInStock ? { inStockOnly: true } : {}),
         ...(wantReserved ? { reservedOnly: true } : {}),
-        ...(wantAvailable ? { availableOnly: true } : {})
+        ...(wantAvailable ? { availableOnly: true } : {}),
+        ...(wantMpBlocked ? { mpStockBlockedOnly: true } : {}),
       };
     },
     [
@@ -2219,6 +2231,7 @@ export function WarehouseStocks() {
       filterInStockOnly,
       filterReservedOnly,
       filterAvailableOnly,
+      filterMpStockBlockedOnly,
       supplierBindingEnabled,
     ]
   );
@@ -2239,11 +2252,15 @@ export function WarehouseStocks() {
       const wantAvailable =
         partial.availableOnly === true ||
         (partial.availableOnly !== false && filterAvailableOnly);
+      const wantMpBlocked =
+        partial.mpStockBlockedOnly === true ||
+        (partial.mpStockBlockedOnly !== false && filterMpStockBlockedOnly);
       return loadProducts({
         ...listParams,
         ...(wantInStock ? { inStockOnly: true } : {}),
         ...(wantReserved ? { reservedOnly: true } : {}),
         ...(wantAvailable ? { availableOnly: true } : {}),
+        ...(wantMpBlocked ? { mpStockBlockedOnly: true } : {}),
         page,
         limit,
         offset: Math.max(0, (page - 1) * limit),
@@ -2258,7 +2275,8 @@ export function WarehouseStocks() {
       loadProducts,
       filterInStockOnly,
       filterReservedOnly,
-      filterAvailableOnly
+      filterAvailableOnly,
+      filterMpStockBlockedOnly,
     ]
   );
 
@@ -2318,6 +2336,7 @@ export function WarehouseStocks() {
       inStockOnly: filterInStockOnly,
       reservedOnly: filterReservedOnly,
       availableOnly: filterAvailableOnly,
+      mpStockBlockedOnly: filterMpStockBlockedOnly,
       brandId: filterBrandId || undefined,
       supplierId: supplierBindingEnabled ? filterSupplierId || undefined : undefined,
       silent: !isFirstLoad
@@ -2328,6 +2347,7 @@ export function WarehouseStocks() {
     filterInStockOnly,
     filterReservedOnly,
     filterAvailableOnly,
+    filterMpStockBlockedOnly,
     filterBrandId,
     filterSupplierId,
     filterCategoryId,
@@ -2447,6 +2467,7 @@ export function WarehouseStocks() {
     if (filterInStockOnly) filterParts.push('наличие');
     if (filterReservedOnly) filterParts.push('резерв');
     if (filterAvailableOnly) filterParts.push('доступно');
+    if (filterMpStockBlockedOnly) filterParts.push('блок МП');
     return filterParts.length > 0 ? filterParts.join('; ') : '';
   }, [
     filterCategoryId,
@@ -2456,6 +2477,7 @@ export function WarehouseStocks() {
     filterInStockOnly,
     filterReservedOnly,
     filterAvailableOnly,
+    filterMpStockBlockedOnly,
     categories,
     brands
   ]);
@@ -2669,6 +2691,12 @@ export function WarehouseStocks() {
     'availableOnly',
     STOCK_AVAILABLE_ONLY_LS,
     setFilterAvailableOnly
+  );
+
+  const handleMpStockBlockedOnlyChange = handleStockToggleFilterChange(
+    'mpStockBlockedOnly',
+    STOCK_MP_BLOCKED_ONLY_LS,
+    setFilterMpStockBlockedOnly
   );
 
   const ownWarehouses = useMemo(
@@ -3444,6 +3472,24 @@ export function WarehouseStocks() {
                   onChange={handleAvailableOnlyChange}
                   disabled={listRefreshing}
                   aria-label="Доступно"
+                />
+              </span>
+            </label>
+            <label
+              className="stock-levels-filter-label stock-levels-filter-toggle"
+              title="Товары с отключённой передачей остатков хотя бы на один маркетплейс (OZ / WB / ЯМ)"
+            >
+              <span>Блок МП:</span>
+              <span className="form-check form-switch mb-0 stock-levels-filter-switch">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="stock-filter-mp-blocked-only"
+                  checked={filterMpStockBlockedOnly}
+                  onChange={handleMpStockBlockedOnlyChange}
+                  disabled={listRefreshing}
+                  aria-label="Блок передачи остатков на МП"
                 />
               </span>
             </label>

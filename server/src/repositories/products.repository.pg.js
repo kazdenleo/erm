@@ -418,6 +418,7 @@ function buildFindAllFilters(options = {}) {
     unlinkedMp,
     linkedMp,
     requireAnyMarketplaceLink,
+    mpStockBlockedOnly,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -686,6 +687,20 @@ function buildFindAllFilters(options = {}) {
         )
       )`;
     }
+  }
+
+  const onlyMpStockBlocked =
+    mpStockBlockedOnly === true ||
+    mpStockBlockedOnly === 'true' ||
+    mpStockBlockedOnly === '1' ||
+    mpStockBlockedOnly === 1;
+  if (onlyMpStockBlocked) {
+    // Хотя бы один МП с отключённой передачей остатков
+    whereSql += ` AND (
+      COALESCE(p.block_stock_ozon, false) = true
+      OR COALESCE(p.block_stock_wb, false) = true
+      OR COALESCE(p.block_stock_ym, false) = true
+    )`;
   }
 
   return { whereSql, params, paramIndex };
