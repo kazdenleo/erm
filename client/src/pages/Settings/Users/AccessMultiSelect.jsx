@@ -1,6 +1,6 @@
 /**
- * Мультивыбор для доступа: выпадающий список с несколькими опциями.
- * Пустой выбор = полный доступ (placeholder).
+ * Мультивыбор: клик по названию, без галочек.
+ * После выбора меню закрывается. Пустой выбор = полный доступ.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -12,12 +12,11 @@ export function AccessMultiSelect({
   onChange,
   disabled = false,
   emptyLabel = 'Все (полный доступ)',
-  placeholder = 'Выберите…',
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
-  const selected = Array.isArray(value) ? value : [];
-  const selectedSet = new Set(selected.map(Number));
+  const selected = Array.isArray(value) ? value.map(Number).filter((n) => Number.isFinite(n)) : [];
+  const selectedSet = new Set(selected);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -37,29 +36,34 @@ export function AccessMultiSelect({
     };
   }, [open]);
 
-  const toggle = (id) => {
+  const pick = (id) => {
     const n = Number(id);
     if (!Number.isFinite(n)) return;
+    let next;
     if (selectedSet.has(n)) {
-      onChange(selected.filter((x) => Number(x) !== n));
+      next = selected.filter((x) => x !== n);
     } else {
-      onChange([...selected, n]);
+      next = [...selected, n];
     }
+    onChange(next);
+    setOpen(false);
   };
 
-  const clear = (e) => {
+  const removeChip = (id, e) => {
+    e.stopPropagation();
+    const n = Number(id);
+    onChange(selected.filter((x) => x !== n));
+  };
+
+  const clearAll = (e) => {
     e.stopPropagation();
     onChange([]);
+    setOpen(false);
   };
 
-  const summary =
-    selected.length === 0
-      ? emptyLabel
-      : selected
-          .map((id) => options.find((o) => Number(o.id) === Number(id)))
-          .filter(Boolean)
-          .map((o) => o.label)
-          .join(', ') || `${selected.length} выбрано`;
+  const selectedOptions = selected
+    .map((id) => options.find((o) => Number(o.id) === id))
+    .filter(Boolean);
 
   return (
     <div className={`access-multi-select${disabled ? ' is-disabled' : ''}`} ref={rootRef}>
@@ -72,8 +76,32 @@ export function AccessMultiSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="access-multi-select__value" title={summary}>
-          {summary || placeholder}
+        <span className="access-multi-select__value">
+          {selectedOptions.length === 0 ? (
+            <span className="access-multi-select__placeholder">{emptyLabel}</span>
+          ) : (
+            <span className="access-multi-select__chips">
+              {selectedOptions.map((opt) => (
+                <span key={opt.id} className="access-multi-select__chip">
+                  <span className="access-multi-select__chip-text">{opt.label}</span>
+                  {!disabled ? (
+                    <span
+                      className="access-multi-select__chip-remove"
+                      role="button"
+                      tabIndex={-1}
+                      title="Убрать"
+                      onClick={(e) => removeChip(opt.id, e)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') removeChip(opt.id, e);
+                      }}
+                    >
+                      ×
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+            </span>
+          )}
         </span>
         <span className="access-multi-select__actions">
           {selected.length > 0 && !disabled ? (
@@ -81,9 +109,9 @@ export function AccessMultiSelect({
               className="access-multi-select__clear"
               role="button"
               tabIndex={-1}
-              onClick={clear}
+              onClick={clearAll}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') clear(e);
+                if (e.key === 'Enter' || e.key === ' ') clearAll(e);
               }}
               title="Сбросить (полный доступ)"
             >
@@ -103,16 +131,18 @@ export function AccessMultiSelect({
           ) : (
             options.map((opt) => {
               const id = Number(opt.id);
-              const checked = selectedSet.has(id);
+              const active = selectedSet.has(id);
               return (
-                <label key={opt.id} className="access-multi-select__option">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggle(id)}
-                  />
-                  <span>{opt.label}</span>
-                </label>
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  className={`access-multi-select__option${active ? ' is-selected' : ''}`}
+                  onClick={() => pick(id)}
+                >
+                  {opt.label}
+                </button>
               );
             })
           )}
