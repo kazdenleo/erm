@@ -78,7 +78,7 @@ export const NAV_SECTION_LABELS = {
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'prices', 'tasks'],
+    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'assembly', 'shipments', 'prices', 'tasks'],
   },
   {
     title: 'Маркетплейс',
@@ -156,8 +156,7 @@ export const ROLE_NAV_PRESETS = {
     questions: false,
     reviews: false,
     wb_returns: false,
-    orders: false,
-    shipments: false,
+    // Заказы/сборка/отгрузки — рабочие разделы склада; скрывать только явно в настройках роли
     settings_users: false,
     settings_roles: false,
     integrations: false,

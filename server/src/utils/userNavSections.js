@@ -156,8 +156,7 @@ export const ROLE_NAV_PRESETS = {
     questions: false,
     reviews: false,
     wb_returns: false,
-    orders: false,
-    shipments: false,
+    // Заказы/сборка/отгрузки — рабочие разделы склада; скрывать только явно в настройках роли
     settings_users: false,
     settings_roles: false,
     integrations: false,
