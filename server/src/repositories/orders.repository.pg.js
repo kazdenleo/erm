@@ -660,6 +660,9 @@ class OrdersRepositoryPG {
       rawProductId != null && String(rawProductId).trim() !== '' ? Number(rawProductId) : NaN;
     const productId =
       Number.isFinite(productIdNum) && productIdNum >= 1 ? Math.trunc(productIdNum) : null;
+    const rawWh = order.warehouseId ?? order.warehouse_id ?? null;
+    const whNum = rawWh != null && String(rawWh).trim() !== '' ? Number(rawWh) : NaN;
+    const warehouseId = Number.isFinite(whNum) && whNum >= 1 ? Math.trunc(whNum) : null;
     return [
       pid,
       marketplace,
@@ -675,6 +678,7 @@ class OrdersRepositoryPG {
       order.customerName ?? order.customer_name ?? null,
       order.customerPhone ?? order.customer_phone ?? null,
       order.deliveryAddress ?? order.delivery_address ?? null,
+      warehouseId,
       createdAt,
       inProcessAt,
       shipmentDate,
@@ -692,9 +696,9 @@ class OrdersRepositoryPG {
       INSERT INTO orders (
         profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
-        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at,
+        customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date, returned_to_new_at,
         terminal_status_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text, $12, $13, $14, $15, $16, $17, $18,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text, $12, $13, $14, $15, $16, $17, $18, $19,
         CASE WHEN LOWER(TRIM($11::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END
       )
       ON CONFLICT (profile_id, marketplace, order_id) DO UPDATE SET
@@ -729,6 +733,7 @@ class OrdersRepositoryPG {
         customer_name = EXCLUDED.customer_name,
         customer_phone = EXCLUDED.customer_phone,
         delivery_address = EXCLUDED.delivery_address,
+        warehouse_id = COALESCE(EXCLUDED.warehouse_id, orders.warehouse_id),
         created_at = COALESCE(EXCLUDED.created_at, orders.created_at),
         in_process_at = COALESCE(EXCLUDED.in_process_at, orders.in_process_at),
         shipment_date = COALESCE(EXCLUDED.shipment_date, orders.shipment_date),
@@ -752,7 +757,7 @@ class OrdersRepositoryPG {
     const BATCH = 100;
     const cols = `profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
-        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at,
+        customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date, returned_to_new_at,
         terminal_status_at`;
     const setClause = `
         order_group_id = CASE
@@ -786,6 +791,7 @@ class OrdersRepositoryPG {
         customer_name = EXCLUDED.customer_name,
         customer_phone = EXCLUDED.customer_phone,
         delivery_address = EXCLUDED.delivery_address,
+        warehouse_id = COALESCE(EXCLUDED.warehouse_id, orders.warehouse_id),
         created_at = COALESCE(EXCLUDED.created_at, orders.created_at),
         in_process_at = COALESCE(EXCLUDED.in_process_at, orders.in_process_at),
         shipment_date = COALESCE(EXCLUDED.shipment_date, orders.shipment_date),
@@ -802,9 +808,9 @@ class OrdersRepositoryPG {
       chunk.forEach((order, idx) => {
         const p = this._orderToUpsertParams(order);
         params.push(...p);
-        const base = idx * 18 + 1;
+        const base = idx * 19 + 1;
         placeholders.push(
-          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::text, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17}, CASE WHEN LOWER(TRIM($${base + 10}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END)`
+          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::text, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17}, $${base + 18}, CASE WHEN LOWER(TRIM($${base + 10}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END)`
         );
       });
       await query(`

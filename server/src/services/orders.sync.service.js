@@ -46,9 +46,38 @@ async function attachResolvedProductIds(orders) {
   }
 }
 
-// Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
-const SYNC_STALE_LOCK_MS = 5 * 60 * 1000;
+/**
+ * Перед upsert: склад ERP из warehouse_mappings (склад МП в delivery_address → наш склад).
+ * FBS-заказы относятся к связанному складу.
+ */
+async function attachResolvedWarehouseIds(orders) {
+  const list = Array.isArray(orders) ? orders : [];
+  for (const o of list) {
+    if (!o) continue;
+    const existing = o.warehouseId ?? o.warehouse_id;
+    if (existing != null && String(existing).trim() !== '' && Number(existing) > 0) continue;
+    try {
+      const wid =
+        typeof ordersService._resolveOwnWarehouseIdForOrder === 'function'
+          ? await ordersService._resolveOwnWarehouseIdForOrder(o)
+          : null;
+      const n = Number(wid);
+      if (Number.isFinite(n) && n >= 1) {
+        o.warehouseId = n;
+        o.warehouse_id = n;
+      }
+    } catch {
+      /* не блокируем синк */
+    }
+  }
+}
+
+// Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата.
+// Stale-lock должен быть ≥ фонового таймаута: иначе через 5 мин сбрасываем флаг,
+// пока syncFbsForAllProfiles ещё бежит (2 профиля × Ozon/WB/YM), и ручной
+// «Обновить статусы» стартует параллельно — зависания и «статус не меняется».
 const SYNC_BACKGROUND_MAX_MS = 25 * 60 * 1000;
+const SYNC_STALE_LOCK_MS = SYNC_BACKGROUND_MAX_MS;
 
 /** Ручной импорт: допустимые периоды (дней назад). */
 export const MANUAL_ORDER_SYNC_DAYS = [7, 14, 28, 90];
@@ -317,10 +346,17 @@ function isStaleLocalStatusForRefresh(status) {
 
 function statusCatchUpPriority(status) {
   const s = String(status ?? '').toLowerCase();
-  if (isStaleLocalStatusForRefresh(s)) return 0;
+  // «Обновить статусы»: в первую очередь догоняем «Новый» и «В закупке»
+  // (иначе catch-up лимит съедают in_assembly/in_transit, а закупка остаётся старой).
+  if (isStaleLocalStatusForRefresh(s) || s === 'in_procurement') return 0;
   if (s === 'in_assembly' || s === 'assembled') return 1;
   if (s === 'in_transit' || s === 'shipped') return 2;
   return 3;
+}
+
+function isYandexMarketplace(marketplace) {
+  const m = String(marketplace || '').toLowerCase();
+  return m === 'yandex' || m === 'ym' || m === 'yandexmarket';
 }
 
 /**
@@ -642,6 +678,7 @@ class OrdersSyncService {
     }
 
     await attachResolvedProductIds(toInsert);
+    await attachResolvedWarehouseIds(toInsert);
     await ordersRepo.upsertFromSyncBatch(toInsert);
 
     const rowsToAutoReserve = [];
@@ -674,7 +711,10 @@ class OrdersSyncService {
 
     if (rowsToAutoReserve.length > 0) {
       try {
-        await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
+        // Только эти новые строки — без FIFO-каскада на сотни других заказов.
+        await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve, {
+          refillOtherOrders: false,
+        });
         logger.info(`[Orders Sync] WB new-poll auto-reserve: ${rowsToAutoReserve.length} row(s)`);
       } catch (e) {
         logger.warn('[Orders Sync] WB new-poll auto-reserve failed:', e?.message || e);
@@ -1008,19 +1048,32 @@ class OrdersSyncService {
     existingOrders.forEach(order => {
       const oid = order.orderId ?? order.order_id;
       const mp = (order.marketplace || '').toLowerCase();
-      const key = `${mp === 'wb' ? 'wildberries' : mp}:${oid}`;
-      ordersMap.set(key, { ...order, marketplace: mp === 'wb' ? 'wildberries' : order.marketplace });
+      const normMp =
+        mp === 'wb' || mp === 'wildberries'
+          ? 'wildberries'
+          : mp === 'ym' || mp === 'yandex' || mp === 'yandexmarket'
+            ? 'yandex'
+            : mp;
+      const key = `${normMp}:${oid}`;
+      ordersMap.set(key, { ...order, marketplace: normMp === 'wildberries' ? 'wildberries' : order.marketplace });
     });
 
     const procurementAnchors = buildProcurementAnchorsFromMap(ordersMap);
 
     newOrders.forEach(order => {
-      const key = `${order.marketplace}:${order.orderId}`;
+      const incomingMpRaw = (order.marketplace || '').toLowerCase();
+      const incomingKeyMp =
+        incomingMpRaw === 'wb' || incomingMpRaw === 'wildberries'
+          ? 'wildberries'
+          : incomingMpRaw === 'ym' || incomingMpRaw === 'yandex' || incomingMpRaw === 'yandexmarket'
+            ? 'yandex'
+            : incomingMpRaw;
+      const key = `${incomingKeyMp}:${order.orderId}`;
       const existing = ordersMap.get(key);
       const mpExisting = (existing?.marketplace || '').toLowerCase();
       const isWbExisting = mpExisting === 'wb' || mpExisting === 'wildberries';
-      const incomingMp = (order.marketplace || '').toLowerCase();
-      const isWbIncoming = incomingMp === 'wb' || incomingMp === 'wildberries';
+      const incomingMp = incomingKeyMp;
+      const isWbIncoming = incomingMp === 'wildberries';
 
       let nextStatus = order.status;
       if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
@@ -1281,6 +1334,7 @@ class OrdersSyncService {
           `[Orders Sync] upsert ${toUpsert.length}/${allOrders.length} orders (profile=${profileId ?? 'all'})`
         );
         await attachResolvedProductIds(toUpsert);
+        await attachResolvedWarehouseIds(toUpsert);
         await ordersRepo.upsertFromSyncBatch(toUpsert);
       } catch (err) {
         console.error('[Orders Sync] Batch upsert failed:', err.message);
@@ -1331,7 +1385,9 @@ class OrdersSyncService {
       }
       if (rowsToAutoReserve.length > 0) {
         try {
-          await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
+          await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve, {
+            refillOtherOrders: false,
+          });
           logger.info(`[Orders Sync] auto-reserve: ${rowsToAutoReserve.length} row(s)`);
         } catch (e) {
           logger.warn('[Orders Sync] auto-reserve failed:', e?.message || e);
@@ -1408,6 +1464,11 @@ class OrdersSyncService {
     };
     const backgroundJob = options.backgroundJob === true;
     for (const profileId of ids) {
+      // Heartbeat: длинный multi-profile прогон не должен выглядеть «зависшим»
+      // для resetStaleSyncLockIfNeeded, пока реально идёт работа.
+      if (backgroundJob && ordersSyncCache.syncInProgress) {
+        ordersSyncCache.syncStartedAt = Date.now();
+      }
       const orgIds = await integrationsService.getOrganizationIdsWithMarketplaceIntegrations(profileId);
       const targets =
         orgIds.length > 0
@@ -1520,6 +1581,7 @@ class OrdersSyncService {
           merged.profileId = profileId;
         }
         await attachResolvedProductIds([merged]);
+        await attachResolvedWarehouseIds([merged]);
         await ordersRepo.upsertFromSync(merged);
         lastMerged = merged;
       }
@@ -1642,6 +1704,7 @@ class OrdersSyncService {
           merged.profileId = profileId;
         }
         await attachResolvedProductIds([merged]);
+        await attachResolvedWarehouseIds([merged]);
         await ordersRepo.upsertFromSync(merged);
         lastMerged = merged;
       }
@@ -2141,7 +2204,7 @@ async function fetchYandexExtraOrdersFromExisting(existingOrders, alreadySyncedY
   const maxCatchUp = Number(options.maxCatchUp) > 0 ? Number(options.maxCatchUp) : 40;
   const seenBases = new Set();
   for (const o of alreadySyncedYandexRows || []) {
-    if (String(o.marketplace || '').toLowerCase() !== 'yandex') continue;
+    if (!isYandexMarketplace(o.marketplace)) continue;
     const base =
       yandexOrderIdForApi(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? o.order_id) || null;
     if (base) seenBases.add(base);
@@ -2150,7 +2213,7 @@ async function fetchYandexExtraOrdersFromExisting(existingOrders, alreadySyncedY
   const candidates = [];
   const queued = new Set();
   for (const o of existingOrders || []) {
-    if (String(o.marketplace || '').toLowerCase() !== 'yandex') continue;
+    if (!isYandexMarketplace(o.marketplace)) continue;
     const st = o.status;
     if (!st || terminal.has(st)) continue;
     const base = yandexOrderIdForApi(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? o.order_id);
