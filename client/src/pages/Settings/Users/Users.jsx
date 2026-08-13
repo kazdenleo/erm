@@ -13,6 +13,7 @@ import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
 import { buildFullName } from '../../../utils/userName.js';
 import { UsersRolesTab } from './UsersRolesTab.jsx';
+import { AccessMultiSelect } from './AccessMultiSelect.jsx';
 import './Users.css';
 
 const TABS = [
@@ -43,13 +44,6 @@ function emptyUserForm() {
     organizationIds: [],
     warehouseIds: [],
   };
-}
-
-function toggleId(list, id) {
-  const n = Number(id);
-  if (!Number.isFinite(n)) return list;
-  if (list.includes(n)) return list.filter((x) => x !== n);
-  return [...list, n];
 }
 
 export function SettingsUsers() {
@@ -388,73 +382,33 @@ export function SettingsUsers() {
                   </p>
                 ) : (
                   <p className="text-muted small settings-users-access-hint">
-                    Если ничего не отмечено — доступ ко всем организациям и складам аккаунта.
-                    Отметьте нужные, чтобы ограничить видимость данных.
+                    Можно выбрать несколько. Если не выбрано — полный доступ ко всем.
                   </p>
                 )}
 
-                <div className="settings-users-access-group">
-                  <div className="settings-users-access-group-title">Организации</div>
-                  {organizations.length === 0 ? (
-                    <div className="text-muted small">Организаций пока нет</div>
-                  ) : (
-                    <div className="settings-users-access-toggles">
-                      {organizations.map((org) => {
-                        const id = Number(org.id);
-                        const checked = form.organizationIds.includes(id);
-                        return (
-                          <label key={org.id} className="settings-users-nav-toggle">
-                            <input
-                              type="checkbox"
-                              className="form-check-input"
-                              checked={checked}
-                              disabled={form.isProfileAdmin}
-                              onChange={() =>
-                                setForm((f) => ({
-                                  ...f,
-                                  organizationIds: toggleId(f.organizationIds, id),
-                                }))
-                              }
-                            />
-                            <span className="form-check-label">{org.name || `Организация #${org.id}`}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <AccessMultiSelect
+                  label="Организации"
+                  emptyLabel="Все организации (полный доступ)"
+                  disabled={form.isProfileAdmin}
+                  options={organizations.map((org) => ({
+                    id: org.id,
+                    label: org.name || `Организация #${org.id}`,
+                  }))}
+                  value={form.organizationIds}
+                  onChange={(organizationIds) => setForm((f) => ({ ...f, organizationIds }))}
+                />
 
-                <div className="settings-users-access-group">
-                  <div className="settings-users-access-group-title">Склады</div>
-                  {warehouses.length === 0 ? (
-                    <div className="text-muted small">Складов пока нет</div>
-                  ) : (
-                    <div className="settings-users-access-toggles">
-                      {warehouses.map((wh) => {
-                        const id = Number(wh.id);
-                        const checked = form.warehouseIds.includes(id);
-                        const label = wh.address || wh.name || `Склад #${wh.id}`;
-                        return (
-                          <label key={wh.id} className="settings-users-nav-toggle">
-                            <input
-                              type="checkbox"
-                              className="form-check-input"
-                              checked={checked}
-                              disabled={form.isProfileAdmin}
-                              onChange={() =>
-                                setForm((f) => ({
-                                  ...f,
-                                  warehouseIds: toggleId(f.warehouseIds, id),
-                                }))
-                              }
-                            />
-                            <span className="form-check-label">{label}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <AccessMultiSelect
+                  label="Склады"
+                  emptyLabel="Все склады (полный доступ)"
+                  disabled={form.isProfileAdmin}
+                  options={warehouses.map((wh) => ({
+                    id: wh.id,
+                    label: wh.address || wh.name || `Склад #${wh.id}`,
+                  }))}
+                  value={form.warehouseIds}
+                  onChange={(warehouseIds) => setForm((f) => ({ ...f, warehouseIds }))}
+                />
               </div>
 
               {showSystemAdminRoleOption && (
