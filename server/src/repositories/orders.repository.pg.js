@@ -161,7 +161,9 @@ class OrdersRepositoryPG {
     if (Array.isArray(warehouseIds) && warehouseIds.length > 0) {
       const ids = warehouseIds.map((v) => Number(v)).filter((n) => Number.isFinite(n));
       if (ids.length > 0) {
-        whereSql += ` AND o.warehouse_id = ANY($${paramIndex++}::bigint[])`;
+        // FBS-заказы часто без warehouse_id до сборки/резерва — их не скрываем.
+        // Скрываем только заказы, уже привязанные к чужому складу.
+        whereSql += ` AND (o.warehouse_id IS NULL OR o.warehouse_id = ANY($${paramIndex++}::bigint[]))`;
         params.push(ids);
       }
     }
@@ -957,6 +959,50 @@ class OrdersRepositoryPG {
       ORDER BY o.id
     `, pid ? [String(orderGroupId), pid] : [String(orderGroupId)]);
     return result.rows.map(rowToCamel);
+  }
+
+  /**
+   * Все позиции групп (YM/Ozon/manual): для склейки в списке, даже если статусы строк разошлись.
+   */
+  async findByOrderGroupIds(orderGroupIds, profileId = null) {
+    const ids = [
+      ...new Set(
+        (orderGroupIds || [])
+          .map((g) => String(g ?? '').trim())
+          .filter((g) => g !== '')
+      ),
+    ];
+    if (!ids.length) return [];
+    const pid = normalizeProfileId(profileId);
+    const result = await query(
+      `
+      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        COALESCE(p.name, o.product_name) AS product_name,
+        o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
+        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.returned_to_new_at,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
+        assembler.email AS assembled_by_email,
+        assembler.full_name AS assembled_by_full_name,
+        p.sku AS product_sku,
+        COALESCE(o.reserved_qty, 0) AS reserved_qty,
+        CASE
+          WHEN COALESCE(o.reserve_need_qty, 0) > 0 THEN o.reserve_need_qty
+          ELSE GREATEST(1, COALESCE(o.quantity, 1))
+        END AS reserve_need_qty,
+        COALESCE(NULLIF(TRIM(o.reserve_coverage), ''), 'none') AS reserve_coverage,
+        o.reserve_snapshot_at,
+        (COALESCE(o.reserved_qty, 0) > 0) AS has_reserve
+      FROM orders o
+      LEFT JOIN products p ON o.product_id = p.id
+      LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
+      WHERE o.order_group_id = ANY($1::text[])
+        ${pid ? 'AND o.profile_id = $2::bigint' : ''}
+      ORDER BY o.created_at DESC, o.id ASC
+      `,
+      pid ? [ids, pid] : [ids]
+    );
+    return (result.rows || []).map(rowToCamel);
   }
 
   /**
