@@ -35,6 +35,7 @@ import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.j
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
 import { getFboItemReserveParts } from './fboSupplyItemReserve.js';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal.jsx';
+import { FboSupplyDeleteConfirmModal } from './FboSupplyDeleteConfirmModal.jsx';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -106,6 +107,7 @@ export function FboSupplyDetail() {
   const [breakdownItem, setBreakdownItem] = useState(null);
   const [packingExporting, setPackingExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [syncingPlacementZones, setSyncingPlacementZones] = useState(false);
   const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
   const [submittingPacking, setSubmittingPacking] = useState(false);
@@ -835,6 +837,20 @@ export function FboSupplyDetail() {
     }
   };
 
+  const handleDeleteSupplyConfirm = async () => {
+    setDeleting(true);
+    setErr(null);
+    try {
+      await fboSuppliesApi.delete(id);
+      setDeleteConfirmOpen(false);
+      navigate('/stock-levels/fbo-supplies');
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось удалить поставку');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (loading) return <div className="fbo-supplies-page">Загрузка…</div>;
   if (!supply) {
     return (
@@ -969,19 +985,7 @@ export function FboSupplyDetail() {
           variant="secondary"
           size="small"
           disabled={deleting || saving}
-          onClick={async () => {
-            if (!window.confirm('Удалить поставку? Связанные строки и грузоместа будут удалены.')) return;
-            setDeleting(true);
-            setErr(null);
-            try {
-              await fboSuppliesApi.delete(id);
-              navigate('/stock-levels/fbo-supplies');
-            } catch (e) {
-              setErr(e.response?.data?.message || e.message || 'Не удалось удалить поставку');
-            } finally {
-              setDeleting(false);
-            }
-          }}
+          onClick={() => setDeleteConfirmOpen(true)}
         >
           {deleting ? 'Удаление…' : 'Удалить поставку'}
         </Button>
@@ -1597,6 +1601,21 @@ export function FboSupplyDetail() {
         isOpen={Boolean(breakdownItem)}
         item={breakdownItem}
         onClose={() => setBreakdownItem(null)}
+      />
+
+      <FboSupplyDeleteConfirmModal
+        open={deleteConfirmOpen}
+        supplyLabel={
+          supplyExternalShipmentNumber(supply) ||
+          supply?.name ||
+          (supply?.id != null ? `#${supply.id}` : null)
+        }
+        deleting={deleting}
+        onCancel={() => {
+          if (deleting) return;
+          setDeleteConfirmOpen(false);
+        }}
+        onConfirm={handleDeleteSupplyConfirm}
       />
     </div>
   );

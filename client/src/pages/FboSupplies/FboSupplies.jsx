@@ -16,6 +16,7 @@ import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelec
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
+import { FboSupplyDeleteConfirmModal } from './FboSupplyDeleteConfirmModal.jsx';
 import '../../styles/erp-filter-bar.css';
 import './FboSupplies.css';
 
@@ -49,6 +50,7 @@ export function FboSupplies() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState(() => new Set(FBO_LIST_DEFAULT_STATUSES));
 
@@ -123,13 +125,25 @@ export function FboSupplies() {
     }
   };
 
-  const handleDeleteSupply = async (supplyId, e) => {
+  const openDeleteConfirm = (row, e) => {
     e?.stopPropagation?.();
-    if (!window.confirm('Удалить поставку? Связанные строки и грузоместа будут удалены.')) return;
+    if (!row?.id) return;
+    const num =
+      row.externalShipmentNumber ||
+      row.external_shipment_number ||
+      row.name ||
+      `#${row.id}`;
+    setDeleteConfirm({ id: row.id, label: String(num) });
+  };
+
+  const handleDeleteSupply = async () => {
+    const supplyId = deleteConfirm?.id;
+    if (!supplyId) return;
     setDeletingId(supplyId);
     setErr(null);
     try {
       await fboSuppliesApi.delete(supplyId);
+      setDeleteConfirm(null);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(String(supplyId));
@@ -355,7 +369,7 @@ export function FboSupplies() {
                       variant="secondary"
                       size="small"
                       disabled={deletingId === row.id}
-                      onClick={(e) => handleDeleteSupply(row.id, e)}
+                      onClick={(e) => openDeleteConfirm(row, e)}
                     >
                       {deletingId === row.id ? '…' : 'Удалить'}
                     </Button>
@@ -367,6 +381,17 @@ export function FboSupplies() {
           </table>
         </div>
       )}
+
+      <FboSupplyDeleteConfirmModal
+        open={!!deleteConfirm}
+        supplyLabel={deleteConfirm?.label}
+        deleting={deletingId != null && deletingId === deleteConfirm?.id}
+        onCancel={() => {
+          if (deletingId) return;
+          setDeleteConfirm(null);
+        }}
+        onConfirm={handleDeleteSupply}
+      />
 
       <FboSupplyImportModal
         open={!!importMode}
