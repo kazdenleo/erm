@@ -16,6 +16,25 @@ function pickOzonMinTariff(minVal, maxVal) {
 }
 
 /**
+ * Ozon v5 отдаёт `acquiring` в рублях от marketing_seller_price (≈1%), а не от price.price.
+ * Деление на price.price занижает % при скидке (например 19₽ / 2250 → 0.8% вместо 19₽ / 1900 → 1%).
+ */
+function resolveOzonAcquiringPercent(acquiringValue, priceObj) {
+  const amount = parseFloat(acquiringValue);
+  if (!Number.isFinite(amount)) return null;
+  const marketing = parseFloat(priceObj?.marketing_seller_price);
+  const price = parseFloat(priceObj?.price);
+  const base =
+    Number.isFinite(marketing) && marketing > 0
+      ? marketing
+      : Number.isFinite(price) && price > 0
+        ? price
+        : null;
+  if (!base) return null;
+  return Math.round(((amount / base) * 100) * 10) / 10;
+}
+
+/**
  * @param {object} item — элемент из data.items ответа v5
  * @param {string} offer_id — идентификатор оффера (для логов и fallback volume в БД)
  * @param {string} client_id
@@ -31,19 +50,13 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
 
   if (item.acquiring !== undefined && item.acquiring !== null) {
     acquiringValue = parseFloat(item.acquiring);
-    if (item.price?.price) {
-      acquiringPercent = Math.round(((acquiringValue / item.price.price) * 100) * 10) / 10;
-    }
+    acquiringPercent = resolveOzonAcquiringPercent(acquiringValue, item.price);
   } else if (item.price?.acquiring !== undefined && item.price?.acquiring !== null) {
     acquiringValue = parseFloat(item.price.acquiring);
-    if (item.price?.price) {
-      acquiringPercent = Math.round(((acquiringValue / item.price.price) * 100) * 10) / 10;
-    }
+    acquiringPercent = resolveOzonAcquiringPercent(acquiringValue, item.price);
   } else if (rawCommissionsData.acquiring !== undefined && rawCommissionsData.acquiring !== null) {
     acquiringValue = parseFloat(rawCommissionsData.acquiring);
-    if (item.price?.price) {
-      acquiringPercent = Math.round(((acquiringValue / item.price.price) * 100) * 10) / 10;
-    }
+    acquiringPercent = resolveOzonAcquiringPercent(acquiringValue, item.price);
   } else if (rawCommissionsData.acquiring_percent !== undefined && rawCommissionsData.acquiring_percent !== null) {
     acquiringPercent = parseFloat(rawCommissionsData.acquiring_percent);
   } else if (rawCommissionsData.acquiringPercent !== undefined && rawCommissionsData.acquiringPercent != null) {

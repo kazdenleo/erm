@@ -1164,7 +1164,16 @@ app.get('/api/product/prices/ozon', async (req, res) => {
         fullCommissions: rawCommissionsData, // Сохраняем сырые данные комиссий из API
         rawCommissions: rawCommissionsData, // Сырые данные комиссий для отладки
         price_indexes: item.price_indexes || {},
-        acquiring: item.acquiring && item.price?.price ? Math.round(((item.acquiring / item.price.price) * 100) * 10) / 10 : 1.9, // Рассчитываем процент эквайринга от цены товара и округляем до десятых
+        // acquiring в API — ₽ от marketing_seller_price (~1%), не от price.price
+        acquiring: (() => {
+          if (item.acquiring == null) return 1.9;
+          const amount = parseFloat(item.acquiring);
+          const marketing = parseFloat(item.price?.marketing_seller_price);
+          const price = parseFloat(item.price?.price);
+          const base = marketing > 0 ? marketing : price > 0 ? price : null;
+          if (!base || !Number.isFinite(amount)) return 1.9;
+          return Math.round(((amount / base) * 100) * 10) / 10;
+        })(),
         vat: item.price?.vat || 0
       };
       
