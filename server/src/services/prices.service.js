@@ -16,7 +16,7 @@ import config from '../config/index.js';
 import fs from 'fs';
 import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
-import { calculateMinPrice } from './min-price-calculator.service.js';
+import { calculateMinPrice, resolveMinPriceTaxProfile } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
 import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
@@ -2989,9 +2989,12 @@ class PricesService {
 
       logger.info(`[Prices Service] YM tariffs/calculate OK for ${offer_id}: program=${ymProgram} fee=${feePercent}%, acquiring=${acquiringPercent}%`);
 
+      // Кэш — сырые тарифы API (без оверлеев из настроек интеграции).
+      // Перевод платежа и скидка за раннюю отгрузку накладываются при чтении/расчёте,
+      // иначе после очистки настройки в UI остаётся «запечённая» скидка в кэше.
+      await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
       this._applyYmPaymentTransferOverride(calculator, paymentTransferPercentOverride);
       this._applyYmEarlyShipmentDiscount(calculator, earlyShipmentDiscountPpOverride);
-      await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
 
       return {
         found: true,
@@ -3004,6 +3007,53 @@ class PricesService {
         error: error.message || 'Ошибка при расчёте цен Yandex.Market'
       };
     }
+  }
+
+  /**
+   * Убрать из product_mp_calculator_cache YM «запечённую» скидку за раннюю отгрузку
+   * (восстановить percent из percent_before_early_shipment). Оверлеи из настроек
+   * снова накладываются при getYMPrices(source=cache) / пересчёте мин. цен.
+   * @returns {Promise<{ updated: number }>}
+   */
+  async stripYmEarlyShipmentFromCalculatorCache() {
+    let updated = 0;
+    let offset = 0;
+    const batchSize = 200;
+    for (;;) {
+      let rows;
+      try {
+        const res = await query(
+          `SELECT product_id, calculator FROM product_mp_calculator_cache
+           WHERE marketplace = 'ym' AND calculator IS NOT NULL
+           ORDER BY product_id
+           LIMIT $1 OFFSET $2`,
+          [batchSize, offset]
+        );
+        rows = res.rows || [];
+      } catch (e) {
+        if (String(e.message || '').includes('product_mp_calculator_cache') && String(e.message || '').includes('does not exist')) {
+          return { updated: 0 };
+        }
+        throw e;
+      }
+      if (!rows.length) break;
+      offset += rows.length;
+      for (const row of rows) {
+        const raw = row.calculator;
+        const calculator = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(JSON.stringify(raw));
+        const hadDiscount =
+          calculator.early_shipment_discount_pp != null ||
+          calculator.commissions?.FBS?.percent_before_early_shipment != null ||
+          calculator.commissions?.FBO?.percent_before_early_shipment != null ||
+          calculator.ymTariffs?.FEE?.percent_before_early_shipment != null;
+        if (!hadDiscount) continue;
+        this._applyYmEarlyShipmentDiscount(calculator, 0);
+        await this._upsertMpCalculatorCache(row.product_id, 'ym', calculator, 'strip_early_shipment');
+        updated += 1;
+      }
+    }
+    logger.info('[Prices Service] Stripped YM early-shipment overlay from calculator cache', { updated });
+    return { updated };
   }
 
   /**
@@ -3452,8 +3502,9 @@ class PricesService {
               calculator.acquiring = ozonAcquiringPercent;
             }
             const profit = resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault);
-            const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, null, 'FBS');
-            const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, null, 'FBO');
+            const taxProfile = resolveMinPriceTaxProfile(product);
+            const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBS');
+            const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBO');
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ozon', priceFbs, calculator, { scheme: 'FBS' });
             }
@@ -3502,11 +3553,12 @@ class PricesService {
             });
           } else {
             const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
+            const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
-              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, null, 'FBO'
+              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
             );
             const priceFbs = calculateMinPrice(
-              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, null, 'FBS'
+              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
             );
             console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs}`);
             if (priceFbo != null) {
@@ -3542,6 +3594,7 @@ class PricesService {
     if (skuYm && (ymCategoryId || ymUserCategoryId)) {
       try {
         const profit = resolveMarketplaceMinProfit(product, 'ym', minProfitDefault);
+        const taxProfile = resolveMinPriceTaxProfile(product);
         const ymFbsResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, {
           ...mpOpts,
           sellingProgram: 'FBS',
@@ -3561,7 +3614,7 @@ class PricesService {
               meta: { productId, offerId: skuYm },
             });
           } else {
-            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, null, 'FBS');
+            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, taxProfile, 'FBS');
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, dataFbs.calculator, { scheme: 'FBS' });
             } else {
@@ -3579,7 +3632,7 @@ class PricesService {
           const ymFbyResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, ymFbyOpts);
           const dataFby = ymFbyResult?.data ?? ymFbyResult;
           if (dataFby?.found && dataFby?.calculator) {
-            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, null, 'FBO');
+            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, taxProfile, 'FBO');
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(
                 productId,

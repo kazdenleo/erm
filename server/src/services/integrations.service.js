@@ -818,6 +818,20 @@ class IntegrationsService {
         config.early_shipment_discount_pp = null;
       }
     }
+
+    let prevEarlyShipmentPp = undefined;
+    if (type === 'yandex' && repositoryFactory.isUsingPostgreSQL()) {
+      try {
+        const existing = await this.repository.findByCode(type, profileId, organizationId);
+        const prevCfg = this._parseIntegrationConfig(existing?.config);
+        const prevRaw = prevCfg?.early_shipment_discount_pp ?? prevCfg?.earlyShipmentDiscountPp;
+        prevEarlyShipmentPp = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : null;
+        if (!Number.isFinite(prevEarlyShipmentPp)) prevEarlyShipmentPp = null;
+      } catch (e) {
+        logger.warn('[Integrations] Could not read previous YM early_shipment_discount_pp:', e.message);
+      }
+    }
+
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;
     }
@@ -865,10 +879,42 @@ class IntegrationsService {
           is_active: true
         });
       }
+
+      if (type === 'yandex' && prevEarlyShipmentPp !== undefined) {
+        const nextRaw = config.early_shipment_discount_pp;
+        const nextEarly =
+          nextRaw != null && nextRaw !== '' && Number.isFinite(Number(nextRaw)) ? Number(nextRaw) : null;
+        const earlyChanged = (prevEarlyShipmentPp ?? null) !== (nextEarly ?? null);
+        if (earlyChanged) {
+          setImmediate(() => {
+            this._afterYmEarlyShipmentSettingChanged({ profileId, organizationId }).catch((err) => {
+              logger.error('[Integrations] after YM early_shipment change failed:', err);
+            });
+          });
+        }
+      }
+
       return { success: true, type, config };
     } else {
       await writeData(type, config);
       return { success: true, type, config };
+    }
+  }
+
+  /**
+   * После смены «скидка за раннюю отгрузку» в YM: снять запечённый оверлей из кэша
+   * калькулятора и пересчитать мин. цены из кэша (с актуальными настройками).
+   */
+  async _afterYmEarlyShipmentSettingChanged({ profileId = null, organizationId = null } = {}) {
+    try {
+      const { default: pricesService } = await import('./prices.service.js');
+      const stripped = await pricesService.stripYmEarlyShipmentFromCalculatorCache();
+      logger.info('[Integrations] YM early_shipment: stripped calculator cache', stripped);
+      const recalc = await pricesService.recalculateAndSaveAllFromCache({});
+      logger.info('[Integrations] YM early_shipment: min prices recalculated from cache', recalc);
+    } catch (err) {
+      logger.error('[Integrations] YM early_shipment post-save refresh failed:', err);
+      throw err;
     }
   }
 

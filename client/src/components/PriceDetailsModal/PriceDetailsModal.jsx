@@ -446,7 +446,8 @@ export function PriceDetailsModal({
   });
   
   // Проценты. YM: полная ставка размещения + скидка за раннюю отгрузку отдельной строкой.
-  // Скидка из деталей расчёта или из настроек интеграции.
+  // Источник истины — настройки интеграции YM. Не показываем «запечённую» скидку из
+  // calculation_details / кэша калькулятора, если поле в интеграциях очищено.
   const settingsEarlyPp =
     marketplace === 'ym' && ymEarlyShipmentDiscountPp != null && ymEarlyShipmentDiscountPp !== ''
       ? Number(ymEarlyShipmentDiscountPp)
@@ -456,8 +457,7 @@ export function PriceDetailsModal({
       ? Number(commission.early_shipment_discount_pp ?? resolvedCalculatorData.early_shipment_discount_pp)
       : NaN;
   const earlyShipmentDiscountPp =
-    (Number.isFinite(metaEarlyPp) && metaEarlyPp > 0 ? metaEarlyPp : 0) ||
-    (Number.isFinite(settingsEarlyPp) && settingsEarlyPp > 0 ? settingsEarlyPp : 0);
+    Number.isFinite(settingsEarlyPp) && settingsEarlyPp > 0 ? settingsEarlyPp : 0;
 
   const commissionPercentBefore = Number(commission.percent_before_early_shipment);
   const storedCommissionPercent = Number(commission.percent) || 0;
