@@ -3122,9 +3122,17 @@ class ProductsRepositoryPG {
    */
   async updateCostFromSupplierStocks(productId) {
     const numId = typeof productId === 'string' ? parseInt(productId, 10) : productId;
-    const productRow = await query('SELECT product_type FROM products WHERE id = $1', [numId]);
+    const productRow = await query('SELECT product_type, cost FROM products WHERE id = $1', [numId]);
     if (productRow.rows.length > 0 && productRow.rows[0].product_type === 'kit') {
       return null; // себестоимость комплекта считается по комплектующим
+    }
+    // Ручная себестоимость в карточке — канон: не затираем, если уже задана.
+    const existingCost =
+      productRow.rows[0]?.cost != null && !Number.isNaN(Number(productRow.rows[0].cost))
+        ? Number(productRow.rows[0].cost)
+        : null;
+    if (existingCost != null) {
+      return existingCost;
     }
     // Сначала проверяем, есть ли вообще записи в supplier_stocks для этого товара
     const checkResult = await query(
@@ -3161,12 +3169,13 @@ class ProductsRepositoryPG {
     if (stocksResult.rows.length > 0 && stocksResult.rows[0].min_cost !== null) {
       const minCost = parseFloat(stocksResult.rows[0].min_cost);
       if (!isNaN(minCost) && minCost > 0) {
-        // Обновляем cost в БД
+        // Только если cost ещё пустой
         await query(
-          `UPDATE products SET cost = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+          `UPDATE products SET cost = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2 AND cost IS NULL`,
           [minCost, numId]
         );
-        console.log(`[Products Repository] ✓ Updated cost for product ${numId} to ${minCost}₽`);
+        console.log(`[Products Repository] ✓ Updated cost for product ${numId} to ${minCost}₽ (was empty)`);
         await this.recalcKitsContainingProduct(numId);
         return minCost;
       } else {

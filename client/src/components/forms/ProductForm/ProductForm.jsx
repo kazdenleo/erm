@@ -4305,10 +4305,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : {}),
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
-      cost:
-        formData.cost !== '' && formData.cost != null && !isNaN(parseFloat(formData.cost))
-          ? parseFloat(formData.cost)
-          : null,
+      // У комплекта cost пересчитывается на сервере по комплектующим — не шлём ручное значение.
+      ...(formData.product_type === 'kit'
+        ? {}
+        : {
+            cost:
+              formData.cost !== '' && formData.cost != null && !isNaN(parseFloat(formData.cost))
+                ? parseFloat(formData.cost)
+                : null,
+          }),
       additionalExpenses:
         formData.additionalExpenses !== '' && formData.additionalExpenses != null && !isNaN(parseFloat(formData.additionalExpenses))
           ? parseFloat(formData.additionalExpenses)
@@ -5714,9 +5719,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
           placeholder="0.00"
           value={formData.cost}
           onChange={(e) => handleChange('cost', e.target.value)}
+          disabled={formData.product_type === 'kit'}
+          readOnly={formData.product_type === 'kit'}
+          title={
+            formData.product_type === 'kit'
+              ? 'Для комплекта считается по комплектующим'
+              : undefined
+          }
         />
         <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Сохраняется вручную. При синхронизации остатков поставщиков может обновиться.
+            {formData.product_type === 'kit'
+              ? 'Считается автоматически по комплектующим — вручную не сохраняется.'
+              : 'Сохраняется вручную. Цена поставщиков подставляется только если поле пустое.'}
         </div>
         {errors.cost && <div className="error">{errors.cost}</div>}
       </div>
