@@ -182,14 +182,21 @@ export function isCoveredByDedicatedProductDimFields(name) {
  * @param {unknown} width
  * @param {unknown} height
  * @param {'mm'|'cm'} [unit='mm']
+ * @param {{ roundUpToWholeCm?: boolean }} [opts] — как логистика WB: каждая сторона в целых см вверх
  * @returns {string|null}
  */
-export function formatVolumeLitersLabel(length, width, height, unit = 'mm') {
+export function formatVolumeLitersLabel(length, width, height, unit = 'mm', opts = {}) {
   const L = Number(length);
   const W = Number(width);
   const H = Number(height);
   if (!(L > 0 && W > 0 && H > 0)) return null;
-  const liters = unit === 'cm' ? (L * W * H) / 1000 : (L * W * H) / 1_000_000;
+  let liters;
+  if (opts.roundUpToWholeCm) {
+    const toCm = (v) => (unit === 'cm' ? Math.ceil(v) : Math.ceil(v / 10));
+    liters = (toCm(L) * toCm(W) * toCm(H)) / 1000;
+  } else {
+    liters = unit === 'cm' ? (L * W * H) / 1000 : (L * W * H) / 1_000_000;
+  }
   if (!(liters > 0)) return null;
   return `${(Math.round(liters * 1000) / 1000).toFixed(2)} л`;
 }

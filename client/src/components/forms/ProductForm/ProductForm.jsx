@@ -15,6 +15,8 @@ import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
+import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
+import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import {
   canUsePrintHelper,
   openProductLabelPrintTab,
@@ -120,8 +122,8 @@ import './ProductForm.css';
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
 
 /** Readonly «Объём» рядом с габаритами (мм или см). */
-function DimVolumeReadonly({ length, width, height, unit = 'mm', id }) {
-  const label = formatVolumeLitersLabel(length, width, height, unit);
+function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWholeCm = false, hint = null }) {
+  const label = formatVolumeLitersLabel(length, width, height, unit, { roundUpToWholeCm });
   return (
     <div className="col-6 col-md-3">
       <label className="form-label" htmlFor={id}>
@@ -140,9 +142,13 @@ function DimVolumeReadonly({ length, width, height, unit = 'mm', id }) {
           fontVariantNumeric: 'tabular-nums',
           color: label ? 'var(--text)' : 'var(--muted)',
         }}
+        title={hint || undefined}
       >
         {label || '—'}
       </div>
+      {hint ? (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{hint}</div>
+      ) : null}
     </div>
   );
 }
@@ -1133,6 +1139,12 @@ function MpSkuCountryDimsEditor({
             length={dimsMm.length}
             width={dimsMm.width}
             height={dimsMm.height}
+            roundUpToWholeCm={code === 'wb'}
+            hint={
+              code === 'wb'
+                ? 'Для WB: стороны в целых см вверх (как в мин. ценах)'
+                : null
+            }
           />
         </div>
       </div>
@@ -3598,6 +3610,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [pushCardMessage, setPushCardMessage] = useState('');
   const [pushCardError, setPushCardError] = useState('');
   const [pushCardIsWarning, setPushCardIsWarning] = useState(false);
+  const [richContentLoading, setRichContentLoading] = useState(null);
+  const [richContentError, setRichContentError] = useState('');
+  const [richContentResult, setRichContentResult] = useState(null);
 
   const formatPushCardResults = (data) => {
     const payload = data?.data ?? data;
@@ -3690,6 +3705,91 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setPushCardError(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейс');
     } finally {
       setPushCardLoading(null);
+    }
+  };
+
+  const handleGenerateRichContent = async (marketplace) => {
+    if (!currentProduct?.id) {
+      setRichContentError('Сначала сохраните товар в ERP.');
+      return;
+    }
+    const productPatch = buildProductSubmitPayload();
+    if (!productPatch) {
+      setRichContentError('Исправьте ошибки в форме перед генерацией.');
+      return;
+    }
+    const characteristics = {};
+    if (marketplace === 'ozon' || marketplace === 'all') {
+      characteristics.ozon = (ozonAttributes || []).flatMap((attr) => {
+        if (isOzonRichContentAttrId(attr?.id)) return [];
+        if (classifyMarketplaceDimAttrName(attr?.name)) return [];
+        const raw = ozonAttributeValues[String(attr.id)];
+        if (raw == null || String(raw).trim() === '') return [];
+        const opts = ozonDictValues[attr.id];
+        const hit = Array.isArray(opts) ? findOzonDictEntryForStored(raw, opts) : null;
+        const labeled = hit ? ozonDictEntryText(hit) : '';
+        const rawStr = String(raw).trim();
+        const arrow = rawStr.indexOf('->');
+        const value = labeled || (arrow > 0 ? rawStr.slice(0, arrow).trim() : rawStr);
+        if (!value) return [];
+        return [{ name: attr.name || `ID ${attr.id}`, value }];
+      });
+    }
+    if (marketplace === 'wb' || marketplace === 'all') {
+      const schema = Array.isArray(wbCategoryAttributes) ? wbCategoryAttributes : [];
+      characteristics.wb = schema.flatMap((attr) => {
+        const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
+        if (id == null || isWbDedicatedDimCharcId(id)) return [];
+        const name = attr?.name ?? attr?.charcName ?? attr?.characteristic_name ?? '';
+        if (classifyMarketplaceDimAttrName(name)) return [];
+        const raw = wbAttributeValues[String(id)];
+        const value = String(normalizeWbAttributeScalar(raw) || '').trim();
+        if (!value) return [];
+        return [{ name: name || `ID ${id}`, value }];
+      });
+    }
+    if (marketplace === 'ym' || marketplace === 'all') {
+      characteristics.ym = (ymFormAttributes || []).flatMap((attr) => {
+        if (classifyMarketplaceDimAttrName(attr?.name)) return [];
+        const raw = ymAttributeValues[String(attr.id)];
+        const value = raw == null ? '' : String(raw).trim();
+        if (!value) return [];
+        return [{ name: attr.name || `ID ${attr.id}`, value }];
+      });
+    }
+    setRichContentLoading(marketplace);
+    setRichContentError('');
+    try {
+      const body = await productsApi.generateRichContent(
+        currentProduct.id,
+        marketplace,
+        productPatch,
+        characteristics
+      );
+      const payload = body?.data ?? body;
+      setRichContentResult(payload);
+      if (payload?.ozon?.jsonString) {
+        setOzonAttributeValues((prev) => ({
+          ...prev,
+          [String(OZON_RICH_CONTENT_ATTR_ID)]: payload.ozon.jsonString,
+        }));
+      }
+      if (payload?.wb?.description) {
+        setFormData((prev) => ({ ...prev, mp_wb_description: payload.wb.description }));
+      }
+      if (payload?.ym?.description) {
+        setFormData((prev) => ({ ...prev, mp_ym_description: payload.ym.description }));
+      }
+      requestAnimationFrame(() => {
+        document.getElementById(`rich-content-preview-${marketplace}`)?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+        });
+      });
+    } catch (e) {
+      setRichContentError(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать Rich-контент');
+    } finally {
+      setRichContentLoading(null);
     }
   };
 
@@ -4257,6 +4357,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
         const attr = ozonAttributes.find((a) => String(a.id) === key);
         const hasDict = attr && attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
         const opts = hasDict ? ozonDictValues[attr.id] : null;
+        if (isOzonRichContentAttrId(key)) {
+          out[key] = { value: str };
+          continue;
+        }
         if (hasDict) {
           const hit = Array.isArray(opts) && opts.length > 0 ? findOzonDictEntryForStored(str, opts) : null;
           if (hit) {
@@ -5864,16 +5968,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge ozon">OZ</span>
             Данные для Ozon
           </h4>
-          <ProductMarketplaceLinkSection
-            marketplace="ozon"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -5909,6 +6003,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
+              variant="secondary"
+              onClick={() => handleGenerateRichContent('ozon')}
+              disabled={!currentProduct?.id || !!richContentLoading}
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей этой вкладки'}
+            >
+              {richContentLoading === 'ozon' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+            </Button>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('ozon')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
@@ -5920,6 +6023,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
               «Обновить с Ozon» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
             </span>
           </div>
+          <MarketplaceRichContentPanel
+            marketplace="ozon"
+            loading={richContentLoading === 'ozon'}
+            error={activeTab === 'ozon' ? richContentError : ''}
+            result={richContentResult}
+            onGenerate={() => handleGenerateRichContent('ozon')}
+            disabled={!currentProduct?.id || !!richContentLoading}
+          />
+          <ProductMarketplaceLinkSection
+            marketplace="ozon"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
           <div className="card mt-3 border-secondary">
             <div className="card-header">Текст карточки Ozon</div>
             <div className="card-body">
@@ -6187,6 +6308,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <div className="row g-3">
                   {ozonAttributes
                     .filter((attr) => {
+                      if (isOzonRichContentAttrId(attr?.id)) return false;
                       const kind = classifyMarketplaceDimAttrName(attr?.name);
                       return kind !== 'product' && kind !== 'pack';
                     })
@@ -6317,16 +6439,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge wb">WB</span>
             Данные для Wildberries
           </h4>
-          <ProductMarketplaceLinkSection
-            marketplace="wb"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -6374,6 +6486,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
+              variant="secondary"
+              onClick={() => handleGenerateRichContent('wb')}
+              disabled={!currentProduct?.id || !!richContentLoading}
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
+            >
+              {richContentLoading === 'wb' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+            </Button>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('wb')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_wb?.trim()}
@@ -6384,6 +6505,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
               «Обновить с WB» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
             </span>
           </div>
+          <MarketplaceRichContentPanel
+            marketplace="wb"
+            loading={richContentLoading === 'wb'}
+            error={activeTab === 'wb' ? richContentError : ''}
+            result={richContentResult}
+            onGenerate={() => handleGenerateRichContent('wb')}
+            disabled={!currentProduct?.id || !!richContentLoading}
+          />
+          <ProductMarketplaceLinkSection
+            marketplace="wb"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
             <div
               className={`alert py-2 mb-2 ${
@@ -6670,16 +6809,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge ym">YM</span>
             Данные для Яндекс.Маркет
           </h4>
-          <ProductMarketplaceLinkSection
-            marketplace="ym"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -6711,6 +6840,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
+              variant="secondary"
+              onClick={() => handleGenerateRichContent('ym')}
+              disabled={!currentProduct?.id || !!richContentLoading}
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
+            >
+              {richContentLoading === 'ym' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+            </Button>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('ym')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ym?.trim()}
@@ -6729,6 +6867,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
               Подтянуть данные/изображения с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).
             </span>
             </div>
+          <MarketplaceRichContentPanel
+            marketplace="ym"
+            loading={richContentLoading === 'ym'}
+            error={activeTab === 'ym' ? richContentError : ''}
+            result={richContentResult}
+            onGenerate={() => handleGenerateRichContent('ym')}
+            disabled={!currentProduct?.id || !!richContentLoading}
+          />
+          <ProductMarketplaceLinkSection
+            marketplace="ym"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
           {ymSyncError && (
             <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
               {ymSyncError}
@@ -7315,6 +7471,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             >
               {labelPrinting ? 'Печать…' : 'Печать стикера'}
+            </Button>
+          ) : null}
+          {['ozon', 'wb', 'ym'].includes(activeTab) ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!currentProduct?.id || !!richContentLoading}
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей вкладки'}
+              onClick={() => handleGenerateRichContent(activeTab)}
+            >
+              {richContentLoading === activeTab ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
           ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">
