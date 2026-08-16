@@ -14,6 +14,24 @@ import {
 } from '../../utils/marketplaceMinProfit.js';
 import './PriceDetailsModal.css';
 
+/** Сумма в строке расходов; формула расчёта — в title (показ по hover). */
+function PriceBreakdownValue({ children, formula, className = '', style, extra = null }) {
+  const title =
+    formula != null && String(formula).trim() !== ''
+      ? String(formula).replace(/\s+/g, ' ').trim()
+      : undefined;
+  return (
+    <span
+      className={`price-breakdown-value${className ? ` ${className}` : ''}${title ? ' has-formula' : ''}`}
+      style={style}
+      title={title}
+    >
+      {children}
+      {extra}
+    </span>
+  );
+}
+
 export function PriceDetailsModal({
   isOpen,
   onClose,
@@ -100,12 +118,9 @@ export function PriceDetailsModal({
               </div>
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">Целевая чистая прибыль (наценка)</span>
-                <span className="price-breakdown-value">
+                <PriceBreakdownValue formula="после налогов · из карточки товара">
                   {(parts?.minMarkup ?? 0).toFixed(2)} ₽
-                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                    после налогов · из карточки товара
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             </div>
           </div>
@@ -116,25 +131,20 @@ export function PriceDetailsModal({
               {profile.vatRate > 0 && (
                 <div className="price-breakdown-item">
                   <span className="price-breakdown-label">НДС ({vatPctLabel})</span>
-                  <span className="price-breakdown-value negative">
+                  <PriceBreakdownValue
+                    className="negative"
+                    formula={`= ${total.toFixed(2)} × ${vatPctLabel}`}
+                  >
                     −{vatAmount.toFixed(2)} ₽
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                      = {total.toFixed(2)} × {vatPctLabel}
-                    </div>
-                  </span>
+                  </PriceBreakdownValue>
                 </div>
               )}
               {profile.incomeTaxRate > 0 && (
                 <div className="price-breakdown-item">
                   <span className="price-breakdown-label">Налог ({incomeTaxPctLabel})</span>
-                  <span className="price-breakdown-value negative">
+                  <PriceBreakdownValue className="negative" formula={incomeTaxFormulaHint}>
                     −{incomeTaxAmount.toFixed(2)} ₽
-                    {incomeTaxFormulaHint && (
-                      <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                        {incomeTaxFormulaHint}
-                      </div>
-                    )}
-                  </span>
+                  </PriceBreakdownValue>
                 </div>
               )}
               {profile.vatRate <= 0 && profile.incomeTaxRate <= 0 && (
@@ -493,12 +503,10 @@ export function PriceDetailsModal({
   const commissionGrossAmount = calculatedPrice * (commissionDisplayPercent / 100);
   const earlyShipmentDiscountAmount =
     earlyShipmentDiscountPp > 0 ? calculatedPrice * (earlyShipmentDiscountPp / 100) : 0;
-  // Для Ozon: округляем эквайринг в большую сторону до целого числа
+  // Ozon: эквайринг = price × % с округлением до копеек (не ceil)
   let acquiringAmount = calculatedPrice * acquiringPercent;
   if (marketplace === 'ozon') {
-    const acquiringAmountBefore = acquiringAmount;
-    acquiringAmount = Math.ceil(acquiringAmount);
-    console.log(`[PriceDetailsModal] Ozon acquiring amount rounded: ${acquiringAmountBefore.toFixed(2)} → ${acquiringAmount}`);
+    acquiringAmount = Math.round(acquiringAmount * 100) / 100;
   }
   const brandPromotionAmount = calculatedPrice * brandPromotionPercent;
   const adsPromotionAmount = calculatedPrice * adsPromotionPercent;
@@ -616,53 +624,57 @@ export function PriceDetailsModal({
           <div className="price-breakdown">
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">Себестоимость:</span>
-              <span className="price-breakdown-value">
+              <PriceBreakdownValue
+                formula={
+                  costBase > 0
+                    ? `= ${costBase.toFixed(2)} ₽ ${
+                        product.cost != null && product.cost !== '' && !isNaN(Number(product.cost)) && Number(product.cost) > 0
+                          ? '(из карточки товара, себестоимость)'
+                          : product.price != null && product.price !== '' && !isNaN(Number(product.price)) && Number(product.price) > 0
+                            ? '(из цены товара)'
+                            : '(из базовой цены)'
+                      }`
+                    : undefined
+                }
+              >
                 {costBase > 0 ? `${costBase.toFixed(2)} ₽` : '— не указана'}
-                {costBase > 0 && (
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {costBase.toFixed(2)} ₽ {product.cost != null && product.cost !== '' && !isNaN(Number(product.cost)) && Number(product.cost) > 0
-                      ? '(из карточки товара, себестоимость)'
-                      : product.price != null && product.price !== '' && !isNaN(Number(product.price)) && Number(product.price) > 0
-                        ? '(из цены товара)'
-                        : '(из базовой цены)'}
-                  </div>
-                )}
-              </span>
+              </PriceBreakdownValue>
             </div>
 
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">Дополнительные расходы:</span>
-              <span className="price-breakdown-value">
-                {additionalExpenses > 0 ? `${additionalExpenses.toFixed(2)} ₽` : '—'}
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  {additionalExpenses > 0
+              <PriceBreakdownValue
+                formula={
+                  additionalExpenses > 0
                     ? `= ${additionalExpenses.toFixed(2)} ₽ (из карточки товара)`
-                    : '— не указаны'}
-                </div>
-              </span>
+                    : '— не указаны'
+                }
+              >
+                {additionalExpenses > 0 ? `${additionalExpenses.toFixed(2)} ₽` : '—'}
+              </PriceBreakdownValue>
             </div>
 
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">База (себестоимость + доп.):</span>
-              <span className="price-breakdown-value">
+              <PriceBreakdownValue
+                formula={
+                  basePrice > 0
+                    ? `= ${costBase.toFixed(2)} + ${additionalExpenses.toFixed(2)} = ${basePrice.toFixed(2)} ₽`
+                    : undefined
+                }
+              >
                 {basePrice > 0 ? `${basePrice.toFixed(2)} ₽` : '—'}
-                {basePrice > 0 && (
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {costBase.toFixed(2)} + {additionalExpenses.toFixed(2)} = {basePrice.toFixed(2)} ₽
-                  </div>
-                )}
-              </span>
+              </PriceBreakdownValue>
             </div>
             
             {processingCost > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">Обработка заказа:</span>
-                <span className="price-breakdown-value">
+                <PriceBreakdownValue
+                  formula={`= ${processingCost.toFixed(2)} ₽ ${marketplace === 'ozon' ? '(обработка заказа FBS из API Ozon)' : marketplace === 'ym' ? '(тариф YM SORTING — обработка заказа)' : '(из API)'}`}
+                >
                   {processingCost.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {processingCost.toFixed(2)} ₽ {marketplace === 'ozon' ? '(обработка заказа FBS из API Ozon)' : marketplace === 'ym' ? '(тариф YM SORTING — обработка заказа)' : '(из API)'}
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
             
@@ -670,42 +682,36 @@ export function PriceDetailsModal({
               <span className="price-breakdown-label">
                 Логистика{productVolume > 0 ? ` (${productVolume.toFixed(2)} л)` : ''}:
               </span>
-              <span className="price-breakdown-value">
-                {logisticsCost.toFixed(2)} ₽
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  {marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined ? (
-                    (() => {
-                      const volume = productVolume;
-                      
-                      if (!volume || volume <= 1) {
-                        return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
-                      } else {
-                        // Округляем (volume - 1) вверх
+              <PriceBreakdownValue
+                formula={
+                  marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined
+                    ? (() => {
+                        const volume = productVolume;
+                        if (!volume || volume <= 1) {
+                          return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
+                        }
                         const additionalLiters = Math.ceil(volume - 1);
                         const additionalCost = resolvedCalculatorData.logistics_liter * additionalLiters;
-                        // Пересчитываем logisticsCost с учетом округления
                         const recalculatedLogisticsCost = resolvedCalculatorData.logistics_base + additionalCost;
                         return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ + ${resolvedCalculatorData.logistics_liter.toFixed(2)} ₽ × ${additionalLiters} л = ${resolvedCalculatorData.logistics_base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
-                      }
-                    })()
-                  ) : marketplace === 'ozon' ? (
-                    `= ${logisticsCost.toFixed(2)} ₽ (fbs_direct_flow_trans_min_amount из API Ozon)`
-                  ) : (
-                    `= ${logisticsCost.toFixed(2)} ₽ (из API YM)`
-                  )}
-                </div>
-              </span>
+                      })()
+                    : marketplace === 'ozon'
+                      ? `= ${logisticsCost.toFixed(2)} ₽ (fbs_direct_flow_trans_min_amount из API Ozon)`
+                      : `= ${logisticsCost.toFixed(2)} ₽ (из API YM)`
+                }
+              >
+                {logisticsCost.toFixed(2)} ₽
+              </PriceBreakdownValue>
             </div>
             
             {deliveryToCustomer > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">Доставка до клиента:</span>
-                <span className="price-breakdown-value">
+                <PriceBreakdownValue
+                  formula={`= ${deliveryToCustomer.toFixed(2)} ₽ ${marketplace === 'ozon' ? '(fbs_deliv_to_customer_amount из API Ozon)' : marketplace === 'ym' ? '(тарифы YM: доставка до клиента + кросс-регион + экспресс, % или фикс.)' : '(из API)'}`}
+                >
                   {deliveryToCustomer.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {deliveryToCustomer.toFixed(2)} ₽ {marketplace === 'ozon' ? '(fbs_deliv_to_customer_amount из API Ozon)' : marketplace === 'ym' ? '(тарифы YM: доставка до клиента + кросс-регион + экспресс, % или фикс.)' : '(из API)'}
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
             
@@ -716,35 +722,35 @@ export function PriceDetailsModal({
                   <span className="price-breakdown-label">
                     Потеря себестоимости возвращенных товаров{expectedReturns > 0 ? ` (${expectedReturns.toFixed(2)} шт, выкуп ${buyoutRateInput.toFixed(0)}%)` : ` (выкуп ${buyoutRateInput.toFixed(0)}%)`}:
                   </span>
-                  <span className="price-breakdown-value negative">
+                  <PriceBreakdownValue
+                    className="negative"
+                    formula={`= ${basePrice.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnLossCost.toFixed(2)} ₽`}
+                  >
                     -{returnLossCost.toFixed(2)} ₽
-                    <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      = {basePrice.toFixed(2)} × {(returnRate * 100).toFixed(1)}% = {returnLossCost.toFixed(2)} ₽
-                    </div>
-                  </span>
+                  </PriceBreakdownValue>
                 </div>
                 {returnCost > 0 && (
                   <div className="price-breakdown-item">
                     <span className="price-breakdown-label">
                       Возвраты{expectedReturns > 0 ? ` (${expectedReturns.toFixed(2)} шт)` : ` (${(returnRate * 100).toFixed(1)}%)`}:
                     </span>
-                    <span className="price-breakdown-value negative">
+                    <PriceBreakdownValue
+                      className="negative"
+                      formula={`= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`}
+                    >
                       -{returnCost.toFixed(2)} ₽
-                      <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                        = {returnAmount.toFixed(2)} × {(returnRate * 100).toFixed(1)}% = {returnCost.toFixed(2)} ₽
-                      </div>
-                    </span>
+                    </PriceBreakdownValue>
                   </div>
                 )}
                 {returnProcessingCost > 0 && (
                   <div className="price-breakdown-item">
                     <span className="price-breakdown-label">Обработка возвратов:</span>
-                    <span className="price-breakdown-value negative">
+                    <PriceBreakdownValue
+                      className="negative"
+                      formula={`= ${returnProcessingCost.toFixed(2)} ₽ (из API × ${(returnRate * 100).toFixed(1)}% возвратов)`}
+                    >
                       -{returnProcessingCost.toFixed(2)} ₽
-                      <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                        = {returnProcessingCost.toFixed(2)} ₽ (из API × {(returnRate * 100).toFixed(1)}% возвратов)
-                      </div>
-                    </span>
+                    </PriceBreakdownValue>
                   </div>
                 )}
               </>
@@ -754,22 +760,24 @@ export function PriceDetailsModal({
               <span className="price-breakdown-label">
                 Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commissionDisplayPercent}%):
               </span>
-              <span className="price-breakdown-value negative">
+              <PriceBreakdownValue
+                className="negative"
+                formula={
+                  `= ${calculatedPrice.toFixed(2)} × ${Number(commissionDisplayPercent).toFixed(2)}% = ${commissionGrossAmount.toFixed(2)} ₽` +
+                  (marketplace === 'wb'
+                    ? ' — схема FBO/FBW (Склад WB, paidStorageKgvp), по категории из API WB'
+                    : '')
+                }
+                extra={
+                  marketplace === 'wb' && commissions.FBS && commissions.FBS.percent !== commission.percent ? (
+                    <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic', whiteSpace: 'normal'}}>
+                      FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
+                    </div>
+                  ) : null
+                }
+              >
                 -{commissionGrossAmount.toFixed(2)} ₽
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {calculatedPrice.toFixed(2)} × {Number(commissionDisplayPercent).toFixed(2)}% = {commissionGrossAmount.toFixed(2)} ₽
-                  {marketplace === 'wb' && (
-                    <span style={{color: '#10b981', fontWeight: 600}}>
-                      {' '}— схема FBO/FBW (Склад WB, paidStorageKgvp), по категории из API WB
-                    </span>
-                  )}
-                </div>
-                {marketplace === 'wb' && commissions.FBS && commissions.FBS.percent !== commission.percent && (
-                  <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic'}}>
-                    FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
-                  </div>
-                )}
-              </span>
+              </PriceBreakdownValue>
             </div>
 
             {marketplace === 'ym' && earlyShipmentDiscountPp > 0 && (
@@ -777,13 +785,12 @@ export function PriceDetailsModal({
                 <span className="price-breakdown-label">
                   Скидка за раннюю отгрузку (−{earlyShipmentDiscountPp} п.п.):
                 </span>
-                <span className="price-breakdown-value positive">
+                <PriceBreakdownValue
+                  className="positive"
+                  formula={`= ${calculatedPrice.toFixed(2)} × ${earlyShipmentDiscountPp.toFixed(2)}% = ${earlyShipmentDiscountAmount.toFixed(2)} ₽ (комиссия ${commissionDisplayPercent}% → ${commissionNetPercent}%)`}
+                >
                   +{earlyShipmentDiscountAmount.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {calculatedPrice.toFixed(2)} × {earlyShipmentDiscountPp.toFixed(2)}% = {earlyShipmentDiscountAmount.toFixed(2)} ₽
-                    {' '}(комиссия {commissionDisplayPercent}% → {commissionNetPercent}%)
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
             
@@ -791,25 +798,29 @@ export function PriceDetailsModal({
               <>
                 <div className="price-breakdown-item">
                   <span className="price-breakdown-label">Приём платежа покупателя:</span>
-                  <span className="price-breakdown-value negative">
-                    -{ymAgencyDisplay.toFixed(2)} ₽
-                    <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      {resolvedCalculatorData.ymTariffs?.AGENCY_COMMISSION?.valueType === 'relative'
+                  <PriceBreakdownValue
+                    className="negative"
+                    formula={
+                      resolvedCalculatorData.ymTariffs?.AGENCY_COMMISSION?.valueType === 'relative'
                         ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION?.value) || 0).toFixed(2)}% = ${ymAgencyDisplay.toFixed(2)} ₽`
-                        : `= ${ymAgencyDisplay.toFixed(2)} ₽ (фиксированная сумма)`}
-                    </div>
-                  </span>
+                        : `= ${ymAgencyDisplay.toFixed(2)} ₽ (фиксированная сумма)`
+                    }
+                  >
+                    -{ymAgencyDisplay.toFixed(2)} ₽
+                  </PriceBreakdownValue>
                 </div>
                 <div className="price-breakdown-item">
                   <span className="price-breakdown-label">Перевод платежа покупателя:</span>
-                  <span className="price-breakdown-value negative">
-                    -{ymPaymentTransferDisplay.toFixed(2)} ₽
-                    <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      {resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
+                  <PriceBreakdownValue
+                    className="negative"
+                    formula={
+                      resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
                         ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽${resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.fromSettings ? ' (из настроек)' : ''}`
-                        : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (фиксированная сумма)`}
-                    </div>
-                  </span>
+                        : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (фиксированная сумма)`
+                    }
+                  >
+                    -{ymPaymentTransferDisplay.toFixed(2)} ₽
+                  </PriceBreakdownValue>
                 </div>
               </>
             )}
@@ -818,15 +829,15 @@ export function PriceDetailsModal({
                 <span className="price-breakdown-label">
                   Эквайринг ({acquiring != null ? Number(acquiring).toFixed(2) : 0}%):
                 </span>
-                <span className="price-breakdown-value negative">
+                <PriceBreakdownValue
+                  className="negative"
+                  formula={
+                    `= ${calculatedPrice.toFixed(2)} × ${(acquiringPercent * 100).toFixed(2)}% = ${acquiringAmount.toFixed(2)} ₽` +
+                    (marketplace === 'wb' && wbAcquiringPercent != null ? ' (из настроек интеграции)' : '')
+                  }
+                >
                   -{acquiringAmount.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {calculatedPrice.toFixed(2)} × {(acquiringPercent * 100).toFixed(2)}% = {acquiringAmount.toFixed(2)} ₽
-                    {marketplace === 'wb' && wbAcquiringPercent != null && (
-                      <span> (из настроек интеграции)</span>
-                    )}
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
             
@@ -835,15 +846,15 @@ export function PriceDetailsModal({
                 <span className="price-breakdown-label">
                   Услуги Джем ({wbGemServicesPercent || 0}%):
                 </span>
-                <span className="price-breakdown-value negative">
+                <PriceBreakdownValue
+                  className="negative"
+                  formula={
+                    `= ${calculatedPrice.toFixed(2)} × ${(gemServicesPercent * 100).toFixed(2)}% = ${gemServicesAmount.toFixed(2)} ₽` +
+                    (marketplace === 'wb' && wbGemServicesPercent !== null ? ' (из настроек интеграции)' : '')
+                  }
+                >
                   -{gemServicesAmount.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {calculatedPrice.toFixed(2)} × {(gemServicesPercent * 100).toFixed(2)}% = {gemServicesAmount.toFixed(2)} ₽
-                    {marketplace === 'wb' && wbGemServicesPercent !== null && (
-                      <span> (из настроек интеграции)</span>
-                    )}
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
             
@@ -858,14 +869,16 @@ export function PriceDetailsModal({
                       : ''}
                   :
                 </span>
-                <span className={`price-breakdown-value${brandPromotionAmount > 0 ? ' negative' : ''}`}>
-                  {brandPromotionAmount > 0 ? `-${brandPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    {brandPromotionPercent > 0
+                <PriceBreakdownValue
+                  className={brandPromotionAmount > 0 ? 'negative' : ''}
+                  formula={
+                    brandPromotionPercent > 0
                       ? `= ${calculatedPrice.toFixed(2)} × ${(brandPromotionPercent * 100).toFixed(2)}% = ${brandPromotionAmount.toFixed(2)} ₽`
-                      : 'нет данных API / настроек бренда — в формуле 0%'}
-                  </div>
-                </span>
+                      : 'нет данных API / настроек бренда — в формуле 0%'
+                  }
+                >
+                  {brandPromotionAmount > 0 ? `-${brandPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
+                </PriceBreakdownValue>
               </div>
             )}
 
@@ -880,58 +893,71 @@ export function PriceDetailsModal({
                       : ''}
                   :
                 </span>
-                <span className={`price-breakdown-value${adsPromotionAmount > 0 ? ' negative' : ''}`}>
-                  {adsPromotionAmount > 0 ? `-${adsPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    {adsPromotionPercent > 0
+                <PriceBreakdownValue
+                  className={adsPromotionAmount > 0 ? 'negative' : ''}
+                  formula={
+                    adsPromotionPercent > 0
                       ? `= ${calculatedPrice.toFixed(2)} × ${(adsPromotionPercent * 100).toFixed(2)}% = ${adsPromotionAmount.toFixed(2)} ₽`
-                      : 'нет статистики Performance по SKU — в формуле 0% (или задайте ДРР по умолчанию в интеграциях)'}
-                  </div>
-                </span>
+                      : 'нет статистики Performance по SKU — в формуле 0% (или задайте ДРР по умолчанию в интеграциях)'
+                  }
+                >
+                  {adsPromotionAmount > 0 ? `-${adsPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
+                </PriceBreakdownValue>
               </div>
             )}
             
             <div className="price-breakdown-item price-breakdown-subtotal">
               <span className="price-breakdown-label">Всего расходов:</span>
-              <span className="price-breakdown-value negative">
+              <PriceBreakdownValue
+                className="negative"
+                formula={
+                  `= ${
+                    earlyShipmentDiscountPp > 0
+                      ? `${commissionGrossAmount.toFixed(2)} − ${earlyShipmentDiscountAmount.toFixed(2)}`
+                      : commissionAmount.toFixed(2)
+                  } + ${effectiveAcquiringAmount.toFixed(2)}${
+                    marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''
+                  } + ${brandPromotionAmount.toFixed(2)}${
+                    adsPromotionAmount > 0 ? ` + ${adsPromotionAmount.toFixed(2)}` : ''
+                  }${gemServicesAmount > 0 ? ` + ${gemServicesAmount.toFixed(2)}` : ''} + ${fixedExpenses.toFixed(2)} = ${(
+                    commissionAmount +
+                    effectiveAcquiringAmount +
+                    brandPromotionAmount +
+                    adsPromotionAmount +
+                    gemServicesAmount +
+                    fixedExpenses
+                  ).toFixed(2)} ₽`
+                }
+              >
                 {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {earlyShipmentDiscountPp > 0
-                    ? `${commissionGrossAmount.toFixed(2)} − ${earlyShipmentDiscountAmount.toFixed(2)}`
-                    : commissionAmount.toFixed(2)}
-                  {' '}+ {effectiveAcquiringAmount.toFixed(2)}{marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''} + {brandPromotionAmount.toFixed(2)}{adsPromotionAmount > 0 ? ` + ${adsPromotionAmount.toFixed(2)}` : ''}{gemServicesAmount > 0 ? ' + ' + gemServicesAmount.toFixed(2) : ''} + {fixedExpenses.toFixed(2)} = {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
-                </div>
-              </span>
+              </PriceBreakdownValue>
             </div>
             
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">Минимальная чистая прибыль:</span>
-              <span className="price-breakdown-value" style={{color: '#10b981'}}>
-                {(() => {
-                  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
-                  if (targetProfit == null) return '— не указана';
-                  return `+${Number(targetProfit).toFixed(2)} ₽`;
-                })()}
-                {(() => {
-                  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
-                  if (targetProfit == null) return null;
-                  const mpLabel =
-                    marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'WB' : marketplace === 'ym' ? 'Я.Маркет' : marketplace;
-                  const specific =
-                    marketplace === 'ozon'
-                      ? product?.minProfitOzon ?? product?.min_profit_ozon
-                      : marketplace === 'wb'
-                        ? product?.minProfitWb ?? product?.min_profit_wb
-                        : product?.minProfitYm ?? product?.min_profit_ym;
-                  const fromMp = specific != null && specific !== '' && !isNaN(Number(specific));
-                  return (
-                    <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      = {Number(targetProfit).toFixed(2)} ₽ (цель после налогов
-                      {fromMp ? ` · ${mpLabel}` : ' · общая наценка'})
-                    </div>
-                  );
-                })()}
-              </span>
+              {(() => {
+                const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+                if (targetProfit == null) {
+                  return <PriceBreakdownValue style={{ color: '#10b981' }}>— не указана</PriceBreakdownValue>;
+                }
+                const mpLabel =
+                  marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'WB' : marketplace === 'ym' ? 'Я.Маркет' : marketplace;
+                const specific =
+                  marketplace === 'ozon'
+                    ? product?.minProfitOzon ?? product?.min_profit_ozon
+                    : marketplace === 'wb'
+                      ? product?.minProfitWb ?? product?.min_profit_wb
+                      : product?.minProfitYm ?? product?.min_profit_ym;
+                const fromMp = specific != null && specific !== '' && !isNaN(Number(specific));
+                return (
+                  <PriceBreakdownValue
+                    style={{ color: '#10b981' }}
+                    formula={`= ${Number(targetProfit).toFixed(2)} ₽ (цель после налогов${fromMp ? ` · ${mpLabel}` : ' · общая наценка'})`}
+                  >
+                    +{Number(targetProfit).toFixed(2)} ₽
+                  </PriceBreakdownValue>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -941,37 +967,32 @@ export function PriceDetailsModal({
           <div className="price-breakdown">
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">Валовая прибыль:</span>
-              <span className="price-breakdown-value positive">
+              <PriceBreakdownValue
+                className="positive"
+                formula={`= ${calculatedPrice.toFixed(2)} - ${totalExpenses.toFixed(2)} = ${profit.toFixed(2)} ₽`}
+              >
                 {profit.toFixed(2)} ₽ ({profitPercent.toFixed(2)}%)
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {calculatedPrice.toFixed(2)} - {totalExpenses.toFixed(2)} = {profit.toFixed(2)} ₽
-                </div>
-              </span>
+              </PriceBreakdownValue>
             </div>
             
             {profile.vatRate > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">НДС ({vatPctLabel}):</span>
-                <span className="price-breakdown-value negative">
+                <PriceBreakdownValue
+                  className="negative"
+                  formula={`= ${calculatedPrice.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽`}
+                >
                   -{vatAmount.toFixed(2)} ₽
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {calculatedPrice.toFixed(2)} × {vatPctLabel} = {vatAmount.toFixed(2)} ₽
-                  </div>
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
 
             {profile.incomeTaxRate > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
-                <span className="price-breakdown-value negative">
+                <PriceBreakdownValue className="negative" formula={incomeTaxFormulaHint}>
                   -{incomeTaxAmount.toFixed(2)} ₽
-                  {incomeTaxFormulaHint && (
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                      {incomeTaxFormulaHint}
-                    </div>
-                  )}
-                </span>
+                </PriceBreakdownValue>
               </div>
             )}
 

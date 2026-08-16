@@ -84,6 +84,11 @@
   white-space: nowrap;
 }
 
+.price-breakdown-value.has-formula {
+  cursor: help;
+  border-bottom: 1px dotted currentColor;
+}
+
 .price-breakdown-value.positive {
   color: #10b981;
 }
