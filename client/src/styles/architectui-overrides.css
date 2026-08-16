@@ -45,6 +45,18 @@
   height: calc(100vh - var(--erm-header-height));
 }
 
+/*
+  Вложенные модалки через createPortal(body): Bootstrap ~1055,
+  карточка товара .erm-product-card-overlay = 1100, footer формы = 1110.
+  Иначе «Комплектующие» и др. открываются под карточкой — «кнопка ничего не делает».
+*/
+.modal-backdrop-erm--stacked {
+  z-index: 1140 !important;
+}
+.modal.modal-erm--stacked {
+  z-index: 1150 !important;
+}
+
 /* Product card overlay (non-modal, inside app chrome) */
 .erm-product-card-overlay {
   position: fixed;

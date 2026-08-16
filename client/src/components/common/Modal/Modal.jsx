@@ -3,7 +3,7 @@
  * Компонент модального окна
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 /** usePortal=true: рендер в body — вложенные модалки не ломаются из‑за родительского диалога. */
@@ -18,28 +18,41 @@ export function Modal({
   closeOnEscape = true,
   usePortal = true,
 }) {
+  const modalRef = useRef(null);
+
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = '';
     }
-    
+
     return () => {
       document.body.style.overflow = '';
     };
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen || !closeOnEscape) return undefined;
+
     const handleEscape = (e) => {
-      if (closeOnEscape && e.key === 'Escape' && isOpen) {
-        onClose();
+      if (e.key !== 'Escape') return;
+      // Сверху открыта portaled-модалка — закрываем только её, не родителя.
+      if (!usePortal && document.querySelector('.modal.modal-erm--stacked')) {
+        return;
       }
+      if (usePortal) {
+        const stacked = document.querySelectorAll('.modal.modal-erm--stacked');
+        if (stacked.length > 0 && stacked[stacked.length - 1] !== modalRef.current) {
+          return;
+        }
+      }
+      onClose();
     };
-    
+
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
-  }, [isOpen, onClose, closeOnEscape]);
+  }, [isOpen, onClose, closeOnEscape, usePortal]);
 
   if (!isOpen) return null;
 
@@ -52,9 +65,13 @@ export function Modal({
 
   const content = (
     <>
-      <div className="modal-backdrop fade show modal-backdrop-erm" aria-hidden />
       <div
-        className="modal fade show modal-erm"
+        className={`modal-backdrop fade show modal-backdrop-erm${usePortal ? ' modal-backdrop-erm--stacked' : ''}`}
+        aria-hidden
+      />
+      <div
+        ref={modalRef}
+        className={`modal fade show modal-erm${usePortal ? ' modal-erm--stacked' : ''}`}
         style={{ display: 'block' }}
         role="dialog"
         aria-modal="true"
@@ -84,4 +101,3 @@ export function Modal({
 
   return content;
 }
-
