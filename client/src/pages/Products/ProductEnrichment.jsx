@@ -193,6 +193,7 @@ export function ProductEnrichment() {
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
   const [reportMeta, setReportMeta] = useState(null);
+  const [collectErrors, setCollectErrors] = useState([]);
   const [draftRows, setDraftRows] = useState([]);
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
@@ -354,18 +355,31 @@ export function ProductEnrichment() {
     setRunning(true);
     setRunError('');
     setReportMeta(null);
+    setCollectErrors([]);
     setDraftRows([]);
     setCreateMessage('');
     setCreateError('');
     try {
       const res = await productsApi.enrichBulk(items, { apply: false });
       const data = res?.data ?? res;
+      const results = Array.isArray(data?.results) ? data.results : [];
       setReportMeta({
         total: data?.total ?? 0,
         ok: data?.ok ?? 0,
         failed: data?.failed ?? 0,
       });
-      const rows = buildDraftRows(data?.results || [], brands, singleOrganizationId);
+      setCollectErrors(
+        results
+          .filter((r) => !r?.ok || (Array.isArray(r.warnings) && r.warnings.length))
+          .map((r) => ({
+            index: r.index,
+            brand: r.brand || '',
+            sku: r.sku || '',
+            error: r.ok ? null : r.error || 'Ошибка сбора',
+            warnings: Array.isArray(r.warnings) ? r.warnings : [],
+          }))
+      );
+      const rows = buildDraftRows(results, brands, singleOrganizationId);
       setDraftRows(await ensureBrandIdsForRows(rows));
       await reloadStatus();
     } catch (err) {
@@ -667,8 +681,37 @@ export function ProductEnrichment() {
               {reportMeta.failed ? `, ошибок ${reportMeta.failed}` : ''}
             </h2>
 
+            {collectErrors.length > 0 ? (
+              <div className="product-enrichment-errors mb-3" role="alert">
+                <div className="product-enrichment-errors__title">
+                  Ошибки и предупреждения сбора ({collectErrors.length})
+                </div>
+                <ul className="product-enrichment-errors__list">
+                  {collectErrors.map((e, i) => (
+                    <li key={`${e.index || i}-${e.sku}-${e.brand}`}>
+                      <span className="product-enrichment-errors__sku">
+                        {[e.brand, e.sku].filter(Boolean).join(' · ') || `Строка ${e.index || i + 1}`}
+                      </span>
+                      {e.error ? (
+                        <span className="product-enrichment-errors__msg">{e.error}</span>
+                      ) : null}
+                      {e.warnings?.length ? (
+                        <span className="product-enrichment-errors__warn">
+                          {e.warnings.join('; ')}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {draftRows.length === 0 ? (
-              <p className="text-muted small mb-0">Нет успешных позиций для создания.</p>
+              <p className="text-muted small mb-0">
+                {collectErrors.length
+                  ? 'Успешных позиций для создания нет.'
+                  : 'Нет успешных позиций для создания.'}
+              </p>
             ) : (
               <>
                 <div className="product-enrichment-bulk-bar">
