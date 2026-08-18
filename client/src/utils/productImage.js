@@ -16,6 +16,44 @@ export function parseProductImages(images) {
   return [];
 }
 
+/** Порядок в массиве = порядок на карточке; первый элемент — главное фото. */
+export function normalizeProductImagesOrder(images) {
+  const arr = Array.isArray(images) ? [...images] : [];
+  if (arr.length === 0) return [];
+  const primIdx = arr.findIndex((i) => i?.primary === true);
+  let ordered;
+  if (primIdx > 0) {
+    const p = arr[primIdx];
+    ordered = [...arr.slice(0, primIdx), ...arr.slice(primIdx + 1)];
+    ordered.unshift(p);
+  } else {
+    ordered = [...arr];
+  }
+  return ordered.map((img, i) => ({ ...img, primary: i === 0 }));
+}
+
+/** Ответ { data: Image[] } от upload/delete/getImages или уже массив */
+export function extractImagesFromApiPayload(payload) {
+  if (payload == null) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.data)) return payload.data;
+  return [];
+}
+
+export function filterDroppedImageFiles(fileList) {
+  return Array.from(fileList || []).filter(
+    (f) => typeof f?.type === 'string' && f.type.startsWith('image/')
+  );
+}
+
+export function resolveProductImageUrl(raw) {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  if (!t) return '';
+  if (t.startsWith('http://') || t.startsWith('https://') || t.startsWith('data:')) return t;
+  if (t.startsWith('/')) return t;
+  return `/${t.replace(/^\//, '')}`;
+}
+
 /**
  * URL основного изображения для миниатюры в списке.
  * @param {Record<string, unknown>|null|undefined} product
@@ -35,9 +73,5 @@ export function getPrimaryProductImageUrl(product) {
     (img) => img && (img.primary === true || img.is_main === true) && withUrl(img)
   );
   const chosen = primary || list.find((img) => withUrl(img));
-  const t = chosen ? withUrl(chosen) : '';
-  if (!t) return '';
-  if (t.startsWith('http://') || t.startsWith('https://') || t.startsWith('data:')) return t;
-  if (t.startsWith('/')) return t;
-  return `/${t.replace(/^\//, '')}`;
+  return resolveProductImageUrl(chosen ? withUrl(chosen) : '');
 }
