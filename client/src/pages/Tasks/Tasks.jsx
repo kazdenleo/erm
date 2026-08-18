@@ -21,6 +21,14 @@ function userDisplayName(u) {
   return name;
 }
 
+function taskAssigneeLabel(task) {
+  return (
+    task.assignee_full_name ||
+    task.assignee_email ||
+    (task.assignee_id != null ? `#${task.assignee_id}` : 'Не назначен')
+  );
+}
+
 function taskCreatorLabel(task) {
   return (
     task.created_by_full_name ||
