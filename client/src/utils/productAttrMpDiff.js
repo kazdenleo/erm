@@ -6,6 +6,7 @@ import {
   getMpDraftCountry,
   getMpDraftDimensionsMm,
   getYmDraftCountry,
+  mmToCm,
 } from './productMpFieldLinks.js';
 
 const MP_SHORT = { ozon: 'OZ', wb: 'WB', ym: 'ЯМ' };
@@ -142,16 +143,30 @@ function dimNum(v) {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
-/** Габариты/вес упаковки отличаются (мм / г). Пустой МП — не расхождение. */
-export function dimensionsDiffer(mainDims, mpDims) {
+/**
+ * Сторона для сравнения: YM/WB в кабинете — целые см, 55 мм и 60 мм это одно и то же (6 см).
+ */
+function dimLenForCompare(v, mp) {
+  const n = dimNum(v);
+  if (n == null) return null;
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ym' || code === 'wb' || code === 'wildberries' || code === 'yandex') {
+    return mmToCm(n);
+  }
+  return n;
+}
+
+/** Габариты/вес упаковки отличаются. Пустой МП — не расхождение. */
+export function dimensionsDiffer(mainDims, mpDims, mp = null) {
   if (!mpDims || typeof mpDims !== 'object') return false;
   const keys = ['length', 'width', 'height', 'weight'];
   const mpHasAny = keys.some((k) => dimNum(mpDims[k]) != null);
   if (!mpHasAny) return false;
   for (const k of keys) {
-    const a = dimNum(mainDims?.[k]);
-    const b = dimNum(mpDims[k]);
-    if (b == null) continue;
+    const bRaw = dimNum(mpDims[k]);
+    if (bRaw == null) continue;
+    const a = k === 'weight' ? dimNum(mainDims?.[k]) : dimLenForCompare(mainDims?.[k], mp);
+    const b = k === 'weight' ? bRaw : dimLenForCompare(mpDims[k], mp);
     if (a !== b) return true;
   }
   return false;
@@ -230,7 +245,7 @@ export function getMainCardFieldMpDiffs(formData = {}, extra = {}) {
   const mainDimText = formatDimsMm(mainDims) || '—';
   for (const mp of ['ozon', 'wb', 'ym']) {
     const mpDims = getMpDraftDimensionsMm(formData, mp);
-    if (!dimensionsDiffer(mainDims, mpDims)) continue;
+    if (!dimensionsDiffer(mainDims, mpDims, mp)) continue;
     const text = formatDimsMm(mpDims);
     dimDiffs.push({
       mp,
