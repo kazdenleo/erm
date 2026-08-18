@@ -24,6 +24,11 @@ export const employeeTasksApi = {
     return response.data;
   },
 
+  async getProductCreateStatus(id) {
+    const response = await api.get(`/employee-tasks/${id}/product-create-status`);
+    return response.data;
+  },
+
   async complete(id) {
     const response = await api.post(`/employee-tasks/${id}/complete`);
     return response.data;

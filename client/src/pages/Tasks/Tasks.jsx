@@ -51,6 +51,10 @@ function dimItemsOf(task) {
   return Array.isArray(task?.meta?.items) ? task.meta.items : [];
 }
 
+function productCreateSkuListOf(task) {
+  return Array.isArray(task?.meta?.sku_list) ? task.meta.sku_list : [];
+}
+
 function taskPreviewMeta(task) {
   const isDimensions = task.task_type === 'dimensions_check';
   const dimItems = dimItemsOf(task);
@@ -58,22 +62,31 @@ function taskPreviewMeta(task) {
     const n = dimItems.length;
     return `${n} ${n === 1 ? 'артикул' : n < 5 ? 'артикула' : 'артикулов'}`;
   }
+  if (task.task_type === 'product_create') {
+    const n = productCreateSkuListOf(task).length;
+    if (n > 0) {
+      return `${n} ${n === 1 ? 'артикул' : n < 5 ? 'артикула' : 'артикулов'}`;
+    }
+  }
   return null;
 }
 
 export function Tasks() {
   const { user, accountRole, isAccountAdmin } = useAuth();
-  const { tasks, loading, error, createTask, completeTask, reassignTask } = useEmployeeTasks();
+  const { tasks, loading, error, createTask, completeTask, reassignTask, getProductCreateStatus } = useEmployeeTasks();
   const [statusFilter, setStatusFilter] = useState('open');
   const [selectedId, setSelectedId] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [skuListText, setSkuListText] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
   const [candidates, setCandidates] = useState([]);
   const [saving, setSaving] = useState(false);
   const [reassignFor, setReassignFor] = useState(null);
   const [reassignId, setReassignId] = useState('');
+  const [productCreateStatus, setProductCreateStatus] = useState(null);
+  const [productCreateLoading, setProductCreateLoading] = useState(false);
 
   const canManage =
     isAccountAdmin ||
@@ -111,9 +124,42 @@ export function Tasks() {
     }
   }, [tasks, selectedId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedTask || selectedTask.task_type !== 'product_create') {
+      setProductCreateStatus(null);
+      setProductCreateLoading(false);
+      return undefined;
+    }
+    setProductCreateLoading(true);
+    setProductCreateStatus(null);
+    (async () => {
+      try {
+        const data = await getProductCreateStatus(selectedTask.id);
+        if (!cancelled) setProductCreateStatus(data);
+      } catch (e) {
+        if (!cancelled) {
+          setProductCreateStatus({
+            items: [],
+            total: 0,
+            createdCount: 0,
+            missingCount: 0,
+            error: e?.message || String(e),
+          });
+        }
+      } finally {
+        if (!cancelled) setProductCreateLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getProductCreateStatus, selectedTask]);
+
   const openCreate = () => {
     setTitle('');
     setDescription('');
+    setSkuListText('');
     const defaultManager = candidates.find(
       (c) => String(c.account_role || '').toLowerCase() === 'warehouse_manager'
     );
@@ -138,6 +184,7 @@ export function Tasks() {
       const created = await createTask({
         title: title.trim(),
         description: description.trim() || null,
+        skuList: skuListText,
         assigneeId: assigneeId ? Number(assigneeId) : null,
       });
       setIsModalOpen(false);
@@ -188,6 +235,7 @@ export function Tasks() {
       task.assignee_id != null && Number(task.assignee_id) === Number(user?.id);
     const dimItems = dimItemsOf(task);
     const isDimensions = task.task_type === 'dimensions_check';
+    const isProductCreate = task.task_type === 'product_create';
     const productUrl =
       task.meta?.url ||
       (task.product_id ? `/products?open=${task.product_id}` : null) ||
@@ -211,6 +259,7 @@ export function Tasks() {
             {isOpen ? 'Открыта' : 'Выполнена'}
           </span>
           {isDimensions && <span className="task-badge">Габариты</span>}
+          {isProductCreate && <span className="task-badge">Создание товаров</span>}
           <span>Исполнитель: {taskAssigneeLabel(task)}</span>
           <span>Создана: {formatDate(task.created_at)}</span>
           {task.updated_at && task.updated_at !== task.created_at && (
@@ -243,6 +292,38 @@ export function Tasks() {
                 );
               })}
             </ul>
+          </div>
+        ) : isProductCreate ? (
+          <div className="task-desc">
+            <div style={{ marginBottom: 8 }}>
+              Список артикулов для создания товаров:
+            </div>
+            {productCreateLoading ? (
+              <div className="task-create-status-summary">Проверяем товары в базе...</div>
+            ) : productCreateStatus?.error ? (
+              <div className="task-create-status-summary">Ошибка проверки: {productCreateStatus.error}</div>
+            ) : (
+              <>
+                <div className="task-create-status-summary">
+                  Уже созданы: {productCreateStatus?.createdCount || 0} · Ещё не созданы: {productCreateStatus?.missingCount || 0}
+                </div>
+                <ul className="task-sku-list">
+                  {(productCreateStatus?.items || []).map((it) => (
+                    <li key={it.sku}>
+                      {it.exists && it.product_id ? (
+                        <Link to={`/products?open=${it.product_id}`}>{it.sku}</Link>
+                      ) : (
+                        it.sku
+                      )}
+                      {' — '}
+                      <span className={`task-create-state ${it.exists ? 'is-exists' : 'is-missing'}`}>
+                        {it.exists ? `уже создан${it.product_name ? ` (${it.product_name})` : ''}` : 'ещё не создан'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </div>
         ) : (
           task.description && <div className="task-desc">{task.description}</div>
@@ -386,6 +467,7 @@ export function Tasks() {
           filtered.map((task) => {
             const isOpen = task.status === 'open';
             const isDimensions = task.task_type === 'dimensions_check';
+            const isProductCreate = task.task_type === 'product_create';
             const preview = taskPreviewMeta(task);
             return (
               <button
@@ -401,6 +483,7 @@ export function Tasks() {
                       {isOpen ? 'Открыта' : 'Выполнена'}
                     </span>
                     {isDimensions && <span className="task-badge">Габариты</span>}
+                    {isProductCreate && <span className="task-badge">Создание товаров</span>}
                     {preview && <span>{preview}</span>}
                     <span>{taskAssigneeLabel(task)}</span>
                     <span>{formatDateShort(task.created_at)}</span>
@@ -439,6 +522,15 @@ export function Tasks() {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Подробности (необязательно)"
+            />
+          </label>
+          <label>
+            Артикулы для создания товаров
+            <textarea
+              rows={5}
+              value={skuListText}
+              onChange={(e) => setSkuListText(e.target.value)}
+              placeholder="По одному на строку или через запятую"
             />
           </label>
           <label>

@@ -88,6 +88,19 @@
   white-space: pre-wrap;
 }
 
+.task-create-status-summary {
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+
+.task-create-state.is-exists {
+  color: #86efac;
+}
+
+.task-create-state.is-missing {
+  color: #fca5a5;
+}
+
 .task-sku-list {
   margin: 0;
   padding-left: 18px;

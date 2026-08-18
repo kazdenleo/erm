@@ -49,6 +49,11 @@ export function useEmployeeTasks() {
     return response.data;
   };
 
+  const getProductCreateStatus = async (id) => {
+    const response = await employeeTasksApi.getProductCreateStatus(id);
+    return response.data || { items: [], total: 0, createdCount: 0, missingCount: 0 };
+  };
+
   return {
     tasks,
     loading,
@@ -56,6 +61,7 @@ export function useEmployeeTasks() {
     loadTasks,
     createTask,
     completeTask,
+    getProductCreateStatus,
     reassignTask,
   };
 }

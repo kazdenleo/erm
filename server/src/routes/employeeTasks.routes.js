@@ -13,6 +13,7 @@ router.use(requireAuth);
 
 router.get('/', wrapAsync(employeeTasksController.getAll));
 router.get('/stats', wrapAsync(employeeTasksController.getStats));
+router.get('/:id/product-create-status', wrapAsync(employeeTasksController.getProductCreateStatus));
 router.post('/', wrapAsync(employeeTasksController.create));
 router.post('/:id/complete', wrapAsync(employeeTasksController.complete));
 router.post('/:id/reassign', wrapAsync(employeeTasksController.reassign));

@@ -78,15 +78,28 @@ export const employeeTasksController = {
     try {
       const profileId = requireProfile(req, res);
       if (profileId == null) return;
-      const { title, description, assigneeId, assignee_id } = req.body || {};
+      const { title, description, assigneeId, assignee_id, skuList, sku_list } = req.body || {};
       const task = await employeeTasksService.createTextTask({
         profileId,
         title,
         description,
         assigneeId: assigneeId ?? assignee_id,
         createdById: req.user?.id ?? null,
+        skuList: skuList ?? sku_list,
       });
       res.status(201).json({ ok: true, data: task });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getProductCreateStatus(req, res, next) {
+    try {
+      const profileId = requireProfile(req, res);
+      if (profileId == null) return;
+      const task = await assertTaskAccess(req.params.id, profileId);
+      const data = await employeeTasksService.getProductCreateTaskStatus(task, profileId);
+      res.json({ ok: true, data });
     } catch (error) {
       next(error);
     }

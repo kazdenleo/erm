@@ -4,6 +4,7 @@
 
 import employeeTasksRepository from '../repositories/employee_tasks.repository.pg.js';
 import usersRepository from '../repositories/users.repository.pg.js';
+import productsService from './products.service.js';
 
 const MP_TITLE = {
   ozon: 'Ozon',
@@ -48,6 +49,7 @@ export async function createTextTask({
   description,
   assigneeId,
   createdById,
+  skuList,
 }) {
   const trimmedTitle = String(title || '').trim();
   if (!trimmedTitle) {
@@ -66,13 +68,15 @@ export async function createTextTask({
       throw err;
     }
   }
+  const normalizedSkuList = normalizeSkuList(skuList);
   return employeeTasksRepository.create({
     profileId,
     title: trimmedTitle,
     description: description != null ? String(description).trim() || null : null,
-    taskType: 'text',
+    taskType: normalizedSkuList.length > 0 ? 'product_create' : 'text',
     assigneeId: assignee,
     createdById: createdById ?? null,
+    meta: normalizedSkuList.length > 0 ? { sku_list: normalizedSkuList } : {},
   });
 }
 
@@ -88,6 +92,23 @@ function parseTaskMeta(raw) {
     }
   }
   return {};
+}
+
+export function normalizeSkuList(input) {
+  const src = Array.isArray(input)
+    ? input
+    : String(input || '').split(/[\n,;]+/);
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    const sku = String(item || '').trim();
+    if (!sku) continue;
+    const key = sku.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(sku);
+  }
+  return out;
 }
 
 function buildDimensionsTaskContent(items) {
@@ -223,6 +244,31 @@ export async function completeTask(task, userId) {
   });
 }
 
+export async function getProductCreateTaskStatus(task, profileId) {
+  if (!task || task.task_type !== 'product_create') {
+    return { items: [], total: 0, createdCount: 0, missingCount: 0 };
+  }
+  const meta = parseTaskMeta(task.meta);
+  const skuList = normalizeSkuList(meta.sku_list);
+  const items = await Promise.all(
+    skuList.map(async (sku) => {
+      const product = await productsService.getBySku(sku, { profileId });
+      return {
+        sku,
+        exists: !!product,
+        product_id: product?.id ?? null,
+        product_name: product?.name ?? null,
+      };
+    })
+  );
+  return {
+    items,
+    total: items.length,
+    createdCount: items.filter((x) => x.exists).length,
+    missingCount: items.filter((x) => !x.exists).length,
+  };
+}
+
 export async function reassignTask(task, assigneeId, profileId) {
   const nextId = Number(assigneeId);
   if (!nextId || Number.isNaN(nextId)) {
@@ -243,6 +289,8 @@ export default {
   createTextTask,
   createDimensionsCheckTaskIfNeeded,
   completeTask,
+  getProductCreateTaskStatus,
+  normalizeSkuList,
   reassignTask,
   canManageTasks,
   isWarehouseManagerUser,
