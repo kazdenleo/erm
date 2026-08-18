@@ -2628,12 +2628,6 @@ export function ProductsBulkEdit() {
     [rows, bulkVirtRange.start, bulkVirtRange.end]
   );
 
-  const hideColumn = useCallback((colKey) => {
-    const key = String(colKey || '');
-    if (!key || ALWAYS_VISIBLE_COL_KEYS.has(key)) return;
-    setHiddenColumnKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
-  }, []);
-
   const toggleColumnHidden = useCallback((colKey, visible) => {
     const key = String(colKey || '');
     if (!key || ALWAYS_VISIBLE_COL_KEYS.has(key)) return;
@@ -4589,21 +4583,6 @@ export function ProductsBulkEdit() {
                                 }}
                               >
                                 ›
-                              </button>
-                            ) : null}
-                            {!ALWAYS_VISIBLE_COL_KEYS.has(col.key) ? (
-                              <button
-                                type="button"
-                                className="products-bulk-pin-btn products-bulk-hide-btn"
-                                title="Скрыть столбец"
-                                aria-label={`Скрыть столбец ${col.label || col.key}`}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  hideColumn(col.key);
-                                }}
-                              >
-                                ×
                               </button>
                             ) : null}
                             </span>
