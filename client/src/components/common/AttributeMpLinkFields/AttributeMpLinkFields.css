@@ -1,0 +1,35 @@
+.attribute-mp-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.attribute-mp-links__row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.attribute-mp-links__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted, #6b7280);
+}
+
+.attribute-mp-links__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}

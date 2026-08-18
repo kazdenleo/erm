@@ -7,6 +7,8 @@ import React, { useState, useEffect } from 'react';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { AttributeMpLinkFields } from '../../components/common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
+import { normalizeAttrMpLinks } from '../../utils/productAttributeMpLinks.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -17,6 +19,19 @@ const TYPE_LABELS = {
   dictionary: 'Словарь'
 };
 
+const MP_SHORT = { ozon: 'OZ', wb: 'WB', ym: 'ЯМ' };
+
+function formatMpLinksCell(raw) {
+  const links = normalizeAttrMpLinks(raw);
+  const parts = [];
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const entry = links[mp];
+    if (!entry) continue;
+    parts.push(`${MP_SHORT[mp]}: ${entry.name || entry.id}`);
+  }
+  return parts.length ? parts.join(' · ') : '—';
+}
+
 function AttributeForm({ attribute, onSubmit, onCancel }) {
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
@@ -26,6 +41,7 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
       ? sortDict(attribute.dictionary_values)
       : []
   );
+  const [mpLinks, setMpLinks] = useState(() => normalizeAttrMpLinks(attribute?.mp_links));
   const [newDictItem, setNewDictItem] = useState('');
   const [error, setError] = useState('');
 
@@ -53,7 +69,8 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
     onSubmit({
       name: name.trim(),
       type,
-      dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined
+      dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
+      mp_links: mpLinks,
     });
   };
 
@@ -102,6 +119,14 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
           </div>
         </div>
       )}
+      <div className="form-group">
+        <label>Связь с характеристиками маркетплейсов</label>
+        <p className="muted" style={{ margin: 0 }}>
+          Укажите название характеристики Ozon, Wildberries или Яндекс.Маркета.
+          В карточке товара можно выбрать её из списка категории.
+        </p>
+        <AttributeMpLinkFields links={mpLinks} onChange={setMpLinks} />
+      </div>
       <div className="form-actions">
         <Button type="button" variant="secondary" onClick={onCancel}>Отмена</Button>
         <Button type="submit" variant="primary">Сохранить</Button>
@@ -194,6 +219,7 @@ export function Attributes() {
               <tr>
                 <th>Название</th>
                 <th>Тип</th>
+                <th>Маркетплейсы</th>
                 <th style={{ width: 100 }}></th>
               </tr>
             </thead>
@@ -202,6 +228,7 @@ export function Attributes() {
                 <tr key={attr.id}>
                   <td>{attr.name}</td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
+                  <td className="attributes-mp-cell">{formatMpLinksCell(attr.mp_links)}</td>
                   <td>
                     <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>Изменить</Button>
                     <Button variant="secondary" size="small" onClick={() => handleDelete(attr.id)} className="btn-delete">Удалить</Button>
@@ -220,6 +247,7 @@ export function Attributes() {
         size="medium"
       >
         <AttributeForm
+          key={editing?.id || 'new'}
           attribute={editing}
           onSubmit={handleSubmit}
           onCancel={() => { setModalOpen(false); setEditing(null); }}

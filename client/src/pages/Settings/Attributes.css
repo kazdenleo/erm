@@ -173,3 +173,43 @@
   color: var(--muted);
   font-size: 13px;
 }
+
+.attribute-mp-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attribute-mp-links__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.attribute-mp-links__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.attribute-mp-links__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.attributes-mp-cell {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+  max-width: 320px;
+}

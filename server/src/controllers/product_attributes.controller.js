@@ -7,6 +7,28 @@ import { query } from '../config/database.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const VALID_TYPES = ['text', 'checkbox', 'number', 'date', 'dictionary'];
+const MP_LINK_CODES = ['ozon', 'wb', 'ym'];
+
+function normalizeMpLinks(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const mp of MP_LINK_CODES) {
+    const v = raw[mp];
+    if (v == null || v === '') continue;
+    if (typeof v === 'string' || typeof v === 'number') {
+      const s = String(v).trim();
+      if (!s) continue;
+      out[mp] = /^\d+$/.test(s) ? { id: s, name: '' } : { id: '', name: s };
+      continue;
+    }
+    if (typeof v !== 'object') continue;
+    const id = v.id != null && v.id !== '' ? String(v.id).trim() : '';
+    const name = String(v.name || v.title || '').trim();
+    if (!id && !name) continue;
+    out[mp] = { id, name };
+  }
+  return out;
+}
 
 class ProductAttributesController {
   async getAll(req, res, next) {
@@ -43,7 +65,7 @@ class ProductAttributesController {
 
   async create(req, res, next) {
     try {
-      const { name, type, dictionary_values } = req.body;
+      const { name, type, dictionary_values, mp_links } = req.body;
       if (!name || !type) {
         return res.status(400).json({ ok: false, message: 'Название и тип атрибута обязательны' });
       }
@@ -51,11 +73,12 @@ class ProductAttributesController {
         return res.status(400).json({ ok: false, message: `Тип должен быть один из: ${VALID_TYPES.join(', ')}` });
       }
       const dictVal = type === 'dictionary' ? (Array.isArray(dictionary_values) ? dictionary_values : []) : [];
+      const links = normalizeMpLinks(mp_links);
       const result = await query(
-        `INSERT INTO product_attributes (name, type, dictionary_values)
-         VALUES ($1, $2, $3::jsonb)
+        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb)
          RETURNING *`,
-        [name.trim(), type, JSON.stringify(dictVal)]
+        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links)]
       );
       return res.status(201).json({ ok: true, data: result.rows[0] });
     } catch (error) {
@@ -66,7 +89,7 @@ class ProductAttributesController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const { name, type, dictionary_values } = req.body;
+      const { name, type, dictionary_values, mp_links } = req.body;
       const check = await query('SELECT id FROM product_attributes WHERE id = $1', [id]);
       if (check.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
@@ -89,6 +112,10 @@ class ProductAttributesController {
         const dictVal = Array.isArray(dictionary_values) ? dictionary_values : [];
         updates.push(`dictionary_values = $${idx++}::jsonb`);
         params.push(JSON.stringify(dictVal));
+      }
+      if (mp_links !== undefined) {
+        updates.push(`mp_links = $${idx++}::jsonb`);
+        params.push(JSON.stringify(normalizeMpLinks(mp_links)));
       }
       if (updates.length > 0) {
         updates.push(`updated_at = CURRENT_TIMESTAMP`);

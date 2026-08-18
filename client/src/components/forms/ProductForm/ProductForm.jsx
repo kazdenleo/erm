@@ -52,6 +52,12 @@ import {
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { MpFieldLabel, MpFieldLinkToggles, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { AttributeMpLinkFields } from '../../common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
+import {
+  findLinkedMpAttribute,
+  getLinkedAttrMpDiffs,
+  normalizeAttrMpLinks,
+} from '../../../utils/productAttributeMpLinks.js';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import {
   isProfileKitsEnabled,
@@ -4294,7 +4300,76 @@ export const ProductForm = React.forwardRef(function ProductForm({
       ...prev,
       attributeValues: { ...prev.attributeValues, [key]: value }
     }));
+    const attr = allAttributes.find((a) => String(a.id) === key);
+    if (attr) applyErpAttrValueToLinkedMp(attr, value);
   };
+
+  const applyErpAttrValueToLinkedMp = useCallback((attrLike, value, { onlyIfEmpty = false } = {}) => {
+    const links = normalizeAttrMpLinks(attrLike?.mp_links);
+    const str =
+      value === true ? 'true' : value === false ? 'false' : value == null ? '' : String(value);
+    const ozonHit = findLinkedMpAttribute(links.ozon, ozonAttributes);
+    if (ozonHit?.id != null) {
+      const ozKey = String(ozonHit.id);
+      setOzonAttributeValues((prev) => {
+        if (onlyIfEmpty && String(prev[ozKey] ?? '').trim()) return prev;
+        if (String(prev[ozKey] ?? '') === str) return prev;
+        return { ...prev, [ozKey]: str };
+      });
+    }
+    const wbHit = findLinkedMpAttribute(links.wb, wbCategoryAttributes, wbAttrKey, wbAttrName);
+    if (wbHit) {
+      const wbKey = wbAttrKey(wbHit);
+      if (wbKey) {
+        setWbAttributeValues((prev) => {
+          if (onlyIfEmpty && String(prev[wbKey] ?? '').trim()) return prev;
+          if (String(prev[wbKey] ?? '') === str) return prev;
+          return { ...prev, [wbKey]: str };
+        });
+      }
+    }
+    const ymHit = findLinkedMpAttribute(links.ym, ymFormAttributes);
+    if (ymHit?.id != null) {
+      const ymKey = String(ymHit.id);
+      setYmAttributeValues((prev) => {
+        if (onlyIfEmpty && String(prev[ymKey] ?? '').trim()) return prev;
+        if (String(prev[ymKey] ?? '') === str) return prev;
+        return { ...prev, [ymKey]: str };
+      });
+    }
+  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName]);
+
+  const handleErpAttrMpLinksChange = useCallback(
+    async (attributeId, nextLinks) => {
+      const id = String(attributeId);
+      setAllAttributes((prev) =>
+        prev.map((a) => (String(a.id) === id ? { ...a, mp_links: nextLinks } : a))
+      );
+      try {
+        await productAttributesApi.update(id, { mp_links: nextLinks });
+      } catch (err) {
+        console.error('[ProductForm] mp_links save failed:', err);
+      }
+      const attr = {
+        ...(allAttributes.find((a) => String(a.id) === id) || { id }),
+        mp_links: nextLinks,
+      };
+      const value = formData.attributeValues?.[id];
+      if (value != null && value !== '') {
+        applyErpAttrValueToLinkedMp(attr, value, { onlyIfEmpty: true });
+      }
+    },
+    [allAttributes, applyErpAttrValueToLinkedMp, formData.attributeValues]
+  );
+
+  useEffect(() => {
+    if (!categoryAttributes.length) return;
+    for (const attr of categoryAttributes) {
+      const val = formData.attributeValues?.[String(attr.id)];
+      if (val == null || val === '') continue;
+      applyErpAttrValueToLinkedMp(attr, val, { onlyIfEmpty: true });
+    }
+  }, [categoryAttributes, applyErpAttrValueToLinkedMp, formData.attributeValues]);
 
   useEffect(() => {
     if (!kitModalOpen) {
@@ -5768,7 +5843,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
             Атрибуты категории
             <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--muted)', marginLeft: 8 }}>
-              OZ/WB/ЯМ с обводкой = другое значение на МП
+              Под каждым полем можно выбрать характеристику OZ / WB / ЯМ для связи
             </span>
           </h4>
           <div className="row g-3">
@@ -5776,7 +5851,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
               const key = String(attr.id);
               const value = formData.attributeValues[key];
               const rawValue = value !== undefined && value !== null ? value : '';
-              const attrDiffs = getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName);
+              const attrDiffs = [
+                ...getMainAttrMpDiffs(attr.name, rawValue, mpAttrDisplayByName),
+                ...getLinkedAttrMpDiffs(attr, rawValue, {
+                  ozonAttributes,
+                  ozonAttributeValues,
+                  wbAttributes: wbCategoryAttributes,
+                  wbAttributeValues,
+                  wbAttrKey,
+                  wbAttrName,
+                  ymAttributes: ymFormAttributes,
+                  ymAttributeValues,
+                }),
+              ].filter((d, i, arr) => arr.findIndex((x) => x.mp === d.mp) === i);
+              const mpLinksEditor = (
+                <AttributeMpLinkFields
+                  links={attr.mp_links}
+                  onChange={(next) => void handleErpAttrMpLinksChange(attr.id, next)}
+                  ozonOptions={ozonAttributes}
+                  wbOptions={wbCategoryAttributes}
+                  ymOptions={ymFormAttributes}
+                  getWbId={wbAttrKey}
+                  getWbName={wbAttrName}
+                />
+              );
               const nameWithDiff = (
                 <>
                   {attr.name}
@@ -5798,6 +5896,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         {TYPE_LABELS[attr.type] && <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span>}
                       </span>
                     </label>
+                    {mpLinksEditor}
                   </div>
                 );
               }
@@ -5814,6 +5913,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
+                    {mpLinksEditor}
                   </div>
                 );
               }
@@ -5830,6 +5930,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
+                    {mpLinksEditor}
                   </div>
                 );
               }
@@ -5864,6 +5965,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
                       </div>
                     )}
+                    {mpLinksEditor}
                   </div>
                 );
               }
@@ -5898,6 +6000,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
                   )}
+                  {mpLinksEditor}
                 </div>
               );
             })}
