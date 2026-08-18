@@ -39,6 +39,11 @@ export function attrMpLinksHasAny(raw) {
   return ATTR_MP_CODES.some((mp) => links[mp]);
 }
 
+export function mappedMpsFromAttrLinks(raw) {
+  const links = normalizeAttrMpLinks(raw);
+  return ATTR_MP_CODES.filter((mp) => links[mp]);
+}
+
 export function formatAttrMpLinksSummary(raw) {
   const links = normalizeAttrMpLinks(raw);
   const parts = [];

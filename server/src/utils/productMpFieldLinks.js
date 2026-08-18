@@ -14,6 +14,15 @@ export const MP_FIELD_LINK_KEYS = [
   'rich_content',
 ];
 
+export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
+
+/** Связь ручного ERP-атрибута с характеристиками МП: attr_<id> */
+export const ATTR_MP_FIELD_LINK_RE = /^attr_\d+$/;
+
+export function isAttrMpFieldLinkKey(fieldKey) {
+  return ATTR_MP_FIELD_LINK_RE.test(String(fieldKey || ''));
+}
+
 export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
   sku: ['ozon', 'wb', 'ym'],
@@ -76,18 +85,25 @@ export function normalizeMpFieldLinks(raw) {
       out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
       continue;
     }
-    const v = obj[key];
-    if (Array.isArray(v)) {
-      out[key] = v
-        .map((x) => String(x || '').toLowerCase())
-        .filter((m) => supported.includes(m));
-    } else if (v && typeof v === 'object') {
-      out[key] = supported.filter((m) => !!v[m]);
-    } else {
-      out[key] = [];
-    }
+    out[key] = parseFieldMpList(obj[key], supported);
+  }
+  for (const key of Object.keys(obj)) {
+    if (!isAttrMpFieldLinkKey(key)) continue;
+    out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_MPS);
   }
   return out;
+}
+
+function parseFieldMpList(v, supported) {
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => String(x || '').toLowerCase())
+      .filter((m) => supported.includes(m));
+  }
+  if (v && typeof v === 'object') {
+    return supported.filter((m) => !!v[m]);
+  }
+  return [];
 }
 
 export function isMpFieldLinked(links, fieldKey, mp) {
@@ -317,3 +333,4 @@ export function resolveProductDimensionsMmForPush(product, mp) {
         : parseDraftObj(product?.ym_draft);
   return pick(draft.productDimensions);
 }
+

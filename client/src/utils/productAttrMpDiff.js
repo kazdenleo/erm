@@ -161,7 +161,7 @@ export function dimensionsDiffer(mainDims, mpDims) {
  * Расхождения dedicated-полей карточки (название, бренд, описание, страна, артикул, габариты).
  * @returns {Record<string, { mp: string, label: string, title: string, value: string }[]>}
  */
-export function getMainCardFieldMpDiffs(formData = {}) {
+export function getMainCardFieldMpDiffs(formData = {}, extra = {}) {
   const mainName = formData.name;
   const mainBrand = formData.brand;
   const mainDesc = formData.description;
@@ -176,16 +176,16 @@ export function getMainCardFieldMpDiffs(formData = {}) {
 
   const pairs = {
     name: [
-      ['ozon', formData.mp_ozon_name],
+      ['ozon', extra.ozonName ?? ''],
       ['wb', formData.mp_wb_name],
       ['ym', formData.mp_ym_name],
     ],
     brand: [
-      ['ozon', formData.mp_ozon_brand],
+      ['ozon', extra.ozonBrand ?? ''],
       ['wb', formData.mp_wb_brand],
     ],
     description: [
-      ['ozon', formData.mp_ozon_description],
+      ['ozon', extra.ozonDescription ?? ''],
       ['wb', formData.mp_wb_description],
       ['ym', formData.mp_ym_description],
     ],
@@ -194,9 +194,9 @@ export function getMainCardFieldMpDiffs(formData = {}) {
       ['wb', formData.mp_wb_vendor_code],
       ['ym', formData.sku_ym],
     ],
-    // Без связи страна МП лежит в draft; пустой draft — не сигнал расхождения.
+    // Без связи страна МП лежит в draft (WB/YM) или в атрибуте Ozon «Страна-изготовитель».
     country: [
-      ['ozon', getMpDraftCountry(formData, 'ozon')],
+      ['ozon', extra.ozonManufacturerCountry ?? ''],
       ['wb', getMpDraftCountry(formData, 'wb')],
       ['ym', getYmDraftCountry(formData)],
     ],

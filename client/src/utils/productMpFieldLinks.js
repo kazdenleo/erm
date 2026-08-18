@@ -17,6 +17,18 @@ export const MP_FIELD_LINK_KEYS = [
 
 export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
 
+/** Связь ручного ERP-атрибута с характеристиками МП: attr_<id> → ['ozon','wb','ym'] */
+export const ATTR_MP_FIELD_LINK_RE = /^attr_\d+$/;
+
+export function isAttrMpFieldLinkKey(fieldKey) {
+  return ATTR_MP_FIELD_LINK_RE.test(String(fieldKey || ''));
+}
+
+export function erpAttrLinkFieldKey(attrId) {
+  const id = String(attrId ?? '').trim();
+  return id ? `attr_${id}` : '';
+}
+
 /** Какие МП поддерживают связь для поля. */
 export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
@@ -110,18 +122,43 @@ export function normalizeMpFieldLinks(raw) {
       out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
       continue;
     }
-    const v = obj[key];
-    if (Array.isArray(v)) {
-      out[key] = v
-        .map((x) => String(x || '').toLowerCase())
-        .filter((m) => supported.includes(m));
-    } else if (v && typeof v === 'object') {
-      out[key] = supported.filter((m) => !!v[m]);
-    } else {
-      out[key] = [];
-    }
+    out[key] = parseFieldMpList(obj[key], supported);
+  }
+  for (const key of Object.keys(obj)) {
+    if (!isAttrMpFieldLinkKey(key)) continue;
+    out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_MPS);
   }
   return out;
+}
+
+function parseFieldMpList(v, supported) {
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => String(x || '').toLowerCase())
+      .filter((m) => supported.includes(m));
+  }
+  if (v && typeof v === 'object') {
+    return supported.filter((m) => !!v[m]);
+  }
+  return [];
+}
+
+export function supportedMpsForFieldKey(fieldKey, supportedOverride) {
+  if (Array.isArray(supportedOverride) && supportedOverride.length) {
+    return supportedOverride.map((m) => String(m || '').toLowerCase()).filter(Boolean);
+  }
+  if (MP_FIELD_LINK_SUPPORT[fieldKey]) return MP_FIELD_LINK_SUPPORT[fieldKey];
+  if (isAttrMpFieldLinkKey(fieldKey)) return [...MP_FIELD_LINK_MPS];
+  return [];
+}
+
+function currentMpListForField(normalized, fieldKey, supported) {
+  if (Object.prototype.hasOwnProperty.call(normalized, fieldKey) && Array.isArray(normalized[fieldKey])) {
+    return normalized[fieldKey];
+  }
+  // Ручной атрибут с маппингом категории: нет сохранённого ключа — все доступные МП включены.
+  if (isAttrMpFieldLinkKey(fieldKey)) return [...supported];
+  return [];
 }
 
 /**
@@ -131,7 +168,9 @@ export function normalizeMpFieldLinks(raw) {
  */
 export function isMpFieldLinked(links, fieldKey, mp) {
   const list = links?.[fieldKey];
-  if (!Array.isArray(list)) return false;
+  if (!Array.isArray(list)) {
+    return isAttrMpFieldLinkKey(fieldKey);
+  }
   return list.includes(String(mp || '').toLowerCase());
 }
 
@@ -141,12 +180,12 @@ export function isMpFieldLinked(links, fieldKey, mp) {
  * @param {string} mp
  * @returns {Record<string, string[]>}
  */
-export function toggleMpFieldLink(links, fieldKey, mp) {
+export function toggleMpFieldLink(links, fieldKey, mp, supportedOverride) {
   const normalized = normalizeMpFieldLinks(links);
   const code = String(mp || '').toLowerCase();
-  const supported = MP_FIELD_LINK_SUPPORT[fieldKey] || [];
+  const supported = supportedMpsForFieldKey(fieldKey, supportedOverride);
   if (!supported.includes(code)) return normalized;
-  const set = new Set(normalized[fieldKey] || []);
+  const set = new Set(currentMpListForField(normalized, fieldKey, supported));
   if (set.has(code)) set.delete(code);
   else set.add(code);
   return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
@@ -160,12 +199,12 @@ export function toggleMpFieldLink(links, fieldKey, mp) {
  * @param {boolean} enabled
  * @returns {Record<string, string[]>}
  */
-export function setMpFieldLink(links, fieldKey, mp, enabled) {
+export function setMpFieldLink(links, fieldKey, mp, enabled, supportedOverride) {
   const normalized = normalizeMpFieldLinks(links);
   const code = String(mp || '').toLowerCase();
-  const supported = MP_FIELD_LINK_SUPPORT[fieldKey] || [];
+  const supported = supportedMpsForFieldKey(fieldKey, supportedOverride);
   if (!supported.includes(code)) return normalized;
-  const set = new Set(normalized[fieldKey] || []);
+  const set = new Set(currentMpListForField(normalized, fieldKey, supported));
   if (enabled) set.add(code);
   else set.delete(code);
   return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
@@ -472,10 +511,6 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
   }
   if (want('country')) {
     const c = String(prev.country_of_origin || '').trim();
-    if (isMpFieldLinked(normalized, 'country', 'ozon')) {
-      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
-      next.ozon_draft = { ...d, country: c };
-    }
     if (isMpFieldLinked(normalized, 'country', 'wb')) {
       const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
       next.wb_draft = { ...d, country: c };
