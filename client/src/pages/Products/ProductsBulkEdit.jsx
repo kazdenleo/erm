@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { productAttributesApi } from '../../services/productAttributes.api';
+import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
