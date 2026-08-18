@@ -5129,40 +5129,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         >
                           ×
                         </button>
-                        <button
-                          type="button"
-                          title="Привести к 3:4"
-                          aria-label="Привести изображение к 3:4"
-                          disabled={aspectBusy || imageUploadLoading}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            fitImageAspect3x4(id);
-                          }}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          style={{
-                            position: 'absolute',
-                            top: 6,
-                            left: 6,
-                            zIndex: 3,
-                            minWidth: 44,
-                            height: 28,
-                            border: 'none',
-                            borderRadius: 999,
-                            background: 'rgba(0,0,0,0.62)',
-                            color: '#fff',
-                            fontSize: '11px',
-                            fontWeight: 700,
-                            lineHeight: 1,
-                            cursor: aspectBusy || imageUploadLoading ? 'default' : 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            padding: '0 10px',
-                            opacity: aspectBusy || imageUploadLoading ? 0.75 : 1,
-                          }}
-                        >
-                          {aspectBusy ? '3:4…' : '3:4'}
-                        </button>
                         {url ? (
                           <a
                             href={url}
@@ -5274,6 +5240,32 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           </div>
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        disabled={aspectBusy || imageUploadLoading}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fitImageAspect3x4(id);
+                        }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        style={{
+                          width: '100%',
+                          marginTop: 8,
+                          minHeight: 32,
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          borderRadius: 8,
+                          background: aspectBusy
+                            ? 'rgba(99, 102, 241, 0.22)'
+                            : 'rgba(255,255,255,0.05)',
+                          color: '#fff',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: aspectBusy || imageUploadLoading ? 'default' : 'pointer',
+                          opacity: aspectBusy || imageUploadLoading ? 0.8 : 1,
+                        }}
+                      >
+                        {aspectBusy ? 'Приведение к 3:4…' : 'Сделать 3:4'}
+                      </button>
                     </div>
                   );
                 })}
