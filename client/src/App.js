@@ -6,7 +6,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductionEnabled, isProfileProductEnrichmentEnabled } from './utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
 import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';

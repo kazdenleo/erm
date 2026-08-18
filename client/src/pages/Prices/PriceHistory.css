@@ -1,0 +1,213 @@
+.price-history-page .subtitle {
+  margin-bottom: 0;
+}
+
+.price-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin: 16px 0 12px;
+}
+
+.price-history-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  position: relative;
+}
+
+.price-history-field input,
+.price-history-field select {
+  min-width: 160px;
+  height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.price-history-search {
+  min-width: 280px;
+  flex: 1 1 280px;
+}
+
+.price-history-suggest {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  margin: 2px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #1e2430;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.price-history-suggest button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.price-history-suggest button:hover,
+.price-history-suggest button:focus {
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.price-history-suggest .sku {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.price-history-suggest .name {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.price-history-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  font-size: 13px;
+}
+
+.price-history-selected button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.price-history-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.price-history-table-wrap {
+  max-height: calc(100vh - 280px);
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.price-history-empty {
+  margin: 12px;
+}
+
+.price-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.price-history-table th,
+.price-history-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  vertical-align: top;
+}
+
+.price-history-table th {
+  position: sticky;
+  top: 0;
+  background: #1e2430;
+  z-index: 1;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.price-history-table tr.changed td {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.price-history-table .sku {
+  font-weight: 600;
+}
+
+.price-history-table .name.muted,
+.price-history-table .muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.price-history-table .nowrap {
+  white-space: nowrap;
+}
+
+.price-history-table .reason {
+  max-width: 420px;
+  line-height: 1.35;
+}
+
+.price-history-delta-changed {
+  font-weight: 600;
+}
+
+.price-history-product-btn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.price-history-product-btn:hover .sku {
+  text-decoration: underline;
+}
+
+.price-history-reason-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.price-history-source {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.price-history-grounds {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.price-history-tab-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.product-price-history-tab .price-history-table-wrap {
+  max-height: 55vh;
+}
