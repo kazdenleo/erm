@@ -44,6 +44,12 @@
   margin-right: 0;
 }
 
+/* Глобальный .card { overflow:hidden } обрезает длинные блоки и ломает прокрутку карточки */
+.product-form .card,
+.product-form-marketplace-panel .card {
+  overflow: visible;
+}
+
 .product-form-marketplace-panel .row.g-3 > [class*='col-'] {
   min-width: 0;
 }

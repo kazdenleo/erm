@@ -38,12 +38,36 @@ export function isOzonAnnotationAttr(attr) {
   return false;
 }
 
+/** Дубль карточного описания Ozon: в UI не показываем, текст уходит в «Аннотация». */
+export function isOzonPlainDescriptionAttr(attr) {
+  if (!attr || isOzonAnnotationAttr(attr)) return false;
+  const n = normalizeOzonAttrName(attr.name);
+  if (!n) return false;
+  if (n === 'описание' || n === 'описание товара' || n === 'описание карточки' || n === 'description') {
+    return true;
+  }
+  if (
+    n.startsWith('описание') &&
+    !n.includes('модел') &&
+    !n.includes('комплект') &&
+    !n.includes('состава') &&
+    !n.includes('rich')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function findOzonNameAttrs(attrs) {
   return (Array.isArray(attrs) ? attrs : []).filter(isOzonNameAttr);
 }
 
 export function findOzonAnnotationAttrs(attrs) {
   return (Array.isArray(attrs) ? attrs : []).filter(isOzonAnnotationAttr);
+}
+
+export function findOzonPlainDescriptionAttrs(attrs) {
+  return (Array.isArray(attrs) ? attrs : []).filter(isOzonPlainDescriptionAttr);
 }
 
 export function ozonAttrPlainText(raw) {

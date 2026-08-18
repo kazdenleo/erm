@@ -68,6 +68,7 @@ import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.j
 import {
   isOzonAnnotationAttr,
   isOzonNameAttr,
+  isOzonPlainDescriptionAttr,
   OZON_ANNOTATION_ATTR_ID,
 } from '../../utils/ozonCardTextAttrs.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
@@ -1478,6 +1479,7 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
   if (DUPLICATE_MP_CARD_ATTR_LABELS.has(flat)) return true;
 
   if (bucket === 'ozon') {
+    if (isOzonPlainDescriptionAttr({ name: raw })) return true;
     const kind = classifyMarketplaceDimAttrName(raw);
     if (kind === 'pack' || kind === 'product') return true;
     return false;

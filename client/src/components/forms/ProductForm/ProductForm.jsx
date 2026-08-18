@@ -135,8 +135,10 @@ import {
 import {
   findOzonAnnotationAttrs,
   findOzonNameAttrs,
+  findOzonPlainDescriptionAttrs,
   isOzonAnnotationAttr,
   isOzonNameAttr,
+  isOzonPlainDescriptionAttr,
   ozonAttrPlainText,
   OZON_ANNOTATION_ATTR_ID,
 } from '../../../utils/ozonCardTextAttrs.js';
@@ -3652,6 +3654,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
     const nameText = String(formData.name || '').trim();
     const descText = String(formData.description || '').trim();
+    const leftoverDesc = findOzonPlainDescriptionAttrs(ozonAttributes);
     setOzonAttributeValues((prev) => {
       let changed = false;
       const next = { ...prev };
@@ -3661,15 +3664,70 @@ export const ProductForm = React.forwardRef(function ProductForm({
         next[key] = nameText;
         changed = true;
       }
+      let annText = descText;
+      if (!annText) {
+        for (const attr of leftoverDesc) {
+          const t = ozonAttrPlainText(prev[String(attr.id)]);
+          if (t) {
+            annText = t;
+            break;
+          }
+        }
+      }
       for (const attr of descTargets) {
         const key = String(attr.id);
-        if (String(prev[key] ?? '') === descText) continue;
-        next[key] = descText;
+        if (String(prev[key] ?? '') === annText) continue;
+        next[key] = annText;
         changed = true;
+      }
+      if (descLinked && leftoverDesc.length) {
+        for (const attr of leftoverDesc) {
+          const key = String(attr.id);
+          if (String(prev[key] ?? '') === annText) continue;
+          next[key] = annText;
+          changed = true;
+        }
       }
       return changed ? next : prev;
     });
   }, [formData.name, formData.description, formData.mp_field_links, ozonAttributes]);
+
+  // Если в схеме ещё есть скрытое «Описание» — перенести текст в пустую Аннотацию
+  useEffect(() => {
+    const leftoverDesc = findOzonPlainDescriptionAttrs(ozonAttributes);
+    if (!leftoverDesc.length) return;
+    const schemaReady = Array.isArray(ozonAttributes) && ozonAttributes.length > 0;
+    const fromSchema = schemaReady ? findOzonAnnotationAttrs(ozonAttributes) : [];
+    const targets = schemaReady && fromSchema.length === 0
+      ? []
+      : fromSchema.length
+        ? fromSchema
+        : [{ id: OZON_ANNOTATION_ATTR_ID, name: 'Аннотация' }];
+    if (schemaReady && targets.length === 0) return;
+    setOzonAttributeValues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      const firstKey = String(targets[0].id);
+      let annText = ozonAttrPlainText(prev[firstKey]);
+      if (!annText) {
+        for (const attr of leftoverDesc) {
+          const t = ozonAttrPlainText(prev[String(attr.id)]);
+          if (t) {
+            annText = t;
+            break;
+          }
+        }
+      }
+      if (!annText) return prev;
+      for (const attr of targets) {
+        const key = String(attr.id);
+        if (String(prev[key] ?? '') === annText) continue;
+        next[key] = annText;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [ozonAttributes]);
 
   useEffect(() => {
     if (isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')) return;
@@ -5010,6 +5068,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
           // Числовые поля (вес, габариты-атрибуты) — value, не dictionary_value_id
           out[key] = { value: str };
         }
+      }
+      const annAttr = findOzonAnnotationAttrs(ozonAttributes)[0];
+      const annKey = annAttr ? String(annAttr.id) : String(OZON_ANNOTATION_ATTR_ID);
+      const annText =
+        ozonAttrPlainText(ozonAttributeValues[annKey]) ||
+        ozonAttrPlainText(out[annKey]?.value);
+      for (const attr of findOzonPlainDescriptionAttrs(ozonAttributes)) {
+        const key = String(attr.id);
+        if (annText) out[key] = { value: annText };
+        else delete out[key];
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
@@ -7108,6 +7176,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   {ozonAttributes
                     .filter((attr) => {
                       if (isOzonRichContentAttrId(attr?.id)) return false;
+                      if (isOzonPlainDescriptionAttr(attr)) return false;
                       const kind = classifyMarketplaceDimAttrName(attr?.name);
                       return kind !== 'product' && kind !== 'pack';
                     })
@@ -7115,6 +7184,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     const key = String(attr.id);
                     const value = ozonAttributeValues[key];
                     const rawValue = value !== undefined && value !== null ? value : '';
+                    const colClass = isOzonAnnotationAttr(attr) || isOzonNameAttr(attr)
+                      ? 'col-12'
+                      : 'col-12 col-md-6 col-lg-4';
                     const hasDict = ozonAttrHasDictionary(attr);
                     const options = ozonDictValues[attr.id];
                     const matchedOpt = Array.isArray(options) ? findOzonDictEntryForStored(rawValue, options) : null;
@@ -7130,7 +7202,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       (selectValue === '' || String(selectValue) !== fallbackLabel);
                     if (hasDict) {
                       return (
-                        <div key={attr.id} className="col-12 col-md-6 col-lg-4">
+                        <div key={attr.id} className={colClass}>
                           <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                             {attr.name}
                             {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
@@ -7165,7 +7237,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     if (attr.type === 'boolean' || (attr.type === 'string' && attr.is_aspect)) {
                       const checked = rawValue === 'true' || rawValue === true;
                       return (
-                        <div key={attr.id} className="col-12 col-md-6 col-lg-4">
+                        <div key={attr.id} className={colClass}>
                           <div className="form-check">
           <input
                               className="form-check-input"
@@ -7186,7 +7258,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       );
                     }
                     return (
-                      <div key={attr.id} className="col-12 col-md-6 col-lg-4">
+                      <div key={attr.id} className={colClass}>
                         <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                           {attr.name}
                           {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
@@ -7198,11 +7270,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           )}
                         </label>
                         {(() => {
-                          const nameNorm = String(attr.name || '').toLowerCase();
-                          const isAnnotation =
-                            isOzonAnnotationAttr(attr) ||
-                            /аннотац/.test(nameNorm) ||
-                            /описание/.test(nameNorm);
+                          const isAnnotation = isOzonAnnotationAttr(attr);
                           if (!isAnnotation) {
                             return (
           <input
