@@ -3,7 +3,7 @@
  * mp_links: { ozon?: { id, name }, wb?: { id, name }, ym?: { id, name } }
  */
 
-import { attrValuesDiffer } from './productAttrMpDiff.js';
+import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
 
 export const ATTR_MP_CODES = ['ozon', 'wb', 'ym'];
 
