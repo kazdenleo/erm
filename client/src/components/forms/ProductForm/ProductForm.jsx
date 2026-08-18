@@ -4993,6 +4993,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px' }}>
           Карточки перетаскивайте для порядка (первое — главное). Файлы с компьютера — в пунктирную область или на карточку; одна или несколько.
+          Под каждым фото — кнопка <strong>Сделать 3:4</strong>.
         </div>
         {!currentProduct?.id ? (
           <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Сначала сохраните товар, затем можно загружать изображения.</div>
