@@ -2597,11 +2597,15 @@ export function ProductsBulkEdit() {
 
   const displayColumns = useMemo(() => {
     const hidden = new Set(hiddenColumnKeys || []);
-    const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys).filter(
-      (c) => ALWAYS_VISIBLE_COL_KEYS.has(c.key) || !hidden.has(c.key)
-    );
+    const pinned = new Set(pinnedColumnKeys || []);
+    const q = String(columnsSearch || '').trim();
+    const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys).filter((c) => {
+      if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
+      if (q) return columnMatchesSearchQuery(c, q);
+      return !hidden.has(c.key);
+    });
     return [SELECT_COL, ...ordered];
-  }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys]);
+  }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch]);
 
   const stickyLeftMap = useMemo(
     () => buildStickyLeftMap(displayColumns, pinnedColumnKeys),
@@ -2639,12 +2643,19 @@ export function ProductsBulkEdit() {
 
   const showAllColumns = useCallback(() => {
     setHiddenColumnKeys([]);
+    setColumnsSearch('');
   }, []);
 
   const filteredColumnMenuItems = useMemo(() => {
-    const q = columnsSearch;
-    return (visibleColumns || []).filter((col) => columnMatchesSearchQuery(col, q));
-  }, [visibleColumns, columnsSearch]);
+    const hidden = new Set(hiddenColumnKeys || []);
+    const pinned = new Set(pinnedColumnKeys || []);
+    const q = String(columnsSearch || '').trim();
+    return (visibleColumns || []).filter((col) => {
+      if (ALWAYS_VISIBLE_COL_KEYS.has(col.key) || pinned.has(col.key)) return true;
+      if (q) return columnMatchesSearchQuery(col, q);
+      return !hidden.has(col.key);
+    });
+  }, [visibleColumns, columnsSearch, hiddenColumnKeys, pinnedColumnKeys]);
 
   const colStickyClass = useCallback(
     (col) => {
@@ -4134,7 +4145,11 @@ export function ProductsBulkEdit() {
                             </div>
                             <div className="products-bulk-columns-list">
                               {filteredColumnMenuItems.length === 0 ? (
-                                <div className="text-muted small py-2 px-1">Нет столбцов по запросу</div>
+                                <div className="text-muted small py-2 px-1">
+                                  {String(columnsSearch || '').trim()
+                                    ? 'Нет столбцов по запросу'
+                                    : 'Нет выбранных столбцов'}
+                                </div>
                               ) : (
                                 filteredColumnMenuItems.map((col) => {
                                   const locked = ALWAYS_VISIBLE_COL_KEYS.has(col.key);
