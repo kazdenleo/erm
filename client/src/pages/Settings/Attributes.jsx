@@ -9,7 +9,12 @@ import { userCategoriesApi } from '../../services/userCategories.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { AttributeMpLinkFields } from '../../components/common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
-import { emptyAttrMpLinks, normalizeAttrMpLinks } from '../../utils/productAttributeMpLinks.js';
+import {
+  attrMpLinksHasAny,
+  emptyAttrMpLinks,
+  formatAttrMpLinksSummary,
+  normalizeAttrMpLinks,
+} from '../../utils/productAttributeMpLinks.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -37,9 +42,16 @@ function wbAttrName(a) {
   return a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
 }
 
+function linksOfCategory(cat, attributeId) {
+  const map = cat?.attribute_mp_links && typeof cat.attribute_mp_links === 'object'
+    ? cat.attribute_mp_links
+    : {};
+  return normalizeAttrMpLinks(map[String(attributeId)] ?? map[attributeId]);
+}
+
 function CategoryMpLinksPanel({ attributeId }) {
   const [categories, setCategories] = useState([]);
-  const [selectedCatId, setSelectedCatId] = useState('');
+  const [openCatId, setOpenCatId] = useState('');
   const [links, setLinks] = useState(() => emptyAttrMpLinks());
   const [ozonOptions, setOzonOptions] = useState([]);
   const [wbOptions, setWbOptions] = useState([]);
@@ -59,7 +71,8 @@ function CategoryMpLinksPanel({ attributeId }) {
           (c.attribute_ids || []).map((id) => String(id)).includes(String(attributeId))
         );
         setCategories(linked);
-        setSelectedCatId(linked[0] ? String(linked[0].id) : '');
+        const withLinks = linked.find((c) => attrMpLinksHasAny(linksOfCategory(c, attributeId)));
+        setOpenCatId(String((withLinks || linked[0])?.id || ''));
       })
       .catch(() => {
         if (!cancelled) setCategories([]);
@@ -72,17 +85,17 @@ function CategoryMpLinksPanel({ attributeId }) {
     };
   }, [attributeId]);
 
-  const selected = categories.find((c) => String(c.id) === String(selectedCatId)) || null;
+  const openCat = categories.find((c) => String(c.id) === String(openCatId)) || null;
 
   useEffect(() => {
-    if (!selectedCatId) {
+    if (!openCatId) {
       setLinks(emptyAttrMpLinks());
       setOzonOptions([]);
       setWbOptions([]);
       setYmOptions([]);
       return undefined;
     }
-    const cat = categories.find((c) => String(c.id) === String(selectedCatId));
+    const cat = categories.find((c) => String(c.id) === String(openCatId));
     if (!cat) {
       setLinks(emptyAttrMpLinks());
       setOzonOptions([]);
@@ -90,10 +103,7 @@ function CategoryMpLinksPanel({ attributeId }) {
       setYmOptions([]);
       return undefined;
     }
-    const map = cat.attribute_mp_links && typeof cat.attribute_mp_links === 'object'
-      ? cat.attribute_mp_links
-      : {};
-    setLinks(normalizeAttrMpLinks(map[String(attributeId)] ?? map[attributeId]));
+    setLinks(linksOfCategory(cat, attributeId));
     let cancelled = false;
     Promise.all([
       userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon').catch(() => null),
@@ -108,19 +118,16 @@ function CategoryMpLinksPanel({ attributeId }) {
     return () => {
       cancelled = true;
     };
-    // categories читаем из замыкания при смене категории, не при каждом сохранении связей
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCatId, attributeId]);
+  }, [openCatId, attributeId]);
 
-  const handleLinksChange = async (next) => {
-    if (!selected) return;
-    setLinks(next);
+  const persistLinks = async (cat, next) => {
     setSaving(true);
     try {
-      await userCategoriesApi.updateAttributeMpLinks(selected.id, attributeId, next);
+      await userCategoriesApi.updateAttributeMpLinks(cat.id, attributeId, next);
       setCategories((prev) =>
         prev.map((c) =>
-          String(c.id) === String(selected.id)
+          String(c.id) === String(cat.id)
             ? {
                 ...c,
                 attribute_mp_links: {
@@ -131,12 +138,17 @@ function CategoryMpLinksPanel({ attributeId }) {
             : c
         )
       );
+      if (String(cat.id) === String(openCatId)) setLinks(next);
     } catch (err) {
       alert(err?.response?.data?.message || err?.response?.data?.error || 'Не удалось сохранить связь');
     } finally {
       setSaving(false);
     }
   };
+
+  const copySources = categories.filter(
+    (c) => String(c.id) !== String(openCatId) && attrMpLinksHasAny(linksOfCategory(c, attributeId))
+  );
 
   if (loading) {
     return <p className="muted" style={{ margin: 0 }}>Загрузка категорий…</p>;
@@ -152,29 +164,56 @@ function CategoryMpLinksPanel({ attributeId }) {
 
   return (
     <div className="attribute-category-mp-links">
-      <label>Категория ERP</label>
-      <select
-        className="form-select form-select-sm"
-        value={selectedCatId}
-        onChange={(e) => setSelectedCatId(e.target.value)}
-      >
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>{c.name}</option>
-        ))}
-      </select>
-      <p className="muted" style={{ margin: '8px 0 10px' }}>
-        Для выбранной категории укажите характеристики Ozon / WB / Яндекс.Маркета.
-        В другой категории можно выбрать другие. {saving ? 'Сохранение…' : 'Сохраняется сразу.'}
+      <p className="muted" style={{ margin: '0 0 10px' }}>
+        Связи хранятся отдельно для каждой категории и не затирают друг друга.
+        {saving ? ' Сохранение…' : ' Изменения сохраняются сразу.'}
       </p>
-      <AttributeMpLinkFields
-        links={links}
-        onChange={(next) => void handleLinksChange(next)}
-        ozonOptions={ozonOptions}
-        wbOptions={wbOptions}
-        ymOptions={ymOptions}
-        getWbId={wbAttrKey}
-        getWbName={wbAttrName}
-      />
+      <div className="attribute-cat-mp-list">
+        {categories.map((c) => {
+          const isOpen = String(c.id) === String(openCatId);
+          const summary = formatAttrMpLinksSummary(linksOfCategory(c, attributeId));
+          return (
+            <div key={c.id} className={`attribute-cat-mp-card${isOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="attribute-cat-mp-card__head"
+                onClick={() => setOpenCatId(String(c.id))}
+              >
+                <span className="attribute-cat-mp-card__name">{c.name}</span>
+                <span className="attribute-cat-mp-card__summary">{summary}</span>
+              </button>
+              {isOpen && openCat ? (
+                <div className="attribute-cat-mp-card__body">
+                  {copySources.length > 0 ? (
+                    <div className="attribute-cat-mp-copy">
+                      <span className="muted">Скопировать связи из</span>
+                      {copySources.map((src) => (
+                        <button
+                          key={src.id}
+                          type="button"
+                          className="btn btn-outline-secondary btn-sm"
+                          onClick={() => void persistLinks(openCat, linksOfCategory(src, attributeId))}
+                        >
+                          {src.name}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <AttributeMpLinkFields
+                    links={links}
+                    onChange={(next) => void persistLinks(openCat, next)}
+                    ozonOptions={ozonOptions}
+                    wbOptions={wbOptions}
+                    ymOptions={ymOptions}
+                    getWbId={wbAttrKey}
+                    getWbName={wbAttrName}
+                  />
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -349,7 +388,7 @@ export function Attributes() {
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
       <p className="subtitle">
-        Откройте атрибут кнопкой «Изменить» — там выбирается категория ERP и характеристики Ozon / Wildberries / Яндекс.Маркета для неё.
+        Откройте атрибут кнопкой «Изменить» — связи с Ozon / Wildberries / Яндекс.Маркетом задаются отдельно для каждой категории и сохраняются в базе.
       </p>
 
       <div className="attributes-toolbar">

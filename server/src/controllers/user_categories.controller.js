@@ -84,13 +84,23 @@ function attachParsedAttributeMeta(row) {
 }
 
 async function upsertCategoryAttributeLinks(categoryId, attributeId, mpLinks) {
+  const links = normalizeMpLinks(mpLinks);
   await query(
     `INSERT INTO category_attributes (user_category_id, attribute_id, mp_links)
      VALUES ($1, $2, $3::jsonb)
      ON CONFLICT (user_category_id, attribute_id)
      DO UPDATE SET mp_links = EXCLUDED.mp_links`,
-    [categoryId, attributeId, JSON.stringify(normalizeMpLinks(mpLinks))]
+    [categoryId, attributeId, JSON.stringify(links)]
   );
+  if (Object.keys(links).length > 0) {
+    await query(
+      `UPDATE product_attributes
+       SET mp_links = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+         AND (mp_links IS NULL OR mp_links = '{}'::jsonb)`,
+      [JSON.stringify(links), attributeId]
+    );
+  }
 }
 
 class UserCategoriesController {

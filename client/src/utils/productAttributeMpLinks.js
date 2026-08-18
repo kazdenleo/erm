@@ -34,6 +34,20 @@ export function normalizeAttrMpLinks(raw) {
   return out;
 }
 
+export function attrMpLinksHasAny(raw) {
+  const links = normalizeAttrMpLinks(raw);
+  return ATTR_MP_CODES.some((mp) => links[mp]);
+}
+
+export function formatAttrMpLinksSummary(raw) {
+  const links = normalizeAttrMpLinks(raw);
+  const parts = [];
+  if (links.ozon) parts.push(`OZ: ${links.ozon.name || links.ozon.id}`);
+  if (links.wb) parts.push(`WB: ${links.wb.name || links.wb.id}`);
+  if (links.ym) parts.push(`ЯМ: ${links.ym.name || links.ym.id}`);
+  return parts.length ? parts.join(' · ') : 'не связано';
+}
+
 export function attrMpLinkKey(entry) {
   if (!entry) return '';
   if (entry.id) return `id:${entry.id}`;
