@@ -706,19 +706,22 @@
 
 .products-bulk-columns-menu {
   position: relative;
+  flex: 1 1 280px;
+  min-width: 240px;
+  max-width: 420px;
 }
 
 .products-bulk-columns-panel {
   position: absolute;
+  left: 0;
   right: 0;
   top: calc(100% + 4px);
   z-index: 1060;
-  width: min(400px, 92vw);
   max-height: min(420px, 60vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 8px;
@@ -729,8 +732,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 0 0 auto;
-  margin-bottom: 8px;
 }
 
 .products-bulk-columns-search {

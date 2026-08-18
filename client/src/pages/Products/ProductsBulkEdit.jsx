@@ -2508,17 +2508,13 @@ export function ProductsBulkEdit() {
 
   useEffect(() => {
     if (!columnsMenuOpen) return undefined;
-    const t = window.setTimeout(() => columnsSearchRef.current?.focus(), 0);
     const onDoc = (e) => {
       if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target)) {
         setColumnsMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', onDoc);
-    return () => {
-      window.clearTimeout(t);
-      document.removeEventListener('mousedown', onDoc);
-    };
+    return () => document.removeEventListener('mousedown', onDoc);
   }, [columnsMenuOpen]);
 
   const togglePinColumn = useCallback((colKey) => {
@@ -4099,50 +4095,49 @@ export function ProductsBulkEdit() {
                     </div>
                     <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                       <div className="products-bulk-columns-menu" ref={columnsMenuRef}>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="small"
-                          className="btn-shadow"
-                          onClick={() => setColumnsMenuOpen((o) => !o)}
-                          aria-expanded={columnsMenuOpen}
-                          title="Показать или скрыть столбцы таблицы"
-                        >
-                          {columnsMenuOpen ? '▼ Столбцы' : '▶ Столбцы'}
-                          {String(columnsSearch || '').trim() ? (
-                            <span className="badge bg-primary ms-1 rounded-pill" title={columnsSearch}>
-                              поиск
-                            </span>
-                          ) : null}
+                        <label className="text-muted small mb-1 d-block" htmlFor="bulk-columns-search">
+                          Столбцы
                           {hiddenColumnKeys.length > 0 ? (
                             <span className="badge bg-secondary ms-1 rounded-pill">{hiddenColumnKeys.length}</span>
                           ) : null}
-                        </Button>
+                        </label>
+                        <div className="products-bulk-columns-toolbar">
+                          <input
+                            ref={columnsSearchRef}
+                            id="bulk-columns-search"
+                            type="search"
+                            className="form-control form-control-sm products-bulk-columns-search"
+                            placeholder="Найти столбец…"
+                            value={columnsSearch}
+                            onChange={(e) => {
+                              setColumnsSearch(e.target.value);
+                              setColumnsMenuOpen(true);
+                            }}
+                            onFocus={() => setColumnsMenuOpen(true)}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === 'Escape') setColumnsMenuOpen(false);
+                            }}
+                            autoComplete="off"
+                            aria-label="Поиск по названию столбца"
+                            aria-expanded={columnsMenuOpen}
+                            aria-controls="bulk-columns-list"
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-outline-secondary btn-sm products-bulk-columns-show-all"
+                            onClick={() => {
+                              showAllColumns();
+                              setColumnsMenuOpen(true);
+                            }}
+                            disabled={hiddenColumnKeys.length === 0}
+                            title="Показать все скрытые столбцы"
+                          >
+                            Показать все
+                          </button>
+                        </div>
                         {columnsMenuOpen ? (
-                          <div className="products-bulk-columns-panel" role="menu">
-                            <div className="products-bulk-columns-toolbar">
-                              <input
-                                ref={columnsSearchRef}
-                                id="bulk-columns-search"
-                                type="search"
-                                className="form-control form-control-sm products-bulk-columns-search"
-                                placeholder="Найти столбец…"
-                                value={columnsSearch}
-                                onChange={(e) => setColumnsSearch(e.target.value)}
-                                onKeyDown={(e) => e.stopPropagation()}
-                                autoComplete="off"
-                                aria-label="Поиск по названию столбца"
-                              />
-                              <button
-                                type="button"
-                                className="btn btn-outline-secondary btn-sm products-bulk-columns-show-all"
-                                onClick={showAllColumns}
-                                disabled={hiddenColumnKeys.length === 0}
-                                title="Показать все скрытые столбцы"
-                              >
-                                Показать все
-                              </button>
-                            </div>
+                          <div className="products-bulk-columns-panel" role="listbox" id="bulk-columns-list">
                             <div className="products-bulk-columns-list">
                               {filteredColumnMenuItems.length === 0 ? (
                                 <div className="text-muted small py-2 px-1">Нет столбцов по запросу</div>
