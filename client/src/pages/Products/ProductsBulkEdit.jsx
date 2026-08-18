@@ -277,12 +277,30 @@ function bulkMpCodeForColumn(colKey) {
   return null;
 }
 
-/** Ячейка МП только для чтения, если поле связано с «Основным». */
+/** Ячейка МП связана с «Основным» — в UI показываем зеркало Main, правка отвязывает. */
 function isBulkLinkedMpReadonly(row, colKey) {
   const fieldKey = bulkLinkFieldForColumn(colKey);
   const mp = bulkMpCodeForColumn(colKey);
   if (!fieldKey || !mp) return false;
   return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp);
+}
+
+/** Значение колонки МП при включённой связи: как на «Основном». */
+function bulkLinkedMirrorValue(row, colKey) {
+  const fieldKey = bulkLinkFieldForColumn(colKey);
+  if (fieldKey === 'name') return row.name ?? '';
+  if (fieldKey === 'description') return row.description ?? '';
+  if (fieldKey === 'brand') return row.brand ?? '';
+  if (fieldKey === 'country') return row.country_of_origin ?? '';
+  if (fieldKey === 'dimensions') {
+    const dimKey = BULK_DIM_KEYS.find((d) => colKey === d || String(colKey).endsWith(`_pack_${d}`));
+    return dimKey ? row[dimKey] ?? '' : row[colKey];
+  }
+  if (fieldKey === 'product_dimensions') {
+    const base = productDimBaseKey(colKey);
+    return base ? row[base] ?? '' : row[colKey];
+  }
+  return row[colKey];
 }
 
 function copyMainNameToMp(row, mp) {
@@ -344,11 +362,24 @@ function copyMainFieldToMp(row, fieldKey, mp) {
  * Единицы в таблице уже display — ozon/wb/ym pack совпадают с ERP-колонками.
  */
 function withSyncedLinkedFields(row, key, value) {
-  let next = withSyncedProductDims(row, key, value);
   const fieldKey = bulkLinkFieldForColumn(key);
+  const editedMp = bulkMpCodeForColumn(key);
+  const links0 = normalizeMpFieldLinks(row.mp_field_links);
+
+  // Правка колонки МП при связи — отвязать этот МП и писать только в него (как «свои» название/описание).
+  if (fieldKey && editedMp && isMpFieldLinked(links0, fieldKey, editedMp)) {
+    const next = {
+      ...row,
+      mp_field_links: setMpFieldLink(row.mp_field_links, fieldKey, editedMp, false),
+      [key]: value,
+    };
+    if (fieldKey === 'product_dimensions') return withSyncedProductDims(next, key, value);
+    return next;
+  }
+
+  let next = withSyncedProductDims(row, key, value);
   if (!fieldKey || fieldKey === 'product_dimensions') return next;
   const links = normalizeMpFieldLinks(next.mp_field_links);
-  const editedMp = bulkMpCodeForColumn(key);
 
   const syncScalar = (mainKey, colsByMp) => {
     if (!editedMp) {
@@ -633,8 +664,8 @@ const COLUMNS = [
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
   { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country' },
   /* ——— Ozon ——— */
-  { key: 'mp_ozon_name', label: 'Название', title: 'Ozon · Название', input: 'textarea', minW: 140, mpBucket: 'ozon' },
-  { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 140, mpBucket: 'ozon' },
+  { key: 'mp_ozon_name', label: 'Название', title: 'Ozon · Название', input: 'textarea', minW: 140, mpBucket: 'ozon', linkFieldKey: 'name' },
+  { key: 'mp_ozon_description', label: 'Описание', title: 'Ozon · Описание', input: 'textarea', minW: 140, mpBucket: 'ozon', linkFieldKey: 'description' },
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   { key: 'ozon_product_length', label: 'Дл. тов.', title: 'Ozon · Длина товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
@@ -648,8 +679,8 @@ const COLUMNS = [
   { key: 'mp_ozon_brand', label: 'Бренд', title: 'Ozon · Бренд', input: 'text', minW: 90, mpBucket: 'ozon' },
   { key: 'ozon_country', label: 'Страна', title: 'Ozon · Страна производителя', input: 'text', minW: 80, mpBucket: 'ozon' },
   /* ——— Wildberries ——— */
-  { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 140, mpBucket: 'wb' },
-  { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 140, mpBucket: 'wb' },
+  { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'name' },
+  { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'description' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 80, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb' },
   { key: 'wb_product_length', label: 'Дл. тов.', title: 'Wildberries · Длина товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
@@ -663,8 +694,8 @@ const COLUMNS = [
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 90, mpBucket: 'wb' },
   { key: 'wb_country', label: 'Страна', title: 'Wildberries · Страна производителя', input: 'text', minW: 80, mpBucket: 'wb' },
   /* ——— Яндекс.Маркет ——— */
-  { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym' },
-  { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym' },
+  { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
+  { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym' },
   { key: 'ym_product_length', label: 'Дл. тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_product_width', label: 'Ш. тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
@@ -3412,10 +3443,10 @@ export function ProductsBulkEdit() {
   const toggleBulkHeaderFieldLink = useCallback(
     (fieldKey, mp) => {
       if (!rows.length) return;
-      const allOn = rows.every((r) =>
+      const anyOn = rows.some((r) =>
         isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
       );
-      const enable = !allOn;
+      const enable = !anyOn;
       markChangedForPush(rows.map((r) => r.id));
       markDirty();
       setRows((prev) =>
@@ -3457,10 +3488,10 @@ export function ProductsBulkEdit() {
         continue;
       }
       for (const mp of ['ozon', 'wb', 'ym']) {
-        const on = rows.every((r) =>
+        const anyOn = rows.some((r) =>
           isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
         );
-        if (on) base[fieldKey] = [...(base[fieldKey] || []), mp];
+        if (anyOn) base[fieldKey] = [...(base[fieldKey] || []), mp];
       }
       out[fieldKey] = base;
     }
@@ -3772,35 +3803,31 @@ export function ProductsBulkEdit() {
       </span>
     ) : null;
 
-    if (col.readonly || isBulkLinkedMpReadonly(row, col.key)) {
+    if (col.readonly) {
       const text = str(row[col.key]).trim();
-      const linked = isBulkLinkedMpReadonly(row, col.key);
       return (
         <span
-          className={`text-muted small text-nowrap d-block${linked ? ' products-bulk-cell-linked' : ''}${
-            dimDirty ? ' products-bulk-dim-dirty' : ''
-          }`}
-          title={
-            dimLocked
-              ? OZON_DIMS_LOCK_TITLE
-              : linked
-                ? 'Связано с «Основным» — правьте колонку Основное'
-                : col.hint || undefined
-          }
+          className={`text-muted small text-nowrap d-block${dimDirty ? ' products-bulk-dim-dirty' : ''}`}
+          title={dimLocked ? OZON_DIMS_LOCK_TITLE : col.hint || undefined}
         >
           {text !== '' ? text : '—'}
           {lockMark}
         </span>
       );
     }
-    const v = row[col.key];
+    const linked = isBulkLinkedMpReadonly(row, col.key);
+    const v = linked ? bulkLinkedMirrorValue(row, col.key) : row[col.key];
     const common = {
       className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}${
         dimDirty ? ' products-bulk-dim-dirty' : ''
-      }`,
-      value: v,
+      }${linked ? ' products-bulk-cell-linked' : ''}`,
+      value: v ?? '',
       onChange: (e) => updateCell(row.id, col.key, e.target.value),
-      title: dimLocked ? OZON_DIMS_LOCK_TITLE : undefined,
+      title: dimLocked
+        ? OZON_DIMS_LOCK_TITLE
+        : linked
+          ? 'Связано с «Основным». Правка отвяжет это поле у строки'
+          : undefined,
     };
 
     if (col.input === 'select_dict') {
