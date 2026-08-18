@@ -21,7 +21,7 @@ const SELECT_BASE = `
 `;
 
 class EmployeeTasksRepositoryPG {
-  async findAll({ profileId, status, assigneeId } = {}) {
+  async findAll({ profileId, status, assigneeId, involvedUserId } = {}) {
     const where = [];
     const params = [];
     let i = 1;
@@ -36,6 +36,11 @@ class EmployeeTasksRepositoryPG {
     if (assigneeId != null && assigneeId !== '') {
       where.push(`t.assignee_id = $${i++}::bigint`);
       params.push(assigneeId);
+    }
+    if (involvedUserId != null && involvedUserId !== '') {
+      where.push(`(t.assignee_id = $${i}::bigint OR t.created_by_id = $${i}::bigint)`);
+      params.push(involvedUserId);
+      i += 1;
     }
     const sql = `${SELECT_BASE}
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
@@ -115,6 +120,8 @@ class EmployeeTasksRepositoryPG {
       title: 'title',
       description: 'description',
       status: 'status',
+      task_type: 'task_type',
+      taskType: 'task_type',
       assignee_id: 'assignee_id',
       assigneeId: 'assignee_id',
       completed_at: 'completed_at',

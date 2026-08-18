@@ -6,6 +6,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import employeeTasksService, {
   canManageTasks,
+  canEditTask,
   isAccountAdminUser,
 } from '../services/employeeTasks.service.js';
 import employeeTasksRepository from '../repositories/employee_tasks.repository.pg.js';
@@ -45,15 +46,9 @@ export const employeeTasksController = {
       const list = await employeeTasksRepository.findAll({
         profileId,
         status: status || undefined,
-        assigneeId: !manage || mine ? req.user.id : undefined,
+        involvedUserId: !manage || mine ? req.user.id : undefined,
       });
-      // Руководитель/админ видит все; остальные — только свои (и без assignee — не показываем)
-      const data = manage && !mine
-        ? list
-        : list.filter(
-            (t) => t.assignee_id == null || Number(t.assignee_id) === Number(req.user.id)
-          );
-      res.json({ ok: true, data });
+      res.json({ ok: true, data: list });
     } catch (error) {
       next(error);
     }
@@ -88,6 +83,34 @@ export const employeeTasksController = {
         skuList: skuList ?? sku_list,
       });
       res.status(201).json({ ok: true, data: task });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async update(req, res, next) {
+    try {
+      const profileId = requireProfile(req, res);
+      if (profileId == null) return;
+      const task = await assertTaskAccess(req.params.id, profileId);
+      if (!canEditTask(task, req.user)) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Редактировать может только создатель задачи, руководитель склада или администратор',
+        });
+      }
+      if (task.status !== 'open') {
+        return res.status(400).json({ ok: false, message: 'Задача уже закрыта' });
+      }
+      const { title, description, assigneeId, assignee_id, skuList, sku_list } = req.body || {};
+      const updated = await employeeTasksService.updateTask(task, {
+        profileId,
+        title,
+        description,
+        assigneeId: assigneeId ?? assignee_id,
+        skuList: skuList ?? sku_list,
+      });
+      res.json({ ok: true, data: updated });
     } catch (error) {
       next(error);
     }

@@ -24,6 +24,11 @@ export const employeeTasksApi = {
     return response.data;
   },
 
+  async update(id, data) {
+    const response = await api.patch(`/employee-tasks/${id}`, data);
+    return response.data;
+  },
+
   async getProductCreateStatus(id) {
     const response = await api.get(`/employee-tasks/${id}/product-create-status`);
     return response.data;

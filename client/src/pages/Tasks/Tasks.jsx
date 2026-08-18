@@ -21,11 +21,11 @@ function userDisplayName(u) {
   return name;
 }
 
-function taskAssigneeLabel(task) {
+function taskCreatorLabel(task) {
   return (
-    task.assignee_full_name ||
-    task.assignee_email ||
-    (task.assignee_id != null ? `#${task.assignee_id}` : 'Не назначен')
+    task.created_by_full_name ||
+    task.created_by_email ||
+    (task.created_by_id != null ? `#${task.created_by_id}` : 'Система')
   );
 }
 
@@ -73,10 +73,11 @@ function taskPreviewMeta(task) {
 
 export function Tasks() {
   const { user, accountRole, isAccountAdmin } = useAuth();
-  const { tasks, loading, error, createTask, completeTask, reassignTask, getProductCreateStatus } = useEmployeeTasks();
+  const { tasks, loading, error, createTask, updateTask, completeTask, reassignTask, getProductCreateStatus } = useEmployeeTasks();
   const [statusFilter, setStatusFilter] = useState('open');
   const [selectedId, setSelectedId] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [skuListText, setSkuListText] = useState('');
@@ -126,6 +127,10 @@ export function Tasks() {
 
   const selectedTaskId = selectedTask?.id;
   const selectedTaskType = selectedTask?.task_type;
+  const selectedSkuKey =
+    selectedTaskType === 'product_create'
+      ? productCreateSkuListOf(selectedTask).join('\n')
+      : '';
 
   useEffect(() => {
     if (selectedTaskType !== 'product_create' || selectedTaskId == null) {
@@ -156,9 +161,15 @@ export function Tasks() {
     return () => {
       cancelled = true;
     };
-  }, [getProductCreateStatus, selectedTaskId, selectedTaskType]);
+  }, [getProductCreateStatus, selectedTaskId, selectedTaskType, selectedSkuKey]);
+
+  const closeFormModal = () => {
+    setIsModalOpen(false);
+    setEditingId(null);
+  };
 
   const openCreate = () => {
+    setEditingId(null);
     setTitle('');
     setDescription('');
     setSkuListText('');
@@ -175,24 +186,45 @@ export function Tasks() {
     setIsModalOpen(true);
   };
 
-  const handleCreate = async (e) => {
+  const openEdit = (task) => {
+    setEditingId(task.id);
+    setTitle(task.title || '');
+    setDescription(task.description || '');
+    setSkuListText(
+      task.task_type === 'dimensions_check' ? '' : productCreateSkuListOf(task).join('\n')
+    );
+    setAssigneeId(task.assignee_id != null ? String(task.assignee_id) : '');
+    setIsModalOpen(true);
+  };
+
+  const handleSave = async (e) => {
     e.preventDefault();
     if (!title.trim()) {
       alert('Укажите название задачи');
       return;
     }
+    const payload = {
+      title: title.trim(),
+      description: description.trim() || null,
+      skuList: skuListText,
+      assigneeId: assigneeId ? Number(assigneeId) : null,
+    };
     try {
       setSaving(true);
-      const created = await createTask({
-        title: title.trim(),
-        description: description.trim() || null,
-        skuList: skuListText,
-        assigneeId: assigneeId ? Number(assigneeId) : null,
-      });
-      setIsModalOpen(false);
-      if (created?.id != null) setSelectedId(created.id);
+      if (editingId) {
+        const updated = await updateTask(editingId, payload);
+        closeFormModal();
+        if (updated?.id != null) setSelectedId(updated.id);
+      } else {
+        const created = await createTask(payload);
+        closeFormModal();
+        if (created?.id != null) setSelectedId(created.id);
+      }
     } catch (err) {
-      alert('Ошибка создания задачи: ' + (err.message || String(err)));
+      alert(
+        (editingId ? 'Ошибка сохранения задачи: ' : 'Ошибка создания задачи: ') +
+          (err.response?.data?.message || err.message || String(err))
+      );
     } finally {
       setSaving(false);
     }
@@ -222,6 +254,81 @@ export function Tasks() {
     }
   };
 
+  const editingTask =
+    editingId != null
+      ? tasks.find((t) => Number(t.id) === Number(editingId)) || null
+      : null;
+  const hideSkuField = editingTask?.task_type === 'dimensions_check';
+
+  const formModal = (
+    <Modal
+      isOpen={isModalOpen}
+      onClose={closeFormModal}
+      title={editingId ? 'Редактировать задачу' : 'Новая задача'}
+      size="md"
+    >
+      <form className="task-form" onSubmit={handleSave}>
+        <label>
+          Название
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Кратко, что сделать"
+            required
+          />
+        </label>
+        <label>
+          Описание
+          <textarea
+            rows={4}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Подробности (необязательно)"
+          />
+        </label>
+        {!hideSkuField && (
+          <label>
+            Артикулы для создания товаров
+            <textarea
+              rows={5}
+              value={skuListText}
+              onChange={(e) => setSkuListText(e.target.value)}
+              placeholder="По одному на строку или через запятую"
+            />
+          </label>
+        )}
+        <label>
+          Исполнитель
+          <select
+            value={assigneeId}
+            onChange={(e) => setAssigneeId(e.target.value)}
+          >
+            <option value="">Руководитель склада, иначе администратор</option>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {userDisplayName(c)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="task-form-actions">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={closeFormModal}
+            disabled={saving}
+          >
+            Отмена
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? 'Сохранение…' : editingId ? 'Сохранить' : 'Создать'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+
   if (loading) {
     return <div className="loading">Загрузка задач...</div>;
   }
@@ -235,6 +342,9 @@ export function Tasks() {
     const isOpen = task.status === 'open';
     const isAssignee =
       task.assignee_id != null && Number(task.assignee_id) === Number(user?.id);
+    const isCreator =
+      task.created_by_id != null && Number(task.created_by_id) === Number(user?.id);
+    const canEdit = isOpen && (canManage || isCreator);
     const dimItems = dimItemsOf(task);
     const isDimensions = task.task_type === 'dimensions_check';
     const isProductCreate = task.task_type === 'product_create';
@@ -263,6 +373,7 @@ export function Tasks() {
           {isDimensions && <span className="task-badge">Габариты</span>}
           {isProductCreate && <span className="task-badge">Создание товаров</span>}
           <span>Исполнитель: {taskAssigneeLabel(task)}</span>
+          <span>Создатель: {taskCreatorLabel(task)}</span>
           <span>Создана: {formatDate(task.created_at)}</span>
           {task.updated_at && task.updated_at !== task.created_at && (
             <span>Обновлена: {formatDate(task.updated_at)}</span>
@@ -360,6 +471,15 @@ export function Tasks() {
                 Выполнить
               </Button>
             )}
+            {canEdit && (
+              <Button
+                size="small"
+                variant="secondary"
+                onClick={() => openEdit(task)}
+              >
+                Редактировать
+              </Button>
+            )}
             {canManage && (
               <Button
                 size="small"
@@ -424,6 +544,7 @@ export function Tasks() {
             </div>
           </form>
         </Modal>
+        {formModal}
       </div>
     );
   }
@@ -505,70 +626,7 @@ export function Tasks() {
         )}
       </div>
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="Новая задача"
-        size="md"
-      >
-        <form className="task-form" onSubmit={handleCreate}>
-          <label>
-            Название
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Кратко, что сделать"
-              required
-            />
-          </label>
-          <label>
-            Описание
-            <textarea
-              rows={4}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Подробности (необязательно)"
-            />
-          </label>
-          <label>
-            Артикулы для создания товаров
-            <textarea
-              rows={5}
-              value={skuListText}
-              onChange={(e) => setSkuListText(e.target.value)}
-              placeholder="По одному на строку или через запятую"
-            />
-          </label>
-          <label>
-            Исполнитель
-            <select
-              value={assigneeId}
-              onChange={(e) => setAssigneeId(e.target.value)}
-            >
-              <option value="">Руководитель склада, иначе администратор</option>
-              {candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {userDisplayName(c)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="task-form-actions">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setIsModalOpen(false)}
-              disabled={saving}
-            >
-              Отмена
-            </Button>
-            <Button type="submit" variant="primary" disabled={saving}>
-              {saving ? 'Сохранение…' : 'Создать'}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      {formModal}
     </div>
   );
 }

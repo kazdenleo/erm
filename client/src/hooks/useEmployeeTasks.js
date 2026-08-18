@@ -35,6 +35,13 @@ export function useEmployeeTasks() {
     return response.data;
   };
 
+  const updateTask = async (id, data) => {
+    const response = await employeeTasksApi.update(id, data);
+    setTasks((prev) => prev.map((t) => (t.id === id ? response.data : t)));
+    window.dispatchEvent(new Event('employee-tasks-stats-refresh'));
+    return response.data;
+  };
+
   const completeTask = async (id) => {
     const response = await employeeTasksApi.complete(id);
     setTasks((prev) => prev.map((t) => (t.id === id ? response.data : t)));
@@ -60,6 +67,7 @@ export function useEmployeeTasks() {
     error,
     loadTasks,
     createTask,
+    updateTask,
     completeTask,
     getProductCreateStatus,
     reassignTask,

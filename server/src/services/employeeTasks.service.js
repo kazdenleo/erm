@@ -32,6 +32,15 @@ export function canManageTasks(user) {
   return isAccountAdminUser(user) || isWarehouseManagerUser(user);
 }
 
+export function isTaskCreator(task, user) {
+  return task?.created_by_id != null && user?.id != null
+    && Number(task.created_by_id) === Number(user.id);
+}
+
+export function canEditTask(task, user) {
+  return canManageTasks(user) || isTaskCreator(task, user);
+}
+
 export async function resolveDefaultAssigneeId(profileId) {
   const manager = await employeeTasksRepository.findFirstWarehouseManager(profileId);
   if (manager?.id) return manager.id;
@@ -278,6 +287,63 @@ export async function getProductCreateTaskStatus(task, profileId) {
   };
 }
 
+export async function updateTask(task, {
+  profileId,
+  title,
+  description,
+  assigneeId,
+  skuList,
+}) {
+  if (!task || task.status !== 'open') {
+    const err = new Error('Задача уже закрыта');
+    err.statusCode = 400;
+    throw err;
+  }
+  const trimmedTitle = String(title || '').trim();
+  if (!trimmedTitle) {
+    const err = new Error('Укажите название задачи');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const updates = {
+    title: trimmedTitle,
+    description: description != null ? String(description).trim() || null : null,
+  };
+
+  if (assigneeId != null && assigneeId !== '') {
+    const nextId = Number(assigneeId);
+    if (!nextId || Number.isNaN(nextId)) {
+      const err = new Error('Укажите исполнителя');
+      err.statusCode = 400;
+      throw err;
+    }
+    const u = await usersRepository.findById(nextId);
+    if (!u || Number(u.profile_id) !== Number(profileId)) {
+      const err = new Error('Исполнитель не найден в этом аккаунте');
+      err.statusCode = 400;
+      throw err;
+    }
+    updates.assigneeId = nextId;
+  }
+
+  if (task.task_type !== 'dimensions_check') {
+    const normalizedSkuList = normalizeSkuList(skuList);
+    const meta = parseTaskMeta(task.meta);
+    if (normalizedSkuList.length > 0) {
+      updates.taskType = 'product_create';
+      updates.meta = { ...meta, sku_list: normalizedSkuList };
+    } else {
+      updates.taskType = 'text';
+      const nextMeta = { ...meta };
+      delete nextMeta.sku_list;
+      updates.meta = nextMeta;
+    }
+  }
+
+  return employeeTasksRepository.update(task.id, updates);
+}
+
 export async function reassignTask(task, assigneeId, profileId) {
   const nextId = Number(assigneeId);
   if (!nextId || Number.isNaN(nextId)) {
@@ -296,12 +362,15 @@ export async function reassignTask(task, assigneeId, profileId) {
 
 export default {
   createTextTask,
+  updateTask,
   createDimensionsCheckTaskIfNeeded,
   completeTask,
   getProductCreateTaskStatus,
   normalizeSkuList,
   reassignTask,
   canManageTasks,
+  canEditTask,
+  isTaskCreator,
   isWarehouseManagerUser,
   isAccountAdminUser,
   resolveDefaultAssigneeId,
