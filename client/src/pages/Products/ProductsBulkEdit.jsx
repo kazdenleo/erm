@@ -2003,6 +2003,59 @@ function cloneRow(r) {
   };
 }
 
+/** Оценка высоты строки для виртуализации (фото 3:4 + textarea). */
+const BULK_ROW_ESTIMATE_PX = 60;
+const BULK_ROW_OVERSCAN = 12;
+
+/**
+ * Справочник Ozon/WB/YM: полный список option монтируем только в фокусе.
+ * Иначе 100 строк × десятки dict-колонок × сотни значений вешают вкладку.
+ */
+function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommit }) {
+  const [expanded, setExpanded] = useState(false);
+  const list = Array.isArray(options) ? options : [];
+  const raw = str(cellRaw);
+  const selectValue = resolveDictSelectValue(raw, list);
+  const needsFallback = raw.trim() !== '' && selectValue === '';
+  const visible = expanded ? list : list.filter((o) => String(o.id) === String(selectValue));
+
+  return (
+    <select
+      className="products-bulk-cell-input"
+      value={needsFallback ? raw : selectValue}
+      title={title}
+      onFocus={() => setExpanded(true)}
+      onChange={(e) => {
+        const picked = e.target.value;
+        if (!picked) {
+          onCommit('');
+          return;
+        }
+        if (needsFallback && picked === raw) return;
+        onCommit(encodeDictSelection(picked, list, bucket));
+      }}
+    >
+      <option value="">—</option>
+      {visible.map((opt) => (
+        <option key={String(opt.id)} value={String(opt.id)}>
+          {opt.label || ozonDictOptionLabel(opt) || opt.id}
+        </option>
+      ))}
+      {needsFallback ? <option value={raw}>{formatOzonAttrDisplayValue(raw)}</option> : null}
+      {!expanded && list.length > visible.length ? (
+        <option value="" disabled>
+          {list.length} значений — откройте список
+        </option>
+      ) : null}
+      {bucket === 'ozon' && list.length === 0 && Number(dictionaryId) > 0 ? (
+        <option value="" disabled>
+          Загрузка справочника…
+        </option>
+      ) : null}
+    </select>
+  );
+}
+
 function PinIcon({ locked = false }) {
   return (
     <svg
@@ -2139,6 +2192,9 @@ export function ProductsBulkEdit() {
   const pendingLeaveActionRef = useRef(null);
   const leaveBypassRef = useRef(false);
   const hasUnsavedChangesRef = useRef(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const bulkScrollRef = useRef(null);
+  const [bulkViewport, setBulkViewport] = useState({ top: 0, height: 640 });
   /** id товаров, изменённых в этой сессии (после успешного push снимаются) */
   const changedForPushIdsRef = useRef(new Set());
   /** Выбранные на текущей странице строки (галочки) — scope для На МП / Из МП */
@@ -2390,6 +2446,26 @@ export function ProductsBulkEdit() {
     [displayColumns, pinnedColumnKeys]
   );
 
+  const bulkVirtRange = useMemo(() => {
+    const n = rows.length;
+    if (n === 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+    const top = Math.max(0, Number(bulkViewport.top) || 0);
+    const h = Math.max(160, Number(bulkViewport.height) || 640);
+    const start = Math.max(0, Math.floor(top / BULK_ROW_ESTIMATE_PX) - BULK_ROW_OVERSCAN);
+    const end = Math.min(n, Math.ceil((top + h) / BULK_ROW_ESTIMATE_PX) + BULK_ROW_OVERSCAN);
+    return {
+      start,
+      end,
+      padTop: start * BULK_ROW_ESTIMATE_PX,
+      padBottom: Math.max(0, (n - end) * BULK_ROW_ESTIMATE_PX),
+    };
+  }, [rows.length, bulkViewport]);
+
+  const visibleRows = useMemo(
+    () => rows.slice(bulkVirtRange.start, bulkVirtRange.end),
+    [rows, bulkVirtRange.start, bulkVirtRange.end]
+  );
+
   const hideColumn = useCallback((colKey) => {
     const key = String(colKey || '');
     if (!key || ALWAYS_VISIBLE_COL_KEYS.has(key)) return;
@@ -2490,15 +2566,17 @@ export function ProductsBulkEdit() {
     setPullMpMessage(null);
   };
 
-  const hasUnsavedChanges = useMemo(() => {
-    for (const r of rows) {
-      const orig = originals[r.id];
-      if (!orig) continue;
-      if (Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0) return true;
+  const markDirty = useCallback(() => {
+    if (!hasUnsavedChangesRef.current) {
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
     }
-    return false;
-  }, [rows, originals, mpAttrColumnDefs, lengthUnit, weightUnit]);
-  hasUnsavedChangesRef.current = hasUnsavedChanges;
+  }, []);
+
+  const clearDirty = useCallback(() => {
+    hasUnsavedChangesRef.current = false;
+    setHasUnsavedChanges(false);
+  }, []);
 
   const runPendingLeaveAction = useCallback(() => {
     const fn = pendingLeaveActionRef.current;
@@ -2576,6 +2654,7 @@ export function ProductsBulkEdit() {
       setOriginals({});
       setMpAttrColumnDefs([]);
       setTotalProducts(0);
+      clearDirty();
       applyCategoryScope(v);
     });
   };
@@ -2634,14 +2713,22 @@ export function ProductsBulkEdit() {
       if (selectedIds.length > 0) {
         total = selectedIds.length;
         const pageIds = selectedIds.slice(offset, offset + limit);
-        for (const id of pageIds) {
+        const CONC = 8;
+        for (let i = 0; i < pageIds.length; i += CONC) {
           if (gen !== loadGenRef.current) return;
-          try {
-            const wrap = await productsApi.getById(id);
-            const p = wrap?.data ?? wrap;
+          const chunk = pageIds.slice(i, i + CONC);
+          const parts = await Promise.all(
+            chunk.map(async (id) => {
+              try {
+                const wrap = await productsApi.getById(id);
+                return wrap?.data ?? wrap;
+              } catch {
+                return null;
+              }
+            })
+          );
+          for (const p of parts) {
             if (p?.id != null) list.push(p);
-          } catch {
-            /* пропускаем */
           }
         }
       } else {
@@ -2701,6 +2788,7 @@ export function ProductsBulkEdit() {
       setRows(nextRows);
       setOriginals(orig);
       clearChangedForPush();
+      clearDirty();
       setOzonBulkDictOptions({});
 
       queueMicrotask(() => {
@@ -2814,12 +2902,36 @@ export function ProductsBulkEdit() {
     lengthUnit,
     weightUnit,
     clearChangedForPush,
+    clearDirty,
   ]);
 
   useEffect(() => {
     if (!categoryScopeReady) return;
     loadProducts();
   }, [loadProducts, categoryScopeReady]);
+
+  useEffect(() => {
+    const el = bulkScrollRef.current;
+    if (!el || !categoryScopeReady || loading) return undefined;
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      setBulkViewport({ top: el.scrollTop, height: el.clientHeight || 640 });
+    };
+    const onScroll = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(sync);
+    };
+    sync();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onScroll) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [categoryScopeReady, loading, rows.length, pageSize]);
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
@@ -3156,6 +3268,7 @@ export function ProductsBulkEdit() {
     if (!col) return;
     const key = col.key;
     markChangedForPush(rows.map((r) => r.id));
+    markDirty();
     setRows((prev) =>
       prev.map((r) => {
         let next = withSyncedLinkedFields(r, key, bulkDraft);
@@ -3173,8 +3286,9 @@ export function ProductsBulkEdit() {
     setBulkModal({ open: false, column: null });
   };
 
-  const updateCell = (id, key, value) => {
+  const updateCell = useCallback((id, key, value) => {
     markChangedForPush(id);
+    markDirty();
     setRows((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
@@ -3190,7 +3304,7 @@ export function ProductsBulkEdit() {
         return next;
       })
     );
-  };
+  }, [markChangedForPush, markDirty, mpAttrColumnDefs]);
 
   /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
   const toggleBulkHeaderFieldLink = useCallback(
@@ -3201,6 +3315,7 @@ export function ProductsBulkEdit() {
       );
       const enable = !allOn;
       markChangedForPush(rows.map((r) => r.id));
+      markDirty();
       setRows((prev) =>
         prev.map((r) => {
           let next = {
@@ -3222,22 +3337,39 @@ export function ProductsBulkEdit() {
         })
       );
     },
-    [rows, markChangedForPush, mpAttrColumnDefs]
+    [rows, markChangedForPush, markDirty, mpAttrColumnDefs]
   );
 
-  const headerLinksForField = useCallback(
-    (fieldKey) => {
+  const mpLinksFingerprint = useMemo(
+    () => rows.map((r) => linksSignature(r.mp_field_links)).join('\n'),
+    [rows]
+  );
+
+  const headerLinksByField = useMemo(() => {
+    const keys = [...new Set((displayColumns || []).map((c) => c.linkFieldKey).filter(Boolean))];
+    const out = {};
+    for (const fieldKey of keys) {
       const base = normalizeMpFieldLinks(null);
-      if (!rows.length) return base;
+      if (!rows.length) {
+        out[fieldKey] = base;
+        continue;
+      }
       for (const mp of ['ozon', 'wb', 'ym']) {
         const on = rows.every((r) =>
           isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
         );
         if (on) base[fieldKey] = [...(base[fieldKey] || []), mp];
       }
-      return base;
-    },
-    [rows]
+      out[fieldKey] = base;
+    }
+    return out;
+    // rows читаем при смене fingerprint (связи) или набора колонок
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mpLinksFingerprint, displayColumns, rows.length]);
+
+  const headerLinksForField = useCallback(
+    (fieldKey) => headerLinksByField[fieldKey] || normalizeMpFieldLinks(null),
+    [headerLinksByField]
   );
 
   const handleSave = async (opts = {}) => {
@@ -3270,6 +3402,7 @@ export function ProductsBulkEdit() {
         }
       }
       if (errors.length === 0) {
+        clearDirty();
         setSaveMessage(ok > 0 ? `Сохранено изменений: ${ok}.` : 'Нет изменений для сохранения.');
       } else {
         setSaveMessage(
@@ -3577,37 +3710,15 @@ export function ProductsBulkEdit() {
           ? ozonBulkDictOptions[attrId] || ozonBulkDictOptions[Number(attrId)] || []
           : []) ||
         [];
-      const cellRaw = str(v);
-      const selectValue = resolveDictSelectValue(cellRaw, options);
-      const needsFallback = cellRaw.trim() !== '' && selectValue === '';
       return (
-        <select
-          className="products-bulk-cell-input"
-          value={needsFallback ? cellRaw : selectValue}
+        <BulkDictSelect
+          cellRaw={str(v)}
+          options={options}
+          bucket={bucket}
           title={col.title || col._humanName || undefined}
-          onChange={(e) => {
-            const picked = e.target.value;
-            if (!picked) {
-              updateCell(row.id, col.key, '');
-              return;
-            }
-            if (needsFallback && picked === cellRaw) return;
-            updateCell(row.id, col.key, encodeDictSelection(picked, options, bucket));
-          }}
-        >
-          <option value="">—</option>
-          {options.map((opt) => (
-            <option key={String(opt.id)} value={String(opt.id)}>
-              {opt.label || ozonDictOptionLabel(opt) || opt.id}
-            </option>
-          ))}
-          {needsFallback ? <option value={cellRaw}>{formatOzonAttrDisplayValue(cellRaw)}</option> : null}
-          {bucket === 'ozon' && options.length === 0 && Number(col.dictionaryId) > 0 ? (
-            <option value="" disabled>
-              Загрузка справочника…
-            </option>
-          ) : null}
-        </select>
+          dictionaryId={col.dictionaryId}
+          onCommit={(next) => updateCell(row.id, col.key, next)}
+        />
       );
     }
     if (col.input === 'textarea' || col.mpAttr) {
@@ -4183,7 +4294,7 @@ export function ProductsBulkEdit() {
       <div className="products-bulk-scoped-table">
       {renderBulkListPager('top')}
 
-      <div className="products-bulk-scroll-region">
+      <div className="products-bulk-scroll-region" ref={bulkScrollRef}>
 
           {loading ? (
             <p className="text-muted mb-0">Загрузка товаров…</p>
@@ -4353,7 +4464,15 @@ export function ProductsBulkEdit() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {bulkVirtRange.padTop > 0 ? (
+                <tr aria-hidden="true" className="products-bulk-virt-spacer">
+                  <td
+                    colSpan={Math.max(1, displayColumns.length)}
+                    style={{ height: bulkVirtRange.padTop, padding: 0, border: 0, lineHeight: 0 }}
+                  />
+                </tr>
+              ) : null}
+              {visibleRows.map((row) => (
                 <tr key={row.id} className={selectedRowIds.has(str(row.id)) ? 'is-row-selected' : undefined}>
                   {displayColumns.map((col) => {
                     if (col.key === SELECT_COL_KEY) {
@@ -4430,6 +4549,14 @@ export function ProductsBulkEdit() {
                   })}
                 </tr>
               ))}
+              {bulkVirtRange.padBottom > 0 ? (
+                <tr aria-hidden="true" className="products-bulk-virt-spacer">
+                  <td
+                    colSpan={Math.max(1, displayColumns.length)}
+                    style={{ height: bulkVirtRange.padBottom, padding: 0, border: 0, lineHeight: 0 }}
+                  />
+                </tr>
+              ) : null}
             </tbody>
           </table>
             </div>
