@@ -15,6 +15,7 @@ import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
 import { reviewsApi } from '../../../services/reviews.api';
 import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api';
+import { marketplaceReturnClaimsApi } from '../../../services/marketplaceReturnClaims.api';
 import { employeeTasksApi } from '../../../services/employeeTasks.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
@@ -79,9 +80,16 @@ const stockWarehouseChildren = [
 const analyticsChildren = [
   {
     path: '/analytics/sales',
-    label: 'Продажи',
+    label: 'Продажи FBS',
     iconClass: 'pe-7s-angle-right',
     sectionKey: 'analytics_sales',
+  },
+  {
+    path: '/analytics/fbo-sales',
+    label: 'Продажи FBO',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'analytics_sales',
+    requiresFbo: true,
   },
 ];
 
@@ -93,7 +101,11 @@ const menuItems = [
     iconClass: 'pe-7s-graph2',
     children: analyticsChildren,
   },
-  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
+  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products', children: [
+    { path: '/products', label: 'Список', iconClass: 'pe-7s-angle-right', sectionKey: 'products' },
+    { path: '/products/enrichment', label: 'Обогащение', iconClass: 'pe-7s-magic-wand', sectionKey: 'products' },
+    { path: '/products/rich-content', label: 'Rich-контент', iconClass: 'pe-7s-photo', sectionKey: 'products' },
+  ]},
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
@@ -108,6 +120,7 @@ const menuItems = [
   { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices', children: [
     { path: '/prices', label: 'Минимальные цены', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/strategies', label: 'Стратегии', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+    { path: '/prices/history', label: 'История изменения цен', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/promotions', label: 'Акции', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
   ]},
   {
@@ -149,6 +162,7 @@ export function Sidebar({ onNavigate }) {
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [reviewsNewCount, setReviewsNewCount] = useState(0);
   const [returnsWaitingCount, setReturnsWaitingCount] = useState(0);
+  const [returnsClaimsPendingCount, setReturnsClaimsPendingCount] = useState(0);
   const [tasksOpenCount, setTasksOpenCount] = useState(0);
 
   const onLeafClick = useCallback((item) => {
@@ -189,13 +203,23 @@ export function Sidebar({ onNavigate }) {
   const loadReturnsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
       setReturnsWaitingCount(0);
+      setReturnsClaimsPendingCount(0);
       return;
     }
     try {
-      const { waitingCount } = await marketplaceReturnsApi.getStats({ days: 31, marketplace: 'all' });
+      const [{ waitingCount }, claimsStats] = await Promise.all([
+        marketplaceReturnsApi.getStats({ days: 31, marketplace: 'all' }),
+        marketplaceReturnClaimsApi.getStats(),
+      ]);
       setReturnsWaitingCount(typeof waitingCount === 'number' && Number.isFinite(waitingCount) ? waitingCount : 0);
+      setReturnsClaimsPendingCount(
+        typeof claimsStats?.pendingCount === 'number' && Number.isFinite(claimsStats.pendingCount)
+          ? claimsStats.pendingCount
+          : 0
+      );
     } catch {
       setReturnsWaitingCount(0);
+      setReturnsClaimsPendingCount(0);
     }
   }, [user?.profileId]);
 
@@ -238,10 +262,12 @@ export function Sidebar({ onNavigate }) {
       loadReturnsStats();
     };
     window.addEventListener('marketplace-returns-stats-refresh', onRefresh);
+    window.addEventListener('marketplace-return-claims-stats-refresh', onRefresh);
     window.addEventListener('wb-returns-stats-refresh', onRefresh);
     return () => {
       clearInterval(interval);
       window.removeEventListener('marketplace-returns-stats-refresh', onRefresh);
+      window.removeEventListener('marketplace-return-claims-stats-refresh', onRefresh);
       window.removeEventListener('wb-returns-stats-refresh', onRefresh);
     };
   }, [loadReturnsStats, user?.profileId]);
@@ -433,10 +459,11 @@ export function Sidebar({ onNavigate }) {
                   <ul className={isOpen ? 'mm-show' : ''}>
                     {item.children.map((sub) => {
                       const subActive = childMatchesLocation(sub, location, item.children);
+                      const returnsBadgeTotal = returnsWaitingCount + returnsClaimsPendingCount;
                       const showReturnsBadge =
-                        sub.warehouseOp === 'return_customer' && returnsWaitingCount > 0;
+                        sub.warehouseOp === 'return_customer' && returnsBadgeTotal > 0;
                       const returnsBadgeText =
-                        returnsWaitingCount > 99 ? '99+' : String(returnsWaitingCount);
+                        returnsBadgeTotal > 99 ? '99+' : String(returnsBadgeTotal);
                       return (
                         <li key={sub.warehouseOp ?? sub.path}>
                           <Link
@@ -447,7 +474,17 @@ export function Sidebar({ onNavigate }) {
                             <i className={`metismenu-icon ${sub.iconClass || ''}`} />
                             <span className="sidebar-nav-label">{sub.label}</span>
                             {showReturnsBadge ? (
-                              <span className="sidebar-menu-badge" title="Возвратов, ждущих забора">
+                              <span
+                                className="sidebar-menu-badge"
+                                title={
+                                  returnsClaimsPendingCount > 0
+                                    ? `Заявок ждут решения: ${returnsClaimsPendingCount}` +
+                                      (returnsWaitingCount > 0
+                                        ? `; ждут забора: ${returnsWaitingCount}`
+                                        : '')
+                                    : 'Возвратов, ждущих забора'
+                                }
+                              >
                                 {returnsBadgeText}
                               </span>
                             ) : null}

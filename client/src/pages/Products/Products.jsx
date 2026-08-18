@@ -28,7 +28,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled, isProfileProductEnrichmentEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './Products.css';
@@ -101,7 +101,6 @@ export function Products() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
-  const enrichmentEnabled = isProfileProductEnrichmentEnabled(profile);
   const { suppliers } = useSuppliers();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -989,17 +988,15 @@ export function Products() {
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
               + Добавить
             </Button>
-            {enrichmentEnabled ? (
-              <Button
-                className="btn-shadow me-2"
-                variant="secondary"
-                size="small"
-                onClick={() => navigate('/products/enrichment')}
-                title="Сбор контента карточек по бренду и артикулу (PartsIndex)"
-              >
-                Обогащение
-              </Button>
-            ) : null}
+            <Button
+              className="btn-shadow me-2"
+              variant="secondary"
+              size="small"
+              onClick={() => navigate('/products/enrichment')}
+              title="Сбор контента карточек по бренду и артикулу (PartsIndex)"
+            >
+              Обогащение
+            </Button>
             <Button
               className="btn-shadow me-2"
               variant="secondary"
@@ -1009,6 +1006,15 @@ export function Products() {
               title="Таблица полей карточки; в каждом столбце — заполнение всех строк сразу"
             >
               Массовое редактирование
+            </Button>
+            <Button
+              className="btn-shadow me-2"
+              variant="secondary"
+              size="small"
+              onClick={() => navigate('/products/rich-content')}
+              title="Конструктор Rich-контента карточек"
+            >
+              Rich-контент
             </Button>
             <Button
               className="btn-shadow"
@@ -1543,6 +1549,16 @@ export function Products() {
                             aria-label="Печать этикетки"
                           >
                             🏷️
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            onClick={() => navigate(`/products/rich-content?productId=${encodeURIComponent(product.id)}`)}
+                            title="Rich-контент этого товара"
+                            className="btn-icon btn-icon-only"
+                            aria-label="Rich-контент"
+                          >
+                            🖼️
                           </Button>
                           <Button 
                             variant="secondary" 
