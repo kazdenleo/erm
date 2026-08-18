@@ -171,6 +171,11 @@ router.post(
   validateProductId,
   wrapAsync(productsController.collapseImageDuplicates.bind(productsController))
 );
+router.post(
+  '/:id/images/:imageId/fit-3x4',
+  validateProductId,
+  wrapAsync(productsController.fitImageAspect3x4.bind(productsController))
+);
 
 // Обогащение карточки (PartsAPI) — до PUT /:id
 router.post(
@@ -197,6 +202,18 @@ router.post(
   '/:id/link-marketplace/:marketplace',
   validateProductId,
   wrapAsync(productsController.linkMarketplace.bind(productsController))
+);
+
+// Тестовая генерация Rich-контента из полей карточки (до PUT /:id)
+router.post(
+  '/:id/generate-rich-content',
+  validateProductId,
+  wrapAsync(productsController.generateRichContent.bind(productsController))
+);
+router.post(
+  '/:id/generate-rich-content/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.generateRichContent.bind(productsController))
 );
 
 // Отправить данные карточки на маркетплейс (до PUT /:id)

@@ -15,6 +15,7 @@ import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
+import { ProductPriceHistoryTab } from './ProductPriceHistoryTab.jsx';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import {
@@ -120,6 +121,22 @@ import {
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
+
+function richContentGenerateTargets(links, clickedMp) {
+  const clicked = String(clickedMp || '').toLowerCase();
+  const targets = new Set();
+  if (clicked === 'all') {
+    ['ozon', 'wb', 'ym'].forEach((m) => targets.add(m));
+  } else if (['ozon', 'wb', 'ym'].includes(clicked)) {
+    targets.add(clicked);
+    for (const m of ['ozon', 'wb', 'ym']) {
+      if (isMpFieldLinked(links, 'rich_content', m)) targets.add(m);
+    }
+  }
+  const list = ['ozon', 'wb', 'ym'].filter((m) => targets.has(m));
+  const genMp = list.length === 3 ? 'all' : list.length <= 1 ? list[0] || clicked || 'ozon' : list.join(',');
+  return { list, genMp };
+}
 
 /** Readonly «Объём» рядом с габаритами (мм или см). */
 function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWholeCm = false, hint = null }) {
@@ -305,6 +322,15 @@ function ozonDictEntryText(o) {
   if (!o || typeof o !== 'object') return '';
   const raw = o.value ?? o.info ?? o.title ?? o.name ?? o.label ?? '';
   return String(raw).trim();
+}
+
+function ozonAttrHasDictionary(attr) {
+  if (!attr || typeof attr !== 'object') return false;
+  for (const k of ['dictionary_id', 'attribute_dictionary_id', 'dictionaryId', 'dictionaryID']) {
+    const n = Number(attr[k]);
+    if (Number.isFinite(n) && n !== 0) return true;
+  }
+  return false;
 }
 
 /** Сохранённое в БД значение: id или текст из таблицы/Excel → элемент справочника Ozon */
@@ -554,6 +580,9 @@ const EMPTY_PRODUCT_FORM_DATA = {
     minProfitOzon: '',
     minProfitWb: '',
     minProfitYm: '',
+    maxPriceOzon: '',
+    maxPriceWb: '',
+    maxPriceYm: '',
     description: '',
     sku_ozon: '',
     /** Редактируемое поле числового product_id Ozon (сохраняется как marketplace_ozon_product_id) */
@@ -562,6 +591,9 @@ const EMPTY_PRODUCT_FORM_DATA = {
     sku_ym: '',
     ym_market_sku: '',
     buyout_rate: 95,
+    buyout_rate_ozon: '',
+    buyout_rate_wb: '',
+    buyout_rate_ym: '',
     barcodes: [{ ...EMPTY_BARCODE_ROW }],
     weight: '',
     length: '',
@@ -1216,6 +1248,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ozonAttributesLoading, setOzonAttributesLoading] = useState(false);
   const [ozonAttributeValues, setOzonAttributeValues] = useState({});
   const [ozonDictValues, setOzonDictValues] = useState({});
+  const ozonDictQueueRef = useRef(null);
+  if (!ozonDictQueueRef.current) {
+    ozonDictQueueRef.current = createAsyncQueue(2);
+  }
+  const ozonDictInflightRef = useRef(new Set());
+  const ozonDictPromisesRef = useRef(new Map());
   const [ozonAttributesError, setOzonAttributesError] = useState('');
   /** Пара desc/type после ответа GET marketplace-attributes (бэкенд разрешает один id по дереву Ozon) */
   const [ozonResolvedPair, setOzonResolvedPair] = useState({ descId: null, typeId: 0 });
@@ -1278,6 +1316,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
+  const [imageAspectLoadingId, setImageAspectLoadingId] = useState('');
   const [imageError, setImageError] = useState('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const imageFileInputRef = useRef(null);
@@ -1289,6 +1328,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const ozonSyncedFromFetchedRef = useRef(null);
   /** Предыдущий product.id — полный сброс галереи/fetch только при смене карточки */
   const prevProductPropIdRef = useRef(null);
+  const generateRichContentRef = useRef(null);
 
   // Синхронизация с пропом product: смена карточки или режим «Создать» (product === null)
   useEffect(() => {
@@ -1462,6 +1502,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
           const v = currentProduct.minProfitYm ?? currentProduct.min_profit_ym;
           return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
         })(),
+        maxPriceOzon: (() => {
+          const v =
+            currentProduct.maxPriceOzon ??
+            currentProduct.max_price_ozon ??
+            currentProduct.marketplacePrices?.ozon?.maxPrice ??
+            currentProduct.marketplacePrices?.ozon?.max_price;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
+        maxPriceWb: (() => {
+          const v =
+            currentProduct.maxPriceWb ??
+            currentProduct.max_price_wb ??
+            currentProduct.marketplacePrices?.wb?.maxPrice ??
+            currentProduct.marketplacePrices?.wb?.max_price;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
+        maxPriceYm: (() => {
+          const v =
+            currentProduct.maxPriceYm ??
+            currentProduct.max_price_ym ??
+            currentProduct.marketplacePrices?.ym?.maxPrice ??
+            currentProduct.marketplacePrices?.ym?.max_price;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
         description: currentProduct.description || '',
         sku_ozon: currentProduct.sku_ozon || '',
         ozon_product_id:
@@ -1477,6 +1541,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
               ? String(currentProduct.ym_product_id)
               : '',
         buyout_rate: buyoutRate,
+        buyout_rate_ozon:
+          currentProduct.buyout_rate_ozon != null && currentProduct.buyout_rate_ozon !== ''
+            ? String(currentProduct.buyout_rate_ozon)
+            : '',
+        buyout_rate_wb:
+          currentProduct.buyout_rate_wb != null && currentProduct.buyout_rate_wb !== ''
+            ? String(currentProduct.buyout_rate_wb)
+            : '',
+        buyout_rate_ym:
+          currentProduct.buyout_rate_ym != null && currentProduct.buyout_rate_ym !== ''
+            ? String(currentProduct.buyout_rate_ym)
+            : '',
         barcodes: barcodesForForm(currentProduct.barcodes),
         weight: currentProduct.weight || '',
         length: currentProduct.length || '',
@@ -2024,6 +2100,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           setOzonResolvedPair({ descId: null, typeId: 0 });
         }
         setOzonDictValues({});
+        ozonDictInflightRef.current.clear();
+        ozonDictPromisesRef.current.clear();
       })
       .catch((err) => {
         if (!cancelled) {
@@ -2087,38 +2165,57 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setOzonAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
   }, []);
 
-  const ozonDictQueueRef = useRef(null);
-  if (!ozonDictQueueRef.current) {
-    ozonDictQueueRef.current = createAsyncQueue(2);
-  }
-  const ozonDictInflightRef = useRef(new Set());
-
   const loadOzonDictValues = useCallback((attrId) => {
-    if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
+    if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return Promise.resolve([]);
     const key = String(attrId);
-    if (ozonDictInflightRef.current.has(key)) return;
+    const pending = ozonDictPromisesRef.current.get(key);
+    if (pending) return pending;
     ozonDictInflightRef.current.add(key);
-    ozonDictQueueRef.current(() =>
+    const promise = ozonDictQueueRef.current(() =>
       integrationsApi
         .getOzonAttributeValues(attrId, ozonDescIdForApi, ozonTypeIdForApi, { limit: 500 })
         .then(({ result }) => {
+          const list = Array.isArray(result) ? result : [];
           setOzonDictValues((prev) => {
-            if (Array.isArray(prev[attrId])) return prev;
-            return { ...prev, [attrId]: result || [] };
+            if (Array.isArray(prev[attrId]) || Array.isArray(prev[key])) return prev;
+            return { ...prev, [attrId]: list };
           });
+          return list;
         })
         .catch((err) => {
           console.warn('[ProductForm] Ozon attribute values load failed:', err);
           setOzonDictValues((prev) => {
-            if (Array.isArray(prev[attrId])) return prev;
+            if (Array.isArray(prev[attrId]) || Array.isArray(prev[key])) return prev;
             return { ...prev, [attrId]: [] };
           });
+          return [];
         })
         .finally(() => {
           ozonDictInflightRef.current.delete(key);
         })
     );
+    ozonDictPromisesRef.current.set(key, promise);
+    return promise;
   }, [ozonDescIdForApi, ozonTypeIdForApi]);
+
+  useEffect(() => {
+    if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
+    if (!Array.isArray(ozonAttributes) || ozonAttributes.length === 0) return;
+    ozonAttributes.forEach((attr) => {
+      if (!ozonAttrHasDictionary(attr)) return;
+      const raw = ozonAttributeValues[String(attr.id)];
+      if (raw == null || String(raw).trim() === '') return;
+      if (Array.isArray(ozonDictValues[attr.id]) || Array.isArray(ozonDictValues[String(attr.id)])) return;
+      loadOzonDictValues(attr.id);
+    });
+  }, [
+    ozonAttributes,
+    ozonAttributeValues,
+    ozonDescIdForApi,
+    ozonTypeIdForApi,
+    ozonDictValues,
+    loadOzonDictValues,
+  ]);
 
   // WB: загрузка атрибутов категории (схема) — только на вкладке WB
   useEffect(() => {
@@ -3122,7 +3219,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     if (!ozonAttributes?.length || !Object.keys(ozonDictValues).length) return;
     let updated = null;
     ozonAttributes.forEach((attr) => {
-      const hasDict = attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
+      const hasDict = ozonAttrHasDictionary(attr);
       if (!hasDict) return;
       const options = ozonDictValues[attr.id];
       if (!Array.isArray(options) || options.length === 0) return;
@@ -3496,7 +3593,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setFormData((prev) => {
       const links = toggleMpFieldLink(prev.mp_field_links, fieldKey, mp);
       let next = { ...prev, mp_field_links: links };
-      if (isMpFieldLinked(links, fieldKey, mp)) {
+      if (isMpFieldLinked(links, fieldKey, mp) && fieldKey !== 'rich_content') {
         return applyLinkedMpFieldsFromMain(next, links, [fieldKey]);
       }
       // Выключили связь с «Основным»: зафиксировать текущее значение в своём хранилище МП
@@ -3561,7 +3658,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       return next;
     });
-  }, []);
+    if (fieldKey === 'rich_content' && currentProduct?.id) {
+      const nextLinks = toggleMpFieldLink(formData.mp_field_links, fieldKey, mp);
+      if (isMpFieldLinked(nextLinks, fieldKey, mp)) {
+        queueMicrotask(() => generateRichContentRef.current?.(mp, nextLinks));
+      }
+    }
+  }, [currentProduct?.id, formData.mp_field_links]);
 
   const handleBrandSelect = useCallback(
     (brandName) => {
@@ -3613,6 +3716,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [richContentLoading, setRichContentLoading] = useState(null);
   const [richContentError, setRichContentError] = useState('');
   const [richContentResult, setRichContentResult] = useState(null);
+  const [richContentModulesDraft, setRichContentModulesDraft] = useState(null);
 
   const formatPushCardResults = (data) => {
     const payload = data?.data ?? data;
@@ -3708,7 +3812,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   };
 
-  const handleGenerateRichContent = async (marketplace) => {
+  const handleGenerateRichContent = async (marketplace, linksOverride = null) => {
     if (!currentProduct?.id) {
       setRichContentError('Сначала сохраните товар в ERP.');
       return;
@@ -3718,24 +3822,36 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setRichContentError('Исправьте ошибки в форме перед генерацией.');
       return;
     }
+    const links = linksOverride || formData.mp_field_links;
+    const { list, genMp } = richContentGenerateTargets(links, marketplace);
     const characteristics = {};
-    if (marketplace === 'ozon' || marketplace === 'all') {
+    if (list.includes('ozon')) {
+      const dictByAttr = { ...ozonDictValues };
+      await Promise.all(
+        (ozonAttributes || []).map(async (attr) => {
+          if (!ozonAttrHasDictionary(attr)) return;
+          const raw = ozonAttributeValues[String(attr.id)];
+          if (raw == null || String(raw).trim() === '') return;
+          if (Array.isArray(dictByAttr[attr.id]) || Array.isArray(dictByAttr[String(attr.id)])) return;
+          dictByAttr[attr.id] = await loadOzonDictValues(attr.id);
+        })
+      );
       characteristics.ozon = (ozonAttributes || []).flatMap((attr) => {
         if (isOzonRichContentAttrId(attr?.id)) return [];
         if (classifyMarketplaceDimAttrName(attr?.name)) return [];
         const raw = ozonAttributeValues[String(attr.id)];
         if (raw == null || String(raw).trim() === '') return [];
-        const opts = ozonDictValues[attr.id];
+        const opts = dictByAttr[attr.id] || dictByAttr[String(attr.id)];
         const hit = Array.isArray(opts) ? findOzonDictEntryForStored(raw, opts) : null;
         const labeled = hit ? ozonDictEntryText(hit) : '';
         const rawStr = String(raw).trim();
         const arrow = rawStr.indexOf('->');
         const value = labeled || (arrow > 0 ? rawStr.slice(0, arrow).trim() : rawStr);
         if (!value) return [];
-        return [{ name: attr.name || `ID ${attr.id}`, value }];
+        return [{ id: String(attr.id), name: attr.name || `ID ${attr.id}`, value }];
       });
     }
-    if (marketplace === 'wb' || marketplace === 'all') {
+    if (list.includes('wb')) {
       const schema = Array.isArray(wbCategoryAttributes) ? wbCategoryAttributes : [];
       characteristics.wb = schema.flatMap((attr) => {
         const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
@@ -3748,7 +3864,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return [{ name: name || `ID ${id}`, value }];
       });
     }
-    if (marketplace === 'ym' || marketplace === 'all') {
+    if (list.includes('ym')) {
       characteristics.ym = (ymFormAttributes || []).flatMap((attr) => {
         if (classifyMarketplaceDimAttrName(attr?.name)) return [];
         const raw = ymAttributeValues[String(attr.id)];
@@ -3757,31 +3873,41 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return [{ name: attr.name || `ID ${attr.id}`, value }];
       });
     }
-    setRichContentLoading(marketplace);
+    setRichContentLoading(list.length > 1 ? 'all' : genMp);
     setRichContentError('');
     try {
       const body = await productsApi.generateRichContent(
         currentProduct.id,
-        marketplace,
+        genMp,
         productPatch,
-        characteristics
+        characteristics,
+        Array.isArray(richContentModulesDraft) && richContentModulesDraft.length
+          ? richContentModulesDraft
+          : null
       );
       const payload = body?.data ?? body;
-      setRichContentResult(payload);
-      if (payload?.ozon?.jsonString) {
+      setRichContentResult((prev) => ({
+        ...(prev && typeof prev === 'object' ? prev : {}),
+        ...(payload && typeof payload === 'object' ? payload : {}),
+        ozon: list.includes('ozon') ? payload?.ozon ?? null : prev?.ozon ?? null,
+        wb: list.includes('wb') ? payload?.wb ?? null : prev?.wb ?? null,
+        ym: list.includes('ym') ? payload?.ym ?? null : prev?.ym ?? null,
+      }));
+      if (list.includes('ozon') && payload?.ozon?.jsonString) {
         setOzonAttributeValues((prev) => ({
           ...prev,
           [String(OZON_RICH_CONTENT_ATTR_ID)]: payload.ozon.jsonString,
         }));
       }
-      if (payload?.wb?.description) {
+      if (list.includes('wb') && payload?.wb?.description) {
         setFormData((prev) => ({ ...prev, mp_wb_description: payload.wb.description }));
       }
-      if (payload?.ym?.description) {
+      if (list.includes('ym') && payload?.ym?.description) {
         setFormData((prev) => ({ ...prev, mp_ym_description: payload.ym.description }));
       }
       requestAnimationFrame(() => {
-        document.getElementById(`rich-content-preview-${marketplace}`)?.scrollIntoView({
+        const scrollMp = ['ozon', 'wb', 'ym'].includes(String(marketplace)) ? marketplace : list[0];
+        document.getElementById(`rich-content-preview-${scrollMp}`)?.scrollIntoView({
           behavior: 'smooth',
           block: 'nearest',
         });
@@ -3792,6 +3918,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setRichContentLoading(null);
     }
   };
+  generateRichContentRef.current = handleGenerateRichContent;
 
   const handleBarcodeChange = (index, value) => {
     const next = coerceBarcodeString(value);
@@ -3862,6 +3989,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setProductImages(normalizeProductImagesOrder(list));
     } catch (e) {
       setImageError(e?.response?.data?.error || e?.message || 'Ошибка удаления изображения');
+    }
+  }, [currentProduct?.id]);
+
+  const fitImageAspect3x4 = useCallback(async (imageId) => {
+    if (!currentProduct?.id || !imageId) return;
+    setImageError('');
+    setImageAspectLoadingId(String(imageId));
+    try {
+      const r = await productsApi.fitImageAspect3x4(currentProduct.id, imageId);
+      const list = extractImagesFromApiPayload(r);
+      setProductImages(normalizeProductImagesOrder(list));
+    } catch (e) {
+      setImageError(e?.response?.data?.error || e?.message || 'Ошибка приведения фото к 3:4');
+    } finally {
+      setImageAspectLoadingId('');
     }
   }, [currentProduct?.id]);
 
@@ -4355,7 +4497,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (!key) continue;
         const str = String(v).trim();
         const attr = ozonAttributes.find((a) => String(a.id) === key);
-        const hasDict = attr && attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
+        const hasDict = ozonAttrHasDictionary(attr);
         const opts = hasDict ? ozonDictValues[attr.id] : null;
         if (isOzonRichContentAttrId(key)) {
           out[key] = { value: str };
@@ -4436,6 +4578,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
       minProfitYm:
         formData.minProfitYm !== '' && formData.minProfitYm != null && !isNaN(parseFloat(formData.minProfitYm))
           ? parseFloat(formData.minProfitYm)
+          : null,
+      maxPriceOzon:
+        formData.maxPriceOzon !== '' && formData.maxPriceOzon != null && !isNaN(parseFloat(formData.maxPriceOzon))
+          ? parseFloat(formData.maxPriceOzon)
+          : null,
+      maxPriceWb:
+        formData.maxPriceWb !== '' && formData.maxPriceWb != null && !isNaN(parseFloat(formData.maxPriceWb))
+          ? parseFloat(formData.maxPriceWb)
+          : null,
+      maxPriceYm:
+        formData.maxPriceYm !== '' && formData.maxPriceYm != null && !isNaN(parseFloat(formData.maxPriceYm))
+          ? parseFloat(formData.maxPriceYm)
           : null,
       unit: 'шт',
       description: formData.description.trim() || null,
@@ -4549,7 +4703,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const resolveOzonAttrDisplayForDiff = useCallback(
     (attr, raw) => {
       if (raw === undefined || raw === null || String(raw).trim() === '') return '';
-      const hasDict = attr?.dictionary_id != null && Number(attr.dictionary_id) !== 0;
+      const hasDict = ozonAttrHasDictionary(attr);
       if (hasDict) {
         const opts = ozonDictValues[attr.id];
         const hit = Array.isArray(opts) ? findOzonDictEntryForStored(raw, opts) : null;
@@ -4720,6 +4874,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   const tabButtons = [
     { id: 'main', label: 'Основное' },
+    { id: 'price', label: 'Цена' },
     { id: 'ozon', label: dirtyMarketplaces.includes('ozon') ? 'Ozon •' : 'Ozon' },
     { id: 'wb', label: dirtyMarketplaces.includes('wb') ? 'Wildberries •' : 'Wildberries' },
     { id: 'ym', label: dirtyMarketplaces.includes('ym') ? 'Яндекс.Маркет •' : 'Яндекс.Маркет' },
@@ -4908,6 +5063,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   const url = img?.url || '';
                   const mp = img?.marketplaces || {};
                   const isMain = index === 0;
+                  const aspectBusy = imageAspectLoadingId === id;
                   return (
                     <div
                       key={id}
@@ -4972,6 +5128,40 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           }}
                         >
                           ×
+                        </button>
+                        <button
+                          type="button"
+                          title="Привести к 3:4"
+                          aria-label="Привести изображение к 3:4"
+                          disabled={aspectBusy || imageUploadLoading}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fitImageAspect3x4(id);
+                          }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          style={{
+                            position: 'absolute',
+                            top: 6,
+                            left: 6,
+                            zIndex: 3,
+                            minWidth: 44,
+                            height: 28,
+                            border: 'none',
+                            borderRadius: 999,
+                            background: 'rgba(0,0,0,0.62)',
+                            color: '#fff',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            cursor: aspectBusy || imageUploadLoading ? 'default' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '0 10px',
+                            opacity: aspectBusy || imageUploadLoading ? 0.75 : 1,
+                          }}
+                        >
+                          {aspectBusy ? '3:4…' : '3:4'}
                         </button>
                         {url ? (
                           <a
@@ -5730,7 +5920,43 @@ export const ProductForm = React.forwardRef(function ProductForm({
             placeholder="95"
           />
           <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Используется для расчетов. Можно изменить вручную.
+            Общий — запасной, если по МП ещё нет статистики. Ozon / WB / Я.Маркет обновляются раз в сутки
+            (FBS из заказов, FBO из финансовых отчётов).
+          </div>
+          <div className="row g-2 mt-2">
+            <div className="col-md-4">
+              <label className="form-label" htmlFor="buyout_rate_ozon" style={{fontSize: '12px'}}>Ozon, %</label>
+              <input
+                id="buyout_rate_ozon"
+                type="number"
+                className="form-control form-control-sm"
+                readOnly
+                value={formData.buyout_rate_ozon}
+                placeholder="нет данных"
+              />
+            </div>
+            <div className="col-md-4">
+              <label className="form-label" htmlFor="buyout_rate_wb" style={{fontSize: '12px'}}>WB, %</label>
+              <input
+                id="buyout_rate_wb"
+                type="number"
+                className="form-control form-control-sm"
+                readOnly
+                value={formData.buyout_rate_wb}
+                placeholder="нет данных"
+              />
+            </div>
+            <div className="col-md-4">
+              <label className="form-label" htmlFor="buyout_rate_ym" style={{fontSize: '12px'}}>Я.Маркет, %</label>
+              <input
+                id="buyout_rate_ym"
+                type="number"
+                className="form-control form-control-sm"
+                readOnly
+                value={formData.buyout_rate_ym}
+                placeholder="нет данных"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -5954,6 +6180,62 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
+      <div className="row g-3 mt-1">
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="maxPriceOzon">Макс. цена Ozon, ₽</label>
+          <input
+            id="maxPriceOzon"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="не задана"
+            value={formData.maxPriceOzon}
+            onChange={(e) => handleChange('maxPriceOzon', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Потолок продажи на Ozon
+          </div>
+        </div>
+
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="maxPriceWb">Макс. цена WB, ₽</label>
+          <input
+            id="maxPriceWb"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="не задана"
+            value={formData.maxPriceWb}
+            onChange={(e) => handleChange('maxPriceWb', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Потолок продажи на Wildberries
+          </div>
+        </div>
+
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="maxPriceYm">Макс. цена Я.Маркет, ₽</label>
+          <input
+            id="maxPriceYm"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="не задана"
+            value={formData.maxPriceYm}
+            onChange={(e) => handleChange('maxPriceYm', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Потолок продажи на Яндекс.Маркет
+          </div>
+        </div>
+      </div>
+
       {Object.keys(errors).length > 0 && (
         <div className="error" style={{marginTop: '12px'}}>
           {Object.values(errors)[0]}
@@ -6008,7 +6290,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               disabled={!currentProduct?.id || !!richContentLoading}
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей этой вкладки'}
             >
-              {richContentLoading === 'ozon' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+              {richContentLoading === 'ozon' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
             <Button
               type="button"
@@ -6025,11 +6307,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
           <MarketplaceRichContentPanel
             marketplace="ozon"
-            loading={richContentLoading === 'ozon'}
+            loading={!!richContentLoading}
             error={activeTab === 'ozon' ? richContentError : ''}
             result={richContentResult}
             onGenerate={() => handleGenerateRichContent('ozon')}
             disabled={!currentProduct?.id || !!richContentLoading}
+            categoryId={formData.categoryId}
+            productId={currentProduct?.id}
+            onModulesDraftChange={setRichContentModulesDraft}
+            mpFieldLinks={formData.mp_field_links}
+            onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
           <ProductMarketplaceLinkSection
             marketplace="ozon"
@@ -6316,7 +6603,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     const key = String(attr.id);
                     const value = ozonAttributeValues[key];
                     const rawValue = value !== undefined && value !== null ? value : '';
-                    const hasDict = attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
+                    const hasDict = ozonAttrHasDictionary(attr);
                     const options = ozonDictValues[attr.id];
                     const matchedOpt = Array.isArray(options) ? findOzonDictEntryForStored(rawValue, options) : null;
                     const selectValue = matchedOpt
@@ -6491,7 +6778,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               disabled={!currentProduct?.id || !!richContentLoading}
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
             >
-              {richContentLoading === 'wb' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+              {richContentLoading === 'wb' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
             <Button
               type="button"
@@ -6507,11 +6794,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
           <MarketplaceRichContentPanel
             marketplace="wb"
-            loading={richContentLoading === 'wb'}
+            loading={!!richContentLoading}
             error={activeTab === 'wb' ? richContentError : ''}
             result={richContentResult}
             onGenerate={() => handleGenerateRichContent('wb')}
             disabled={!currentProduct?.id || !!richContentLoading}
+            categoryId={formData.categoryId}
+            productId={currentProduct?.id}
+            onModulesDraftChange={setRichContentModulesDraft}
+            mpFieldLinks={formData.mp_field_links}
+            onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
           <ProductMarketplaceLinkSection
             marketplace="wb"
@@ -6845,7 +7137,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               disabled={!currentProduct?.id || !!richContentLoading}
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
             >
-              {richContentLoading === 'ym' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+              {richContentLoading === 'ym' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
             <Button
               type="button"
@@ -6869,11 +7161,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           <MarketplaceRichContentPanel
             marketplace="ym"
-            loading={richContentLoading === 'ym'}
+            loading={!!richContentLoading}
             error={activeTab === 'ym' ? richContentError : ''}
             result={richContentResult}
             onGenerate={() => handleGenerateRichContent('ym')}
             disabled={!currentProduct?.id || !!richContentLoading}
+            categoryId={formData.categoryId}
+            productId={currentProduct?.id}
+            onModulesDraftChange={setRichContentModulesDraft}
+            mpFieldLinks={formData.mp_field_links}
+            onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
           <ProductMarketplaceLinkSection
             marketplace="ym"
@@ -7419,6 +7716,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       )}
 
+      {activeTab === 'price' && (
+        <ProductPriceHistoryTab productId={currentProduct?.id || product?.id || null} />
+      )}
+
       {activeTab === 'competitors' && (
         <ProductCompetitorsTab
           productId={currentProduct?.id || product?.id || null}
@@ -7481,7 +7782,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей вкладки'}
               onClick={() => handleGenerateRichContent(activeTab)}
             >
-              {richContentLoading === activeTab ? 'Генерация…' : 'Сгенерировать Rich-контент'}
+              {richContentLoading ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
           ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">

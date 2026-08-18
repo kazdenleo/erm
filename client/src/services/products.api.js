@@ -384,8 +384,23 @@ export const productsApi = {
   },
 
   /**
-   * Отправить данные карточки на маркетплейс (ozon | wb | ym | all).
+   * Тестовая генерация Rich-контента из полей карточки (ozon | wb | ym | all).
+   * Не сохраняет и не отправляет на МП — только превью.
    */
+  generateRichContent: async (productId, marketplace = 'all', productPatch = null, characteristics = null, modules = null) => {
+    const id = encodeURIComponent(String(productId));
+    const mpRaw = String(marketplace || 'all').trim() || 'all';
+    const mp = encodeURIComponent(mpRaw);
+    const body = { marketplace: mpRaw };
+    if (productPatch && typeof productPatch === 'object') body.product = productPatch;
+    if (characteristics && typeof characteristics === 'object') body.characteristics = characteristics;
+    if (Array.isArray(modules)) body.modules = modules;
+    const response = await api.post(`/products/${id}/generate-rich-content/${mp}`, body, {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
   /**
    * Отправить карточку на МП. При productPatch сначала сохраняет поля в ERP (тот же запрос).
    * @param {object|null} [productPatch]
@@ -532,6 +547,15 @@ export const productsApi = {
   /** Схлопнуть визуальные дубликаты галереи (одна картинка — бейджи нескольких МП). */
   collapseImageDuplicates: async (id) => {
     const response = await api.post(`/products/${id}/images/collapse-duplicates`);
+    return response.data;
+  },
+  /** Привести одно фото к 3:4 (фон по цвету углов, контент по центру). */
+  fitImageAspect3x4: async (id, imageId) => {
+    const response = await api.post(
+      `/products/${id}/images/${encodeURIComponent(String(imageId))}/fit-3x4`,
+      null,
+      { timeout: 120000 }
+    );
     return response.data;
   },
   deleteImage: async (id, imageId) => {

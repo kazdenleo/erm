@@ -581,6 +581,35 @@ class ProductsController {
     }
   }
 
+  async generateRichContent(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const marketplace = body.marketplace ?? req.params.marketplace ?? req.query.marketplace ?? 'all';
+      const patch =
+        body.product && typeof body.product === 'object'
+          ? body.product
+          : (() => {
+              const { marketplace: _mp, product: _p, characteristics: _c, modules: _m, ...rest } = body;
+              return Object.keys(rest).length > 0 ? rest : null;
+            })();
+      const { generateMarketplaceRichContent } = await import(
+        '../services/marketplaceRichContent.service.js'
+      );
+      const result = await generateMarketplaceRichContent(id, {
+        marketplace,
+        productPatch: patch,
+        characteristics: body.characteristics,
+        modules: body.modules,
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async pushCard(req, res, next) {
     try {
       const { id, marketplace } = req.params;
@@ -903,6 +932,33 @@ class ProductsController {
         changed: result.changed === true,
       });
     } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Привести одно изображение к 3:4 (поля цветом фона, контент по центру).
+   */
+  async fitImageAspect3x4(req, res, next) {
+    try {
+      const { id, imageId } = req.params;
+      const product = await productsService.getById(id);
+      if (!product) {
+        return res.status(404).json({ ok: false, error: 'Товар не найден' });
+      }
+      const { fitProductImageTo3x4 } = await import('../services/productImageAspect.service.js');
+      const result = await fitProductImageTo3x4(id, imageId, product.images || []);
+      const updated = await productsService.update(id, { images: result.images });
+      return res.status(200).json({
+        ok: true,
+        data: updated?.images ?? result.images,
+        image: result.image,
+        meta: result.meta,
+      });
+    } catch (error) {
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({ ok: false, error: error.message });
+      }
       next(error);
     }
   }
