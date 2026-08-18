@@ -882,6 +882,7 @@ function MpSkuCountryDimsEditor({
   const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
   const linkedCountry = isMpFieldLinked(formData.mp_field_links, 'country', code);
   const linkedDims = isMpFieldLinked(formData.mp_field_links, 'dimensions', code);
+  const linkedProductDims = isMpFieldLinked(formData.mp_field_links, 'product_dimensions', code);
   const skuValue = linkedSku
     ? formData.sku || ''
     : code === 'ozon'
@@ -923,7 +924,7 @@ function MpSkuCountryDimsEditor({
     { key: 'height', label: `Высота упаковки (${L})` },
     { key: 'weight', label: `Вес с упаковкой (${Wt})` },
   ];
-  const showWbItemAttrs = code === 'wb' && typeof onItemAttrChange === 'function';
+  const showWbItemAttrs = code === 'wb' && typeof onItemAttrChange === 'function' && !linkedProductDims;
   const itemFields = [
     { key: WB_ITEM_DIM_CHARC.length, fallback: 'Длина товара' },
     { key: WB_ITEM_DIM_CHARC.width, fallback: 'Ширина товара' },
@@ -935,7 +936,8 @@ function MpSkuCountryDimsEditor({
     { key: 'product_height', label: `Высота товара (${L})` },
     { key: 'product_weight', label: `Вес товара (${Wt})` },
   ];
-  const showMainProductDims = code === 'ozon' && typeof onProductDimChange === 'function';
+  const showMainProductDims =
+    typeof onProductDimChange === 'function' && (code === 'ozon' || (code === 'wb' && linkedProductDims));
   const ozonYmProductFields = Array.isArray(productAttrFields) ? productAttrFields : [];
 
   return (
@@ -980,7 +982,29 @@ function MpSkuCountryDimsEditor({
       </div>
 
       <div className="col-12">
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            marginBottom: 6,
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '2px 4px',
+          }}
+        >
+          <span>Габариты товара</span>
+          {typeof onLinkToggle === 'function' ? (
+            <MpFieldLinkToggles
+              fieldKey="product_dimensions"
+              links={formData.mp_field_links}
+              onToggle={onLinkToggle}
+              size={20}
+            />
+          ) : linkedProductDims ? (
+            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+          ) : null}
+        </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
           {code === 'wb'
             ? `Характеристики предмета WB (в интерфейсе — ${L}; в кабинете WB хранятся в см).`
@@ -3446,6 +3470,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
         else if (field === 'country_of_origin') syncFields.push('country');
         else if (field === 'length' || field === 'width' || field === 'height' || field === 'weight') {
           syncFields.push('dimensions');
+        } else if (
+          field === 'product_length' ||
+          field === 'product_width' ||
+          field === 'product_height' ||
+          field === 'product_weight'
+        ) {
+          syncFields.push('product_dimensions');
         }
         if (syncFields.length) {
           return applyLinkedMpFieldsFromMain(next, next.mp_field_links, syncFields);
@@ -3461,12 +3492,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
             : field === 'product_height'
               ? WB_ITEM_DIM_CHARC.height
               : null;
-      if (itemCharc) {
+      if (itemCharc && isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) {
         const cm = value === '' || value == null ? '' : (mmToCm(value) != null ? String(mmToCm(value)) : '');
         setWbAttributeValues((prev) => ({ ...prev, [itemCharc]: cm }));
       }
       // Вес товара → атрибуты Ozon «Вес товара» (без дубля в UI)
-      if (field === 'product_weight') {
+      if (field === 'product_weight' && isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) {
         setOzonAttributeValues((prev) => {
           let next = prev;
           for (const attr of ozonAttributes || []) {
@@ -3591,9 +3622,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
             ? 'product_height'
             : null;
     if (!dimKey) return;
+    if (!isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) return;
     const mm = raw === '' || raw == null ? '' : (cmToMm(raw) != null ? String(cmToMm(raw)) : '');
     setFormData((prev) => ({ ...prev, [dimKey]: mm }));
-  }, []);
+  }, [formData.mp_field_links]);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
     setFormData((prev) => {
@@ -3664,13 +3696,27 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       return next;
     });
+    if (fieldKey === 'product_dimensions' && mp === 'wb') {
+      const nextLinks = toggleMpFieldLink(formData.mp_field_links, fieldKey, mp);
+      if (isMpFieldLinked(nextLinks, fieldKey, mp)) {
+        const l = mmToCm(formData.product_length);
+        const w = mmToCm(formData.product_width);
+        const h = mmToCm(formData.product_height);
+        setWbAttributeValues((prev) => ({
+          ...prev,
+          [WB_ITEM_DIM_CHARC.length]: l != null ? String(l) : '',
+          [WB_ITEM_DIM_CHARC.width]: w != null ? String(w) : '',
+          [WB_ITEM_DIM_CHARC.height]: h != null ? String(h) : '',
+        }));
+      }
+    }
     if (fieldKey === 'rich_content' && currentProduct?.id) {
       const nextLinks = toggleMpFieldLink(formData.mp_field_links, fieldKey, mp);
       if (isMpFieldLinked(nextLinks, fieldKey, mp)) {
         queueMicrotask(() => generateRichContentRef.current?.(mp, nextLinks));
       }
     }
-  }, [currentProduct?.id, formData.mp_field_links]);
+  }, [currentProduct?.id, formData.mp_field_links, formData.product_length, formData.product_width, formData.product_height]);
 
   const handleBrandSelect = useCallback(
     (brandName) => {
@@ -5622,9 +5668,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
           Габариты
         </h4>
 
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            marginBottom: 6,
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '2px 4px',
+          }}
+        >
+          <span>Габариты товара</span>
+          <MpFieldLinkToggles
+            fieldKey="product_dimensions"
+            links={formData.mp_field_links}
+            onToggle={handleMpFieldLinkToggle}
+          />
+        </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). На WB зеркалятся в характеристики предмета.
+          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Тумблеры OZ/WB/ЯМ связывают их с вкладкой МП (как габариты упаковки).
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-3">
@@ -7054,6 +7117,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
+                onProductDimChange={(key, v) => handleChange(key, v)}
                 onLinkToggle={handleMpFieldLinkToggle}
                 lengthUnit={lengthUnit}
                 weightUnit={weightUnit}
@@ -7353,7 +7417,25 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </div>
               </div>
 
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Габариты товара</div>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '2px 4px',
+                }}
+              >
+                <span>Габариты товара</span>
+                <MpFieldLinkToggles
+                  fieldKey="product_dimensions"
+                  links={formData.mp_field_links}
+                  onToggle={handleMpFieldLinkToggle}
+                  size={20}
+                />
+              </div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
                 Как на вкладке «Основное» ({lengthLbl} / {weightLbl}). Параметры категории Маркета — ниже, если есть.
               </div>

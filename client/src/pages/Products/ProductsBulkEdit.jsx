@@ -29,6 +29,7 @@ import {
   normalizeMpFieldLinks,
   isMpFieldLinked,
   setMpFieldLink,
+  emptyMpFieldLinks,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -1373,6 +1374,18 @@ function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const width = lengthMmToDisplay(p.product_width ?? p.productWidth, lengthUnit);
   const height = lengthMmToDisplay(p.product_height ?? p.productHeight, lengthUnit);
   const weight = weightGToDisplay(p.product_weight ?? p.productWeight, weightUnit);
+  const links = normalizeMpFieldLinks(p.mp_field_links);
+  const wbAttrs = normalizeJsonAttrs(p.wb_attributes);
+  const wbLinked = isMpFieldLinked(links, 'product_dimensions', 'wb');
+  const wbLength = wbLinked
+    ? length
+    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.length], lengthUnit) || length;
+  const wbWidth = wbLinked
+    ? width
+    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.width], lengthUnit) || width;
+  const wbHeight = wbLinked
+    ? height
+    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.height], lengthUnit) || height;
   return {
     product_length: length,
     product_width: width,
@@ -1382,9 +1395,9 @@ function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
     ozon_product_width: width,
     ozon_product_height: height,
     ozon_product_weight: weight,
-    wb_product_length: length,
-    wb_product_width: width,
-    wb_product_height: height,
+    wb_product_length: wbLength,
+    wb_product_width: wbWidth,
+    wb_product_height: wbHeight,
     wb_product_weight: weight,
     ym_product_length: length,
     ym_product_width: width,
@@ -1867,22 +1880,35 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     }
   }
 
-  if (productDimsTouched) {
-    const prevWb = {
-      ...normalizeJsonAttrs(original._productRef?.wb_attributes),
-      ...normalizeJsonAttrs(original._mpAttrBaseline?.wb),
-      ...(payload.wb_attributes && typeof payload.wb_attributes === 'object'
-        ? payload.wb_attributes
-        : {}),
-    };
-    const nextWb = sanitizeMpAttrsForApi(prevWb);
-    const cmL = lengthDisplayToCm(current.product_length, lengthUnit);
-    const cmW = lengthDisplayToCm(current.product_width, lengthUnit);
-    const cmH = lengthDisplayToCm(current.product_height, lengthUnit);
-    if (cmL != null && Number(cmL) > 0) nextWb[WB_ITEM_DIM_CHARC.length] = String(cmL);
-    if (cmW != null && Number(cmW) > 0) nextWb[WB_ITEM_DIM_CHARC.width] = String(cmW);
-    if (cmH != null && Number(cmH) > 0) nextWb[WB_ITEM_DIM_CHARC.height] = String(cmH);
-    touch('wb_attributes', nextWb);
+  {
+    const links = normalizeMpFieldLinks(current.mp_field_links);
+    const wbLinked = isMpFieldLinked(links, 'product_dimensions', 'wb');
+    const wbProductItemChanged =
+      !eq(original.wb_product_length, current.wb_product_length) ||
+      !eq(original.wb_product_width, current.wb_product_width) ||
+      !eq(original.wb_product_height, current.wb_product_height);
+    const writeWbItem =
+      (productDimsTouched && wbLinked) || (wbProductItemChanged && !wbLinked);
+    if (writeWbItem) {
+      const prevWb = {
+        ...normalizeJsonAttrs(original._productRef?.wb_attributes),
+        ...normalizeJsonAttrs(original._mpAttrBaseline?.wb),
+        ...(payload.wb_attributes && typeof payload.wb_attributes === 'object'
+          ? payload.wb_attributes
+          : {}),
+      };
+      const nextWb = sanitizeMpAttrsForApi(prevWb);
+      const srcL = wbLinked ? current.product_length : current.wb_product_length;
+      const srcW = wbLinked ? current.product_width : current.wb_product_width;
+      const srcH = wbLinked ? current.product_height : current.wb_product_height;
+      const cmL = lengthDisplayToCm(srcL, lengthUnit);
+      const cmW = lengthDisplayToCm(srcW, lengthUnit);
+      const cmH = lengthDisplayToCm(srcH, lengthUnit);
+      if (cmL != null && Number(cmL) > 0) nextWb[WB_ITEM_DIM_CHARC.length] = String(cmL);
+      if (cmW != null && Number(cmW) > 0) nextWb[WB_ITEM_DIM_CHARC.width] = String(cmW);
+      if (cmH != null && Number(cmH) > 0) nextWb[WB_ITEM_DIM_CHARC.height] = String(cmH);
+      touch('wb_attributes', nextWb);
+    }
   }
 
   // WB характеристики упаковки (см) — иначе push/кабинет оставляют старые 90849/90745/90846
@@ -3349,7 +3375,7 @@ export function ProductsBulkEdit() {
     const keys = [...new Set((displayColumns || []).map((c) => c.linkFieldKey).filter(Boolean))];
     const out = {};
     for (const fieldKey of keys) {
-      const base = normalizeMpFieldLinks(null);
+      const base = emptyMpFieldLinks();
       if (!rows.length) {
         out[fieldKey] = base;
         continue;
@@ -3368,7 +3394,7 @@ export function ProductsBulkEdit() {
   }, [mpLinksFingerprint, displayColumns, rows.length]);
 
   const headerLinksForField = useCallback(
-    (fieldKey) => headerLinksByField[fieldKey] || normalizeMpFieldLinks(null),
+    (fieldKey) => headerLinksByField[fieldKey] || emptyMpFieldLinks(),
     [headerLinksByField]
   );
 
@@ -4351,25 +4377,18 @@ export function ProductsBulkEdit() {
                       title={col.title || col.hint || col.label || undefined}
                     >
                       <div className="products-bulk-th-label">
-                        <span className="products-bulk-th-text">{col.label}</span>
-                        {col.linkFieldKey ? (
-                          <MpFieldLinkToggles
-                            fieldKey={col.linkFieldKey}
-                            links={headerLinksForField(col.linkFieldKey)}
-                            onToggle={toggleBulkHeaderFieldLink}
-                            size={18}
-                          />
-                        ) : null}
-                        {isBaseSticky ? (
-                          <span
-                            className="products-bulk-pin-btn products-bulk-pin-btn--locked"
-                            title="Столбец закреплён по умолчанию"
-                            aria-hidden
-                          >
-                            <PinIcon locked />
-                          </span>
-                        ) : (
-                          <span className="products-bulk-th-actions">
+                        <div className="products-bulk-th-top">
+                          <span className="products-bulk-th-text">{col.label}</span>
+                          {isBaseSticky ? (
+                            <span
+                              className="products-bulk-pin-btn products-bulk-pin-btn--locked"
+                              title="Столбец закреплён по умолчанию"
+                              aria-hidden
+                            >
+                              <PinIcon locked />
+                            </span>
+                          ) : (
+                            <span className="products-bulk-th-actions">
                             {isPinned ? (
                               <button
                                 type="button"
@@ -4435,8 +4454,17 @@ export function ProductsBulkEdit() {
                                 ×
                               </button>
                             ) : null}
-                          </span>
-                        )}
+                            </span>
+                          )}
+                        </div>
+                        {col.linkFieldKey ? (
+                          <MpFieldLinkToggles
+                            fieldKey={col.linkFieldKey}
+                            links={headerLinksForField(col.linkFieldKey)}
+                            onToggle={toggleBulkHeaderFieldLink}
+                            size={18}
+                          />
+                        ) : null}
                       </div>
                     </th>
                   );

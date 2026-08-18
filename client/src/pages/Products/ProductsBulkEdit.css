@@ -57,20 +57,78 @@
   }
 }
 
+/* Страница заполняет высоту под фиксированным хедером — горизонтальный скролл
+   таблицы остаётся внизу видимой области, а не уезжает за край экрана. */
+.app-main__inner:has(> .products-bulk-page) {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--erm-header-height));
+  max-height: calc(100dvh - var(--erm-header-height));
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.products-bulk-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.products-bulk-page > .app-page-title,
+.products-bulk-page > .alert,
+.products-bulk-page > .products-bulk-main-card {
+  flex: 0 0 auto;
+}
+
+.products-bulk-scoped-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.products-bulk-scoped-table > .d-flex {
+  flex: 0 0 auto;
+}
+
 /* Один контейнер для вертикального и горизонтального скролла:
    полоса прокрутки вправо всегда видна снизу области таблицы,
    шапка thead липнет при прокрутке вниз. */
 .products-bulk-scroll-region {
-  overflow: auto;
-  max-height: calc(100vh - 200px);
-  width: 100%;
-  min-width: 0;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow-x: scroll;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #adb5bd #e9ecef;
   -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 8px;
   background: #fff;
+}
+
+.products-bulk-scroll-region::-webkit-scrollbar {
+  height: 12px;
+  width: 10px;
+}
+
+.products-bulk-scroll-region::-webkit-scrollbar-track {
+  background: #e9ecef;
+}
+
+.products-bulk-scroll-region::-webkit-scrollbar-thumb {
+  background: #adb5bd;
+  border-radius: 6px;
+}
+
+.products-bulk-scroll-region::-webkit-scrollbar-thumb:hover {
+  background: #6c757d;
 }
 
 .products-bulk-table-xclip {
@@ -154,6 +212,10 @@
 }
 
 
+.products-bulk-table {
+  --products-bulk-head-row1: 54px;
+}
+
 .products-bulk-table thead th {
   position: sticky;
   top: 0;
@@ -164,8 +226,16 @@
   padding: 6px 8px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.12);
   white-space: nowrap;
-  vertical-align: middle;
+  vertical-align: top;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.products-bulk-table thead tr:first-child th {
+  height: var(--products-bulk-head-row1);
+}
+
+.products-bulk-table thead th.products-bulk-select-col {
+  vertical-align: middle;
 }
 
 /* Цвета МП — как в минимальных ценах */
@@ -180,12 +250,13 @@
 }
 
 .products-bulk-table thead tr.bulk-actions-row th {
-  top: 34px;
+  top: var(--products-bulk-head-row1);
   z-index: 2;
   padding: 4px 6px;
   background: #e9ecef;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
   vertical-align: middle;
+  height: auto;
 }
 
 .products-bulk-table thead tr.bulk-actions-row th.bulk-mp-ozon {
@@ -306,14 +377,23 @@
 
 .products-bulk-th-label {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.products-bulk-th-top {
+  display: flex;
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  flex-wrap: nowrap;
+  width: 100%;
+  min-width: 0;
 }
 
 .products-bulk-th-label .mp-field-link-toggles {
-  margin-left: 2px !important;
+  margin-left: 0 !important;
   flex: 0 0 auto;
 }
 
