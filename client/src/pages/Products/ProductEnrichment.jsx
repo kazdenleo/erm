@@ -488,6 +488,8 @@ export function ProductEnrichment() {
         height: r.height,
         barcodes: r.barcodes,
         imageUrls: r.imageUrls,
+        analogs: r.analogs,
+        applicability: r.applicability,
         brandId: r.brandId || null,
         categoryId: r.categoryId || null,
         organizationId: r.organizationId || null,

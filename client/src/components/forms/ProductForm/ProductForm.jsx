@@ -5868,17 +5868,36 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 );
               }
               return (
-                <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                <div
+                  key={attr.id}
+                  className={
+                    /аналог|применимост/i.test(String(attr.name || '')) ||
+                    String(rawValue).includes('\n')
+                      ? 'col-12 field'
+                      : 'col-12 col-md-6 col-lg-4 field'
+                  }
+                >
                   <label className="label" htmlFor={`attr-${attr.id}`} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
                     {nameWithDiff} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span>
                   </label>
-                  <input
-                    id={`attr-${attr.id}`}
-                    type="text"
-                    className="form-control form-control-sm"
-                    value={rawValue}
-                    onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
-                  />
+                  {/аналог|применимост/i.test(String(attr.name || '')) ||
+                  String(rawValue).includes('\n') ? (
+                    <textarea
+                      id={`attr-${attr.id}`}
+                      className="form-control form-control-sm"
+                      rows={/применимост/i.test(String(attr.name || '')) ? 6 : 3}
+                      value={rawValue}
+                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                    />
+                  ) : (
+                    <input
+                      id={`attr-${attr.id}`}
+                      type="text"
+                      className="form-control form-control-sm"
+                      value={rawValue}
+                      onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
+                    />
+                  )}
                 </div>
               );
             })}

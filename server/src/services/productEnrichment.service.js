@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { query } from '../config/database.js';
 import { getPartsIndexConfig, normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import { collectPartsIndexContent } from './partsindexEnrichment.js';
 import { downloadImageToProductFolder } from './productImagesImport.service.js';
@@ -32,6 +33,99 @@ const profilesRepo = () => repositoryFactory.getProfilesRepository();
 const organizationsRepo = () => repositoryFactory.getOrganizationsRepository();
 
 const MP_LABELS = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
+
+/** Имена ERP-атрибутов, куда пишем данные PartsIndex при обогащении. */
+const ENRICHMENT_ATTR_ALIASES = {
+  analogs: ['аналоги', 'analogs', 'analogues'],
+  applicability: ['применимость', 'applicability'],
+};
+
+function normAttrName(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function formatAnalogsAttrValue(analogs) {
+  const codes = (Array.isArray(analogs) ? analogs : [])
+    .map((a) => String(a?.code || a?.sku || a || '').trim())
+    .filter(Boolean);
+  return [...new Set(codes)].join(', ');
+}
+
+function formatApplicabilityLine(a) {
+  if (!a || typeof a !== 'object') return String(a || '').trim();
+  const head = [a.brand, a.model, a.modif, a.years].filter(Boolean).join(' ');
+  const extra = [];
+  if (a.body) extra.push(String(a.body));
+  if (a.engCode) extra.push(`дв. ${a.engCode}`);
+  return extra.length ? `${head}${head ? ' · ' : ''}${extra.join(' · ')}` : head;
+}
+
+function formatApplicabilityAttrValue(list) {
+  const lines = (Array.isArray(list) ? list : [])
+    .map(formatApplicabilityLine)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(lines)].join('\n');
+}
+
+async function findEnrichmentAttributeIds() {
+  try {
+    const result = await query('SELECT id, name FROM product_attributes');
+    const byName = new Map();
+    for (const row of result.rows || []) {
+      const key = normAttrName(row.name);
+      if (key && row.id != null) byName.set(key, String(row.id));
+    }
+    const pick = (aliases) => {
+      for (const alias of aliases) {
+        const id = byName.get(alias);
+        if (id) return id;
+      }
+      return null;
+    };
+    return {
+      analogsId: pick(ENRICHMENT_ATTR_ALIASES.analogs),
+      applicabilityId: pick(ENRICHMENT_ATTR_ALIASES.applicability),
+    };
+  } catch (err) {
+    return { analogsId: null, applicabilityId: null };
+  }
+}
+
+async function ensureCategoryHasAttributes(categoryId, attrIds) {
+  const cid = categoryId != null && categoryId !== '' ? Number(categoryId) : NaN;
+  if (!Number.isFinite(cid)) return;
+  for (const attrId of attrIds) {
+    const aid = attrId != null && attrId !== '' ? Number(attrId) : NaN;
+    if (!Number.isFinite(aid)) continue;
+    try {
+      await query(
+        `INSERT INTO category_attributes (user_category_id, attribute_id)
+         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [cid, aid]
+      );
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+function mergeEnrichmentAttributeValues(ids, analogs, applicability, existing = {}) {
+  const out = { ...(existing && typeof existing === 'object' ? existing : {}) };
+  const analogsVal = formatAnalogsAttrValue(analogs);
+  const appVal = formatApplicabilityAttrValue(applicability);
+  const isEmpty = (v) => v == null || String(v).trim() === '';
+  if (ids.analogsId && analogsVal && isEmpty(out[ids.analogsId])) {
+    out[ids.analogsId] = analogsVal;
+  }
+  if (ids.applicabilityId && appVal && isEmpty(out[ids.applicabilityId])) {
+    out[ids.applicabilityId] = appVal;
+  }
+  return out;
+}
 
 function stripHtmlLoose(s) {
   return String(s || '')
@@ -1091,12 +1185,36 @@ export async function enrichProductById(productId, opts = {}) {
 
   let updated = product;
   if (apply) {
+    const attrIds = await findEnrichmentAttributeIds();
+    const existingAv =
+      product.attribute_values && typeof product.attribute_values === 'object'
+        ? { ...product.attribute_values }
+        : {};
+    const nextAttrValues = mergeEnrichmentAttributeValues(
+      attrIds,
+      content.analogs || [],
+      content.applicability || [],
+      existingAv
+    );
+    const attrChanged =
+      (attrIds.analogsId &&
+        String(nextAttrValues[attrIds.analogsId] || '') !== String(existingAv[attrIds.analogsId] || '')) ||
+      (attrIds.applicabilityId &&
+        String(nextAttrValues[attrIds.applicabilityId] || '') !==
+          String(existingAv[attrIds.applicabilityId] || ''));
+    if (attrChanged) filled.push('erp_attributes');
+
     const updates = {
       ...patch,
       ...enrichmentMeta,
     };
     if (newBarcodes) updates.barcodes = newBarcodes;
     if (nextImages) updates.images = nextImages;
+    if (attrChanged) {
+      updates.attribute_values = nextAttrValues;
+      const categoryId = product.categoryId ?? product.user_category_id;
+      await ensureCategoryHasAttributes(categoryId, [attrIds.analogsId, attrIds.applicabilityId]);
+    }
     updated = await productsRepo().update(product.id, updates);
   }
 
@@ -1283,6 +1401,7 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
   }
 
   const results = [];
+  const attrIds = await findEnrichmentAttributeIds();
   for (let i = 0; i < list.length; i++) {
     const raw = list[i] || {};
     const brandName = String(raw.brand || raw.matchedBrand || '').trim();
@@ -1315,6 +1434,20 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
     }
 
     try {
+      const analogs = Array.isArray(raw.analogs)
+        ? raw.analogs
+        : Array.isArray(raw.content?.analogs)
+          ? raw.content.analogs
+          : [];
+      const applicability = Array.isArray(raw.applicability)
+        ? raw.applicability
+        : Array.isArray(raw.content?.applicability)
+          ? raw.content.applicability
+          : [];
+      const attrIdsForRow = attrIds;
+      const attributeValues = mergeEnrichmentAttributeValues(attrIdsForRow, analogs, applicability);
+      await ensureCategoryHasAttributes(categoryId, [attrIdsForRow.analogsId, attrIdsForRow.applicabilityId]);
+
       const payload = {
         profileId: opts.profileId,
         name,
@@ -1337,6 +1470,9 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
           ? raw.barcodes.map((b) => (typeof b === 'string' ? { barcode: b, marketplaces: [] } : b))
           : [],
       };
+      if (Object.keys(attributeValues).length) {
+        payload.attribute_values = attributeValues;
+      }
       if (payload.brand_id != null && !Number.isFinite(payload.brand_id)) {
         delete payload.brand_id;
       }
