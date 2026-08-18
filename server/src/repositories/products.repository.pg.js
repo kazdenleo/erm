@@ -2068,27 +2068,31 @@ class ProductsRepositoryPG {
    * @param {{ profileId?: number|string|null }} [options]
    */
   async findBySkus(skus, options = {}) {
-    const normalized = [
-      ...new Set(
-        (Array.isArray(skus) ? skus : [])
-          .map((s) => String(s || '').trim().toLowerCase())
-          .filter(Boolean)
-      ),
-    ];
-    if (normalized.length === 0) return [];
+    const originals = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(skus) ? skus : []) {
+      const sku = String(raw || '').trim();
+      if (!sku) continue;
+      const key = sku.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      originals.push(sku);
+    }
+    if (originals.length === 0) return [];
 
     const profileId = options.profileId ?? options.profile_id;
-    const params = [normalized];
+    const params = [originals];
     let profileClause = '';
     if (profileId != null && profileId !== '') {
-      profileClause = ' AND p.profile_id = $2';
+      profileClause = ' AND p.profile_id = $2::bigint';
       params.push(profileId);
     }
 
+    // Точное совпадение sku использует уникальный индекс (profile_id, sku).
     const result = await query(
       `SELECT p.id, p.sku, p.name
        FROM products p
-       WHERE LOWER(TRIM(p.sku)) = ANY($1::text[])${profileClause}`,
+       WHERE p.sku = ANY($1::text[])${profileClause}`,
       params
     );
     return result.rows;

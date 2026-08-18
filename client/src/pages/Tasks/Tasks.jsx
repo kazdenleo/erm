@@ -124,18 +124,20 @@ export function Tasks() {
     }
   }, [tasks, selectedId]);
 
+  const selectedTaskId = selectedTask?.id;
+  const selectedTaskType = selectedTask?.task_type;
+
   useEffect(() => {
-    let cancelled = false;
-    if (!selectedTask || selectedTask.task_type !== 'product_create') {
+    if (selectedTaskType !== 'product_create' || selectedTaskId == null) {
       setProductCreateStatus(null);
       setProductCreateLoading(false);
       return undefined;
     }
+    let cancelled = false;
     setProductCreateLoading(true);
-    setProductCreateStatus(null);
     (async () => {
       try {
-        const data = await getProductCreateStatus(selectedTask.id);
+        const data = await getProductCreateStatus(selectedTaskId);
         if (!cancelled) setProductCreateStatus(data);
       } catch (e) {
         if (!cancelled) {
@@ -154,7 +156,7 @@ export function Tasks() {
     return () => {
       cancelled = true;
     };
-  }, [getProductCreateStatus, selectedTask]);
+  }, [getProductCreateStatus, selectedTaskId, selectedTaskType]);
 
   const openCreate = () => {
     setTitle('');
@@ -298,32 +300,37 @@ export function Tasks() {
             <div style={{ marginBottom: 8 }}>
               Список артикулов для создания товаров:
             </div>
-            {productCreateLoading ? (
-              <div className="task-create-status-summary">Проверяем товары в базе...</div>
-            ) : productCreateStatus?.error ? (
+            {productCreateStatus?.error ? (
               <div className="task-create-status-summary">Ошибка проверки: {productCreateStatus.error}</div>
+            ) : productCreateLoading ? (
+              <div className="task-create-status-summary">Сверяем с базой...</div>
             ) : (
-              <>
-                <div className="task-create-status-summary">
-                  Уже созданы: {productCreateStatus?.createdCount || 0} · Ещё не созданы: {productCreateStatus?.missingCount || 0}
-                </div>
-                <ul className="task-sku-list">
-                  {(productCreateStatus?.items || []).map((it) => (
-                    <li key={it.sku}>
-                      {it.exists && it.product_id ? (
-                        <Link to={`/products?open=${it.product_id}`}>{it.sku}</Link>
-                      ) : (
-                        it.sku
-                      )}
-                      {' — '}
-                      <span className={`task-create-state ${it.exists ? 'is-exists' : 'is-missing'}`}>
-                        {it.exists ? `уже создан${it.product_name ? ` (${it.product_name})` : ''}` : 'ещё не создан'}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </>
+              <div className="task-create-status-summary">
+                Уже созданы: {productCreateStatus?.createdCount || 0} · Ещё не созданы: {productCreateStatus?.missingCount || 0}
+              </div>
             )}
+            <ul className="task-sku-list">
+              {(productCreateStatus?.items?.length
+                ? productCreateStatus.items
+                : productCreateSkuListOf(task).map((sku) => ({ sku, exists: null }))
+              ).map((it) => (
+                <li key={it.sku}>
+                  {it.exists && it.product_id ? (
+                    <Link to={`/products?open=${it.product_id}`}>{it.sku}</Link>
+                  ) : (
+                    it.sku
+                  )}
+                  {' — '}
+                  <span className={`task-create-state ${it.exists === true ? 'is-exists' : it.exists === false ? 'is-missing' : ''}`}>
+                    {it.exists === true
+                      ? `уже создан${it.product_name ? ` (${it.product_name})` : ''}`
+                      : it.exists === false
+                        ? 'ещё не создан'
+                        : 'проверяем'}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         ) : (
           task.description && <div className="task-desc">{task.description}</div>
