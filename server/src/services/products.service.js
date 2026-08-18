@@ -1065,6 +1065,28 @@ class ProductsService {
     }
   }
 
+  /**
+   * @param {string[]} skus
+   * @param {{ profileId?: number|string|null }} [options]
+   */
+  async getBySkus(skus, options = {}) {
+    const list = Array.isArray(skus) ? skus : [];
+    if (list.length === 0) return [];
+
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      return await this.repository.findBySkus(list, options);
+    }
+
+    const pid = options.profileId ?? options.profile_id;
+    const products = await this.getAll();
+    const scoped =
+      pid != null && pid !== ''
+        ? products.filter((p) => String(p.profile_id ?? p.profileId ?? '') === String(pid))
+        : products;
+    const wanted = new Set(list.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean));
+    return scoped.filter((p) => wanted.has(String(p.sku || '').trim().toLowerCase()));
+  }
+
   async getByBarcode(barcode) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       return await this.repository.findByBarcode(barcode);

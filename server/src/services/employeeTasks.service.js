@@ -250,17 +250,26 @@ export async function getProductCreateTaskStatus(task, profileId) {
   }
   const meta = parseTaskMeta(task.meta);
   const skuList = normalizeSkuList(meta.sku_list);
-  const items = await Promise.all(
-    skuList.map(async (sku) => {
-      const product = await productsService.getBySku(sku, { profileId });
-      return {
-        sku,
-        exists: !!product,
-        product_id: product?.id ?? null,
-        product_name: product?.name ?? null,
-      };
-    })
-  );
+  if (skuList.length === 0) {
+    return { items: [], total: 0, createdCount: 0, missingCount: 0 };
+  }
+
+  const products = await productsService.getBySkus(skuList, { profileId });
+  const productBySku = new Map();
+  for (const product of products) {
+    const key = String(product.sku || '').trim().toLowerCase();
+    if (key && !productBySku.has(key)) productBySku.set(key, product);
+  }
+
+  const items = skuList.map((sku) => {
+    const product = productBySku.get(String(sku).trim().toLowerCase());
+    return {
+      sku,
+      exists: !!product,
+      product_id: product?.id ?? null,
+      product_name: product?.name ?? null,
+    };
+  });
   return {
     items,
     total: items.length,

@@ -2062,6 +2062,38 @@ class ProductsRepositoryPG {
     return product;
   }
 
+  /**
+   * Получить товары по списку SKU одним запросом.
+   * @param {string[]} skus
+   * @param {{ profileId?: number|string|null }} [options]
+   */
+  async findBySkus(skus, options = {}) {
+    const normalized = [
+      ...new Set(
+        (Array.isArray(skus) ? skus : [])
+          .map((s) => String(s || '').trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    ];
+    if (normalized.length === 0) return [];
+
+    const profileId = options.profileId ?? options.profile_id;
+    const params = [normalized];
+    let profileClause = '';
+    if (profileId != null && profileId !== '') {
+      profileClause = ' AND p.profile_id = $2';
+      params.push(profileId);
+    }
+
+    const result = await query(
+      `SELECT p.id, p.sku, p.name
+       FROM products p
+       WHERE LOWER(TRIM(p.sku)) = ANY($1::text[])${profileClause}`,
+      params
+    );
+    return result.rows;
+  }
+
   /** Варианты EAN для сканера (12↔13 цифр, ведущий ноль). */
   _barcodeDigitVariants(digits) {
     const out = [];
