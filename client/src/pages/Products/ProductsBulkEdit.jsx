@@ -2210,7 +2210,7 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
   );
 }
 
-function PinIcon({ locked = false }) {
+function PinIcon() {
   return (
     <svg
       width="12"
@@ -2218,7 +2218,7 @@ function PinIcon({ locked = false }) {
       viewBox="0 0 24 24"
       aria-hidden
       focusable="false"
-      className={locked ? 'products-bulk-pin-icon is-locked' : 'products-bulk-pin-icon'}
+      className="products-bulk-pin-icon"
     >
       <path
         fill="currentColor"
@@ -4534,15 +4534,7 @@ export function ProductsBulkEdit() {
                       <div className="products-bulk-th-label">
                         <div className="products-bulk-th-top">
                           <span className="products-bulk-th-text">{col.label}</span>
-                          {isBaseSticky ? (
-                            <span
-                              className="products-bulk-pin-btn products-bulk-pin-btn--locked"
-                              title="Столбец закреплён по умолчанию"
-                              aria-hidden
-                            >
-                              <PinIcon locked />
-                            </span>
-                          ) : (
+                          {isBaseSticky ? null : (
                             <span className="products-bulk-th-actions">
                             {isPinned ? (
                               <button
