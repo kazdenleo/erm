@@ -2507,10 +2507,7 @@ export function ProductsBulkEdit() {
   }, [hiddenColumnKeys]);
 
   useEffect(() => {
-    if (!columnsMenuOpen) {
-      setColumnsSearch('');
-      return undefined;
-    }
+    if (!columnsMenuOpen) return undefined;
     const t = window.setTimeout(() => columnsSearchRef.current?.focus(), 0);
     const onDoc = (e) => {
       if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target)) {
@@ -4112,6 +4109,11 @@ export function ProductsBulkEdit() {
                           title="Показать или скрыть столбцы таблицы"
                         >
                           {columnsMenuOpen ? '▼ Столбцы' : '▶ Столбцы'}
+                          {String(columnsSearch || '').trim() ? (
+                            <span className="badge bg-primary ms-1 rounded-pill" title={columnsSearch}>
+                              поиск
+                            </span>
+                          ) : null}
                           {hiddenColumnKeys.length > 0 ? (
                             <span className="badge bg-secondary ms-1 rounded-pill">{hiddenColumnKeys.length}</span>
                           ) : null}
