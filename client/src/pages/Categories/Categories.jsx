@@ -494,6 +494,7 @@ export function Categories() {
         }}
         title={editingCategory ? 'Редактировать категорию' : 'Добавить категорию'}
         size="large"
+        scrollable
       >
         <CategoryForm
           category={categoryForFormMerged}

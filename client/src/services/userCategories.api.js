@@ -49,6 +49,20 @@ export const userCategoriesApi = {
     return response.data;
   },
 
+  /**
+   * Связь ERP-атрибута с характеристиками Ozon/WB/ЯМ для конкретной категории.
+   * @param {string|number} categoryId
+   * @param {string|number} attributeId
+   * @param {{ ozon?: object|null, wb?: object|null, ym?: object|null }} mpLinks
+   */
+  async updateAttributeMpLinks(categoryId, attributeId, mpLinks) {
+    const response = await api.put(
+      `/user-categories/${categoryId}/attributes/${attributeId}/mp-links`,
+      { mp_links: mpLinks }
+    );
+    return response.data;
+  },
+
   async delete(id) {
     const response = await api.delete(`/user-categories/${id}`);
     return response.data;

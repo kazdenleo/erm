@@ -220,6 +220,19 @@
   padding: 1.15rem 1.35rem 1.35rem;
 }
 
+.modal-erm .modal-dialog.modal-dialog-scrollable {
+  max-height: calc(100vh - 2rem);
+  margin: 1rem auto;
+}
+
+.modal-erm .modal-dialog.modal-dialog-scrollable .modal-content {
+  max-height: calc(100vh - 2rem);
+}
+
+.modal-erm .modal-dialog.modal-dialog-scrollable .modal-body {
+  overflow-y: auto;
+}
+
 .modal-erm .modal-header {
   display: flex;
   align-items: center;

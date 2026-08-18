@@ -5,30 +5,9 @@
 
 import { query } from '../config/database.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { normalizeMpLinks } from '../utils/attributeMpLinks.js';
 
 const VALID_TYPES = ['text', 'checkbox', 'number', 'date', 'dictionary'];
-const MP_LINK_CODES = ['ozon', 'wb', 'ym'];
-
-function normalizeMpLinks(raw) {
-  const out = {};
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
-  for (const mp of MP_LINK_CODES) {
-    const v = raw[mp];
-    if (v == null || v === '') continue;
-    if (typeof v === 'string' || typeof v === 'number') {
-      const s = String(v).trim();
-      if (!s) continue;
-      out[mp] = /^\d+$/.test(s) ? { id: s, name: '' } : { id: '', name: s };
-      continue;
-    }
-    if (typeof v !== 'object') continue;
-    const id = v.id != null && v.id !== '' ? String(v.id).trim() : '';
-    const name = String(v.name || v.title || '').trim();
-    if (!id && !name) continue;
-    out[mp] = { id, name };
-  }
-  return out;
-}
 
 class ProductAttributesController {
   async getAll(req, res, next) {

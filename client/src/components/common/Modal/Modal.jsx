@@ -17,6 +17,7 @@ export function Modal({
   closeOnBackdropClick = true,
   closeOnEscape = true,
   usePortal = true,
+  scrollable = false,
 }) {
   const modalRef = useRef(null);
 
@@ -79,7 +80,7 @@ export function Modal({
         onMouseDown={closeOnBackdropClick ? onClose : undefined}
       >
         <div
-          className={`modal-dialog modal-dialog-centered ${dialogSizeClass}`}
+          className={`modal-dialog modal-dialog-centered ${dialogSizeClass}${scrollable ? ' modal-dialog-scrollable' : ''}`}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="modal-content">

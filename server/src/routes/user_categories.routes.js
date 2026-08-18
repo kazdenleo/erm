@@ -35,6 +35,12 @@ router.post('/', wrapAsync(userCategoriesController.create.bind(userCategoriesCo
 // Обновить пользовательскую категорию
 router.put('/:id', wrapAsync(userCategoriesController.update.bind(userCategoriesController)));
 
+// Связь ERP-атрибута с характеристиками МП в рамках категории
+router.put(
+  '/:id/attributes/:attributeId/mp-links',
+  wrapAsync(userCategoriesController.updateAttributeMpLinks.bind(userCategoriesController))
+);
+
 // Удалить пользовательскую категорию
 router.delete('/:id', wrapAsync(userCategoriesController.delete.bind(userCategoriesController)));
 

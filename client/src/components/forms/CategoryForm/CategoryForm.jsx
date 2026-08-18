@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
 import { categoriesApi } from '../../../services/categories.api';
 import { categoryMappingsApi } from '../../../services/categoryMappings.api';
@@ -17,6 +18,8 @@ import {
   resolveMpCommissionEntry,
 } from '../../../utils/marketplaceCategoryCommissions';
 import api from '../../../services/api';
+import { AttributeMpLinkFields } from '../../common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
+import { emptyAttrMpLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
 import '../../../pages/Categories/Categories.css';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
@@ -144,6 +147,32 @@ function parseOzonCompositeId(ozonCategoryId) {
   return { descId, typeId };
 }
 
+function mpAttrsFromResponse(res) {
+  const raw = res?.data ?? res;
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.attributes)) return raw.attributes;
+  if (Array.isArray(raw?.data)) return raw.data;
+  return [];
+}
+
+function wbAttrKey(a) {
+  const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
+  return id != null ? String(id) : String(a?.name || '');
+}
+
+function wbAttrName(a) {
+  return a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
+}
+
+function parseAttributeMpLinksMap(raw) {
+  const next = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return next;
+  for (const [key, value] of Object.entries(raw)) {
+    next[String(key)] = normalizeAttrMpLinks(value);
+  }
+  return next;
+}
+
 export function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onRefreshWbCategories, onSubmit, onCancel }) {
   const [formData, setFormData] = useState({
     name: '',
@@ -156,6 +185,10 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
   });
   const [attributeIds, setAttributeIds] = useState([]);
   const [selectedAttributeId, setSelectedAttributeId] = useState('');
+  const [attributeMpLinks, setAttributeMpLinks] = useState({});
+  const [ozonMpAttrs, setOzonMpAttrs] = useState([]);
+  const [wbMpAttrs, setWbMpAttrs] = useState([]);
+  const [ymMpAttrs, setYmMpAttrs] = useState([]);
   
   const [errors, setErrors] = useState({});
   const [loadingCategories, setLoadingCategories] = useState({
@@ -725,6 +758,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         ? category.attribute_ids.map((id) => String(id))
         : [];
       setAttributeIds(ids);
+      setAttributeMpLinks(parseAttributeMpLinksMap(category.attribute_mp_links));
     } else {
       setFormData({
         name: '',
@@ -736,6 +770,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         ymCategoryId: ''
       });
       setAttributeIds([]);
+      setAttributeMpLinks({});
       setSelectedAttributeId('');
       setOzonSelectedCategory(null);
       setOzonSearchQuery('');
@@ -745,6 +780,53 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       setYmSearchQuery('');
     }
   }, [category]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const { descId, typeId } = parseOzonCompositeId(formData.ozonCategoryId);
+    const wbSubjectId = formData.wbCategoryId ? Number(formData.wbCategoryId) : 0;
+
+    (async () => {
+      let ozon = [];
+      if (descId && typeId) {
+        try {
+          const raw = await integrationsApi.getOzonCategoryAttributes(descId, typeId);
+          ozon = Array.isArray(raw) ? raw : mpAttrsFromResponse(raw);
+        } catch {
+          ozon = [];
+        }
+      } else if (category?.id) {
+        try {
+          ozon = mpAttrsFromResponse(await userCategoriesApi.getMarketplaceAttributes(category.id, 'ozon'));
+        } catch {
+          ozon = [];
+        }
+      }
+
+      let wb = [];
+      let ym = [];
+      if (category?.id) {
+        const [wbRes, ymRes] = await Promise.all([
+          userCategoriesApi.getMarketplaceAttributes(category.id, 'wb', {
+            subjectId: wbSubjectId > 0 ? wbSubjectId : undefined,
+          }).catch(() => null),
+          userCategoriesApi.getMarketplaceAttributes(category.id, 'ym').catch(() => null),
+        ]);
+        wb = mpAttrsFromResponse(wbRes);
+        ym = mpAttrsFromResponse(ymRes);
+      }
+
+      if (!cancelled) {
+        setOzonMpAttrs(ozon);
+        setWbMpAttrs(wb);
+        setYmMpAttrs(ym);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId]);
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -816,6 +898,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       description: formData.description.trim() || null,
       parent_id: formData.parentId || null,
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
+      attribute_mp_links: attributeMpLinks,
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
@@ -919,7 +1002,8 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       <div className="field" style={{ marginTop: '16px' }}>
         <label className="label">Атрибуты категории</label>
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Добавьте атрибуты, которые будут доступны для товаров этой категории
+          Добавьте атрибуты, которые будут доступны для товаров этой категории.
+          Какие характеристики Ozon / Wildberries / Яндекс.Маркета им соответствуют — настраивается ниже, после сопоставления с маркетплейсами.
         </p>
         {allAttributes.length === 0 ? (
           <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов. Создайте атрибуты в разделе «Настройки → Атрибуты».</span>
@@ -976,7 +1060,14 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                     {attr?.name || id}
                     <button
                       type="button"
-                      onClick={() => setAttributeIds((prev) => prev.filter((x) => x !== id))}
+                      onClick={() => {
+                        setAttributeIds((prev) => prev.filter((x) => x !== id));
+                        setAttributeMpLinks((prev) => {
+                          const next = { ...prev };
+                          delete next[id];
+                          return next;
+                        });
+                      }}
                       aria-label="Удалить"
                       style={{
                         padding: '0 4px',
@@ -997,7 +1088,88 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                 <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Атрибуты не добавлены</span>
               )}
             </div>
+            <div
+              style={{
+                marginTop: '14px',
+                padding: '12px',
+                border: '1px solid #93c5fd',
+                borderRadius: '8px',
+                background: 'rgba(59, 130, 246, 0.06)',
+              }}
+            >
+              <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px', color: 'var(--text)' }}>
+                Связь с характеристиками Ozon / Wildberries / Яндекс.Маркета
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
+                Для этой категории: какой характеристике МП соответствует каждый атрибут ERP.
+                В другой категории у того же атрибута можно выбрать другие характеристики.
+              </p>
+              {attributeIds.length === 0 ? (
+                <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>
+                  Добавьте атрибуты выше, затем выберите характеристики МП.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {!formData.ozonCategoryId && !formData.wbCategoryId && !formData.ymCategoryId && (
+                    <p style={{ fontSize: '12px', color: '#b45309', margin: 0 }}>
+                      Списки характеристик появятся после сопоставления с маркетплейсами ниже. Можно вписать название вручную.
+                    </p>
+                  )}
+                  {attributeIds.map((id) => {
+                    const attr = allAttributes.find((a) => String(a.id) === id);
+                    return (
+                      <div
+                        key={`mp-${id}`}
+                        style={{
+                          padding: '12px',
+                          border: '1px solid var(--border, #e5e7eb)',
+                          borderRadius: '8px',
+                          background: '#fff',
+                        }}
+                      >
+                        <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+                          {attr?.name || id}
+                        </div>
+                        <AttributeMpLinkFields
+                          links={attributeMpLinks[id] || emptyAttrMpLinks()}
+                          onChange={(next) => setAttributeMpLinks((prev) => ({ ...prev, [id]: next }))}
+                          ozonOptions={ozonMpAttrs}
+                          wbOptions={wbMpAttrs}
+                          ymOptions={ymMpAttrs}
+                          getWbId={wbAttrKey}
+                          getWbName={wbAttrName}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </>
+        )}
+      </div>
+
+      <div className="field" style={{ marginTop: '16px' }}>
+        <label className="label">Rich-контент</label>
+        {category?.id ? (
+          <>
+            <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
+              Шаблон собирается из модулей отдельно для каждой категории. В карточке товара значки
+              OZ/WB/ЯМ связывают Rich-контент между маркетплейсами.
+            </p>
+            <div className="d-flex flex-wrap gap-2">
+              <Link
+                to={`/products/rich-content?categoryId=${encodeURIComponent(category.id)}`}
+                className="btn btn-secondary btn-sm"
+              >
+                Шаблон этой категории
+              </Link>
+            </div>
+          </>
+        ) : (
+          <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 0 }}>
+            Сохраните категорию, чтобы настроить шаблон Rich-контента.
+          </p>
         )}
       </div>
 

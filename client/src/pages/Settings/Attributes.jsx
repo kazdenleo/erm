@@ -1,14 +1,15 @@
 /**
  * Attributes Page
- * Атрибуты товаров: создание и типы. Привязка атрибутов к категориям — в форме категории.
+ * Справочник атрибутов. Связь с характеристиками МП задаётся по каждой категории.
  */
 
 import React, { useState, useEffect } from 'react';
 import { productAttributesApi } from '../../services/productAttributes.api';
+import { userCategoriesApi } from '../../services/userCategories.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { AttributeMpLinkFields } from '../../components/common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
-import { normalizeAttrMpLinks } from '../../utils/productAttributeMpLinks.js';
+import { emptyAttrMpLinks, normalizeAttrMpLinks } from '../../utils/productAttributeMpLinks.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -19,17 +20,163 @@ const TYPE_LABELS = {
   dictionary: 'Словарь'
 };
 
-const MP_SHORT = { ozon: 'OZ', wb: 'WB', ym: 'ЯМ' };
+function mpAttrsFromResponse(res) {
+  const raw = res?.data ?? res;
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.attributes)) return raw.attributes;
+  if (Array.isArray(raw?.data)) return raw.data;
+  return [];
+}
 
-function formatMpLinksCell(raw) {
-  const links = normalizeAttrMpLinks(raw);
-  const parts = [];
-  for (const mp of ['ozon', 'wb', 'ym']) {
-    const entry = links[mp];
-    if (!entry) continue;
-    parts.push(`${MP_SHORT[mp]}: ${entry.name || entry.id}`);
+function wbAttrKey(a) {
+  const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
+  return id != null ? String(id) : String(a?.name || '');
+}
+
+function wbAttrName(a) {
+  return a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
+}
+
+function CategoryMpLinksPanel({ attributeId }) {
+  const [categories, setCategories] = useState([]);
+  const [selectedCatId, setSelectedCatId] = useState('');
+  const [links, setLinks] = useState(() => emptyAttrMpLinks());
+  const [ozonOptions, setOzonOptions] = useState([]);
+  const [wbOptions, setWbOptions] = useState([]);
+  const [ymOptions, setYmOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    userCategoriesApi
+      .getAll()
+      .then((res) => {
+        if (cancelled) return;
+        const list = Array.isArray(res?.data) ? res.data : [];
+        const linked = list.filter((c) =>
+          (c.attribute_ids || []).map((id) => String(id)).includes(String(attributeId))
+        );
+        setCategories(linked);
+        setSelectedCatId(linked[0] ? String(linked[0].id) : '');
+      })
+      .catch(() => {
+        if (!cancelled) setCategories([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attributeId]);
+
+  const selected = categories.find((c) => String(c.id) === String(selectedCatId)) || null;
+
+  useEffect(() => {
+    if (!selectedCatId) {
+      setLinks(emptyAttrMpLinks());
+      setOzonOptions([]);
+      setWbOptions([]);
+      setYmOptions([]);
+      return undefined;
+    }
+    const cat = categories.find((c) => String(c.id) === String(selectedCatId));
+    if (!cat) {
+      setLinks(emptyAttrMpLinks());
+      setOzonOptions([]);
+      setWbOptions([]);
+      setYmOptions([]);
+      return undefined;
+    }
+    const map = cat.attribute_mp_links && typeof cat.attribute_mp_links === 'object'
+      ? cat.attribute_mp_links
+      : {};
+    setLinks(normalizeAttrMpLinks(map[String(attributeId)] ?? map[attributeId]));
+    let cancelled = false;
+    Promise.all([
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon').catch(() => null),
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'wb').catch(() => null),
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ym').catch(() => null),
+    ]).then(([oz, wb, ym]) => {
+      if (cancelled) return;
+      setOzonOptions(mpAttrsFromResponse(oz));
+      setWbOptions(mpAttrsFromResponse(wb));
+      setYmOptions(mpAttrsFromResponse(ym));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // categories читаем из замыкания при смене категории, не при каждом сохранении связей
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCatId, attributeId]);
+
+  const handleLinksChange = async (next) => {
+    if (!selected) return;
+    setLinks(next);
+    setSaving(true);
+    try {
+      await userCategoriesApi.updateAttributeMpLinks(selected.id, attributeId, next);
+      setCategories((prev) =>
+        prev.map((c) =>
+          String(c.id) === String(selected.id)
+            ? {
+                ...c,
+                attribute_mp_links: {
+                  ...(c.attribute_mp_links || {}),
+                  [String(attributeId)]: next,
+                },
+              }
+            : c
+        )
+      );
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.response?.data?.error || 'Не удалось сохранить связь');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <p className="muted" style={{ margin: 0 }}>Загрузка категорий…</p>;
   }
-  return parts.length ? parts.join(' · ') : '—';
+  if (!categories.length) {
+    return (
+      <p className="muted" style={{ margin: 0 }}>
+        Этот атрибут ещё не добавлен ни в одну категорию. Добавьте его в
+        {' '}<strong>Настройки → Категории</strong> (карандаш у категории), затем вернитесь сюда.
+      </p>
+    );
+  }
+
+  return (
+    <div className="attribute-category-mp-links">
+      <label>Категория ERP</label>
+      <select
+        className="form-select form-select-sm"
+        value={selectedCatId}
+        onChange={(e) => setSelectedCatId(e.target.value)}
+      >
+        {categories.map((c) => (
+          <option key={c.id} value={c.id}>{c.name}</option>
+        ))}
+      </select>
+      <p className="muted" style={{ margin: '8px 0 10px' }}>
+        Для выбранной категории укажите характеристики Ozon / WB / Яндекс.Маркета.
+        В другой категории можно выбрать другие. {saving ? 'Сохранение…' : 'Сохраняется сразу.'}
+      </p>
+      <AttributeMpLinkFields
+        links={links}
+        onChange={(next) => void handleLinksChange(next)}
+        ozonOptions={ozonOptions}
+        wbOptions={wbOptions}
+        ymOptions={ymOptions}
+        getWbId={wbAttrKey}
+        getWbName={wbAttrName}
+      />
+    </div>
+  );
 }
 
 function AttributeForm({ attribute, onSubmit, onCancel }) {
@@ -41,7 +188,6 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
       ? sortDict(attribute.dictionary_values)
       : []
   );
-  const [mpLinks, setMpLinks] = useState(() => normalizeAttrMpLinks(attribute?.mp_links));
   const [newDictItem, setNewDictItem] = useState('');
   const [error, setError] = useState('');
 
@@ -70,7 +216,6 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
       name: name.trim(),
       type,
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
-      mp_links: mpLinks,
     });
   };
 
@@ -120,12 +265,14 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
         </div>
       )}
       <div className="form-group">
-        <label>Связь с характеристиками маркетплейсов</label>
-        <p className="muted" style={{ margin: 0 }}>
-          Укажите название характеристики Ozon, Wildberries или Яндекс.Маркета.
-          В карточке товара можно выбрать её из списка категории.
-        </p>
-        <AttributeMpLinkFields links={mpLinks} onChange={setMpLinks} />
+        <label>Связь с маркетплейсами по категориям</label>
+        {attribute?.id ? (
+          <CategoryMpLinksPanel attributeId={attribute.id} />
+        ) : (
+          <p className="muted" style={{ margin: 0 }}>
+            Сначала сохраните атрибут, затем снова откройте его — здесь появятся категории и выбор характеристик OZ / WB / ЯМ.
+          </p>
+        )}
       </div>
       <div className="form-actions">
         <Button type="button" variant="secondary" onClick={onCancel}>Отмена</Button>
@@ -201,7 +348,9 @@ export function Attributes() {
   return (
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
-      <p className="subtitle">Создание атрибутов для товаров. Привязка атрибутов к категориям — в разделе «Категории». Типы: Текст, Флажок, Число, Дата, Словарь.</p>
+      <p className="subtitle">
+        Откройте атрибут кнопкой «Изменить» — там выбирается категория ERP и характеристики Ozon / Wildberries / Яндекс.Маркета для неё.
+      </p>
 
       <div className="attributes-toolbar">
         <Button variant="primary" onClick={handleCreate}>➕ Добавить атрибут</Button>
@@ -219,7 +368,6 @@ export function Attributes() {
               <tr>
                 <th>Название</th>
                 <th>Тип</th>
-                <th>Маркетплейсы</th>
                 <th style={{ width: 100 }}></th>
               </tr>
             </thead>
@@ -228,7 +376,6 @@ export function Attributes() {
                 <tr key={attr.id}>
                   <td>{attr.name}</td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
-                  <td className="attributes-mp-cell">{formatMpLinksCell(attr.mp_links)}</td>
                   <td>
                     <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>Изменить</Button>
                     <Button variant="secondary" size="small" onClick={() => handleDelete(attr.id)} className="btn-delete">Удалить</Button>
@@ -244,7 +391,8 @@ export function Attributes() {
         isOpen={modalOpen}
         onClose={() => { setModalOpen(false); setEditing(null); }}
         title={editing ? 'Редактировать атрибут' : 'Добавить атрибут'}
-        size="medium"
+        size="large"
+        scrollable
       >
         <AttributeForm
           key={editing?.id || 'new'}

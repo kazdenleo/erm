@@ -9,6 +9,7 @@ import integrationsService from '../services/integrations.service.js';
 import categoryMarketplaceCommissionsService from '../services/categoryMarketplaceCommissions.service.js';
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -34,6 +35,64 @@ function normalizeSkipMarketplaceStockSync(body) {
   return v === true || v === 'true' || v === 1 || v === '1';
 }
 
+function parseJsonObject(raw) {
+  if (raw == null) return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  return {};
+}
+
+async function loadCategoryAttributeMeta(categoryId) {
+  const attrResult = await query(
+    `SELECT attribute_id, COALESCE(mp_links, '{}'::jsonb) AS mp_links
+     FROM category_attributes WHERE user_category_id = $1`,
+    [categoryId]
+  );
+  const ids = [];
+  const map = {};
+  for (const row of attrResult.rows || []) {
+    ids.push(row.attribute_id);
+    map[String(row.attribute_id)] = parseJsonObject(row.mp_links);
+  }
+  return { ids, map };
+}
+
+function attachParsedAttributeMeta(row) {
+  let ids = row.attribute_ids;
+  if (ids == null) ids = [];
+  if (typeof ids === 'string') {
+    try {
+      ids = JSON.parse(ids);
+    } catch {
+      ids = [];
+    }
+  }
+  if (!Array.isArray(ids)) ids = [];
+  const { attribute_ids, attribute_mp_links, ...rest } = row;
+  return {
+    ...rest,
+    attribute_ids: ids,
+    attribute_mp_links: parseJsonObject(attribute_mp_links),
+  };
+}
+
+async function upsertCategoryAttributeLinks(categoryId, attributeId, mpLinks) {
+  await query(
+    `INSERT INTO category_attributes (user_category_id, attribute_id, mp_links)
+     VALUES ($1, $2, $3::jsonb)
+     ON CONFLICT (user_category_id, attribute_id)
+     DO UPDATE SET mp_links = EXCLUDED.mp_links`,
+    [categoryId, attributeId, JSON.stringify(normalizeMpLinks(mpLinks))]
+  );
+}
+
 class UserCategoriesController {
   async getAll(req, res, next) {
     try {
@@ -52,18 +111,16 @@ class UserCategoriesController {
          COALESCE(
            (SELECT json_agg(ca.attribute_id) FROM category_attributes ca WHERE ca.user_category_id = uc.id),
            '[]'::json
-         ) AS attribute_ids
+         ) AS attribute_ids,
+         COALESCE(
+           (SELECT jsonb_object_agg(ca.attribute_id::text, COALESCE(ca.mp_links, '{}'::jsonb))
+            FROM category_attributes ca WHERE ca.user_category_id = uc.id),
+           '{}'::jsonb
+         ) AS attribute_mp_links
          FROM user_categories uc ${profileFilter} ORDER BY uc.name`,
         params
       );
-      const rows = (result.rows || []).map((row) => {
-        let ids = row.attribute_ids;
-        if (ids == null) ids = [];
-        if (typeof ids === 'string') ids = JSON.parse(ids);
-        if (!Array.isArray(ids)) ids = [];
-        const { attribute_ids, ...rest } = row;
-        return { ...rest, attribute_ids: ids };
-      });
+      const rows = (result.rows || []).map((row) => attachParsedAttributeMeta(row));
       return res.status(200).json({ ok: true, data: rows });
     } catch (error) {
       next(error);
@@ -83,11 +140,9 @@ class UserCategoriesController {
       }
       
       const category = result.rows[0];
-      const attrResult = await query(
-        'SELECT attribute_id FROM category_attributes WHERE user_category_id = $1',
-        [id]
-      );
-      category.attribute_ids = (attrResult.rows || []).map((r) => r.attribute_id);
+      const attrMeta = await loadCategoryAttributeMeta(id);
+      category.attribute_ids = attrMeta.ids;
+      category.attribute_mp_links = attrMeta.map;
 
       const mm = parseMarketplaceMappings(category.marketplace_mappings);
       category.marketplace_mappings = mm;
@@ -283,7 +338,7 @@ class UserCategoriesController {
 
   async create(req, res, next) {
     try {
-      const { name, description, parent_id, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const { name, description, parent_id, attribute_ids, attribute_mp_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
@@ -312,16 +367,17 @@ class UserCategoriesController {
       
       const category = result.rows[0];
       const ids = Array.isArray(attribute_ids) ? attribute_ids : [];
+      const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
+      const savedIds = [];
       for (const aid of ids) {
         const numId = typeof aid === 'number' ? aid : parseInt(aid, 10);
         if (numId && !isNaN(numId)) {
-          await query(
-            'INSERT INTO category_attributes (user_category_id, attribute_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-            [category.id, numId]
-          );
+          await upsertCategoryAttributeLinks(category.id, numId, incomingLinks[String(numId)] || {});
+          savedIds.push(numId);
         }
       }
-      category.attribute_ids = ids.map((aid) => (typeof aid === 'number' ? aid : parseInt(aid, 10))).filter((n) => !isNaN(n) && n > 0);
+      category.attribute_ids = savedIds;
+      category.attribute_mp_links = incomingLinks;
       
       return res.status(201).json({ ok: true, data: category });
     } catch (error) {
@@ -332,7 +388,7 @@ class UserCategoriesController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const { name, description, parent_id, marketplace_mappings, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const { name, description, parent_id, marketplace_mappings, attribute_ids, attribute_mp_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
@@ -400,7 +456,7 @@ class UserCategoriesController {
         params.push(skipMpStock === true);
       }
       
-      if (updateFields.length === 0 && attribute_ids === undefined) {
+      if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined) {
         return res.status(400).json({ ok: false, message: 'Нет полей для обновления' });
       }
       
@@ -417,15 +473,31 @@ class UserCategoriesController {
       }
       
       if (attribute_ids !== undefined) {
+        const existing = await query(
+          'SELECT attribute_id, mp_links FROM category_attributes WHERE user_category_id = $1',
+          [id]
+        );
+        const prev = new Map(
+          (existing.rows || []).map((row) => [String(row.attribute_id), parseJsonObject(row.mp_links)])
+        );
+        const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
         await query('DELETE FROM category_attributes WHERE user_category_id = $1', [id]);
         const ids = Array.isArray(attribute_ids) ? attribute_ids : [];
         for (const aid of ids) {
           const numId = typeof aid === 'number' ? aid : parseInt(aid, 10);
           if (numId && !isNaN(numId)) {
-            await query(
-              'INSERT INTO category_attributes (user_category_id, attribute_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-              [id, numId]
-            );
+            const links = Object.prototype.hasOwnProperty.call(incomingLinks, String(numId))
+              ? incomingLinks[String(numId)]
+              : (prev.get(String(numId)) || {});
+            await upsertCategoryAttributeLinks(id, numId, links);
+          }
+        }
+      } else if (attribute_mp_links !== undefined) {
+        const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
+        for (const [aid, links] of Object.entries(incomingLinks)) {
+          const numId = parseInt(aid, 10);
+          if (numId && !isNaN(numId)) {
+            await upsertCategoryAttributeLinks(id, numId, links);
           }
         }
       }
@@ -435,13 +507,53 @@ class UserCategoriesController {
         return res.status(404).json({ ok: false, message: 'Категория не найдена' });
       }
       const category = catResult.rows[0];
-      const attrResult = await query(
-        'SELECT attribute_id FROM category_attributes WHERE user_category_id = $1',
-        [id]
-      );
-      category.attribute_ids = (attrResult.rows || []).map((r) => r.attribute_id);
+      const attrMeta = await loadCategoryAttributeMeta(id);
+      category.attribute_ids = attrMeta.ids;
+      category.attribute_mp_links = attrMeta.map;
       
       return res.status(200).json({ ok: true, data: category });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /api/user-categories/:id/attributes/:attributeId/mp-links
+   * Связь ERP-атрибута с характеристиками МП в рамках категории.
+   */
+  async updateAttributeMpLinks(req, res, next) {
+    try {
+      const { id, attributeId } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const owner = await query('SELECT profile_id FROM user_categories WHERE id = $1', [id]);
+      if (owner.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(owner.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const numAttrId = parseInt(attributeId, 10);
+      if (!numAttrId || Number.isNaN(numAttrId)) {
+        return res.status(400).json({ ok: false, message: 'Некорректный атрибут' });
+      }
+      const attrCheck = await query('SELECT id FROM product_attributes WHERE id = $1', [numAttrId]);
+      if (attrCheck.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const links = normalizeMpLinks(body.mp_links !== undefined ? body.mp_links : body);
+      await upsertCategoryAttributeLinks(id, numAttrId, links);
+      const attrMeta = await loadCategoryAttributeMeta(id);
+      return res.status(200).json({
+        ok: true,
+        data: {
+          mp_links: links,
+          attribute_mp_links: attrMeta.map,
+        },
+      });
     } catch (error) {
       next(error);
     }
