@@ -207,3 +207,32 @@ export function calculateMinPrice(
   }
   return finalPrice > 0 ? Math.round(finalPrice) : null;
 }
+
+/** Профиль налогов для мин. цены: не давать строке organization затереть tax_system/vat. */
+export function resolveMinPriceTaxProfile(product, taxProfile = null) {
+  if (taxProfile && typeof taxProfile === 'object') {
+    if (
+      taxProfile.vatRate != null ||
+      taxProfile.incomeTaxRate != null ||
+      taxProfile.taxSystemCode != null
+    ) {
+      return taxProfile;
+    }
+    return resolveOrganizationTaxProfile(taxProfile);
+  }
+  if (
+    product?.organization_tax_system != null ||
+    product?.organization_vat != null ||
+    product?.organizationTaxSystem != null ||
+    product?.organizationVat != null
+  ) {
+    return resolveOrganizationTaxProfile({
+      tax_system: product.organization_tax_system ?? product.organizationTaxSystem,
+      vat: product.organization_vat ?? product.organizationVat,
+    });
+  }
+  if (product?.organization && typeof product.organization === 'object') {
+    return resolveOrganizationTaxProfile(product.organization);
+  }
+  return resolveOrganizationTaxProfile(product);
+}
