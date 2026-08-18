@@ -719,9 +719,11 @@
   right: 0;
   top: calc(100% + 4px);
   z-index: 1060;
-  width: min(360px, 90vw);
+  width: min(400px, 92vw);
   max-height: min(420px, 60vh);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 10px 12px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -729,10 +731,31 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
 }
 
+.products-bulk-columns-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+.products-bulk-columns-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.products-bulk-columns-show-all {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .products-bulk-columns-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .products-bulk-columns-item {

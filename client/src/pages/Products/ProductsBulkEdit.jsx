@@ -476,6 +476,26 @@ const PACK_DIM_COL_KEYS = new Set([
   'ozon_pack_weight',
 ]);
 
+function columnSearchHaystack(col) {
+  const mp =
+    col?.mpBucket === 'ozon'
+      ? 'ozon'
+      : col?.mpBucket === 'wb'
+        ? 'wb wildberries'
+        : col?.mpBucket === 'ym'
+          ? 'ym яндекс ям'
+          : '';
+  return [col?.label, col?.title, col?.key, mp].filter(Boolean).join(' ').toLowerCase();
+}
+
+function columnMatchesSearchQuery(col, query) {
+  const q = String(query || '')
+    .trim()
+    .toLowerCase();
+  if (!q) return true;
+  return columnSearchHaystack(col).includes(q);
+}
+
 function isPackDimColumnKey(key) {
   return PACK_DIM_COL_KEYS.has(String(key || ''));
 }
@@ -2435,7 +2455,9 @@ export function ProductsBulkEdit() {
   const [pinnedColumnKeys, setPinnedColumnKeys] = useState(() => readPinnedColumnKeys());
   const [hiddenColumnKeys, setHiddenColumnKeys] = useState(() => readHiddenColumnKeys());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const [columnsSearch, setColumnsSearch] = useState('');
   const columnsMenuRef = useRef(null);
+  const columnsSearchRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -2484,14 +2506,21 @@ export function ProductsBulkEdit() {
   }, [hiddenColumnKeys]);
 
   useEffect(() => {
-    if (!columnsMenuOpen) return undefined;
+    if (!columnsMenuOpen) {
+      setColumnsSearch('');
+      return undefined;
+    }
+    const t = window.setTimeout(() => columnsSearchRef.current?.focus(), 0);
     const onDoc = (e) => {
       if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target)) {
         setColumnsMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener('mousedown', onDoc);
+    };
   }, [columnsMenuOpen]);
 
   const togglePinColumn = useCallback((colKey) => {
@@ -2617,6 +2646,11 @@ export function ProductsBulkEdit() {
   const showAllColumns = useCallback(() => {
     setHiddenColumnKeys([]);
   }, []);
+
+  const filteredColumnMenuItems = useMemo(() => {
+    const q = columnsSearch;
+    return (visibleColumns || []).filter((col) => columnMatchesSearchQuery(col, q));
+  }, [visibleColumns, columnsSearch]);
 
   const colStickyClass = useCallback(
     (col) => {
@@ -4081,41 +4115,56 @@ export function ProductsBulkEdit() {
                         </Button>
                         {columnsMenuOpen ? (
                           <div className="products-bulk-columns-panel" role="menu">
-                            <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
-                              <span className="small fw-semibold">Столбцы таблицы</span>
-                              {hiddenColumnKeys.length > 0 ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-link btn-sm p-0 text-decoration-none"
-                                  onClick={showAllColumns}
-                                >
-                                  Показать все
-                                </button>
-                              ) : null}
+                            <div className="products-bulk-columns-toolbar">
+                              <input
+                                ref={columnsSearchRef}
+                                id="bulk-columns-search"
+                                type="search"
+                                className="form-control form-control-sm products-bulk-columns-search"
+                                placeholder="Найти столбец…"
+                                value={columnsSearch}
+                                onChange={(e) => setColumnsSearch(e.target.value)}
+                                onKeyDown={(e) => e.stopPropagation()}
+                                autoComplete="off"
+                                aria-label="Поиск по названию столбца"
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-outline-secondary btn-sm products-bulk-columns-show-all"
+                                onClick={showAllColumns}
+                                disabled={hiddenColumnKeys.length === 0}
+                                title="Показать все скрытые столбцы"
+                              >
+                                Показать все
+                              </button>
                             </div>
                             <div className="products-bulk-columns-list">
-                              {(visibleColumns || []).map((col) => {
-                                const locked = ALWAYS_VISIBLE_COL_KEYS.has(col.key);
-                                const shown = locked || !hiddenColumnKeys.includes(col.key);
-                                const fullTitle = col.title || col.label || col.key;
-                                return (
-                                  <label key={col.key} className="products-bulk-columns-item">
-                                    <input
-                                      type="checkbox"
-                                      className="form-check-input m-0"
-                                      checked={shown}
-                                      disabled={locked}
-                                      onChange={(e) => toggleColumnHidden(col.key, e.target.checked)}
-                                    />
-                                    <span className="products-bulk-columns-item-label" title={fullTitle}>
-                                      {col.label || col.key}
-                                      {col.mpBucket ? (
-                                        <span className="text-muted"> · {col.mpBucket.toUpperCase()}</span>
-                                      ) : null}
-                                    </span>
-                                  </label>
-                                );
-                              })}
+                              {filteredColumnMenuItems.length === 0 ? (
+                                <div className="text-muted small py-2 px-1">Нет столбцов по запросу</div>
+                              ) : (
+                                filteredColumnMenuItems.map((col) => {
+                                  const locked = ALWAYS_VISIBLE_COL_KEYS.has(col.key);
+                                  const shown = locked || !hiddenColumnKeys.includes(col.key);
+                                  const fullTitle = col.title || col.label || col.key;
+                                  return (
+                                    <label key={col.key} className="products-bulk-columns-item">
+                                      <input
+                                        type="checkbox"
+                                        className="form-check-input m-0"
+                                        checked={shown}
+                                        disabled={locked}
+                                        onChange={(e) => toggleColumnHidden(col.key, e.target.checked)}
+                                      />
+                                      <span className="products-bulk-columns-item-label" title={fullTitle}>
+                                        {col.label || col.key}
+                                        {col.mpBucket ? (
+                                          <span className="text-muted"> · {col.mpBucket.toUpperCase()}</span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                  );
+                                })
+                              )}
                             </div>
                           </div>
                         ) : null}
