@@ -481,11 +481,12 @@ function columnSearchHaystack(col) {
     col?.mpBucket === 'ozon'
       ? 'ozon'
       : col?.mpBucket === 'wb'
-        ? 'wb wildberries'
+        ? 'wb wildberries вб'
         : col?.mpBucket === 'ym'
           ? 'ym яндекс ям'
           : '';
-  return [col?.label, col?.title, col?.key, mp].filter(Boolean).join(' ').toLowerCase();
+  const shortTitle = String(col?.title || '').split('.')[0];
+  return [col?.label, shortTitle, mp].filter(Boolean).join(' ').toLowerCase();
 }
 
 function columnMatchesSearchQuery(col, query) {
@@ -2601,8 +2602,9 @@ export function ProductsBulkEdit() {
     const q = String(columnsSearch || '').trim();
     const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys).filter((c) => {
       if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
+      if (hidden.has(c.key)) return false;
       if (q) return columnMatchesSearchQuery(c, q);
-      return !hidden.has(c.key);
+      return true;
     });
     return [SELECT_COL, ...ordered];
   }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch]);
@@ -2651,8 +2653,8 @@ export function ProductsBulkEdit() {
     const pinned = new Set(pinnedColumnKeys || []);
     const q = String(columnsSearch || '').trim();
     return (visibleColumns || []).filter((col) => {
-      if (ALWAYS_VISIBLE_COL_KEYS.has(col.key) || pinned.has(col.key)) return true;
       if (q) return columnMatchesSearchQuery(col, q);
+      if (ALWAYS_VISIBLE_COL_KEYS.has(col.key) || pinned.has(col.key)) return true;
       return !hidden.has(col.key);
     });
   }, [visibleColumns, columnsSearch, hiddenColumnKeys, pinnedColumnKeys]);
