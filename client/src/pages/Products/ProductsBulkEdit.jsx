@@ -30,6 +30,7 @@ import {
   isMpFieldLinked,
   setMpFieldLink,
   emptyMpFieldLinks,
+  getMpDraftProductDimensionsMm,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -1374,35 +1375,50 @@ function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const width = lengthMmToDisplay(p.product_width ?? p.productWidth, lengthUnit);
   const height = lengthMmToDisplay(p.product_height ?? p.productHeight, lengthUnit);
   const weight = weightGToDisplay(p.product_weight ?? p.productWeight, weightUnit);
+  const main = { length, width, height, weight };
   const links = normalizeMpFieldLinks(p.mp_field_links);
-  const wbAttrs = normalizeJsonAttrs(p.wb_attributes);
-  const wbLinked = isMpFieldLinked(links, 'product_dimensions', 'wb');
-  const wbLength = wbLinked
-    ? length
-    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.length], lengthUnit) || length;
-  const wbWidth = wbLinked
-    ? width
-    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.width], lengthUnit) || width;
-  const wbHeight = wbLinked
-    ? height
-    : lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC.height], lengthUnit) || height;
+  const fromMp = (mp) => {
+    if (isMpFieldLinked(links, 'product_dimensions', mp)) return main;
+    const d = getMpDraftProductDimensionsMm(p, mp);
+    if (d && (Number(d.length) > 0 || Number(d.width) > 0 || Number(d.height) > 0 || Number(d.weight) > 0)) {
+      return {
+        length: lengthMmToDisplay(d.length, lengthUnit),
+        width: lengthMmToDisplay(d.width, lengthUnit),
+        height: lengthMmToDisplay(d.height, lengthUnit),
+        weight: weightGToDisplay(d.weight, weightUnit),
+      };
+    }
+    if (mp === 'wb') {
+      const attrs = normalizeJsonAttrs(p.wb_attributes);
+      return {
+        length: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.length], lengthUnit) || '',
+        width: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.width], lengthUnit) || '',
+        height: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.height], lengthUnit) || '',
+        weight,
+      };
+    }
+    return { length: '', width: '', height: '', weight: '' };
+  };
+  const oz = fromMp('ozon');
+  const wb = fromMp('wb');
+  const ym = fromMp('ym');
   return {
     product_length: length,
     product_width: width,
     product_height: height,
     product_weight: weight,
-    ozon_product_length: length,
-    ozon_product_width: width,
-    ozon_product_height: height,
-    ozon_product_weight: weight,
-    wb_product_length: wbLength,
-    wb_product_width: wbWidth,
-    wb_product_height: wbHeight,
-    wb_product_weight: weight,
-    ym_product_length: length,
-    ym_product_width: width,
-    ym_product_height: height,
-    ym_product_weight: weight,
+    ozon_product_length: oz.length,
+    ozon_product_width: oz.width,
+    ozon_product_height: oz.height,
+    ozon_product_weight: oz.weight,
+    wb_product_length: wb.length,
+    wb_product_width: wb.width,
+    wb_product_height: wb.height,
+    wb_product_weight: wb.weight,
+    ym_product_length: ym.length,
+    ym_product_width: ym.width,
+    ym_product_height: ym.height,
+    ym_product_weight: ym.weight,
   };
 }
 
@@ -1853,6 +1869,55 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     !eq(original.product_width, current.product_width) ||
     !eq(original.product_height, current.product_height) ||
     !eq(original.product_weight, current.product_weight);
+
+  // Размеры товара МП: связь вкл. → draft из Main; выкл. → свои ozon/wb/ym_product_* в draft.productDimensions
+  {
+    const links = normalizeMpFieldLinks(current.mp_field_links);
+    const patchDraft = (mp, extra) => {
+      const key = `${mp}_draft`;
+      const baselineKey =
+        mp === 'ozon' ? '_ozonDraftBaseline' : mp === 'wb' ? '_wbDraftBaseline' : '_ymDraftBaseline';
+      const prev =
+        payload[key] && typeof payload[key] === 'object'
+          ? payload[key]
+          : parseDraftBaseline(original[baselineKey] ?? original._productRef?.[key]);
+      touch(key, { ...prev, ...extra });
+    };
+    const dimsFromDisplay = (length, width, height, weight) =>
+      buildPositiveDimsObject(
+        lengthDisplayToMm(length, lengthUnit),
+        lengthDisplayToMm(width, lengthUnit),
+        lengthDisplayToMm(height, lengthUnit),
+        weightDisplayToG(weight, weightUnit)
+      );
+    const mpProductChanged = (mp) =>
+      !eq(original[`${mp}_product_length`], current[`${mp}_product_length`]) ||
+      !eq(original[`${mp}_product_width`], current[`${mp}_product_width`]) ||
+      !eq(original[`${mp}_product_height`], current[`${mp}_product_height`]) ||
+      !eq(original[`${mp}_product_weight`], current[`${mp}_product_weight`]);
+    for (const mp of ['ozon', 'wb', 'ym']) {
+      const linked = isMpFieldLinked(links, 'product_dimensions', mp);
+      if (mpProductChanged(mp) && !linked) {
+        patchDraft(mp, {
+          productDimensions: dimsFromDisplay(
+            current[`${mp}_product_length`],
+            current[`${mp}_product_width`],
+            current[`${mp}_product_height`],
+            current[`${mp}_product_weight`]
+          ),
+        });
+      } else if (productDimsTouched && linked) {
+        patchDraft(mp, {
+          productDimensions: dimsFromDisplay(
+            current.product_length,
+            current.product_width,
+            current.product_height,
+            current.product_weight
+          ),
+        });
+      }
+    }
+  }
   const dimTouched =
     !eq(original.length, current.length) ||
     !eq(original.width, current.width) ||
@@ -2007,6 +2072,17 @@ function preserveBulkDimFieldsAfterSave(nextRow, currentRow, payload, lengthUnit
   fillPack('width', 'width', (n) => lengthMmToDisplay(n, lengthUnit));
   fillPack('height', 'height', (n) => lengthMmToDisplay(n, lengthUnit));
   fillPack('weight', 'weight', (n) => weightGToDisplay(n, weightUnit));
+
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const draft = payload[`${mp}_draft`];
+    if (!draft || typeof draft !== 'object' || !draft.productDimensions) continue;
+    for (const kind of ['length', 'width', 'height', 'weight']) {
+      const rowKey = `${mp}_product_${kind}`;
+      if (str(row[rowKey]).trim() !== '') continue;
+      const fromCurrent = str(currentRow?.[rowKey]).trim();
+      if (fromCurrent) row[rowKey] = fromCurrent;
+    }
+  }
   return row;
 }
 

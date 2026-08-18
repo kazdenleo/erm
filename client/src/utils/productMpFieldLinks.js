@@ -4,7 +4,16 @@
  * Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
-export const MP_FIELD_LINK_KEYS = ['name', 'sku', 'description', 'brand', 'country', 'dimensions'];
+export const MP_FIELD_LINK_KEYS = [
+  'name',
+  'sku',
+  'description',
+  'brand',
+  'country',
+  'dimensions',
+  'product_dimensions',
+  'rich_content',
+];
 
 export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
 
@@ -16,6 +25,13 @@ export const MP_FIELD_LINK_SUPPORT = {
   brand: ['ozon', 'wb'],
   country: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
+  /** Размеры товара (без упаковки): product_length / width / height / weight */
+  product_dimensions: ['ozon', 'wb', 'ym'],
+  rich_content: ['ozon', 'wb', 'ym'],
+};
+
+export const MP_FIELD_LINK_PEER_SYNC = {
+  rich_content: true,
 };
 
 export const MP_FIELD_LINK_TOGGLES = [
@@ -30,7 +46,9 @@ export const MP_FIELD_LINK_TITLES = {
   description: 'Связать с описанием на «Основном» (не с другими МП)',
   brand: 'Связать с брендом на «Основном» (не с другими МП)',
   country: 'Связать со страной на «Основном» (не с другими МП)',
-  dimensions: 'Связать вес/габариты с «Основным» (не с другими МП; единицы пересчитываются)',
+  dimensions: 'Связать вес/габариты упаковки с «Основным» (не с другими МП; единицы пересчитываются)',
+  product_dimensions: 'Связать размеры товара с «Основным» (не с другими МП)',
+  rich_content: 'Связать Rich-контент: генерация заполняет все включённые маркетплейсы из шаблона категории',
 };
 
 /** Все связи выкл. — дефолт при чтении без сохранённого mp_field_links. */
@@ -62,22 +80,34 @@ export function defaultMpFieldLinks() {
  */
 export function normalizeMpFieldLinks(raw) {
   const defaults = emptyMpFieldLinks();
-  if (raw == null || raw === '') return defaults;
+  if (raw == null || raw === '') {
+    // Раньше размеры товара в bulk всегда зеркалились — сохраняем поведение по умолчанию.
+    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
+    return defaults;
+  }
   let obj = raw;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
+      defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+      defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
       return defaults;
     }
   }
-  if (typeof obj !== 'object' || Array.isArray(obj)) return defaults;
+  if (typeof obj !== 'object' || Array.isArray(obj)) {
+    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
+    return defaults;
+  }
 
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      out[key] = [];
+      // Старые карточки без ключа — размеры товара и Rich-контент считаем связанными со всеми МП.
+      out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
       continue;
     }
     const v = obj[key];
@@ -319,6 +349,13 @@ export function getMpDraftDimensionsMm(formOrProduct, mp) {
   return d;
 }
 
+/** Габариты товара МП без связи — в draft.productDimensions (всегда мм / г). */
+export function getMpDraftProductDimensionsMm(formOrProduct, mp) {
+  const d = getMpDraft(formOrProduct, mp).productDimensions;
+  if (!d || typeof d !== 'object') return null;
+  return d;
+}
+
 export function withMpDraftPatch(prev, mp, patch) {
   const code = String(mp || '').toLowerCase();
   const key = code === 'ozon' ? 'ozon_draft' : code === 'wb' ? 'wb_draft' : code === 'ym' ? 'ym_draft' : null;
@@ -458,6 +495,26 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
     if (isMpFieldLinked(normalized, 'dimensions', 'wb')) {
       const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
       next.wb_draft = { ...d, dimensions: dims };
+    }
+  }
+  if (want('product_dimensions')) {
+    const productDims = {
+      length: prev.product_length !== '' && prev.product_length != null ? Number(prev.product_length) : null,
+      width: prev.product_width !== '' && prev.product_width != null ? Number(prev.product_width) : null,
+      height: prev.product_height !== '' && prev.product_height != null ? Number(prev.product_height) : null,
+      weight: prev.product_weight !== '' && prev.product_weight != null ? Number(prev.product_weight) : null,
+    };
+    if (isMpFieldLinked(normalized, 'product_dimensions', 'ozon')) {
+      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
+      next.ozon_draft = { ...d, productDimensions: productDims };
+    }
+    if (isMpFieldLinked(normalized, 'product_dimensions', 'wb')) {
+      const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
+      next.wb_draft = { ...d, productDimensions: productDims };
+    }
+    if (isMpFieldLinked(normalized, 'product_dimensions', 'ym')) {
+      const d = parseDraftObj(next.ym_draft ?? prev.ym_draft);
+      next.ym_draft = { ...d, productDimensions: productDims };
     }
   }
   return next;

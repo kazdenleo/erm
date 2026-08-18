@@ -18,13 +18,22 @@ import {
   normalizeMpFieldLinks,
   resolveCardTextForPush,
   resolveDimensionsMmForPush,
+  resolveProductDimensionsMmForPush,
   shouldPushDimensions,
 } from '../utils/productMpFieldLinks.js';
 import {
   getProductImageUrlsForMarketplace,
   getProductImageUrlsForMarketplacePush,
 } from './marketplaceProductImages.service.js';
-import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import { WB_ITEM_DIM_CHARC, WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import {
+  detectOzonDimensionsLockedFromInfo,
+  errorIndicatesOzonVwcLock,
+  errorsIndicateOzonVwcLock,
+  isOzonPackagingDimensionsLocked,
+  withOzonDraftDimensionsLock,
+} from '../utils/ozonDimensionsLock.js';
+import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -93,6 +102,28 @@ function assertLinked(product, mp) {
   }
 }
 
+function ozonRichContentValue(raw) {
+  if (raw == null || raw === '') return '';
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return '';
+    try {
+      const p = JSON.parse(s);
+      if (p && typeof p === 'object' && !Array.isArray(p) && (p.content || p.version != null)) {
+        return JSON.stringify(p);
+      }
+    } catch {
+      /* already a JSON string or free text */
+    }
+    return s;
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    if (raw.value != null && typeof raw.value === 'string') return ozonRichContentValue(raw.value);
+    if (Array.isArray(raw.content) || raw.version != null) return JSON.stringify(raw);
+  }
+  return '';
+}
+
 function buildOzonAttributesArray(ozonAttrs) {
   const obj = parseJsonObject(ozonAttrs);
   const out = [];
@@ -100,6 +131,13 @@ function buildOzonAttributesArray(ozonAttrs) {
     const id = Number(key);
     if (!Number.isFinite(id) || id <= 0) continue;
     if (raw == null || raw === '') continue;
+
+    if (isOzonRichContentAttrId(id)) {
+      const s = ozonRichContentValue(raw);
+      if (!s) continue;
+      out.push({ complex_id: 0, id, values: [{ value: s }] });
+      continue;
+    }
 
     let values = null;
     if (typeof raw === 'object' && !Array.isArray(raw)) {
@@ -171,6 +209,8 @@ const OZON_ERROR_CODE_RU = {
     'Слишком короткое или длинное описание. Проверьте текст описания на вкладке Ozon.',
   warning_name_length:
     'Слишком короткое или длинное название. Проверьте название на вкладке Ozon.',
+  SKU_VWC_IS_NOT_EDITABLE:
+    'Изменить габариты и вес нельзя: Ozon уже замерил их и закрепил за карточкой. Если замер неверный — напишите в поддержку Ozon.',
 };
 
 function translateOzonErrorCode(code) {
@@ -543,15 +583,119 @@ function buildOzonImportResult({ offerId, taskId, item }) {
   };
 }
 
-function buildWbCharacteristics(wbAttrs) {
+/** Charc id габаритов упаковки — в кабинете WB берутся из `dimensions`, не из characteristics. */
+const WB_PACK_DIM_IDS = new Set([
+  Number(WB_PACK_DIM_CHARC.length),
+  Number(WB_PACK_DIM_CHARC.width),
+  Number(WB_PACK_DIM_CHARC.height),
+].filter((n) => Number.isFinite(n) && n > 0));
+
+/** Габариты товара (предмет) в characteristics: связь → ERP product_*; иначе draft.productDimensions. */
+function mergeWbItemProductDimsIntoAttrs(wbAttrs, product) {
+  const dims = resolveProductDimensionsMmForPush(product, 'wb');
+  if (!dims) return wbAttrs;
+  const next = { ...parseJsonObject(wbAttrs) };
+  const setCm = (charcId, mm) => {
+    const cm = mmToCm(mm);
+    if (cm != null && Number(cm) > 0) next[String(charcId)] = String(cm);
+  };
+  if (dims.length) setCm(WB_ITEM_DIM_CHARC.length, dims.length);
+  if (dims.width) setCm(WB_ITEM_DIM_CHARC.width, dims.width);
+  if (dims.height) setCm(WB_ITEM_DIM_CHARC.height, dims.height);
+  return next;
+}
+
+/**
+ * Привести значение из ERP (обычно строка в wb_attributes) к типу, который ждёт Content API.
+ * Числовые характеристики нельзя слать строкой — WB отвечает 200, но карточку отклоняет
+ * («Числовое значение характеристики … не должно быть строкой»).
+ */
+function coerceWbCharcValue(raw, existingValue) {
+  if (raw == null) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'boolean') return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((x) => (x == null ? '' : String(x).trim()))
+      .filter((s) => s !== '');
+  }
+
+  const s = String(raw).trim();
+  if (s === '') return null;
+
+  if (typeof existingValue === 'number') {
+    const n = Number(s.replace(',', '.'));
+    return Number.isFinite(n) ? n : null;
+  }
+  if (Array.isArray(existingValue)) {
+    if (s.includes(';')) {
+      return s.split(';').map((x) => x.trim()).filter(Boolean);
+    }
+    return [s];
+  }
+  if (typeof existingValue === 'boolean') {
+    return s === '1' || s.toLowerCase() === 'true';
+  }
+  if (typeof existingValue === 'string') {
+    return s;
+  }
+
+  // Нет образца с карточки: число → number, иначе массив строк (как в примерах WB).
+  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) {
+    const n = Number(s.replace(',', '.'));
+    if (Number.isFinite(n)) return n;
+  }
+  if (s.includes(';')) {
+    return s.split(';').map((x) => x.trim()).filter(Boolean);
+  }
+  return [s];
+}
+
+/**
+ * Собрать characteristics для /cards/update.
+ * Полная перезапись карточки: берём текущие с WB (сохраняя типы value), поверх — ERP wb_attributes.
+ * Габариты упаковки (pack dim charcs) не передаём — только объект dimensions.
+ */
+function buildWbCharacteristics(wbAttrs, existingChars = null) {
   const obj = parseJsonObject(wbAttrs);
-  return Object.entries(obj)
-    .filter(([, v]) => v != null && String(v).trim() !== '')
-    .map(([id, v]) => ({
-      id: Number(id),
-      value: String(v).trim()
-    }))
-    .filter((c) => Number.isFinite(c.id) && c.id > 0);
+  const existingList = Array.isArray(existingChars) ? existingChars : [];
+  const existingById = new Map();
+  for (const c of existingList) {
+    const id = Number(c?.id ?? c?.charcID ?? c?.charcId);
+    if (Number.isFinite(id) && id > 0) existingById.set(id, c?.value);
+  }
+
+  const result = [];
+  const seen = new Set();
+
+  for (const c of existingList) {
+    const id = Number(c?.id ?? c?.charcID ?? c?.charcId);
+    if (!Number.isFinite(id) || id <= 0 || WB_PACK_DIM_IDS.has(id)) continue;
+    seen.add(id);
+    const erpRaw = obj[String(id)];
+    if (erpRaw != null && String(erpRaw).trim() !== '') {
+      const value = coerceWbCharcValue(erpRaw, c?.value);
+      if (value != null && !(Array.isArray(value) && value.length === 0)) {
+        result.push({ id, value });
+        continue;
+      }
+    }
+    if (c?.value != null && c.value !== '' && !(Array.isArray(c.value) && c.value.length === 0)) {
+      result.push({ id, value: c.value });
+    }
+  }
+
+  for (const [idStr, raw] of Object.entries(obj)) {
+    const id = Number(idStr);
+    if (!Number.isFinite(id) || id <= 0 || seen.has(id) || WB_PACK_DIM_IDS.has(id)) continue;
+    if (raw == null || String(raw).trim() === '') continue;
+    const value = coerceWbCharcValue(raw, existingById.get(id));
+    if (value == null || (Array.isArray(value) && value.length === 0)) continue;
+    result.push({ id, value });
+    seen.add(id);
+  }
+
+  return result;
 }
 
 /**
@@ -589,7 +733,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);
   }
-  if (shouldPushDimensions(product, 'ozon')) {
+  if (shouldPushDimensions(product, 'ozon') && !isOzonPackagingDimensionsLocked(product)) {
     const dims = resolveDimensionsMmForPush(product, 'ozon') || {};
     if (dims.weight != null && Number(dims.weight) > 0) {
       item.weight = Number(dims.weight);
@@ -601,7 +745,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
       item.width = Number(dims.width);
       item.height = Number(dims.height);
     }
-  } else {
+  } else if (!isOzonPackagingDimensionsLocked(product)) {
     // Вес без полного комплекта габаритов — всё равно отправляем
     const dims = resolveDimensionsMmForPush(product, 'ozon') || {};
     if (dims.weight != null && Number(dims.weight) > 0) {
@@ -633,6 +777,25 @@ async function pushOzonCard(product, categoryMm, ctx) {
     if (ozonInfoBefore?.id != null && item.product_id == null) {
       const idNum = Number(ozonInfoBefore.id);
       if (Number.isFinite(idNum) && idNum > 0) item.product_id = idNum;
+    }
+    if (detectOzonDimensionsLockedFromInfo(ozonInfoBefore)) {
+      delete item.depth;
+      delete item.width;
+      delete item.height;
+      delete item.dimension_unit;
+      delete item.weight;
+      delete item.weight_unit;
+      if (!isOzonPackagingDimensionsLocked(product)) {
+        try {
+          const nextDraft = withOzonDraftDimensionsLock(product.ozon_draft, true);
+          await productsService.update(product.id, { ozon_draft: nextDraft }, {
+            profileId: ctx.profileId ?? null,
+          });
+          product = { ...product, ozon_draft: nextDraft };
+        } catch (e) {
+          logger.warn('[CardPush] Failed to persist Ozon dimensionsLocked flag', e?.message || e);
+        }
+      }
     }
   } catch (e) {
     logger.warn('[CardPush] Ozon product/info/list (pre-import) failed', {
@@ -848,6 +1011,21 @@ async function pushOzonCard(product, categoryMm, ctx) {
             .filter(Boolean),
         });
       }
+      const vwcLocked =
+        detectOzonDimensionsLockedFromInfo(ozonInfoAfter) ||
+        errorsIndicateOzonVwcLock(cardErrors) ||
+        errorIndicatesOzonVwcLock(result?.error) ||
+        errorIndicatesOzonVwcLock(result?.warnings);
+      if (vwcLocked) {
+        try {
+          const nextDraft = withOzonDraftDimensionsLock(product.ozon_draft, true);
+          await productsService.update(product.id, { ozon_draft: nextDraft }, {
+            profileId: ctx.profileId ?? null,
+          });
+        } catch (e) {
+          logger.warn('[CardPush] Failed to persist Ozon dimensionsLocked after import', e?.message || e);
+        }
+      }
     } catch (e) {
       logger.warn('[CardPush] Ozon product/info/list (post-import) failed', {
         offerId,
@@ -920,25 +1098,25 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     ...(brand ? { brand } : {})
   };
 
-  const chars = buildWbCharacteristics(product.wb_attributes);
+  const wbAttrsForChars = mergeWbItemProductDimsIntoAttrs(product.wb_attributes, product);
+  const chars = buildWbCharacteristics(wbAttrsForChars, existing?.characteristics);
   if (chars.length > 0) {
     card.characteristics = chars;
-  } else if (Array.isArray(existing?.characteristics) && existing.characteristics.length > 0) {
-    card.characteristics = existing.characteristics
-      .map((c) => ({
-        id: Number(c?.id ?? c?.charcID ?? c?.charcId),
-        value: Array.isArray(c?.value) ? c.value : c?.value != null ? [String(c.value)] : []
-      }))
-      .filter((c) => Number.isFinite(c.id) && c.id > 0 && c.value.length > 0);
   }
 
   if (existing?.sizes && Array.isArray(existing.sizes) && existing.sizes.length > 0) {
-    card.sizes = existing.sizes;
+    // Не трогаем barcodes/цены размеров — только сохраняем структуру для полной перезаписи.
+    card.sizes = existing.sizes.map((s) => ({
+      ...(s?.chrtID != null ? { chrtID: s.chrtID } : {}),
+      techSize: s?.techSize ?? s?.tech_size ?? '0',
+      wbSize: s?.wbSize ?? s?.wb_size ?? '',
+      skus: Array.isArray(s?.skus) ? s.skus : [],
+    }));
   }
 
-  // ERP: мм / г; WB Content API: габариты в см (целые), weightBrutto в килограммах (до 3 знаков).
-  // Важно: кабинет WB часто показывает charc 90849/90745/90846 — синхронизируем их с card.dimensions,
-  // иначе в characteristics остаются старые см после pull и кабинет «не обновляется».
+  // ERP: мм / г; WB Content API: габариты упаковки только в dimensions (см + weightBrutto кг).
+  // Pack-charcs 90849/90745/90846 больше не шлём: кабинет читает dimensions, а строковые
+  // числовые характеристики ломают весь /cards/update (200 + ошибка в error/list).
   if (shouldPushDimensions(product, 'wb')) {
     const dims = resolveDimensionsMmForPush(product, 'wb') || {};
     const L = Number(dims.length);
@@ -959,21 +1137,6 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
             : {})
       };
-      const packCharcById = {
-        [Number(WB_PACK_DIM_CHARC.length)]: String(lengthCm),
-        [Number(WB_PACK_DIM_CHARC.width)]: String(widthCm),
-        [Number(WB_PACK_DIM_CHARC.height)]: String(heightCm),
-      };
-      const packIds = new Set(Object.keys(packCharcById).map(Number));
-      const baseChars = Array.isArray(card.characteristics) ? card.characteristics : [];
-      const withoutPack = baseChars.filter((c) => !packIds.has(Number(c.id)));
-      card.characteristics = [
-        ...withoutPack,
-        ...Object.entries(packCharcById).map(([id, value]) => ({
-          id: Number(id),
-          value: String(value),
-        })),
-      ];
     } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
       card.dimensions = existing.dimensions;
     }
@@ -986,6 +1149,34 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       profileId: ctx.profileId,
       organizationId: ctx.organizationId
     });
+
+    // Тихие отказы WB: HTTP 200, но карточка в error/list
+    try {
+      const errList = await integrationsService._wbContentApiPost(
+        '/content/v2/cards/error/list',
+        { cursor: { updatedAt: null, nmID: 0, limit: 50 }, order: { ascending: false } },
+        { profileId: ctx.profileId, organizationId: ctx.organizationId }
+      );
+      const items = Array.isArray(errList?.data?.items) ? errList.data.items : [];
+      const vendor = String(card.vendorCode || '').trim();
+      const nowMs = Date.now();
+      const hit = items.find((it) => {
+        const updatedMs = it?.updatedAt ? Date.parse(it.updatedAt) : NaN;
+        // Только свежие отказы (иначе цепляем старые строки из прошлых выгрузок).
+        if (!Number.isFinite(updatedMs) || nowMs - updatedMs > 5 * 60 * 1000) return false;
+        const codes = Array.isArray(it?.vendorCodes) ? it.vendorCodes : [];
+        if (vendor && codes.some((c) => String(c) === vendor)) return true;
+        const errMap = it?.errors && typeof it.errors === 'object' ? it.errors : {};
+        return vendor && Object.prototype.hasOwnProperty.call(errMap, vendor);
+      });
+      if (hit) {
+        const msgs = hit.errors?.[vendor];
+        const text = Array.isArray(msgs) ? msgs.join('; ') : String(msgs || 'ошибка обновления карточки');
+        return { marketplace: 'wb', ok: false, error: `WB отклонил карточку: ${text}` };
+      }
+    } catch (e) {
+      logger.warn('[MP Card Push] WB error/list check failed:', e?.message || e);
+    }
 
     let imagesNote = '';
     const picUrls = getProductImageUrlsForMarketplace(product, 'wb');

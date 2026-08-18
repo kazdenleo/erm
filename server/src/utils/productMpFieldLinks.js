@@ -3,7 +3,16 @@
  * ERP: мм / г; Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
-export const MP_FIELD_LINK_KEYS = ['name', 'sku', 'description', 'brand', 'country', 'dimensions'];
+export const MP_FIELD_LINK_KEYS = [
+  'name',
+  'sku',
+  'description',
+  'brand',
+  'country',
+  'dimensions',
+  'product_dimensions',
+  'rich_content',
+];
 
 export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
@@ -12,6 +21,8 @@ export const MP_FIELD_LINK_SUPPORT = {
   brand: ['ozon', 'wb'],
   country: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
+  product_dimensions: ['ozon', 'wb', 'ym'],
+  rich_content: ['ozon', 'wb', 'ym'],
 };
 
 export function emptyMpFieldLinks() {
@@ -37,22 +48,32 @@ export function defaultMpFieldLinks() {
 
 export function normalizeMpFieldLinks(raw) {
   const defaults = emptyMpFieldLinks();
-  if (raw == null || raw === '') return defaults;
+  if (raw == null || raw === '') {
+    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
+    return defaults;
+  }
   let obj = raw;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
+      defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+      defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
       return defaults;
     }
   }
-  if (typeof obj !== 'object' || Array.isArray(obj)) return defaults;
+  if (typeof obj !== 'object' || Array.isArray(obj)) {
+    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
+    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
+    return defaults;
+  }
 
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      out[key] = [];
+      out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
       continue;
     }
     const v = obj[key];
@@ -263,4 +284,36 @@ export function resolveDimensionsMmForPush(product, mp) {
 export function shouldPushDimensions(product, mp) {
   const d = resolveDimensionsMmForPush(product, mp);
   return !!(d && Number(d.length) > 0 && Number(d.width) > 0 && Number(d.height) > 0);
+}
+
+/**
+ * Размеры товара (без упаковки) для push: связь вкл. → ERP product_*; выкл. → draft.productDimensions.
+ */
+export function resolveProductDimensionsMmForPush(product, mp) {
+  const links = normalizeMpFieldLinks(product?.mp_field_links);
+  const code = String(mp || '').toLowerCase();
+  const pick = (src) => {
+    if (!src || typeof src !== 'object') return null;
+    const out = {};
+    if (src.length != null && Number(src.length) > 0) out.length = Number(src.length);
+    if (src.width != null && Number(src.width) > 0) out.width = Number(src.width);
+    if (src.height != null && Number(src.height) > 0) out.height = Number(src.height);
+    if (src.weight != null && Number(src.weight) > 0) out.weight = Number(src.weight);
+    return Object.keys(out).length ? out : null;
+  };
+  if (isMpFieldLinked(links, 'product_dimensions', code)) {
+    return pick({
+      length: product.product_length ?? product.productLength,
+      width: product.product_width ?? product.productWidth,
+      height: product.product_height ?? product.productHeight,
+      weight: product.product_weight ?? product.productWeight,
+    });
+  }
+  const draft =
+    code === 'ozon'
+      ? parseDraftObj(product?.ozon_draft)
+      : code === 'wb'
+        ? parseDraftObj(product?.wb_draft)
+        : parseDraftObj(product?.ym_draft);
+  return pick(draft.productDimensions);
 }
