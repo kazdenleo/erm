@@ -2602,9 +2602,8 @@ export function ProductsBulkEdit() {
     const q = String(columnsSearch || '').trim();
     const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys).filter((c) => {
       if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
-      if (hidden.has(c.key)) return false;
       if (q) return columnMatchesSearchQuery(c, q);
-      return true;
+      return !hidden.has(c.key);
     });
     return [SELECT_COL, ...ordered];
   }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch]);
@@ -2649,15 +2648,12 @@ export function ProductsBulkEdit() {
   }, []);
 
   const filteredColumnMenuItems = useMemo(() => {
-    const hidden = new Set(hiddenColumnKeys || []);
-    const pinned = new Set(pinnedColumnKeys || []);
     const q = String(columnsSearch || '').trim();
     return (visibleColumns || []).filter((col) => {
       if (q) return columnMatchesSearchQuery(col, q);
-      if (ALWAYS_VISIBLE_COL_KEYS.has(col.key) || pinned.has(col.key)) return true;
-      return !hidden.has(col.key);
+      return true;
     });
-  }, [visibleColumns, columnsSearch, hiddenColumnKeys, pinnedColumnKeys]);
+  }, [visibleColumns, columnsSearch]);
 
   const colStickyClass = useCallback(
     (col) => {
@@ -4147,11 +4143,7 @@ export function ProductsBulkEdit() {
                             </div>
                             <div className="products-bulk-columns-list">
                               {filteredColumnMenuItems.length === 0 ? (
-                                <div className="text-muted small py-2 px-1">
-                                  {String(columnsSearch || '').trim()
-                                    ? 'Нет столбцов по запросу'
-                                    : 'Нет выбранных столбцов'}
-                                </div>
+                                <div className="text-muted small py-2 px-1">Нет столбцов по запросу</div>
                               ) : (
                                 filteredColumnMenuItems.map((col) => {
                                   const locked = ALWAYS_VISIBLE_COL_KEYS.has(col.key);
