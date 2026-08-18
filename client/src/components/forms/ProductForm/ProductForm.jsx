@@ -147,8 +147,11 @@ import {
   WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
   formatVolumeLitersLabel,
-  isCoveredByDedicatedProductDimFields,
   isWbDedicatedDimCharcId,
+  isWbPackDimCharcId,
+  ozonProductDimAxis,
+  productDimAttrStoredFromMm,
+  wbProductDimAxis,
 } from '../../../utils/marketplaceDimensions.js';
 import './ProductForm.css';
 
@@ -159,7 +162,30 @@ function ozonAttrShowsMainSyncHint(attr, links) {
   if (isOzonBrandAttr(attr) && isMpFieldLinked(links, 'brand', 'ozon')) return true;
   if (isOzonNameAttr(attr) && isMpFieldLinked(links, 'name', 'ozon')) return true;
   if (isOzonAnnotationAttr(attr) && isMpFieldLinked(links, 'description', 'ozon')) return true;
+  const dimAxis = ozonProductDimAxis(attr);
+  if (
+    (dimAxis === 'length' || dimAxis === 'width' || dimAxis === 'height') &&
+    isMpFieldLinked(links, 'product_dimensions', 'ozon')
+  ) {
+    return true;
+  }
   return false;
+}
+
+function wbAttrShowsMainSyncHint(attr, links) {
+  const axis = wbProductDimAxis(attr);
+  return (
+    (axis === 'length' || axis === 'width' || axis === 'height') &&
+    isMpFieldLinked(links, 'product_dimensions', 'wb')
+  );
+}
+
+function ymAttrShowsMainSyncHint(attr, links) {
+  const axis = ozonProductDimAxis(attr);
+  return (
+    (axis === 'length' || axis === 'width' || axis === 'height') &&
+    isMpFieldLinked(links, 'product_dimensions', 'ym')
+  );
 }
 
 function richContentGenerateTargets(links, clickedMp) {
@@ -210,32 +236,24 @@ function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWh
   );
 }
 
-/** Скрытые атрибуты категории Ozon «длина/ширина/высота/вес товара» — зеркало dedicated-полей (мм/г). */
-function syncOzonProductDimAttrsFromMm(ozonAttrs, setValues, dimKey, mmVal) {
+/** Характеристики Ozon/WB/YM «Длина / Ширина / Высота» — зеркало габаритов товара с «Основного». */
+function syncMarketplaceProductDimAttrsFromMm(attrs, setValues, dimKey, mmVal, mp) {
   setValues((prev) => {
     let next = prev;
-    for (const attr of ozonAttrs || []) {
-      if (classifyMarketplaceDimAttrName(attr?.name) !== 'product') continue;
-      const n = String(attr.name || '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ');
-      const match =
-        dimKey === 'weight'
-          ? /^вес\s+товар/.test(n)
-          : dimKey === 'length'
-            ? /^длина\s+товар/.test(n)
-            : dimKey === 'width'
-              ? /^ширина\s+товар/.test(n)
-              : dimKey === 'height'
-                ? /^высота\s+товар/.test(n)
-                : false;
-      if (!match) continue;
+    for (const attr of attrs || []) {
+      const axis = mp === 'wb' ? wbProductDimAxis(attr) : ozonProductDimAxis(attr);
+      if (axis !== dimKey) continue;
       if (next === prev) next = { ...prev };
-      next[String(attr.id)] = mmVal === '' || mmVal == null ? '' : String(mmVal);
+      next[String(attr.id ?? attr.charcID ?? attr.characteristic_id ?? attr.attribute_id)] =
+        productDimAttrStoredFromMm(attr, mmVal, mp);
     }
     return next;
   });
+}
+
+/** Характеристики Ozon «Длина / Ширина / Высота» — зеркало габаритов товара с «Основного» (мм). */
+function syncOzonProductDimAttrsFromMm(ozonAttrs, setValues, dimKey, mmVal) {
+  syncMarketplaceProductDimAttrsFromMm(ozonAttrs, setValues, dimKey, mmVal, 'ozon');
 }
 
 /** Порядок в массиве = порядок на карточке; первый элемент — главное фото. */
@@ -1015,9 +1033,9 @@ function MpSkuCountryDimsEditor({
       onMpProductDimChange(key, mm == null ? '' : String(mm));
     }
   };
-  const showProductDimEditor = typeof onMpProductDimChange === 'function';
-  const showWbItemAttrs =
-    !showProductDimEditor && code === 'wb' && typeof onItemAttrChange === 'function' && !linkedProductDims;
+  const showProductDimEditor = false;
+  const showWbItemAttrs = false;
+  const showProductDimsBlock = false;
   const itemFields = [
     { key: WB_ITEM_DIM_CHARC.length, fallback: 'Длина товара' },
     { key: WB_ITEM_DIM_CHARC.width, fallback: 'Ширина товара' },
@@ -1068,6 +1086,7 @@ function MpSkuCountryDimsEditor({
       </div>
       ) : null}
 
+      {showProductDimsBlock ? (
       <div className="col-12">
         <div
           style={{
@@ -1196,6 +1215,7 @@ function MpSkuCountryDimsEditor({
           </div>
         )}
       </div>
+      ) : null}
 
       <div className="col-12">
         <div
@@ -2303,6 +2323,25 @@ export const ProductForm = React.forwardRef(function ProductForm({
           : {}),
       }));
     }
+    const dimAxis = ozonProductDimAxis(attr);
+    if (dimAxis === 'length' || dimAxis === 'width' || dimAxis === 'height') {
+      setFormData((prev) => {
+        let next = prev;
+        if (isMpFieldLinked(prev.mp_field_links, 'product_dimensions', 'ozon')) {
+          next = {
+            ...next,
+            mp_field_links: setMpFieldLink(prev.mp_field_links, 'product_dimensions', 'ozon', false),
+          };
+        }
+        const prevDims = getMpDraftProductDimensionsMm(next, 'ozon') || {};
+        const n = Number(String(value ?? '').replace(',', '.'));
+        const mmVal = Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+        const nextDims = { ...prevDims };
+        if (mmVal == null) delete nextDims[dimAxis];
+        else nextDims[dimAxis] = mmVal;
+        return withMpDraftPatch(next, 'ozon', { productDimensions: nextDims });
+      });
+    }
     setOzonAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
   }, [ozonAttributes, formData.mp_field_links]);
 
@@ -2530,6 +2569,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
       return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
     });
   }, [ymCategoryAttributes, ymAttributeValues, ymFetchedProduct]);
+
+  useEffect(() => {
+    if (!ymCategoryAttributes?.length) return;
+    if (!isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')) return;
+    syncMarketplaceProductDimAttrsFromMm(
+      ymCategoryAttributes, setYmAttributeValues, 'length', formData.product_length, 'ym'
+    );
+    syncMarketplaceProductDimAttrsFromMm(
+      ymCategoryAttributes, setYmAttributeValues, 'width', formData.product_width, 'ym'
+    );
+    syncMarketplaceProductDimAttrsFromMm(
+      ymCategoryAttributes, setYmAttributeValues, 'height', formData.product_height, 'ym'
+    );
+  }, [
+    ymCategoryAttributes,
+    formData.mp_field_links,
+    formData.product_length,
+    formData.product_width,
+    formData.product_height,
+  ]);
 
   // Автоподстановка значений документа в YM-атрибуты по названию параметра
   useEffect(() => {
@@ -3860,6 +3919,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 : 'height';
         syncOzonProductDimAttrsFromMm(ozonAttributes, setOzonAttributeValues, dimKey, value);
       }
+      if (
+        (field === 'product_length' || field === 'product_width' || field === 'product_height') &&
+        isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
+      ) {
+        const dimKey =
+          field === 'product_length' ? 'length' : field === 'product_width' ? 'width' : 'height';
+        syncMarketplaceProductDimAttrsFromMm(
+          ymCategoryAttributes,
+          setYmAttributeValues,
+          dimKey,
+          value,
+          'ym'
+        );
+      }
     }
     if (errors[field]) {
       setErrors(prev => {
@@ -3955,67 +4028,55 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, []);
 
-  /** Размеры товара Ozon/WB/YM: связь вкл. → Main product_*; выкл. → draft.productDimensions. */
-  const handleMpProductDimMetaChange = useCallback((mp, key, raw) => {
-    const code = String(mp || '').toLowerCase();
-    const formKey =
-      key === 'weight'
-        ? 'product_weight'
-        : key === 'length'
-          ? 'product_length'
-          : key === 'width'
-            ? 'product_width'
-            : key === 'height'
-              ? 'product_height'
-              : null;
-    setFormData((prev) => {
-      let mmVal = '';
-      if (raw !== '' && raw != null) {
-        const n = Number(raw);
-        mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
-      }
-      if (isMpFieldLinked(prev.mp_field_links, 'product_dimensions', code)) {
-        if (!formKey) return prev;
-        const next = { ...prev, [formKey]: mmVal };
-        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['product_dimensions']);
-      }
-      const prevDims = getMpDraftProductDimensionsMm(prev, code) || {};
-      const nextDims = { ...prevDims };
-      if (mmVal === '') delete nextDims[key];
-      else nextDims[key] = Number(mmVal);
-      return withMpDraftPatch(prev, code, { productDimensions: nextDims });
-    });
-    if (code === 'wb' && key !== 'weight') {
-      const charcId = WB_ITEM_DIM_CHARC[key];
-      if (charcId) {
-        const cm =
-          raw === '' || raw == null ? '' : mmToCm(raw) != null ? String(mmToCm(raw)) : '';
-        setWbAttributeValues((prev) => ({ ...prev, [charcId]: cm }));
-      }
+  const handleWbCategoryAttrChange = useCallback((attrId, value, attr) => {
+    const meta = attr || { id: attrId };
+    const axis = wbProductDimAxis(meta);
+    if (axis === 'length' || axis === 'width' || axis === 'height') {
+      setFormData((prev) => {
+        let next = prev;
+        if (isMpFieldLinked(prev.mp_field_links, 'product_dimensions', 'wb')) {
+          next = {
+            ...next,
+            mp_field_links: setMpFieldLink(prev.mp_field_links, 'product_dimensions', 'wb', false),
+          };
+        }
+        const prevDims = getMpDraftProductDimensionsMm(next, 'wb') || {};
+        const n = Number(String(value ?? '').replace(',', '.'));
+        const mmVal = Number.isFinite(n) && n > 0 ? cmToMm(n) : null;
+        const nextDims = { ...prevDims };
+        if (mmVal == null) delete nextDims[axis];
+        else nextDims[axis] = mmVal;
+        return withMpDraftPatch(next, 'wb', { productDimensions: nextDims });
+      });
     }
-    if (code === 'ozon') {
-      syncOzonProductDimAttrsFromMm(ozonAttributes, setOzonAttributeValues, key, raw);
-    }
-  }, [ozonAttributes]);
+    setWbAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
+  }, []);
 
-  const handleWbItemAttrChange = useCallback((charcId, raw) => {
-    setWbAttributeValues((prev) => ({
-      ...prev,
-      [charcId]: raw === '' || raw == null ? '' : String(raw),
-    }));
-    const dimKey =
-      String(charcId) === WB_ITEM_DIM_CHARC.length
-        ? 'product_length'
-        : String(charcId) === WB_ITEM_DIM_CHARC.width
-          ? 'product_width'
-          : String(charcId) === WB_ITEM_DIM_CHARC.height
-            ? 'product_height'
-            : null;
-    if (!dimKey) return;
-    if (!isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) return;
-    const mm = raw === '' || raw == null ? '' : (cmToMm(raw) != null ? String(cmToMm(raw)) : '');
-    setFormData((prev) => ({ ...prev, [dimKey]: mm }));
-  }, [formData.mp_field_links]);
+  const handleYmAttributeChange = useCallback((attrId, value, attr) => {
+    const axis = ozonProductDimAxis(attr);
+    if (axis === 'length' || axis === 'width' || axis === 'height') {
+      setFormData((prev) => {
+        let next = prev;
+        if (isMpFieldLinked(prev.mp_field_links, 'product_dimensions', 'ym')) {
+          next = {
+            ...next,
+            mp_field_links: setMpFieldLink(prev.mp_field_links, 'product_dimensions', 'ym', false),
+          };
+        }
+        const prevDims = getMpDraftProductDimensionsMm(next, 'ym') || {};
+        const n = Number(String(value ?? '').replace(',', '.'));
+        const name = String(attr?.name || '').toLowerCase();
+        const mmVal = Number.isFinite(n) && n > 0
+          ? (/мм|\bmm\b/.test(name) ? Math.round(n) : cmToMm(n))
+          : null;
+        const nextDims = { ...prevDims };
+        if (mmVal == null) delete nextDims[axis];
+        else nextDims[axis] = mmVal;
+        return withMpDraftPatch(next, 'ym', { productDimensions: nextDims });
+      });
+    }
+    setYmAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
+  }, []);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
     const attrForLink = isAttrMpFieldLinkKey(fieldKey)
@@ -4151,13 +4212,27 @@ export const ProductForm = React.forwardRef(function ProductForm({
         syncOzonProductDimAttrsFromMm(ozonAttributes, setOzonAttributeValues, 'weight', formData.product_weight);
       }
     }
+    if (fieldKey === 'product_dimensions' && mp === 'ym') {
+      const nextLinks = toggleMpFieldLink(formData.mp_field_links, fieldKey, mp);
+      if (isMpFieldLinked(nextLinks, fieldKey, mp)) {
+        syncMarketplaceProductDimAttrsFromMm(
+          ymCategoryAttributes, setYmAttributeValues, 'length', formData.product_length, 'ym'
+        );
+        syncMarketplaceProductDimAttrsFromMm(
+          ymCategoryAttributes, setYmAttributeValues, 'width', formData.product_width, 'ym'
+        );
+        syncMarketplaceProductDimAttrsFromMm(
+          ymCategoryAttributes, setYmAttributeValues, 'height', formData.product_height, 'ym'
+        );
+      }
+    }
     if (fieldKey === 'rich_content' && currentProduct?.id) {
       const nextLinks = toggleMpFieldLink(formData.mp_field_links, fieldKey, mp);
       if (isMpFieldLinked(nextLinks, fieldKey, mp)) {
         queueMicrotask(() => generateRichContentRef.current?.(mp, nextLinks));
       }
     }
-  }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, categoryAttributes]);
+  }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, ymCategoryAttributes, categoryAttributes]);
 
   const handleBrandSelect = useCallback(
     (brandName) => {
@@ -5079,6 +5154,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (annText) out[key] = { value: annText };
         else delete out[key];
       }
+      if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) {
+        const mmOf = {
+          length: formData.product_length,
+          width: formData.product_width,
+          height: formData.product_height,
+        };
+        for (const attr of ozonAttributes || []) {
+          const axis = ozonProductDimAxis(attr);
+          if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+          const mm = mmOf[axis];
+          const key = String(attr.id);
+          if (mm !== '' && mm != null && Number(mm) > 0) out[key] = { value: String(mm) };
+        }
+      }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
     const wbAttributesPayload = (() => {
@@ -5094,6 +5183,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
         } else {
           out[key] = normalized;
         }
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) {
+        const l = mmToCm(formData.product_length);
+        const w = mmToCm(formData.product_width);
+        const h = mmToCm(formData.product_height);
+        if (l != null) out[WB_ITEM_DIM_CHARC.length] = String(l);
+        if (w != null) out[WB_ITEM_DIM_CHARC.width] = String(w);
+        if (h != null) out[WB_ITEM_DIM_CHARC.height] = String(h);
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
@@ -5223,6 +5320,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
             return v != null && String(v).trim() !== '';
           })
         );
+        if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')) {
+          const mmOf = {
+            length: formData.product_length,
+            width: formData.product_width,
+            height: formData.product_height,
+          };
+          for (const attr of ymCategoryAttributes || []) {
+            const axis = ozonProductDimAxis(attr);
+            if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+            const stored = productDimAttrStoredFromMm(attr, mmOf[axis], 'ym');
+            const key = String(attr.id);
+            if (stored) cleaned[key] = stored;
+            else delete cleaned[key];
+          }
+        }
         return Object.keys(cleaned).length > 0 ? cleaned : undefined;
       })(),
       marketplace_ozon_product_id: (() => {
@@ -5430,7 +5542,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await saveAndMaybePush({ closeAfter: true, forceAskPush: false });
+      await saveAndMaybePush({ closeAfter: false, forceAskPush: false });
     } catch (err) {
       // onSubmit уже показывает alert при ошибке сохранения
       console.error('[ProductForm] save failed:', err);
@@ -6165,7 +6277,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Тумблеры OZ/WB/ЯМ связывают их с вкладкой МП (как габариты упаковки).
+          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Тумблеры OZ / WB / ЯМ заполняют характеристики маркетплейса «Длина / Ширина / Высота».
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-3">
@@ -6977,10 +7089,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
             onLinked={handleMarketplaceLinked}
           />
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты товара и упаковки (Ozon)</div>
+            <div className="card-header">Габариты упаковки (Ozon)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
                 Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На Ozon уходит в мм / г.
+                Длина, ширина и высота товара — в характеристиках ниже, связь с «Основным».
               </p>
               <MpSkuCountryDimsEditor
                 mp="ozon"
@@ -6988,7 +7101,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
-                onMpProductDimChange={(key, v) => handleMpProductDimMetaChange('ozon', key, v)}
                 productAttrFields={[]}
                 onLinkToggle={handleMpFieldLinkToggle}
                 lengthUnit={lengthUnit}
@@ -7178,7 +7290,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       if (isOzonRichContentAttrId(attr?.id)) return false;
                       if (isOzonPlainDescriptionAttr(attr)) return false;
                       const kind = classifyMarketplaceDimAttrName(attr?.name);
-                      return kind !== 'product' && kind !== 'pack';
+                      if (kind === 'pack') return false;
+                      const axis = ozonProductDimAxis(attr);
+                      if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
+                        return false;
+                      }
+                      return true;
                     })
                     .map((attr) => {
                     const key = String(attr.id);
@@ -7517,10 +7634,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
 
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты товара и упаковки (Wildberries)</div>
+            <div className="card-header">Габариты упаковки (Wildberries)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
                 Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На WB уходит в см и кг (weightBrutto).
+                Длина, ширина и высота товара — в характеристиках ниже, связь с «Основным» (в кабинете — см).
               </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
@@ -7528,28 +7646,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
                 onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
                 onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
-                onMpProductDimChange={(key, v) => handleMpProductDimMetaChange('wb', key, v)}
                 onLinkToggle={handleMpFieldLinkToggle}
                 lengthUnit={lengthUnit}
                 weightUnit={weightUnit}
-                itemAttrValues={wbAttributeValues}
-                onItemAttrChange={handleWbItemAttrChange}
-                itemAttrLabels={(() => {
-                  const labels = {};
-                  for (const a of wbCategoryAttributes || []) {
-                    const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id;
-                    if (id == null) continue;
-                    const key = String(id);
-                    if (isWbDedicatedDimCharcId(key) && (
-                      key === WB_ITEM_DIM_CHARC.length ||
-                      key === WB_ITEM_DIM_CHARC.width ||
-                      key === WB_ITEM_DIM_CHARC.height
-                    )) {
-                      labels[key] = a?.name ?? a?.charcName ?? a?.characteristic_name ?? key;
-                    }
-                  }
-                  return labels;
-                })()}
               />
             </div>
           </div>
@@ -7581,7 +7680,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       {wbCategoryAttributes
                         .filter((a) => {
                           const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
-                          return !isWbDedicatedDimCharcId(id);
+                          if (isWbPackDimCharcId(id)) return false;
+                          const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
+                          const kind = classifyMarketplaceDimAttrName(name);
+                          if (kind === 'pack') return false;
+                          const axis = wbProductDimAxis(a);
+                          if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
+                            return false;
+                          }
+                          return true;
                         })
                         .map((a) => {
                         const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
@@ -7604,15 +7711,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               {dictOpts ? (
                                 <span style={{ fontSize: '11px', color: 'var(--muted)' }}> (справочник)</span>
                               ) : null}
+                              {wbAttrShowsMainSyncHint(a, formData.mp_field_links) ? (
+                                <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                              ) : null}
                             </label>
                             {dictOpts ? (
                               <select
                                 id={`wb-cat-attr-${key}`}
                                 className={mpAttrClass('form-select form-select-sm', 'wb', key, valueStr)}
                                 value={needsFallback ? valueStr : selectValue}
-                                onChange={(e) =>
-                                  setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
-                                }
+                                onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, a)}
                               >
                                 <option value="">— Выберите —</option>
                                 {dictOpts.map((opt) => (
@@ -7630,9 +7738,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 type="text"
                                 className={mpAttrClass('form-control form-control-sm', 'wb', key, valueStr)}
                                 value={valueStr}
-                                onChange={(e) =>
-                                  setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
-                                }
+                                onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, a)}
                               />
                             )}
                           </div>
@@ -7641,7 +7747,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     </div>
                   ) : Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0 ? (
                     <div className="row g-3">
-                      {wbFetchedProduct.characteristics.map((c) => {
+                      {wbFetchedProduct.characteristics
+                        .filter((c) => {
+                          const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
+                          if (isWbPackDimCharcId(id)) return false;
+                          const name = c?.name ?? c?.characteristic_name ?? '';
+                          const kind = classifyMarketplaceDimAttrName(name);
+                          if (kind === 'pack') return false;
+                          const axis = wbProductDimAxis(c);
+                          if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
+                            return false;
+                          }
+                          return true;
+                        })
+                        .map((c) => {
                         const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
                         const name = c?.name ?? c?.characteristic_name ?? (id != null ? `ID ${id}` : 'Характеристика');
                         const key = id != null ? String(id) : String(name);
@@ -7653,13 +7772,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-attr-${key}`}>
                               {name}
+                              {wbAttrShowsMainSyncHint(c, formData.mp_field_links) ? (
+                                <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                              ) : null}
                             </label>
                             <input
                               id={`wb-attr-${key}`}
                               type="text"
                               className={mpAttrClass('form-control form-control-sm', 'wb', key, display)}
                               value={display}
-                              onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                              onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, c)}
                             />
                           </div>
                         );
@@ -7677,7 +7799,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </>
               )}
               <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Сохраняются как <code>wb_attributes</code>. Название, описание и бренд — в блоке «Текст карточки» выше.
+                Сохраняются как <code>wb_attributes</code>. Название, описание и бренд — в блоке «Текст карточки» выше. Длина, ширина и высота товара — здесь, связь с «Основным».
               </div>
             </div>
           </div>
@@ -7784,11 +7906,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )}
 
           <div className="card mb-3 border-secondary">
-            <div className="card-header">Габариты товара и упаковки (Яндекс.Маркет)</div>
+            <div className="card-header">Габариты упаковки (Яндекс.Маркет)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Товар — параметры категории; упаковка в интерфейсе — {lengthLbl} / {weightLbl}
-                (на Я.Маркет уходит в см/кг).
+                Упаковка в интерфейсе — {lengthLbl} / {weightLbl} (на Я.Маркет уходит в см/кг).
+                Длина, ширина и высота товара — в характеристиках ниже, связь с «Основным».
               </p>
               <div className="row g-3 mb-3">
                 <div className="col-12 col-md-6">
@@ -7827,128 +7949,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   </datalist>
                 </div>
               </div>
-
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  marginBottom: 6,
-                  display: 'flex',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '2px 4px',
-                }}
-              >
-                <span>Габариты товара</span>
-                <MpFieldLinkToggles
-                  fieldKey="product_dimensions"
-                  links={formData.mp_field_links}
-                  onToggle={handleMpFieldLinkToggle}
-                  size={20}
-                />
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-                {isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
-                  ? `Синхрон с «Основным» (${lengthLbl} / ${weightLbl}).`
-                  : `Свои размеры для Яндекс.Маркет (${lengthLbl} / ${weightLbl}).`}
-              </div>
-              <div className="row g-2 mb-3">
-                {[
-                  { key: 'length', label: `Длина товара (${lengthLbl})` },
-                  { key: 'width', label: `Ширина товара (${lengthLbl})` },
-                  { key: 'height', label: `Высота товара (${lengthLbl})` },
-                  { key: 'weight', label: `Вес товара (${weightLbl})` },
-                ].map((f) => {
-                  const linkedYm = isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym');
-                  const src = linkedYm
-                    ? {
-                        length: formData.product_length,
-                        width: formData.product_width,
-                        height: formData.product_height,
-                        weight: formData.product_weight,
-                      }
-                    : getMpDraftProductDimensionsMm(formData, 'ym') || {};
-                  const disp =
-                    f.key === 'weight'
-                      ? weightGToDisplay(src.weight, weightUnit)
-                      : lengthMmToDisplay(src[f.key], lengthUnit);
-                  return (
-                  <div className="col-6 col-md-3" key={f.key}>
-                    <label className="form-label" htmlFor={`ym-product-dim-${f.key}`}>
-                      {f.label}
-                    </label>
-                    <input
-                      id={`ym-product-dim-${f.key}`}
-                      type="number"
-                      className="form-control form-control-sm"
-                      min="0"
-                      step={f.key === 'weight' ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
-                      value={disp}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (f.key === 'weight') {
-                          const g = weightDisplayToG(raw, weightUnit);
-                          handleMpProductDimMetaChange('ym', 'weight', g == null ? '' : String(g));
-                        } else {
-                          const mm = lengthDisplayToMm(raw, lengthUnit);
-                          handleMpProductDimMetaChange('ym', f.key, mm == null ? '' : String(mm));
-                        }
-                      }}
-                    />
-                  </div>
-                  );
-                })}
-                <DimVolumeReadonly
-                  id="ym-product-volume"
-                  unit="mm"
-                  length={
-                    (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
-                      ? formData.product_length
-                      : getMpDraftProductDimensionsMm(formData, 'ym')?.length)
-                  }
-                  width={
-                    (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
-                      ? formData.product_width
-                      : getMpDraftProductDimensionsMm(formData, 'ym')?.width)
-                  }
-                  height={
-                    (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
-                      ? formData.product_height
-                      : getMpDraftProductDimensionsMm(formData, 'ym')?.height)
-                  }
-                />
-              </div>
-              {(() => {
-                const productParams = (ymCategoryAttributes || []).filter(
-                  (a) =>
-                    classifyMarketplaceDimAttrName(a?.name) === 'product' &&
-                    !isCoveredByDedicatedProductDimFields(a?.name)
-                );
-                if (productParams.length === 0) return null;
-                return (
-                  <div className="row g-2 mb-3">
-                    {productParams.map((a) => {
-                      const key = String(a.id);
-                      return (
-                        <div className="col-6 col-md-3" key={key}>
-                          <label className="form-label" htmlFor={`ym-product-attr-${key}`}>
-                            {a.name || `ID ${key}`}
-                          </label>
-                          <input
-                            id={`ym-product-attr-${key}`}
-                            type="text"
-                            className="form-control form-control-sm"
-                            value={ymAttributeValues[key] ?? ''}
-                            onChange={(e) =>
-                              setYmAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))
-                            }
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
 
               <div
                 style={{
@@ -8133,9 +8133,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 10 }}>
                 Параметры категории ({ymFormAttributes.length}
                 {ymCategoryAttributes.length > ymFormAttributes.length
-                  ? `, без дублей габаритов/страны/артикула: −${ymCategoryAttributes.length - ymFormAttributes.length}`
+                  ? `, без дублей упаковки/страны/артикула: −${ymCategoryAttributes.length - ymFormAttributes.length}`
                   : ''}
-                ), включая пустые. Обязательные сверху. Габариты и страна — в блоке выше.
+                ), включая пустые. Обязательные сверху. Габариты упаковки и страна — в блоке выше; длина, ширина и высота товара — здесь.
               </div>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
@@ -8207,7 +8207,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       }
                       return String(raw).trim();
                     })();
-                    const setVal = (v) => setYmAttributeValues((prev) => ({ ...prev, [key]: v }));
+                    const setVal = (v) => handleYmAttributeChange(key, v, a);
+                    const ymSyncHint = ymAttrShowsMainSyncHint(a, formData.mp_field_links) ? (
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                    ) : null;
 
                     if (a.type === 'dictionary' && Array.isArray(a.dictionary_options) && a.dictionary_options.length > 0) {
                       const normalizeToken = (s) =>
@@ -8262,6 +8265,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ym-attr-${key}`}>
                             {name}
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                            {ymSyncHint}
                             <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: '4px' }}>(ENUM)</span>
                           </label>
                           <select
@@ -8299,6 +8303,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ym-attr-${key}`}>
                             {name}
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                            {ymSyncHint}
                           </label>
                           <select
                             id={`ym-attr-${key}`}
@@ -8319,6 +8324,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ym-attr-${key}`}>
                             {name}
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                            {ymSyncHint}
                           </label>
                           <input
                             id={`ym-attr-${key}`}
@@ -8336,6 +8342,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         <label className="form-label" htmlFor={`ym-attr-${key}`}>
                           {name}
                           {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                          {ymSyncHint}
                           {a.ym_parameter_type ? (
                             <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: '4px' }}>({a.ym_parameter_type})</span>
                           ) : null}

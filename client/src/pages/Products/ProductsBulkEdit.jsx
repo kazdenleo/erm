@@ -57,6 +57,9 @@ import {
   WB_ITEM_DIM_CHARC,
   WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
+  ozonProductDimAxis,
+  productDimAttrStoredFromMm,
+  wbProductDimAxis,
 } from '../../utils/marketplaceDimensions.js';
 import {
   ATTR_MP_CODES,
@@ -775,9 +778,7 @@ const COLUMNS = [
   /* ——— Ozon ——— */
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
-  { key: 'ozon_product_length', label: 'Дл. тов.', title: 'Ozon · Длина товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_product_width', label: 'Ш. тов.', title: 'Ozon · Ширина товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_product_height', label: 'В. тов.', title: 'Ozon · Высота товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
+  /* Длина/ширина/высота товара Ozon — характеристики, не отдельные колонки */
   { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight' },
   { key: 'ozon_pack_length', label: 'Дл. уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
   { key: 'ozon_pack_width', label: 'Ш. уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
@@ -789,9 +790,7 @@ const COLUMNS = [
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'description' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 80, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb' },
-  { key: 'wb_product_length', label: 'Дл. тов.', title: 'Wildberries · Длина товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_product_width', label: 'Ш. тов.', title: 'Wildberries · Ширина товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_product_height', label: 'В. тов.', title: 'Wildberries · Высота товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
+  /* Длина/ширина/высота товара WB — характеристики, не отдельные колонки */
   { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight' },
   { key: 'wb_pack_length', label: 'Дл. уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
   { key: 'wb_pack_width', label: 'Ш. уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
@@ -803,9 +802,7 @@ const COLUMNS = [
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym' },
-  { key: 'ym_product_length', label: 'Дл. тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_width', label: 'Ш. тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_height', label: 'В. тов.', title: 'Яндекс.Маркет · Высота товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  /* Длина/ширина/высота товара YM — характеристики, не отдельные колонки */
   { key: 'ym_product_weight', label: 'Вес тов.', title: 'Яндекс.Маркет · Вес товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight' },
   { key: 'ym_pack_length', label: 'Дл. уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_pack_width', label: 'Ш. уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
@@ -1389,7 +1386,39 @@ function applyLinkedOzonTextAttrColumns(row, text, fieldKey, matchAttr, mpAttrCo
   return next;
 }
 
-function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols) {
+function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') {
+  const links = normalizeMpFieldLinks(row?.mp_field_links);
+  if (!Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
+  const mmOf = {
+    length: lengthDisplayToMm(row.product_length, lengthUnit),
+    width: lengthDisplayToMm(row.product_width, lengthUnit),
+    height: lengthDisplayToMm(row.product_height, lengthUnit),
+  };
+  let next = row;
+  let changed = false;
+  for (const col of mpAttrCols) {
+    const mp = col?.mpAttr?.bucket;
+    if (mp !== 'ozon' && mp !== 'wb' && mp !== 'ym') continue;
+    if (!isMpFieldLinked(links, 'product_dimensions', mp)) continue;
+    const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+    const axis = mp === 'wb' ? wbProductDimAxis(meta) : ozonProductDimAxis(meta);
+    if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+    const value = productDimAttrStoredFromMm(meta, mmOf[axis], mp);
+    if (str(next[col.key]) === str(value)) continue;
+    if (!changed) {
+      next = { ...next };
+      changed = true;
+    }
+    next[col.key] = value;
+  }
+  return next;
+}
+
+function applyLinkedOzonProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') {
+  return applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit);
+}
+
+function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols, lengthUnit = 'mm') {
   let next = applyLinkedOzonTextAttrColumns(row, row?.name, 'name', isOzonNameAttr, mpAttrCols);
   next = applyLinkedOzonTextAttrColumns(
     next,
@@ -1398,7 +1427,7 @@ function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols) {
     isOzonAnnotationAttr,
     mpAttrCols
   );
-  return next;
+  return applyLinkedOzonProductDimAttrColumns(next, mpAttrCols, lengthUnit);
 }
 
 function hydrateMpAttrCellsFromBaseline(row, mpAttrCols) {
@@ -1427,6 +1456,20 @@ function syncOzonCardTextFromAttrColumn(row, col, value) {
   if (isOzonNameAttr(meta)) return { ...row, mp_ozon_name: value };
   if (isOzonAnnotationAttr(meta)) return { ...row, mp_ozon_description: value };
   return row;
+}
+
+function unlinkProductDimsIfMpDimAttrEdited(row, col) {
+  const mp = col?.mpAttr?.bucket;
+  if (!mp) return row;
+  const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+  const axis = mp === 'wb' ? wbProductDimAxis(meta) : ozonProductDimAxis(meta);
+  if (axis !== 'length' && axis !== 'width' && axis !== 'height') return row;
+  const links = normalizeMpFieldLinks(row?.mp_field_links);
+  if (!isMpFieldLinked(links, 'product_dimensions', mp)) return row;
+  return {
+    ...row,
+    mp_field_links: setMpFieldLink(row.mp_field_links, 'product_dimensions', mp, false),
+  };
 }
 
 function formatMpColumnLabel(attrId, humanName) {
@@ -1481,7 +1524,9 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
   if (bucket === 'ozon') {
     if (isOzonPlainDescriptionAttr({ name: raw })) return true;
     const kind = classifyMarketplaceDimAttrName(raw);
-    if (kind === 'pack' || kind === 'product') return true;
+    if (kind === 'pack') return true;
+    const axis = ozonProductDimAxis(raw);
+    if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') return true;
     return false;
   }
 
@@ -1491,7 +1536,9 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     if (h === 'название' || (h.includes('наименование') && h.includes('товар'))) return true;
     if (h.includes('описание') && (h.includes('товар') || h.includes('продавца'))) return true;
     const kind = classifyMarketplaceDimAttrName(raw);
-    if (kind === 'pack' || kind === 'product') return true;
+    if (kind === 'pack') return true;
+    const axis = ozonProductDimAxis(raw);
+    if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк|брутто|brutto/.test(h)) return true;
     return false;
@@ -1503,7 +1550,9 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     }
     if ((h.includes('описание') && (h.includes('товар') || h.includes('карточк'))) || h === 'описание товара') return true;
     const kind = classifyMarketplaceDimAttrName(raw);
-    if (kind === 'pack' || kind === 'product') return true;
+    if (kind === 'pack') return true;
+    const axis = ozonProductDimAxis(raw);
+    if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк/.test(h)) return true;
     return false;
@@ -1514,8 +1563,8 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
 
 /** Известные id атрибутов Ozon для габаритов/веса упаковки — не дублируем столбцами JSON */
 const OZON_PACK_DIM_ATTR_IDS = new Set(['9802', '6605', '6606', '4497', '4383', '9799', '6859']);
-/** charcID габаритов упаковки/товара WB — не дублируем (вес — в wb_pack_weight) */
-const WB_PACK_DIM_ATTR_IDS = new Set(['90849', '90745', '90846', '90652', '90673', '90630']);
+/** charcID габаритов упаковки WB — не дублируем (вес — в wb_pack_weight; L/W/H товара — JSON-колонки) */
+const WB_PACK_DIM_ATTR_IDS = new Set(['90849', '90745', '90846']);
 
 /** Столбцы по объединению ключей атрибутов по всем загруженным товарам */
 function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} }) {
@@ -3387,7 +3436,8 @@ export function ProductsBulkEdit() {
               prev.map((r) =>
                 applyLinkedOzonNameAndAnnotationColumns(
                   hydrateMpAttrCellsFromBaseline(r, mpColsLabeled),
-                  mpColsLabeled
+                  mpColsLabeled,
+                  lengthUnit
                 )
               )
             );
@@ -3470,7 +3520,7 @@ export function ProductsBulkEdit() {
                     out
                   );
                 }
-                next = applyLinkedOzonNameAndAnnotationColumns(next, mpColsLabeled);
+                next = applyLinkedOzonNameAndAnnotationColumns(next, mpColsLabeled, lengthUnit);
                 return next;
               })
             );
@@ -3893,11 +3943,18 @@ export function ProductsBulkEdit() {
             ozonBulkDictOptionsRef.current
           );
         }
-        if (bulkLinkFieldForColumn(key) === 'name' || bulkLinkFieldForColumn(key) === 'description') {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs);
+        if (
+          bulkLinkFieldForColumn(key) === 'name' ||
+          bulkLinkFieldForColumn(key) === 'description' ||
+          bulkLinkFieldForColumn(key) === 'product_dimensions'
+        ) {
+          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
         }
         const bulkCol = mpAttrColumnDefs.find((c) => c.key === key);
-        if (bulkCol) next = syncOzonCardTextFromAttrColumn(next, bulkCol, bulkDraft);
+        if (bulkCol) {
+          next = syncOzonCardTextFromAttrColumn(next, bulkCol, bulkDraft);
+          next = unlinkProductDimsIfMpDimAttrEdited(next, bulkCol);
+        }
         return next;
       })
     );
@@ -3927,15 +3984,22 @@ export function ProductsBulkEdit() {
             ozonBulkDictOptionsRef.current
           );
         }
-        if (bulkLinkFieldForColumn(key) === 'name' || bulkLinkFieldForColumn(key) === 'description') {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs);
+        if (
+          bulkLinkFieldForColumn(key) === 'name' ||
+          bulkLinkFieldForColumn(key) === 'description' ||
+          bulkLinkFieldForColumn(key) === 'product_dimensions'
+        ) {
+          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
         }
         const attrCol = mpAttrColumnDefs.find((c) => c.key === key);
-        if (attrCol) next = syncOzonCardTextFromAttrColumn(next, attrCol, value);
+        if (attrCol) {
+          next = syncOzonCardTextFromAttrColumn(next, attrCol, value);
+          next = unlinkProductDimsIfMpDimAttrEdited(next, attrCol);
+        }
         return next;
       })
     );
-  }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs]);
+  }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit]);
 
   /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
   const toggleBulkHeaderFieldLink = useCallback(
@@ -3974,14 +4038,17 @@ export function ProductsBulkEdit() {
               );
             }
             if ((fieldKey === 'name' || fieldKey === 'description') && mp === 'ozon') {
-              next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs);
+              next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
+            }
+            if (fieldKey === 'product_dimensions') {
+              next = applyLinkedMpProductDimAttrColumns(next, mpAttrColumnDefs, lengthUnit);
             }
           }
           return next;
         })
       );
     },
-    [rows, markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs]
+    [rows, markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit]
   );
 
   const mpLinksFingerprint = useMemo(

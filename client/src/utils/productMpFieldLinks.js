@@ -239,6 +239,8 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (/^вес\s+(с\s+)?упаковк/.test(n)) return true;
   if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return true;
   if (/^габарит(ы|ы\s+упаковк)/.test(n)) return true;
+  if (/^вес\s+товар/.test(n) || /^вес\s+без\s+упаковк/.test(n)) return true;
+  if (/^габарит(ы)?\s+товар/.test(n)) return true;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
   if (/артикул\s+производител/.test(n)) return true;
   if (n === 'vendor' || n === 'vendorcode' || n === 'vendor code' || n === 'mpn') return true;
@@ -247,22 +249,10 @@ export function isYmParamDuplicatingDedicatedField(name) {
   return false;
 }
 
-/** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. */
+/** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. L/W/H товара оставляем. */
 export function filterYmCategoryAttributesForForm(attrs) {
   if (!Array.isArray(attrs)) return [];
-  return attrs.filter((a) => {
-    if (isYmParamDuplicatingDedicatedField(a?.name)) return false;
-    const n = String(a?.name || '')
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, ' ');
-    // Габариты товара — отдельный блок на вкладке YM
-    if (/^(длина|ширина|высота)\s+товар/.test(n)) return false;
-    if (/^вес\s+товар/.test(n)) return false;
-    if (/^габарит(ы)?\s+товар/.test(n)) return false;
-    if (/^вес\s+без\s+упаковк/.test(n)) return false;
-    return true;
-  });
+  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
 }
 
 /** см → мм (YM → ERP) */

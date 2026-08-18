@@ -1,6 +1,12 @@
 import {
+  classifyMarketplaceDimAttrName,
+  isWbPackDimCharcId,
+  ozonProductDimAxis,
+  productDimAttrStoredFromMm,
   resolveMarketplaceDimensionsMm,
   resolveMarketplaceVolumeLiters,
+  wbProductDimAxis,
+  WB_ITEM_DIM_CHARC,
 } from '../src/utils/marketplaceDimensions.js';
 
 describe('resolveMarketplaceDimensionsMm / volume', () => {
@@ -218,5 +224,38 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     const product = { volume: 12, mp_field_links: { dimensions: [] } };
     expect(resolveMarketplaceDimensionsMm(product, 'ozon')).toBeNull();
     expect(resolveMarketplaceVolumeLiters(product, 'ozon', { allowGeneralFallback: true })).toBe(12);
+  });
+});
+
+describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
+  test('bare Ozon size attrs are product dimensions', () => {
+    expect(classifyMarketplaceDimAttrName('Длина')).toBe('product');
+    expect(classifyMarketplaceDimAttrName('Ширина, мм')).toBe('product');
+    expect(classifyMarketplaceDimAttrName('Высота (мм)')).toBe('product');
+    expect(ozonProductDimAxis({ name: 'Длина' })).toBe('length');
+    expect(ozonProductDimAxis({ name: 'Ширина, мм' })).toBe('width');
+    expect(ozonProductDimAxis({ name: 'Высота' })).toBe('height');
+  });
+
+  test('does not treat cable length as overall product size', () => {
+    expect(classifyMarketplaceDimAttrName('Длина кабеля')).toBeNull();
+    expect(ozonProductDimAxis({ name: 'Длина кабеля' })).toBeNull();
+  });
+
+  test('packaging attrs stay pack', () => {
+    expect(classifyMarketplaceDimAttrName('Длина упаковки')).toBe('pack');
+    expect(ozonProductDimAxis({ name: 'Длина упаковки' })).toBeNull();
+  });
+
+  test('WB item charc ids are product axes; pack ids are not', () => {
+    expect(wbProductDimAxis({ id: WB_ITEM_DIM_CHARC.length })).toBe('length');
+    expect(wbProductDimAxis({ id: WB_ITEM_DIM_CHARC.width })).toBe('width');
+    expect(wbProductDimAxis({ id: WB_ITEM_DIM_CHARC.height })).toBe('height');
+    expect(isWbPackDimCharcId('90849')).toBe(true);
+    expect(wbProductDimAxis({ id: '90849', name: 'Длина упаковки' })).toBeNull();
+    expect(productDimAttrStoredFromMm({ name: 'Длина' }, 120, 'ozon')).toBe('120');
+    expect(productDimAttrStoredFromMm({ name: 'Длина' }, 120, 'wb')).toBe('12');
+    expect(productDimAttrStoredFromMm({ name: 'Длина товара' }, 120, 'ym')).toBe('12');
+    expect(productDimAttrStoredFromMm({ name: 'Длина, мм' }, 120, 'ym')).toBe('120');
   });
 });

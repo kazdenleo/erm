@@ -135,29 +135,45 @@ export const WB_ITEM_DIM_CHARC = {
   height: '90630',
 };
 
-/** charcID габаритов товара или упаковки WB — не дублировать в общем списке характеристик. */
-export function isWbDedicatedDimCharcId(id) {
+export function isWbPackDimCharcId(id) {
   const s = String(id ?? '');
   if (!s) return false;
   return (
     s === WB_PACK_DIM_CHARC.length ||
     s === WB_PACK_DIM_CHARC.width ||
-    s === WB_PACK_DIM_CHARC.height ||
+    s === WB_PACK_DIM_CHARC.height
+  );
+}
+
+export function isWbItemDimCharcId(id) {
+  const s = String(id ?? '');
+  if (!s) return false;
+  return (
     s === WB_ITEM_DIM_CHARC.length ||
     s === WB_ITEM_DIM_CHARC.width ||
     s === WB_ITEM_DIM_CHARC.height
   );
 }
 
+/** charcID габаритов товара или упаковки WB. */
+export function isWbDedicatedDimCharcId(id) {
+  return isWbPackDimCharcId(id) || isWbItemDimCharcId(id);
+}
+
 /**
  * Классификация названия атрибута МП: габариты товара / упаковки / иное.
  * @returns {'product'|'pack'|null}
  */
-export function classifyMarketplaceDimAttrName(name) {
-  const n = String(name || '')
+function normalizeDimAttrName(name) {
+  return String(name || '')
     .trim()
     .toLowerCase()
+    .replace(/ё/g, 'е')
     .replace(/\s+/g, ' ');
+}
+
+export function classifyMarketplaceDimAttrName(name) {
+  const n = normalizeDimAttrName(name);
   if (!n) return null;
   if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return 'pack';
   if (/^вес\s+(с\s+)?упаковк/.test(n)) return 'pack';
@@ -168,7 +184,48 @@ export function classifyMarketplaceDimAttrName(name) {
   if (/^вес\s+товар[аы]?,?\s*г/.test(n)) return 'product';
   if (/^габарит(ы)?\s+товар/.test(n)) return 'product';
   if (/^вес\s+без\s+упаковк/.test(n)) return 'product';
+  if (/^(длина|ширина|высота|глубина)(\s*[,:(–-]\s*|\s+)(мм|см|м|mm|cm|m)\)?$/.test(n)) return 'product';
+  if (/^(длина|ширина|высота|глубина)$/.test(n)) return 'product';
+  if (/^(length|width|height|depth)(\s*[,:(–-]\s*|\s+)(mm|cm|m)\)?$/.test(n)) return 'product';
+  if (/^(length|width|height|depth)$/.test(n)) return 'product';
   return null;
+}
+
+export function ozonProductDimAxis(attrOrName) {
+  const n = normalizeDimAttrName(
+    attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName
+  );
+  if (!n || classifyMarketplaceDimAttrName(n) !== 'product') return null;
+  if (/^(длина|глубина|length|depth)(?:$|[\s,:(])/.test(n)) return 'length';
+  if (/^(ширина|width)(?:$|[\s,:(])/.test(n)) return 'width';
+  if (/^(высота|height)(?:$|[\s,:(])/.test(n)) return 'height';
+  if (/^(вес|weight)(?:$|[\s,:(])/.test(n)) return 'weight';
+  return null;
+}
+
+export function wbProductDimAxis(attr) {
+  const id = String(
+    attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id ?? ''
+  );
+  if (id === WB_ITEM_DIM_CHARC.length) return 'length';
+  if (id === WB_ITEM_DIM_CHARC.width) return 'width';
+  if (id === WB_ITEM_DIM_CHARC.height) return 'height';
+  if (isWbPackDimCharcId(id)) return null;
+  const axis = ozonProductDimAxis(attr?.name ?? attr);
+  return axis === 'length' || axis === 'width' || axis === 'height' ? axis : null;
+}
+
+/** Значение характеристики L/W/H товара: Ozon — мм; WB — см; YM — см, если в названии нет «мм». */
+export function productDimAttrStoredFromMm(attrOrName, mmVal, mp) {
+  if (mmVal === '' || mmVal == null) return '';
+  const n = Number(mmVal);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ozon') return String(Math.round(n));
+  const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
+  const s = String(name || '').toLowerCase();
+  if (code !== 'wb' && /мм|\bmm\b/.test(s)) return String(Math.round(n));
+  return String(Math.max(1, Math.round(n / 10)));
 }
 
 /** Атрибут уже покрыт полями product_length/width/height/weight — не дублировать в форме. */
