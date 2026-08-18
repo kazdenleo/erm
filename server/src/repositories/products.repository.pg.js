@@ -59,6 +59,54 @@ async function insertProductBarcodes(client, productId, barcodes) {
   }
 }
 
+function parseOptionalMaxPrice(raw) {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+async function upsertMarketplaceMaxPrices(client, productId, productData) {
+  const pairs = [
+    ['ozon', parseOptionalMaxPrice(productData.maxPriceOzon ?? productData.max_price_ozon)],
+    ['wb', parseOptionalMaxPrice(productData.maxPriceWb ?? productData.max_price_wb)],
+    ['ym', parseOptionalMaxPrice(productData.maxPriceYm ?? productData.max_price_ym)],
+  ];
+  for (const [marketplace, maxPrice] of pairs) {
+    if (maxPrice === undefined) continue;
+    const num = maxPrice == null ? null : Number(maxPrice).toFixed(2);
+    await client.query(
+      `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, max_price, updated_at)
+       VALUES ($1, $2, 0, $3, CURRENT_TIMESTAMP)
+       ON CONFLICT (product_id, marketplace)
+       DO UPDATE SET max_price = EXCLUDED.max_price, updated_at = CURRENT_TIMESTAMP`,
+      [productId, marketplace, num]
+    );
+  }
+}
+
+function attachMarketplaceMaxPrices(product, rows = []) {
+  const byMp = { ozon: null, wb: null, ym: null };
+  for (const row of rows) {
+    const mp = String(row.marketplace || '').toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(byMp, mp)) continue;
+    byMp[mp] = row.max_price != null && Number.isFinite(Number(row.max_price)) ? Number(row.max_price) : null;
+  }
+  product.maxPriceOzon = byMp.ozon;
+  product.maxPriceWb = byMp.wb;
+  product.maxPriceYm = byMp.ym;
+  if (!product.marketplacePrices) {
+    product.marketplacePrices = { ozon: {}, wb: {}, ym: {} };
+  }
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    product.marketplacePrices[mp] = {
+      ...(product.marketplacePrices[mp] || {}),
+      maxPrice: byMp[mp],
+    };
+  }
+}
+
 /** Единый ключ id товара для Map kit_components (PostgreSQL int8 в node-pg часто приходит строкой). */
 function productIdMapKey(rawId) {
   if (rawId == null || rawId === '') return null;
@@ -1270,12 +1318,13 @@ class ProductsRepositoryPG {
                     selling_price, price_before_discount, discount_percent,
                     pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual,
                     min_price_fbs, min_price_fbo,
-                    calculation_details_fbs, calculation_details_fbo
+                    calculation_details_fbs, calculation_details_fbo,
+                    max_price
              FROM product_marketplace_prices WHERE product_id = ANY($1)`,
             [productIds]
           );
         } catch (colErr) {
-          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual') || colErr.message.includes('min_price_fbs') || colErr.message.includes('min_price_fbo'))) {
+          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual') || colErr.message.includes('min_price_fbs') || colErr.message.includes('min_price_fbo') || colErr.message.includes('max_price'))) {
             try {
               pricesResult = await query(
                 `SELECT product_id, marketplace, min_price, calculation_details, updated_at,
@@ -1333,6 +1382,7 @@ class ProductsRepositoryPG {
           const discount = row.discount_percent != null ? parseFloat(row.discount_percent) : null;
           const mpStrategyId = row.pricing_strategy_id != null ? Number(row.pricing_strategy_id) : null;
           const sellingManual = row.selling_price_manual === true;
+          const maxPrice = row.max_price != null ? parseFloat(row.max_price) : null;
           const pack = {
             min: price,
             minFbs: priceFbs,
@@ -1345,6 +1395,7 @@ class ProductsRepositoryPG {
             discount,
             strategyId: mpStrategyId,
             sellingManual,
+            maxPrice: maxPrice != null && Number.isFinite(maxPrice) ? maxPrice : null,
           };
           if (row.marketplace === 'ozon') {
             pricesByProduct[key].ozon = price;
@@ -1511,6 +1562,7 @@ class ProductsRepositoryPG {
               discountPercent: null,
               strategyId: null,
               sellingPriceManual: false,
+              maxPrice: null,
             };
           }
           return {
@@ -1519,6 +1571,7 @@ class ProductsRepositoryPG {
             discountPercent: pack.discount != null && Number.isFinite(pack.discount) ? pack.discount : null,
             strategyId: pack.strategyId ?? null,
             sellingPriceManual: pack.sellingManual === true,
+            maxPrice: pack.maxPrice != null && Number.isFinite(pack.maxPrice) ? pack.maxPrice : null,
           };
         };
         product.marketplacePrices = {
@@ -1526,6 +1579,9 @@ class ProductsRepositoryPG {
           wb: mapPack(stored.wbPack),
           ym: mapPack(stored.ymPack),
         };
+        product.maxPriceOzon = product.marketplacePrices.ozon.maxPrice;
+        product.maxPriceWb = product.marketplacePrices.wb.maxPrice;
+        product.maxPriceYm = product.marketplacePrices.ym.maxPrice;
         product.pricingStrategyId =
           product.pricing_strategy_id != null && !isNaN(Number(product.pricing_strategy_id))
             ? Number(product.pricing_strategy_id)
@@ -1636,7 +1692,7 @@ class ProductsRepositoryPG {
         }
       }
 
-      if (forExport) {
+      if (products.length > 0) {
         try {
           const attrRes = await query(
             `SELECT pav.product_id, pav.attribute_id, pav.value, pa.name as attr_name
@@ -1655,15 +1711,18 @@ class ProductsRepositoryPG {
             if (row.attr_name) byPid[pid].byName[row.attr_name] = row.value;
           }
           for (const p of products) {
-            p._erp_attr_id_to_name = globalIdToName;
             const pack = byPid[String(p.id)];
-            if (pack) {
-              p.attribute_values = pack.byId;
-              p.erp_attributes_by_name = pack.byName;
+            p.attribute_values = pack ? pack.byId : {};
+            if (forExport) {
+              p._erp_attr_id_to_name = globalIdToName;
+              if (pack) p.erp_attributes_by_name = pack.byName;
             }
           }
         } catch (e) {
-          console.warn('[Products Repository] product_attribute_values for export:', e.message);
+          console.warn('[Products Repository] product_attribute_values:', e.message);
+          for (const p of products) {
+            p.attribute_values = {};
+          }
         }
       }
     }
@@ -1998,6 +2057,15 @@ class ProductsRepositoryPG {
     product.ym_market_sku = skuMeta.ym_market_sku ?? null;
     product.ym_product_id = skuMeta.ym_product_id ?? null;
     applyWbListingFields(product);
+    try {
+      const maxRows = await query(
+        'SELECT marketplace, max_price FROM product_marketplace_prices WHERE product_id = $1',
+        [numericId]
+      );
+      attachMarketplaceMaxPrices(product, maxRows.rows || []);
+    } catch (maxErr) {
+      if (!maxErr.message || !String(maxErr.message).includes('max_price')) throw maxErr;
+    }
       await this._reconcileReservedQuantityFromMovements([product]);
     const { isKitCatalogProduct, attachKitDisplayMetrics, buildKitListStockContext } =
       await import('../services/kitStock.service.js');
@@ -2588,6 +2656,12 @@ class ProductsRepositoryPG {
         if (minProfitYm != null) product.min_profit_ym = minProfitYm;
       }
 
+      try {
+        await upsertMarketplaceMaxPrices(client, product.id, productData);
+      } catch (maxErr) {
+        if (!maxErr.message || !String(maxErr.message).includes('max_price')) throw maxErr;
+      }
+
       const numOrNull = (v) =>
         v != null && v !== '' && !isNaN(Number(v)) ? Number(v) : null;
       const pLen = numOrNull(productData.product_length ?? productData.productLength);
@@ -2767,6 +2841,15 @@ class ProductsRepositoryPG {
         );
         product.images = productData.images ?? null;
       }
+      if (productData.rich_content_modules !== undefined) {
+        await client.query(
+          'UPDATE products SET rich_content_modules = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [Array.isArray(productData.rich_content_modules) ? JSON.stringify(productData.rich_content_modules) : null, product.id]
+        );
+        product.rich_content_modules = Array.isArray(productData.rich_content_modules)
+          ? productData.rich_content_modules
+          : null;
+      }
       return product;
     });
   }
@@ -2793,7 +2876,7 @@ class ProductsRepositoryPG {
         'block_stock_ozon', 'block_stock_wb', 'block_stock_ym',
         'ozon_attributes', 'wb_attributes', 'ym_attributes',
         'ozon_draft', 'wb_draft', 'ym_draft',
-        'images'
+        'images', 'rich_content_modules'
       ];
       const updateFields = [];
       const params = [];
@@ -2831,6 +2914,12 @@ class ProductsRepositoryPG {
       mapNullableProfit('minProfitWb', 'min_profit_wb');
       mapNullableProfit('minProfitYm', 'min_profit_ym');
 
+      try {
+        await upsertMarketplaceMaxPrices(client, numId, updates);
+      } catch (maxErr) {
+        if (!maxErr.message || !String(maxErr.message).includes('max_price')) throw maxErr;
+      }
+
       if (updates.hasOwnProperty('additionalExpenses') || updates.hasOwnProperty('additional_expenses')) {
         updateFields.push(`additional_expenses = $${paramIndex++}`);
         const v = updates.hasOwnProperty('additionalExpenses') ? updates.additionalExpenses : updates.additional_expenses;
@@ -2850,10 +2939,14 @@ class ProductsRepositoryPG {
         if (
           field === 'ozon_attributes' || field === 'wb_attributes' || field === 'ym_attributes' ||
           field === 'ozon_draft' || field === 'wb_draft' || field === 'ym_draft' ||
-          field === 'images' || field === 'mp_field_links'
+          field === 'images' || field === 'mp_field_links' || field === 'rich_content_modules'
         ) {
           updateFields.push(`${field} = $${paramIndex++}::jsonb`);
-          params.push(updates[field] != null && typeof updates[field] === 'object' ? JSON.stringify(updates[field]) : null);
+          if (field === 'rich_content_modules') {
+            params.push(Array.isArray(updates[field]) ? JSON.stringify(updates[field]) : null);
+          } else {
+            params.push(updates[field] != null && typeof updates[field] === 'object' ? JSON.stringify(updates[field]) : null);
+          }
         } else {
           updateFields.push(`${field} = $${paramIndex++}`);
           params.push(updates[field]);

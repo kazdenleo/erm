@@ -697,7 +697,8 @@
 }
 
 /* Длинные подписи атрибутов МП */
-.products-bulk-table thead th.mp-attr-head {
+.products-bulk-table thead th.mp-attr-head,
+.products-bulk-table thead th.erp-attr-head {
   white-space: nowrap;
   max-width: 160px;
   line-height: 1.2;

@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { productsApi } from '../../services/products.api.js';
+import { productAttributesApi } from '../../services/productAttributes.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
@@ -1399,6 +1399,76 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   return cols;
 }
 
+function erpAttrColKey(attrId) {
+  return `__erpAttr__${attrId}`;
+}
+
+function inputForErpAttrType(type) {
+  if (type === 'checkbox') return 'checkbox';
+  if (type === 'number') return 'number';
+  if (type === 'date') return 'date';
+  if (type === 'dictionary') return 'select_erp_dict';
+  return 'text';
+}
+
+function parseErpAttributeValues(product) {
+  const raw = product?.attribute_values;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value == null || value === '') continue;
+    out[String(key)] = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
+  }
+  return out;
+}
+
+function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, products) {
+  const attrById = new Map((allAttributes || []).map((a) => [String(a.id), a]));
+  const ids = new Set();
+  const addFromCat = (cat) => {
+    for (const id of cat?.attribute_ids || []) {
+      if (id != null && String(id).trim() !== '') ids.add(String(id));
+    }
+  };
+  const catId = String(filterCategoryId || '').trim();
+  if (catId && catId !== FILTER_CATEGORY_NONE) {
+    const cat = (categories || []).find((c) => String(c.id) === catId);
+    if (cat) addFromCat(cat);
+  } else if (!catId) {
+    const catIds = new Set();
+    for (const p of products || []) {
+      const cid = p.categoryId ?? p.user_category_id;
+      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
+      const av = p.attribute_values;
+      if (av && typeof av === 'object' && !Array.isArray(av)) {
+        Object.keys(av).forEach((k) => ids.add(String(k)));
+      }
+    }
+    for (const c of categories || []) {
+      if (catIds.has(String(c.id))) addFromCat(c);
+    }
+  }
+  const cols = [];
+  for (const id of ids) {
+    const attr = attrById.get(id);
+    if (!attr) continue;
+    const type = attr.type || 'text';
+    const dict = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
+    cols.push({
+      key: erpAttrColKey(id),
+      label: attr.name || `Атр. ${id}`,
+      title: `Основное · ${attr.name || id}`,
+      headerClass: 'erp-attr-head',
+      input: inputForErpAttrType(type),
+      minW: type === 'checkbox' ? 72 : 120,
+      erpAttr: { id, type, dictionary_values: dict },
+      dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
+    });
+  }
+  cols.sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'ru'));
+  return cols;
+}
+
 /** Объём в литрах из габаритов в мм — как в ProductForm (мм³ / 1_000_000). */
 function volumeLitersFromMmDims(rowOrProduct) {
   const len = Number(rowOrProduct.length);
@@ -1555,7 +1625,7 @@ function readMpCountriesFromProduct(p) {
   };
 }
 
-function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g') {
+function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
   const barcodes = barcodeStringsFromProduct(p.barcodes);
@@ -1618,6 +1688,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     width: lengthMmToDisplay(p.width, lengthUnit),
     height: lengthMmToDisplay(p.height, lengthUnit),
     _mpAttrBaseline: { ozon: { ...oz }, wb: { ...wb }, ym: { ...ym } },
+    _erpAttrBaseline: parseErpAttributeValues(p),
     _ozonDraftBaseline: parseDraftBaseline(p.ozon_draft),
     _wbDraftBaseline: parseDraftBaseline(p.wb_draft),
     _ymDraftBaseline: parseDraftBaseline(p.ym_draft),
@@ -1629,6 +1700,10 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     const { bucket, attrId } = c.mpAttr;
     const src = bucket === 'ozon' ? oz : bucket === 'wb' ? wb : ym;
     row[c.key] = stringifyMpAttrValue(src[attrId]);
+  }
+  for (const c of erpAttrColDefs) {
+    if (!c.erpAttr) continue;
+    row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
   }
   return row;
 }
@@ -1663,7 +1738,7 @@ function parseBuyout(s) {
 }
 
 /** Собрать тело PUT только для изменённых полей */
-function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g') {
+function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = []) {
   const payload = {};
   const touch = (apiKey, value) => {
     payload[apiKey] = value;
@@ -1997,6 +2072,24 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     }
   }
 
+  if ((erpAttrColDefs || []).length > 0) {
+    const before = { ...(original._erpAttrBaseline || {}) };
+    const after = { ...before };
+    let changed = false;
+    for (const c of erpAttrColDefs) {
+      if (!c?.erpAttr) continue;
+      const aid = String(c.erpAttr.id);
+      const nextVal = str(current[c.key]).trim();
+      const prevVal = str(original[c.key]).trim();
+      if (prevVal !== nextVal) changed = true;
+      if (nextVal === '') delete after[aid];
+      else after[aid] = nextVal;
+    }
+    if (changed || stableAttrJson(before) !== stableAttrJson(after)) {
+      touch('attribute_values', after);
+    }
+  }
+
   {
     const links = normalizeMpFieldLinks(current.mp_field_links);
     const wbLinked = isMpFieldLinked(links, 'product_dimensions', 'wb');
@@ -2139,7 +2232,15 @@ function preserveBulkDimFieldsAfterSave(nextRow, currentRow, payload, lengthUnit
 }
 
 function cloneRow(r) {
-  const { _productRef, _ozonDraftBaseline, _wbDraftBaseline, _ymDraftBaseline, _mpAttrBaseline, ...rest } = r;
+  const {
+    _productRef,
+    _ozonDraftBaseline,
+    _wbDraftBaseline,
+    _ymDraftBaseline,
+    _mpAttrBaseline,
+    _erpAttrBaseline,
+    ...rest
+  } = r;
   return {
     ...rest,
     mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
@@ -2150,6 +2251,7 @@ function cloneRow(r) {
           ym: { ...(_mpAttrBaseline.ym || {}) },
         }
       : { ozon: {}, wb: {}, ym: {} },
+    _erpAttrBaseline: { ...(_erpAttrBaseline || {}) },
     _ozonDraftBaseline: _ozonDraftBaseline ? { ..._ozonDraftBaseline } : {},
     _wbDraftBaseline: _wbDraftBaseline ? { ..._wbDraftBaseline } : {},
     _ymDraftBaseline: _ymDraftBaseline ? { ..._ymDraftBaseline } : {},
@@ -2446,6 +2548,7 @@ export function ProductsBulkEdit() {
   }, [pushOfferOpen]);
 
   const [mpAttrColumnDefs, setMpAttrColumnDefs] = useState([]);
+  const [erpAttrColumnDefs, setErpAttrColumnDefs] = useState([]);
   /** Ozon: attrId → [{ id, label }] из getOzonAttributeValues (объединение по категориям страницы) */
   const [ozonBulkDictOptions, setOzonBulkDictOptions] = useState({});
   const ozonBulkDictOptionsRef = useRef(ozonBulkDictOptions);
@@ -2550,7 +2653,7 @@ export function ProductsBulkEdit() {
       if (b === 'ym') return showMpYm;
       return false;
     };
-    const out = [...erp];
+    const out = [...erp, ...erpAttrColumnDefs];
     for (const bucket of ['ozon', 'wb', 'ym']) {
       if (!bucketVisible(bucket)) continue;
       const dedicated = COLUMNS.filter((c) => c.mpBucket === bucket);
@@ -2558,7 +2661,7 @@ export function ProductsBulkEdit() {
       out.push(...sortMpSectionColumns(dedicated, attrs));
     }
     return withDisplayUnitLabels(out, lengthUnit, weightUnit);
-  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, kitsEnabled, lengthUnit, weightUnit]);
+  }, [visibleMpAttrColumnDefs, erpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled, kitsEnabled, lengthUnit, weightUnit]);
 
   /** Сдвиг закреплённого столбца среди пинов (артикул всегда левее). dir: -1 влево, +1 вправо */
   const movePinnedColumn = useCallback(
@@ -2838,7 +2941,11 @@ export function ProductsBulkEdit() {
     setLoadError(null);
     setSaveMessage(null);
     try {
-      await loadCategories({ silent: true });
+      const [cats, attrRes] = await Promise.all([
+        loadCategories({ silent: true }),
+        productAttributesApi.getAll().catch(() => ({ data: [] })),
+      ]);
+      const erpAttrs = Array.isArray(attrRes?.data) ? attrRes.data : [];
 
       const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
       const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
@@ -2941,9 +3048,11 @@ export function ProductsBulkEdit() {
       if (partial.page !== undefined) setCurrentPage(safePage);
 
       const mpColsInitial = buildMpAttrColumnDefs(list, { ozon: {}, wb: {}, ym: {} });
+      const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, list);
       if (gen !== loadGenRef.current) return;
       setMpAttrColumnDefs(mpColsInitial);
-      const nextRows = list.filter(Boolean).map((p) => productToRow(p, mpColsInitial, lengthUnit, weightUnit));
+      setErpAttrColumnDefs(erpCols);
+      const nextRows = list.filter(Boolean).map((p) => productToRow(p, mpColsInitial, lengthUnit, weightUnit, erpCols));
       const orig = {};
       for (const r of nextRows) {
         orig[r.id] = cloneRow(r);
@@ -3546,12 +3655,12 @@ export function ProductsBulkEdit() {
       for (const r of rows) {
         const orig = originals[r.id];
         if (!orig) continue;
-        const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit);
+        const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
         if (Object.keys(payload).length === 0) continue;
         try {
           const wrap = await productsApi.update(r.id, payload);
           const u = wrap?.data !== undefined ? wrap.data : wrap;
-          let nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit);
+          let nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
           // Если API по какой-то причине не вернул габариты — не затираем только что сохранённые значения в таблице
           nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, payload, lengthUnit, weightUnit);
           setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
@@ -3641,7 +3750,7 @@ export function ProductsBulkEdit() {
       const orig = r ? originals[r.id] : null;
       if (!r || !orig) return false;
       return (
-        Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit)).length > 0
+        Object.keys(buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs)).length > 0
       );
     });
     if (!skipConfirm) {
@@ -3860,6 +3969,39 @@ export function ProductsBulkEdit() {
           : undefined,
     };
 
+    if (col.input === 'checkbox') {
+      const checked = v === 'true' || v === true;
+      return (
+        <input
+          type="checkbox"
+          className="form-check-input m-0"
+          checked={checked}
+          onChange={(e) => updateCell(row.id, col.key, e.target.checked ? 'true' : 'false')}
+          title={col.title || col.label}
+        />
+      );
+    }
+    if (col.input === 'date') {
+      return <input {...common} type="date" />;
+    }
+    if (col.input === 'select_erp_dict') {
+      const options = Array.isArray(col.dictOptions) ? col.dictOptions : [];
+      return (
+        <select
+          className="products-bulk-cell-input"
+          value={v ?? ''}
+          onChange={(e) => updateCell(row.id, col.key, e.target.value)}
+          title={col.title || col.label}
+        >
+          <option value="">—</option>
+          {options.map((opt) => (
+            <option key={String(opt.id)} value={String(opt.id)}>
+              {opt.label || opt.id}
+            </option>
+          ))}
+        </select>
+      );
+    }
     if (col.input === 'select_dict') {
       const bucket = col.mpAttr?.bucket;
       const attrId = String(col.mpAttr?.attrId ?? '');
@@ -4889,7 +5031,29 @@ export function ProductsBulkEdit() {
             <p className="text-muted small">
               Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
             </p>
-            {bulkModalCol.input === 'select_dict' ? (
+            {bulkModalCol.input === 'checkbox' ? (
+              <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
+                <option value="true">Да</option>
+                <option value="false">Нет</option>
+              </select>
+            ) : bulkModalCol.input === 'select_erp_dict' ? (
+              <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
+                <option value="">— очистить / не задано</option>
+                {(bulkModalCol.dictOptions || []).map((opt) => (
+                  <option key={String(opt.id)} value={String(opt.id)}>
+                    {opt.label || opt.id}
+                  </option>
+                ))}
+              </select>
+            ) : bulkModalCol.input === 'date' ? (
+              <input
+                className="form-control products-bulk-modal-field"
+                type="date"
+                value={bulkDraft}
+                onChange={(e) => setBulkDraft(e.target.value)}
+                autoFocus
+              />
+            ) : bulkModalCol.input === 'select_dict' ? (
               (() => {
                 const bucket = bulkModalCol.mpAttr?.bucket;
                 const attrId = String(bulkModalCol.mpAttr?.attrId ?? '');

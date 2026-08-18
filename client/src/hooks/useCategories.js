@@ -18,10 +18,13 @@ export function useCategories() {
       setError(null);
       const response = await userCategoriesApi.getAll();
       const list = response?.data ?? (Array.isArray(response) ? response : []);
-      setCategories(Array.isArray(list) ? list : []);
+      const next = Array.isArray(list) ? list : [];
+      setCategories(next);
+      return next;
     } catch (err) {
       console.error('Error loading categories:', err);
       setError(err.message || 'Ошибка загрузки категорий');
+      return [];
     } finally {
       if (!silent) setLoading(false);
     }
