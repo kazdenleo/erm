@@ -49,9 +49,33 @@ function linksOfCategory(cat, attributeId) {
   return normalizeAttrMpLinks(map[String(attributeId)] ?? map[attributeId]);
 }
 
+function categoryHasAttribute(cat, attributeId) {
+  return (cat?.attribute_ids || []).map((id) => String(id)).includes(String(attributeId));
+}
+
+function categoryPathName(cat, all) {
+  const parentId = cat?.parent_id ?? cat?.parentId;
+  if (!parentId) return cat?.name || String(cat?.id || '');
+  const parent = (all || []).find((c) => String(c.id) === String(parentId));
+  return parent ? `${parent.name} / ${cat.name}` : cat.name;
+}
+
+function patchCategoryAttributeState(cat, attributeId, nextLinks) {
+  const ids = [...new Set([...(cat.attribute_ids || []).map(String), String(attributeId)])];
+  return {
+    ...cat,
+    attribute_ids: ids,
+    attribute_mp_links: {
+      ...(cat.attribute_mp_links || {}),
+      [String(attributeId)]: nextLinks,
+    },
+  };
+}
+
 function CategoryMpLinksPanel({ attributeId }) {
   const [categories, setCategories] = useState([]);
   const [openCatId, setOpenCatId] = useState('');
+  const [addCatId, setAddCatId] = useState('');
   const [links, setLinks] = useState(() => emptyAttrMpLinks());
   const [ozonOptions, setOzonOptions] = useState([]);
   const [wbOptions, setWbOptions] = useState([]);
@@ -62,15 +86,14 @@ function CategoryMpLinksPanel({ attributeId }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setAddCatId('');
     userCategoriesApi
       .getAll()
       .then((res) => {
         if (cancelled) return;
         const list = Array.isArray(res?.data) ? res.data : [];
-        const linked = list.filter((c) =>
-          (c.attribute_ids || []).map((id) => String(id)).includes(String(attributeId))
-        );
-        setCategories(linked);
+        setCategories(list);
+        const linked = list.filter((c) => categoryHasAttribute(c, attributeId));
         const withLinks = linked.find((c) => attrMpLinksHasAny(linksOfCategory(c, attributeId)));
         setOpenCatId(String((withLinks || linked[0])?.id || ''));
       })
@@ -85,6 +108,14 @@ function CategoryMpLinksPanel({ attributeId }) {
     };
   }, [attributeId]);
 
+  const linkedCategories = categories
+    .filter((c) => categoryHasAttribute(c, attributeId))
+    .slice()
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'));
+  const unlinkedCategories = categories
+    .filter((c) => !categoryHasAttribute(c, attributeId))
+    .slice()
+    .sort((a, b) => String(categoryPathName(a, categories)).localeCompare(String(categoryPathName(b, categories)), 'ru'));
   const openCat = categories.find((c) => String(c.id) === String(openCatId)) || null;
 
   useEffect(() => {
@@ -127,15 +158,7 @@ function CategoryMpLinksPanel({ attributeId }) {
       await userCategoriesApi.updateAttributeMpLinks(cat.id, attributeId, next);
       setCategories((prev) =>
         prev.map((c) =>
-          String(c.id) === String(cat.id)
-            ? {
-                ...c,
-                attribute_mp_links: {
-                  ...(c.attribute_mp_links || {}),
-                  [String(attributeId)]: next,
-                },
-              }
-            : c
+          String(c.id) === String(cat.id) ? patchCategoryAttributeState(c, attributeId, next) : c
         )
       );
       if (String(cat.id) === String(openCatId)) setLinks(next);
@@ -146,74 +169,105 @@ function CategoryMpLinksPanel({ attributeId }) {
     }
   };
 
-  const copySources = categories.filter(
+  const addCategory = async () => {
+    const cat = categories.find((c) => String(c.id) === String(addCatId));
+    if (!cat) return;
+    await persistLinks(cat, emptyAttrMpLinks());
+    setOpenCatId(String(cat.id));
+    setAddCatId('');
+  };
+
+  const copySources = linkedCategories.filter(
     (c) => String(c.id) !== String(openCatId) && attrMpLinksHasAny(linksOfCategory(c, attributeId))
   );
 
   if (loading) {
     return <p className="muted" style={{ margin: 0 }}>Загрузка категорий…</p>;
   }
-  if (!categories.length) {
-    return (
-      <p className="muted" style={{ margin: 0 }}>
-        Этот атрибут ещё не добавлен ни в одну категорию. Добавьте его в
-        {' '}<strong>Настройки → Категории</strong> (карандаш у категории), затем вернитесь сюда.
-      </p>
-    );
-  }
 
   return (
     <div className="attribute-category-mp-links">
       <p className="muted" style={{ margin: '0 0 10px' }}>
-        Связи хранятся отдельно для каждой категории и не затирают друг друга.
+        У каждой категории свой набор сопоставлений OZ / WB / ЯМ — они не затирают друг друга.
         {saving ? ' Сохранение…' : ' Изменения сохраняются сразу.'}
       </p>
-      <div className="attribute-cat-mp-list">
-        {categories.map((c) => {
-          const isOpen = String(c.id) === String(openCatId);
-          const summary = formatAttrMpLinksSummary(linksOfCategory(c, attributeId));
-          return (
-            <div key={c.id} className={`attribute-cat-mp-card${isOpen ? ' is-open' : ''}`}>
-              <button
-                type="button"
-                className="attribute-cat-mp-card__head"
-                onClick={() => setOpenCatId(String(c.id))}
-              >
-                <span className="attribute-cat-mp-card__name">{c.name}</span>
-                <span className="attribute-cat-mp-card__summary">{summary}</span>
-              </button>
-              {isOpen && openCat ? (
-                <div className="attribute-cat-mp-card__body">
-                  {copySources.length > 0 ? (
-                    <div className="attribute-cat-mp-copy">
-                      <span className="muted">Скопировать связи из</span>
-                      {copySources.map((src) => (
-                        <button
-                          key={src.id}
-                          type="button"
-                          className="btn btn-outline-secondary btn-sm"
-                          onClick={() => void persistLinks(openCat, linksOfCategory(src, attributeId))}
-                        >
-                          {src.name}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <AttributeMpLinkFields
-                    links={links}
-                    onChange={(next) => void persistLinks(openCat, next)}
-                    ozonOptions={ozonOptions}
-                    wbOptions={wbOptions}
-                    ymOptions={ymOptions}
-                    getWbId={wbAttrKey}
-                    getWbName={wbAttrName}
-                  />
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+      {unlinkedCategories.length > 0 ? (
+        <div className="attribute-cat-mp-add">
+          <select
+            className="form-select form-select-sm"
+            value={addCatId}
+            onChange={(e) => setAddCatId(e.target.value)}
+            disabled={saving}
+          >
+            <option value="">Другая категория…</option>
+            {unlinkedCategories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {categoryPathName(c, categories)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn btn-outline-secondary btn-sm"
+            disabled={!addCatId || saving}
+            onClick={() => void addCategory()}
+          >
+            Добавить и настроить
+          </button>
+        </div>
+      ) : null}
+      {linkedCategories.length === 0 ? (
+        <p className="muted" style={{ margin: 0 }}>
+          Атрибут ещё не привязан ни к одной категории. Выберите категорию выше — для неё можно задать свой набор сопоставлений.
+        </p>
+      ) : (
+        <div className="attribute-cat-mp-list">
+          {linkedCategories.map((c) => {
+            const isOpen = String(c.id) === String(openCatId);
+            const summary = formatAttrMpLinksSummary(linksOfCategory(c, attributeId));
+            return (
+              <div key={c.id} className={`attribute-cat-mp-card${isOpen ? ' is-open' : ''}`}>
+                <button
+                  type="button"
+                  className="attribute-cat-mp-card__head"
+                  onClick={() => setOpenCatId(String(c.id))}
+                >
+                  <span className="attribute-cat-mp-card__name">{categoryPathName(c, categories)}</span>
+                  <span className="attribute-cat-mp-card__summary">{summary}</span>
+                </button>
+                {isOpen && openCat ? (
+                  <div className="attribute-cat-mp-card__body">
+                    {copySources.length > 0 ? (
+                      <div className="attribute-cat-mp-copy">
+                        <span className="muted">Скопировать связи из</span>
+                        {copySources.map((src) => (
+                          <button
+                            key={src.id}
+                            type="button"
+                            className="btn btn-outline-secondary btn-sm"
+                            onClick={() => void persistLinks(openCat, linksOfCategory(src, attributeId))}
+                          >
+                            {src.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <AttributeMpLinkFields
+                      links={links}
+                      onChange={(next) => void persistLinks(openCat, next)}
+                      ozonOptions={ozonOptions}
+                      wbOptions={wbOptions}
+                      ymOptions={ymOptions}
+                      getWbId={wbAttrKey}
+                      getWbName={wbAttrName}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -304,12 +358,12 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
         </div>
       )}
       <div className="form-group">
-        <label>Связь с маркетплейсами по категориям</label>
+        <label>Сопоставления по категориям</label>
         {attribute?.id ? (
           <CategoryMpLinksPanel attributeId={attribute.id} />
         ) : (
           <p className="muted" style={{ margin: 0 }}>
-            Сначала сохраните атрибут, затем снова откройте его — здесь появятся категории и выбор характеристик OZ / WB / ЯМ.
+            Сначала сохраните атрибут, затем снова откройте его — здесь можно выбрать категорию и задать для неё свой набор характеристик OZ / WB / ЯМ.
           </p>
         )}
       </div>
@@ -388,7 +442,7 @@ export function Attributes() {
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
       <p className="subtitle">
-        Откройте атрибут кнопкой «Изменить» — связи с Ozon / Wildberries / Яндекс.Маркетом задаются отдельно для каждой категории и сохраняются в базе.
+        Откройте атрибут кнопкой «Изменить»: название и тип — общие, а сопоставления Ozon / Wildberries / Яндекс.Маркета задаются отдельно для каждой категории.
       </p>
 
       <div className="attributes-toolbar">

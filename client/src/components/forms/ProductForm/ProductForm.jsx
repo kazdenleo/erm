@@ -106,6 +106,8 @@ import {
   erpAttrLinkFieldKey,
   isAttrMpFieldLinkKey,
   isMpFieldLinked,
+  isWbCharcDuplicatingDedicatedField,
+  isWbCountryCharcName,
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
   mmToCm,
@@ -170,6 +172,24 @@ function ozonAttrShowsMainSyncHint(attr, links) {
     return true;
   }
   return false;
+}
+
+function wbCharcName(a) {
+  return a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
+}
+
+function isWbCharcVisibleInForm(a) {
+  const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
+  if (isWbPackDimCharcId(id)) return false;
+  const name = wbCharcName(a);
+  if (isWbCharcDuplicatingDedicatedField(name)) return false;
+  const kind = classifyMarketplaceDimAttrName(name);
+  if (kind === 'pack') return false;
+  const axis = wbProductDimAxis(a);
+  if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
+    return false;
+  }
+  return true;
 }
 
 function wbAttrShowsMainSyncHint(attr, links) {
@@ -546,7 +566,9 @@ function mergeWbCharacteristicsIntoValues(characteristics, prev = {}) {
   if (!Array.isArray(characteristics)) return next;
   for (const c of characteristics) {
     const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
-    const key = id != null ? String(id) : String(c?.name ?? c?.characteristic_name ?? '').trim();
+    const name = c?.name ?? c?.characteristic_name ?? '';
+    if (isWbCharcDuplicatingDedicatedField(name) && !isWbCountryCharcName(name)) continue;
+    const key = id != null ? String(id) : String(name).trim();
     if (!key) continue;
     if (!isEmptyMarketplaceValue(next[key])) continue;
     const raw = c?.value;
@@ -3538,7 +3560,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         const next = { ...prev };
         for (const attr of attrs) {
           if (typeof skipAttr === 'function' && skipAttr(attr)) continue;
-          const key = String(attr.id);
+          const key = String(attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id ?? '');
+          if (!key) continue;
           if (!isEmptyMarketplaceValue(next[key])) continue;
           const n = normalizeAttrName(attr?.name);
           if (!/(страна|country|производств)/i.test(n)) continue;
@@ -3562,6 +3585,34 @@ export const ProductForm = React.forwardRef(function ProductForm({
     ozonAttributes,
     wbCategoryAttributes,
     ymCategoryAttributes,
+    formData.mp_field_links,
+  ]);
+
+  // Dedicated «Страна» на вкладке WB → скрытая характеристика «Страна производства»
+  useEffect(() => {
+    if (!Array.isArray(wbCategoryAttributes) || wbCategoryAttributes.length === 0) return;
+    const linked = isMpFieldLinked(formData.mp_field_links, 'country', 'wb');
+    const country = String(
+      linked ? formData.country_of_origin || '' : getMpDraftCountry(formData, 'wb') || ''
+    ).trim();
+    if (!country) return;
+    setWbAttributeValues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const attr of wbCategoryAttributes) {
+        if (!isWbCountryCharcName(wbCharcName(attr))) continue;
+        const key = String(attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id ?? '');
+        if (!key) continue;
+        if (String(next[key] ?? '') === country) continue;
+        next[key] = country;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [
+    wbCategoryAttributes,
+    formData.country_of_origin,
+    formData.wb_draft,
     formData.mp_field_links,
   ]);
 
@@ -4425,6 +4476,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
         if (id == null || isWbDedicatedDimCharcId(id)) return [];
         const name = attr?.name ?? attr?.charcName ?? attr?.characteristic_name ?? '';
+        if (isWbCharcDuplicatingDedicatedField(name)) return [];
         if (classifyMarketplaceDimAttrName(name)) return [];
         const raw = wbAttributeValues[String(id)];
         const value = String(normalizeWbAttributeScalar(raw) || '').trim();
@@ -4870,13 +4922,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   const applyErpAttrValueToLinkedMp = useCallback((attrLike, value, { onlyIfEmpty = false, onlyMp = null } = {}) => {
     const catLinks = normalizeAttrMpLinks(attrLike?.mp_links);
-    const fieldKey = erpAttrLinkFieldKey(attrLike?.id);
-    const fieldLinks = formData.mp_field_links;
     const wantMp = (mp) => {
       if (onlyMp && onlyMp !== mp) return false;
-      if (!catLinks[mp]) return false;
-      if (onlyMp) return true;
-      return !fieldKey || isMpFieldLinked(fieldLinks, fieldKey, mp);
+      return Boolean(catLinks[mp]);
     };
     const str =
       value === true ? 'true' : value === false ? 'false' : value == null ? '' : String(value);
@@ -4911,7 +4959,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return { ...prev, [ymKey]: str };
       });
     }
-  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName, formData.mp_field_links]);
+  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName]);
   applyErpAttrValueToLinkedMpRef.current = applyErpAttrValueToLinkedMp;
 
   useEffect(() => {
@@ -6514,20 +6562,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   ymAttributeValues,
                 }),
               ].filter((d, i, arr) => arr.findIndex((x) => x.mp === d.mp) === i);
-              const mappedMps = mappedMpsFromAttrLinks(attr.mp_links);
-              const attrLinkKey = erpAttrLinkFieldKey(attr.id);
               const nameWithDiff = (
                 <>
                   {attr.name}
-                  {mappedMps.length ? (
-                    <MpFieldLinkToggles
-                      fieldKey={attrLinkKey}
-                      links={formData.mp_field_links}
-                      onToggle={handleMpFieldLinkToggle}
-                      supportedMps={mappedMps}
-                      size={18}
-                    />
-                  ) : null}
                   <MpValueDiffBadges diffs={attrDiffs} />
                 </>
               );
@@ -7678,18 +7715,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   ) : wbCategoryAttributes.length > 0 ? (
                     <div className="row g-3">
                       {wbCategoryAttributes
-                        .filter((a) => {
-                          const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
-                          if (isWbPackDimCharcId(id)) return false;
-                          const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
-                          const kind = classifyMarketplaceDimAttrName(name);
-                          if (kind === 'pack') return false;
-                          const axis = wbProductDimAxis(a);
-                          if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
-                            return false;
-                          }
-                          return true;
-                        })
+                        .filter(isWbCharcVisibleInForm)
                         .map((a) => {
                         const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
                         const key = id != null ? String(id) : String(a?.name || '');
@@ -7748,18 +7774,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   ) : Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0 ? (
                     <div className="row g-3">
                       {wbFetchedProduct.characteristics
-                        .filter((c) => {
-                          const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
-                          if (isWbPackDimCharcId(id)) return false;
-                          const name = c?.name ?? c?.characteristic_name ?? '';
-                          const kind = classifyMarketplaceDimAttrName(name);
-                          if (kind === 'pack') return false;
-                          const axis = wbProductDimAxis(c);
-                          if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') {
-                            return false;
-                          }
-                          return true;
-                        })
+                        .filter(isWbCharcVisibleInForm)
                         .map((c) => {
                         const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
                         const name = c?.name ?? c?.characteristic_name ?? (id != null ? `ID ${id}` : 'Характеристика');
@@ -7799,7 +7814,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </>
               )}
               <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Сохраняются как <code>wb_attributes</code>. Название, описание и бренд — в блоке «Текст карточки» выше. Длина, ширина и высота товара — здесь, связь с «Основным».
+                Сохраняются как <code>wb_attributes</code>. Название, описание, бренд и страна — в блоках выше. Длина, ширина и высота товара — здесь, связь с «Основным».
               </div>
             </div>
           </div>

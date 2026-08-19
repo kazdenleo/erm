@@ -32,8 +32,8 @@ import {
   setMpFieldLink,
   emptyMpFieldLinks,
   getMpDraftProductDimensionsMm,
-  erpAttrLinkFieldKey,
   isAttrMpFieldLinkKey,
+  isWbCharcDuplicatingDedicatedField,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -323,9 +323,7 @@ function copyErpAttrToLinkedMp(row, erpCol, mp) {
 function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = []) {
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
-    const erpCol = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
-    if (!erpCol?.linkFieldKey) return false;
-    return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mpAttr.mp);
+    return false;
   }
   const fieldKey = bulkLinkFieldForColumn(colKey);
   const mp = bulkMpCodeForColumn(colKey);
@@ -420,14 +418,10 @@ function copyMainFieldToMp(row, fieldKey, mp, erpAttrCols = []) {
  */
 function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
   const erpCol = (erpAttrCols || []).find((c) => c.key === key && c.erpAttr);
-  if (erpCol?.linkFieldKey) {
-    const fieldKey = erpCol.linkFieldKey;
-    const links = normalizeMpFieldLinks(row.mp_field_links);
+  if (erpCol?.erpAttr) {
     let next = { ...row, [key]: value };
-    for (const mp of erpCol.linkSupportedMps || mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
-      if (isMpFieldLinked(links, fieldKey, mp)) {
-        next = copyErpAttrToLinkedMp(next, erpCol, mp);
-      }
+    for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
+      next = copyErpAttrToLinkedMp(next, erpCol, mp);
     }
     return next;
   }
@@ -756,19 +750,19 @@ const COLUMNS = [
   /* описание */
   { key: 'description', label: 'Описание', input: 'textarea', minW: 160, linkFieldKey: 'description' },
   /* габариты товара (без упаковки) — вкладка «Основное» */
-  { key: 'product_length', label: 'Дл. тов.', title: 'Основное · Длина товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'product_width', label: 'Ш. тов.', title: 'Основное · Ширина товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'product_height', label: 'В. тов.', title: 'Основное · Высота товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'product_length', label: 'Длина', title: 'Основное · Длина товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'product_width', label: 'Ширина', title: 'Основное · Ширина товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'product_height', label: 'Высота', title: 'Основное · Высота товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
   { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара. Тумблеры OZ/WB/ЯМ связывают размеры товара с МП', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_dimensions' },
   /* габариты упаковки — связь с МП через тумблеры OZ/WB/ЯМ в заголовке */
-  { key: 'length', label: 'Дл. уп.', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'width', label: 'Ш. уп.', title: 'Основное · Ширина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'height', label: 'В. уп.', title: 'Основное · Высота упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки (Д×Ш×В×вес) с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
   { key: 'weight', label: 'Вес уп.', title: 'Основное · Вес с упаковкой. Тумблеры OZ/WB/ЯМ связывают все габариты упаковки с МП', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'dimensions' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 80 },
-  { key: 'categoryId', label: 'Кат.', title: 'Категория', input: 'select_category', minW: 120 },
-  { key: 'organizationId', label: 'Орг.', title: 'Организация', input: 'select_org', minW: 120 },
+  { key: 'categoryId', label: 'Категория', title: 'Категория', input: 'select_category', minW: 120 },
+  { key: 'organizationId', label: 'Организация', title: 'Организация', input: 'select_org', minW: 120 },
   { key: 'supplierId', label: 'Пост.', title: 'Поставщик', input: 'select_supplier', minW: 120 },
   { key: 'cost', label: 'Себест.', title: 'Себестоимость', input: 'number', minW: 80 },
   { key: 'additionalExpenses', label: 'Доп. р.', title: 'Доп. расходы', input: 'number', minW: 80 },
@@ -780,9 +774,9 @@ const COLUMNS = [
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   /* Длина/ширина/высота товара Ozon — характеристики, не отдельные колонки */
   { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight' },
-  { key: 'ozon_pack_length', label: 'Дл. уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_width', label: 'Ш. уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_height', label: 'В. уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_length', label: 'Длина уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_width', label: 'Ширина уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
+  { key: 'ozon_pack_height', label: 'Высота уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
   { key: 'ozon_pack_weight', label: 'Вес уп.', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight' },
   /* Бренд, страна, название и аннотация Ozon — характеристики, не отдельные колонки */
   /* ——— Wildberries ——— */
@@ -792,9 +786,9 @@ const COLUMNS = [
   { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb' },
   /* Длина/ширина/высота товара WB — характеристики, не отдельные колонки */
   { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight' },
-  { key: 'wb_pack_length', label: 'Дл. уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_width', label: 'Ш. уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_height', label: 'В. уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_width', label: 'Ширина уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
+  { key: 'wb_pack_height', label: 'Высота уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
   { key: 'wb_pack_weight', label: 'Вес уп.', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight' },
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 90, mpBucket: 'wb' },
   { key: 'wb_country', label: 'Страна', title: 'Wildberries · Страна производителя', input: 'text', minW: 80, mpBucket: 'wb' },
@@ -804,49 +798,33 @@ const COLUMNS = [
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym' },
   /* Длина/ширина/высота товара YM — характеристики, не отдельные колонки */
   { key: 'ym_product_weight', label: 'Вес тов.', title: 'Яндекс.Маркет · Вес товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight' },
-  { key: 'ym_pack_length', label: 'Дл. уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_width', label: 'Ш. уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_height', label: 'В. уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_pack_weight', label: 'Вес уп.', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight' },
   { key: 'ym_country', label: 'Страна', title: 'Яндекс.Маркет · Страна производителя', input: 'text', minW: 80, mpBucket: 'ym' },
 ];
 
-function withDisplayUnitLabels(cols, lengthUnit, weightUnit) {
+function withDisplayUnitLabels(cols, lengthUnit) {
   const L = lengthUnitLabel(lengthUnit);
-  const W = weightUnitLabel(weightUnit);
   return (cols || []).map((c) => {
     const strip = (s) =>
       String(s || '')
         .replace(/\s*\((мм|см|г|кг)\)\s*$/i, '')
         .trim();
-    if (c.dimKind === 'length') {
-      const base = strip(c.label);
-      const baseTitle = strip(c.title || c.label);
-      return {
-        ...c,
-        label: `${base} (${L})`,
-        title: `${baseTitle} (${L})`,
-      };
+    // Dedicated габариты/вес — короткие заголовки без единиц
+    if (c.dimKind === 'length' || c.dimKind === 'weight') {
+      return { ...c, label: strip(c.label), title: strip(c.title || c.label) };
     }
-    if (c.dimKind === 'weight') {
-      const base = strip(c.label);
-      const baseTitle = strip(c.title || c.label);
-      return {
-        ...c,
-        label: `${base} (${W})`,
-        title: `${baseTitle} (${W})`,
-      };
-    }
-    // JSON-атрибуты габаритов/веса — тоже с единицами
     const human = String(c._humanName || c.label || '');
     const h = human.toLowerCase();
     if (!c.mpAttr) return c;
     const base = strip(c.label);
-    if (/(длина|ширина|высота|глубина)/.test(h) && !/вес/.test(h)) {
-      return { ...c, label: `${base} (${L})`, title: `${strip(c.title || base)} (${L})` };
-    }
     if (/вес/.test(h)) {
-      return { ...c, label: `${base} (${W})`, title: `${strip(c.title || base)} (${W})` };
+      return { ...c, label: base, title: strip(c.title || base) };
+    }
+    if (/(длина|ширина|высота|глубина)/.test(h)) {
+      return { ...c, label: `${base} (${L})`, title: `${strip(c.title || base)} (${L})` };
     }
     return c;
   });
@@ -1059,6 +1037,72 @@ function sortAttrIdsWithLabels(set, labelMap) {
   });
 }
 
+function unwrapMpAttrList(res) {
+  if (Array.isArray(res)) return res;
+  if (!res || typeof res !== 'object') return [];
+  if (Array.isArray(res.data)) return res.data;
+  if (Array.isArray(res.result)) return res.result;
+  if (Array.isArray(res.parameters)) return res.parameters;
+  if (Array.isArray(res.attributes)) return res.attributes;
+  if (res.data && typeof res.data === 'object' && Array.isArray(res.data.data)) return res.data.data;
+  return [];
+}
+
+function ozonSchemaKind(a) {
+  const dictionaryIdRaw = a?.dictionary_id ?? a?.dictionaryId;
+  const dictionaryId =
+    dictionaryIdRaw != null && Number(dictionaryIdRaw) !== 0 ? Number(dictionaryIdRaw) : 0;
+  if (dictionaryId) return 'dictionary';
+  const t = String(a?.type || '').toLowerCase();
+  if (t === 'boolean' || (t === 'string' && a?.is_aspect)) return 'boolean';
+  if (t === 'integer' || t === 'decimal' || t === 'number' || t === 'float') return 'number';
+  return 'text';
+}
+
+function extractYmDictionaryOptions(a) {
+  const raw =
+    (Array.isArray(a?.dictionary_options) && a.dictionary_options) ||
+    (Array.isArray(a?.values) && a.values) ||
+    (Array.isArray(a?.options) && a.options) ||
+    [];
+  const out = [];
+  const seen = new Set();
+  for (const o of raw) {
+    if (o == null) continue;
+    let id = '';
+    let label = '';
+    if (typeof o === 'string' || typeof o === 'number') {
+      id = String(o);
+      label = String(o);
+    } else {
+      if (o.id == null && o.value == null) continue;
+      id = o.id != null ? String(o.id) : String(o.value);
+      label = String(o.label ?? o.value ?? o.description ?? o.name ?? id).trim() || id;
+    }
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label, value: id });
+  }
+  return out.length ? out : null;
+}
+
+function ymSchemaKind(a, options) {
+  const t = String(a?.type || a?.ym_parameter_type || '').toLowerCase();
+  if (options && options.length) return 'dictionary';
+  if (t === 'boolean' || t === 'bool') return 'boolean';
+  if (t === 'number' || t === 'numeric' || t === 'integer' || t === 'decimal' || t === 'float') {
+    return 'number';
+  }
+  return 'text';
+}
+
+function mpAttrInputFromKind(mp, kind) {
+  if (kind === 'dictionary') return 'select_dict';
+  if (kind === 'boolean') return mp === 'ozon' ? 'checkbox' : 'select_bool';
+  if (kind === 'number') return 'number';
+  return 'textarea';
+}
+
 function mergeOzonAttrSchema(list, into, ozonPair, ozonPairsOut) {
   if (!Array.isArray(list) || !into) return;
   for (const a of list) {
@@ -1068,12 +1112,14 @@ function mergeOzonAttrSchema(list, into, ozonPair, ozonPairsOut) {
     const dictionaryIdRaw = a?.dictionary_id ?? a?.dictionaryId;
     const dictionaryId =
       dictionaryIdRaw != null && Number(dictionaryIdRaw) !== 0 ? Number(dictionaryIdRaw) : 0;
+    const kind = ozonSchemaKind(a);
     const prev = into[id];
     if (!prev) {
-      into[id] = { name, dictionaryId };
+      into[id] = { name, dictionaryId, kind };
     } else {
       if (!prev.name && name) prev.name = name;
       if (!prev.dictionaryId && dictionaryId) prev.dictionaryId = dictionaryId;
+      if (!prev.kind && kind) prev.kind = kind;
     }
   }
   if (ozonPair && ozonPairsOut) {
@@ -1131,10 +1177,13 @@ function mergeWbAttrSchema(list, into) {
     const options = extractWbCharcOptions(a);
     const prev = into[id];
     if (!prev) {
-      into[id] = { name, options };
+      into[id] = { name, options, kind: options ? 'dictionary' : 'text' };
     } else {
       if (!prev.name && name) prev.name = name;
-      if ((!prev.options || !prev.options.length) && options) prev.options = options;
+      if ((!prev.options || !prev.options.length) && options) {
+        prev.options = options;
+        prev.kind = 'dictionary';
+      }
     }
   }
 }
@@ -1145,23 +1194,15 @@ function mergeYmAttrSchema(list, into) {
     const id = a?.id != null ? String(a.id) : '';
     if (!id) continue;
     const name = String(a?.name || '').trim();
-    const rawOpts = Array.isArray(a?.dictionary_options) ? a.dictionary_options : [];
-    const options =
-      a?.type === 'dictionary' && rawOpts.length
-        ? rawOpts
-            .filter((o) => o && o.id != null)
-            .map((o) => ({
-              id: String(o.id),
-              label: String(o.label ?? o.value ?? o.id).trim() || String(o.id),
-              value: String(o.id),
-            }))
-        : null;
+    const options = extractYmDictionaryOptions(a);
+    const kind = ymSchemaKind(a, options);
     const prev = into[id];
     if (!prev) {
-      into[id] = { name, options };
+      into[id] = { name, options, kind };
     } else {
       if (!prev.name && name) prev.name = name;
       if ((!prev.options || !prev.options.length) && options) prev.options = options;
+      if (!prev.kind || prev.kind === 'text') prev.kind = kind;
     }
   }
 }
@@ -1188,22 +1229,35 @@ async function fetchMpAttributeLabelMaps(products) {
   ];
   if (catIds.length === 0) return maps;
 
+  const orgByCat = new Map();
+  let fallbackOrg = '';
+  for (const p of products || []) {
+    const cid = String(p?.user_category_id ?? p?.categoryId ?? '').trim();
+    const oid = String(p.organizationId ?? p.organization_id ?? '').trim();
+    if (oid && !fallbackOrg) fallbackOrg = oid;
+    if (cid && oid && !orgByCat.has(cid)) orgByCat.set(cid, oid);
+  }
+
   const markets = /** @type {const} */ (['ozon', 'wb', 'ym']);
   const tasks = [];
   for (const catId of catIds) {
     for (const mp of markets) {
-      tasks.push({ catId, mp });
+      tasks.push({ catId, mp, organizationId: orgByCat.get(catId) || fallbackOrg || undefined });
     }
   }
   const BATCH = 8;
   for (let i = 0; i < tasks.length; i += BATCH) {
     const chunk = tasks.slice(i, i + BATCH);
     const settled = await Promise.all(
-      chunk.map(({ catId, mp }) => userCategoriesApi.getMarketplaceAttributes(catId, mp).catch(() => null))
+      chunk.map(({ catId, mp, organizationId }) =>
+        userCategoriesApi
+          .getMarketplaceAttributes(catId, mp, { organizationId })
+          .catch(() => null)
+      )
     );
     chunk.forEach(({ mp }, j) => {
       const res = settled[j];
-      const body = res?.data ?? res;
+      const body = unwrapMpAttrList(res?.data ?? res);
       if (mp === 'ozon') mergeOzonAttrSchema(body, maps.ozon, res?.ozon_pair, maps.ozonPairs);
       else if (mp === 'wb') mergeWbAttrSchema(body, maps.wb);
       else mergeYmAttrSchema(body, maps.ym);
@@ -1472,9 +1526,17 @@ function unlinkProductDimsIfMpDimAttrEdited(row, col) {
   };
 }
 
-function formatMpColumnLabel(attrId, humanName) {
+function formatMpColumnLabel(attrId, humanName, bucket = '') {
   const id = String(attrId);
   const h = humanName && String(humanName).trim() ? String(humanName).trim() : '';
+  const n = h.toLowerCase().replace(/ё/g, 'е');
+  if (String(bucket).toLowerCase() === 'ozon') {
+    if (isOzonAnnotationAttr({ id, name: h })) return 'Описание';
+    if (/аннотация/.test(n) || n === 'annotation') return 'Описание';
+    if (/альтернативн/.test(n) && /артикул/.test(n)) return 'Аналоги';
+    if (/аналогичн/.test(n) && /артикул/.test(n)) return 'Аналоги';
+    if (/^альтернативные артикулы/.test(n)) return 'Аналоги';
+  }
   if (h) return h;
   return `id ${id}`;
 }
@@ -1531,10 +1593,7 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
   }
 
   if (bucket === 'wb') {
-    if (h.includes('артикул продавца')) return true;
-    if (h === 'бренд' || h.includes('бренд продавца') || h.includes('торговая марк')) return true;
-    if (h === 'название' || (h.includes('наименование') && h.includes('товар'))) return true;
-    if (h.includes('описание') && (h.includes('товар') || h.includes('продавца'))) return true;
+    if (isWbCharcDuplicatingDedicatedField(raw)) return true;
     const kind = classifyMarketplaceDimAttrName(raw);
     if (kind === 'pack') return true;
     const axis = ozonProductDimAxis(raw);
@@ -1579,13 +1638,15 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     const human = schemaAttrName(meta);
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
     const dictionaryId = Number(meta?.dictionaryId) || 0;
-    const isDict = dictionaryId > 0;
+    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary';
+    const kind = isDict ? 'dictionary' : meta?.kind || 'text';
+    const input = mpAttrInputFromKind('ozon', kind);
     cols.push({
       key: `__mpAttr__ozon__${id}`,
-      label: formatMpColumnLabel(id, human),
+      label: formatMpColumnLabel(id, human, 'ozon'),
       title: mpColumnTitleAttr('ozon', id, human, isDict),
       headerClass: 'mp-attr-head',
-      input: isDict ? 'select_dict' : 'textarea',
+      input,
       minW: isDict ? 140 : 120,
       mpBucket: 'ozon',
       mpAttr: { bucket: 'ozon', attrId: id },
@@ -1600,13 +1661,14 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     const human = schemaAttrName(meta);
     if (isDuplicateMpCardJsonAttr('wb', human)) continue;
     const options = Array.isArray(meta?.options) && meta.options.length ? meta.options : null;
-    const isDict = Boolean(options);
+    const kind = options ? 'dictionary' : meta?.kind || 'text';
+    const isDict = kind === 'dictionary';
     cols.push({
       key: `__mpAttr__wb__${id}`,
-      label: formatMpColumnLabel(id, human),
+      label: formatMpColumnLabel(id, human, 'wb'),
       title: mpColumnTitleAttr('wb', id, human, isDict),
       headerClass: 'mp-attr-head',
-      input: isDict ? 'select_dict' : 'textarea',
+      input: mpAttrInputFromKind('wb', kind),
       minW: isDict ? 140 : 120,
       mpBucket: 'wb',
       mpAttr: { bucket: 'wb', attrId: id },
@@ -1620,13 +1682,14 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     const human = schemaAttrName(meta);
     if (isDuplicateMpCardJsonAttr('ym', human)) continue;
     const options = Array.isArray(meta?.options) && meta.options.length ? meta.options : null;
-    const isDict = Boolean(options);
+    const kind = options ? 'dictionary' : meta?.kind || 'text';
+    const isDict = kind === 'dictionary';
     cols.push({
       key: `__mpAttr__ym__${id}`,
-      label: formatMpColumnLabel(id, human),
+      label: formatMpColumnLabel(id, human, 'ym'),
       title: mpColumnTitleAttr('ym', id, human, isDict),
       headerClass: 'mp-attr-head',
-      input: isDict ? 'select_dict' : 'textarea',
+      input: mpAttrInputFromKind('ym', kind),
       minW: isDict ? 140 : 120,
       mpBucket: 'ym',
       mpAttr: { bucket: 'ym', attrId: id },
@@ -1722,21 +1785,15 @@ function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, pro
     const type = attr.type || 'text';
     const dict = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
     const mpLinks = erpAttrMpLinksForId(categories, filterCategoryId, products, id);
-    const mappedMps = mappedMpsFromAttrLinks(mpLinks);
     cols.push({
       key: erpAttrColKey(id),
       label: attr.name || `Атр. ${id}`,
-      title: mappedMps.length
-        ? `Основное · ${attr.name || id}. Тумблеры OZ/WB/ЯМ копируют значение в связанные характеристики МП`
-        : `Основное · ${attr.name || id}`,
+      title: `Основное · ${attr.name || id}`,
       headerClass: 'erp-attr-head',
       input: inputForErpAttrType(type),
       minW: type === 'checkbox' ? 72 : 120,
       erpAttr: { id, type, dictionary_values: dict, mpLinks },
       dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
-      ...(mappedMps.length
-        ? { linkFieldKey: erpAttrLinkFieldKey(id), linkSupportedMps: mappedMps }
-        : {}),
     });
   }
   cols.sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'ru'));
@@ -1753,13 +1810,14 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
   if (isDuplicateMpCardJsonAttr(mp, human)) return null;
   if (mp === 'ozon') {
     const dictionaryId = Number(meta?.dictionaryId) || 0;
-    const isDict = dictionaryId > 0;
+    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary';
+    const kind = isDict ? 'dictionary' : meta?.kind || 'text';
     return {
       key: mpAttrColKey('ozon', id),
-      label: formatMpColumnLabel(id, human),
+      label: formatMpColumnLabel(id, human, 'ozon'),
       title: mpColumnTitleAttr('ozon', id, human, isDict),
       headerClass: 'mp-attr-head',
-      input: isDict ? 'select_dict' : 'textarea',
+      input: mpAttrInputFromKind('ozon', kind),
       minW: isDict ? 140 : 120,
       mpBucket: 'ozon',
       mpAttr: { bucket: 'ozon', attrId: id },
@@ -1769,13 +1827,14 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
     };
   }
   const options = Array.isArray(meta?.options) && meta.options.length ? meta.options : null;
-  const isDict = Boolean(options);
+  const kind = options ? 'dictionary' : meta?.kind || 'text';
+  const isDict = kind === 'dictionary';
   return {
     key: mpAttrColKey(mp, id),
-    label: formatMpColumnLabel(id, human),
+    label: formatMpColumnLabel(id, human, mp),
     title: mpColumnTitleAttr(mp, id, human, isDict),
     headerClass: 'mp-attr-head',
-    input: isDict ? 'select_dict' : 'textarea',
+    input: mpAttrInputFromKind(mp, kind),
     minW: isDict ? 140 : 120,
     mpBucket: mp,
     mpAttr: { bucket: mp, attrId: id },
@@ -4461,7 +4520,28 @@ export function ProductsBulkEdit() {
         />
       );
     }
-    if (col.input === 'textarea' || col.mpAttr) {
+    if (col.input === 'select_bool') {
+      const raw = str(v).trim().toLowerCase();
+      const boolValue =
+        raw === 'true' || raw === '1' || raw === 'да' || raw === 'yes'
+          ? 'true'
+          : raw === 'false' || raw === '0' || raw === 'нет' || raw === 'no'
+            ? 'false'
+            : '';
+      return (
+        <select
+          className="products-bulk-cell-input"
+          value={boolValue}
+          onChange={(e) => updateCell(row.id, col.key, e.target.value)}
+          title={col.title || col.label}
+        >
+          <option value="">—</option>
+          <option value="true">Да</option>
+          <option value="false">Нет</option>
+        </select>
+      );
+    }
+    if (col.input === 'textarea') {
       return <textarea {...common} rows={2} />;
     }
     if (col.input === 'number') {
@@ -5527,8 +5607,13 @@ export function ProductsBulkEdit() {
                   </select>
                 );
               })()
-            ) : bulkModalCol.input === 'textarea' ||
-              (bulkModalCol.mpAttr && bulkModalCol.input !== 'select_dict') ? (
+            ) : bulkModalCol.input === 'select_bool' ? (
+              <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
+                <option value="">— очистить / не задано</option>
+                <option value="true">Да</option>
+                <option value="false">Нет</option>
+              </select>
+            ) : bulkModalCol.input === 'textarea' ? (
               <textarea
                 className="form-control products-bulk-modal-field"
                 value={bulkDraft}

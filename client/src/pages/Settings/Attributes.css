@@ -227,6 +227,19 @@
   gap: 10px;
 }
 
+.attribute-cat-mp-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.attribute-cat-mp-add .form-select {
+  flex: 1;
+  min-width: 180px;
+}
+
 .attribute-cat-mp-copy {
   display: flex;
   flex-wrap: wrap;

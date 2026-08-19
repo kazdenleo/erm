@@ -1035,10 +1035,9 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                     setAttributeIds((prev) => (prev.includes(selectedAttributeId) ? prev : [...prev, selectedAttributeId]));
                     setAttributeMpLinks((prev) => {
                       if (prev[selectedAttributeId] && attrMpLinksHasAny(prev[selectedAttributeId])) return prev;
-                      const attr = allAttributes.find((a) => String(a.id) === String(selectedAttributeId));
                       return {
                         ...prev,
-                        [selectedAttributeId]: normalizeAttrMpLinks(attr?.mp_links),
+                        [selectedAttributeId]: emptyAttrMpLinks(),
                       };
                     });
                     setSelectedAttributeId('');
