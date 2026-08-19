@@ -5,7 +5,6 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
-import { MpFieldLinkToggles } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   buildRichContentPreviewHtml,
   hasRichContentPreview,
@@ -71,13 +70,6 @@ export function MarketplaceRichContentPanel({
       <div className="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
         <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: '2px 0' }}>
           Предпросмотр Rich-контента
-          {typeof onMpFieldLinkToggle === 'function' ? (
-            <MpFieldLinkToggles
-              fieldKey="rich_content"
-              links={mpFieldLinks}
-              onToggle={onMpFieldLinkToggle}
-            />
-          ) : null}
         </span>
         <div className="d-flex gap-2 flex-wrap">
           <Button
@@ -102,7 +94,7 @@ export function MarketplaceRichContentPanel({
       <div className="card-body">
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
           {isOzon
-            ? `Вёрстка виджетов ${MP_LABEL[mp]} из шаблона категории. Значки OZ/WB/ЯМ связывают генерацию между маркетплейсами.`
+            ? `Вёрстка виджетов ${MP_LABEL[mp]} из шаблона категории.`
             : `${MP_LABEL[mp]} не принимает Rich JSON через API — показываем свёрстанное описание из того же шаблона категории.`}
           {categoryId ? (
             <>

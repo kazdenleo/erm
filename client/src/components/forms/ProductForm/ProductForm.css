@@ -74,10 +74,22 @@
 }
 
 /* Изменённые поля карточки МП (ещё не отправлены / отличаются от сохранённых) */
-.product-form .mp-field-dirty {
-  border-color: #c9852a !important;
-  box-shadow: 0 0 0 0.15rem rgba(201, 133, 42, 0.2);
-  background-color: rgba(201, 133, 42, 0.06);
+.product-form .mp-field-over-limit,
+.product-form .mp-field-dirty.mp-field-over-limit {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 0.15rem rgba(220, 38, 38, 0.22);
+  background-color: rgba(220, 38, 38, 0.08);
+}
+
+.mp-field-limit-hint {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  margin-top: 6px;
+}
+
+.mp-field-limit-hint--over {
+  color: #dc2626;
+  font-weight: 600;
 }
 
 .product-form .nav-link--mp-dirty {

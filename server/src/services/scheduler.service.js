@@ -25,6 +25,7 @@ import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissi
 import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
+import { syncMarketplaceQuestions } from './marketplaceQuestions.service.js';
 import productCompetitorsService from './productCompetitors.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
@@ -83,6 +84,92 @@ function isReviewsSyncEnabled() {
 function getReviewsSyncCronExpression() {
   const c = process.env.REVIEWS_SYNC_CRON;
   return c && String(c).trim() ? String(c).trim() : '0 * * * *';
+}
+
+/** Фоновая синхронизация вопросов (Ozon/WB/Яндекс). Выкл: QUESTIONS_SYNC_ENABLED=0 */
+function isQuestionsSyncEnabled() {
+  const v = process.env.QUESTIONS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 10 минут; QUESTIONS_SYNC_CRON */
+function getQuestionsSyncCronExpression() {
+  const c = process.env.QUESTIONS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+}
+
+async function getSchedulerProfiles() {
+  let profiles = [{ id: null }];
+  try {
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      const rows = await repositoryFactory.getProfilesRepository().findAll();
+      profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
+    }
+  } catch (e) {
+    throw e;
+  }
+  return profiles;
+}
+
+async function runQuestionsSyncForAllProfiles({ force = false } = {}) {
+  let profiles = [{ id: null }];
+  try {
+    profiles = await getSchedulerProfiles();
+  } catch (e) {
+    logger.warn('[Scheduler] Questions sync: could not load profiles:', e?.message || e);
+    return;
+  }
+  for (const p of profiles) {
+    const profileId = p?.id ?? null;
+    if (!profileId) continue;
+    try {
+      const out = await syncMarketplaceQuestions(profileId, { scheduler: true, force });
+      logger.info('[Scheduler] Questions sync done', { profileId, ...out });
+    } catch (error) {
+      logger.warn('[Scheduler] Questions sync failed', {
+        profileId,
+        message: error?.message || String(error),
+      });
+      await addRuntimeNotification({
+        type: 'job_failed',
+        severity: 'warn',
+        source: 'scheduler',
+        title: 'Сбой синхронизации вопросов',
+        message: `Questions sync failed (profile=${profileId}): ${error?.message || String(error)}`,
+      });
+    }
+  }
+}
+
+async function runReviewsSyncForAllProfiles({ force = false } = {}) {
+  let profiles = [{ id: null }];
+  try {
+    profiles = await getSchedulerProfiles();
+  } catch (e) {
+    logger.warn('[Scheduler] Reviews sync: could not load profiles:', e?.message || e);
+    return;
+  }
+  for (const p of profiles) {
+    const profileId = p?.id ?? null;
+    if (!profileId) continue;
+    try {
+      const out = await syncMarketplaceReviews(profileId, { scheduler: true, force });
+      logger.info('[Scheduler] Reviews sync done', { profileId, ...out });
+    } catch (error) {
+      logger.warn('[Scheduler] Reviews sync failed', {
+        profileId,
+        message: error?.message || String(error),
+      });
+      await addRuntimeNotification({
+        type: 'job_failed',
+        severity: 'warn',
+        source: 'scheduler',
+        title: 'Сбой синхронизации отзывов',
+        message: `Reviews sync failed (profile=${profileId}): ${error?.message || String(error)}`,
+      });
+    }
+  }
 }
 
 /** Мониторинг цен конкурентов. Выкл: COMPETITORS_SYNC_ENABLED=0 */
@@ -740,37 +827,31 @@ class SchedulerService {
       const apiCheckJob = null;
 
       // Периодическая синхронизация отзывов — по каждому профилю (аккаунту)
+      let questionsSyncJob = null;
+      const questionsCron = getQuestionsSyncCronExpression();
+      if (isQuestionsSyncEnabled()) {
+        questionsSyncJob = cron.schedule(
+          questionsCron,
+          async () => {
+            logger.info('[Scheduler] Questions sync (cron)...');
+            await runQuestionsSyncForAllProfiles();
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow',
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Questions background sync disabled (QUESTIONS_SYNC_ENABLED)');
+      }
+
+      // Периодическая синхронизация отзывов — по каждому профилю (аккаунту)
       let reviewsSyncJob = null;
       const reviewsCron = getReviewsSyncCronExpression();
       if (isReviewsSyncEnabled()) {
         reviewsSyncJob = cron.schedule(reviewsCron, async () => {
           logger.info('[Scheduler] Reviews sync (cron)...');
-          let profiles = [{ id: null }];
-          try {
-            if (repositoryFactory.isUsingPostgreSQL()) {
-              const rows = await repositoryFactory.getProfilesRepository().findAll();
-              profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
-            }
-          } catch (e) {
-            logger.warn('[Scheduler] Reviews sync: could not load profiles:', e?.message || e);
-          }
-          for (const p of profiles) {
-            const profileId = p?.id ?? null;
-            if (!profileId) continue;
-            try {
-              const out = await syncMarketplaceReviews(profileId, { scheduler: true });
-              logger.info('[Scheduler] Reviews sync done', { profileId, ...out });
-            } catch (error) {
-              logger.warn('[Scheduler] Reviews sync failed', { profileId, message: error?.message || String(error) });
-              await addRuntimeNotification({
-                type: 'job_failed',
-                severity: 'warn',
-                source: 'scheduler',
-                title: 'Сбой синхронизации отзывов',
-                message: `Reviews sync failed (profile=${profileId}): ${error?.message || String(error)}`,
-              });
-            }
-          }
+          await runReviewsSyncForAllProfiles();
         }, {
           scheduled: false,
           timezone: 'Europe/Moscow'
@@ -1228,6 +1309,16 @@ class SchedulerService {
           'Диспетчер ночных задач по profiles.timezone (отчёты, архив, карточки, остатки МП, API check, очистка закрытых WB-отгрузок). PROFILE_NIGHTLY_DISPATCH_CRON',
       });
 
+      if (questionsSyncJob) {
+        this.jobs.push({
+          name: 'questions-sync',
+          job: questionsSyncJob,
+          schedule: questionsCron,
+          description:
+            'Синхронизация вопросов (Ozon, WB, Яндекс). Интервал: QUESTIONS_SYNC_CRON, по умолчанию */10 * * * *',
+        });
+      }
+
       if (reviewsSyncJob) {
         this.jobs.push({
           name: 'reviews-sync',
@@ -1325,6 +1416,9 @@ class SchedulerService {
       ymCategoriesJob.start();
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
+      if (questionsSyncJob) {
+        questionsSyncJob.start();
+      }
       if (reviewsSyncJob) {
         reviewsSyncJob.start();
       }
@@ -1413,30 +1507,25 @@ class SchedulerService {
         }, 150 * 1000);
       }
 
+      if (questionsSyncJob && isQuestionsSyncEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred questions sync (~60s after startup)...');
+              await runQuestionsSyncForAllProfiles({ force: true });
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred questions sync:', e?.message || e);
+            }
+          })();
+        }, 60 * 1000);
+      }
+
       if (reviewsSyncJob && isReviewsSyncEnabled()) {
         setTimeout(() => {
           (async () => {
             try {
               logger.info('[Scheduler] Deferred reviews sync (~90s after startup)...');
-              let profiles = [{ id: null }];
-              try {
-                if (repositoryFactory.isUsingPostgreSQL()) {
-                  const rows = await repositoryFactory.getProfilesRepository().findAll();
-                  profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
-                }
-              } catch (e) {
-                logger.warn('[Scheduler] Deferred reviews sync: could not load profiles:', e?.message || e);
-              }
-              for (const p of profiles) {
-                const profileId = p?.id ?? null;
-                if (!profileId) continue;
-                try {
-                  const out = await syncMarketplaceReviews(profileId, { scheduler: true, force: true });
-                  logger.info('[Scheduler] Deferred reviews sync done', { profileId, ...out });
-                } catch (e) {
-                  logger.warn('[Scheduler] Deferred reviews sync failed', { profileId, message: e?.message || String(e) });
-                }
-              }
+              await runReviewsSyncForAllProfiles({ force: true });
             } catch (e) {
               logger.warn('[Scheduler] Deferred reviews sync:', e?.message || e);
             }

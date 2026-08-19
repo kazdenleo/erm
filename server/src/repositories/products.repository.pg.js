@@ -3,6 +3,7 @@
  * Репозиторий для работы с товарами в PostgreSQL
  */
 
+import { overlayCategoryDedicatedMpLinks } from '../utils/productMpFieldLinks.js';
 import { query, transaction } from '../config/database.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import {
@@ -19,6 +20,16 @@ function mapBarcodeDbRow(row) {
     barcode: coerceBarcodeString(row.barcode),
     marketplaces: parseBarcodesMarketplacesColumn(row.marketplaces),
   };
+}
+
+function applyCategoryDedicatedMpLinks(product) {
+  if (!product) return product;
+  product.mp_field_links = overlayCategoryDedicatedMpLinks(
+    product.mp_field_links,
+    product.category_mp_field_links
+  );
+  delete product.category_mp_field_links;
+  return product;
 }
 
 async function insertProductBarcodes(client, productId, barcodes) {
@@ -1093,6 +1104,7 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
+        uc.mp_field_links as category_mp_field_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
         o.vat as organization_vat,
@@ -1471,6 +1483,7 @@ class ProductsRepositoryPG {
         applyWbListingFields(product);
         product.barcodes = barcodesByProduct[String(product.id)] || [];
         if (product.user_category_id) product.categoryId = product.user_category_id;
+        applyCategoryDedicatedMpLinks(product);
         if (product.brand_name) product.brand = product.brand_name;
         if (product.organization_id != null && product.organization_id !== '') {
           product.organizationId = product.organization_id;
@@ -1910,6 +1923,7 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
+        uc.mp_field_links as category_mp_field_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
         o.vat as organization_vat,
@@ -1939,6 +1953,7 @@ class ProductsRepositoryPG {
     if (product.user_category_id) {
       product.categoryId = product.user_category_id;
     }
+    applyCategoryDedicatedMpLinks(product);
     if (product.organization_id != null && product.organization_id !== '') {
       product.organizationId = product.organization_id;
     }
@@ -2109,7 +2124,8 @@ class ProductsRepositoryPG {
       SELECT 
         p.*,
         b.name as brand_name,
-        uc.name as category_name
+        uc.name as category_name,
+        uc.mp_field_links as category_mp_field_links
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
@@ -2122,6 +2138,7 @@ class ProductsRepositoryPG {
       if (product.user_category_id) {
         product.categoryId = product.user_category_id;
       }
+      applyCategoryDedicatedMpLinks(product);
       // Маппим brand_name в brand для совместимости с фронтендом
       if (product.brand_name) {
         product.brand = product.brand_name;
@@ -2620,15 +2637,7 @@ class ProductsRepositoryPG {
         JSON.stringify(
           productData.mp_field_links != null && typeof productData.mp_field_links === 'object'
             ? productData.mp_field_links
-            : {
-                // Создание без явных связей с формы — как createMpFieldLinks()
-                name: ['ozon', 'wb', 'ym'],
-                sku: ['ozon', 'wb', 'ym'],
-                description: ['ozon', 'wb', 'ym'],
-                brand: ['ozon', 'wb'],
-                country: ['ozon', 'wb', 'ym'],
-                dimensions: ['ozon', 'wb', 'ym'],
-              }
+            : {}
         )
       ]);
       

@@ -19,7 +19,15 @@ import {
 } from '../../../utils/marketplaceCategoryCommissions';
 import api from '../../../services/api';
 import { AttributeMpLinkFields } from '../../common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
-import { attrMpLinksHasAny, emptyAttrMpLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
+import { MpMappedMpBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { attrMpLinksHasAny, emptyAttrMpLinks, mappedMpsFromAttrLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
+import {
+  DEDICATED_MAIN_MAP_KEYS,
+  emptyCategoryDedicatedCharcLinks,
+  MP_FIELD_LINK_FIELD_LABELS,
+  normalizeCategoryDedicatedCharcLinks,
+  withYmOfferFieldAttrs,
+} from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
@@ -184,11 +192,13 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     ymCategoryId: ''
   });
   const [attributeIds, setAttributeIds] = useState([]);
-  const [selectedAttributeId, setSelectedAttributeId] = useState('');
   const [attributeMpLinks, setAttributeMpLinks] = useState({});
+  const [dedicatedMpLinks, setDedicatedMpLinks] = useState(() => emptyCategoryDedicatedCharcLinks());
+  const [addedDedicatedKeys, setAddedDedicatedKeys] = useState([]);
+  const [pickerValue, setPickerValue] = useState('');
   const [ozonMpAttrs, setOzonMpAttrs] = useState([]);
   const [wbMpAttrs, setWbMpAttrs] = useState([]);
-  const [ymMpAttrs, setYmMpAttrs] = useState([]);
+  const [ymMpAttrs, setYmMpAttrs] = useState(() => withYmOfferFieldAttrs([]));
   
   const [errors, setErrors] = useState({});
   const [loadingCategories, setLoadingCategories] = useState({
@@ -759,6 +769,10 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         : [];
       setAttributeIds(ids);
       setAttributeMpLinks(parseAttributeMpLinksMap(category.attribute_mp_links));
+      const dedicated = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
+      setDedicatedMpLinks(dedicated);
+      setAddedDedicatedKeys(DEDICATED_MAIN_MAP_KEYS.filter((key) => attrMpLinksHasAny(dedicated[key])));
+      setPickerValue('');
     } else {
       setFormData({
         name: '',
@@ -771,7 +785,9 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       });
       setAttributeIds([]);
       setAttributeMpLinks({});
-      setSelectedAttributeId('');
+      setDedicatedMpLinks(emptyCategoryDedicatedCharcLinks());
+      setAddedDedicatedKeys([]);
+      setPickerValue('');
       setOzonSelectedCategory(null);
       setOzonSearchQuery('');
       setWbSelectedCategory(null);
@@ -819,7 +835,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       if (!cancelled) {
         setOzonMpAttrs(ozon);
         setWbMpAttrs(wb);
-        setYmMpAttrs(ym);
+        setYmMpAttrs(withYmOfferFieldAttrs(ym));
       }
     })();
 
@@ -899,6 +915,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       parent_id: formData.parentId || null,
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
       attribute_mp_links: attributeMpLinks,
+      mp_field_links: dedicatedMpLinks,
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
@@ -948,18 +965,6 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       </div>
 
       <div className="field">
-        <label className="label" htmlFor="categoryDescription">Описание</label>
-        <textarea
-          id="categoryDescription"
-          className="form-control form-control-sm"
-          rows="3"
-          placeholder="Введите описание категории"
-          value={formData.description}
-          onChange={(e) => handleChange('description', e.target.value)}
-        />
-      </div>
-
-      <div className="field">
         <div className="form-check form-switch mb-0">
           <input
             className="form-check-input"
@@ -1000,71 +1005,162 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       </div>
 
       <div className="field" style={{ marginTop: '16px' }}>
-        <label className="label">Атрибуты категории</label>
+        <label className="label">Атрибуты на вкладке «Основное»</label>
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Добавьте атрибуты, которые будут доступны для товаров этой категории.
-          Какие характеристики Ozon / Wildberries / Яндекс.Маркета им соответствуют — настраивается ниже, после сопоставления с маркетплейсами.
+          Добавьте нужное поле или атрибут, затем прикрепите к нему характеристики Ozon / WB / Яндекс.Маркета.
+          К одному полю можно привязать несколько характеристик одного маркетплейса. Списки характеристик появятся после сопоставления категорий ниже.
         </p>
-        {allAttributes.length === 0 ? (
-          <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов. Создайте атрибуты в разделе «Настройки → Атрибуты».</span>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
-              <select
-                id="categoryAttributesSelect"
-                className="form-select form-select-sm"
-                value={selectedAttributeId}
-                onChange={(e) => setSelectedAttributeId(e.target.value)}
-                style={{ flex: 1, maxWidth: '280px' }}
-              >
-                <option value="">Выберите атрибут...</option>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
+          <select
+            id="categoryAttributesSelect"
+            className="form-select form-select-sm"
+            value={pickerValue}
+            onChange={(e) => setPickerValue(e.target.value)}
+            style={{ flex: 1, maxWidth: '320px' }}
+          >
+            <option value="">Поле или атрибут…</option>
+            {DEDICATED_MAIN_MAP_KEYS.filter((key) => !addedDedicatedKeys.includes(key)).length > 0 ? (
+              <optgroup label="Поля вкладки «Основное»">
+                {DEDICATED_MAIN_MAP_KEYS
+                  .filter((key) => !addedDedicatedKeys.includes(key))
+                  .slice()
+                  .sort((a, b) =>
+                    String(MP_FIELD_LINK_FIELD_LABELS[a] || a).localeCompare(
+                      String(MP_FIELD_LINK_FIELD_LABELS[b] || b),
+                      'ru',
+                      { sensitivity: 'base' }
+                    )
+                  )
+                  .map((key) => (
+                    <option key={`main:${key}`} value={`main:${key}`}>
+                      {MP_FIELD_LINK_FIELD_LABELS[key] || key}
+                    </option>
+                  ))}
+              </optgroup>
+            ) : null}
+            {allAttributes.filter((attr) => !attributeIds.includes(String(attr.id))).length > 0 ? (
+              <optgroup label="Свои атрибуты">
                 {allAttributes
                   .filter((attr) => !attributeIds.includes(String(attr.id)))
+                  .slice()
+                  .sort((a, b) =>
+                    String(a.name || '').localeCompare(String(b.name || ''), 'ru', { sensitivity: 'base' })
+                  )
                   .map((attr) => (
-                    <option key={attr.id} value={attr.id}>
+                    <option key={`attr:${attr.id}`} value={`attr:${attr.id}`}>
                       {attr.name}
                     </option>
                   ))}
-              </select>
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                onClick={() => {
-                  if (selectedAttributeId) {
-                    setAttributeIds((prev) => (prev.includes(selectedAttributeId) ? prev : [...prev, selectedAttributeId]));
-                    setAttributeMpLinks((prev) => {
-                      if (prev[selectedAttributeId] && attrMpLinksHasAny(prev[selectedAttributeId])) return prev;
-                      return {
-                        ...prev,
-                        [selectedAttributeId]: emptyAttrMpLinks(),
-                      };
-                    });
-                    setSelectedAttributeId('');
-                  }
+              </optgroup>
+            ) : null}
+          </select>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            onClick={() => {
+              if (!pickerValue) return;
+              if (pickerValue.startsWith('main:')) {
+                const key = pickerValue.slice(5);
+                if (!DEDICATED_MAIN_MAP_KEYS.includes(key)) return;
+                setAddedDedicatedKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+                setDedicatedMpLinks((prev) => ({
+                  ...prev,
+                  [key]: prev[key] && attrMpLinksHasAny(prev[key]) ? prev[key] : emptyAttrMpLinks(),
+                }));
+                setPickerValue('');
+                return;
+              }
+              if (pickerValue.startsWith('attr:')) {
+                const id = pickerValue.slice(5);
+                if (!id) return;
+                setAttributeIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+                setAttributeMpLinks((prev) => {
+                  if (prev[id] && attrMpLinksHasAny(prev[id])) return prev;
+                  return { ...prev, [id]: emptyAttrMpLinks() };
+                });
+                setPickerValue('');
+              }
+            }}
+            disabled={!pickerValue}
+          >
+            Добавить
+          </Button>
+        </div>
+        {allAttributes.length === 0 ? (
+          <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
+            Свои атрибуты создаются в «Настройки → Атрибуты».
+          </p>
+        ) : null}
+        {!formData.ozonCategoryId && !formData.wbCategoryId && !formData.ymCategoryId && (
+          <p style={{ fontSize: '12px', color: '#b45309', marginBottom: '8px' }}>
+            Списки характеристик появятся после сопоставления с маркетплейсами ниже. Можно вписать название вручную.
+          </p>
+        )}
+        {addedDedicatedKeys.length === 0 && attributeIds.length === 0 ? (
+          <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Ничего не добавлено</span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {addedDedicatedKeys.map((key) => (
+              <div
+                key={`dedicated-${key}`}
+                style={{
+                  padding: '12px',
+                  border: '1px solid var(--border, #e5e7eb)',
+                  borderRadius: '8px',
+                  background: '#fff',
                 }}
-                disabled={!selectedAttributeId}
               >
-                Добавить
-              </Button>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-              {attributeIds.map((id) => {
-                const attr = allAttributes.find((a) => String(a.id) === id);
-                return (
-                  <span
-                    key={id}
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                  {MP_FIELD_LINK_FIELD_LABELS[key] || key}
+                  <MpMappedMpBadges mps={mappedMpsFromAttrLinks(dedicatedMpLinks[key])} size={18} />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddedDedicatedKeys((prev) => prev.filter((x) => x !== key));
+                      setDedicatedMpLinks((prev) => ({ ...prev, [key]: emptyAttrMpLinks() }));
+                    }}
+                    aria-label="Удалить"
                     style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      padding: '4px 8px',
-                      background: 'var(--bg-secondary, #f3f4f6)',
-                      borderRadius: '6px',
-                      fontSize: '13px',
+                      marginLeft: 'auto',
+                      padding: '0 4px',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--muted, #6b7280)',
+                      fontSize: '16px',
+                      lineHeight: 1,
                     }}
                   >
+                    ×
+                  </button>
+                </div>
+                <AttributeMpLinkFields
+                  links={dedicatedMpLinks[key] || emptyAttrMpLinks()}
+                  onChange={(next) => setDedicatedMpLinks((prev) => ({ ...prev, [key]: next }))}
+                  ozonOptions={ozonMpAttrs}
+                  wbOptions={wbMpAttrs}
+                  ymOptions={ymMpAttrs}
+                  getWbId={wbAttrKey}
+                  getWbName={wbAttrName}
+                />
+              </div>
+            ))}
+            {attributeIds.map((id) => {
+              const attr = allAttributes.find((a) => String(a.id) === id);
+              return (
+                <div
+                  key={`mp-${id}`}
+                  style={{
+                    padding: '12px',
+                    border: '1px solid var(--border, #e5e7eb)',
+                    borderRadius: '8px',
+                    background: '#fff',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
                     {attr?.name || id}
+                    <MpMappedMpBadges mps={mappedMpsFromAttrLinks(attributeMpLinks[id])} size={18} />
                     <button
                       type="button"
                       onClick={() => {
@@ -1077,6 +1173,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                       }}
                       aria-label="Удалить"
                       style={{
+                        marginLeft: 'auto',
                         padding: '0 4px',
                         background: 'none',
                         border: 'none',
@@ -1088,71 +1185,20 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                     >
                       ×
                     </button>
-                  </span>
-                );
-              })}
-              {attributeIds.length === 0 && (
-                <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Атрибуты не добавлены</span>
-              )}
-            </div>
-            <div
-              style={{
-                marginTop: '14px',
-                padding: '12px',
-                border: '1px solid #93c5fd',
-                borderRadius: '8px',
-                background: 'rgba(59, 130, 246, 0.06)',
-              }}
-            >
-              <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px', color: 'var(--text)' }}>
-                Связь с характеристиками Ozon / Wildberries / Яндекс.Маркета
-              </div>
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
-                Для этой категории: какой характеристике МП соответствует каждый атрибут ERP.
-                В другой категории у того же атрибута можно выбрать другие характеристики.
-              </p>
-              {attributeIds.length === 0 ? (
-                <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>
-                  Добавьте атрибуты выше, затем выберите характеристики МП.
-                </p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {!formData.ozonCategoryId && !formData.wbCategoryId && !formData.ymCategoryId && (
-                    <p style={{ fontSize: '12px', color: '#b45309', margin: 0 }}>
-                      Списки характеристик появятся после сопоставления с маркетплейсами ниже. Можно вписать название вручную.
-                    </p>
-                  )}
-                  {attributeIds.map((id) => {
-                    const attr = allAttributes.find((a) => String(a.id) === id);
-                    return (
-                      <div
-                        key={`mp-${id}`}
-                        style={{
-                          padding: '12px',
-                          border: '1px solid var(--border, #e5e7eb)',
-                          borderRadius: '8px',
-                          background: '#fff',
-                        }}
-                      >
-                        <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
-                          {attr?.name || id}
-                        </div>
-                        <AttributeMpLinkFields
-                          links={attributeMpLinks[id] || emptyAttrMpLinks()}
-                          onChange={(next) => setAttributeMpLinks((prev) => ({ ...prev, [id]: next }))}
-                          ozonOptions={ozonMpAttrs}
-                          wbOptions={wbMpAttrs}
-                          ymOptions={ymMpAttrs}
-                          getWbId={wbAttrKey}
-                          getWbName={wbAttrName}
-                        />
-                      </div>
-                    );
-                  })}
+                  </div>
+                  <AttributeMpLinkFields
+                    links={attributeMpLinks[id] || emptyAttrMpLinks()}
+                    onChange={(next) => setAttributeMpLinks((prev) => ({ ...prev, [id]: next }))}
+                    ozonOptions={ozonMpAttrs}
+                    wbOptions={wbMpAttrs}
+                    ymOptions={ymMpAttrs}
+                    getWbId={wbAttrKey}
+                    getWbName={wbAttrName}
+                  />
                 </div>
-              )}
-            </div>
-          </>
+              );
+            })}
+          </div>
         )}
       </div>
 
@@ -1161,8 +1207,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         {category?.id ? (
           <>
             <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-              Шаблон собирается из модулей отдельно для каждой категории. В карточке товара значки
-              OZ/WB/ЯМ связывают Rich-контент между маркетплейсами.
+              Шаблон собирается из модулей отдельно для каждой категории.
             </p>
             <div className="d-flex flex-wrap gap-2">
               <Link

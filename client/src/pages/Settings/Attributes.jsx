@@ -15,6 +15,7 @@ import {
   formatAttrMpLinksSummary,
   normalizeAttrMpLinks,
 } from '../../utils/productAttributeMpLinks.js';
+import { withYmOfferFieldAttrs } from '../../utils/productMpFieldLinks.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -135,6 +136,7 @@ function CategoryMpLinksPanel({ attributeId }) {
       return undefined;
     }
     setLinks(linksOfCategory(cat, attributeId));
+    setYmOptions(withYmOfferFieldAttrs([]));
     let cancelled = false;
     Promise.all([
       userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon').catch(() => null),
@@ -144,7 +146,7 @@ function CategoryMpLinksPanel({ attributeId }) {
       if (cancelled) return;
       setOzonOptions(mpAttrsFromResponse(oz));
       setWbOptions(mpAttrsFromResponse(wb));
-      setYmOptions(mpAttrsFromResponse(ym));
+      setYmOptions(withYmOfferFieldAttrs(mpAttrsFromResponse(ym)));
     });
     return () => {
       cancelled = true;
@@ -442,7 +444,7 @@ export function Attributes() {
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
       <p className="subtitle">
-        Откройте атрибут кнопкой «Изменить»: название и тип — общие, а сопоставления Ozon / Wildberries / Яндекс.Маркета задаются отдельно для каждой категории.
+        Откройте атрибут кнопкой «Изменить»: название и тип — общие. Сопоставление с характеристиками Ozon / WB / Яндекс.Маркета задаётся только в категории.
       </p>
 
       <div className="attributes-toolbar">

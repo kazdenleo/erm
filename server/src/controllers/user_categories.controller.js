@@ -10,6 +10,7 @@ import categoryMarketplaceCommissionsService from '../services/categoryMarketpla
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
+import { normalizeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -80,6 +81,7 @@ function attachParsedAttributeMeta(row) {
     ...rest,
     attribute_ids: ids,
     attribute_mp_links: parseJsonObject(attribute_mp_links),
+    mp_field_links: normalizeCategoryDedicatedCharcLinks(rest.mp_field_links),
   };
 }
 
@@ -144,6 +146,7 @@ class UserCategoriesController {
       const attrMeta = await loadCategoryAttributeMeta(id);
       category.attribute_ids = attrMeta.ids;
       category.attribute_mp_links = attrMeta.map;
+      category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
 
       const mm = parseMarketplaceMappings(category.marketplace_mappings);
       category.marketplace_mappings = mm;
@@ -339,7 +342,7 @@ class UserCategoriesController {
 
   async create(req, res, next) {
     try {
-      const { name, description, parent_id, attribute_ids, attribute_mp_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const { name, description, parent_id, attribute_ids, attribute_mp_links, mp_field_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
@@ -351,8 +354,8 @@ class UserCategoriesController {
       }
       
       const result = await query(
-        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
          RETURNING *`,
         [
           tid,
@@ -362,7 +365,8 @@ class UserCategoriesController {
           certificate_number || null,
           certificate_valid_from || null,
           certificate_valid_to || null,
-          skipMpStock === true
+          skipMpStock === true,
+          JSON.stringify(normalizeCategoryDedicatedCharcLinks(mp_field_links)),
         ]
       );
       
@@ -379,6 +383,7 @@ class UserCategoriesController {
       }
       category.attribute_ids = savedIds;
       category.attribute_mp_links = incomingLinks;
+      category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
       
       return res.status(201).json({ ok: true, data: category });
     } catch (error) {
@@ -389,7 +394,7 @@ class UserCategoriesController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const { name, description, parent_id, marketplace_mappings, attribute_ids, attribute_mp_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const { name, description, parent_id, marketplace_mappings, attribute_ids, attribute_mp_links, mp_field_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
@@ -456,8 +461,13 @@ class UserCategoriesController {
         updateFields.push(`skip_marketplace_stock_sync = $${paramIndex++}`);
         params.push(skipMpStock === true);
       }
+
+      if (mp_field_links !== undefined) {
+        updateFields.push(`mp_field_links = $${paramIndex++}::jsonb`);
+        params.push(JSON.stringify(normalizeCategoryDedicatedCharcLinks(mp_field_links)));
+      }
       
-      if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined) {
+      if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined && mp_field_links === undefined) {
         return res.status(400).json({ ok: false, message: 'Нет полей для обновления' });
       }
       
@@ -511,6 +521,7 @@ class UserCategoriesController {
       const attrMeta = await loadCategoryAttributeMeta(id);
       category.attribute_ids = attrMeta.ids;
       category.attribute_mp_links = attrMeta.map;
+      category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
       
       return res.status(200).json({ ok: true, data: category });
     } catch (error) {

@@ -868,6 +868,10 @@ class IntegrationsService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       let integration = await this.repository.findByCode(type, profileId, organizationId);
       if (integration) {
+        const prevCfg = this._parseIntegrationConfig(integration.config);
+        if (config.field_limits === undefined && prevCfg?.field_limits !== undefined) {
+          config.field_limits = prevCfg.field_limits;
+        }
         await this.repository.updateConfig(integration.id, config);
       } else {
         await this.repository.create({

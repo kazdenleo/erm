@@ -17,11 +17,29 @@ export const MP_FIELD_LINK_KEYS = [
 
 export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
 
+export const DEDICATED_PRODUCT_DIM_KEYS = [
+  'product_length',
+  'product_width',
+  'product_height',
+  'product_weight',
+];
+
+export const DEDICATED_PACK_DIM_KEYS = ['length', 'width', 'height', 'weight'];
+
 /** Связь ручного ERP-атрибута с характеристиками МП: attr_<id> → ['ozon','wb','ym'] */
 export const ATTR_MP_FIELD_LINK_RE = /^attr_\d+$/;
 
 export function isAttrMpFieldLinkKey(fieldKey) {
   return ATTR_MP_FIELD_LINK_RE.test(String(fieldKey || ''));
+}
+
+export function isDedicatedMpFieldLinkKey(fieldKey) {
+  const key = String(fieldKey || '');
+  return (
+    MP_FIELD_LINK_KEYS.includes(key) ||
+    DEDICATED_PRODUCT_DIM_KEYS.includes(key) ||
+    DEDICATED_PACK_DIM_KEYS.includes(key)
+  );
 }
 
 export function erpAttrLinkFieldKey(attrId) {
@@ -34,7 +52,7 @@ export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
   sku: ['ozon', 'wb', 'ym'],
   description: ['ozon', 'wb', 'ym'],
-  brand: ['ozon', 'wb'],
+  brand: ['ozon', 'wb', 'ym'],
   country: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
   /** Размеры товара (без упаковки): product_length / width / height / weight */
@@ -63,6 +81,114 @@ export const MP_FIELD_LINK_TITLES = {
   rich_content: 'Связать Rich-контент: генерация заполняет все включённые маркетплейсы из шаблона категории',
 };
 
+export const MP_FIELD_LINK_FIELD_LABELS = {
+  name: 'Название',
+  sku: 'Артикул',
+  description: 'Описание',
+  brand: 'Бренд',
+  country: 'Страна производителя',
+  product_length: 'Длина товара',
+  product_width: 'Ширина товара',
+  product_height: 'Высота товара',
+  product_weight: 'Вес товара',
+  length: 'Длина упаковки',
+  width: 'Ширина упаковки',
+  height: 'Высота упаковки',
+  weight: 'Вес упаковки',
+  product_dimensions: 'Габариты товара',
+  dimensions: 'Габариты упаковки',
+  rich_content: 'Rich-контент',
+};
+
+/** Поля вкладки «Основное», которые сопоставляются в категории с характеристиками МП. */
+export const DEDICATED_MAIN_MAP_KEYS = [
+  'name',
+  'sku',
+  'description',
+  'brand',
+  'country',
+  ...DEDICATED_PRODUCT_DIM_KEYS,
+  ...DEDICATED_PACK_DIM_KEYS,
+];
+
+const DEDICATED_MAIN_STORED_KEYS = [
+  ...DEDICATED_MAIN_MAP_KEYS,
+  'product_dimensions',
+  'dimensions',
+];
+
+function parseDedicatedCharcEntry(raw) {
+  if (raw == null || raw === '' || raw === false) return null;
+  if (raw === true) return { id: '', name: 'Основное' };
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    const s = String(raw).trim();
+    if (!s) return null;
+    return /^\d+$/.test(s) ? { id: s, name: '' } : { id: '', name: s };
+  }
+  if (typeof raw !== 'object') return null;
+  const id = raw.id != null && raw.id !== '' ? String(raw.id).trim() : '';
+  const name = String(raw.name || raw.title || '').trim();
+  if (!id && !name) return null;
+  return { id, name };
+}
+
+function parseDedicatedCharcList(raw) {
+  if (raw == null || raw === '' || raw === false) return [];
+  if (raw === true) return [{ id: '', name: 'Основное' }];
+  const items = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const e = parseDedicatedCharcEntry(item);
+    if (!e) continue;
+    const k = `${e.id}|${String(e.name || '').trim().toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  return out;
+}
+
+export function emptyCategoryDedicatedCharcLinks() {
+  const out = {};
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    out[key] = { ozon: [], wb: [], ym: [] };
+  }
+  return out;
+}
+
+/** Сопоставление поля Main → характеристики Ozon/WB/ЯМ (массивы {id,name}). */
+export function normalizeCategoryDedicatedCharcLinks(raw) {
+  const out = emptyCategoryDedicatedCharcLinks();
+  let obj = raw;
+  if (raw == null || raw === '') return out;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return out;
+    }
+  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return out;
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    const v = obj[key];
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+      out[key] = {
+        ozon: v.includes('ozon') ? [{ id: '', name: 'Основное' }] : [],
+        wb: v.includes('wb') ? [{ id: '', name: 'Основное' }] : [],
+        ym: v.includes('ym') ? [{ id: '', name: 'Основное' }] : [],
+      };
+      continue;
+    }
+    out[key] = {
+      ozon: parseDedicatedCharcList(v?.ozon),
+      wb: parseDedicatedCharcList(v?.wb),
+      ym: parseDedicatedCharcList(v?.ym),
+    };
+  }
+  return out;
+}
+
 /** Все связи выкл. — дефолт при чтении без сохранённого mp_field_links. */
 export function emptyMpFieldLinks() {
   const out = {};
@@ -72,18 +198,51 @@ export function emptyMpFieldLinks() {
   return out;
 }
 
-/** Все поддерживаемые связи вкл. — только при создании новой карточки. */
+/** @deprecated связи полей Main↔МП задаются в категории, не при создании карточки. */
 export function createMpFieldLinks() {
-  const out = {};
-  for (const key of MP_FIELD_LINK_KEYS) {
-    out[key] = [...(MP_FIELD_LINK_SUPPORT[key] || [])];
-  }
-  return out;
+  return emptyMpFieldLinks();
 }
 
 /** @deprecated используйте emptyMpFieldLinks / createMpFieldLinks */
 export function defaultMpFieldLinks() {
   return emptyMpFieldLinks();
+}
+
+function mpsFromDedicatedSlot(slot) {
+  if (!slot || typeof slot !== 'object') return [];
+  return MP_FIELD_LINK_MPS.filter((m) => mpSlotIsLinked(slot[m]));
+}
+
+function unionMpLists(...lists) {
+  const set = new Set();
+  for (const list of lists) {
+    for (const m of list || []) set.add(String(m || '').toLowerCase());
+  }
+  return MP_FIELD_LINK_MPS.filter((m) => set.has(m));
+}
+
+/**
+ * Поля Main↔МП: источник истины — категория. Ключи attr_* с карточки сохраняем.
+ */
+export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks) {
+  const prod = normalizeMpFieldLinks(productLinks);
+  const cat = normalizeMpFieldLinks(categoryLinks);
+  const charc = normalizeCategoryDedicatedCharcLinks(categoryLinks);
+  const out = { ...prod };
+  for (const key of MP_FIELD_LINK_KEYS) {
+    out[key] = [...(cat[key] || [])];
+  }
+  out.product_dimensions = unionMpLists(
+    out.product_dimensions,
+    mpsFromDedicatedSlot(charc.product_dimensions),
+    ...DEDICATED_PRODUCT_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
+  );
+  out.dimensions = unionMpLists(
+    out.dimensions,
+    mpsFromDedicatedSlot(charc.dimensions),
+    ...DEDICATED_PACK_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
+  );
+  return out;
 }
 
 /**
@@ -92,34 +251,22 @@ export function defaultMpFieldLinks() {
  */
 export function normalizeMpFieldLinks(raw) {
   const defaults = emptyMpFieldLinks();
-  if (raw == null || raw === '') {
-    // Раньше размеры товара в bulk всегда зеркалились — сохраняем поведение по умолчанию.
-    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
-    return defaults;
-  }
+  if (raw == null || raw === '') return defaults;
   let obj = raw;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
-      defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-      defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
       return defaults;
     }
   }
-  if (typeof obj !== 'object' || Array.isArray(obj)) {
-    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
-    return defaults;
-  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return defaults;
 
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      // Старые карточки без ключа — размеры товара и Rich-контент считаем связанными со всеми МП.
-      out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
+      out[key] = [];
       continue;
     }
     out[key] = parseFieldMpList(obj[key], supported);
@@ -131,6 +278,13 @@ export function normalizeMpFieldLinks(raw) {
   return out;
 }
 
+function mpSlotIsLinked(slot) {
+  if (slot == null || slot === false || slot === '') return false;
+  if (Array.isArray(slot)) return slot.length > 0;
+  if (typeof slot === 'object') return true;
+  return true;
+}
+
 function parseFieldMpList(v, supported) {
   if (Array.isArray(v)) {
     return v
@@ -138,7 +292,7 @@ function parseFieldMpList(v, supported) {
       .filter((m) => supported.includes(m));
   }
   if (v && typeof v === 'object') {
-    return supported.filter((m) => !!v[m]);
+    return supported.filter((m) => mpSlotIsLinked(v[m]));
   }
   return [];
 }
@@ -152,12 +306,10 @@ export function supportedMpsForFieldKey(fieldKey, supportedOverride) {
   return [];
 }
 
-function currentMpListForField(normalized, fieldKey, supported) {
+function currentMpListForField(normalized, fieldKey, _supported) {
   if (Object.prototype.hasOwnProperty.call(normalized, fieldKey) && Array.isArray(normalized[fieldKey])) {
     return normalized[fieldKey];
   }
-  // Ручной атрибут с маппингом категории: нет сохранённого ключа — все доступные МП включены.
-  if (isAttrMpFieldLinkKey(fieldKey)) return [...supported];
   return [];
 }
 
@@ -168,9 +320,7 @@ function currentMpListForField(normalized, fieldKey, supported) {
  */
 export function isMpFieldLinked(links, fieldKey, mp) {
   const list = links?.[fieldKey];
-  if (!Array.isArray(list)) {
-    return isAttrMpFieldLinkKey(fieldKey);
-  }
+  if (!Array.isArray(list)) return false;
   return list.includes(String(mp || '').toLowerCase());
 }
 
@@ -247,6 +397,33 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   return false;
+}
+
+/** Название и описание оффера YM — не параметры категории, поэтому их нет в API-списке. */
+export const YM_OFFER_FIELD_ATTRS = [
+  { id: '__ym_name__', name: 'Название' },
+  { id: '__ym_description__', name: 'Описание' },
+];
+
+export function isYmOfferFieldAttrId(id) {
+  const s = String(id || '');
+  return s === '__ym_name__' || s === '__ym_description__';
+}
+
+export function withYmOfferFieldAttrs(attrs) {
+  const list = Array.isArray(attrs) ? [...attrs] : [];
+  const ids = new Set(list.map((a) => String(a?.id ?? '').trim().toLowerCase()).filter(Boolean));
+  const names = new Set(
+    list
+      .map((a) => String(a?.name || '').trim().toLowerCase().replace(/\s+/g, ' '))
+      .filter(Boolean)
+  );
+  for (const extra of YM_OFFER_FIELD_ATTRS) {
+    const nameKey = extra.name.toLowerCase();
+    if (ids.has(extra.id) || names.has(nameKey) || names.has(`${nameKey} товара`)) continue;
+    list.push({ ...extra });
+  }
+  return list;
 }
 
 /** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. L/W/H товара оставляем. */
@@ -507,13 +684,8 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
   if (want('sku')) {
     const v = String(prev.sku || '');
     if (isMpFieldLinked(normalized, 'sku', 'wb')) next.mp_wb_vendor_code = v;
-    // Ozon offer_id / YM offerId — идентификаторы связи; копируем только если поле пустое
-    if (isMpFieldLinked(normalized, 'sku', 'ozon') && !String(prev.sku_ozon || '').trim()) {
-      next.sku_ozon = v;
-    }
-    if (isMpFieldLinked(normalized, 'sku', 'ym') && !String(prev.sku_ym || '').trim()) {
-      next.sku_ym = v;
-    }
+    if (isMpFieldLinked(normalized, 'sku', 'ozon')) next.sku_ozon = v;
+    if (isMpFieldLinked(normalized, 'sku', 'ym')) next.sku_ym = v;
   }
   if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
     const wd = erpDimsToYmWeightDimensions(prev);

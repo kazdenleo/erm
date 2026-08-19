@@ -1,0 +1,10 @@
+{
+  "_comment": "Скопируйте в partsapi-keys.local.json и вставьте демо-ключи с partsapi.ru (Кабинет → метод → тестовый ключ).",
+  "searchArticles": "",
+  "getArticle": "",
+  "getArticleCriteria": "",
+  "getArticleMedia": "",
+  "getPartnameByBrandNumber": "",
+  "getPartWeight": "",
+  "FindEAN13": ""
+}

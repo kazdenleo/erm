@@ -103,7 +103,6 @@ const menuItems = [
   },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products', children: [
     { path: '/products', label: 'Список', iconClass: 'pe-7s-angle-right', sectionKey: 'products' },
-    { path: '/products/enrichment', label: 'Обогащение', iconClass: 'pe-7s-magic-wand', sectionKey: 'products' },
     { path: '/products/rich-content', label: 'Rich-контент', iconClass: 'pe-7s-photo', sectionKey: 'products' },
   ]},
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },

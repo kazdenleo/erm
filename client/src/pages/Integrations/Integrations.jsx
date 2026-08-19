@@ -12,6 +12,7 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { FboPackingLimitFields } from '../../components/integrations/FboPackingLimitFields.jsx';
 import { OzonAutoPromotionsFields } from '../../components/integrations/OzonAutoPromotionsFields.jsx';
+import { MarketplaceFieldLimitsPanel } from '../../components/integrations/MarketplaceFieldLimitsPanel.jsx';
 import { pricesApi } from '../../services/prices.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { INTEGRATION_CATALOG, INTEGRATION_TABS, findIntegration } from './integrationCatalog';
@@ -192,6 +193,7 @@ export function Integrations() {
             await marketplaceCabinetsApi.delete(selectedOrgId, id);
             loadCabinets();
           }}
+          onReloadCabinets={loadCabinets}
           onTest={handleTest}
           onSaveLegacy={handleSaveMarketplace}
         />
@@ -310,6 +312,7 @@ function MarketplacesTab({
   cabinetsLoading,
   onSaveCabinet,
   onDeleteCabinet,
+  onReloadCabinets,
   onTest,
   onSaveLegacy
 }) {
@@ -352,8 +355,9 @@ function MarketplacesTab({
       e.preventDefault();
       setSaving(true);
       try {
-        if (onSaveForm) await onSaveForm(type, formData);
-        else await onSave(type, formData);
+        const { field_limits: _fieldLimits, ...credentialConfig } = formData || {};
+        if (onSaveForm) await onSaveForm(type, credentialConfig);
+        else await onSave(type, credentialConfig);
 
         const blockAutoPromotions =
           type === 'ozon' &&
@@ -1448,6 +1452,8 @@ function MarketplacesTab({
       ) : cabinetsLoading ? (
         <div style={{ padding: '24px', textAlign: 'center' }}>Загрузка кабинетов...</div>
       ) : (
+        <div className="marketplace-layout">
+        <div className="marketplace-layout__main">
         <div className="marketplace-content">
             {activeMarketplace === 'ozon' && (
               <div className="cabinets-section">
@@ -1552,6 +1558,14 @@ function MarketplacesTab({
                 <Button type="button" variant="secondary" onClick={() => setAddingCabinetType('yandex')} disabled={addingCabinetType !== null} style={{ marginTop: '8px' }}>+ Добавить кабинет Яндекс.Маркет</Button>
               </div>
             )}
+        </div>
+        </div>
+        <MarketplaceFieldLimitsPanel
+          marketplaceType={activeMarketplace}
+          organizationId={selectedOrgId}
+          cabinets={cabinets}
+          onSaved={onReloadCabinets}
+        />
         </div>
       )}
     </div>

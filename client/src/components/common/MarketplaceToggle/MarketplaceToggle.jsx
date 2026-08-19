@@ -9,6 +9,7 @@ export function MarketplaceToggle({
   children,
   onToggle,
   size = 28,
+  readOnly = false,
 }) {
   return (
     <button
@@ -21,14 +22,14 @@ export function MarketplaceToggle({
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        onToggle?.();
+        if (!readOnly) onToggle?.();
       }}
       style={{
         width: size,
         height: size,
         borderRadius: '6px',
         border: active ? `2px solid ${color}` : '1px solid #d1d5db',
-        cursor: 'pointer',
+        cursor: readOnly ? 'default' : 'pointer',
         fontSize: size <= 24 ? '7px' : '8px',
         fontWeight: 800,
         letterSpacing: '-0.02em',

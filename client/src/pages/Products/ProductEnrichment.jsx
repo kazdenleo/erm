@@ -60,46 +60,34 @@ function formatAnalogsCodes(analogs) {
 }
 
 /**
- * Разбор строк: brand;sku | brand\tsku | brand,sku | brand sku
+ * Разбор столбца артикулов (вставка из Excel/таблиц):
+ * - 1 артикул на строку
+ * - поддерживаем табы и лишние разделители ; , как переносы строк
  * @param {string} text
- * @returns {{ brand: string, sku: string }[]}
+ * @returns {string[]} уникальные SKU (в оригинальном виде), дедуп по UPPERCASE
  */
-function parseBrandSkuList(text) {
-  const lines = String(text || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const items = [];
+function parseSkuColumn(text) {
+  const out = [];
+  const seen = new Set();
+
+  const raw = String(text || '')
+    .replace(/\t/g, '\n')
+    .replace(/[;,]/g, '\n');
+
+  const lines = raw.split(/\r?\n/).map((l) => String(l).trim());
   for (const line of lines) {
-    if (/^(бренд|brand)\s*[;,\t]/i.test(line) && /артикул|sku|number/i.test(line)) {
-      continue;
-    }
-    let brand = '';
-    let sku = '';
-    if (line.includes(';')) {
-      const parts = line.split(';').map((p) => p.trim());
-      brand = parts[0] || '';
-      sku = parts[1] || '';
-    } else if (line.includes('\t')) {
-      const parts = line.split('\t').map((p) => p.trim());
-      brand = parts[0] || '';
-      sku = parts[1] || '';
-    } else if (line.includes(',')) {
-      const parts = line.split(',').map((p) => p.trim());
-      brand = parts[0] || '';
-      sku = parts[1] || '';
-    } else {
-      const parts = line.split(/\s+/).filter(Boolean);
-      if (parts.length >= 2) {
-        brand = parts[0];
-        sku = parts.slice(1).join(' ');
-      } else {
-        sku = parts[0] || '';
-      }
-    }
-    if (brand || sku) items.push({ brand, sku });
+    if (!line) continue;
+    // Если в строке получилось "sku something" — берём первое слово.
+    const token = line.split(/\s+/)[0]?.trim();
+    if (!token) continue;
+
+    const key = String(token).toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(token);
   }
-  return items;
+
+  return out;
 }
 
 function normBrand(s) {
@@ -189,7 +177,10 @@ export function ProductEnrichment() {
   const [keysError, setKeysError] = useState('');
   const [moduleInfo, setModuleInfo] = useState(null);
 
-  const [listText, setListText] = useState('');
+  const [brandText, setBrandText] = useState('');
+  const [skuList, setSkuList] = useState([]);
+  const [skuPasteModalOpen, setSkuPasteModalOpen] = useState(false);
+  const [skuPasteText, setSkuPasteText] = useState('');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
   const [reportMeta, setReportMeta] = useState(null);
@@ -209,7 +200,7 @@ export function ProductEnrichment() {
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
 
-  const parsedItems = useMemo(() => parseBrandSkuList(listText), [listText]);
+  const skuCount = skuList.length;
   const selectedCount = useMemo(
     () => draftRows.filter((r) => r.selected && !r.productId).length,
     [draftRows]
@@ -347,11 +338,17 @@ export function ProductEnrichment() {
   };
 
   const runEnrichment = async () => {
-    const items = parseBrandSkuList(listText);
-    if (!items.length) {
-      setRunError('Добавьте хотя бы одну строку: бренд и артикул');
+    const brand = String(brandText || '').trim();
+    const skus = Array.isArray(skuList) ? skuList : [];
+    if (!brand) {
+      setRunError('Введите название бренда');
       return;
     }
+    if (!skus.length) {
+      setRunError('Добавьте хотя бы один артикул');
+      return;
+    }
+    const items = skus.map((sku) => ({ brand, sku }));
     setRunning(true);
     setRunError('');
     setReportMeta(null);
@@ -641,40 +638,139 @@ export function ProductEnrichment() {
         )}
 
         <section className="product-enrichment-list">
-          <label className="d-block mb-1" htmlFor="enrichment-list">
-            <strong>Список для сбора</strong>
-            <span
-              className="text-muted small"
-              style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}
-            >
-              Одна позиция на строку: <code>бренд;артикул</code>. После сбора появится таблица —
-              отметьте строки, укажите бренд / категорию / организацию и нажмите «Добавить».
-            </span>
-          </label>
-          <textarea
-            id="enrichment-list"
-            className="form-control"
-            rows={8}
-            value={listText}
-            onChange={(e) => setListText(e.target.value)}
-            placeholder={'Zekkert;TG-5127\nBosch;0986424590'}
-            spellCheck={false}
-          />
+          <div style={{ maxWidth: 720 }}>
+            <div className="mb-3">
+              <label className="d-block mb-1" htmlFor="enrichment-brand">
+                <strong>Бренд</strong>
+                <span
+                  className="text-muted small"
+                  style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}
+                >
+                  Название бренда пишем один раз (для всех артикулов ниже).
+                </span>
+              </label>
+              <input
+                id="enrichment-brand"
+                type="text"
+                className="form-control"
+                value={brandText}
+                onChange={(e) => setBrandText(e.target.value)}
+                placeholder="Например: Zekkert"
+                autoComplete="off"
+              />
+            </div>
+
+            <div>
+              <div className="d-flex align-items-end gap-2" style={{ flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 240 }}>
+                  <label className="d-block mb-1">
+                    <strong>Артикулы</strong>
+                    <span className="text-muted small d-block" style={{ fontWeight: 'normal', marginTop: 4 }}>
+                      Нажмите кнопку — откроется окно, куда можно вставить список артикулов в столбец.
+                    </span>
+                  </label>
+                  <div className="text-muted small" style={{ marginTop: 6 }}>
+                    Добавлено: <strong>{skuCount}</strong>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setSkuPasteModalOpen(true)}
+                >
+                  Вставить артикулы
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="product-enrichment-actions">
             <span className="text-muted small">
-              {parsedItems.length > 0 ? `Строк: ${parsedItems.length}` : 'Список пуст'}
+              {brandText.trim() ? `Бренд: ${brandText.trim()}` : 'Бренд не задан'} ·{' '}
+              {skuCount > 0 ? `Артикулы: ${skuCount}` : 'Артикулы не добавлены'}
             </span>
             <Button
               type="button"
               variant="primary"
               onClick={runEnrichment}
-              disabled={running || !parsedItems.length}
+              disabled={running || !brandText.trim() || skuCount === 0}
             >
               {running ? 'Сбор…' : 'Собрать контент'}
             </Button>
           </div>
           {runError && <div className="error mt-2">{runError}</div>}
         </section>
+
+        <Modal
+          isOpen={skuPasteModalOpen}
+          onClose={() => {
+            setSkuPasteModalOpen(false);
+            setSkuPasteText('');
+          }}
+          title="Артикулы для обогащения"
+          size="small"
+          scrollable
+        >
+          <div>
+            <p className="text-muted small mb-2">
+              Вставьте артикулы в столбец: один артикул на строку. Можно вставлять из Excel/таблиц.
+            </p>
+            <textarea
+              className="form-control"
+              rows={10}
+              value={skuPasteText}
+              onChange={(e) => setSkuPasteText(e.target.value)}
+              placeholder={'TG-5127\n0986424590\n...'}
+              spellCheck={false}
+              autoFocus
+            />
+            <div className="product-enrichment-actions" style={{ marginTop: 12 }}>
+              <span className="text-muted small">
+                Будет добавлено:{' '}
+                <strong>{parseSkuColumn(skuPasteText).length}</strong>
+              </span>
+              <div className="d-flex gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    setSkuPasteModalOpen(false);
+                    setSkuPasteText('');
+                  }}
+                >
+                  Отмена
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={() => {
+                    const next = parseSkuColumn(skuPasteText);
+                    if (!next.length) {
+                      setSkuPasteModalOpen(false);
+                      setSkuPasteText('');
+                      return;
+                    }
+                    setSkuList((prev) => {
+                      const merged = [...(prev || [])];
+                      const seen = new Set(merged.map((s) => String(s).toUpperCase()));
+                      for (const s of next) {
+                        const key = String(s).toUpperCase();
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        merged.push(s);
+                      }
+                      return merged;
+                    });
+                    setSkuPasteModalOpen(false);
+                    setSkuPasteText('');
+                  }}
+                >
+                  Добавить
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Modal>
 
         {reportMeta && (
           <section className="product-enrichment-report">

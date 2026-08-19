@@ -64,9 +64,9 @@ export function Categories() {
 
   const wbNameMap = useMemo(() => new Map(), []);
 
-  // Атрибуты — только при открытии формы (не блокируют список)
+  // Атрибуты — при каждом открытии формы, чтобы список был актуальным
   useEffect(() => {
-    if (!isModalOpen || allAttributes.length > 0) return undefined;
+    if (!isModalOpen) return undefined;
     let cancelled = false;
     productAttributesApi
       .getAll()
@@ -79,7 +79,7 @@ export function Categories() {
     return () => {
       cancelled = true;
     };
-  }, [isModalOpen, allAttributes.length]);
+  }, [isModalOpen]);
 
   // Сопоставления из marketplace_mappings — сразу, без ожидания API
   useEffect(() => {
@@ -369,11 +369,6 @@ export function Categories() {
                         <span style={{fontSize: '14px', fontWeight: 500}}>{category.name}</span>
                         <CategoryMpBadges category={category} />
                       </div>
-                      {category.description && (
-                        <div style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '4px'}}>
-                          {category.description}
-                        </div>
-                      )}
                       <div style={{fontSize: '12px', color: 'var(--muted)'}}>
                         Товаров: {category.productsCount || 0}
                       </div>
@@ -451,11 +446,6 @@ export function Categories() {
                       <span style={{fontSize: '14px', fontWeight: 500}}>{category.name}</span>
                       <CategoryMpBadges category={category} />
                     </div>
-                    {category.description && (
-                      <div style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '4px'}}>
-                        {category.description}
-                      </div>
-                    )}
                     <div style={{fontSize: '12px', color: 'var(--muted)'}}>
                       Товаров: {category.productsCount || 0}
                     </div>

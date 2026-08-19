@@ -54,11 +54,38 @@ export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22, suppo
   );
 }
 
+/** Значки OZ/WB/ЯМ у атрибута, связанного в категории. Только индикатор, не тумблер. */
+export function MpMappedMpBadges({ mps, size = 18 }) {
+  const codes = (Array.isArray(mps) ? mps : [])
+    .map((m) => String(m || '').toLowerCase())
+    .filter((m) => MP_FIELD_LINK_TOGGLES.some((t) => t.code === m));
+  if (!codes.length) return null;
+  return (
+    <span
+      className="mp-field-link-toggles"
+      style={{ display: 'inline-flex', gap: 4, alignItems: 'center', marginLeft: 8, verticalAlign: 'middle' }}
+    >
+      {MP_FIELD_LINK_TOGGLES.filter((mp) => codes.includes(mp.code)).map((mp) => (
+        <MarketplaceToggle
+          key={mp.code}
+          active
+          readOnly
+          size={size}
+          color={mp.color}
+          title={`${mp.title}: связано с «Основным» в настройках категории`}
+        >
+          {mp.label}
+        </MarketplaceToggle>
+      ))}
+    </span>
+  );
+}
+
 /**
  * Подпись поля + значки связи.
  * @param {{ mp: string, label: string, title: string }[]} [diffs] — МП, где значение ≠ Основному
  */
-export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, required, diffs }) {
+export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, required, diffs, supportedMps, readOnly = false }) {
   return (
     <label
       className="form-label"
@@ -69,7 +96,16 @@ export function MpFieldLabel({ htmlFor, fieldKey, links, onToggle, children, req
         {children}
         {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
       </span>
-      <MpFieldLinkToggles fieldKey={fieldKey} links={links} onToggle={onToggle} />
+      {readOnly ? (
+        <MpMappedMpBadges mps={links?.[fieldKey]} />
+      ) : (
+        <MpFieldLinkToggles
+          fieldKey={fieldKey}
+          links={links}
+          onToggle={onToggle}
+          supportedMps={supportedMps}
+        />
+      )}
       <MpValueDiffBadges diffs={diffs} />
     </label>
   );

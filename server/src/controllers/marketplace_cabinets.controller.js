@@ -10,6 +10,37 @@ import integrationsService from '../services/integrations.service.js';
 
 const VALID_TYPES = ['ozon', 'wildberries', 'yandex'];
 
+function parseCabinetConfig(config) {
+  if (!config) return {};
+  if (typeof config === 'string') {
+    try {
+      const parsed = JSON.parse(config);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof config === 'object' && !Array.isArray(config) ? { ...config } : {};
+}
+
+function withPreservedFieldLimits(incomingConfig, existingConfig) {
+  const next = parseCabinetConfig(incomingConfig);
+  const prev = parseCabinetConfig(existingConfig);
+  if (next.field_limits === undefined && prev.field_limits !== undefined) {
+    next.field_limits = prev.field_limits;
+  }
+  return next;
+}
+
+function inheritFieldLimits(incomingConfig, siblingCabinets) {
+  const next = parseCabinetConfig(incomingConfig);
+  if (next.field_limits !== undefined) return next;
+  const source = (siblingCabinets || []).find((c) => parseCabinetConfig(c.config).field_limits);
+  if (!source) return next;
+  next.field_limits = parseCabinetConfig(source.config).field_limits;
+  return next;
+}
+
 /**
  * Сохраняет кабинет в integrations с теми же profile_id + organization_id, что и у организации.
  * Без этих полей saveMarketplaceConfig в PostgreSQL не находит запись (findByCode) и дубли в integrations не сходят с UI.
@@ -70,7 +101,8 @@ export const marketplaceCabinetsController = {
           return res.status(400).json({ ok: false, message: 'Для организации разрешён только один кабинет Wildberries' });
         }
       }
-      const cabinetConfig = config || {};
+      const siblings = await repo.findAll(organizationId, { marketplaceType: marketplace_type });
+      const cabinetConfig = inheritFieldLimits(config || {}, siblings);
       let cabinet = await repo.create({
         organization_id: organizationId,
         marketplace_type,
@@ -101,7 +133,11 @@ export const marketplaceCabinetsController = {
       if (!cabinet) {
         return res.status(404).json({ ok: false, message: 'Кабинет не найден' });
       }
-      let updated = await repo.update(id, req.body);
+      const body = { ...req.body };
+      if (body.config !== undefined) {
+        body.config = withPreservedFieldLimits(body.config, cabinet.config);
+      }
+      let updated = await repo.update(id, body);
       const configToSync = updated?.config ?? cabinet?.config;
       if (configToSync && updated?.marketplace_type) {
         try {

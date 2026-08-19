@@ -1,18 +1,22 @@
 /**
  * Связь ERP-атрибута с характеристиками Ozon / WB / Яндекс.Маркета.
- * mp_links: { ozon?: { id, name }, wb?: { id, name }, ym?: { id, name } }
+ * mp_links: { ozon?: [{ id, name }, ...], wb?: [...], ym?: [...] }
+ * Старый формат { ozon: { id, name } } читается как массив из одного элемента.
  */
 
 import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
+import { isYmOfferFieldAttrId } from './productMpFieldLinks.js';
 
 export const ATTR_MP_CODES = ['ozon', 'wb', 'ym'];
 
 export function emptyAttrMpLinks() {
-  return { ozon: null, wb: null, ym: null };
+  return { ozon: [], wb: [], ym: [] };
 }
 
 export function normalizeAttrMpLinkEntry(raw) {
-  if (raw == null || raw === '') return null;
+  if (raw == null || raw === '' || raw === false) return null;
+  if (raw === true) return { id: '', name: 'Основное' };
+  if (Array.isArray(raw)) return normalizeAttrMpLinkEntry(raw[0]);
   if (typeof raw === 'string' || typeof raw === 'number') {
     const s = String(raw).trim();
     if (!s) return null;
@@ -25,57 +29,118 @@ export function normalizeAttrMpLinkEntry(raw) {
   return { id, name };
 }
 
+export function attrMpLinkKey(entry) {
+  const e = normalizeAttrMpLinkEntry(entry);
+  if (!e) return '';
+  if (e.id) return `id:${e.id}`;
+  if (e.name) return `name:${normalizeAttrCompareName(e.name)}`;
+  return '';
+}
+
+export function normalizeAttrMpLinkList(raw) {
+  if (raw == null || raw === '' || raw === false) return [];
+  if (raw === true) return [{ id: '', name: 'Основное' }];
+  const items = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const e = normalizeAttrMpLinkEntry(item);
+    if (!e) continue;
+    const k = attrMpLinkKey(e);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  return out;
+}
+
 export function normalizeAttrMpLinks(raw) {
   const out = emptyAttrMpLinks();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const mp of ATTR_MP_CODES) {
-    out[mp] = normalizeAttrMpLinkEntry(raw[mp]);
+    out[mp] = normalizeAttrMpLinkList(raw[mp]);
   }
   return out;
 }
 
 export function attrMpLinksHasAny(raw) {
   const links = normalizeAttrMpLinks(raw);
-  return ATTR_MP_CODES.some((mp) => links[mp]);
+  return ATTR_MP_CODES.some((mp) => links[mp].length > 0);
 }
 
 export function mappedMpsFromAttrLinks(raw) {
   const links = normalizeAttrMpLinks(raw);
-  return ATTR_MP_CODES.filter((mp) => links[mp]);
+  return ATTR_MP_CODES.filter((mp) => links[mp].length > 0);
 }
 
 export function formatAttrMpLinksSummary(raw) {
   const links = normalizeAttrMpLinks(raw);
   const parts = [];
-  if (links.ozon) parts.push(`OZ: ${links.ozon.name || links.ozon.id}`);
-  if (links.wb) parts.push(`WB: ${links.wb.name || links.wb.id}`);
-  if (links.ym) parts.push(`ЯМ: ${links.ym.name || links.ym.id}`);
+  const fmt = (list) => list.map((e) => e.name || e.id).filter(Boolean).join(', ');
+  if (links.ozon.length) parts.push(`OZ: ${fmt(links.ozon)}`);
+  if (links.wb.length) parts.push(`WB: ${fmt(links.wb)}`);
+  if (links.ym.length) parts.push(`ЯМ: ${fmt(links.ym)}`);
   return parts.length ? parts.join(' · ') : 'не связано';
 }
 
-export function attrMpLinkKey(entry) {
-  if (!entry) return '';
-  if (entry.id) return `id:${entry.id}`;
-  if (entry.name) return `name:${normalizeAttrCompareName(entry.name)}`;
-  return '';
+export function addAttrMpLink(links, mp, entry) {
+  const current = normalizeAttrMpLinks(links);
+  const code = String(mp || '').toLowerCase();
+  if (!ATTR_MP_CODES.includes(code)) return current;
+  const nextEntry = normalizeAttrMpLinkEntry(entry);
+  if (!nextEntry) return current;
+  const list = normalizeAttrMpLinkList([...(current[code] || []), nextEntry]);
+  return { ...current, [code]: list };
 }
 
-export function findLinkedMpAttribute(link, attributes, getId, getName) {
-  const entry = normalizeAttrMpLinkEntry(link);
-  if (!entry) return null;
+export function removeAttrMpLink(links, mp, entry) {
+  const current = normalizeAttrMpLinks(links);
+  const code = String(mp || '').toLowerCase();
+  if (!ATTR_MP_CODES.includes(code)) return current;
+  const drop = attrMpLinkKey(entry);
+  if (!drop) return current;
+  return {
+    ...current,
+    [code]: (current[code] || []).filter((e) => attrMpLinkKey(e) !== drop),
+  };
+}
+
+function matchMpAttribute(entry, attributes, getId, getName) {
+  const e = normalizeAttrMpLinkEntry(entry);
+  if (!e) return null;
   const list = Array.isArray(attributes) ? attributes : [];
   const idOf = typeof getId === 'function' ? getId : (a) => a?.id;
   const nameOf = typeof getName === 'function' ? getName : (a) => a?.name;
-  if (entry.id) {
-    const hit = list.find((a) => String(idOf(a) ?? '') === String(entry.id));
+  if (e.id) {
+    const hit = list.find((a) => String(idOf(a) ?? '') === String(e.id));
     if (hit) return hit;
   }
-  if (entry.name) {
-    const want = normalizeAttrCompareName(entry.name);
+  if (e.name) {
+    const want = normalizeAttrCompareName(e.name);
     if (!want) return null;
     return list.find((a) => normalizeAttrCompareName(nameOf(a)) === want) || null;
   }
   return null;
+}
+
+export function findLinkedMpAttributes(link, attributes, getId, getName) {
+  const entries = normalizeAttrMpLinkList(link);
+  const out = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    const hit = matchMpAttribute(entry, attributes, getId, getName);
+    if (!hit) continue;
+    const idOf = typeof getId === 'function' ? getId : (a) => a?.id;
+    const k = String(idOf(hit) ?? '') || attrMpLinkKey(entry);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(hit);
+  }
+  return out;
+}
+
+export function findLinkedMpAttribute(link, attributes, getId, getName) {
+  return findLinkedMpAttributes(link, attributes, getId, getName)[0] || null;
 }
 
 export function mpAttributeOptionValue(attr, getId, getName) {
@@ -108,8 +173,8 @@ function displayMpAttrValue(raw, attr, resolveDisplay) {
 export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
   const links = normalizeAttrMpLinks(attr?.mp_links);
   const out = [];
-  const ozonHit = findLinkedMpAttribute(links.ozon, ctx.ozonAttributes);
-  if (ozonHit?.id != null) {
+  for (const ozonHit of findLinkedMpAttributes(links.ozon, ctx.ozonAttributes)) {
+    if (ozonHit?.id == null) continue;
     const raw = ctx.ozonAttributeValues?.[String(ozonHit.id)];
     const text = displayMpAttrValue(raw, ozonHit, ctx.resolveOzonDisplay);
     if (attrValuesDiffer(mainValue, text)) {
@@ -121,8 +186,7 @@ export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
       });
     }
   }
-  const wbHit = findLinkedMpAttribute(links.wb, ctx.wbAttributes, ctx.wbAttrKey, ctx.wbAttrName);
-  if (wbHit) {
+  for (const wbHit of findLinkedMpAttributes(links.wb, ctx.wbAttributes, ctx.wbAttrKey, ctx.wbAttrName)) {
     const key = ctx.wbAttrKey ? ctx.wbAttrKey(wbHit) : String(wbHit.id ?? '');
     const raw = ctx.wbAttributeValues?.[key];
     const text = raw == null ? '' : String(raw);
@@ -135,8 +199,23 @@ export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
       });
     }
   }
-  const ymHit = findLinkedMpAttribute(links.ym, ctx.ymAttributes);
-  if (ymHit?.id != null) {
+  for (const entry of links.ym || []) {
+    const id = String(entry?.id || '');
+    if (!isYmOfferFieldAttrId(id)) continue;
+    const text = id === '__ym_name__'
+      ? String(ctx.mpYmName ?? '')
+      : String(ctx.mpYmDescription ?? '');
+    if (attrValuesDiffer(mainValue, text)) {
+      out.push({
+        mp: 'ym',
+        label: MP_SHORT.ym,
+        title: `${MP_TITLE.ym}: «${text}»`,
+        value: text,
+      });
+    }
+  }
+  for (const ymHit of findLinkedMpAttributes(links.ym, ctx.ymAttributes)) {
+    if (ymHit?.id == null || isYmOfferFieldAttrId(ymHit.id)) continue;
     const raw = ctx.ymAttributeValues?.[String(ymHit.id)];
     const text = displayMpAttrValue(raw, ymHit, ctx.resolveYmDisplay);
     if (attrValuesDiffer(mainValue, text)) {

@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
+import { isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 
@@ -25,15 +26,28 @@ function isMarketplaceLinked(marketplace, formData) {
   return false;
 }
 
+function sellerSkuValue(marketplace, formData) {
+  if (isMpFieldLinked(formData?.mp_field_links, 'sku', marketplace)) {
+    return formData?.sku || '';
+  }
+  if (marketplace === 'ozon') return formData?.sku_ozon || '';
+  if (marketplace === 'wb') return formData?.mp_wb_vendor_code || '';
+  if (marketplace === 'ym') return formData?.sku_ym || '';
+  return '';
+}
+
 export function ProductMarketplaceLinkSection({
   marketplace,
   formData,
   errors,
   handleChange,
+  onSkuChange,
+  onLinkToggle,
   productId,
   organizationId,
   erpSku,
   onLinked,
+  vendorCodeClassName,
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -41,18 +55,17 @@ export function ProductMarketplaceLinkSection({
   const [linkSuccess, setLinkSuccess] = useState('');
 
   const linked = isMarketplaceLinked(marketplace, formData);
+  const skuLinked = isMpFieldLinked(formData?.mp_field_links, 'sku', marketplace);
   const skuTrim = erpSku != null ? String(erpSku).trim() : '';
   const orgTrim = organizationId != null ? String(organizationId).trim() : '';
   const wbVendorTrim = sanitizeWbVendorCode(formData?.mp_wb_vendor_code || '');
-  const wbNmTrim = String(formData?.sku_wb || '').trim();
   const ozonOfferTrim = String(formData?.sku_ozon || '').trim();
-  const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
   const ymOfferTrim = String(formData?.sku_ym || '').trim();
   const hasLinkIdentifiers =
     marketplace === 'wb'
-      ? !!(wbVendorTrim || wbNmTrim || skuTrim)
+      ? !!(wbVendorTrim || skuTrim)
       : marketplace === 'ozon'
-        ? !!(ozonOfferTrim || ozonPidTrim || skuTrim)
+        ? !!(ozonOfferTrim || skuTrim)
         : marketplace === 'ym'
           ? !!(ymOfferTrim || skuTrim)
           : !!skuTrim;
@@ -63,12 +76,26 @@ export function ProductMarketplaceLinkSection({
     : !orgTrim
       ? 'Выберите организацию'
       : !hasLinkIdentifiers
-        ? marketplace === 'wb'
-          ? 'Укажите vendorCode WB, nmId или артикул'
-          : marketplace === 'ozon'
-            ? 'Укажите offer_id Ozon, product_id или артикул'
-            : 'Укажите offerId ЯМ или артикул'
+        ? 'Укажите артикул продавца или артикул на «Основном»'
         : '';
+
+  const handleSellerSkuChange = (raw) => {
+    const value =
+      marketplace === 'wb' && !skuLinked
+        ? sanitizeWbVendorCode(raw).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
+        : marketplace === 'ozon'
+          ? String(raw).slice(0, MP_LINK_MAX.OZON_OFFER_ID)
+          : marketplace === 'ym'
+            ? String(raw).slice(0, MP_LINK_MAX.YM_OFFER_ID)
+            : raw;
+    if (typeof onSkuChange === 'function') {
+      onSkuChange(marketplace, value);
+      return;
+    }
+    if (marketplace === 'ozon') handleChange('sku_ozon', value);
+    else if (marketplace === 'wb') handleChange('mp_wb_vendor_code', value);
+    else if (marketplace === 'ym') handleChange('sku_ym', value);
+  };
 
   const handleAutoLink = async () => {
     if (!canLink) return;
@@ -79,11 +106,13 @@ export function ProductMarketplaceLinkSection({
       const hints = {};
       if (marketplace === 'wb') {
         if (wbVendorTrim) hints.mp_wb_vendor_code = wbVendorTrim;
+        const wbNmTrim = String(formData?.sku_wb || '').trim();
         if (wbNmTrim) hints.sku_wb = wbNmTrim;
         const ozonOffer = String(formData?.sku_ozon || '').trim();
         if (ozonOffer) hints.sku_ozon = ozonOffer;
       } else if (marketplace === 'ozon') {
         if (ozonOfferTrim) hints.sku_ozon = ozonOfferTrim;
+        const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
         if (ozonPidTrim) hints.ozon_product_id = ozonPidTrim;
       } else if (marketplace === 'ym' && ymOfferTrim) {
         hints.sku_ym = ymOfferTrim;
@@ -108,6 +137,33 @@ export function ProductMarketplaceLinkSection({
       setLinking(false);
     }
   };
+
+  const sellerSkuError =
+    marketplace === 'ozon'
+      ? errors.sku_ozon
+      : marketplace === 'wb'
+        ? errors.mp_wb_vendor_code
+        : errors.sku_ym;
+  const maxLen =
+    marketplace === 'ozon'
+      ? MP_LINK_MAX.OZON_OFFER_ID
+      : marketplace === 'wb'
+        ? MP_LINK_MAX.WB_VENDOR_CODE
+        : MP_LINK_MAX.YM_OFFER_ID;
+  const inputId = `mp-link-${marketplace}-seller-sku`;
+  const inputClass =
+    marketplace === 'wb' && vendorCodeClassName
+      ? vendorCodeClassName
+      : 'form-control form-control-sm';
+  const ozonProductId = String(formData?.ozon_product_id || '').trim();
+  const wbNmId = String(formData?.sku_wb || '').trim();
+  const marketplaceIdHint = !linked
+    ? null
+    : marketplace === 'ozon' && ozonProductId
+      ? { label: 'product_id', value: ozonProductId }
+      : marketplace === 'wb' && wbNmId
+        ? { label: 'nmId', value: wbNmId }
+        : null;
 
   return (
     <div
@@ -147,145 +203,51 @@ export function ProductMarketplaceLinkSection({
         </Button>
       </div>
       <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', lineHeight: 1.45 }}>
-        Идентификаторы для сопоставления товара с карточкой на площадке. Иконка справа ищет карточку в
-        кабинете организации
-        {marketplace === 'wb' ? (
-          <>
-            {' '}
-            по vendorCode WB (<code>{wbVendorTrim || '—'}</code>), nmId (<code>{wbNmTrim || '—'}</code>) или
-            артикулу (<code>{skuTrim || '—'}</code>).
-          </>
-        ) : marketplace === 'ozon' ? (
-          <>
-            {' '}
-            по offer_id (<code>{ozonOfferTrim || '—'}</code>), product_id или артикулу (
-            <code>{skuTrim || '—'}</code>).
-          </>
-        ) : (
-          <>
-            {' '}
-            по offerId ЯМ (<code>{ymOfferTrim || '—'}</code>) или артикулу (<code>{skuTrim || '—'}</code>).
-          </>
-        )}
+        Артикул продавца на площадке. Иконка справа ищет карточку в кабинете организации по этому
+        артикулу или по артикулу на вкладке «Основное» (<code>{skuTrim || '—'}</code>).
       </p>
       {linkError && <div className="text-danger small mb-2">{linkError}</div>}
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}
 
-      {marketplace === 'ozon' && (
-        <div className="row g-3">
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-ozon-offer">
-              offer_id (артикул продавца)
-            </label>
-            <input
-              id="mp-link-ozon-offer"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.OZON_OFFER_ID}
-              placeholder="До 50 символов (/v2/product/import)"
-              autoComplete="off"
-              value={formData.sku_ozon}
-              onChange={(e) => handleChange('sku_ozon', e.target.value)}
-            />
-            {errors.sku_ozon && <div className="text-danger small mt-1">{errors.sku_ozon}</div>}
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-ozon-pid">
-              product_id (числовой ID карточки)
-            </label>
-            <input
-              id="mp-link-ozon-pid"
-              type="text"
-              inputMode="numeric"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS}
-              placeholder="После импорта или синхронизации"
-              autoComplete="off"
-              value={formData.ozon_product_id}
-              onChange={(e) =>
-                handleChange(
-                  'ozon_product_id',
-                  e.target.value.replace(/\D/g, '').slice(0, MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS)
-                )
-              }
-            />
-            {errors.ozon_product_id && (
-              <div className="text-danger small mt-1">{errors.ozon_product_id}</div>
-            )}
-          </div>
+      <div className="row g-3">
+        <div className="col-12 col-md-8">
+          <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>
+              Артикул продавца
+            </span>
+          </label>
+          <input
+            id={inputId}
+            type="text"
+            className={inputClass}
+            maxLength={maxLen}
+            placeholder="Артикул продавца на площадке"
+            autoComplete="off"
+            value={sellerSkuValue(marketplace, formData)}
+            onChange={(e) => handleSellerSkuChange(e.target.value)}
+            onBlur={
+              marketplace === 'wb' && !skuLinked
+                ? (e) => handleSellerSkuChange(e.target.value)
+                : undefined
+            }
+          />
+          {sellerSkuError && <div className="text-danger small mt-1">{sellerSkuError}</div>}
+          {marketplaceIdHint ? (
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                lineHeight: 1.35,
+                color: 'var(--muted)',
+                userSelect: 'text',
+              }}
+              title="Идентификатор карточки в кабинете, только для просмотра"
+            >
+              {marketplaceIdHint.label}: {marketplaceIdHint.value}
+            </div>
+          ) : null}
         </div>
-      )}
-
-      {marketplace === 'wb' && (
-        <div className="row g-3">
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-wb-nmid">
-              nmId (номенклатура)
-            </label>
-            <input
-              id="mp-link-wb-nmid"
-              type="text"
-              inputMode="numeric"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.WB_NMID}
-              placeholder="Например: 527548163"
-              autoComplete="off"
-              value={formData.sku_wb}
-              onChange={(e) => handleChange('sku_wb', e.target.value.slice(0, MP_LINK_MAX.WB_NMID))}
-            />
-            {errors.sku_wb && <div className="text-danger small mt-1">{errors.sku_wb}</div>}
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-wb-vendor">
-              vendorCode (артикул продавца)
-            </label>
-            <input
-              id="mp-link-wb-vendor"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.WB_VENDOR_CODE}
-              autoComplete="off"
-              value={formData.mp_wb_vendor_code}
-              onChange={(e) =>
-                handleChange(
-                  'mp_wb_vendor_code',
-                  sanitizeWbVendorCode(e.target.value).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
-                )
-              }
-              onBlur={(e) =>
-                handleChange(
-                  'mp_wb_vendor_code',
-                  sanitizeWbVendorCode(e.target.value).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
-                )
-              }
-            />
-            {errors.mp_wb_vendor_code && (
-              <div className="text-danger small mt-1">{errors.mp_wb_vendor_code}</div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {marketplace === 'ym' && (
-        <div className="row g-3">
-          <div className="col-12 col-md-8">
-            <label className="form-label" htmlFor="mp-link-ym-offer">
-              offerId / shopSku
-            </label>
-            <input
-              id="mp-link-ym-offer"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.YM_OFFER_ID}
-              placeholder="1–255 символов (offerId в вашем каталоге)"
-              autoComplete="off"
-              value={formData.sku_ym}
-              onChange={(e) => handleChange('sku_ym', e.target.value.slice(0, MP_LINK_MAX.YM_OFFER_ID))}
-            />
-            {errors.sku_ym && <div className="text-danger small mt-1">{errors.sku_ym}</div>}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

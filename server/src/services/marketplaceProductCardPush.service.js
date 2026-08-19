@@ -13,6 +13,7 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import {
   gramsToKg,
+  overlayCategoryDedicatedMpLinks,
   isMpFieldLinked,
   mmToCm,
   normalizeMpFieldLinks,
@@ -68,12 +69,19 @@ function parseJsonObject(v) {
   return {};
 }
 
-async function loadCategoryMappings(userCategoryId) {
-  if (userCategoryId == null || userCategoryId === '') return {};
-  const r = await query(`SELECT marketplace_mappings FROM user_categories WHERE id = $1`, [
-    userCategoryId
-  ]);
-  return parseUserCategoryMarketplaceMappings(r.rows[0]?.marketplace_mappings);
+async function loadCategoryPushContext(userCategoryId) {
+  if (userCategoryId == null || userCategoryId === '') {
+    return { mappings: {}, mpFieldLinks: {} };
+  }
+  const r = await query(
+    `SELECT marketplace_mappings, mp_field_links FROM user_categories WHERE id = $1`,
+    [userCategoryId]
+  );
+  const row = r.rows[0] || {};
+  return {
+    mappings: parseUserCategoryMarketplaceMappings(row.marketplace_mappings),
+    mpFieldLinks: row.mp_field_links,
+  };
 }
 
 function assertLinked(product, mp) {
@@ -1392,14 +1400,18 @@ async function pushProductToMp(product, mp, opts) {
     throw err;
   }
   const categoryId = product.user_category_id ?? product.categoryId;
-  const categoryMm = await loadCategoryMappings(categoryId);
+  const { mappings: categoryMm, mpFieldLinks: catLinks } = await loadCategoryPushContext(categoryId);
+  const productForPush = {
+    ...product,
+    mp_field_links: overlayCategoryDedicatedMpLinks(product.mp_field_links, catLinks),
+  };
   const ctx = {
     profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
     organizationId: orgId
   };
-  if (mp === 'ozon') return pushOzonCard(product, categoryMm, ctx);
-  if (mp === 'wb') return pushWildberriesCard(product, categoryMm, ctx);
-  if (mp === 'ym') return pushYandexCard(product, categoryMm, ctx);
+  if (mp === 'ozon') return pushOzonCard(productForPush, categoryMm, ctx);
+  if (mp === 'wb') return pushWildberriesCard(productForPush, categoryMm, ctx);
+  if (mp === 'ym') return pushYandexCard(productForPush, categoryMm, ctx);
   return { marketplace: mp, ok: false, error: 'unsupported' };
 }
 

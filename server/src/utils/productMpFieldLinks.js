@@ -16,6 +16,15 @@ export const MP_FIELD_LINK_KEYS = [
 
 export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
 
+export const DEDICATED_PRODUCT_DIM_KEYS = [
+  'product_length',
+  'product_width',
+  'product_height',
+  'product_weight',
+];
+
+export const DEDICATED_PACK_DIM_KEYS = ['length', 'width', 'height', 'weight'];
+
 /** Связь ручного ERP-атрибута с характеристиками МП: attr_<id> */
 export const ATTR_MP_FIELD_LINK_RE = /^attr_\d+$/;
 
@@ -23,16 +32,112 @@ export function isAttrMpFieldLinkKey(fieldKey) {
   return ATTR_MP_FIELD_LINK_RE.test(String(fieldKey || ''));
 }
 
+export function isDedicatedMpFieldLinkKey(fieldKey) {
+  const key = String(fieldKey || '');
+  return (
+    MP_FIELD_LINK_KEYS.includes(key) ||
+    DEDICATED_PRODUCT_DIM_KEYS.includes(key) ||
+    DEDICATED_PACK_DIM_KEYS.includes(key)
+  );
+}
+
 export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
   sku: ['ozon', 'wb', 'ym'],
   description: ['ozon', 'wb', 'ym'],
-  brand: ['ozon', 'wb'],
+  brand: ['ozon', 'wb', 'ym'],
   country: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
   product_dimensions: ['ozon', 'wb', 'ym'],
   rich_content: ['ozon', 'wb', 'ym'],
 };
+
+export const DEDICATED_MAIN_MAP_KEYS = [
+  'name',
+  'sku',
+  'description',
+  'brand',
+  'country',
+  ...DEDICATED_PRODUCT_DIM_KEYS,
+  ...DEDICATED_PACK_DIM_KEYS,
+];
+
+const DEDICATED_MAIN_STORED_KEYS = [
+  ...DEDICATED_MAIN_MAP_KEYS,
+  'product_dimensions',
+  'dimensions',
+];
+
+function parseDedicatedCharcEntry(raw) {
+  if (raw == null || raw === '' || raw === false) return null;
+  if (raw === true) return { id: '', name: 'Основное' };
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    const s = String(raw).trim();
+    if (!s) return null;
+    return /^\d+$/.test(s) ? { id: s, name: '' } : { id: '', name: s };
+  }
+  if (typeof raw !== 'object') return null;
+  const id = raw.id != null && raw.id !== '' ? String(raw.id).trim() : '';
+  const name = String(raw.name || raw.title || '').trim();
+  if (!id && !name) return null;
+  return { id, name };
+}
+
+function parseDedicatedCharcList(raw) {
+  if (raw == null || raw === '' || raw === false) return [];
+  if (raw === true) return [{ id: '', name: 'Основное' }];
+  const items = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const e = parseDedicatedCharcEntry(item);
+    if (!e) continue;
+    const k = `${e.id}|${String(e.name || '').trim().toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  return out;
+}
+
+export function emptyCategoryDedicatedCharcLinks() {
+  const out = {};
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    out[key] = { ozon: [], wb: [], ym: [] };
+  }
+  return out;
+}
+
+export function normalizeCategoryDedicatedCharcLinks(raw) {
+  const out = emptyCategoryDedicatedCharcLinks();
+  let obj = raw;
+  if (raw == null || raw === '') return out;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return out;
+    }
+  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return out;
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    const v = obj[key];
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+      out[key] = {
+        ozon: v.includes('ozon') ? [{ id: '', name: 'Основное' }] : [],
+        wb: v.includes('wb') ? [{ id: '', name: 'Основное' }] : [],
+        ym: v.includes('ym') ? [{ id: '', name: 'Основное' }] : [],
+      };
+      continue;
+    }
+    out[key] = {
+      ozon: parseDedicatedCharcList(v?.ozon),
+      wb: parseDedicatedCharcList(v?.wb),
+      ym: parseDedicatedCharcList(v?.ym),
+    };
+  }
+  return out;
+}
 
 export function emptyMpFieldLinks() {
   const out = {};
@@ -42,47 +147,66 @@ export function emptyMpFieldLinks() {
   return out;
 }
 
-/** Все связи вкл. — только при создании новой карточки. */
 export function createMpFieldLinks() {
-  const out = {};
-  for (const key of MP_FIELD_LINK_KEYS) {
-    out[key] = [...(MP_FIELD_LINK_SUPPORT[key] || [])];
-  }
-  return out;
+  return emptyMpFieldLinks();
 }
 
 export function defaultMpFieldLinks() {
   return emptyMpFieldLinks();
 }
 
+export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks) {
+  const prod = normalizeMpFieldLinks(productLinks);
+  const cat = normalizeMpFieldLinks(categoryLinks);
+  const charc = normalizeCategoryDedicatedCharcLinks(categoryLinks);
+  const out = { ...prod };
+  for (const key of MP_FIELD_LINK_KEYS) {
+    out[key] = [...(cat[key] || [])];
+  }
+  out.product_dimensions = unionMpLists(
+    out.product_dimensions,
+    mpsFromDedicatedSlot(charc.product_dimensions),
+    ...DEDICATED_PRODUCT_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
+  );
+  out.dimensions = unionMpLists(
+    out.dimensions,
+    mpsFromDedicatedSlot(charc.dimensions),
+    ...DEDICATED_PACK_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
+  );
+  return out;
+}
+
+function mpsFromDedicatedSlot(slot) {
+  if (!slot || typeof slot !== 'object') return [];
+  return MP_FIELD_LINK_MPS.filter((m) => mpSlotIsLinked(slot[m]));
+}
+
+function unionMpLists(...lists) {
+  const set = new Set();
+  for (const list of lists) {
+    for (const m of list || []) set.add(String(m || '').toLowerCase());
+  }
+  return MP_FIELD_LINK_MPS.filter((m) => set.has(m));
+}
+
 export function normalizeMpFieldLinks(raw) {
   const defaults = emptyMpFieldLinks();
-  if (raw == null || raw === '') {
-    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
-    return defaults;
-  }
+  if (raw == null || raw === '') return defaults;
   let obj = raw;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
-      defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-      defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
       return defaults;
     }
   }
-  if (typeof obj !== 'object' || Array.isArray(obj)) {
-    defaults.product_dimensions = [...(MP_FIELD_LINK_SUPPORT.product_dimensions || [])];
-    defaults.rich_content = [...(MP_FIELD_LINK_SUPPORT.rich_content || [])];
-    return defaults;
-  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return defaults;
 
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      out[key] = key === 'product_dimensions' || key === 'rich_content' ? [...supported] : [];
+      out[key] = [];
       continue;
     }
     out[key] = parseFieldMpList(obj[key], supported);
@@ -94,6 +218,13 @@ export function normalizeMpFieldLinks(raw) {
   return out;
 }
 
+function mpSlotIsLinked(slot) {
+  if (slot == null || slot === false || slot === '') return false;
+  if (Array.isArray(slot)) return slot.length > 0;
+  if (typeof slot === 'object') return true;
+  return true;
+}
+
 function parseFieldMpList(v, supported) {
   if (Array.isArray(v)) {
     return v
@@ -101,7 +232,7 @@ function parseFieldMpList(v, supported) {
       .filter((m) => supported.includes(m));
   }
   if (v && typeof v === 'object') {
-    return supported.filter((m) => !!v[m]);
+    return supported.filter((m) => mpSlotIsLinked(v[m]));
   }
   return [];
 }
