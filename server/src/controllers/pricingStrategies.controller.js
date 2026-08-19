@@ -156,6 +156,7 @@ export const pricingStrategiesController = {
         velocity: body.velocity || null,
         previousSelling: body.previousSelling ?? null,
         marketplace: body.marketplace || 'wb',
+        ceiling: body.ceiling ?? body.maxPrice ?? body.max_price ?? null,
       });
       res.json({ ok: true, data: computed });
     } catch (e) {
@@ -170,11 +171,12 @@ export const pricingStrategiesController = {
       marketplacePriceChanges.pruneMarketplacePriceChanges().catch(() => {});
       const profileId = profileIdFromReq(req);
       const data = await marketplacePriceChanges.listMarketplacePriceChanges({
-        days: req.query?.days ?? 7,
+        days: req.query?.days ?? 30,
         limit: req.query?.limit ?? 150,
         offset: req.query?.offset ?? 0,
         productId: req.query?.productId ?? null,
         marketplace: req.query?.marketplace ?? null,
+        search: req.query?.search ?? null,
         profileId,
       });
       res.json({ ok: true, data });

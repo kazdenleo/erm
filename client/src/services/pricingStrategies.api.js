@@ -54,7 +54,14 @@ export const pricingStrategiesApi = {
     return response.data;
   },
 
-  async priceChanges({ days = 7, marketplace = '', productId = '', limit = 150, offset = 0 } = {}) {
+  async priceChanges({
+    days = 30,
+    marketplace = '',
+    productId = '',
+    search = '',
+    limit = 150,
+    offset = 0,
+  } = {}) {
     const response = await api.get('/pricing-strategies/price-changes', {
       params: {
         days,
@@ -62,6 +69,7 @@ export const pricingStrategiesApi = {
         offset,
         ...(marketplace ? { marketplace } : {}),
         ...(productId ? { productId } : {}),
+        ...(search ? { search } : {}),
       },
     });
     return response.data;

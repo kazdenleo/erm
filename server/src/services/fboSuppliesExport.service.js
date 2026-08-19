@@ -183,6 +183,7 @@ class FboSuppliesExportService {
     const headers = [
       'Товар',
       'Артикул',
+      'В поставках',
       'К закупке',
       'Наличие',
       'В пути',
@@ -194,8 +195,11 @@ class FboSuppliesExportService {
     const headerRow = rowIndex;
     rowIndex += 1;
 
+    let supplyQtyTotalSum = 0;
     for (const row of rows) {
       const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
+      const supplyQtyTotal = Number(row.supplyQtyTotal) || 0;
+      if (!isKitHeader) supplyQtyTotalSum += supplyQtyTotal;
       const supplyValues = supplies.map((s) => {
         const v = row.supplyQty?.[s.id] ?? row.supplyQty?.[String(s.id)];
         return v != null && v !== '' ? Number(v) || 0 : '';
@@ -203,6 +207,7 @@ class FboSuppliesExportService {
       writeRow(ws, rowIndex, [
         purchaseRowDisplayName(row),
         row.sku || '',
+        isKitHeader ? '' : supplyQtyTotal,
         formatPurchaseToPurchaseCell(row),
         isKitHeader ? '' : Number(row.onHand) || 0,
         isKitHeader ? '' : Number(row.incoming) || 0,
@@ -220,18 +225,21 @@ class FboSuppliesExportService {
     if (totalLabelSpan > 1) {
       ws.mergeCells(rowIndex, 1, rowIndex, totalLabelSpan);
     }
-    totalRow.getCell(3).value = Number(totals.toPurchaseQty) || 0;
+    totalRow.getCell(3).value = supplyQtyTotalSum;
     totalRow.getCell(3).font = { bold: true };
+    totalRow.getCell(4).value = Number(totals.toPurchaseQty) || 0;
+    totalRow.getCell(4).font = { bold: true };
     const lastCol = headers.length;
     totalRow.getCell(lastCol).value = Number(totals.costSum) || 0;
     totalRow.getCell(lastCol).font = { bold: true };
 
     ws.getColumn(1).width = 36;
     ws.getColumn(2).width = 18;
-    ws.getColumn(3).width = 14;
-    ws.getColumn(4).width = 10;
+    ws.getColumn(3).width = 12;
+    ws.getColumn(4).width = 14;
     ws.getColumn(5).width = 10;
-    for (let c = 6; c <= 5 + supplies.length; c += 1) {
+    ws.getColumn(6).width = 10;
+    for (let c = 7; c <= 6 + supplies.length; c += 1) {
       ws.getColumn(c).width = 14;
     }
     ws.getColumn(lastCol - 1).width = 12;

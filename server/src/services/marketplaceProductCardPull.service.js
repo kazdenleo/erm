@@ -136,7 +136,7 @@ async function notifyCardFieldChanges(product, mp, changedLabels, opts = {}) {
       product_id: Number(product.id),
       marketplace: mp,
       fields: changedLabels,
-      url: `/products?open=${product.id}`,
+      url: `/products/${product.id}`,
       ...(profileId != null ? { profile_id: Number(profileId) } : {}),
     },
   });

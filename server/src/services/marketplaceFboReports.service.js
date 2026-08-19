@@ -12,6 +12,8 @@ import { extractOzonFinanceAmounts } from '../utils/ozonFinanceReportAmounts.js'
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
 import { buildOrderBreakdownFromLines, buildAmountTooltips } from '../utils/marketplaceReportBreakdown.js';
+import { attachOrderEconomics, backfillReportOrderIds } from '../utils/marketplaceOrderEconomics.js';
+import { lookupMarketplaceOrderEconomics } from '../utils/marketplaceOrderEconomicsLookup.js';
 import {
   enrichAnalyticsRowWithTax,
   loadMarketplaceTaxContext,
@@ -250,17 +252,42 @@ function mapWbProductName(row) {
   return row?.brand_name != null ? String(row.brand_name) : null;
 }
 
+/**
+ * WB: assembly_id ≈ номер заказа в ERP; srid — внутренний ключ отгрузки (в posting_number).
+ */
+function mapWbDisplayOrderIds(row) {
+  const srid = String(row?.srid ?? row?.rid ?? '').trim() || null;
+  const gNumberRaw = row?.gNumber ?? row?.g_number ?? null;
+  const gNumber =
+    gNumberRaw != null && String(gNumberRaw).trim() !== '' ? String(gNumberRaw).trim() : '';
+  const assemblyRaw = row?.assembly_id ?? row?.assemblyId ?? null;
+  const assemblyId =
+    assemblyRaw != null && String(assemblyRaw).trim() !== '' && String(assemblyRaw).trim() !== '0'
+      ? String(assemblyRaw).trim()
+      : '';
+  const giRaw = row?.gi_id ?? row?.giId ?? null;
+  const giId =
+    giRaw != null && String(giRaw).trim() !== '' && String(giRaw).trim() !== '0'
+      ? String(giRaw).trim()
+      : '';
+  return {
+    order_id: assemblyId || gNumber || srid,
+    posting_number: srid || giId || null,
+  };
+}
+
 function mapWbReportRow(row, profileId, syncId) {
   const amounts = extractWbFinanceAmounts(row);
   const operationDate = mapWbOperationDate(row);
+  const ids = mapWbDisplayOrderIds(row);
 
   return {
     sync_id: syncId,
     profile_id: profileId,
     marketplace: 'wb',
     operation_date: operationDate,
-    order_id: row?.srid != null ? String(row.srid) : row?.rid != null ? String(row.rid) : null,
-    posting_number: row?.gi_id != null ? String(row.gi_id) : null,
+    order_id: ids.order_id,
+    posting_number: ids.posting_number,
     sku: mapWbSku(row),
     product_name: mapWbProductName(row),
     barcode: row?.barcode != null ? String(row.barcode) : null,
@@ -305,7 +332,14 @@ function mapOzonTransactionRow(op, profileId, syncId) {
     profile_id: profileId,
     marketplace: 'ozon',
     operation_date: operationDate,
-    order_id: op?.posting?.order_id != null ? String(op.posting.order_id) : null,
+    order_id:
+      op?.posting?.order_id != null && String(op.posting.order_id).trim() !== ''
+        ? String(op.posting.order_id)
+        : op?.posting?.posting_number != null
+          ? String(op.posting.posting_number)
+          : op?.posting_number != null
+            ? String(op.posting_number)
+            : null,
     posting_number:
       op?.posting?.posting_number != null
         ? String(op.posting.posting_number)
@@ -1420,6 +1454,7 @@ class MarketplaceFboReportsService {
     const summaryQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter);
 
     await withFboReportMaintenanceLock(pid, async () => {
+      await backfillReportOrderIds('marketplace_fbo_report_lines', pid);
       if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
         await backfillWbLineIdentity(pid);
         await recategorizeWbReportLines(pid);
@@ -1478,10 +1513,26 @@ class MarketplaceFboReportsService {
             WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
               l.operation_type ILIKE '%Плат%покупателя%'
               OR l.operation_type ILIKE '%платеж покупателя%'
-            ) THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
+            )             THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
             ELSE 0
           END
-        )::numeric AS cost_amount
+        )::numeric AS cost_amount,
+        SUM(
+          CASE
+            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
+              THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
+              THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+              l.operation_type ILIKE '%Плат%покупателя%'
+              OR l.operation_type ILIKE '%платеж покупателя%'
+            ) THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+            ELSE 0
+          END
+        )::numeric AS additional_expenses_amount,
+        SUM(
+          CASE WHEN l.marketplace IN ('wb', 'wildberries') THEN l.logistics_amount ELSE 0 END
+        )::numeric AS wb_logistics_amount
       FROM marketplace_fbo_report_lines l
       LEFT JOIN products p ON p.id = l.product_id
       WHERE l.profile_id = $1
@@ -1584,6 +1635,9 @@ class MarketplaceFboReportsService {
       otherDeductions: Number(row.other_deductions) || 0,
       payoutAmount: Number(row.payout_amount) || 0,
       costAmount: Number(row.cost_amount) || 0,
+      additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
+      wbLogisticsAmount: Number(row.wb_logistics_amount) || 0,
+      marketplace: mpFilter ? marketplace : 'all',
       expensesTotal:
         Number(row.commission_amount) +
           Number(row.logistics_amount) +
@@ -1648,6 +1702,7 @@ class MarketplaceFboReportsService {
     const rowLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 500));
 
     await withFboReportMaintenanceLock(pid, async () => {
+      await backfillReportOrderIds('marketplace_fbo_report_lines', pid);
       if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
         await enrichWbLinesFromOrderSale(pid);
         await recategorizeWbReportLines(pid);
@@ -1817,6 +1872,18 @@ class MarketplaceFboReportsService {
               ELSE 0
             END
           )::numeric AS cost_amount,
+          SUM(
+            CASE
+              WHEN (LOWER(TRIM(m.marketplace)) IN ('wb', 'wildberries') AND m.operation_type = 'Продажа')
+                OR (LOWER(TRIM(m.marketplace)) = 'ozon' AND m.operation_type = 'OperationAgentDeliveredToCustomer')
+                OR (LOWER(TRIM(m.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+                  m.operation_type ILIKE '%Плат%покупателя%'
+                  OR m.operation_type ILIKE '%платеж покупателя%'
+                ))
+              THEN GREATEST(m.quantity, 0) * COALESCE(pc.additional_expenses, 0)
+              ELSE 0
+            END
+          )::numeric AS additional_expenses_amount,
           COUNT(*)::int AS line_count,
           COALESCE(
             json_agg(
@@ -1864,6 +1931,7 @@ class MarketplaceFboReportsService {
         a.other_deductions,
         a.payout_amount,
         a.cost_amount,
+        a.additional_expenses_amount,
         a.line_count,
         a.report_lines_json
       FROM agg a
@@ -1897,6 +1965,7 @@ class MarketplaceFboReportsService {
       otherDeductions: Number(row.other_deductions) || 0,
       payoutAmount: Number(row.payout_amount) || 0,
       costAmount: Number(row.cost_amount) || 0,
+      additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
       lineCount: Number(row.line_count) || 0,
       breakdown,
       amountTooltips,
@@ -1908,7 +1977,7 @@ class MarketplaceFboReportsService {
           Number(row.acquiring_amount) +
           Number(row.other_deductions) || 0,
     };
-      return enrichAnalyticsRowWithTax(base, taxContext);
+      return attachOrderEconomics(enrichAnalyticsRowWithTax(base, taxContext));
     });
 
     return {
@@ -1917,6 +1986,10 @@ class MarketplaceFboReportsService {
       taxMeta: buildTaxMetaFromContext(taxContext),
       items,
     };
+  }
+
+  async lookupByOrder({ profileId, marketplace, orderId } = {}) {
+    return lookupMarketplaceOrderEconomics('fbo', { profileId, marketplace, orderId });
   }
 }
 

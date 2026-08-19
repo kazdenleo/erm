@@ -88,7 +88,13 @@ function buildAggSelect(saleExpr) {
         THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
         ELSE 0
       END
-    )::numeric AS cost_amount
+    )::numeric AS cost_amount,
+    SUM(
+      CASE WHEN ${saleExpr}
+        THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+        ELSE 0
+      END
+    )::numeric AS additional_expenses_amount
   `;
 }
 
@@ -202,6 +208,7 @@ function mapProductRow(row) {
   const acquiringAmount = Number(row.acquiring_amount) || 0;
   const otherDeductions = Number(row.other_deductions) || 0;
   const costAmount = Number(row.cost_amount) || 0;
+  const additionalExpensesAmount = Number(row.additional_expenses_amount) || 0;
   const expensesTotal =
     commissionAmount + logisticsAmount + storageAmount + penaltyAmount + acquiringAmount + otherDeductions;
   return {
@@ -214,8 +221,9 @@ function mapProductRow(row) {
     soldQty: Number(row.sold_qty) || 0,
     soldAmount: Number(row.sold_amount) || 0,
     costAmount,
+    additionalExpensesAmount,
     expensesTotal,
-    costsTotal: costAmount + expensesTotal,
+    costsTotal: expensesTotal,
     payoutAmount: Number(row.payout_amount) || 0,
     commissionAmount,
     logisticsAmount,
@@ -251,6 +259,7 @@ function mergeProductsByIdentity(rows) {
       'soldQty',
       'soldAmount',
       'costAmount',
+      'additionalExpensesAmount',
       'commissionAmount',
       'logisticsAmount',
       'storageAmount',
@@ -365,7 +374,8 @@ class MarketplaceCategoryAnalyticsService {
         SUM(acquiring_amount)::numeric AS acquiring_amount,
         SUM(other_deductions)::numeric AS other_deductions,
         SUM(payout_amount)::numeric AS payout_amount,
-        SUM(cost_amount)::numeric AS cost_amount
+        SUM(cost_amount)::numeric AS cost_amount,
+        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount
       FROM (
         ${parts.join('\nUNION ALL\n')}
       ) u
@@ -381,6 +391,7 @@ class MarketplaceCategoryAnalyticsService {
         OR SUM(other_deductions) <> 0
         OR SUM(payout_amount) <> 0
         OR SUM(cost_amount) <> 0
+        OR SUM(additional_expenses_amount) <> 0
       ORDER BY SUM(sold_amount) DESC, sku ASC
     `;
 
@@ -416,6 +427,7 @@ class MarketplaceCategoryAnalyticsService {
         soldQty: p.soldQty,
         soldAmount: p.soldAmount,
         costAmount: p.costAmount,
+        additionalExpensesAmount: p.additionalExpensesAmount,
         commissionAmount: p.commissionAmount,
         logisticsAmount: p.logisticsAmount,
         storageAmount: p.storageAmount,
@@ -438,6 +450,7 @@ class MarketplaceCategoryAnalyticsService {
       .map((cat) => {
         const soldAmount = sumField(cat.products, 'soldAmount');
         const costAmount = sumField(cat.products, 'costAmount');
+        const additionalExpensesAmount = sumField(cat.products, 'additionalExpensesAmount');
         const commissionAmount = sumField(cat.products, 'commissionAmount');
         const logisticsAmount = sumField(cat.products, 'logisticsAmount');
         const storageAmount = sumField(cat.products, 'storageAmount');
@@ -445,7 +458,7 @@ class MarketplaceCategoryAnalyticsService {
         const acquiringAmount = sumField(cat.products, 'acquiringAmount');
         const otherDeductions = sumField(cat.products, 'otherDeductions');
         const expensesTotal = sumField(cat.products, 'expensesTotal');
-        const costsTotal = costAmount + expensesTotal;
+        const costsTotal = expensesTotal;
         const netIncome = sumField(cat.products, 'netIncome');
         const taxAmount = sumField(cat.products, 'taxAmount');
         const vatAmount = sumField(cat.products, 'vatAmount');
@@ -466,6 +479,7 @@ class MarketplaceCategoryAnalyticsService {
           soldQty,
           soldAmount,
           costAmount,
+          additionalExpensesAmount,
           commissionAmount,
           logisticsAmount,
           storageAmount,
@@ -496,6 +510,7 @@ class MarketplaceCategoryAnalyticsService {
         soldQty: sumField(categories, 'soldQty'),
         soldAmount: sumField(categories, 'soldAmount'),
         costAmount: sumField(categories, 'costAmount'),
+        additionalExpensesAmount: sumField(categories, 'additionalExpensesAmount'),
         commissionAmount: sumField(categories, 'commissionAmount'),
         logisticsAmount: sumField(categories, 'logisticsAmount'),
         storageAmount: sumField(categories, 'storageAmount'),

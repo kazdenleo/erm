@@ -12,12 +12,10 @@ import {
   normalizeWarehouseTime,
 } from './supplierWarehouseArrival.js';
 import {
-  findWorkingDayOffset,
   findLastConsecutiveWeekendDay,
   getMoscowDateParts,
   isWeekendWeekday,
   normalizeWeekendDays,
-  resolveShipDayOffsetFromNaiveBucket,
   weekdayForYmd,
 } from './warehouseWorkingCalendar.js';
 
@@ -166,12 +164,14 @@ export function isProcurementBucketOpenForNewOrders(
 /**
  * Закупка создана в текущем окне bucket (после предыдущей отсечки).
  * Отсекает старые закупки, которым ошибочно проставили метку нового окна.
+ * @param {{ arrivalDay?: string }|null} [supplierWarehouse] склад поставщика (для склейки по дате приезда)
  */
 export function isPurchaseCreatedInProcurementWindow(
   createdAt,
   bucket,
   now = new Date(),
-  warehouseWeekendDays = null
+  warehouseWeekendDays = null,
+  supplierWarehouse = null
 ) {
   const normalized = normalizeArrivalBucket(bucket);
   const cutoff = parseCutoffBucket(normalized);
@@ -180,7 +180,12 @@ export function isPurchaseCreatedInProcurementWindow(
   const created = new Date(createdAt);
   if (Number.isNaN(created.getTime())) return true;
 
-  const windowStart = getProcurementWindowStart(cutoff, warehouseWeekendDays, now);
+  const windowStart = getProcurementWindowStart(
+    cutoff,
+    warehouseWeekendDays,
+    now,
+    supplierWarehouse
+  );
   if (!windowStart) return true;
 
   const windowStartYmd = windowStart.date;
@@ -249,10 +254,81 @@ function addDaysToYmd(ymd, days) {
   return `${yy}-${mm}-${dd}`;
 }
 
-/** Начало окна накопления заказов для bucket с отсечкой. */
-function getProcurementWindowStart(cutoff, weekends, now = new Date()) {
+/**
+ * Наивная дата отгрузки по cutoff без выходных склада.
+ * tomorrow → день после cutoff; today → день cutoff.
+ */
+function naiveShipYmdForCutoffDate(cutoffDate, supplierWarehouse) {
+  const arrival = normalizeSupplierWarehouseArrivalDay(supplierWarehouse?.arrivalDay);
+  return arrival === SUPPLIER_ARRIVAL_TOMORROW
+    ? addDaysToYmd(cutoffDate, 1)
+    : cutoffDate;
+}
+
+/** Сдвиг YYYY-MM-DD вперёд до первого рабочего дня нашего склада. */
+function adjustYmdToNextWorkingDay(ymd, weekends, now = new Date()) {
+  const normalizedWeekends = normalizeWeekendDays(weekends);
+  if (!normalizedWeekends.length || !/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) {
+    return ymd;
+  }
+  let cursor = ymd;
+  for (let guard = 0; guard < 14; guard += 1) {
+    if (!isWeekendWeekday(weekdayForYmd(cursor, now), normalizedWeekends)) return cursor;
+    cursor = addDaysToYmd(cursor, 1);
+  }
+  return ymd;
+}
+
+function shipYmdFromCutoffDate(cutoffDate, supplierWarehouse, weekends, now = new Date()) {
+  const naive = naiveShipYmdForCutoffDate(cutoffDate, supplierWarehouse);
+  return adjustYmdToNextWorkingDay(naive, weekends, now);
+}
+
+/**
+ * Если выходные склада сдвигают приезд позже наивной даты — копим до дня перед приездом
+ * (одна закупка на одну дату приезда).
+ * Пример Mikado tomorrow + сб/вс: чт после 21:00 → naive пт → ship пн → bucket вс 21:00.
+ */
+function collapseCutoffDateForSameShip(naiveCutoffDate, timeHm, supplierWarehouse, weekends, now) {
+  const normalizedWeekends = normalizeWeekendDays(weekends);
+  if (!normalizedWeekends.length || !naiveCutoffDate) {
+    return cutoffBucketFromParts(naiveCutoffDate, timeHm);
+  }
+  const naiveShip = naiveShipYmdForCutoffDate(naiveCutoffDate, supplierWarehouse);
+  const ship = adjustYmdToNextWorkingDay(naiveShip, normalizedWeekends, now);
+  let closeYmd = naiveCutoffDate;
+  if (ship && naiveShip && ship > naiveShip) {
+    closeYmd = addDaysToYmd(ship, -1);
+    if (closeYmd < naiveCutoffDate) closeYmd = naiveCutoffDate;
+  }
+  return cutoffBucketFromParts(closeYmd, timeHm);
+}
+
+/**
+ * Начало окна накопления заказов для bucket с отсечкой.
+ * При склейке по дате приезда — после отсечки предыдущего «другого» ship.
+ */
+function getProcurementWindowStart(cutoff, weekends, now = new Date(), supplierWarehouse = null) {
   if (!cutoff) return null;
   const normalizedWeekends = normalizeWeekendDays(weekends);
+
+  if (supplierWarehouse && normalizedWeekends.length) {
+    const ship = shipYmdFromCutoffDate(
+      cutoff.date,
+      supplierWarehouse,
+      normalizedWeekends,
+      now
+    );
+    let earliest = cutoff.date;
+    for (let guard = 0; guard < 14; guard += 1) {
+      const prev = addDaysToYmd(earliest, -1);
+      const prevShip = shipYmdFromCutoffDate(prev, supplierWarehouse, normalizedWeekends, now);
+      if (prevShip !== ship) break;
+      earliest = prev;
+    }
+    return { date: addDaysToYmd(earliest, -1), time: cutoff.time };
+  }
+
   if (!normalizedWeekends.length) {
     return { date: addDaysToYmd(cutoff.date, -1), time: cutoff.time };
   }
@@ -387,11 +463,10 @@ export function resolveProcurementArrivalBucket(warehouses, now = new Date()) {
 
 /**
  * Bucket с учётом выходных нашего склада.
- * Заказы до одной отсечки — одна открытая закупка; после отсечки — новая.
+ * Заказы с одной датой приезда на наш склад (после сдвига с выходных) — одна закупка.
  *
- * Выходные:
- * - сб+вс: после пятничной отсечки → одно окно до вс (bucket = последний выходной);
- * - только вс: субботняя закупка остаётся открытой в воскресенье (bucket = сб).
+ * Пример Mikado (отсечка 21:00, arrival=tomorrow) + выходные сб/вс:
+ * после чт 21:00 наивное окно — пт, приезд сб→пн → копим до вс 21:00 (чт вечер…вс).
  */
 export function resolveProcurementArrivalBucketWithCalendar(
   warehouses,
@@ -411,73 +486,17 @@ export function resolveProcurementArrivalBucketWithCalendar(
   if (!w) return SUPPLIER_ARRIVAL_TODAY;
 
   const until = normalizeWarehouseTime(w.time, '18:00');
-  const cutMins = timeToMinutes(until);
-  const mins = getMoscowMinutesOfDay(now);
-  const today = getMoscowDateParts(now, 0);
   const weekends = normalizeWeekendDays(warehouseWeekendDays);
+  const naiveBucket = computeClosingCutoffBucket(w, now);
+  const parsed = parseCutoffBucket(naiveBucket);
+  if (!parsed) return naiveBucket;
 
-  if (weekends.length) {
-    // Сегодня выходной → до отсечки в последний выходной копим в закупку предыдущего рабочего дня
-    if (isWeekendWeekday(today.weekday, weekends)) {
-      const stretchEnd = findLastConsecutiveWeekendDay(today.ymd, weekends, now);
-      let stretchStart = today.ymd;
-      for (let guard = 0; guard < 14; guard += 1) {
-        const prev = addDaysToYmd(stretchStart, -1);
-        if (!isWeekendWeekday(weekdayForYmd(prev, now), weekends)) break;
-        stretchStart = prev;
-      }
-      const stretchLen =
-        Math.round(
-          (Date.parse(`${stretchEnd}T12:00:00Z`) - Date.parse(`${stretchStart}T12:00:00Z`)) /
-            (24 * 60 * 60 * 1000)
-        ) + 1;
+  if (!weekends.length) return naiveBucket;
 
-      if (today.ymd < stretchEnd || (today.ymd === stretchEnd && mins <= cutMins)) {
-        if (stretchLen > 1) {
-          return cutoffBucketFromParts(stretchEnd, until);
-        }
-        let prevWork = addDaysToYmd(stretchStart, -1);
-        for (let guard = 0; guard < 14; guard += 1) {
-          if (!isWeekendWeekday(weekdayForYmd(prevWork, now), weekends)) break;
-          prevWork = addDaysToYmd(prevWork, -1);
-        }
-        return cutoffBucketFromParts(prevWork, until);
-      }
-    }
-
-    // Рабочий день после отсечки, дальше идут выходные → не открываем «завтра»,
-    // а держим окно до конца выходных (bucket = последний выходной при stretch>1, иначе сегодня).
-    if (mins > cutMins) {
-      const tomorrow = addDaysToYmd(today.ymd, 1);
-      if (isWeekendWeekday(weekdayForYmd(tomorrow, now), weekends)) {
-        const stretchEnd = findLastConsecutiveWeekendDay(tomorrow, weekends, now);
-        const stretchLen =
-          Math.round(
-            (Date.parse(`${stretchEnd}T12:00:00Z`) - Date.parse(`${tomorrow}T12:00:00Z`)) /
-              (24 * 60 * 60 * 1000)
-          ) + 1;
-        if (stretchLen > 1) {
-          return cutoffBucketFromParts(stretchEnd, until);
-        }
-        return cutoffBucketFromParts(today.ymd, until);
-      }
-    }
-  }
-
-  let bucket = computeClosingCutoffBucket(w, now);
-  const parsed = parseCutoffBucket(bucket);
-
-  if (parsed && weekends.length) {
-    const closeWd = weekdayForYmd(parsed.date, now);
-    if (isWeekendWeekday(closeWd, weekends)) {
-      const extended = findLastConsecutiveWeekendDay(parsed.date, weekends, now);
-      if (extended !== parsed.date) {
-        bucket = cutoffBucketFromParts(extended, parsed.time);
-      }
-    }
-  }
-
-  return bucket;
+  return (
+    collapseCutoffDateForSameShip(parsed.date, parsed.time || until, w, weekends, now) ||
+    naiveBucket
+  );
 }
 
 export function resolveProcurementArrivalBucketFromApiConfig(
@@ -519,16 +538,7 @@ function dayOffsetForYmd(now, targetYmd) {
 function shipYmdFromCutoffBucket(bucket, warehouse, now = new Date(), warehouseWeekendDays = null) {
   const parsed = parseCutoffBucket(bucket);
   if (!parsed || !warehouse) return null;
-  const arrival = normalizeSupplierWarehouseArrivalDay(warehouse.arrivalDay);
-  let shipYmd =
-    arrival === SUPPLIER_ARRIVAL_TOMORROW ? addDaysToYmd(parsed.date, 1) : parsed.date;
-  const weekends = normalizeWeekendDays(warehouseWeekendDays);
-  if (weekends.length) {
-    const startOff = dayOffsetForYmd(now, shipYmd);
-    const adj = findWorkingDayOffset(now, weekends, Math.max(0, startOff));
-    shipYmd = getMoscowDateParts(now, adj).ymd;
-  }
-  return shipYmd;
+  return shipYmdFromCutoffDate(parsed.date, warehouse, warehouseWeekendDays, now);
 }
 
 /** Склад поставщика, определивший bucket (для ship_date / planned_delivery). */

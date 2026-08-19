@@ -117,7 +117,17 @@ describe('Mikado procurement buckets with warehouse weekends', () => {
   const WEEKENDS = [6, 0];
   const SUNDAY_ONLY = [0];
 
-  test('Friday after 21:00, Sat/Sun before 21:00 — одна закупка; Sun after 21:00 — новая', () => {
+  test('Thu after 21:00 … Sun before 21:00 — одна закупка (приезд пн); Sun after 21:00 — новая', () => {
+    const thuLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 28, 22, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
+    const friDay = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 29, 12, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
     const friLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
       now: moscowDate(2026, 5, 29, 22, 0),
       warehouseWeekendDays: WEEKENDS,
@@ -139,14 +149,16 @@ describe('Mikado procurement buckets with warehouse weekends', () => {
       supplierCode: 'mikado',
     });
 
-    expect(friLate).toBe('cutoff:2026-05-31:21:00');
-    expect(sat).toBe(friLate);
-    expect(sun).toBe(friLate);
+    expect(thuLate).toBe('cutoff:2026-05-31:21:00');
+    expect(friDay).toBe(thuLate);
+    expect(friLate).toBe(thuLate);
+    expect(sat).toBe(thuLate);
+    expect(sun).toBe(thuLate);
     expect(sunLate).toBe('cutoff:2026-06-01:21:00');
-    expect(sunLate).not.toBe(friLate);
+    expect(sunLate).not.toBe(thuLate);
   });
 
-  test('только вс: сб после 21:00 и вс до 21:00 — та же субботняя закупка', () => {
+  test('только вс: сб и вс до 21:00 — одна закупка до вс; после вс 21:00 — новая', () => {
     // 2026-08-01 = суббота, 2026-08-02 = воскресенье
     const satBefore = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
       now: moscowDate(2026, 8, 1, 20, 0),
@@ -169,7 +181,7 @@ describe('Mikado procurement buckets with warehouse weekends', () => {
       supplierCode: 'mikado',
     });
 
-    expect(satBefore).toBe('cutoff:2026-08-01:21:00');
+    expect(satBefore).toBe('cutoff:2026-08-02:21:00');
     expect(satAfter).toBe(satBefore);
     expect(sun).toBe(satBefore);
     expect(sunLate).toBe('cutoff:2026-08-03:21:00');

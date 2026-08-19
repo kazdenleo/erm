@@ -5,7 +5,7 @@
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 
-export const PRICE_CHANGE_RETENTION_DAYS = 7;
+export const PRICE_CHANGE_RETENTION_DAYS = 30;
 
 const MP_LABELS = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
 const MODE_LABELS = {
@@ -16,6 +16,16 @@ const MODE_LABELS = {
   hybrid: 'Гибрид',
   manual: 'Вручную',
 };
+const SOURCE_LABELS = {
+  strategy: 'Стратегия',
+  manual: 'Вручную',
+  min_recalc: 'Пересчёт минимума',
+};
+
+function rubLabel(v) {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return null;
+  return `${Math.round(Number(v))} ₽`;
+}
 
 function numOrNull(v) {
   if (v == null || v === '') return null;
@@ -46,8 +56,12 @@ export function formatPriceChangeReason({ source, reason, meta, strategyName, mo
   if (m.reason === 'no_strategy') {
     return 'Нет активной стратегии — цена = пол (минимум)';
   }
-  if (m.heldByBand === true) {
-    return `Стратегия «${name || MODE_LABELS[md] || md || '—'}»: без изменения (внутри коридора)`;
+  if (m.cappedByCeiling === true) {
+    const cap = m.ceiling != null ? ` (потолок ${m.ceiling} ₽)` : '';
+    if (name) {
+      return `Стратегия «${name}» (${MODE_LABELS[md] || md || 'режим'}): ограничена макс. ценой${cap}`;
+    }
+    return `Стратегия ограничена максимальной ценой${cap}`;
   }
   if (name) {
     return `Стратегия «${name}» (${MODE_LABELS[md] || md || 'режим'})`;
@@ -58,6 +72,93 @@ export function formatPriceChangeReason({ source, reason, meta, strategyName, mo
   if (src === 'strategy') return 'Пересчёт по стратегии';
   if (src === 'min_recalc') return 'Пересчёт минимальной цены';
   return 'Изменение цены';
+}
+
+/**
+ * Шаги расчёта из strategy_details / meta — «на каких основаниях» сменилась цена.
+ */
+export function formatPriceChangeGrounds(meta) {
+  const m = meta && typeof meta === 'object' ? meta : {};
+  const details = m.details && typeof m.details === 'object' ? m.details : m;
+  const steps = Array.isArray(details.steps)
+    ? details.steps
+    : Array.isArray(m.steps)
+      ? m.steps
+      : [];
+  const lines = [];
+
+  for (const s of steps) {
+    const step = String(s?.step || '');
+    if (step === 'floor' || step === 'base_floor') {
+      const p = rubLabel(s.price);
+      if (p) lines.push(`База — минимум (пол): ${p}`);
+    } else if (step === 'target_margin') {
+      const p = rubLabel(s.price);
+      const cost = rubLabel(s.cost);
+      const pct = s.margin_percent != null ? `${s.margin_percent}%` : null;
+      lines.push(
+        ['Целевая маржа', pct, cost ? `от себестоимости ${cost}` : null, p ? `→ ${p}` : null]
+          .filter(Boolean)
+          .join(' ')
+      );
+    } else if (step === 'competitor') {
+      if (s.applied === false) {
+        if (s.reason === 'ozon_no_competitors') {
+          lines.push('Конкуренты: на Ozon шаг не применяется');
+        } else if (s.reason === 'disabled') {
+          lines.push('Конкуренты: шаг выключен');
+        } else {
+          lines.push('Конкуренты: нет данных — оставили базу');
+        }
+      } else {
+        const agg = rubLabel(s.competitorAgg);
+        const p = rubLabel(s.price);
+        const off = [];
+        if (s.offset_percent) off.push(`${s.offset_percent}%`);
+        if (s.offset_rub) off.push(`${s.offset_rub} ₽`);
+        const bits = ['Конкуренты'];
+        if (agg) bits.push(agg);
+        if (off.length) bits.push(`смещение ${off.join(', ')}`);
+        if (p) bits.push(`→ ${p}`);
+        lines.push(bits.join(' '));
+      }
+    } else if (step === 'sales') {
+      if (s.applied === false) {
+        lines.push('Продажи: шаг выключен');
+      } else {
+        const bandLabel = s.band === 'high' ? 'высокие' : s.band === 'low' ? 'низкие' : 'средние';
+        const vel = s.perDay != null ? `${s.perDay} шт/день` : null;
+        const win = s.windowDays != null ? `за ${s.windowDays} дн.` : null;
+        const sold = s.soldQty != null ? `${s.soldQty} шт` : null;
+        const p = rubLabel(s.price);
+        lines.push(
+          [`Продажи (${bandLabel})`, sold, vel, win, p ? `→ ${p}` : null].filter(Boolean).join(', ')
+        );
+      }
+    } else if (step === 'max_change') {
+      const p = rubLabel(s.price);
+      lines.push(`Ограничение шага за пересчёт${p ? ` → ${p}` : ''}`);
+    } else if (step === 'clamp_floor') {
+      lines.push(
+        `Подтянули до пола: ${rubLabel(s.from) || '—'} → ${rubLabel(s.to) || '—'}`
+      );
+    } else if (step === 'band_hold') {
+      continue;
+    }
+  }
+
+  if (m.reason === 'manual_selling_price' && lines.length === 0) {
+    lines.push('Фактическую цену задали вручную (стратегия не перезаписывает)');
+  }
+  if (m.reason === 'no_strategy' && lines.length === 0) {
+    const floor = rubLabel(m.floor ?? m.sellingPrice);
+    lines.push(floor ? `Нет стратегии — цена равна полу ${floor}` : 'Нет активной стратегии');
+  }
+  if (String(m.source || '').toLowerCase() === 'min_recalc' && lines.length === 0) {
+    lines.push('Изменился расчётный минимум (комиссии, логистика, себестоимость или наценка)');
+  }
+
+  return lines;
 }
 
 /**
@@ -164,10 +265,10 @@ export async function pruneMarketplacePriceChanges(
 }
 
 /**
- * История за N дней (по умолчанию 7).
+ * История за N дней (по умолчанию 30).
  */
 export async function listMarketplacePriceChanges(opts = {}) {
-  const days = Math.max(1, Math.min(30, Number(opts.days) || PRICE_CHANGE_RETENTION_DAYS));
+  const days = Math.max(1, Math.min(90, Number(opts.days) || PRICE_CHANGE_RETENTION_DAYS));
   const limit = Math.max(1, Math.min(500, Number(opts.limit) || 100));
   const offset = Math.max(0, Number(opts.offset) || 0);
   const productId =
@@ -178,13 +279,25 @@ export async function listMarketplacePriceChanges(opts = {}) {
       : null;
   const profileId =
     opts.profileId != null && opts.profileId !== '' ? Number(opts.profileId) : null;
+  const searchRaw = opts.search != null ? String(opts.search).trim() : '';
 
   const params = [days];
   let i = 2;
   const where = [`c.created_at >= CURRENT_TIMESTAMP - ($1::text || ' days')::interval`];
+  where.push(
+    `(c.min_price_before IS DISTINCT FROM c.min_price_after
+      OR c.selling_price_before IS DISTINCT FROM c.selling_price_after)`
+  );
   if (Number.isFinite(productId) && productId > 0) {
     where.push(`c.product_id = $${i++}`);
     params.push(productId);
+  } else if (searchRaw) {
+    const safe = searchRaw.replace(/[%_\\]/g, ' ').slice(0, 80);
+    if (safe) {
+      where.push(`(p.sku ILIKE $${i} OR p.name ILIKE $${i})`);
+      params.push(`%${safe}%`);
+      i += 1;
+    }
   }
   if (marketplace && ['ozon', 'wb', 'ym'].includes(marketplace)) {
     where.push(`c.marketplace = $${i++}`);
@@ -242,6 +355,8 @@ export async function listMarketplacePriceChanges(opts = {}) {
     pricingStrategyId:
       row.pricing_strategy_id != null ? Number(row.pricing_strategy_id) : null,
     strategyName: row.strategy_name || null,
+    sourceLabel: SOURCE_LABELS[row.source] || row.source,
+    grounds: formatPriceChangeGrounds(row.meta),
     meta: row.meta || null,
   }));
 
@@ -257,6 +372,7 @@ export async function listMarketplacePriceChanges(opts = {}) {
 export default {
   PRICE_CHANGE_RETENTION_DAYS,
   formatPriceChangeReason,
+  formatPriceChangeGrounds,
   logMarketplacePriceChange,
   pruneMarketplacePriceChanges,
   listMarketplacePriceChanges,

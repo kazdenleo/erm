@@ -314,6 +314,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/settings/attributes')) return 'settings_attributes';
   if (path.startsWith('/settings/certificates')) return 'settings_certificates';
   if (path.startsWith('/settings/labels')) return 'settings_labels';
+  if (path.startsWith('/settings/rich-content') || path.startsWith('/products/rich-content')) return 'products';
   if (path.startsWith('/settings')) return 'settings_general';
   if (path.startsWith('/organizations')) return 'organizations';
   if (path.startsWith('/warehouses')) return 'warehouses';

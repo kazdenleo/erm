@@ -766,3 +766,33 @@
   font-size: 12px;
   margin-top: 4px;
 }
+
+.mp-returns-inner-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.mp-returns-inner-tab {
+  border: 1px solid var(--border, #cbd5e1);
+  background: var(--surface, #fff);
+  color: var(--text, #334155);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mp-returns-inner-tab.is-active {
+  border-color: var(--primary, #2563eb);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary, #2563eb);
+  font-weight: 600;
+}
+
+.mp-returns-inner-tab__count {
+  margin-left: 6px;
+  opacity: 0.75;
+  font-weight: 600;
+}

@@ -813,7 +813,8 @@ class IntegrationsService {
       }
       if (config.early_shipment_discount_pp != null && config.early_shipment_discount_pp !== '') {
         const n = Number(config.early_shipment_discount_pp);
-        config.early_shipment_discount_pp = Number.isFinite(n) && n >= 0 ? n : null;
+        // 0 = скидка выключена (как null), чтобы UI/оверлей и пост-сейв refresh вели себя одинаково
+        config.early_shipment_discount_pp = Number.isFinite(n) && n > 0 ? n : null;
       } else if (config.early_shipment_discount_pp === '') {
         config.early_shipment_discount_pp = null;
       }
@@ -826,7 +827,7 @@ class IntegrationsService {
         const prevCfg = this._parseIntegrationConfig(existing?.config);
         const prevRaw = prevCfg?.early_shipment_discount_pp ?? prevCfg?.earlyShipmentDiscountPp;
         prevEarlyShipmentPp = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : null;
-        if (!Number.isFinite(prevEarlyShipmentPp)) prevEarlyShipmentPp = null;
+        if (!Number.isFinite(prevEarlyShipmentPp) || prevEarlyShipmentPp <= 0) prevEarlyShipmentPp = null;
       } catch (e) {
         logger.warn('[Integrations] Could not read previous YM early_shipment_discount_pp:', e.message);
       }
@@ -883,7 +884,9 @@ class IntegrationsService {
       if (type === 'yandex' && prevEarlyShipmentPp !== undefined) {
         const nextRaw = config.early_shipment_discount_pp;
         const nextEarly =
-          nextRaw != null && nextRaw !== '' && Number.isFinite(Number(nextRaw)) ? Number(nextRaw) : null;
+          nextRaw != null && nextRaw !== '' && Number.isFinite(Number(nextRaw)) && Number(nextRaw) > 0
+            ? Number(nextRaw)
+            : null;
         const earlyChanged = (prevEarlyShipmentPp ?? null) !== (nextEarly ?? null);
         if (earlyChanged) {
           setImmediate(() => {
@@ -3327,7 +3330,10 @@ class IntegrationsService {
       language: 'DEFAULT',
       type_id: typeIdNum
     };
-    const data = await this._ozonApiPost('/v1/description-category/attribute', body);
+    const data = await this._ozonApiPost('/v1/description-category/attribute', body, {
+      profileId: opts.profileId ?? null,
+      organizationId: opts.organizationId ?? null,
+    });
     const list = data.result ?? data.attributes ?? data ?? [];
     const normalized = Array.isArray(list) ? list : [];
     // пишем кэш “как есть” (raw list) — нормализацию типов/enum можно добавить позже без ломания контракта
@@ -3375,7 +3381,10 @@ class IntegrationsService {
       limit: limitNum,
       type_id: typeIdNum
     };
-    const data = await this._ozonApiPost('/v1/description-category/attribute/values', body);
+    const data = await this._ozonApiPost('/v1/description-category/attribute/values', body, {
+      profileId: options.profileId ?? null,
+      organizationId: options.organizationId ?? null,
+    });
     const result = {
       result: Array.isArray(data.result) ? data.result : [],
       has_next: Boolean(data.has_next)

@@ -156,8 +156,12 @@ export function allocateWarehouseScopedIncoming({
 }
 
 /**
- * Согласовать «в пути» на складе с непринятыми строками открытых закупок:
- * прочий incoming (не по закупкам на этом складе) + ожидание по закупкам.
+ * Согласовать «в пути» с непринятыми строками открытых закупок:
+ * прочий incoming (журнал минус нетто по открытым закупкам) + ожидание по открытым закупкам.
+ *
+ * purchaseDocNet должен быть нетто incoming только по открытым закупкам
+ * (не по всей истории purchase_id — иначе закрытые +1/−1 обнуляют docNet и pending
+ * двойным счётом раздувает «в пути»).
  */
 export function reconcileWarehouseIncomingWithPurchasePending({
   journalIncoming = 0,

@@ -57,12 +57,6 @@ export function PricingStrategies() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
 
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState(null);
-  const [historyFilterMp, setHistoryFilterMp] = useState('');
-  const [historyData, setHistoryData] = useState({ items: [], total: 0, days: 7 });
-
   const load = useCallback(async () => {
     try {
       setLoading(true);
@@ -113,57 +107,6 @@ export function PricingStrategies() {
     setEditing(null);
     setForm(emptyForm(defaults?.defaultConfig?.hybrid));
     setModalOpen(true);
-  };
-
-  const loadHistory = useCallback(async (marketplace = historyFilterMp) => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const res = await pricingStrategiesApi.priceChanges({
-        days: 7,
-        limit: 200,
-        marketplace: marketplace || undefined,
-      });
-      setHistoryData(res?.data || { items: [], total: 0, days: 7 });
-    } catch (e) {
-      setHistoryError(e.response?.data?.message || e.message);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [historyFilterMp]);
-
-  const openHistory = async () => {
-    setHistoryOpen(true);
-    await loadHistory(historyFilterMp);
-  };
-
-  const formatMoney = (v) => {
-    if (v == null || Number.isNaN(Number(v))) return '—';
-    return `${Math.round(Number(v))} ₽`;
-  };
-
-  const formatDelta = (before, after) => {
-    if (before == null && after == null) return '—';
-    if (before == null) return `→ ${formatMoney(after)}`;
-    if (after == null) return `${formatMoney(before)} → —`;
-    if (Math.abs(Number(before) - Number(after)) < 0.005) return `${formatMoney(after)} (без изм.)`;
-    const sign = Number(after) > Number(before) ? '+' : '';
-    const d = Math.round(Number(after) - Number(before));
-    return `${formatMoney(before)} → ${formatMoney(after)} (${sign}${d} ₽)`;
-  };
-
-  const formatWhen = (iso) => {
-    if (!iso) return '—';
-    try {
-      return new Date(iso).toLocaleString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return String(iso);
-    }
   };
 
   const openEdit = (row) => {
@@ -283,9 +226,9 @@ export function PricingStrategies() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Button variant="secondary" onClick={openHistory}>
-            История цен (7 дн.)
-          </Button>
+          <Link to="/prices/history" className="btn btn-secondary">
+            История изменения цен
+          </Link>
           <Button variant="primary" onClick={openCreate} disabled={!strategiesOn}>
             Добавить стратегию
           </Button>
@@ -601,90 +544,6 @@ export function PricingStrategies() {
           <Button type="button" variant="primary" onClick={handleSave} disabled={saving}>
             {saving ? 'Сохранение…' : 'Сохранить'}
           </Button>
-        </div>
-      </Modal>
-
-      <Modal
-        isOpen={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        title="Изменения цен — последние 7 дней"
-        size="large"
-      >
-        <div className="pricing-strategies-history">
-          <div className="pricing-strategies-history-toolbar">
-            <label>
-              Маркетплейс{' '}
-              <select
-                value={historyFilterMp}
-                onChange={async (e) => {
-                  const v = e.target.value;
-                  setHistoryFilterMp(v);
-                  await loadHistory(v);
-                }}
-              >
-                <option value="">Все</option>
-                <option value="ozon">Ozon</option>
-                <option value="wb">Wildberries</option>
-                <option value="ym">Яндекс.Маркет</option>
-              </select>
-            </label>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => loadHistory(historyFilterMp)}
-              disabled={historyLoading}
-            >
-              {historyLoading ? 'Загрузка…' : 'Обновить'}
-            </Button>
-            <span className="text-muted small">
-              Записей: {historyData.total ?? 0} (показано {historyData.items?.length ?? 0})
-            </span>
-          </div>
-
-          {historyError && (
-            <div className="error" style={{ marginBottom: 12 }}>
-              {historyError}
-            </div>
-          )}
-
-          {historyLoading && !historyData.items?.length ? (
-            <div className="loading">Загрузка истории…</div>
-          ) : !historyData.items?.length ? (
-            <p className="text-muted" style={{ margin: '12px 0' }}>
-              Пока нет изменений за 7 дней. Они появятся после пересчёта стратегий или ручного
-              изменения фактической цены на странице «Цены».
-            </p>
-          ) : (
-            <div className="pricing-strategies-history-table-wrap">
-              <table className="pricing-strategies-history-table">
-                <thead>
-                  <tr>
-                    <th>Когда</th>
-                    <th>Товар</th>
-                    <th>МП</th>
-                    <th>Факт. цена</th>
-                    <th>Причина</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {historyData.items.map((row) => (
-                    <tr key={row.id} className={row.sellingPriceBefore != null && row.sellingPriceAfter != null && Math.abs(row.sellingPriceBefore - row.sellingPriceAfter) >= 0.5 ? 'changed' : ''}>
-                      <td className="nowrap">{formatWhen(row.createdAt)}</td>
-                      <td>
-                        <div className="sku">{row.productSku || `#${row.productId}`}</div>
-                        <div className="name muted">{row.productName || '—'}</div>
-                      </td>
-                      <td className="nowrap">{row.marketplaceLabel || row.marketplace}</td>
-                      <td className="nowrap">
-                        {formatDelta(row.sellingPriceBefore, row.sellingPriceAfter)}
-                      </td>
-                      <td className="reason">{row.reason || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       </Modal>
     </div>

@@ -38,9 +38,8 @@ const SCHEME_OPTIONS = [
   { value: 'fbs', label: 'Только FBS' },
 ];
 
-/** Детализация «Затрат» — показывается при раскрытии колонки. */
+/** Детализация «Затрат» — показывается при раскрытии колонки. Себестоимость и доп. расходы отдельно. */
 const COST_BREAKDOWN_COLS = [
-  { key: 'costAmount', label: 'Себестоимость', title: 'qty × себестоимость товара в ERP' },
   { key: 'commissionAmount', label: 'Комиссия', title: 'Комиссия / вознаграждение МП' },
   { key: 'logisticsAmount', label: 'Логистика', title: 'Доставка, ПВЗ, возвратная логистика' },
   { key: 'storageAmount', label: 'Хранение', title: 'Хранение на складе МП' },
@@ -109,6 +108,11 @@ export function CategorySalesAnalytics() {
       const taxAmount = products.reduce((s, p) => s + (Number(p.taxAmount) || 0), 0);
       const netIncome = products.reduce((s, p) => s + (Number(p.netIncome) || 0), 0);
       const costsTotal = products.reduce((s, p) => s + (Number(p.costsTotal) || 0), 0);
+      const costAmount = products.reduce((s, p) => s + (Number(p.costAmount) || 0), 0);
+      const additionalExpensesAmount = products.reduce(
+        (s, p) => s + (Number(p.additionalExpensesAmount) || 0),
+        0
+      );
       return {
         ...cat,
         products,
@@ -116,10 +120,12 @@ export function CategorySalesAnalytics() {
         taxAmount,
         netIncome,
         costsTotal,
+        costAmount,
+        additionalExpensesAmount,
       };
     })
     .filter(Boolean);
-  const colCount = 7 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
+  const colCount = 9 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
 
   const toggleCategory = (categoryId) => {
     const key = String(categoryId ?? 0);
@@ -197,7 +203,7 @@ export function CategorySalesAnalytics() {
         <div className="sales-analytics__card sales-analytics__card--canceled">
           <div className="sales-analytics__card-label">Затраты</div>
           <div className="sales-analytics__card-value">{formatRub(summary.costsTotal)}</div>
-          <div className="sales-analytics__card-sub">Себестоимость + удержания МП</div>
+          <div className="sales-analytics__card-sub">Удержания МП</div>
         </div>
         <div className="sales-analytics__card">
           <div className="sales-analytics__card-label">Налоги</div>
@@ -245,7 +251,7 @@ export function CategorySalesAnalytics() {
                   title={
                     costsExpanded
                       ? 'Скрыть разбивку затрат'
-                      : 'Показать разбивку: себестоимость, комиссия, логистика…'
+                      : 'Показать разбивку: комиссия, логистика…'
                   }
                   aria-expanded={costsExpanded}
                 >
@@ -254,6 +260,12 @@ export function CategorySalesAnalytics() {
                     {costsExpanded ? '▾' : '▸'}
                   </span>
                 </button>
+              </th>
+              <th className="sales-analytics__num" title="qty × себестоимость товара в ERP">
+                Себестоимость
+              </th>
+              <th className="sales-analytics__num" title="qty × дополнительные расходы из карточки товара">
+                Доп. расходы
               </th>
               <th
                 className="sales-analytics__num"
@@ -299,6 +311,8 @@ export function CategorySalesAnalytics() {
                     <td className="sales-analytics__num">{formatRub(cat.soldAmount)}</td>
                     <CostCells row={cat} costsExpanded={costsExpanded} />
                     <td className="sales-analytics__num">{formatRub(cat.costsTotal)}</td>
+                    <td className="sales-analytics__num">{formatRub(cat.costAmount)}</td>
+                    <td className="sales-analytics__num">{formatRub(cat.additionalExpensesAmount)}</td>
                     <td
                       className="sales-analytics__num sales-analytics__num--hint"
                       title={cat.taxTooltip || undefined}
@@ -324,6 +338,8 @@ export function CategorySalesAnalytics() {
                         <td className="sales-analytics__num">{formatRub(p.soldAmount)}</td>
                         <CostCells row={p} costsExpanded={costsExpanded} />
                         <td className="sales-analytics__num">{formatRub(p.costsTotal)}</td>
+                        <td className="sales-analytics__num">{formatRub(p.costAmount)}</td>
+                        <td className="sales-analytics__num">{formatRub(p.additionalExpensesAmount)}</td>
                         <td
                           className="sales-analytics__num sales-analytics__num--hint"
                           title={p.taxTooltip || undefined}
@@ -341,9 +357,9 @@ export function CategorySalesAnalytics() {
       </div>
 
       <p className="sales-analytics__hint">
-        Затраты = себестоимость + удержания маркетплейса (комиссия, логистика, хранение и др.). Нажмите
-        на заголовок «Затраты», чтобы раскрыть статьи. «Налоги» = НДС (если указан в организации) + налог
-        по схеме. Чистая прибыль — после налогов.
+        Затраты = удержания маркетплейса (комиссия, логистика, хранение и др.), без себестоимости и доп. расходов.
+        Нажмите на заголовок «Затраты», чтобы раскрыть статьи. «Налоги» = НДС (если указан в организации) + налог
+        по схеме. Чистая прибыль = пришло от МП − себестоимость − доп. расходы − налоги.
         {taxMeta?.taxSystemLabel ? (
           <>
             {' '}

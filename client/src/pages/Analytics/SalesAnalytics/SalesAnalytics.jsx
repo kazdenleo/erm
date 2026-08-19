@@ -2,14 +2,16 @@
  * Аналитика продаж FBS: финансовые отчёты с маркетплейсов
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { marketplaceFbsReportsApi } from '../../../services/marketplaceFbsReports.api';
 import '../FboSalesAnalytics/FboSalesAnalytics.css';
 import './SalesAnalytics.css';
-import { AmountCell, otherDeductionsTotal } from '../shared/AmountCell';
+import { AmountCell } from '../shared/AmountCell';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
+import { OrderEconomicsOrderTable } from '../shared/OrderEconomicsOrderTable';
+import { marketplaceRevenueAmount } from '../shared/orderEconomics';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 
 function formatQty(n) {
@@ -45,7 +47,7 @@ export function SalesAnalytics() {
   const [syncMessage, setSyncMessage] = useState(null);
   const [data, setData] = useState(null);
   const [orders, setOrders] = useState([]);
-  const [view, setView] = useState('product');
+  const [view, setView] = useState('order');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,6 +67,10 @@ export function SalesAnalytics() {
       setLoading(false);
     }
   }, [dateFrom, dateTo, marketplace]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const syncFromMarketplaces = useCallback(async () => {
     setSyncing(true);
@@ -107,7 +113,7 @@ export function SalesAnalytics() {
         iconClass="pe-7s-graph2"
         iconBgClass="bg-mean-fruit"
         title="Продажи FBS"
-        subtitle="Финансовые отчёты с маркетплейсов: продажи и все удержания по заказам"
+        subtitle="Факт по каждому заказу: цена продажи, затраты и сколько пришло от маркетплейса"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -183,26 +189,43 @@ export function SalesAnalytics() {
                 <th>Товар</th>
                 <th>Артикул</th>
                 <th className="sales-analytics__num">Продано</th>
-                <th className="sales-analytics__num">Выручка</th>
-                <th className="sales-analytics__num">Себестоимость</th>
+                <th className="sales-analytics__num">Сумма продаж</th>
                 <th className="sales-analytics__num">Комиссия</th>
                 <th className="sales-analytics__num">Логистика</th>
                 <th className="sales-analytics__num">Хранение</th>
                 <th className="sales-analytics__num">Прочее</th>
                 <th className="sales-analytics__num">К выплате</th>
+                <th className="sales-analytics__num">Себестоимость</th>
+                <th
+                  className="sales-analytics__num"
+                  title="qty × дополнительные расходы из карточки товара"
+                >
+                  Доп. расходы
+                </th>
+                <th
+                  className="sales-analytics__num"
+                  title="К выплате − себестоимость − доп. расходы. У WB ещё − логистика."
+                >
+                  Выручка
+                </th>
                 <th
                   className="sales-analytics__num"
                   title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
                 >
                   Налоги
                 </th>
-                <th className="sales-analytics__num">Чистый доход</th>
+                <th
+                  className="sales-analytics__num"
+                  title="Пришло от МП − себестоимость − доп. расходы − налоги"
+                >
+                  Чистый доход
+                </th>
               </tr>
             </thead>
             <tbody>
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="sales-analytics__empty">
+                  <td colSpan={14} className="sales-analytics__empty">
                     {data == null
                       ? 'Выберите параметры и нажмите «Показать».'
                       : 'Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.'}
@@ -221,7 +244,6 @@ export function SalesAnalytics() {
                   </td>
                   <td className="sales-analytics__num">{formatQty(row.soldQty)}</td>
                   <td className="sales-analytics__num">{formatRub(row.soldAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.commissionAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.logisticsAmount)}</td>
                   <td className="sales-analytics__num">{formatRub(row.storageAmount)}</td>
@@ -233,6 +255,9 @@ export function SalesAnalytics() {
                     )}
                   </td>
                   <td className="sales-analytics__num">{formatRub(row.payoutAmount)}</td>
+                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
+                  <td className="sales-analytics__num">{formatRub(row.additionalExpensesAmount)}</td>
+                  <td className="sales-analytics__num">{formatRub(marketplaceRevenueAmount(row))}</td>
                   <AmountCell value={row.taxAmount} format={formatRub} tooltip={row.taxTooltip} />
                   <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
                 </tr>
@@ -241,73 +266,15 @@ export function SalesAnalytics() {
           </table>
         </div>
       ) : (
-        <div className="sales-analytics__table-wrap">
-          <table className="sales-analytics__table">
-            <thead>
-              <tr>
-                <th>Дата</th>
-                <th>МП</th>
-                <th>Заказ / отправление</th>
-                <th>Товар</th>
-                <th className="sales-analytics__num">Кол-во</th>
-                <th className="sales-analytics__num">Себестоимость</th>
-                <th className="sales-analytics__num">Выручка</th>
-                <th className="sales-analytics__num">Комиссия</th>
-                <th className="sales-analytics__num">Логистика</th>
-                <th className="sales-analytics__num">Хранение</th>
-                <th className="sales-analytics__num">Прочее</th>
-                <th className="sales-analytics__num">К выплате</th>
-                <th
-                  className="sales-analytics__num"
-                  title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
-                >
-                  Налоги
-                </th>
-                <th className="sales-analytics__num">Чистый доход</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!loading && orders.length === 0 && (
-                <tr>
-                  <td colSpan={14} className="sales-analytics__empty">
-                    {data == null
-                      ? 'Выберите параметры и нажмите «Показать».'
-                      : 'Нет данных по заказам за выбранный период.'}
-                  </td>
-                </tr>
-              )}
-              {orders.map((row, idx) => (
-                <tr key={`${row.orderId || row.postingNumber || idx}`}>
-                  <td>{row.operationDate || '—'}</td>
-                  <td>{row.marketplace || '—'}</td>
-                  <td title={row.lineCount > 1 ? `Операций в отчёте: ${row.lineCount}` : undefined}>
-                    {row.orderId || (row.postingNumber && row.postingNumber !== '0' ? row.postingNumber : null) || '—'}
-                  </td>
-                  <td>
-                    {row.productName || '—'}
-                    {row.erpSku ? (
-                      <span className="fbo-sales-analytics__erp-sku"> · {row.erpSku}</span>
-                    ) : null}
-                  </td>
-                  <td className="sales-analytics__num">{formatQty(row.quantity)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
-                  <AmountCell value={row.retailAmount} format={formatRub} tooltip={row.amountTooltips?.retail} />
-                  <AmountCell value={row.commissionAmount} format={formatRub} tooltip={row.amountTooltips?.commission} />
-                  <AmountCell value={row.logisticsAmount} format={formatRub} tooltip={row.amountTooltips?.logistics} />
-                  <AmountCell value={row.storageAmount} format={formatRub} tooltip={row.amountTooltips?.storage} />
-                  <AmountCell
-                    value={otherDeductionsTotal(row)}
-                    format={formatRub}
-                    tooltip={row.amountTooltips?.other}
-                  />
-                  <td className="sales-analytics__num">{formatRub(row.payoutAmount)}</td>
-                  <AmountCell value={row.taxAmount} format={formatRub} tooltip={row.taxTooltip} />
-                  <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <OrderEconomicsOrderTable
+          loading={loading}
+          orders={orders}
+          emptyMessage={
+            data == null
+              ? 'Выберите параметры и нажмите «Показать».'
+              : 'Нет данных по заказам за выбранный период.'
+          }
+        />
       )}
 
       {recentSyncs.length > 0 && (
@@ -327,14 +294,15 @@ export function SalesAnalytics() {
 
       <p className="sales-analytics__hint">
         Данные загружаются через API маркетплейсов: WB — reportDetailByPeriod (FBS), Ozon —
-        finance/transaction/list (FBS), Яндекс — united-netting (FBS). Даты — по дате операции в
-        отчёте (МСК). После обновления логики перезагрузите период кнопкой «Загрузить с маркетплейсов».
+        finance/transaction/list (FBS), Яндекс — united-netting (FBS).         Даты — по дате операции в
+        отчёте (МСК). Во вкладке «По заказам»: цена продажи, затраты (удержания МП, без себестоимости и доп. расходов)
+        и сколько пришло от маркетплейса. После обновления логики перезагрузите период кнопкой «Загрузить с маркетплейсов».
         {taxMeta?.taxSystemLabel ? (
           <>
             {' '}
             Налоги: схема «{taxMeta.taxSystemLabel}»
             {taxMeta.organizationName ? ` (${taxMeta.organizationName})` : ''}. База — выручка минус
-            себестоимость и удержания МП. При УСН 15% / ОСН налог = 0, если прибыль отрицательная.
+            себестоимость, доп. расходы и удержания МП. При УСН 15% / ОСН налог = 0, если прибыль отрицательная.
             Наведите на «Налоги» — там разбивка базы.
           </>
         ) : (

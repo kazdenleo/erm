@@ -109,7 +109,7 @@ export const pricesApi = {
     return response.data;
   },
 
-  /** Сохранить рассчитанные цены в БД (массив { productId, ozon?, wb?, ym? }) */
+  /** Сохранить рассчитанные цены в БД (массив { productId, ozon?, wb?, ym?, ozonFbs?, ozonFbo?, wbFbs?, wbFbo?, ... }) */
   async saveBulk(pricesList) {
     const response = await api.post('/product/prices/save-bulk', { prices: pricesList });
     return response.data;
@@ -117,7 +117,7 @@ export const pricesApi = {
 
   /**
    * Сохранить фактическую цену / до скидки / % по МП.
-   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }>} items
+   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent?, maxPrice? }>} items
    */
   async saveCommercial(items) {
     const response = await api.post('/product/prices/save-commercial', { items });

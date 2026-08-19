@@ -19,6 +19,7 @@ import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesA
 import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
 import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
 import { Products } from './pages/Products/Products';
+import { ProductCard } from './pages/Products/ProductCard';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { ProductEnrichment } from './pages/Products/ProductEnrichment';
 import { Warehouses } from './pages/Warehouses/Warehouses';
@@ -149,6 +150,8 @@ function App() {
           <Route path="/products/enrichment" element={<ProtectedRoute><ProductEnrichmentRoute /></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
           <Route path="/products/rich-content" element={<ProtectedRoute><Layout><RichContentConstructor /></Layout></ProtectedRoute>} />
+          <Route path="/products/new" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
+          <Route path="/products/:productId" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
           <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
           <Route path="/stock-levels" element={<ProtectedRoute><Layout><StockLevelsLayout /></Layout></ProtectedRoute>}>
             <Route index element={<Navigate to="/stock-levels/warehouse" replace />} />

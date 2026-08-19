@@ -31,10 +31,11 @@ export async function resolveEffectiveProfileId(req, userRow) {
 
   const r = await query(
     `SELECT profile_id FROM support_inquiries WHERE author_user_id = $1 ORDER BY id DESC LIMIT 1`,
-    [req.user.id]
+    [req.user?.id ?? userRow.id]
   );
   if (r.rows[0]?.profile_id != null) {
     return profileIdFromDb(r.rows[0].profile_id);
   }
+
   return null;
 }

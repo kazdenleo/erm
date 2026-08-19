@@ -20,7 +20,7 @@ export function PlatformLayout() {
 
   const handleLogout = () => {
     logout();
-    navigate('/login', { replace: true });
+    navigate('/platform-login', { replace: true });
   };
 
   return (
@@ -45,9 +45,6 @@ export function PlatformLayout() {
           ))}
         </nav>
         <div className="platform-header__actions">
-          <Link to="/" className="platform-link-erp">
-            В приложение ERP
-          </Link>
           <span className="platform-user-email" title={user?.email}>
             {shortUserName(user) || user?.email}
           </span>

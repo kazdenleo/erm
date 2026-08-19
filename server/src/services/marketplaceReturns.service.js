@@ -8,7 +8,7 @@ import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.s
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 
 const CACHE_TTL_MS = 3 * 60 * 1000;
-const CACHE_LOGIC_VERSION = 'pickup-ready-v2';
+const CACHE_LOGIC_VERSION = 'pickup-ready-v3';
 const DEFAULT_DAYS = 31;
 
 /** @type {Map<string, { at: number, rows: object[] }>} */
@@ -161,8 +161,16 @@ function mapOzonRow(raw) {
 }
 
 function formatYmAddress(addr) {
-  if (!addr || typeof addr !== 'object') return null;
-  const parts = [addr.city, addr.street, addr.house].filter(Boolean);
+  if (addr == null) return null;
+  if (typeof addr === 'string') {
+    const s = addr.trim();
+    return s || null;
+  }
+  if (typeof addr !== 'object') return null;
+  if (addr.fullAddress && String(addr.fullAddress).trim()) {
+    return String(addr.fullAddress).trim();
+  }
+  const parts = [addr.city, addr.street, addr.house].filter(Boolean).map((p) => String(p).trim()).filter(Boolean);
   return parts.length ? parts.join(', ') : null;
 }
 
@@ -175,6 +183,8 @@ function mapYmRow(raw) {
   const returnType = r.returnType === 'UNREDEEMED' ? 'Невыкуп' : r.returnType === 'RETURN' ? 'Возврат' : r.returnType;
   const names = items.map((it) => it?.offerName || it?.shopSku).filter(Boolean);
   const productName = names.length > 1 ? `${names[0]} (+${names.length - 1})` : (names[0] || null);
+  // Сначала адрес: name часто общий («Пункт выдачи заказов Яндекс Маркета») и перекрывал улицу.
+  const pickupAddress = formatYmAddress(lp.address) || (lp.name ? String(lp.name).trim() : null) || null;
   return {
     marketplace: 'yandex',
     id: String(r.id ?? `${r.orderId}-${r.creationDate}`),
@@ -185,7 +195,7 @@ function mapYmRow(raw) {
     barcode: null,
     productName,
     productExtra: items.length > 1 ? `${items.length} поз.` : null,
-    pickupAddress: lp.name || formatYmAddress(lp.address) || null,
+    pickupAddress,
     pickupPointId: lp.id ?? null,
     readyFromDt: r.creationDate ?? r.updateDate ?? null,
     expiredDt: r.pickupTillDate ?? null,

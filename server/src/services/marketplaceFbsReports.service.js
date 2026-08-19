@@ -12,6 +12,8 @@ import { extractOzonFinanceAmounts } from '../utils/ozonFinanceReportAmounts.js'
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
 import { buildOrderBreakdownFromLines, buildAmountTooltips } from '../utils/marketplaceReportBreakdown.js';
+import { attachOrderEconomics, backfillReportOrderIds } from '../utils/marketplaceOrderEconomics.js';
+import { lookupMarketplaceOrderEconomics } from '../utils/marketplaceOrderEconomicsLookup.js';
 import {
   enrichAnalyticsRowWithTax,
   loadMarketplaceTaxContext,
@@ -182,6 +184,33 @@ function wbOrderKey(row) {
   return k || null;
 }
 
+/**
+ * WB reportDetailByPeriod: srid/rid — внутренний ключ отгрузки;
+ * assembly_id совпадает с номером сборочного задания / orders.order_id в ERP;
+ * gNumber — старое поле номера заказа (если есть).
+ */
+function mapWbDisplayOrderIds(row) {
+  const srid = wbOrderKey(row);
+  const gNumberRaw = row?.gNumber ?? row?.g_number ?? null;
+  const gNumber =
+    gNumberRaw != null && String(gNumberRaw).trim() !== '' ? String(gNumberRaw).trim() : '';
+  const assemblyRaw = row?.assembly_id ?? row?.assemblyId ?? null;
+  const assemblyId =
+    assemblyRaw != null && String(assemblyRaw).trim() !== '' && String(assemblyRaw).trim() !== '0'
+      ? String(assemblyRaw).trim()
+      : '';
+  const giRaw = row?.gi_id ?? row?.giId ?? null;
+  const giId =
+    giRaw != null && String(giRaw).trim() !== '' && String(giRaw).trim() !== '0'
+      ? String(giRaw).trim()
+      : '';
+  return {
+    order_id: assemblyId || gNumber || srid || null,
+    // srid оставляем в posting_number, чтобы связывать логистику/штрафы без assembly_id
+    posting_number: srid || giId || null,
+  };
+}
+
 function collectWbFbsOrderKeys(rows) {
   const keys = new Set();
   for (const row of rows) {
@@ -318,16 +347,16 @@ function mapWbProductName(row) {
 
 function mapWbReportRow(row, profileId, syncId) {
   const amounts = extractWbFinanceAmounts(row);
-  const saleDt = row?.sale_dt || row?.order_dt || row?.rr_dt;
   const operationDate = mapWbOperationDate(row);
+  const ids = mapWbDisplayOrderIds(row);
 
   return {
     sync_id: syncId,
     profile_id: profileId,
     marketplace: 'wb',
     operation_date: operationDate,
-    order_id: row?.srid != null ? String(row.srid) : row?.rid != null ? String(row.rid) : null,
-    posting_number: row?.gi_id != null ? String(row.gi_id) : null,
+    order_id: ids.order_id,
+    posting_number: ids.posting_number,
     sku: mapWbSku(row),
     product_name: mapWbProductName(row),
     barcode: row?.barcode != null ? String(row.barcode) : null,
@@ -372,7 +401,14 @@ function mapOzonTransactionRow(op, profileId, syncId) {
     profile_id: profileId,
     marketplace: 'ozon',
     operation_date: operationDate,
-    order_id: op?.posting?.order_id != null ? String(op.posting.order_id) : null,
+    order_id:
+      op?.posting?.order_id != null && String(op.posting.order_id).trim() !== ''
+        ? String(op.posting.order_id)
+        : op?.posting?.posting_number != null
+          ? String(op.posting.posting_number)
+          : op?.posting_number != null
+            ? String(op.posting_number)
+            : null,
     posting_number:
       op?.posting?.posting_number != null
         ? String(op.posting.posting_number)
@@ -1486,6 +1522,7 @@ class MarketplaceFbsReportsService {
     const summaryQuery = buildFbsReportQueryParams(pid, fromYmd, toYmd, mpFilter);
 
     await withFbsReportMaintenanceLock(pid, async () => {
+      await backfillReportOrderIds('marketplace_fbs_report_lines', pid);
       if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
         await backfillWbLineIdentity(pid);
         await recategorizeWbReportLines(pid);
@@ -1518,7 +1555,17 @@ class MarketplaceFbsReportsService {
             THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
             ELSE 0
           END
-        )::numeric AS cost_amount
+        )::numeric AS cost_amount,
+        SUM(
+          CASE WHEN ${SQL_SALE_LINE_L}
+            THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+            ELSE 0
+          END
+        )::numeric AS additional_expenses_amount,
+        SUM(
+          CASE WHEN LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries')
+            THEN l.logistics_amount ELSE 0 END
+        )::numeric AS wb_logistics_amount
       FROM marketplace_fbs_report_lines l
       LEFT JOIN products p ON p.id = l.product_id
       WHERE l.profile_id = $1
@@ -1582,6 +1629,9 @@ class MarketplaceFbsReportsService {
       otherDeductions: Number(row.other_deductions) || 0,
       payoutAmount: Number(row.payout_amount) || 0,
       costAmount: Number(row.cost_amount) || 0,
+      additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
+      wbLogisticsAmount: Number(row.wb_logistics_amount) || 0,
+      marketplace: mpFilter ? marketplace : 'all',
       expensesTotal:
         Number(row.commission_amount) +
           Number(row.logistics_amount) +
@@ -1646,6 +1696,7 @@ class MarketplaceFbsReportsService {
     const rowLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 500));
 
     await withFbsReportMaintenanceLock(pid, async () => {
+      await backfillReportOrderIds('marketplace_fbs_report_lines', pid);
       if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
         await enrichWbLinesFromOrderSale(pid);
         await recategorizeWbReportLines(pid);
@@ -1802,6 +1853,12 @@ class MarketplaceFbsReportsService {
               ELSE 0
             END
           )::numeric AS cost_amount,
+          SUM(
+            CASE WHEN ${SQL_SALE_LINE_M}
+              THEN GREATEST(m.quantity, 0) * COALESCE(pc.additional_expenses, 0)
+              ELSE 0
+            END
+          )::numeric AS additional_expenses_amount,
           COUNT(*)::int AS line_count,
           COALESCE(
             json_agg(
@@ -1849,6 +1906,7 @@ class MarketplaceFbsReportsService {
         a.other_deductions,
         a.payout_amount,
         a.cost_amount,
+        a.additional_expenses_amount,
         a.line_count,
         a.report_lines_json
       FROM agg a
@@ -1882,6 +1940,7 @@ class MarketplaceFbsReportsService {
       otherDeductions: Number(row.other_deductions) || 0,
       payoutAmount: Number(row.payout_amount) || 0,
       costAmount: Number(row.cost_amount) || 0,
+      additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
       lineCount: Number(row.line_count) || 0,
       breakdown,
       amountTooltips,
@@ -1893,7 +1952,7 @@ class MarketplaceFbsReportsService {
           Number(row.acquiring_amount) +
           Number(row.other_deductions) || 0,
     };
-      return enrichAnalyticsRowWithTax(base, taxContext);
+      return attachOrderEconomics(enrichAnalyticsRowWithTax(base, taxContext));
     });
 
     return {
@@ -1902,6 +1961,10 @@ class MarketplaceFbsReportsService {
       taxMeta: buildTaxMetaFromContext(taxContext),
       items,
     };
+  }
+
+  async lookupByOrder({ profileId, marketplace, orderId } = {}) {
+    return lookupMarketplaceOrderEconomics('fbs', { profileId, marketplace, orderId });
   }
 }
 

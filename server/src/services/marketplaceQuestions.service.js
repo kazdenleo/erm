@@ -695,23 +695,22 @@ async function syncYandex(profileId, _organizationId = null) {
   let imported = 0;
   const externalIds = [];
 
-  // Важно: API Яндекса ограничивает dateFrom/dateTo интервалом максимум 1 месяц.
-  // По умолчанию (без dateFrom/dateTo) Яндекс возвращает только ~последний месяц.
-  // Но "ветки" покупателя могут содержать несколько вопросов по одному offerId в разные даты.
-  // Поэтому выгружаем окнами по 1 месяцу, например за последние 6 месяцев.
-  const MONTH_WINDOWS = 6;
+  // Важно: API Яндекса ограничивает dateFrom/dateTo интервалом максимум 30 дней.
+  // Календарный «месяц» через setUTCMonth часто даёт 31 день → 400 BAD_REQUEST,
+  // из‑за чего синк YM полностью падает и вопросы не попадают в ERP.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const WINDOW_DAYS = 29;
+  const WINDOWS = 6;
   const now = new Date();
   const startOfDay = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const toDateOnly = (d) => d.toISOString().slice(0, 10);
 
-  for (let w = 0; w < MONTH_WINDOWS; w++) {
-    const end = new Date(now);
-    end.setUTCMonth(end.getUTCMonth() - w);
-    const start = new Date(end);
-    start.setUTCMonth(start.getUTCMonth() - 1);
+  for (let w = 0; w < WINDOWS; w++) {
+    const end = startOfDay(new Date(now.getTime() - w * WINDOW_DAYS * DAY_MS));
+    const start = startOfDay(new Date(end.getTime() - WINDOW_DAYS * DAY_MS));
 
-    const dateTo = toDateOnly(startOfDay(end));
-    const dateFrom = toDateOnly(startOfDay(start));
+    const dateTo = toDateOnly(end);
+    const dateFrom = toDateOnly(start);
 
     let pageToken = '';
     for (let i = 0; i < 80; i++) {

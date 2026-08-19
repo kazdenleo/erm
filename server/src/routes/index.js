@@ -55,6 +55,7 @@ import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
 import marketplaceReturnClaimsRoutes from './marketplaceReturnClaims.routes.js';
 import downloadsRoutes from './downloads.routes.js';
 import categoryLabelTemplatesRoutes from './categoryLabelTemplates.routes.js';
+import categoryRichContentTemplatesRoutes from './categoryRichContentTemplates.routes.js';
 import productLabelsController from '../controllers/productLabels.controller.js';
 import { validateProductId } from '../validators/productValidator.js';
 import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
@@ -299,6 +300,7 @@ router.use('/user-categories', userCategoriesRoutes);
 
 // Шаблоны этикеток по категориям
 router.use('/category-label-templates', categoryLabelTemplatesRoutes);
+router.use('/category-rich-content-templates', categoryRichContentTemplatesRoutes);
 
 // Category Mappings API (сопоставление категорий с маркетплейсами)
 router.use('/category-mappings', categoryMappingsRoutes);

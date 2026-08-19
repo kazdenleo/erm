@@ -1,0 +1,70 @@
+.order-economics__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.order-economics__fact {
+  background: #fff;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.order-economics__label {
+  font-size: 12px;
+  color: var(--muted, #666);
+}
+
+.order-economics__value {
+  font-size: 1.15rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.order-economics__sub {
+  font-size: 11px;
+  color: var(--muted, #888);
+  margin-top: 2px;
+}
+
+.order-economics__breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.order-economics__breakdown th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-secondary, #555);
+  padding: 4px 8px 4px 0;
+  width: 40%;
+}
+
+.order-economics__breakdown td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 0;
+}
+
+.order-economics__hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted, #666);
+  line-height: 1.45;
+}
+
+.order-economics__error {
+  margin: 0;
+  font-size: 13px;
+  color: #b42318;
+}
+
+@media (max-width: 720px) {
+  .order-economics__facts {
+    grid-template-columns: 1fr;
+  }
+}

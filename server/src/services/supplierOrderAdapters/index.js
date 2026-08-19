@@ -3,7 +3,7 @@
  */
 
 import { canonicalSupplierApiCode } from '../../repositories/suppliers.repository.pg.js';
-import { submitMikadoPurchase } from './mikado.adapter.js';
+import { deleteMikadoBasketItems, submitMikadoPurchase } from './mikado.adapter.js';
 import { submitMoskvorechiePurchase } from './moskvorechie.adapter.js';
 
 const ADAPTERS = {
@@ -20,4 +20,4 @@ export function supportedSupplierOrderApiCodes() {
   return Object.keys(ADAPTERS);
 }
 
-export { submitMikadoPurchase, submitMoskvorechiePurchase };
+export { deleteMikadoBasketItems, submitMikadoPurchase, submitMoskvorechiePurchase };

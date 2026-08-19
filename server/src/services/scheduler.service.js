@@ -3,9 +3,10 @@
  * Сервис для планирования периодических задач (cron jobs)
  *
  * Минимальные цены по маркетплейсам:
- * Комиссии и справочники MP обновляются примерно раз в сутки (ночные задачи 1:00–2:00 МСК).
- * После этого один раз за сутки выполняется полный прогон: синхронизация кэша калькулятора из API
- * и пересчёт мин. цен по всему каталогу из БД (см. MIN_PRICES_NIGHTLY_CRON),
+ * Комиссии и справочники MP обновляются примерно раз в сутки (ночные задачи 1:00–2:00 МСК — общие справочники).
+ * Тенант-задачи (отчёты FBO/FBS, архив заказов, карточки МП, остатки МП, проверка API) —
+ * по локальному времени профиля (profiles.timezone), диспетчер PROFILE_NIGHTLY_DISPATCH_CRON.
+ * После справочников — полный прогон мин. цен (MIN_PRICES_NIGHTLY_CRON, по умолчанию МСК),
  * затем пуш цен на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED; только org с auto_push_marketplace_prices).
  * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): WB батчем + Ozon/YM для затронутых.
  * В течение дня при изменении карточки (себестоимость, габариты, категория и т.д.) достаточно
@@ -30,6 +31,10 @@ import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnap
 import marketplaceFboReportsService from './marketplaceFboReports.service.js';
 import marketplaceFbsReportsService from './marketplaceFbsReports.service.js';
 import marketplaceProductCardPull from './marketplaceProductCardPull.service.js';
+import {
+  getProfileNightlyDispatcherCron,
+  runProfileNightlyDispatcherTick,
+} from './profileNightlyDispatcher.service.js';
 import {
   getSchedulerDbJobName,
   isSchedulerDbJobRunning,
@@ -262,6 +267,18 @@ function getMarketplaceFbsReportsDailyCron() {
 
 function isMarketplaceFbsReportsDailyEnabled() {
   const v = process.env.MP_FBS_REPORTS_DAILY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Суточный пересчёт % выкупа (FBS заказы + FBO отчёты). По умолчанию 05:40 МСК. */
+function getBuyoutRateDailyCron() {
+  const c = process.env.BUYOUT_RATE_DAILY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '40 5 * * *';
+}
+
+function isBuyoutRateDailyEnabled() {
+  const v = process.env.BUYOUT_RATE_DAILY_ENABLED;
   if (v == null || String(v).trim() === '') return true;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
@@ -654,7 +671,7 @@ class SchedulerService {
           const { pruneMarketplacePriceChanges } = await import(
             './marketplacePriceChanges.service.js'
           );
-          const pruned = await pruneMarketplacePriceChanges(7);
+          const pruned = await pruneMarketplacePriceChanges(30);
           logger.info('[Scheduler] Price changes prune', pruned);
         } catch (error) {
           logger.warn('[Scheduler] Price changes prune failed:', error?.message || error);
@@ -719,50 +736,8 @@ class SchedulerService {
         logger.info('[Scheduler] Min price reconcile disabled (MARKETPLACE_MIN_PRICE_RECONCILE_ENABLED)');
       }
 
-      // Ежедневная проверка API всех интеграций (Ozon, WB, Yandex) — по каждому профилю (аккаунту)
-      const apiCheckJob = cron.schedule('0 6 * * *', async () => {
-        logger.info('[Scheduler] Starting daily marketplace API check...');
-        const marketplaces = ['ozon', 'wildberries', 'yandex'];
-        let profiles = [{ id: null }];
-        try {
-          if (repositoryFactory.isUsingPostgreSQL()) {
-            const rows = await repositoryFactory.getProfilesRepository().findAll();
-            profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
-          }
-        } catch (e) {
-          logger.warn('[Scheduler] API check: could not load profiles:', e?.message || e);
-        }
-        for (const p of profiles) {
-          const profileId = p?.id ?? null;
-          for (const code of marketplaces) {
-            try {
-              const config = await integrationsService.getMarketplaceConfig(code, { profileId });
-              const ozonApiKey = config?.api_key ?? config?.apiKey;
-              const ozonClient = config?.client_id ?? config?.clientId;
-              const hasOzonKeys =
-                ozonClient &&
-                String(ozonClient).trim() !== '' &&
-                ozonApiKey != null &&
-                String(ozonApiKey).trim() !== '';
-              const simpleKey = config?.api_key ?? config?.apiKey;
-              const hasSimpleKey = simpleKey != null && String(simpleKey).trim() !== '';
-              const hasKey = code === 'ozon' ? hasOzonKeys : hasSimpleKey;
-              if (!hasKey) continue;
-              await integrationsService.getMarketplaceTokenStatus(code, { profileId });
-              logger.info(`[Scheduler] API check done: ${code} profile=${profileId ?? 'default'}`);
-            } catch (error) {
-              logger.warn(
-                `[Scheduler] API check failed for ${code} profile=${profileId ?? 'default'}:`,
-                error?.message || error
-              );
-            }
-          }
-        }
-        logger.info('[Scheduler] Daily marketplace API check finished');
-      }, {
-        scheduled: false,
-        timezone: 'Europe/Moscow'
-      });
+      // Ежедневная проверка API — в диспетчере по TZ профиля (см. profile-nightly-dispatch).
+      const apiCheckJob = null;
 
       // Периодическая синхронизация отзывов — по каждому профилю (аккаунту)
       let reviewsSyncJob = null;
@@ -937,21 +912,14 @@ class SchedulerService {
         logger.info('[Scheduler] FBO supply status sync disabled (FBO_SUPPLY_STATUS_SYNC_ENABLED)');
       }
 
-      let ordersArchiveJob = null;
-      const ordersArchiveCron = getOrdersArchiveCronExpression();
-      if (isOrdersArchiveEnabled()) {
-        ordersArchiveJob = cron.schedule(ordersArchiveCron, async () => {
-          if (isSchedulerDbJobRunning()) {
-            logger.info('[Scheduler] Orders archive: пропуск — ночная задача БД');
-            return;
-          }
-          await runSchedulerDbJob('orders-archive', () => runOrdersArchive());
-        }, {
-          scheduled: false,
-          timezone: 'Europe/Moscow'
-        });
-      } else {
+      // Архивация заказов — по локальной ночи профиля (profile-nightly-dispatch).
+      const ordersArchiveJob = null;
+      if (!isOrdersArchiveEnabled()) {
         logger.info('[Scheduler] Orders archive disabled (ORDERS_ARCHIVE_ENABLED)');
+      } else {
+        logger.info(
+          '[Scheduler] Orders archive: через profile-nightly-dispatch (локальное время профиля, ORDERS_ARCHIVE_CRON)'
+        );
       }
 
       let orphanOrderReserveJob = null;
@@ -993,9 +961,10 @@ class SchedulerService {
       const autoOrderReserveCron =
         process.env.AUTO_ORDER_RESERVE_CRON && String(process.env.AUTO_ORDER_RESERVE_CRON).trim()
           ? String(process.env.AUTO_ORDER_RESERVE_CRON).trim()
-          : '*/2 * * * *';
+          : '35 * * * *';
+      // Основной авторезерв — при импорте нового заказа (orders.sync). Крон — редкая страховка.
       const autoOrderReserveEnabled = !/^(0|false|no|off)$/i.test(
-        String(process.env.AUTO_ORDER_RESERVE_ENABLED ?? '1').trim()
+        String(process.env.AUTO_ORDER_RESERVE_ENABLED ?? '0').trim()
       );
       if (autoOrderReserveEnabled) {
         autoOrderReserveJob = cron.schedule(
@@ -1014,7 +983,7 @@ class SchedulerService {
             }
             await runSchedulerDbJob('auto-order-reserve', async () => {
               const { default: ordersService } = await import('./orders.service.js');
-              const out = await ordersService.runScheduledAutoReserveAllProfiles({ limitPerProfile: 50 });
+              const out = await ordersService.runScheduledAutoReserveAllProfiles({ limitPerProfile: 20 });
               if (out.reapplied > 0) {
                 logger.info(
                   `[Scheduler] Auto order reserve: reapplied=${out.reapplied} checked=${out.checked} profiles=${out.profiles}`
@@ -1028,7 +997,9 @@ class SchedulerService {
           }
         );
       } else {
-        logger.info('[Scheduler] Auto order reserve disabled (AUTO_ORDER_RESERVE_ENABLED)');
+        logger.info(
+          '[Scheduler] Auto order reserve cron disabled (AUTO_ORDER_RESERVE_ENABLED); reserve on new order sync'
+        );
       }
 
       let autoProcurementJob = null;
@@ -1131,123 +1102,131 @@ class SchedulerService {
 
       this.jobs.push({
         name: 'marketplace-api-check',
-        job: apiCheckJob,
+        job: null,
         schedule: '0 6 * * *',
-        description: 'Ежедневная проверка API интеграций (Ozon, WB, Yandex) для уведомлений'
+        description:
+          'Проверка API интеграций по локальному времени профиля (profile-nightly-dispatch, 06:00)',
       });
 
+      this.jobs.push({
+        name: 'wb-closed-shipments-prune',
+        job: null,
+        schedule: process.env.WB_CLOSED_SHIPMENTS_PRUNE_CRON || '55 3 * * *',
+        description:
+          'Удаление закрытых WB-отгрузок старше WB_CLOSED_SHIPMENT_RETENTION_DAYS (по умолчанию 2) через profile-nightly-dispatch',
+      });
+
+      if (isOrdersArchiveEnabled()) {
+        this.jobs.push({
+          name: 'orders-archive',
+          job: null,
+          schedule: getOrdersArchiveCronExpression(),
+          description:
+            'Архивация заказов по локальному времени профиля. ORDERS_ARCHIVE_CRON + profiles.timezone',
+        });
+      }
+
       if (isMarketplaceInventoryDailyEnabled()) {
-        const mpInvCron = getMarketplaceInventoryDailyCron();
+        logger.info(
+          '[Scheduler] Marketplace inventory daily: через profile-nightly-dispatch (MP_INVENTORY_DAILY_CRON, локальное время профиля)'
+        );
         this.jobs.push({
           name: 'marketplace-inventory-daily',
-          job: async () => {
-            try {
-              await runMarketplaceInventoryDailySnapshot();
-            } catch (e) {
-              logger.error('[Scheduler] Marketplace inventory daily snapshot failed:', e?.message || e);
-              addRuntimeNotification({
-                type: 'error',
-                message: `Ошибка ежедневного импорта остатков маркетплейсов: ${e?.message || e}`
-              });
-            }
-          },
-          schedule: mpInvCron,
-          description: 'Ежедневный импорт остатков МП + товары в пути/возвраты (MP_INVENTORY_DAILY_CRON)'
+          job: null,
+          schedule: getMarketplaceInventoryDailyCron(),
+          description:
+            'Ежедневный импорт остатков МП по TZ профиля (profile-nightly-dispatch / MP_INVENTORY_DAILY_CRON)',
         });
       } else {
         logger.info('[Scheduler] Marketplace inventory daily snapshot disabled (MP_INVENTORY_DAILY_ENABLED)');
       }
 
-      let marketplaceFboReportsDailyJob = null;
+      const marketplaceFboReportsDailyJob = null;
       if (isMarketplaceFboReportsDailyEnabled()) {
-        const fboReportsCron = getMarketplaceFboReportsDailyCron();
-        marketplaceFboReportsDailyJob = cron.schedule(
-          fboReportsCron,
-          async () => {
-            try {
-              await syncMarketplaceReportsForAllProfiles(marketplaceFboReportsService, 'Marketplace FBO reports');
-            } catch (e) {
-              logger.error('[Scheduler] Marketplace FBO reports sync failed:', e?.message || e);
-              addRuntimeNotification({
-                type: 'error',
-                message: `Ошибка ежедневной загрузки FBO-отчётов: ${e?.message || e}`,
-              });
-            }
-          },
-          { scheduled: false, timezone: 'Europe/Moscow' }
+        logger.info(
+          '[Scheduler] Marketplace FBO reports: через profile-nightly-dispatch (MP_FBO_REPORTS_DAILY_CRON)'
         );
         this.jobs.push({
           name: 'marketplace-fbo-reports-daily',
-          job: marketplaceFboReportsDailyJob,
-          schedule: fboReportsCron,
+          job: null,
+          schedule: getMarketplaceFboReportsDailyCron(),
           description:
-            'Ежедневная загрузка финансовых отчётов FBO (WB, Ozon, YM) по всем профилям. MP_FBO_REPORTS_DAILY_CRON',
+            'FBO-отчёты по локальному времени профиля. MP_FBO_REPORTS_DAILY_CRON + profiles.timezone',
         });
       } else {
         logger.info('[Scheduler] Marketplace FBO reports daily sync disabled (MP_FBO_REPORTS_DAILY_ENABLED)');
       }
 
-      let marketplaceFbsReportsDailyJob = null;
+      const marketplaceFbsReportsDailyJob = null;
       if (isMarketplaceFbsReportsDailyEnabled()) {
-        const fbsReportsCron = getMarketplaceFbsReportsDailyCron();
-        marketplaceFbsReportsDailyJob = cron.schedule(
-          fbsReportsCron,
-          async () => {
-            try {
-              await syncMarketplaceReportsForAllProfiles(marketplaceFbsReportsService, 'Marketplace FBS reports');
-            } catch (e) {
-              logger.error('[Scheduler] Marketplace FBS reports sync failed:', e?.message || e);
-              addRuntimeNotification({
-                type: 'error',
-                message: `Ошибка ежедневной загрузки FBS-отчётов: ${e?.message || e}`,
-              });
-            }
-          },
-          { scheduled: false, timezone: 'Europe/Moscow' }
+        logger.info(
+          '[Scheduler] Marketplace FBS reports: через profile-nightly-dispatch (MP_FBS_REPORTS_DAILY_CRON)'
         );
         this.jobs.push({
           name: 'marketplace-fbs-reports-daily',
-          job: marketplaceFbsReportsDailyJob,
-          schedule: fbsReportsCron,
+          job: null,
+          schedule: getMarketplaceFbsReportsDailyCron(),
           description:
-            'Ежедневная загрузка финансовых отчётов FBS (WB, Ozon, YM) по всем профилям. MP_FBS_REPORTS_DAILY_CRON',
+            'FBS-отчёты по локальному времени профиля. MP_FBS_REPORTS_DAILY_CRON + profiles.timezone',
         });
       } else {
         logger.info('[Scheduler] Marketplace FBS reports daily sync disabled (MP_FBS_REPORTS_DAILY_ENABLED)');
       }
 
-      let marketplaceCardPullDailyJob = null;
+      if (isBuyoutRateDailyEnabled()) {
+        logger.info(
+          '[Scheduler] Buyout rate daily: через profile-nightly-dispatch (BUYOUT_RATE_DAILY_CRON)'
+        );
+        this.jobs.push({
+          name: 'buyout-rate-daily',
+          job: null,
+          schedule: getBuyoutRateDailyCron(),
+          description:
+            '% выкупа: FBS из заказов, FBO из отчётов. BUYOUT_RATE_DAILY_CRON + profiles.timezone (после FBO/FBS отчётов)',
+        });
+      } else {
+        logger.info('[Scheduler] Buyout rate daily disabled (BUYOUT_RATE_DAILY_ENABLED)');
+      }
+
+      const marketplaceCardPullDailyJob = null;
       if (isMarketplaceCardPullDailyEnabled()) {
-        const cardPullCron = getMarketplaceCardPullDailyCron();
-        marketplaceCardPullDailyJob = cron.schedule(
-          cardPullCron,
-          async () => {
-            try {
-              logger.info('[Scheduler] Marketplace card pull daily...');
-              await marketplaceProductCardPull.pullDailyMarketplaceCardsForEnabledOrgs();
-            } catch (e) {
-              logger.error('[Scheduler] Marketplace card pull daily failed:', e?.message || e);
-              await addRuntimeNotification({
-                type: 'error',
-                severity: 'error',
-                source: 'marketplace_card_pull',
-                title: 'Ошибка ежедневного импорта карточек МП',
-                message: `Ошибка ежедневного импорта карточек с маркетплейсов: ${e?.message || e}`,
-              });
-            }
-          },
-          { scheduled: false, timezone: 'Europe/Moscow' }
+        logger.info(
+          '[Scheduler] Marketplace card pull: через profile-nightly-dispatch (MP_CARD_PULL_DAILY_CRON)'
         );
         this.jobs.push({
           name: 'marketplace-card-pull-daily',
-          job: marketplaceCardPullDailyJob,
-          schedule: cardPullCron,
+          job: null,
+          schedule: getMarketplaceCardPullDailyCron(),
           description:
-            'Ежедневный импорт карточек МП для org с daily_pull_marketplace_cards. MP_CARD_PULL_DAILY_CRON',
+            'Импорт карточек МП по локальному времени профиля. MP_CARD_PULL_DAILY_CRON + profiles.timezone',
         });
       } else {
         logger.info('[Scheduler] Marketplace card pull daily disabled (MP_CARD_PULL_DAILY_ENABLED)');
       }
+
+      const profileNightlyDispatchCron = getProfileNightlyDispatcherCron();
+      const profileNightlyDispatchJob = cron.schedule(
+        profileNightlyDispatchCron,
+        async () => {
+          try {
+            const out = await runProfileNightlyDispatcherTick();
+            if (out?.ran > 0 || out?.failed > 0) {
+              logger.info('[Scheduler] Profile nightly dispatch tick', out);
+            }
+          } catch (e) {
+            logger.error('[Scheduler] Profile nightly dispatch failed:', e?.message || e);
+          }
+        },
+        // UTC: сравнение идёт через Intl в TZ профиля, а не через timezone cron.
+        { scheduled: false, timezone: 'UTC' }
+      );
+      this.jobs.push({
+        name: 'profile-nightly-dispatch',
+        job: profileNightlyDispatchJob,
+        schedule: profileNightlyDispatchCron,
+        description:
+          'Диспетчер ночных задач по profiles.timezone (отчёты, архив, карточки, остатки МП, API check, очистка закрытых WB-отгрузок). PROFILE_NIGHTLY_DISPATCH_CRON',
+      });
 
       if (reviewsSyncJob) {
         this.jobs.push({
@@ -1308,16 +1287,6 @@ class SchedulerService {
         });
       }
 
-      if (ordersArchiveJob) {
-        this.jobs.push({
-          name: 'orders-archive',
-          job: ordersArchiveJob,
-          schedule: ordersArchiveCron,
-          description:
-            'Архивация завершённых заказов старше 30 дн. (delivered/cancelled). ORDERS_ARCHIVE_CRON, ORDERS_ARCHIVE_AFTER_DAYS'
-        });
-      }
-
       if (orphanOrderReserveJob) {
         this.jobs.push({
           name: 'orphan-order-reserve',
@@ -1334,7 +1303,7 @@ class SchedulerService {
           job: autoOrderReserveJob,
           schedule: autoOrderReserveCron,
           description:
-            'Фоновый авторезерв заказов без UI. AUTO_ORDER_RESERVE_CRON, по умолчанию */2 * * * *'
+            'Страховочный авторезерв (основной — при синке нового заказа). AUTO_ORDER_RESERVE_CRON, по умолчанию 35 * * * *, выкл. по умолчанию'
         });
       }
 
@@ -1356,7 +1325,6 @@ class SchedulerService {
       ymCategoriesJob.start();
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
-      apiCheckJob.start();
       if (reviewsSyncJob) {
         reviewsSyncJob.start();
       }
@@ -1375,9 +1343,6 @@ class SchedulerService {
       if (fboSupplyStatusSyncJob) {
         fboSupplyStatusSyncJob.start();
       }
-      if (ordersArchiveJob) {
-        ordersArchiveJob.start();
-      }
       if (orphanOrderReserveJob) {
         orphanOrderReserveJob.start();
       }
@@ -1387,15 +1352,7 @@ class SchedulerService {
       if (autoProcurementJob) {
         autoProcurementJob.start();
       }
-      if (marketplaceFboReportsDailyJob) {
-        marketplaceFboReportsDailyJob.start();
-      }
-      if (marketplaceFbsReportsDailyJob) {
-        marketplaceFbsReportsDailyJob.start();
-      }
-      if (marketplaceCardPullDailyJob) {
-        marketplaceCardPullDailyJob.start();
-      }
+      profileNightlyDispatchJob.start();
       this.isRunning = true;
 
       if (isOrdersFbsSyncEnabled()) {

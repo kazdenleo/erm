@@ -77,10 +77,12 @@
 }
 
 .sales-analytics__table-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: calc(100vh - var(--erm-header-height, 60px) - 12rem);
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #fff;
+  --erm-sticky-table-header-top: 0px;
 }
 
 .sales-analytics__table {
@@ -102,6 +104,16 @@
   color: #334155;
 }
 
+.sales-analytics__date {
+  white-space: nowrap;
+  min-width: 7.5rem;
+}
+
+.sales-analytics__order {
+  white-space: nowrap;
+  width: 1%;
+}
+
 .sales-analytics__num {
   text-align: right;
   white-space: nowrap;
@@ -111,6 +123,50 @@
   cursor: help;
   text-decoration: underline dotted;
   text-underline-offset: 3px;
+}
+
+.sales-analytics__tip {
+  position: relative;
+}
+
+.sales-analytics__tip-box {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% - 2px);
+  z-index: 30;
+  min-width: 220px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.sales-analytics__tip:hover .sales-analytics__tip-box {
+  display: block;
+}
+
+.sales-analytics__tip-box b {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.sales-analytics__tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sales-analytics__tip-row span:last-child {
+  font-variant-numeric: tabular-nums;
 }
 
 .sales-analytics__empty {
@@ -124,4 +180,24 @@
   font-size: 12px;
   color: #64748b;
   max-width: 720px;
+}
+
+.sales-analytics__table th.sales-analytics__col-cost-total,
+.sales-analytics__table td.sales-analytics__col-cost-total {
+  background-color: #fde68a;
+}
+
+.sales-analytics__table th.sales-analytics__col-cost-part,
+.sales-analytics__table td.sales-analytics__col-cost-part {
+  background-color: #fff7ed;
+}
+
+.sales-analytics__table thead th.sales-analytics__col-cost-total {
+  background-color: #fbbf24;
+  color: #78350f;
+}
+
+.sales-analytics__table thead th.sales-analytics__col-cost-part {
+  background-color: #fed7aa;
+  color: #9a3412;
 }

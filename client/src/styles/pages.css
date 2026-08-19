@@ -25,6 +25,7 @@
 .card:has(.stock-levels-table) {
   max-width: none;
   width: 100%;
+  overflow: visible;
 }
 
 /* Заголовок страницы */

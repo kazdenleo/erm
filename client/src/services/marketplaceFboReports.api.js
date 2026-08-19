@@ -30,4 +30,13 @@ export const marketplaceFboReportsApi = {
     const r = await api.get(`/marketplace-fbo-reports/by-order${qs ? `?${qs}` : ''}`);
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  lookup: async ({ marketplace, orderId } = {}) => {
+    const params = new URLSearchParams();
+    if (marketplace) params.set('marketplace', marketplace);
+    if (orderId) params.set('orderId', orderId);
+    const qs = params.toString();
+    const r = await api.get(`/marketplace-fbo-reports/lookup${qs ? `?${qs}` : ''}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
 };

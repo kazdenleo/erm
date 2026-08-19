@@ -195,8 +195,8 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
         ) : null}
         {mode === 'api' && marketplace === 'ozon' ? (
           <p className="text-muted small mb-2">
-            Ozon: в списке только заявки «Заполнение данных» (раздел «Подготовка к поставке»). «Готово к
-            отгрузке», поставки в пути и архив не показываются.
+            Ozon: заявки «Заполнение данных» и «Готово к отгрузке» (раздел «Подготовка к поставке»).
+            Поставки в пути и архив не показываются.
           </p>
         ) : null}
         {mode === 'api' && marketplace === 'wb' ? (

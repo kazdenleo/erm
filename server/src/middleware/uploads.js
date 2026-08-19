@@ -143,3 +143,29 @@ export function createInquiryFilesUpload() {
   });
 }
 
+export function createRichContentBackgroundUpload() {
+  const storage = multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const dir = path.resolve(__dirname, '../../uploads/rich-content');
+      ensureDirSync(dir);
+      cb(null, dir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = safeExt(file?.originalname || '');
+      const id = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+      cb(null, `${id}${ext}`);
+    },
+  });
+
+  return multer({
+    storage,
+    limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+      const mime = String(file?.mimetype || '').toLowerCase();
+      const ext = safeExt(file?.originalname || '');
+      const ok = mime.startsWith('image/') && !!ext;
+      cb(ok ? null : new Error('Разрешены только изображения (jpg/png/webp/gif).'), ok);
+    },
+  });
+}
+

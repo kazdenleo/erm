@@ -10,5 +10,6 @@ router.use(requireAuth);
 router.post('/sync', wrapAsync(controller.syncFboReports));
 router.get('/by-product', wrapAsync(controller.getFboByProduct));
 router.get('/by-order', wrapAsync(controller.getFboByOrder));
+router.get('/lookup', wrapAsync(controller.lookupFboOrder));
 
 export default router;

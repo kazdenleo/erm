@@ -78,7 +78,13 @@ export function extractYmFinanceAmounts(row) {
     amounts.retail_amount = abs;
     return amounts;
   }
-  if (src.includes('баллы') || src.includes('скидк')) {
+  // Компенсация скидки Маркетом (начисление баллов) — это выручка, не удержание.
+  if (src.includes('баллы') && (type.includes('начисл') || sum > 0)) {
+    amounts.retail_amount = abs;
+    return amounts;
+  }
+  // Доля продавца в совместной акции — удержание.
+  if (src.includes('скидк') || (src.includes('баллы') && (type.includes('списан') || type.includes('удерж') || sum < 0))) {
     amounts.other_deductions = abs;
     return amounts;
   }

@@ -37,3 +37,14 @@ export async function getFbsByOrder(req, res) {
   });
   return res.json({ ok: true, data });
 }
+
+export async function lookupFbsOrder(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { marketplace, orderId } = req.query || {};
+  const data = await marketplaceFbsReportsService.lookupByOrder({
+    profileId,
+    marketplace,
+    orderId,
+  });
+  return res.json({ ok: true, data });
+}

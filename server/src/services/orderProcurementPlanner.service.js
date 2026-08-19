@@ -598,22 +598,28 @@ async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, 
 
 /**
  * Сколько единиц товара уже покрыто закупками под этот заказ.
- * Важно: считаем и archived — иначе после приёмки/архива сбрасывается purchased
- * и автозакупка заказывает те же source_orders повторно (как CN1009 в №224→№227).
+ *
+ * Open-закупки всегда считаются покрытием.
+ * Archived — только если заказ ещё «держит» товар (есть резерв) или уже не в
+ * new/in_procurement. Иначе после приёмки чужой расход on_hand оставляет
+ * new-заказ с purchased=1 и ложным «закупка не требуется» (AN1014M / #233).
  */
 async function effectivePurchasedQty(
   profileId,
   orderDbId,
   productId,
   recordedPurchased,
-  { resetStale = false, lineKey = null } = {}
+  { resetStale = false, lineKey = null, reservedQty = 0, orderStatus = null } = {}
 ) {
   const recorded = Math.max(0, Math.floor(Number(recordedPurchased) || 0));
+  const reserved = Math.max(0, Math.floor(Number(reservedQty) || 0));
+  const st = String(orderStatus ?? '').trim().toLowerCase();
+  const stillNeedsStock = st === '' || st === 'new' || st === 'in_procurement';
 
   const linked = await query(
     `SELECT
-       COALESCE(COUNT(*), 0)::int AS linked_qty,
-       COALESCE(SUM(CASE WHEN p.status = 'open' THEN 1 ELSE 0 END), 0)::int AS open_links
+       COALESCE(SUM(CASE WHEN p.status = 'open' THEN 1 ELSE 0 END), 0)::int AS open_links,
+       COALESCE(SUM(CASE WHEN p.status = 'archived' THEN 1 ELSE 0 END), 0)::int AS archived_links
      FROM purchase_items pi
      INNER JOIN purchases p ON p.id = pi.purchase_id
      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
@@ -630,11 +636,14 @@ async function effectivePurchasedQty(
        )`,
     [profileId, orderDbId, productId]
   );
-  const fromLinked = Number(linked.rows?.[0]?.linked_qty) || 0;
-  if (fromLinked > 0) {
-    return Math.max(recorded, fromLinked);
+  const openLinks = Number(linked.rows?.[0]?.open_links) || 0;
+  const archivedLinks = Number(linked.rows?.[0]?.archived_links) || 0;
+
+  if (openLinks > 0) {
+    return Math.max(recorded, openLinks);
   }
 
+  // Открытая закупка с pending по строке (на случай, если source_orders уже сняли)
   const r = await query(
     `SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int AS qty
      FROM purchase_items pi
@@ -658,7 +667,12 @@ async function effectivePurchasedQty(
     return Math.max(recorded, fromOpen);
   }
 
-  // Нет привязки ни к одной закупке — устаревший quantity_purchased можно сбросить.
+  if (archivedLinks > 0 && (reserved > 0 || !stillNeedsStock)) {
+    // Архив + резерв / уже ушёл со склада — не закупаем повторно (CN1009).
+    return Math.max(recorded, archivedLinks);
+  }
+
+  // Нет актуального покрытия — сбрасываем устаревший quantity_purchased.
   if (resetStale && recorded > 0) {
     const params = [profileId, orderDbId, productId];
     let whereExtra = '';
@@ -678,16 +692,19 @@ async function effectivePurchasedQty(
        WHERE fl.profile_id = $1 AND fl.order_db_id = $2 AND fl.product_id = $3${whereExtra}`,
       params
     );
-    logger.info('[OrderProcurement] reset stale purchased qty (no purchase link)', {
+    logger.info('[OrderProcurement] reset stale purchased qty (no active coverage)', {
       orderDbId,
       productId,
       lineKey,
       was: recorded,
+      archivedLinks,
+      reserved,
+      orderStatus: st || null,
     });
     return 0;
   }
 
-  return recorded;
+  return 0;
 }
 
 /** Перевести заказ(ы) в статус «В закупке» после оформления закупки или отправки поставщику. */
@@ -942,7 +959,12 @@ class OrderProcurementPlannerService {
         line.orderDbId,
         line.productId,
         recordedPurchased,
-        { resetStale: true, lineKey: line.lineKey }
+        {
+          resetStale: true,
+          lineKey: line.lineKey,
+          reservedQty: reservedNow,
+          orderStatus: line.orderRow?.status ?? null,
+        }
       );
 
       const coverage = computeProcurementDeficit({
@@ -1383,12 +1405,18 @@ class OrderProcurementPlannerService {
       const quantityNeeded = Number(row.quantity_needed) || 0;
       const quantityPurchased = Number(row.quantity_purchased) || 0;
       const reservedNow = await ordersService._getReservedQtyForOrderProduct(orderDbId, productId);
+      const orderRow = orderRows.find((o) => Number(o.id) === orderDbId) || null;
       const effectivePurchased = await effectivePurchasedQty(
         pid,
         orderDbId,
         productId,
         quantityPurchased,
-        { resetStale: false, lineKey: row.line_key }
+        {
+          resetStale: true,
+          lineKey: row.line_key,
+          reservedQty: reservedNow,
+          orderStatus: orderRow?.status ?? null,
+        }
       );
       const coverage = computeProcurementDeficit({
         quantityNeeded,

@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { pricesApi } from '../../services/prices.api.js';
 import { Modal } from '../../components/common/Modal/Modal';
-import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
+import { productCardPath } from '../../utils/productCardPath.js';
 import './Prices.css';
 
 function formatRub(value) {
@@ -42,7 +42,6 @@ function ozonDisplayActionPrice(p) {
 }
 
 export function PricePromotions() {
-  const { openProductCardFromClick } = useProductCardModal();
   const [activePromoMarketplace, setActivePromoMarketplace] = useState('ozon'); // 'ozon' | 'wb' | 'ym'
   const [ozonActions, setOzonActions] = useState([]);
   const [ozonActionsLoading, setOzonActionsLoading] = useState(false);
@@ -470,28 +469,26 @@ export function PricePromotions() {
                       <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
                         <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>
                           {p.our_product_id != null ? (
-                            <button
-                              type="button"
-                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
+                            <Link
+                              to={productCardPath(p.our_product_id)}
                               title="Открыть карточку товара"
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
+                              style={{ color: 'inherit', textDecoration: 'underline' }}
                             >
                               {p.our_product_name || '—'}
-                            </button>
+                            </Link>
                           ) : (
                             p.our_product_name || '—'
                           )}
                         </td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>
                           {p.our_product_id != null ? (
-                            <button
-                              type="button"
-                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
+                            <Link
+                              to={productCardPath(p.our_product_id)}
                               title="Открыть карточку товара"
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                              style={{ color: 'inherit', textDecoration: 'underline' }}
                             >
                               {p.our_sku ?? p.offer_id ?? '—'}
-                            </button>
+                            </Link>
                           ) : (
                             p.our_sku ?? p.offer_id ?? '—'
                           )}

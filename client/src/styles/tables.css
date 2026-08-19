@@ -15,7 +15,7 @@
   border-spacing: 0;
   background: white;
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: var(--shadow);
   position: relative;
   table-layout: auto;
@@ -29,9 +29,6 @@
 .suppliers-table thead,
 .stock-levels-table thead {
   background: #f8fafc;
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
 
 .table th,
@@ -99,6 +96,7 @@
 .suppliers-list,
 .stock-levels-table-wrapper {
   overflow-x: auto;
+  overflow-y: clip;
   margin: 20px 0;
 }
 
@@ -128,5 +126,64 @@
   .stock-levels-table td {
     padding: 12px 8px;
   }
+}
+
+/*
+  Липкая шапка таблиц при прокрутке страницы (под фиксированным хедером).
+  overflow-x: auto на обёртке ломает sticky — для горизонтального скролла
+  используем overflow-y: clip, чтобы якорь оставался у окна.
+*/
+:root {
+  /* 0: иначе overflow-x у обёртки таблицы даёт постоянный зазор под «высоту хедера». */
+  --erm-sticky-table-header-top: 0px;
+}
+
+.app-main__inner table,
+.platform-main table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.app-main__inner table > thead,
+.platform-main table > thead {
+  position: sticky;
+  top: var(--erm-sticky-table-header-top);
+  z-index: 6;
+}
+
+.app-main__inner table > thead > tr > th,
+.platform-main table > thead > tr > th {
+  background-color: #f8fafc;
+}
+
+.app-main__inner table > thead > tr:last-child > th,
+.platform-main table > thead > tr:last-child > th {
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.08);
+}
+
+/* Горизонтальный скролл без вертикального scrollport */
+.app-main__inner .prices-table-container,
+.app-main__inner .table-responsive,
+.app-main__inner .questions-table-wrap,
+.app-main__inner .assembly-table-wrap,
+.app-main__inner .warehouse-ops-inventory-table-wrap,
+.app-main__inner .procurement-forecast__table-wrap,
+.platform-main .table-responsive {
+  overflow-x: auto;
+  overflow-y: clip;
+  --erm-sticky-table-header-top: 0px;
+}
+
+/* Внутри своей вертикальной прокрутки шапка липнет к верху блока, не к хедеру приложения */
+.app-main__inner .sales-analytics__table-wrap,
+.app-main__inner .products-bulk-scroll-region,
+.app-main__inner .fbo-purchase-calc-wrap,
+.app-main__inner .fbo-import-table-wrap,
+.app-main__inner .fbo-forecast-table-wrap,
+.app-main__inner .price-history-table-wrap,
+.modal,
+.modal-body,
+.erm-product-card-overlay {
+  --erm-sticky-table-header-top: 0px;
 }
 

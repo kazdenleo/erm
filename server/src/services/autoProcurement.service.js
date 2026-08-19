@@ -18,6 +18,7 @@ import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 import { computeProcurementDeficit } from '../utils/orderProcurementCoverage.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
+import { hasRecentSupplierAccept } from '../utils/recentSupplierAccept.js';
 import { isKitProductId, getKitComponents } from './kitStock.service.js';
 import {
   supplierPreSubmitRequired,
@@ -99,11 +100,21 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
  * Сколько уже закуплено по заказу и товару (антидубль автозакупки).
  * Учитываем не только open: после приёмки закупка уходит в archived, и иначе
  * заказ снова выглядит «без покрытия» и автозаказ дублирует позицию.
+ * Также: недавний успешный Basket_Add (in-memory) — если локальную строку
+ * откатили, а позиция у поставщика осталась.
  */
 async function purchasedQtyInOpenPurchases(profileId, orderDbId, productId) {
   const oid = Number(orderDbId);
   const pid = Number(productId);
   if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
+
+  if (hasRecentSupplierAccept(profileId, oid, pid)) {
+    const o = await query(`SELECT COALESCE(quantity, 1)::int AS order_qty FROM orders WHERE id = $1`, [
+      oid,
+    ]);
+    return Math.max(0, Number(o.rows?.[0]?.order_qty) || 1);
+  }
+
   const r = await query(
     `SELECT
        GREATEST(1, COALESCE(o.quantity, 1))::int AS order_qty,
@@ -123,6 +134,28 @@ async function purchasedQtyInOpenPurchases(profileId, orderDbId, productId) {
              )
            )
        ) AS ever_linked,
+       EXISTS (
+         SELECT 1
+         FROM purchase_items pi
+         INNER JOIN purchases p ON p.id = pi.purchase_id
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+         WHERE p.profile_id = $1
+           AND pi.product_id = $3
+           AND LOWER(COALESCE(p.status, '')) NOT IN ('cancelled', 'canceled')
+           AND (
+             LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+             OR (
+               o.order_group_id IS NOT NULL
+               AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+             )
+           )
+           AND (
+             NULLIF(TRIM(elem->>'supplierSubmittedAt'), '') IS NOT NULL
+             OR NULLIF(TRIM(elem->>'supplier_submitted_at'), '') IS NOT NULL
+             OR NULLIF(TRIM(elem->>'supplierBasketItemId'), '') IS NOT NULL
+             OR NULLIF(TRIM(elem->>'supplier_basket_item_id'), '') IS NOT NULL
+           )
+       ) AS supplier_accepted,
        (
          SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int
          FROM purchase_items pi
@@ -145,7 +178,7 @@ async function purchasedQtyInOpenPurchases(profileId, orderDbId, productId) {
   );
   const row = r.rows?.[0];
   if (!row) return 0;
-  if (row.ever_linked) return Math.max(0, Number(row.order_qty) || 0);
+  if (row.ever_linked || row.supplier_accepted) return Math.max(0, Number(row.order_qty) || 0);
   return Math.max(0, Number(row.open_remaining) || 0);
 }
 

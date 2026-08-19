@@ -7,6 +7,7 @@
  * - competitor — от цен конкурентов (WB/YM; на Ozon шаг пропускается)
  * - sales — корректировка от скорости продаж (FBS orders)
  * - hybrid — цель/пол → конкурент → продажи, всегда ≥ пол
+ * Если задана max_price товара по МП — стратегия не ставит цену выше этого потолка.
  */
 
 import { query } from '../config/database.js';
@@ -22,6 +23,23 @@ function floorRub(minPrice) {
   const n = Number(minPrice);
   if (!Number.isFinite(n) || n < 0) return null;
   return Math.max(1, Math.ceil(n));
+}
+
+/** Потолок продажи: положительное число ₽, иначе не задан. */
+function ceilingRub(maxPrice) {
+  if (maxPrice == null || maxPrice === '') return null;
+  const n = Number(maxPrice);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+/** Не выше потолка. Стратегия считает целыми рублями — округляем вниз, чтобы не превысить. */
+function capToCeiling(price, ceilingN) {
+  if (ceilingN == null || price == null || !Number.isFinite(price) || price <= ceilingN) {
+    return price;
+  }
+  const floored = Math.floor(ceilingN);
+  return floored >= 1 ? floored : ceilingN;
 }
 
 export function defaultStrategyConfig(mode = 'hybrid') {
@@ -223,12 +241,15 @@ export function computeSellingPriceFromInputs({
   velocity = null,
   previousSelling = null,
   marketplace = null,
+  ceiling = null,
+  maxPrice = null,
 }) {
   const m = PRICING_STRATEGY_MODES.includes(mode) ? mode : 'floor';
   const cfg = mergeConfig(m, config);
   const floorN = floorRub(floor);
+  const ceilingN = ceilingRub(ceiling ?? maxPrice);
   const costN = num(cost, 0) || 0;
-  const details = { mode: m, steps: [] };
+  const details = { mode: m, steps: [], ceiling: ceilingN };
 
   let base;
   if (m === 'floor') {
@@ -273,8 +294,33 @@ export function computeSellingPriceFromInputs({
     }
   }
 
-  const rounded = roundRub(price);
-  if (withinBand(rounded, previousSelling, cfg.band_percent) && previousSelling != null) {
+  if (ceilingN != null && price > ceilingN) {
+    const capped = capToCeiling(price, ceilingN);
+    details.steps.push({
+      step: 'clamp_ceiling',
+      from: price,
+      to: capped,
+      ceiling: ceilingN,
+      floorBelowCeiling: floorN == null || floorN <= ceilingN,
+    });
+    price = capped;
+  }
+
+  let rounded = roundRub(price);
+  if (ceilingN != null && rounded > ceilingN) {
+    const capped = capToCeiling(rounded, ceilingN);
+    details.steps.push({ step: 'clamp_ceiling_round', from: rounded, to: capped, ceiling: ceilingN });
+    rounded = capped;
+  }
+
+  const previousCapped = capToCeiling(previousSelling, ceilingN);
+  const previousWouldExceedCeiling =
+    ceilingN != null && previousSelling != null && Number(previousSelling) > ceilingN;
+  if (
+    !previousWouldExceedCeiling &&
+    withinBand(rounded, previousCapped, cfg.band_percent) &&
+    previousSelling != null
+  ) {
     details.steps.push({
       step: 'band_hold',
       previous: previousSelling,
@@ -282,18 +328,22 @@ export function computeSellingPriceFromInputs({
       band_percent: cfg.band_percent,
     });
     return {
-      sellingPrice: roundRub(previousSelling),
+      sellingPrice: roundRub(previousCapped ?? previousSelling),
       floor: floorN,
+      ceiling: ceilingN,
       details,
       heldByBand: true,
+      cappedByCeiling: false,
     };
   }
 
   return {
     sellingPrice: rounded,
     floor: floorN,
+    ceiling: ceilingN,
     details,
     heldByBand: false,
+    cappedByCeiling: details.steps.some((s) => String(s.step || '').startsWith('clamp_ceiling')),
   };
 }
 
@@ -405,14 +455,27 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     strategyId: null,
   });
 
-  const floorsRes = await query(
-    `SELECT marketplace, min_price, selling_price
-     FROM product_marketplace_prices
-     WHERE product_id = $1
-       AND min_price IS NOT NULL AND min_price > 0
-       ${marketplace ? 'AND marketplace = $2' : ''}`,
-    marketplace ? [pid, String(marketplace).toLowerCase()] : [pid]
-  );
+  let floorsRes;
+  try {
+    floorsRes = await query(
+      `SELECT marketplace, min_price, selling_price, max_price
+       FROM product_marketplace_prices
+       WHERE product_id = $1
+         AND min_price IS NOT NULL AND min_price > 0
+         ${marketplace ? 'AND marketplace = $2' : ''}`,
+      marketplace ? [pid, String(marketplace).toLowerCase()] : [pid]
+    );
+  } catch (colErr) {
+    if (!String(colErr.message || '').includes('max_price')) throw colErr;
+    floorsRes = await query(
+      `SELECT marketplace, min_price, selling_price
+       FROM product_marketplace_prices
+       WHERE product_id = $1
+         AND min_price IS NOT NULL AND min_price > 0
+         ${marketplace ? 'AND marketplace = $2' : ''}`,
+      marketplace ? [pid, String(marketplace).toLowerCase()] : [pid]
+    );
+  }
 
   const results = [];
   for (const row of floorsRes.rows || []) {
@@ -521,6 +584,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       velocity,
       previousSelling,
       marketplace: mp,
+      ceiling: row.max_price,
     });
 
     const details = {
@@ -529,9 +593,11 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       strategyName: strategy.name,
       sellingPrice: computed.sellingPrice,
       floor: computed.floor,
+      ceiling: computed.ceiling,
       competitorsCount: (comp.prices || []).length,
       competitorSkip: comp.skipped ? comp.reason : null,
       heldByBand: computed.heldByBand === true,
+      cappedByCeiling: computed.cappedByCeiling === true,
     };
 
     await query(
@@ -569,10 +635,12 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       sellingPrice: computed.sellingPrice,
       sellingPriceBefore: previousSelling,
       floor: computed.floor,
+      ceiling: computed.ceiling,
       mode,
       strategyId: Number(strategy.id),
       strategyName: strategy.name,
       heldByBand: computed.heldByBand,
+      cappedByCeiling: computed.cappedByCeiling,
       reason,
       changed: !sameMoneyLocal(previousSelling, computed.sellingPrice),
     });

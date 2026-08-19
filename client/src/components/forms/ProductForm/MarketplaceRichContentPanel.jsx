@@ -3,12 +3,15 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
+import { MpFieldLinkToggles } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   buildRichContentPreviewHtml,
   hasRichContentPreview,
   openRichContentPreviewPage,
 } from '../../../utils/marketplaceRichContentPreview.js';
+import { RichContentConstructor } from '../../../pages/Settings/RichContentConstructor.jsx';
 
 const MP_LABEL = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
 
@@ -31,6 +34,11 @@ export function MarketplaceRichContentPanel({
   result = null,
   onGenerate,
   disabled = false,
+  categoryId = '',
+  productId = '',
+  onModulesDraftChange,
+  mpFieldLinks = null,
+  onMpFieldLinkToggle,
 }) {
   const mp = String(marketplace || '').toLowerCase();
   const payload = result?.[mp] || null;
@@ -42,6 +50,7 @@ export function MarketplaceRichContentPanel({
   );
   const [showCode, setShowCode] = useState(false);
   const [openError, setOpenError] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
   const isOzon = mp === 'ozon';
   const code = previewCode(mp, payload);
 
@@ -60,7 +69,16 @@ export function MarketplaceRichContentPanel({
       className="card mt-3 border-secondary"
     >
       <div className="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
-        <span>Предпросмотр Rich-контента</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: '2px 0' }}>
+          Предпросмотр Rich-контента
+          {typeof onMpFieldLinkToggle === 'function' ? (
+            <MpFieldLinkToggles
+              fieldKey="rich_content"
+              links={mpFieldLinks}
+              onToggle={onMpFieldLinkToggle}
+            />
+          ) : null}
+        </span>
         <div className="d-flex gap-2 flex-wrap">
           <Button
             type="button"
@@ -84,9 +102,40 @@ export function MarketplaceRichContentPanel({
       <div className="card-body">
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
           {isOzon
-            ? `Вёрстка виджетов ${MP_LABEL[mp]} из карточки. «Открыть страницу» — полноразмерный предпросмотр.`
-            : `${MP_LABEL[mp]} не принимает Rich JSON через API — показываем свёрстанное описание.`}
+            ? `Вёрстка виджетов ${MP_LABEL[mp]} из шаблона категории. Значки OZ/WB/ЯМ связывают генерацию между маркетплейсами.`
+            : `${MP_LABEL[mp]} не принимает Rich JSON через API — показываем свёрстанное описание из того же шаблона категории.`}
+          {categoryId ? (
+            <>
+              {' '}
+              <Link to={`/products/rich-content?categoryId=${encodeURIComponent(categoryId)}`}>
+                Шаблон категории
+              </Link>
+            </>
+          ) : null}
+          {productId ? (
+            <>
+              {' · '}
+              <Link to={`/products/rich-content?productId=${encodeURIComponent(productId)}`}>
+                Шаблон этого товара
+              </Link>
+            </>
+          ) : null}
         </p>
+        {productId ? (
+          <details
+            className="rich-content-product-editor"
+            open={editOpen}
+            onToggle={(e) => setEditOpen(e.currentTarget.open)}
+          >
+            <summary>Изменить вёрстку этого товара</summary>
+            {editOpen ? (
+              <RichContentConstructor
+                embeddedProductId={String(productId)}
+                onModulesChange={onModulesDraftChange}
+              />
+            ) : null}
+          </details>
+        ) : null}
         {error ? (
           <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
             {error}

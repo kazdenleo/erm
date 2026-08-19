@@ -536,8 +536,10 @@ class StockMovementsService {
           // Не даём двум заказам занять больше свободного «в пути», чем есть по supply.
           const wantInc = Math.max(0, Math.floor(Number(metaOut.reserve_from_incoming) || 0));
           if (wantInc > 0) {
-            const { clampReserveSplitToFreeIncoming, freeIncomingFromSupply, onHandHeadroomFromSnapshot } =
-              await import('./orders.service.js');
+            const { clampReserveSplitToFreeIncoming, freeIncomingFromSupply } = await import(
+              '../utils/reserveIncomingSplit.js'
+            );
+            const { onHandHeadroomFromSnapshot } = await import('./orders.service.js');
             const freeIncoming = freeIncomingFromSupply({
               onHand: supply.onHand,
               incoming: supply.incoming,

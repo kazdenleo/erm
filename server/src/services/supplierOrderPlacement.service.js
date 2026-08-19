@@ -9,6 +9,7 @@ import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.p
 import {
   resolveSupplierOrderAdapter,
   supportedSupplierOrderApiCodes,
+  deleteMikadoBasketItems,
 } from './supplierOrderAdapters/index.js';
 import {
   markOrderSourceOrdersSubmitted,
@@ -18,6 +19,53 @@ import {
   isSourceEntrySupplierSubmitted,
   pendingSupplierSubmitQuantity,
 } from '../utils/orderSupplierSubmitScope.js';
+import { basketItemIdsForRollback } from '../utils/supplierSubmitRollback.js';
+import { rememberSupplierAccept } from '../utils/recentSupplierAccept.js';
+import { orderMarketplaceToDb } from '../utils/orderPurchaseLookup.js';
+
+function normalizeProfileId(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** Запомнить антидубль после успешного приёма позиций поставщиком. */
+async function rememberAcceptsFromSubmittedLines(profileId, lines, submittedResults) {
+  const pid = normalizeProfileId(profileId);
+  if (pid == null) return;
+
+  const acceptedProducts = new Set();
+  for (const sl of submittedResults || []) {
+    const productId = Number(sl?.productId ?? sl?.product_id);
+    if (Number.isFinite(productId) && productId > 0) acceptedProducts.add(productId);
+  }
+  const useAll = acceptedProducts.size === 0;
+
+  for (const line of lines || []) {
+    const productId = Number(line?.product_id ?? line?.productId);
+    if (!Number.isFinite(productId) || productId < 1) continue;
+    if (!useAll && !acceptedProducts.has(productId)) continue;
+
+    const entries = parseSourceOrdersEntries(line?.source_orders ?? line?.sourceOrders);
+    for (const ent of entries) {
+      const mp = orderMarketplaceToDb(ent.marketplace);
+      const oid = String(ent.orderId || '').trim();
+      if (!mp || !oid) continue;
+      try {
+        const r = await query(
+          `SELECT id FROM orders WHERE marketplace = $1 AND order_id = $2 LIMIT 1`,
+          [mp, oid]
+        );
+        const orderDbId = Number(r.rows?.[0]?.id);
+        if (Number.isFinite(orderDbId) && orderDbId > 0) {
+          rememberSupplierAccept(pid, orderDbId, productId);
+        }
+      } catch {
+        /* ignore — антидубль best-effort */
+      }
+    }
+  }
+}
 
 function parseApiConfig(raw) {
   if (!raw) return {};
@@ -80,6 +128,44 @@ function submitEnabledForSupplier(apiConfig, integrationConfig) {
 }
 
 const SUPPLIER_SUBMIT_LOCK_NS = 8843211;
+const ORDER_SUBMIT_LOCK_NS = 8843212;
+
+function hashAdvisoryLockKey(str) {
+  let hash = 0;
+  const s = String(str ?? '');
+  for (let i = 0; i < s.length; i += 1) {
+    hash = (hash * 31 + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % 2147483647;
+}
+
+function orderScopeSessionLockKey(orderScope) {
+  const oid = String(orderScope?.orderId ?? '').trim().toLowerCase();
+  const mp = String(
+    orderScope?.marketplaceVariants?.[0] ?? orderScope?.marketplace ?? ''
+  ).toLowerCase();
+  return hashAdvisoryLockKey(`${mp}|${oid}`);
+}
+
+async function tryAcquireSessionLock(ns, key) {
+  const r = await query('SELECT pg_try_advisory_lock($1::integer, $2::integer) AS ok', [ns, key]);
+  return r.rows?.[0]?.ok === true;
+}
+
+async function releaseSessionLock(ns, key) {
+  await query('SELECT pg_advisory_unlock($1::integer, $2::integer)', [ns, key]).catch(() => {});
+}
+
+/** Все source_orders строки уже с supplierSubmittedAt (антидубль повторной отправки). */
+export function purchaseLinesFullySubmitted(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  if (!list.length) return false;
+  return list.every((line) => {
+    const entries = parseSourceOrdersEntries(line?.source_orders);
+    if (!entries.length) return false;
+    return entries.every((e) => isSourceEntrySupplierSubmitted(e));
+  });
+}
 
 /** Не отправлять повторно, если закупка уже ушла поставщику (без force). */
 export function shouldSkipSupplierSubmit(purchase, { force = false } = {}) {
@@ -101,29 +187,30 @@ export function shouldMarkPurchaseSupplierSubmitted(result) {
 export function filterPendingSupplierSubmitLines(purchase, lines) {
   const list = Array.isArray(lines) ? lines : [];
   const submittedAt = purchase?.supplier_submitted_at ?? purchase?.supplierSubmittedAt;
-  if (!submittedAt || String(submittedAt).trim() === '') {
-    return list;
-  }
-  const cutoff = new Date(submittedAt);
-  const cutoffOk = !Number.isNaN(cutoff.getTime());
+  const cutoff = submittedAt ? new Date(submittedAt) : null;
+  const cutoffOk = cutoff && !Number.isNaN(cutoff.getTime());
 
   const out = [];
   for (const line of list) {
     const entries = parseSourceOrdersEntries(line?.source_orders);
-    const pendingEntries = entries.filter((e) => !isSourceEntrySupplierSubmitted(e));
 
-    // Дописали заказ в уже существующую строку (created_at строки старый) — шлём только pending qty.
-    // Не pendingEntries.length: одна запись source_orders может закрывать qty>1 (заказ на 2 шт.).
-    if (pendingEntries.length > 0) {
-      const qty = pendingSupplierSubmitQuantity(line, pendingEntries);
-      out.push({
-        ...line,
-        expected_quantity: qty,
-      });
+    if (entries.length > 0) {
+      const pendingEntries = entries.filter((e) => !isSourceEntrySupplierSubmitted(e));
+      if (pendingEntries.length > 0) {
+        const qty = pendingSupplierSubmitQuantity(line, pendingEntries);
+        out.push({
+          ...line,
+          expected_quantity: qty,
+        });
+      }
       continue;
     }
 
-    if (!cutoffOk) continue;
+    // Строка без source_orders — legacy / ручная позиция.
+    if (!cutoffOk) {
+      out.push(line);
+      continue;
+    }
     const created = line.created_at ?? line.createdAt;
     if (!created) continue;
     const t = new Date(created);
@@ -132,6 +219,23 @@ export function filterPendingSupplierSubmitLines(purchase, lines) {
     }
   }
   return out;
+}
+
+async function markSubmittedAfterAmbiguous({
+  purchaseId,
+  lines,
+  orderScope,
+  orderScoped,
+  appendOnly,
+}) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return;
+  if (orderScoped) {
+    await markOrderSourceOrdersSubmitted(pid, orderScope, []);
+    return;
+  }
+  await markPurchaseSupplierSubmitted(pid, { append: appendOnly });
+  await markPurchaseLinesSourceOrdersSubmitted(pid, lines, []);
 }
 
 async function claimPurchaseForSupplierSubmit(
@@ -564,7 +668,109 @@ export async function trySubmitPurchaseToSupplier({
       }
       return { submitted: false, reason: 'no_lines', message: 'Нет позиций для отправки поставщику' };
     }
+    if (purchaseLinesFullySubmitted(ctx.lines)) {
+      logger.info('[SupplierOrderPlacement] skip duplicate submit — all source_orders marked', {
+        purchaseId: pid,
+        supplierId: sid,
+      });
+      return {
+        submitted: false,
+        skipped: true,
+        reason: 'already_submitted',
+        message: `Все заказы в закупке №${pid} уже отправлены поставщику`,
+        supplierName: ctx.supplier.name,
+        supplierCode: ctx.supplier.code,
+        purchaseId: pid,
+      };
+    }
   }
+
+  const purchaseLockKey = pid % 2147483647;
+  let purchaseLockHeld = false;
+  let orderLockKey = null;
+  let orderLockHeld = false;
+
+  const releaseSubmitSessionLocks = async () => {
+    if (orderLockHeld && orderLockKey != null) {
+      await releaseSessionLock(ORDER_SUBMIT_LOCK_NS, orderLockKey);
+      orderLockHeld = false;
+    }
+    if (purchaseLockHeld) {
+      await releaseSessionLock(SUPPLIER_SUBMIT_LOCK_NS, purchaseLockKey);
+      purchaseLockHeld = false;
+    }
+  };
+
+  purchaseLockHeld = await tryAcquireSessionLock(SUPPLIER_SUBMIT_LOCK_NS, purchaseLockKey);
+  if (!purchaseLockHeld) {
+    return {
+      submitted: false,
+      skipped: true,
+      reason: 'submit_in_progress',
+      message: `Отправка закупки №${pid} уже выполняется`,
+      supplierName: ctx.supplier.name,
+      supplierCode: ctx.supplier.code,
+      purchaseId: pid,
+    };
+  }
+
+  if (orderScoped) {
+    orderLockKey = orderScopeSessionLockKey(orderScope);
+    orderLockHeld = await tryAcquireSessionLock(ORDER_SUBMIT_LOCK_NS, orderLockKey);
+    if (!orderLockHeld) {
+      await releaseSubmitSessionLocks();
+      const oid = String(orderScope.orderId ?? '').trim();
+      return {
+        submitted: false,
+        skipped: true,
+        reason: 'submit_in_progress',
+        message: oid
+          ? `Отправка заказа ${oid} поставщику уже выполняется`
+          : 'Отправка заказа поставщику уже выполняется',
+        supplierName: ctx.supplier.name,
+        supplierCode: ctx.supplier.code,
+        purchaseId: pid,
+        orderScope,
+      };
+    }
+  }
+
+  try {
+    const fresh = await loadPurchaseSubmitContext(pid, sid, profileId);
+    if (fresh) {
+      ctx.lines = fresh.lines;
+      ctx.purchase = fresh.purchase;
+      if (orderScoped) {
+        linesToSubmit = selectLinesForOrderSupplierSubmit(ctx.lines, orderScope, { force });
+        if (!linesToSubmit.length) {
+          return {
+            submitted: false,
+            skipped: true,
+            reason: 'already_submitted',
+            message: `Заказ ${String(orderScope.orderId ?? '').trim()} уже отправлен поставщику`,
+            supplierName: ctx.supplier.name,
+            supplierCode: ctx.supplier.code,
+            purchaseId: pid,
+            orderScope,
+          };
+        }
+      } else {
+        linesToSubmit = force
+          ? ctx.lines
+          : filterPendingSupplierSubmitLines(ctx.purchase, ctx.lines);
+        if (!linesToSubmit.length) {
+          return {
+            submitted: false,
+            skipped: true,
+            reason: 'already_submitted',
+            message: `Нет новых позиций для отправки в закупке №${pid}`,
+            supplierName: ctx.supplier.name,
+            supplierCode: ctx.supplier.code,
+            purchaseId: pid,
+          };
+        }
+      }
+    }
 
   const appendOnly = !orderScoped && Boolean(ctx.purchase.supplier_submitted_at) && !force;
 
@@ -611,7 +817,14 @@ export async function trySubmitPurchaseToSupplier({
 
   const apiCode = canonicalSupplierApiCode(ctx.supplier.code);
   const adapter = resolveSupplierOrderAdapter(apiCode);
+  const releaseClaimIfNeeded = async () => {
+    if (claim.claimed && !force && !appendOnly && !orderScoped) {
+      await releasePurchaseSupplierSubmitClaim(pid).catch(() => {});
+    }
+  };
+
   if (!adapter) {
+    await releaseClaimIfNeeded();
     return {
       submitted: false,
       reason: 'supplier_api_not_configured',
@@ -628,6 +841,7 @@ export async function trySubmitPurchaseToSupplier({
   );
 
   if (!force && !submitEnabledForSupplier(ctx.supplier.apiConfig, integrationConfig)) {
+    await releaseClaimIfNeeded();
     return {
       submitted: false,
       reason: 'submit_disabled',
@@ -650,49 +864,115 @@ export async function trySubmitPurchaseToSupplier({
   });
 
   let claimedWithoutForce = claim.claimed && !claim.force && !claim.appendOnly && !claim.orderScoped;
+  let adapterResult = null;
+  let ambiguousMarked = false;
   try {
-    const result = await adapter({
+    adapterResult = await adapter({
       purchase: ctx.purchase,
       lines: linesToSubmit,
       config: integrationConfig,
       integrationConfig,
       supplier: ctx.supplier,
     });
-    if (shouldMarkPurchaseSupplierSubmitted(result)) {
-      if (orderScoped) {
-        await markOrderSourceOrdersSubmitted(pid, orderScope, result.lines);
-      } else {
-        const orderRef =
-          result.supplierOrderId ??
-          result.supplierOrderIds?.[0] ??
-          (Array.isArray(result.supplierOrderIds) && result.supplierOrderIds.length
-            ? result.supplierOrderIds.join(',')
-            : null);
-        await markPurchaseSupplierSubmitted(pid, {
-          supplierOrderRef: orderRef,
-          force: Boolean(force),
-          append: appendOnly,
+    if (shouldMarkPurchaseSupplierSubmitted(adapterResult)) {
+      await rememberAcceptsFromSubmittedLines(
+        ctx.purchase.profile_id ?? profileId,
+        linesToSubmit,
+        adapterResult.lines
+      );
+      try {
+        if (orderScoped) {
+          await markOrderSourceOrdersSubmitted(pid, orderScope, adapterResult.lines);
+        } else {
+          const orderRef =
+            adapterResult.supplierOrderId ??
+            adapterResult.supplierOrderIds?.[0] ??
+            (Array.isArray(adapterResult.supplierOrderIds) && adapterResult.supplierOrderIds.length
+              ? adapterResult.supplierOrderIds.join(',')
+              : null);
+          await markPurchaseSupplierSubmitted(pid, {
+            supplierOrderRef: orderRef,
+            force: Boolean(force),
+            append: appendOnly,
+          });
+          await markPurchaseLinesSourceOrdersSubmitted(pid, linesToSubmit, adapterResult.lines);
+        }
+      } catch (markErr) {
+        // Позиции уже у поставщика — нельзя вернуть submitted:false (иначе откат → дубли в корзине).
+        logger.error('[SupplierOrderPlacement] mark submitted failed after supplier accept', {
+          purchaseId: pid,
+          supplierCode: apiCode,
+          message: markErr?.message || String(markErr),
+          acceptedLines: adapterResult?.lines?.length || 0,
         });
-        await markPurchaseLinesSourceOrdersSubmitted(pid, linesToSubmit, result.lines);
       }
       claimedWithoutForce = false;
+    } else if (adapterResult?.ambiguousSuccess) {
+      await rememberAcceptsFromSubmittedLines(
+        ctx.purchase.profile_id ?? profileId,
+        linesToSubmit,
+        linesToSubmit.map((l) => ({
+          productId: l.product_id ?? l.productId,
+        }))
+      );
+      try {
+        await markSubmittedAfterAmbiguous({
+          purchaseId: pid,
+          lines: linesToSubmit,
+          orderScope,
+          orderScoped,
+          appendOnly,
+        });
+        claimedWithoutForce = false;
+        ambiguousMarked = true;
+        logger.warn('[SupplierOrderPlacement] ambiguous supplier response — marked submitted', {
+          purchaseId: pid,
+          supplierCode: apiCode,
+          orderId: orderScope?.orderId ?? null,
+          lines: linesToSubmit.length,
+        });
+      } catch (markErr) {
+        logger.error('[SupplierOrderPlacement] ambiguous mark failed', {
+          purchaseId: pid,
+          supplierCode: apiCode,
+          message: markErr?.message || String(markErr),
+        });
+      }
     } else if (claimedWithoutForce) {
       await releasePurchaseSupplierSubmitClaim(pid);
       claimedWithoutForce = false;
     }
     const oid = orderScope?.orderId ? String(orderScope.orderId) : null;
-    let msg = result?.message;
-    if (orderScoped && shouldMarkPurchaseSupplierSubmitted(result)) {
+    let msg = adapterResult?.message;
+    if (orderScoped && shouldMarkPurchaseSupplierSubmitted(adapterResult)) {
       msg = oid
         ? `Заказ ${oid} отправлен поставщику (${linesToSubmit.length} поз.)`
         : `Отправлено поставщику: ${linesToSubmit.length} поз.`;
-    } else if (appendOnly && shouldMarkPurchaseSupplierSubmitted(result)) {
+    } else if (appendOnly && shouldMarkPurchaseSupplierSubmitted(adapterResult)) {
       msg = `Дополнительно отправлено поставщику: ${linesToSubmit.length} поз. (закупка №${pid})`;
     }
+    if (adapterResult?.ambiguousSuccess && ambiguousMarked) {
+      return {
+        ...adapterResult,
+        submitted: false,
+        skipped: true,
+        reason: 'ambiguous_assumed_submitted',
+        message:
+          msg ||
+          'Таймаут Mikado — позиция помечена отправленной, повтор не выполняется (проверьте корзину)',
+        appendOnly,
+        orderScoped,
+        orderId: oid,
+        supplierName: ctx.supplier.name,
+        supplierCode: apiCode,
+        lineCount: linesToSubmit.length,
+        purchaseId: pid,
+      };
+    }
     return {
-      ...result,
+      ...adapterResult,
       message: msg,
-      submitted: shouldMarkPurchaseSupplierSubmitted(result),
+      submitted: shouldMarkPurchaseSupplierSubmitted(adapterResult),
       appendOnly,
       orderScoped,
       orderId: oid,
@@ -704,6 +984,23 @@ export async function trySubmitPurchaseToSupplier({
   } catch (e) {
     if (claimedWithoutForce) {
       await releasePurchaseSupplierSubmitClaim(pid).catch(() => {});
+    }
+    // Если адаптер уже принял позиции, не маскируем это под полный провал.
+    if (adapterResult && shouldMarkPurchaseSupplierSubmitted(adapterResult)) {
+      logger.error('[SupplierOrderPlacement] error after supplier accept', {
+        purchaseId: pid,
+        supplierCode: apiCode,
+        message: e?.message || String(e),
+      });
+      return {
+        ...adapterResult,
+        submitted: true,
+        markError: e?.message || String(e),
+        supplierName: ctx.supplier.name,
+        supplierCode: apiCode,
+        lineCount: linesToSubmit.length,
+        purchaseId: pid,
+      };
     }
     logger.error('[SupplierOrderPlacement] adapter error', {
       purchaseId: pid,
@@ -718,6 +1015,55 @@ export async function trySubmitPurchaseToSupplier({
       supplierCode: apiCode,
     };
   }
+  } finally {
+    await releaseSubmitSessionLocks();
+  }
+}
+
+/**
+ * Снять принятые позиции из корзины поставщика при откате локальной закупки.
+ */
+export async function cleanupSupplierBasketOnRollback({
+  supplierId,
+  profileId,
+  supplierSubmit,
+  rollbackItems,
+} = {}) {
+  const basketIds = basketItemIdsForRollback(supplierSubmit, rollbackItems);
+  if (!basketIds.length) return { deleted: [], failed: [], skipped: true };
+
+  const sid = Number(supplierId);
+  if (!Number.isFinite(sid) || sid < 1) {
+    return { deleted: [], failed: basketIds.map((id) => ({ id, message: 'no_supplier' })) };
+  }
+
+  const supplierRow = await query(
+    `SELECT code FROM suppliers WHERE id = $1 LIMIT 1`,
+    [sid]
+  );
+  const apiCode = canonicalSupplierApiCode(supplierRow.rows?.[0]?.code);
+  if (apiCode !== 'mikado') {
+    return { deleted: [], failed: [], skipped: true, reason: 'unsupported_supplier' };
+  }
+
+  const config = await loadIntegrationConfigForOrder(apiCode, profileId);
+  if (!config?.user_id || !config?.password) {
+    logger.warn('[SupplierOrderPlacement] Basket_Delete skipped — no Mikado credentials', {
+      supplierId: sid,
+      basketIds,
+    });
+    return { deleted: [], failed: basketIds.map((id) => ({ id, message: 'no_credentials' })) };
+  }
+
+  const out = await deleteMikadoBasketItems(config, basketIds);
+  if (out.deleted.length || out.failed.length) {
+    logger.info('[SupplierOrderPlacement] Basket_Delete on rollback', {
+      supplierId: sid,
+      deleted: out.deleted,
+      failed: out.failed,
+    });
+  }
+  return out;
 }
 
 export default {
@@ -729,5 +1075,7 @@ export default {
   shouldSkipSupplierSubmit,
   shouldMarkPurchaseSupplierSubmitted,
   filterPendingSupplierSubmitLines,
+  purchaseLinesFullySubmitted,
   markPurchaseSupplierSubmitted,
+  cleanupSupplierBasketOnRollback,
 };

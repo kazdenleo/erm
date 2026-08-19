@@ -201,7 +201,7 @@ class ProductCompetitorsService {
           meta: {
             product_id: Number(row.product_id),
             competitor_id: Number(row.id),
-            url: `/products?open=${row.product_id}&tab=competitors`,
+            url: `/products/${row.product_id}?tab=competitors`,
           },
         });
         alert_sent_at = now;

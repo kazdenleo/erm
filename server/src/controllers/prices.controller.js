@@ -380,7 +380,7 @@ class PricesController {
 
   /**
    * POST /api/product/prices/save-commercial
-   * Body: { items: [{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }] }
+   * Body: { items: [{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent?, maxPrice? }] }
    */
   async saveCommercial(req, res, next) {
     try {

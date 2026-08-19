@@ -10,6 +10,7 @@ import {
   parseArrivalBucketFromPurchaseNote,
   normalizeArrivalBucket,
   resolveProcurementArrivalBucketFromApiConfig,
+  resolveWarehouseForProcurementBucket,
   isProcurementBucketOpenForNewOrders,
   isPurchaseCreatedInProcurementWindow,
 } from './supplierProcurementArrival.js';
@@ -25,6 +26,20 @@ function parseApiConfig(raw) {
   }
 }
 
+async function loadSupplierWarehouseForWindow(client, { profileId, supplierId, now }) {
+  const sid = Number(supplierId);
+  const pid = Number(profileId);
+  if (!Number.isFinite(sid) || sid < 1 || !Number.isFinite(pid)) return null;
+  const sup = await client.query(
+    `SELECT api_config, code FROM suppliers WHERE id = $1 AND profile_id = $2 LIMIT 1`,
+    [sid, pid]
+  );
+  const row = sup.rows?.[0];
+  if (!row) return null;
+  const apiConfig = parseApiConfig(row.api_config);
+  return resolveWarehouseForProcurementBucket(apiConfig.warehouses, now, row.code ?? null);
+}
+
 /**
  * @param {import('pg').PoolClient | { query: Function }} client
  */
@@ -38,6 +53,11 @@ export async function findOpenAutoPurchaseId(
   }
 
   const markerLike = `${autoArrivalNoteMarker(bucket)}%`;
+  const supplierWarehouse = await loadSupplierWarehouseForWindow(client, {
+    profileId,
+    supplierId,
+    now,
+  });
 
   const exact = await client.query(
     `SELECT id, note, created_at FROM purchases
@@ -56,7 +76,8 @@ export async function findOpenAutoPurchaseId(
           exactRow.created_at,
           bucket,
           now,
-          warehouseWeekendDays
+          warehouseWeekendDays,
+          supplierWarehouse
         )
       ) {
         return null;
@@ -75,7 +96,12 @@ export async function upgradeLegacyPurchaseArrivalNote(
   client,
   purchaseId,
   arrivalBucket,
-  { extraSuffix = null, now = new Date(), warehouseWeekendDays = null } = {}
+  {
+    extraSuffix = null,
+    now = new Date(),
+    warehouseWeekendDays = null,
+    supplierWarehouse = null,
+  } = {}
 ) {
   const purId = Number(purchaseId);
   const bucket = normalizeArrivalBucket(arrivalBucket);
@@ -88,7 +114,17 @@ export async function upgradeLegacyPurchaseArrivalNote(
   const row = r.rows?.[0];
   const note = String(row?.note || '').trim();
   if (note.includes('[auto-arrival:')) return;
-  if (!isPurchaseCreatedInProcurementWindow(row?.created_at, bucket, now, warehouseWeekendDays)) return;
+  if (
+    !isPurchaseCreatedInProcurementWindow(
+      row?.created_at,
+      bucket,
+      now,
+      warehouseWeekendDays,
+      supplierWarehouse
+    )
+  ) {
+    return;
+  }
 
   const prefix = autoArrivalNoteText(bucket);
   let newNote = note ? `${prefix} · ${note}` : prefix;
@@ -148,4 +184,3 @@ export async function resolveArrivalBucketForSupplier({
 }
 
 export { normalizeArrivalBucket };
-

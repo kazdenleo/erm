@@ -72,11 +72,12 @@ export function calcPurchaseTotals(rows) {
     (acc, r) => {
       const rem = Number(r.remainingToPurchase ?? r.toPurchase) || 0;
       acc.toPurchaseQty += rem;
+      acc.supplyQtyTotal += Number(r.supplyQtyTotal) || 0;
       acc.costSum += r.lineCostTotal || 0;
       if (r.purchasedQty != null) acc.purchasedQty += Number(r.purchasedQty) || 0;
       return acc;
     },
-    { toPurchaseQty: 0, costSum: 0, purchasedQty: 0 }
+    { toPurchaseQty: 0, supplyQtyTotal: 0, costSum: 0, purchasedQty: 0 }
   );
 }
 
@@ -134,17 +135,13 @@ export function mergePurchasedProgress(rows, prevRows = []) {
   });
 }
 
-function groupPurchaseComplete(group) {
-  if (group.header) {
-    return (group.components || []).every(
-      (r) => r.purchaseComplete ?? (Number(r.toPurchase) || 0) === 0
-    );
-  }
-  const row = group.components?.[0];
-  return row ? row.purchaseComplete ?? (Number(row.toPurchase) || 0) === 0 : true;
+/** Позиция уходит вниз только когда во всех поставках 0 (и к закупке тоже 0). */
+export function isRowFullyCleared(row) {
+  if (!row) return true;
+  return (Number(row.supplyQtyTotal) || 0) === 0;
 }
 
-export function sortPurchaseRowsWithProgress(rows) {
+function partitionPurchaseGroups(rows) {
   const groups = [];
   let current = null;
   for (const row of rows) {
@@ -160,18 +157,34 @@ export function sortPurchaseRowsWithProgress(rows) {
     current = null;
     groups.push({ header: null, components: [row] });
   }
+  return groups;
+}
 
-  groups.sort((a, b) => {
-    const aDone = groupPurchaseComplete(a);
-    const bDone = groupPurchaseComplete(b);
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    const aName = a.header?.productName || a.components[0]?.productName || '';
-    const bName = b.header?.productName || b.components[0]?.productName || '';
-    return String(aName).localeCompare(String(bName), 'ru');
-  });
+function groupFullyCleared(group) {
+  if (group.header) {
+    const headerClear = isRowFullyCleared(group.header);
+    const compsClear = (group.components || []).every(isRowFullyCleared);
+    return headerClear && compsClear;
+  }
+  const row = group.components?.[0];
+  return row ? isRowFullyCleared(row) : true;
+}
+
+/**
+ * Стабильная сортировка: очищенные группы (все поставки = 0) вниз,
+ * внутри активных/очищенных порядок не меняется — курсор не прыгает при правках.
+ */
+export function sortPurchaseRowsWithProgress(rows) {
+  const groups = partitionPurchaseGroups(rows);
+  const active = [];
+  const cleared = [];
+  for (const g of groups) {
+    if (groupFullyCleared(g)) cleared.push(g);
+    else active.push(g);
+  }
 
   const out = [];
-  for (const g of groups) {
+  for (const g of [...active, ...cleared]) {
     if (g.header) out.push(g.header);
     out.push(...g.components);
   }

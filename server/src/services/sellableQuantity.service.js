@@ -24,7 +24,7 @@ import {
 
 /**
  * Непринятое ожидание открытых закупок и нетто incoming по purchase_id
- * (для согласования «в пути» с строками закупок).
+ * только открытых закупок (для согласования «в пути» с строками закупок).
  */
 async function readOpenPurchaseIncomingMaps(run, productId, warehouseId = null) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -58,23 +58,31 @@ async function readOpenPurchaseIncomingMaps(run, productId, warehouseId = null) 
           [pid]
         );
 
+  // Нетто журнала только по открытым закупкам (как pending) — иначе исторические
+  // +1/−1 и сиротские сторно обнуляют docNet и pending двойным счётом раздувает incoming.
   const docNetR =
     wh != null
       ? await run(
           `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
-           FROM stock_movements
-           WHERE product_id = $1
-             AND LOWER(TRIM(type::text)) = 'incoming'
-             AND warehouse_id = $2
-             AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'`,
+           FROM stock_movements sm
+           INNER JOIN purchases p
+             ON p.id = (NULLIF(TRIM(sm.meta->>'purchase_id'), ''))::bigint
+            AND p.status = 'open'
+            AND p.warehouse_id = $2
+           WHERE sm.product_id = $1
+             AND LOWER(TRIM(sm.type::text)) = 'incoming'
+             AND COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'`,
           [pid, wh]
         )
       : await run(
           `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
-           FROM stock_movements
-           WHERE product_id = $1
-             AND LOWER(TRIM(type::text)) = 'incoming'
-             AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'`,
+           FROM stock_movements sm
+           INNER JOIN purchases p
+             ON p.id = (NULLIF(TRIM(sm.meta->>'purchase_id'), ''))::bigint
+            AND p.status = 'open'
+           WHERE sm.product_id = $1
+             AND LOWER(TRIM(sm.type::text)) = 'incoming'
+             AND COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'`,
           [pid]
         );
 
@@ -253,12 +261,12 @@ export async function getReservedQuantityFromMovements(productId, opts = {}) {
     if (whId != null) {
       journalNet = await queryWarehouseScopedReservedFromMovements(query, pid, whId);
     } else {
-      const r = await query(
+    const r = await query(
         `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements
-         WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
-        [pid]
-      );
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
+    );
       journalNet = Number(r.rows[0]?.rv ?? 0) || 0;
     }
     const orderMap = await batchOrderAttributedReservedMap([pid], opts);

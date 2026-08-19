@@ -1,4 +1,4 @@
-﻿# Secrets
+# Secrets
 .env
 .env.*
 
@@ -32,10 +32,14 @@ Thumbs.db
 *.bak
 server/tmp-*.png
 
+# Локальные тесты (водяные знаки и т.п.)
+tmp/
+
 # Local runtime data (do not commit)
 data/
 server/data/
 server/uploads/
+server/config/partsapi-keys.local.json
 print-helper/dist/temp/
 print-helper/installer/Output/
 

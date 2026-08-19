@@ -140,6 +140,39 @@ export function filterYmCategoryAttributesForForm(attrs) {
   return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
 }
 
+function normalizeWbCharcName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ');
+}
+
+export function isWbCountryCharcName(name) {
+  const n = normalizeWbCharcName(name);
+  if (!n) return false;
+  if (n === 'страна' || n === 'country') return true;
+  return /страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n);
+}
+
+export function isWbCharcDuplicatingDedicatedField(name) {
+  const n = normalizeWbCharcName(name);
+  if (!n) return false;
+  if (n === 'название' || n === 'наименование' || n === 'name' || n === 'title') return true;
+  if (/^название(\s+товар(а)?)?$/.test(n)) return true;
+  if (/^наименование(\s+товар(а)?)?$/.test(n)) return true;
+  if (n === 'описание' || n === 'description') return true;
+  if (/^описание(\s+товар(а)?)?$/.test(n)) return true;
+  if (n.includes('описание') && (n.includes('товар') || n.includes('продавца') || n.includes('карточк'))) {
+    return true;
+  }
+  if (isWbCountryCharcName(n)) return true;
+  if (n === 'бренд' || n === 'brand') return true;
+  if (n.includes('бренд продавца') || n.includes('торговая марк')) return true;
+  if (n.includes('артикул продавца') || n === 'vendorcode' || n === 'vendor code') return true;
+  return false;
+}
+
 export function mmToCm(mm) {
   const n = Number(mm);
   if (!Number.isFinite(n) || n <= 0) return null;

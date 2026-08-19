@@ -10,5 +10,6 @@ router.use(requireAuth);
 router.post('/sync', wrapAsync(controller.syncFbsReports));
 router.get('/by-product', wrapAsync(controller.getFbsByProduct));
 router.get('/by-order', wrapAsync(controller.getFbsByOrder));
+router.get('/lookup', wrapAsync(controller.lookupFbsOrder));
 
 export default router;

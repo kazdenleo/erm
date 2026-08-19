@@ -126,6 +126,32 @@
   color: #3b82f6;
 }
 
+.price-details-final-amounts {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.price-details-final-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.price-range-max {
+  color: rgba(148, 163, 184, 0.55);
+  font-weight: 500;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+.price-details-final-amounts .price-range-max {
+  font-size: 20px;
+}
+
 .price-discount-helper {
   margin-top: 16px;
   padding-top: 16px;

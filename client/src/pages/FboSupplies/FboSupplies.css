@@ -775,6 +775,13 @@
   flex-wrap: nowrap;
 }
 
+.fbo-pc-restore-btn {
+  min-width: 28px;
+  padding: 2px 6px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
 .fbo-pc-qty-input {
   width: 56px;
   max-width: 100%;

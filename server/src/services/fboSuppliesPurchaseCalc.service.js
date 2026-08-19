@@ -324,14 +324,22 @@ function finalizePurchaseRow(r) {
   };
 }
 
-function groupPurchaseComplete(group) {
-  if (group.header) {
-    return (group.components || []).every((r) => (Number(r.toPurchase) || 0) === 0);
-  }
-  const row = group.components?.[0];
-  return row ? (Number(row.toPurchase) || 0) === 0 : true;
+function isRowFullyCleared(row) {
+  if (!row) return true;
+  return (Number(row.supplyQtyTotal) || 0) === 0;
 }
 
+function groupFullyCleared(group) {
+  if (group.header) {
+    const headerClear = isRowFullyCleared(group.header);
+    const compsClear = (group.components || []).every(isRowFullyCleared);
+    return headerClear && compsClear;
+  }
+  const row = group.components?.[0];
+  return row ? isRowFullyCleared(row) : true;
+}
+
+/** Очищенные (все поставки = 0) вниз; внутри блоков — по имени. */
 function sortPurchaseDisplayRows(rows) {
   const groups = [];
   let current = null;
@@ -350,8 +358,8 @@ function sortPurchaseDisplayRows(rows) {
   }
 
   groups.sort((a, b) => {
-    const aDone = groupPurchaseComplete(a);
-    const bDone = groupPurchaseComplete(b);
+    const aDone = groupFullyCleared(a);
+    const bDone = groupFullyCleared(b);
     if (aDone !== bDone) return aDone ? 1 : -1;
     const aName = a.header?.productName || a.components[0]?.productName || '';
     const bName = b.header?.productName || b.components[0]?.productName || '';

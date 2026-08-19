@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { integrationsApi } from '../../services/integrations.api';
 import { Button } from '../../components/common/Button/Button';
 import { useNavigate } from 'react-router-dom';
+import { rewriteLegacyProductCardUrl } from '../../utils/productCardPath.js';
 
 function notificationOpenUrl(n) {
   const direct = String(n?.meta?.url || n?.meta?.link || '').trim();
@@ -21,7 +22,7 @@ function notificationOpenUrl(n) {
   if (n?.type === 'purchase_receipt_invite' && receiptId != null && String(receiptId).trim() !== '') {
     return `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(receiptId).trim())}`;
   }
-  if (direct) return direct;
+  if (direct) return rewriteLegacyProductCardUrl(direct);
   if (sid != null && String(sid).trim() !== '') {
     return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
   }
@@ -36,6 +37,17 @@ function notificationOpenLabel(n) {
   if (n?.type === 'mp_card_field_changed') return 'Открыть товар';
   if (n?.type === 'supplier_order_submit_failed') return 'Открыть заказы';
   return 'Открыть';
+}
+
+function formatNotificationDate(v) {
+  if (v == null || v === '') return '';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function notificationCreatedAt(n) {
+  return n?.created_at || n?.createdAt || n?.checked_at || null;
 }
 
 export function Notifications() {
@@ -108,6 +120,7 @@ export function Notifications() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {items.map((n) => {
             const openUrl = notificationOpenUrl(n);
+            const createdLabel = formatNotificationDate(notificationCreatedAt(n));
             return (
             <div
               key={n.id}
@@ -122,11 +135,12 @@ export function Notifications() {
                     : 'rgba(59, 130, 246, 0.06)'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', alignItems: 'baseline' }}>
                 <div style={{ fontWeight: 600, fontSize: '13px' }}>{n.title || 'Уведомление'}</div>
-                {n.marketplace && (
-                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>{String(n.marketplace)}</div>
-                )}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline', fontSize: '12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                  {n.marketplace ? <span>{String(n.marketplace)}</span> : null}
+                  {createdLabel ? <span title="Время создания">Создано: {createdLabel}</span> : null}
+                </div>
               </div>
               <div style={{ marginTop: '6px', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
                 {n.message}

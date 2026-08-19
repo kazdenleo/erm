@@ -8,6 +8,7 @@ import {
   formatTaxSystemLabel,
   resolveOrganizationTaxProfile,
 } from './organizationTaxRates.js';
+import { marketplaceRevenueAmount } from './marketplaceOrderEconomics.js';
 
 function formatRubTooltip(n) {
   const v = Number(n) || 0;
@@ -58,13 +59,15 @@ function buildTaxTooltip({
 export function computeMarketplaceRowTax({
   retailAmount,
   costAmount = 0,
+  additionalExpensesAmount = 0,
   expensesTotal = 0,
   taxProfile,
   orgName = null,
   taxSystemRaw = null,
 }) {
   const price = Number(retailAmount) || 0;
-  const totalExpenses = (Number(costAmount) || 0) + (Number(expensesTotal) || 0);
+  const totalExpenses =
+    (Number(costAmount) || 0) + (Number(additionalExpensesAmount) || 0) + (Number(expensesTotal) || 0);
   const profile = taxProfile || resolveOrganizationTaxProfile(null);
   const { vat, incomeTax, netProfit, profitBeforeIncomeTax } = computeTaxesAndNetProfit({
     price,
@@ -161,15 +164,32 @@ export function enrichAnalyticsRowWithTax(row, taxContext) {
   const taxProfile = resolveOrganizationTaxProfile(org);
   const retailAmount = row.retailAmount ?? row.soldAmount ?? 0;
   const expensesTotal = row.expensesTotal ?? 0;
+  const additionalExpensesAmount = Number(row.additionalExpensesAmount ?? row.additional_expenses_amount) || 0;
   const taxFields = computeMarketplaceRowTax({
     retailAmount,
     costAmount: row.costAmount ?? 0,
+    additionalExpensesAmount,
     expensesTotal,
     taxProfile,
     orgName: org?.name || null,
     taxSystemRaw: org?.tax_system || null,
   });
-  return { ...row, ...taxFields };
+  const received = Number(row.payoutAmount ?? row.receivedAmount) || 0;
+  const costAmount = Number(row.costAmount) || 0;
+  const taxAmount = Number(taxFields.taxAmount) || 0;
+  const revenueAmount = marketplaceRevenueAmount({
+    ...row,
+    additionalExpensesAmount,
+    payoutAmount: received,
+    costAmount,
+  });
+  return {
+    ...row,
+    ...taxFields,
+    additionalExpensesAmount,
+    revenueAmount,
+    netIncome: revenueAmount - taxAmount,
+  };
 }
 
 export async function enrichAnalyticsItemsWithTax(items, profileId) {

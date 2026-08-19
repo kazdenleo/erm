@@ -45,6 +45,11 @@ export function resolveEffectiveVolumeLiters(calculator, product, marketplace = 
   if (mp) {
     const fromMp = resolveMarketplaceVolumeLiters(product, mp);
     if (fromMp != null) return fromMp;
+    const fromCalc = calculator?.volume_weight;
+    if (fromCalc != null && fromCalc !== '') {
+      const n = Number(fromCalc);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
     return null;
   }
 
@@ -71,7 +76,6 @@ export function enrichCalculatorVolumeFromProduct(calculator, product, marketpla
     if (mp) {
       return {
         ...calculator,
-        volume_weight: null,
         volume_source: `${mpNorm}:missing_packaging`,
         marketplace: mpNorm === 'yandex' ? 'ym' : mpNorm === 'wildberries' ? 'wb' : mpNorm,
       };

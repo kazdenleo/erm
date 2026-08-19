@@ -59,6 +59,21 @@ async function lookupMikadoOffer({ sku, brand, config }) {
   return { ok: true, lines, message: message || null };
 }
 
+function isMikadoBasketAddOk({ basketId, message, orderedQty }) {
+  if (basketId > 0) return true;
+  const msg = String(message || '').trim();
+  // Mikado иногда отвечает Message=OK без ID в XML — позиция уже в корзине.
+  if (/^ok$/i.test(msg)) return true;
+  if (orderedQty > 0 && /ok|добавл|added|success/i.test(msg)) return true;
+  return false;
+}
+
+function isAmbiguousMikadoNetworkError(message) {
+  return /таймаут|timeout|aborterror|econnreset|econnrefused|fetch failed|network|socket/i.test(
+    String(message || '')
+  );
+}
+
 async function addToMikadoBasket({
   config,
   zakazCode,
@@ -97,13 +112,63 @@ async function addToMikadoBasket({
   const basketId = parseInt(xmlTag(xml, 'ID'), 10) || 0;
   const message = xmlTag(xml, 'Message');
   const orderedQty = parseInt(xmlTag(xml, 'OrderedQTY'), 10) || 0;
+  const ok = isMikadoBasketAddOk({ basketId, message, orderedQty });
   return {
-    ok: basketId > 0,
+    ok,
     basketItemId: basketId || null,
     orderedQty,
-    message: message || (basketId > 0 ? 'Добавлено в корзину Mikado' : 'Mikado не принял позицию'),
+    message:
+      message ||
+      (ok ? 'Добавлено в корзину Mikado' : 'Mikado не принял позицию'),
     raw: xml.slice(0, 500),
   };
+}
+
+/** Снять позицию из корзины Mikado (Basket_Delete). */
+export async function deleteMikadoBasketItem(config, itemId) {
+  const id = parseInt(itemId, 10);
+  if (!config?.user_id || !config?.password || !Number.isFinite(id) || id < 1) {
+    return { ok: false, reason: 'invalid_args' };
+  }
+  const url = buildQueryUrl(`${MIKADO_BASKET_BASE}/Basket_Delete`, {
+    ItemID: id,
+    ClientID: config.user_id,
+    Password: config.password,
+  });
+  const response = await fetchWithTimeout(url, {
+    method: 'GET',
+    headers: { Accept: 'application/xml, text/xml, */*' },
+  });
+  if (!response.ok) {
+    throw new Error(`Mikado Basket_Delete: HTTP ${response.status}`);
+  }
+  const xml = await response.text();
+  const message = xmlTag(xml, 'Message');
+  return {
+    ok: !message || /^ok$/i.test(message) || /удал|delete|success/i.test(message),
+    message: message || 'OK',
+    basketItemId: id,
+  };
+}
+
+/**
+ * Массовое снятие позиций корзины Mikado (при откате локальной закупки).
+ * Ошибки отдельных ID не прерывают остальные.
+ */
+export async function deleteMikadoBasketItems(config, itemIds = []) {
+  const ids = [...new Set((itemIds || []).map((x) => parseInt(x, 10)).filter((n) => n > 0))];
+  const deleted = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      const out = await deleteMikadoBasketItem(config, id);
+      if (out.ok) deleted.push(id);
+      else failed.push({ id, message: out.message });
+    } catch (e) {
+      failed.push({ id, message: e?.message || String(e) });
+    }
+  }
+  return { deleted, failed };
 }
 
 /**
@@ -226,22 +291,30 @@ export async function submitMikadoPurchase(ctx) {
         });
       }
     } catch (e) {
+      const message = e?.message || String(e);
+      const ambiguous = isAmbiguousMikadoNetworkError(message);
       failedLines.push({
         productId: line.product_id,
         sku,
-        reason: 'basket_error',
-        message: e?.message || String(e),
+        reason: ambiguous ? 'basket_timeout' : 'basket_error',
+        ambiguous,
+        message,
       });
     }
   }
 
   const submitted = submittedLines.length > 0 && failedLines.length === 0;
   const partial = submittedLines.length > 0 && failedLines.length > 0;
+  const allAmbiguous =
+    submittedLines.length === 0 &&
+    failedLines.length > 0 &&
+    failedLines.every((f) => f.ambiguous);
 
   logger.info('[MikadoOrder] submit result', {
     purchaseId: purchase?.id,
     submitted: submittedLines.length,
     failed: failedLines.length,
+    ambiguous: allAmbiguous,
   });
 
   if (submitted) {
@@ -263,6 +336,18 @@ export async function submitMikadoPurchase(ctx) {
       message: `Частично в корзине Mikado: ${submittedLines.length} из ${lines.length}`,
       supplierOrderIds: submittedLines.map((l) => l.basketItemId).filter(Boolean),
       lines: submittedLines,
+      failedLines,
+    };
+  }
+
+  if (allAmbiguous) {
+    return {
+      submitted: false,
+      reason: 'ambiguous_submit',
+      ambiguousSuccess: true,
+      mode: 'basket',
+      message:
+        'Таймаут Mikado после возможного Basket_Add — локальную позицию оставляем, чтобы не задублировать корзину',
       failedLines,
     };
   }

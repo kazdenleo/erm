@@ -41,6 +41,7 @@ export function MarketplacePriceCells({
   onOpenMinDetailsFbo,
   onSave,
   disabled = false,
+  showMax = false,
 }) {
   const pack = getMarketplacePricePack(product, marketplace);
   const primaryMin = minPrice != null && !isNaN(Number(minPrice)) ? Number(minPrice) : null;
@@ -61,7 +62,8 @@ export function MarketplacePriceCells({
           ? Number(minPriceFbo)
           : null;
   const min = primaryMin ?? fbsMin ?? fboMin;
-
+  const initialMax = pack.maxPrice != null && Number.isFinite(Number(pack.maxPrice)) ? Number(pack.maxPrice) : null;
+  const [maxStr, setMaxStr] = useState(() => formatMoneyInput(initialMax));
   const initialActual = pack.sellingPrice != null ? pack.sellingPrice : min;
   const [actualStr, setActualStr] = useState(() => formatMoneyInput(initialActual));
   const [beforeStr, setBeforeStr] = useState(() => formatMoneyInput(pack.priceBeforeDiscount));
@@ -81,6 +83,10 @@ export function MarketplacePriceCells({
     setBeforeStr(formatMoneyInput(next.priceBeforeDiscount));
     setPctStr(formatMoneyInput(next.discountPercent));
   }, [productId, marketplace, pack.sellingPrice, pack.priceBeforeDiscount, pack.discountPercent, min]);
+
+  useEffect(() => {
+    setMaxStr(formatMoneyInput(pack.maxPrice));
+  }, [productId, marketplace, pack.maxPrice]);
 
   const scheduleSave = (payload) => {
     if (typeof onSave !== 'function') return;
@@ -157,6 +163,11 @@ export function MarketplacePriceCells({
     scheduleSave({ priceBeforeDiscount: nextBefore, discountPercent: pct });
   };
 
+  const onMaxChange = (raw) => {
+    setMaxStr(raw);
+    scheduleSave({ maxPrice: parseMoneyInput(raw) });
+  };
+
   const renderEmpty = () => {
     if (isLoading) return <span className="mp-price-muted">...</span>;
     if (min == null && !hasSku) return <span className="mp-price-muted">—</span>;
@@ -196,35 +207,33 @@ export function MarketplacePriceCells({
 
   const renderMinBtn = (value, onOpen, label, { showVolume = false } = {}) => {
     if (isLoading) return <span className="mp-price-muted">...</span>;
-    if (value != null) {
-      return (
-        <div className="mp-price-min-wrap">
+    const canOpen = typeof onOpen === 'function';
+    const title = label ? `Детали расчёта мин. цены ${label}` : 'Детали расчёта минимальной цены';
+    const inner =
+      value != null ? (
+        `${value} ₽`
+      ) : hasSku ? (
+        <span className="mp-badge" style={{ opacity: 0.7 }}>
+          {skuBadge}
+        </span>
+      ) : (
+        '—'
+      );
+    return (
+      <div className="mp-price-min-wrap">
+        {canOpen ? (
           <button
             type="button"
             className="mp-price-cell-min-btn"
-            style={{ color }}
+            style={{ color: value != null ? color : 'var(--muted)' }}
             onClick={onOpen}
-            title={label ? `Детали расчёта мин. цены ${label}` : 'Детали расчёта минимальной цены'}
+            title={title}
           >
-            {value} ₽
+            {inner}
           </button>
-          {renderVolumeHint(showVolume)}
-        </div>
-      );
-    }
-    if (hasSku) {
-      return (
-        <div className="mp-price-min-wrap">
-          <span className="mp-badge" style={{ opacity: 0.5 }}>
-            {skuBadge}
-          </span>
-          {renderVolumeHint(showVolume)}
-        </div>
-      );
-    }
-    return (
-      <div className="mp-price-min-wrap">
-        <span className="mp-price-muted">—</span>
+        ) : (
+          <span className={value != null ? '' : 'mp-price-muted'}>{inner}</span>
+        )}
         {renderVolumeHint(showVolume)}
       </div>
     );
@@ -262,6 +271,27 @@ export function MarketplacePriceCells({
       {!showFbs && !showFbo && (
         <td className="mp-col mp-col-min" style={{ background: bg }}>
           {empty || renderMinBtn(primaryMin, onOpenMinDetails, null, { showVolume: volumeInSingle })}
+        </td>
+      )}
+
+      {showMax && (
+        <td className="mp-col mp-col-max" style={{ background: bg }}>
+          {isLoading ? (
+            <span className="mp-price-muted">...</span>
+          ) : (
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              className="mp-price-input"
+              value={maxStr}
+              disabled={disabled || saving}
+              placeholder="макс."
+              title="Максимальная цена продажи"
+              onChange={(e) => onMaxChange(e.target.value)}
+            />
+          )}
         </td>
       )}
 

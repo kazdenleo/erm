@@ -192,13 +192,90 @@ class PricesService {
     const pt = ptRaw != null && ptRaw !== '' ? Number(ptRaw) : null;
     const esRaw = cfg?.early_shipment_discount_pp ?? cfg?.earlyShipmentDiscountPp;
     const es = esRaw != null && esRaw !== '' ? Number(esRaw) : null;
+    // 0 / пусто = без скидки (не храним 0 как «активную» настройку)
     return {
       scope,
       api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
       campaign_id: cfg?.campaign_id ?? cfg?.campaignId ?? null,
       payment_transfer_percent: Number.isFinite(pt) && pt >= 0 ? pt : null,
-      early_shipment_discount_pp: Number.isFinite(es) && es >= 0 ? es : null,
+      early_shipment_discount_pp: Number.isFinite(es) && es > 0 ? es : null,
     };
+  }
+
+  /**
+   * Официальный FEE категории YM из marketplace_category_commission_cache
+   * (tariffs/calculate по categoryId). Нужен, чтобы мин. цена не брала заниженный %
+   * из товара-образца / FBY, попавшего в product_mp_calculator_cache.
+   */
+  async _resolveYmCategoryFeePercent(ymCategoryId, program = 'FBS') {
+    const id = String(ymCategoryId || '').replace(/[^\d]/g, '').trim();
+    if (!id) return null;
+    const wantFby = String(program || 'FBS').toUpperCase() === 'FBY';
+    try {
+      const res = await query(
+        `SELECT schemes FROM marketplace_category_commission_cache
+         WHERE marketplace = 'ym' AND category_id = $1`,
+        [id]
+      );
+      const schemes = Array.isArray(res.rows[0]?.schemes) ? res.rows[0].schemes : [];
+      const hit = schemes.find((s) => {
+        const k = String(s?.key || '').toUpperCase();
+        if (wantFby) return k === 'FBY' || k === 'FBO';
+        return k === 'FBS';
+      });
+      const n = hit?.percent != null ? Number(hit.percent) : NaN;
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch (e) {
+      logger.warn('[Prices Service] YM category fee cache read failed:', e?.message || e);
+      return null;
+    }
+  }
+
+  /**
+   * Подменяет FEE/% комиссии в калькуляторе на тариф категории (если есть в кэше).
+   */
+  _applyYmCategoryFeeOverride(calculator, categoryFeePercent, program = 'FBS') {
+    if (!calculator || categoryFeePercent == null) return calculator;
+    const feePercent = Number(categoryFeePercent);
+    if (!Number.isFinite(feePercent) || feePercent <= 0) return calculator;
+    const ymProgram = String(program || 'FBS').toUpperCase() === 'FBY' ? 'FBY' : 'FBS';
+    const calcPrice = Number(calculator.price) || 0;
+    const feeAmount =
+      calcPrice > 0 ? Math.round(((calcPrice * feePercent) / 100) * 100) / 100 : Number(calculator.ymTariffs?.FEE?.amount) || 0;
+
+    const patchCommission = (c) => {
+      if (!c || typeof c !== 'object') return c;
+      const { percent_before_early_shipment: _b, early_shipment_discount_pp: _d, ...rest } = c;
+      return { ...rest, percent: feePercent, value: feeAmount };
+    };
+
+    const commissions = { ...(calculator.commissions || {}) };
+    if (ymProgram === 'FBY') {
+      // FBY → только FBO; FBS не трогаем (иначе чипы/кэш категории получают 37% как «FBS»).
+      if (commissions.FBO) commissions.FBO = patchCommission(commissions.FBO);
+      else commissions.FBO = { percent: feePercent, value: feeAmount };
+    } else if (commissions.FBS) {
+      commissions.FBS = patchCommission(commissions.FBS);
+    } else {
+      commissions.FBS = { percent: feePercent, value: feeAmount };
+    }
+    calculator.commissions = commissions;
+
+    if (calculator.ymTariffs?.FEE) {
+      const { percent_before_early_shipment: _b, early_shipment_discount_pp: _d, ...feeRest } =
+        calculator.ymTariffs.FEE;
+      calculator.ymTariffs = {
+        ...calculator.ymTariffs,
+        FEE: {
+          ...feeRest,
+          percent: feePercent,
+          amount: feeAmount,
+          fromCategoryTariff: true,
+        },
+      };
+    }
+    calculator.fee_source = 'ym_category_tariff';
+    return calculator;
   }
 
   /**
@@ -2407,45 +2484,26 @@ class PricesService {
         console.error(`[Prices Service] Error stack:`, dbError.stack);
       }
       
-      // Рассчитываем логистику ФБС: boxDeliveryMarketplaceBase + boxDeliveryMarketplaceLiter * (volume - 1)
-      let logisticsCost = 0;
-      let logisticsBase = 0;
-      let logisticsLiter = 0;
+      // FBO (склад WB): boxDeliveryBase/Liter. FBS (маркетплейс): boxDeliveryMarketplace*.
+      const parseWbBox = (v) => parseFloat(String(v || '0').replace(',', '.')) || 0;
+      const box = selectedBoxTariffs || {};
+      const fboBase = parseWbBox(box.boxDeliveryBase);
+      const fboLiter = parseWbBox(box.boxDeliveryLiter);
+      const fbsBase = parseWbBox(box.boxDeliveryMarketplaceBase);
+      const fbsLiter = parseWbBox(box.boxDeliveryMarketplaceLiter);
+      const extraLiters = productVolume > 1 ? Math.ceil(productVolume - 1) : 0;
+      const logisticsCostFbo = fboBase + fboLiter * extraLiters;
+      const logisticsCostFbs = fbsBase + fbsLiter * extraLiters;
+
+      // Рассчитываем логистику по схемам. Дефолт калькулятора — FBO (основная мин. цена WB).
+      let logisticsCost = logisticsCostFbo;
+      let logisticsBase = fboBase;
+      let logisticsLiter = fboLiter;
       
       if (selectedBoxTariffs && productVolume && productVolume > 0) {
-        // Преобразуем строковые значения с запятыми в числа (например, "40" или "11,2" -> 40 или 11.2)
-        const baseStr = String(selectedBoxTariffs.boxDeliveryMarketplaceBase || '0').replace(',', '.');
-        const literStr = String(selectedBoxTariffs.boxDeliveryMarketplaceLiter || '0').replace(',', '.');
-        logisticsBase = parseFloat(baseStr) || 0;
-        logisticsLiter = parseFloat(literStr) || 0;
-        
-        let additionalLiters = 0;
-        if (productVolume <= 1) {
-          logisticsCost = logisticsBase;
-        } else {
-          // Округляем (volume - 1) вверх
-          additionalLiters = Math.ceil(productVolume - 1);
-          logisticsCost = logisticsBase + logisticsLiter * additionalLiters;
-        }
-        
-        console.log(`[Prices Service] Calculated WB FBS logistics: ${logisticsCost}₽ (base: ${logisticsBase}₽, liter: ${logisticsLiter}₽, volume: ${productVolume}L, additionalLiters: ${additionalLiters})`);
+        console.log(`[Prices Service] Calculated WB logistics: FBO=${logisticsCostFbo}₽ FBS=${logisticsCostFbs}₽ (volume: ${productVolume}L, extraLiters: ${extraLiters})`);
       } else {
-        // Если объема нет или тарифы не найдены, используем базовое значение
-        if (selectedBoxTariffs) {
-          // Если тарифы есть, но объема нет, используем базовые значения из тарифов
-          const baseStr = String(selectedBoxTariffs.boxDeliveryMarketplaceBase || '0').replace(',', '.');
-          const literStr = String(selectedBoxTariffs.boxDeliveryMarketplaceLiter || '0').replace(',', '.');
-          logisticsBase = parseFloat(baseStr) || 0;
-          logisticsLiter = parseFloat(literStr) || 0;
-          logisticsCost = logisticsBase;
-        } else {
-          // Если тарифы не найдены, используем fallback
-          const baseStr = String(fboLogisticsFirstLiter || '0').replace(',', '.');
-          logisticsCost = parseFloat(baseStr) || 0;
-          logisticsBase = logisticsCost;
-          logisticsLiter = 0;
-        }
-        console.warn(`[Prices Service] Cannot calculate logistics from volume, using base value: ${logisticsCost}₽`);
+        console.warn(`[Prices Service] Cannot calculate logistics from volume, using FBO base: ${logisticsCost}₽`);
       }
       
       // Определяем проценты комиссии в зависимости от источника данных
@@ -2615,6 +2673,12 @@ class PricesService {
         logistics_cost: logisticsCost,
         logistics_base: logisticsBase,
         logistics_liter: logisticsLiter,
+        logistics_cost_fbo: logisticsCostFbo,
+        logistics_base_fbo: fboBase,
+        logistics_liter_fbo: fboLiter,
+        logistics_cost_fbs: logisticsCostFbs,
+        logistics_base_fbs: fbsBase,
+        logistics_liter_fbs: fbsLiter,
         volume_weight: productVolume,
         marketplace: 'wb',
         wb_price_scheme: 'FBO'
@@ -2677,6 +2741,29 @@ class PricesService {
             payment_transfer_percent,
             early_shipment_discount_pp,
           } = await this._getYandexApiCredentials(options);
+          const ymProgram =
+            String(options.sellingProgram || calculator.sellingProgram || 'FBS').toUpperCase() === 'FBY'
+              ? 'FBY'
+              : 'FBS';
+          let ymCategoryIdForFee = categoryId ? String(categoryId).replace(/[^\d]/g, '') || null : null;
+          if ((!ymCategoryIdForFee || ymCategoryIdForFee === '0') && userCategoryId) {
+            try {
+              const catResult = await query(
+                `SELECT marketplace_mappings FROM user_categories WHERE id = $1`,
+                [userCategoryId]
+              );
+              const mm = catResult.rows?.[0]?.marketplace_mappings;
+              if (mm && typeof mm === 'object' && (mm.ym || mm.yandex)) {
+                ymCategoryIdForFee = String(mm.ym || mm.yandex || '').replace(/[^\d]/g, '') || null;
+              }
+            } catch (_) {
+              /* ignore */
+            }
+          }
+          const catFee = await this._resolveYmCategoryFeePercent(ymCategoryIdForFee, ymProgram);
+          if (catFee != null) {
+            this._applyYmCategoryFeeOverride(calculator, catFee, ymProgram);
+          }
           this._applyYmPaymentTransferOverride(calculator, payment_transfer_percent);
           this._applyYmEarlyShipmentDiscount(calculator, early_shipment_discount_pp);
           return { found: true, calculator, fromCache: true };
@@ -2914,6 +3001,19 @@ class PricesService {
           feePercent = feeTariff.amount && calcPrice > 0 ? (feeTariff.amount / calcPrice * 100) : 0;
         }
       }
+
+      const ymProgram = String(options.sellingProgram || 'FBS').toUpperCase() === 'FBY' ? 'FBY' : 'FBS';
+      // Предпочитаем официальный FEE категории (как в калькуляторе Яндекса / чипах),
+      // а не относительный % с конкретного товара (часто совпадает с FBY / ниже).
+      const categoryFeePercent = await this._resolveYmCategoryFeePercent(ymCategoryId, ymProgram);
+      if (categoryFeePercent != null) {
+        if (Math.abs(categoryFeePercent - feePercent) > 0.05) {
+          logger.info(
+            `[Prices Service] YM FEE override: product=${feePercent}% → category ${ymProgram}=${categoryFeePercent}% (cat ${ymCategoryId})`
+          );
+        }
+        feePercent = categoryFeePercent;
+      }
       // Эквайринг YM = приём платежа (AGENCY_COMMISSION) + перевод платежа (PAYMENT_TRANSFER)
       // % перевода: из настроек интеграции (если задан), иначе из ответа tariffs/calculate
       let paymentTransferValueType = getValueType(paymentTransferTariff);
@@ -2945,10 +3045,13 @@ class PricesService {
       const expressValueType = getValueType(expressDeliveryTariff);
       const expressValueNum = getValueNum(expressDeliveryTariff);
 
-      const ymProgram = String(options.sellingProgram || 'FBS').toUpperCase() === 'FBY' ? 'FBY' : 'FBS';
+      const feeAmountFromPercent =
+        categoryFeePercent != null && calcPrice > 0
+          ? Math.round(((calcPrice * feePercent) / 100) * 100) / 100
+          : feeTariff?.amount ?? 0;
       const feeCommission = {
         percent: feePercent,
-        value: feeTariff?.amount ?? 0,
+        value: feeAmountFromPercent,
         delivery_amount: deliveryAmount,
         return_amount: 0,
         return_processing_amount: 0
@@ -2959,8 +3062,9 @@ class PricesService {
         price: calcPrice,
         currency_code: 'RUB',
         sellingProgram: ymProgram,
+        // FBY не дублируем в FBS — иначе refresh чипов/образец пишет 37% как FBS.
         commissions: ymProgram === 'FBY'
-          ? { FBO: feeCommission, FBS: feeCommission }
+          ? { FBO: feeCommission }
           : { FBS: feeCommission },
         acquiring: Math.round(acquiringPercent * 100) / 100,
         acquiring_amount_rub: agencyAmount,
@@ -2968,8 +3072,14 @@ class PricesService {
         logistics_cost: logisticsCost,
         volume_weight: resolveMarketplaceVolumeLiters(productRow, 'ym'),
         marketplace: 'ym',
+        ...(categoryFeePercent != null ? { fee_source: 'ym_category_tariff' } : {}),
         ymTariffs: {
-          FEE: { name: 'Размещение товара на Маркете (комиссия)', percent: feePercent, amount: feeTariff?.amount ?? 0 },
+          FEE: {
+            name: 'Размещение товара на Маркете (комиссия)',
+            percent: feePercent,
+            amount: feeAmountFromPercent,
+            ...(categoryFeePercent != null ? { fromCategoryTariff: true } : {}),
+          },
           AGENCY_COMMISSION: { name: 'Приём платежа покупателя (эквайринг)', amount: Number(agencyTariff?.amount) || 0, valueType: agencyValueType, value: agencyValueNum },
           PAYMENT_TRANSFER: {
             name: 'Перевод платежа покупателя',
@@ -2992,7 +3102,10 @@ class PricesService {
       // Кэш — сырые тарифы API (без оверлеев из настроек интеграции).
       // Перевод платежа и скидка за раннюю отгрузку накладываются при чтении/расчёте,
       // иначе после очистки настройки в UI остаётся «запечённая» скидка в кэше.
-      await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
+      // FBY не пишем в общий ym-кэш: иначе mass-recalc FBS берёт 37% вместо 44%.
+      if (ymProgram !== 'FBY') {
+        await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
+      }
       this._applyYmPaymentTransferOverride(calculator, paymentTransferPercentOverride);
       this._applyYmEarlyShipmentDiscount(calculator, earlyShipmentDiscountPpOverride);
 
@@ -3062,8 +3175,18 @@ class PricesService {
    */
   _sanitizeCalculatorForStorage(calc, marketplace) {
     if (!calc || typeof calc !== 'object') return null;
+    // Deep clone nested objects so later overlays (early-ship / payment transfer)
+    // cannot mutate a calculator already queued for product_mp_calculator_cache.
+    const cloneObj = (v) => {
+      if (v == null || typeof v !== 'object') return v;
+      try {
+        return JSON.parse(JSON.stringify(v));
+      } catch {
+        return { ...v };
+      }
+    };
     const out = {
-      commissions: calc.commissions || null,
+      commissions: cloneObj(calc.commissions) || null,
       processing_cost: calc.processing_cost,
       logistics_cost: calc.logistics_cost,
       logistics_base: calc.logistics_base,
@@ -3071,6 +3194,33 @@ class PricesService {
       volume_weight: calc.volume_weight,
       acquiring: calc.acquiring
     };
+    if (calc.processing_cost_max != null && Number.isFinite(Number(calc.processing_cost_max))) {
+      out.processing_cost_max = Number(calc.processing_cost_max);
+    }
+    if (calc.logistics_cost_max != null && Number.isFinite(Number(calc.logistics_cost_max))) {
+      out.logistics_cost_max = Number(calc.logistics_cost_max);
+    }
+    if (calc.logistics_cost_fbs != null && Number.isFinite(Number(calc.logistics_cost_fbs))) {
+      out.logistics_cost_fbs = Number(calc.logistics_cost_fbs);
+    }
+    if (calc.logistics_cost_fbo != null && Number.isFinite(Number(calc.logistics_cost_fbo))) {
+      out.logistics_cost_fbo = Number(calc.logistics_cost_fbo);
+    }
+    if (calc.logistics_base_fbo != null && Number.isFinite(Number(calc.logistics_base_fbo))) {
+      out.logistics_base_fbo = Number(calc.logistics_base_fbo);
+    }
+    if (calc.logistics_liter_fbo != null && Number.isFinite(Number(calc.logistics_liter_fbo))) {
+      out.logistics_liter_fbo = Number(calc.logistics_liter_fbo);
+    }
+    if (calc.logistics_base_fbs != null && Number.isFinite(Number(calc.logistics_base_fbs))) {
+      out.logistics_base_fbs = Number(calc.logistics_base_fbs);
+    }
+    if (calc.logistics_liter_fbs != null && Number.isFinite(Number(calc.logistics_liter_fbs))) {
+      out.logistics_liter_fbs = Number(calc.logistics_liter_fbs);
+    }
+    if (calc.logistics_cost_fbo_max != null && Number.isFinite(Number(calc.logistics_cost_fbo_max))) {
+      out.logistics_cost_fbo_max = Number(calc.logistics_cost_fbo_max);
+    }
     if (calc.brand_promotion_percent != null && !isNaN(Number(calc.brand_promotion_percent))) {
       out.brand_promotion_percent = Number(calc.brand_promotion_percent);
     }
@@ -3083,9 +3233,13 @@ class PricesService {
     if (calc.ads_promotion_source) {
       out.ads_promotion_source = String(calc.ads_promotion_source);
     }
-    if (marketplace === 'ym' && calc.ymTariffs) out.ymTariffs = calc.ymTariffs;
+    if (marketplace === 'ym' && calc.ymTariffs) out.ymTariffs = cloneObj(calc.ymTariffs);
+    if (marketplace === 'ym' && calc.sellingProgram) {
+      out.sellingProgram = String(calc.sellingProgram).toUpperCase();
+    }
     if (marketplace === 'ym' && calc.early_shipment_discount_pp != null && !isNaN(Number(calc.early_shipment_discount_pp))) {
-      out.early_shipment_discount_pp = Number(calc.early_shipment_discount_pp);
+      const pp = Number(calc.early_shipment_discount_pp);
+      if (pp > 0) out.early_shipment_discount_pp = pp;
     }
     if (!out.commissions || typeof out.commissions !== 'object') return null;
     return out;
@@ -3096,31 +3250,48 @@ class PricesService {
    */
   async saveBulkPrices(pricesList) {
     if (!Array.isArray(pricesList) || pricesList.length === 0) return;
+    const saveIf = async (productId, marketplace, price, details, scheme) => {
+      if (price == null || isNaN(Number(price)) || Number(price) < 0) return;
+      const sanitized = this._sanitizeCalculatorForStorage(details, marketplace) || details;
+      await this.saveProductMarketplacePrice(
+        productId,
+        marketplace,
+        Number(price),
+        sanitized,
+        scheme ? { scheme } : {}
+      );
+    };
     for (const item of pricesList) {
       const productId = item.productId ?? item.product_id;
       if (productId == null) continue;
-      if (item.ozon != null && !isNaN(Number(item.ozon)) && Number(item.ozon) >= 0) {
-        const raw = item.ozonDetails ?? item.ozon_details ?? null;
-        const details = this._sanitizeCalculatorForStorage(raw, 'ozon') || raw;
-        await this.saveProductMarketplacePrice(productId, 'ozon', Number(item.ozon), details);
+
+      const ozonHasScheme = item.ozonFbs != null || item.ozonFbo != null;
+      await saveIf(productId, 'ozon', item.ozonFbs, item.ozonDetailsFbs ?? item.ozonDetails ?? item.ozon_details, 'FBS');
+      await saveIf(productId, 'ozon', item.ozonFbo, item.ozonDetailsFbo ?? item.ozonDetails ?? item.ozon_details, 'FBO');
+      if (!ozonHasScheme) {
+        await saveIf(productId, 'ozon', item.ozon, item.ozonDetails ?? item.ozon_details, null);
       }
-      if (item.wb != null && !isNaN(Number(item.wb)) && Number(item.wb) >= 0) {
-        const raw = item.wbDetails ?? item.wb_details ?? null;
-        const details = this._sanitizeCalculatorForStorage(raw, 'wb') || raw;
-        await this.saveProductMarketplacePrice(productId, 'wb', Number(item.wb), details);
+
+      const wbHasScheme = item.wbFbs != null || item.wbFbo != null;
+      await saveIf(productId, 'wb', item.wbFbs, item.wbDetailsFbs ?? item.wbDetails ?? item.wb_details, 'FBS');
+      await saveIf(productId, 'wb', item.wbFbo, item.wbDetailsFbo ?? item.wbDetails ?? item.wb_details, 'FBO');
+      if (!wbHasScheme) {
+        await saveIf(productId, 'wb', item.wb, item.wbDetails ?? item.wb_details, null);
       }
-      if (item.ym != null && !isNaN(Number(item.ym)) && Number(item.ym) >= 0) {
-        const raw = item.ymDetails ?? item.ym_details ?? null;
-        const details = this._sanitizeCalculatorForStorage(raw, 'ym') || raw;
-        await this.saveProductMarketplacePrice(productId, 'ym', Number(item.ym), details);
+
+      const ymHasScheme = item.ymFbs != null || item.ymFbo != null;
+      await saveIf(productId, 'ym', item.ymFbs, item.ymDetailsFbs ?? item.ymDetails ?? item.ym_details, 'FBS');
+      await saveIf(productId, 'ym', item.ymFbo, item.ymDetailsFbo ?? item.ymDetails ?? item.ym_details, 'FBO');
+      if (!ymHasScheme) {
+        await saveIf(productId, 'ym', item.ym, item.ymDetails ?? item.ym_details, null);
       }
     }
     logger.info(`[Prices Service] Saved bulk prices for ${pricesList.length} products`);
   }
 
   /**
-   * Сохранить фактическую цену / цену до скидки / % скидки по МП.
-   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }>} items
+   * Сохранить фактическую цену / цену до скидки / % скидки / макс. цену по МП.
+   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent?, maxPrice? }>} items
    */
   async saveCommercialPrices(items) {
     if (!Array.isArray(items) || items.length === 0) return { saved: 0 };
@@ -3136,7 +3307,8 @@ class PricesService {
         item.priceBeforeDiscount !== undefined || item.price_before_discount !== undefined;
       const hasDiscount =
         item.discountPercent !== undefined || item.discount_percent !== undefined;
-      if (!hasSelling && !hasBefore && !hasDiscount) continue;
+      const hasMax = item.maxPrice !== undefined || item.max_price !== undefined;
+      if (!hasSelling && !hasBefore && !hasDiscount && !hasMax) continue;
 
       const parseOpt = (v) => {
         if (v === null || v === '') return null;
@@ -3147,6 +3319,7 @@ class PricesService {
       const sellingRaw = parseOpt(item.sellingPrice ?? item.selling_price);
       const beforeRaw = parseOpt(item.priceBeforeDiscount ?? item.price_before_discount);
       const discountRaw = parseOpt(item.discountPercent ?? item.discount_percent);
+      const maxRaw = parseOpt(item.maxPrice ?? item.max_price);
 
       // Убедимся, что строка МП существует (min_price NOT NULL — ставим 0, если ещё не считали).
       await query(
@@ -3210,6 +3383,10 @@ class PricesService {
         sets.push(`discount_percent = $${i++}`);
         params.push(d == null ? null : Number(d).toFixed(2));
       }
+      if (hasMax && maxRaw !== undefined) {
+        sets.push(`max_price = $${i++}`);
+        params.push(maxRaw == null ? null : Number(maxRaw).toFixed(2));
+      }
       if (!sets.length) continue;
       sets.push('updated_at = CURRENT_TIMESTAMP');
       params.push(productId, marketplace);
@@ -3266,6 +3443,33 @@ class PricesService {
     const isPrimaryScheme =
       (mp === 'wb' && (scheme === 'FBO' || !scheme)) ||
       (mp !== 'wb' && (scheme === 'FBS' || !scheme));
+    const logPrimaryMin = !scheme || (alsoPrimary && isPrimaryScheme);
+
+    let prevMin = null;
+    let prevSelling = null;
+    let profileId = null;
+    if (logPrimaryMin) {
+      try {
+        const prev = await query(
+          `SELECT pmp.min_price, pmp.selling_price, p.profile_id
+           FROM product_marketplace_prices pmp
+           JOIN products p ON p.id = pmp.product_id
+           WHERE pmp.product_id = $1 AND pmp.marketplace = $2`,
+          [productId, marketplace]
+        );
+        const row = prev.rows?.[0];
+        if (row) {
+          prevMin = row.min_price != null ? Number(row.min_price) : null;
+          prevSelling = row.selling_price != null ? Number(row.selling_price) : null;
+          profileId = row.profile_id ?? null;
+        } else {
+          const p = await query(`SELECT profile_id FROM products WHERE id = $1`, [productId]);
+          profileId = p.rows?.[0]?.profile_id ?? null;
+        }
+      } catch {
+        /* журнал не должен ломать сохранение */
+      }
+    }
 
     try {
       if (scheme === 'FBS' || scheme === 'FBO') {
@@ -3298,15 +3502,14 @@ class PricesService {
             [productId, marketplace, num, detailsJson]
           );
         }
-        return;
+      } else {
+        await query(
+          `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, calculation_details, updated_at)
+           VALUES ($1, $2, $3, $4::jsonb, CURRENT_TIMESTAMP)
+           ON CONFLICT (product_id, marketplace) DO UPDATE SET min_price = $3, calculation_details = $4::jsonb, updated_at = CURRENT_TIMESTAMP`,
+          [productId, marketplace, num, detailsJson]
+        );
       }
-
-      await query(
-        `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, calculation_details, updated_at)
-         VALUES ($1, $2, $3, $4::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (product_id, marketplace) DO UPDATE SET min_price = $3, calculation_details = $4::jsonb, updated_at = CURRENT_TIMESTAMP`,
-        [productId, marketplace, num, detailsJson]
-      );
     } catch (err) {
       if (err.message && (err.message.includes('calculation_details') || err.message.includes('min_price_fbs') || err.message.includes('min_price_fbo'))) {
         await query(
@@ -3318,6 +3521,28 @@ class PricesService {
         logger.warn('[Prices Service] Scheme/details columns missing — run migration 156. Saved min_price only.');
       } else {
         throw err;
+      }
+    }
+
+    if (logPrimaryMin) {
+      try {
+        const { logMarketplacePriceChange } = await import(
+          './marketplacePriceChanges.service.js'
+        );
+        await logMarketplacePriceChange({
+          productId,
+          marketplace,
+          source: 'min_recalc',
+          reason: 'Пересчёт минимальной цены',
+          minPriceBefore: prevMin,
+          minPriceAfter: Number(num),
+          sellingPriceBefore: prevSelling,
+          sellingPriceAfter: prevSelling,
+          profileId,
+          meta: { source: 'min_recalc', scheme: scheme || null },
+        });
+      } catch {
+        /* журнал не должен ломать сохранение */
       }
     }
   }

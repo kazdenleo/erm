@@ -126,7 +126,7 @@
 
 .stock-levels-table-wrapper {
   overflow-x: auto !important;
-  overflow-y: visible !important;
+  overflow-y: clip !important;
   -webkit-overflow-scrolling: touch;
 }
 

@@ -19,12 +19,15 @@ export function useOrders(options = {}) {
   const visibleLoadCountRef = useRef(0);
 
   /**
-   * @param {boolean | { silent?: boolean, params?: object }} [options] — при silent=true не трогаем loading
-   * (чтобы не скрывать всю страницу при обновлении списка после смены статуса и т.п.)
+   * @param {boolean | { silent?: boolean, ephemeral?: boolean, params?: object }} [options]
+   * — silent=true: не трогаем loading (не скрываем страницу при обновлении списка).
+   * — ephemeral=true: фоновый опрос — не двигает loadSeqRef, чтобы не помечать
+   *   основную загрузку по фильтрам как stale (иначе список залипает блеклым).
    */
   const loadOrders = useCallback(async (options) => {
     const silent = options === true || Boolean(options?.silent);
-    const seq = ++loadSeqRef.current;
+    const ephemeral = Boolean(options && typeof options === 'object' && options.ephemeral);
+    const seq = ephemeral ? loadSeqRef.current : ++loadSeqRef.current;
     if (!silent) {
       visibleLoadCountRef.current += 1;
       setLoading(true);

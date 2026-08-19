@@ -16,7 +16,12 @@ import ordersService from './orders.service.js';
 import {
   trySubmitPurchaseToSupplier,
   supplierPreSubmitRequired,
+  cleanupSupplierBasketOnRollback,
 } from './supplierOrderPlacement.service.js';
+import {
+  supplierSubmitNeedsRollback,
+  rollbackItemsForSupplierSubmit,
+} from '../utils/supplierSubmitRollback.js';
 import {
   enrichProcurementNote,
   upgradeLegacyPurchaseArrivalNote,
@@ -433,16 +438,6 @@ function formatSourceOrderIdsForMessage(refs, limit = 12) {
   if (!ids.length) return '';
   const head = ids.slice(0, limit);
   return head.join(', ') + (ids.length > limit ? '…' : '');
-}
-
-function supplierSubmitNeedsRollback(supplierSubmit, { apiSubmitRequired = false } = {}) {
-  if (!apiSubmitRequired) return false;
-  if (!supplierSubmit || supplierSubmit.skipped) return false;
-  if (supplierSubmit.reason === 'already_submitted') return false;
-  if (supplierSubmit.submitted === true && !supplierSubmit.partial) return false;
-  // Полный отказ или частичный приём — откатываем то, что поставщик не взял.
-  if (supplierSubmit.submitted !== true) return true;
-  return Boolean(supplierSubmit.partial && Array.isArray(supplierSubmit.failedLines));
 }
 
 async function notifySupplierSubmitFailed({
@@ -2719,9 +2714,12 @@ class PurchasesService {
     }
 
     // Успешная отправка поставщику не должна повторяться при retry БД (503 lock timeout).
+    // И создание/дописывание позиций — тоже только один раз, иначе дубли expected_quantity.
     let cachedPostSubmit = null;
     let postSubmitCompleted = false;
     let postSubmitRolledBack = false;
+    let purchaseMutated = false;
+    let purchaseIdCached = null;
 
     return runWithLockRetry(async () => {
       if (postSubmitRolledBack) {
@@ -2736,71 +2734,75 @@ class PurchasesService {
       let itemsToProcess = initialItems;
       let supplierSubmit = cachedPostSubmit;
 
-      let purchaseId;
-      if (!createdNew) {
-        purchaseId = parseInt(existingPurchaseId, 10);
-        const prof = normalizeProfileId(profileId);
-        await transaction(async (client) => {
-          await assertPurchaseInProfile(client, purchaseId, prof);
-          await assertPurchaseNotArchivedInTx(client, purchaseId);
-        });
-        await this.appendDraftItems(purchaseId, { items: itemsToProcess }, {
-          profileId,
-          lightIncoming: true,
-        });
-        const head = await query(
-          `SELECT supplier_id, warehouse_id FROM purchases WHERE id = $1 LIMIT 1`,
-          [purchaseId]
-        );
-        const headRow = head.rows?.[0];
-        const sidForNote =
-          Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
-            ? resolvedSupplierId
-            : headRow?.supplier_id != null
-              ? Number(headRow.supplier_id)
-              : null;
-        const widForNote =
-          warehouseId != null && warehouseId !== ''
-            ? Number(warehouseId)
-            : headRow?.warehouse_id != null
-              ? Number(headRow.warehouse_id)
-              : null;
-        if (sidForNote) {
-          const bucket = await resolveArrivalBucketForSupplier({
+      let purchaseId = purchaseIdCached;
+      if (!purchaseMutated) {
+        if (!createdNew) {
+          purchaseId = parseInt(existingPurchaseId, 10);
+          const prof = normalizeProfileId(profileId);
+          await transaction(async (client) => {
+            await assertPurchaseInProfile(client, purchaseId, prof);
+            await assertPurchaseNotArchivedInTx(client, purchaseId);
+          });
+          await this.appendDraftItems(purchaseId, { items: itemsToProcess }, {
+            profileId,
+            lightIncoming: true,
+          });
+          const head = await query(
+            `SELECT supplier_id, warehouse_id FROM purchases WHERE id = $1 LIMIT 1`,
+            [purchaseId]
+          );
+          const headRow = head.rows?.[0];
+          const sidForNote =
+            Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
+              ? resolvedSupplierId
+              : headRow?.supplier_id != null
+                ? Number(headRow.supplier_id)
+                : null;
+          const widForNote =
+            warehouseId != null && warehouseId !== ''
+              ? Number(warehouseId)
+              : headRow?.warehouse_id != null
+                ? Number(headRow.warehouse_id)
+                : null;
+          if (sidForNote) {
+            const bucket = await resolveArrivalBucketForSupplier({
+              supplierId: sidForNote,
+              warehouseId: widForNote,
+              profileId: prof,
+            });
+            if (bucket) {
+              await transaction(async (client) => {
+                await upgradeLegacyPurchaseArrivalNote(client, purchaseId, bucket);
+              });
+            }
+          }
+        } else {
+          const prof = normalizeProfileId(profileId);
+          const sidForNote =
+            Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
+              ? resolvedSupplierId
+              : supplierId != null && supplierId !== ''
+                ? Number(supplierId)
+                : null;
+          const enrichedNote = await enrichProcurementNote(note, {
             supplierId: sidForNote,
-            warehouseId: widForNote,
+            warehouseId,
             profileId: prof,
           });
-          if (bucket) {
-            await transaction(async (client) => {
-              await upgradeLegacyPurchaseArrivalNote(client, purchaseId, bucket);
-            });
-          }
+          const created = await this.create(
+            {
+              supplierId,
+              organizationId,
+              warehouseId,
+              items: itemsToProcess,
+              note: enrichedNote,
+            },
+            { userId, profileId, lightIncoming: true }
+          );
+          purchaseId = created?.id;
         }
-      } else {
-        const prof = normalizeProfileId(profileId);
-        const sidForNote =
-          Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
-            ? resolvedSupplierId
-            : supplierId != null && supplierId !== ''
-              ? Number(supplierId)
-              : null;
-        const enrichedNote = await enrichProcurementNote(note, {
-          supplierId: sidForNote,
-          warehouseId,
-          profileId: prof,
-        });
-        const created = await this.create(
-          {
-            supplierId,
-            organizationId,
-            warehouseId,
-            items: itemsToProcess,
-            note: enrichedNote,
-          },
-          { userId, profileId, lightIncoming: true }
-        );
-        purchaseId = created?.id;
+        purchaseIdCached = purchaseId;
+        purchaseMutated = true;
       }
 
       const refsFromItems = collectSourceOrdersFromPurchaseItems(itemsToProcess);
@@ -2847,26 +2849,40 @@ class PurchasesService {
       }
 
       // Поставщик не принял (блок / ошибка) — убираем из локальной закупки, статус «Новый».
+      // Успешный Basket_Add / partial accepted — не откатываем принятые позиции.
       if (
         submitToSupplier &&
         purchaseId &&
         supplierSubmitNeedsRollback(supplierSubmit, { apiSubmitRequired })
       ) {
-        let rollbackItems = itemsToProcess;
-        if (supplierSubmit?.partial && Array.isArray(supplierSubmit.failedLines)) {
-          const failedIds = new Set(
-            supplierSubmit.failedLines
-              .map((l) => Number(l.productId))
-              .filter((id) => Number.isFinite(id) && id > 0)
-          );
-          rollbackItems = itemsToProcess.filter((it) => failedIds.has(Number(it.productId)));
+        const rollbackItems = rollbackItemsForSupplierSubmit(itemsToProcess, supplierSubmit);
+
+        if (rollbackItems.length > 0) {
+          await cleanupSupplierBasketOnRollback({
+            supplierId: resolvedSupplierId,
+            profileId,
+            supplierSubmit,
+            rollbackItems,
+          }).catch((e) => {
+            logger.warn('[Purchases] cleanupSupplierBasketOnRollback failed', {
+              purchaseId,
+              message: e?.message || String(e),
+            });
+          });
         }
 
         const rollbackRefs = collectSourceOrdersFromPurchaseItems(rollbackItems);
-        await this.revertProcureItemsBatch(purchaseId, rollbackItems, {
-          profileId,
-          createdNew: createdNew && !(supplierSubmit?.partial && supplierSubmit?.submitted),
-        });
+        if (rollbackItems.length > 0) {
+          await this.revertProcureItemsBatch(purchaseId, rollbackItems, {
+            profileId,
+            createdNew:
+              createdNew &&
+              !(
+                (supplierSubmit?.partial && supplierSubmit?.submitted) ||
+                (Array.isArray(supplierSubmit?.lines) && supplierSubmit.lines.length > 0)
+              ),
+          });
+        }
 
         await notifySupplierSubmitFailed({
           supplierSubmit,
@@ -2876,9 +2892,11 @@ class PurchasesService {
           profileId,
         });
 
-        postSubmitRolledBack = !supplierSubmit?.partial;
-        const keptPurchase =
-          supplierSubmit?.partial && supplierSubmit?.submitted ? purchaseId : null;
+        const keptAccepted =
+          (supplierSubmit?.partial && supplierSubmit?.submitted) ||
+          (Array.isArray(supplierSubmit?.lines) && supplierSubmit.lines.length > 0);
+        postSubmitRolledBack = !keptAccepted;
+        const keptPurchase = keptAccepted ? purchaseId : null;
 
         let procurement = { updated: 0, skipped: 0 };
         if (keptPurchase && Array.isArray(supplierSubmit.lines)) {

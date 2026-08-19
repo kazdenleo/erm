@@ -28,10 +28,14 @@ import {
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled, isProfilePrivateOrdersEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
-import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
-import { computeTaxesAndNetProfit, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
+import { enrichCalculatorVolumeFromProduct, resolveProductVolumeLiters } from '../../utils/productVolume.js';
+import { taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { getApiSessionContext } from '../../services/apiSession.js';
 import { privateClientMinPrice } from '../../utils/marketplaceMinProfit.js';
+import {
+  liveMinPriceForProduct,
+  pickStoredCalculator,
+} from '../../utils/calculateMinPrice.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
 
@@ -42,329 +46,10 @@ const MP_LINK_FILTER_TOGGLES = [
   { code: 'ym', label: 'ЯМ', name: 'Яндекс.Маркет', color: '#fc3f1d' },
 ];
 
-// Нормализация ответа API: сервер возвращает { ok, data: result }, axios даёт response.data = этот объект
-function getPriceResult(r) {
-  if (r == null) return r;
-  if (typeof r === 'object' && 'data' in r && r.data != null) return r.data;
-  return r;
-}
-
-// Функция расчета минимальной цены на основе комиссий. Только фактические данные, без значений по умолчанию.
-function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null, taxProfile = null, ozonAcquiringPercent = null) {
-  const basePriceNum = Number(basePrice) || 0;
-  // Минимальная прибыль — только из карточки товара; без значения расчёт не выполняем
-  const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
-  if (minProfitNum == null || minProfitNum < 0) {
-    return null;
-  }
-
-  // Только фактический расчёт по данным API
-  if (!calculator || !calculator.commissions) {
-    return null;
-  }
-
-  const commissions = calculator.commissions;
-  // WB: мин. цена по схеме FBO/FBW (paidStorageKgvp). Логистика уже в logistics_base/liter.
-  const emptyCommission = { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 };
-  let commission;
-  if (marketplace === 'wb') {
-    const wbBase = commissions.FBO || commissions.FBS || emptyCommission;
-    commission = { ...wbBase, delivery_amount: 0 };
-  } else {
-    commission = commissions.FBS || commissions.FBO || emptyCommission;
-  }
-  
-  if (marketplace === 'wb') {
-    console.log(`[calculateMinPrice] WB commission: FBO=${commissions.FBO?.percent}% FBS=${commissions.FBS?.percent}% → using ${commission.percent}% (FBO/FBW)`);
-    if (commission.percent === 0) {
-      console.error(`[calculateMinPrice] ✗ ERROR: Selected WB commission percent is 0!`);
-    }
-  }
-  
-  // Основные расходы (преобразуем в числа, без fallback - только из API)
-  // Для Wildberries используем процент эквайринга из настроек
-  let acquiring = 0;
-  if (marketplace === 'wb') {
-    if (wbAcquiringPercent !== null && wbAcquiringPercent !== undefined) {
-      // Для WB: используем процент эквайринга из настроек (уже в процентах, например 2.5)
-      // Это будет использовано как процент для умножения на цену товара
-      acquiring = Number(wbAcquiringPercent) || 0;
-      console.log(`[calculateMinPrice] ✓ WB acquiring percent from settings: ${acquiring}%`);
-    } else {
-      // Если настройки не загрузились или не установлены, используем 0
-      acquiring = 0;
-      console.warn(`[calculateMinPrice] ⚠ WB acquiring percent not loaded from settings, using 0%`);
-    }
-  } else if (marketplace === 'ozon' && ozonAcquiringPercent != null && ozonAcquiringPercent !== '') {
-    acquiring = Number(ozonAcquiringPercent) || 0;
-    console.log(`[calculateMinPrice] ✓ Ozon acquiring percent from settings: ${acquiring}%`);
-  } else {
-    acquiring = calculator.acquiring !== undefined && calculator.acquiring !== null
-      ? Number(calculator.acquiring)
-      : 0;
-  }
-  // Для YM эквайринг = приём (AGENCY) + перевод (PAYMENT_TRANSFER): фикс. части в fixedExpenses, % в знаменателе
-  let ymAgencyFixed = 0;
-  let ymPaymentTransferPercent = 0;
-  let ymPaymentTransferFixed = 0;
-  if (marketplace === 'ym' && calculator.ymTariffs) {
-    const agency = calculator.ymTariffs.AGENCY_COMMISSION;
-    const payment = calculator.ymTariffs.PAYMENT_TRANSFER;
-    const agencyVT = (agency?.valueType || '').toLowerCase();
-    const agencyVal = Number(agency?.value) ?? Number(agency?.amount) ?? 0;
-    const paymentVT = (payment?.valueType || '').toLowerCase();
-    const paymentVal = Number(payment?.value) ?? Number(payment?.amount) ?? 0;
-    ymAgencyFixed = agencyVT === 'absolute' ? agencyVal : 0;
-    if (paymentVT === 'relative') {
-      ymPaymentTransferPercent = paymentVal / 100;
-      acquiring = paymentVal;
-    } else {
-      ymPaymentTransferFixed = paymentVal;
-    }
-  }
-
-  // Обработка заказа: используем значение из API
-  console.log(`[calculateMinPrice] ========== PROCESSING COST DEBUG ==========`);
-  console.log(`[calculateMinPrice] Full calculator object:`, JSON.stringify(calculator, null, 2));
-  console.log(`[calculateMinPrice] calculator.processing_cost:`, calculator.processing_cost);
-  console.log(`[calculateMinPrice] calculator.processing_cost type:`, typeof calculator.processing_cost);
-  console.log(`[calculateMinPrice] calculator.commissions:`, calculator.commissions);
-  console.log(`[calculateMinPrice] calculator.commissions.FBS:`, calculator.commissions?.FBS);
-  console.log(`[calculateMinPrice] calculator.commissions.FBS?.first_mile_amount:`, calculator.commissions?.FBS?.first_mile_amount);
-  
-  // Обработка заказа: Ozon — fbs_first_mile_min_amount; YM — SORTING; WB — нет
-  let processingCost = 0;
-  if (marketplace === 'ozon') {
-    processingCost = calculator.processing_cost !== undefined && calculator.processing_cost !== null
-      ? Number(calculator.processing_cost)
-      : 0;
-    console.log(`[calculateMinPrice] Ozon processing cost (from API): ${processingCost}`);
-  } else if (marketplace === 'ym') {
-    processingCost = calculator.processing_cost !== undefined && calculator.processing_cost !== null
-      ? Number(calculator.processing_cost)
-      : 0;
-    console.log(`[calculateMinPrice] YM processing cost (SORTING): ${processingCost}`);
-  }
-  // WB: услуги "Обработка заказа" нет
-  
-  // Логистика: для WB пересчитываем из logistics_base + logistics_liter (как в PriceDetailsModal), иначе из API
-  let logisticsCost = 0;
-  if (marketplace === 'wb' && calculator.logistics_base !== undefined && calculator.logistics_liter !== undefined) {
-    const volume = resolveEffectiveVolumeLiters(calculator, product, marketplace) || 0;
-    if (volume && volume > 1) {
-      const additionalLiters = Math.ceil(volume - 1);
-      logisticsCost = calculator.logistics_base + calculator.logistics_liter * additionalLiters;
-    } else {
-      logisticsCost = calculator.logistics_base;
-    }
-  } else {
-    // Ozon, YM: logistics_cost из API (YM — MIDDLE_MILE)
-    logisticsCost = calculator.logistics_cost !== undefined && calculator.logistics_cost !== null
-      ? Number(calculator.logistics_cost)
-      : 0;
-    if (marketplace === 'ozon' && logisticsCost > 0) {
-      const logisticsCostBefore = logisticsCost;
-      logisticsCost = Math.round(logisticsCost);
-      console.log(`[calculateMinPrice] Ozon logistics cost rounded: ${logisticsCostBefore} → ${logisticsCost}`);
-    }
-  }
-  
-  // Доставка до клиента: для YM пересчёт по valueType (relative = % от цены)
-  let deliveryToCustomer = commission.delivery_amount !== undefined && commission.delivery_amount !== null
-    ? Number(commission.delivery_amount)
-    : 0;
-  let ymDeliveryPercent = 0;
-  if (marketplace === 'ym' && calculator.ymTariffs) {
-    const d = calculator.ymTariffs.DELIVERY_TO_CUSTOMER;
-    const cr = calculator.ymTariffs.CROSSREGIONAL_DELIVERY;
-    const ex = calculator.ymTariffs.EXPRESS_DELIVERY;
-    const addRelative = (t) => {
-      if (!t || (t.valueType || '').toLowerCase() !== 'relative') return 0;
-      return (Number(t.value) || 0) / 100;
-    };
-    ymDeliveryPercent = addRelative(d) + addRelative(cr) + addRelative(ex);
-    deliveryToCustomer = 0;
-  }
-
-  // Расчет возвратов (на основе процента выкупа товара)
-  // Важно: рассчитываем на единицу товара, а не на общее количество
-  let returnCost = 0;
-  let returnProcessingCost = 0;
-  let returnLossCost = 0; // Потеря себестоимости возвращенных товаров
-  
-  // Возвраты: только если в карточке указан процент выкупа (buyout_rate)
-  if (product && product.buyout_rate != null && product.buyout_rate !== '' && !isNaN(Number(product.buyout_rate))) {
-    const buyoutRateInput = Number(product.buyout_rate);
-    const buyoutRate = buyoutRateInput / 100;
-    const returnRate = 1 - buyoutRate;
-
-    if (buyoutRateInput < 100 && returnRate > 0) {
-      returnLossCost = basePriceNum * returnRate;
-
-      let returnAmount = 0;
-      if (commission.return_amount !== undefined && commission.return_amount !== null) {
-        returnAmount = Number(commission.return_amount);
-      }
-      returnCost = returnAmount * returnRate;
-
-      const returnProcessingFromApi = (commission.return_processing_amount !== undefined && commission.return_processing_amount !== null)
-        ? Number(commission.return_processing_amount)
-        : 0;
-      returnProcessingCost = returnProcessingFromApi * returnRate;
-
-      console.log(`[calculateMinPrice] ${marketplace} return costs (only from API/product):`, {
-        return_amount: commission.return_amount,
-        returnAmount_used: returnAmount,
-        returnRate: (returnRate * 100).toFixed(2) + '%',
-        returnCost: returnCost.toFixed(2),
-        returnProcessingCost: returnProcessingCost.toFixed(2),
-        returnLossCost: returnLossCost.toFixed(2)
-      });
-    }
-  }
-  
-  // Процент комиссии маркетплейса (преобразуем в число)
-  const marketplaceCommissionPercent = (Number(commission.percent) || 0) / 100;
-  // Процент эквайринга (преобразуем в число)
-  const acquiringPercent = (Number(acquiring) || 0) / 100;
-  
-  // Процент услуг Джем (только для WB, вычисляется от суммы товара)
-  let gemServicesPercent = 0;
-  if (marketplace === 'wb' && wbGemServicesPercent !== null && wbGemServicesPercent !== undefined) {
-    gemServicesPercent = (Number(wbGemServicesPercent) || 0) / 100;
-    console.log(`[calculateMinPrice] ✓ WB gem services percent from settings: ${wbGemServicesPercent}% (${gemServicesPercent})`);
-  }
-  
-  // Комиссия за продвижение бренда — только из API/настроек, без подстановки по умолчанию
-  const brandPromotionPercent = (calculator.brand_promotion_percent != null && !isNaN(Number(calculator.brand_promotion_percent)))
-    ? Number(calculator.brand_promotion_percent) / 100
-    : 0;
-  // Реклама (ДРР) — из Performance API / fallback настроек
-  const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent)))
-    ? Number(calculator.ads_promotion_percent) / 100
-    : 0;
-  
-  // Фиксированные расходы: для YM доставка (%) и приём платежа (0.12 ₽) учитываются в формуле/итерации
-  const fixedExpenses = Number(processingCost) + Number(logisticsCost) + Number(deliveryToCustomer) + Number(returnCost) + Number(returnProcessingCost) + Number(returnLossCost) + (marketplace === 'ym' ? (ymAgencyFixed + ymPaymentTransferFixed) : 0);
-
-  const targetProfitAfterTax = Number(minProfitNum);
-  const profile = taxProfile || taxProfileForProduct(null, product);
-
-  const calculateNetProfit = (price) => {
-    const priceNum = Number(price) || 0;
-    const commissionAmount = priceNum * marketplaceCommissionPercent;
-    let acquiringAmount = priceNum * acquiringPercent;
-    if (marketplace === 'ym') {
-      acquiringAmount = ymAgencyFixed + ymPaymentTransferFixed + priceNum * ymPaymentTransferPercent;
-    } else if (marketplace === 'ozon') {
-      const acquiringAmountBefore = acquiringAmount;
-      acquiringAmount = Math.ceil(acquiringAmount);
-      if (acquiringAmountBefore !== acquiringAmount) {
-        console.log(`[calculateNetProfit] Ozon acquiring amount rounded: ${acquiringAmountBefore.toFixed(2)} → ${acquiringAmount}`);
-      }
-    }
-    const brandPromotionAmount = priceNum * brandPromotionPercent;
-    const adsPromotionAmount = priceNum * adsPromotionPercent;
-    const gemServicesAmount = priceNum * gemServicesPercent;
-    const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-    const totalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(commissionAmount) + Number(acquiringAmount) + Number(deliveryAmountAtPrice) + Number(brandPromotionAmount) + Number(adsPromotionAmount) + Number(gemServicesAmount);
-    const { netProfit } = computeTaxesAndNetProfit({
-      price: priceNum,
-      totalExpenses,
-      taxProfile: profile,
-    });
-    return Number(netProfit);
-  };
-  
-  const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - adsPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
-  if (denominator <= 0) {
-    console.warn('[calculateMinPrice] Invalid denominator (commission/acquiring/delivery data)');
-    return null;
-  }
-  let recommendedPrice = Math.round((basePriceNum + fixedExpenses + targetProfitAfterTax) / denominator);
-  
-  // Итеративно увеличиваем цену по 1₽ до достижения целевой чистой прибыли.
-  // Это гарантирует корректный результат при округлениях (Ozon: ceil эквайринга и т.д.)
-  let netProfit = calculateNetProfit(recommendedPrice);
-  let iterations = 0;
-  const maxIterations = 5000; // защита от бесконечного цикла
-  
-  while (netProfit < targetProfitAfterTax && iterations < maxIterations) {
-    recommendedPrice += 1;
-    netProfit = calculateNetProfit(recommendedPrice);
-    iterations++;
-    
-    if (recommendedPrice > basePriceNum * 20) {
-      console.warn('[calculateMinPrice] Price too high, stopping iterations');
-      break;
-    }
-  }
-  
-  // Финальная проверка расчета (убеждаемся, что все значения - числа)
-  const recommendedPriceNum = Number(recommendedPrice) || 0;
-  const finalCommissionAmount = Number(recommendedPriceNum * marketplaceCommissionPercent);
-  // Для Ozon: округляем эквайринг в большую сторону до целого числа
-  let finalAcquiringAmount = Number(recommendedPriceNum * acquiringPercent);
-  if (marketplace === 'ozon') {
-    const acquiringAmountBefore = finalAcquiringAmount;
-    finalAcquiringAmount = Math.ceil(finalAcquiringAmount);
-    console.log(`[calculateMinPrice] Ozon final acquiring amount rounded: ${acquiringAmountBefore.toFixed(2)} → ${finalAcquiringAmount}`);
-  }
-  const finalBrandPromotionAmount = Number(recommendedPriceNum * brandPromotionPercent);
-  const finalAdsPromotionAmount = Number(recommendedPriceNum * adsPromotionPercent);
-  // Услуги Джем (только для WB, вычисляется от суммы товара)
-  const finalGemServicesAmount = Number(recommendedPriceNum * gemServicesPercent);
-  const finalTotalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(finalCommissionAmount) + Number(finalAcquiringAmount) + Number(finalBrandPromotionAmount) + Number(finalAdsPromotionAmount) + Number(finalGemServicesAmount);
-  const { vat: finalVat, incomeTax: finalTaxes, netProfit: finalNetProfit, profitBeforeIncomeTax: finalProfitBeforeTax } = computeTaxesAndNetProfit({
-    price: recommendedPriceNum,
-    totalExpenses: finalTotalExpenses,
-    taxProfile: profile,
-  });
-  
-  const buyoutRateForLog = (product && product.buyout_rate != null && product.buyout_rate !== '') ? Number(product.buyout_rate) : null;
-  const returnRatePercent = buyoutRateForLog != null ? ((1 - buyoutRateForLog / 100) * 100).toFixed(2) : '—';
-
-  console.log(`[calculateMinPrice] Final calculation for ${marketplace}:`, {
-    recommendedPrice: recommendedPriceNum,
-    basePrice: basePriceNum,
-    buyoutRate: buyoutRateForLog,
-    returnRate: returnRatePercent + '%',
-    returnLossCost: Number(returnLossCost).toFixed(2),
-    returnCost: Number(returnCost).toFixed(2),
-    returnProcessingCost: Number(returnProcessingCost).toFixed(2),
-    totalReturnCosts: (Number(returnLossCost) + Number(returnCost) + Number(returnProcessingCost)).toFixed(2),
-    processingCost: Number(processingCost).toFixed(2),
-    logisticsCost: Number(logisticsCost).toFixed(2),
-    fixedExpenses: Number(fixedExpenses).toFixed(2),
-    commissionPercent: (Number(marketplaceCommissionPercent) * 100).toFixed(2) + '%',
-    commissionAmount: Number(finalCommissionAmount).toFixed(2),
-    acquiringPercent: (Number(acquiringPercent) * 100).toFixed(2) + '%',
-    acquiringAmount: Number(finalAcquiringAmount).toFixed(2),
-    brandPromotionAmount: Number(finalBrandPromotionAmount).toFixed(2),
-    gemServicesAmount: Number(finalGemServicesAmount).toFixed(2),
-    totalExpenses: Number(finalTotalExpenses).toFixed(2),
-    profitBeforeTax: Number(finalProfitBeforeTax).toFixed(2),
-    vat: Number(finalVat).toFixed(2),
-    taxes: Number(finalTaxes).toFixed(2),
-    netProfit: Number(finalNetProfit).toFixed(2),
-    targetNetProfit: targetProfitAfterTax,
-    iterations
-  });
-  
-  // Финальная гарантия: итеративно добавляем 1₽, пока чистая прибыль < целевой
-  let finalPrice = Number(recommendedPriceNum) || 0;
-  let finalNetProfitCheck = calculateNetProfit(finalPrice);
-  
-  while (finalNetProfitCheck < targetProfitAfterTax) {
-    finalPrice += 1;
-    finalNetProfitCheck = calculateNetProfit(finalPrice);
-    if (finalPrice > basePriceNum * 20) {
-      console.warn(`[calculateMinPrice] Price adjustment stopped: price too high (${finalPrice})`);
-      break;
-    }
-  }
-  
-  return finalPrice > 0 ? Math.round(finalPrice) : null;
+function numOrNull(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 export function Prices() {
@@ -374,7 +59,7 @@ export function Prices() {
   const showFboPrices = isProfileFboEnabled(profile);
   const privateOrdersEnabled = isProfilePrivateOrdersEnabled(profile);
   const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
-  const mpColSpan = minColsPerMp; // только мин. цены (FBS/FBO)
+  const mpColSpan = minColsPerMp + 1; // мин. FBS/FBO + макс.
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -413,6 +98,9 @@ export function Prices() {
   const [wbAcquiringPercent, setWbAcquiringPercent] = useState(null); // Процент эквайринга для WB из настроек
   const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
+  const [mpSettingsReady, setMpSettingsReady] = useState(false);
+  const persistInFlightRef = useRef(false);
+  const persistDoneRef = useRef(new Set());
   const [ymEarlyShipmentDiscountPp, setYmEarlyShipmentDiscountPp] = useState(null);  const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
   const [recalcAllMessage, setRecalcAllMessage] = useState(null); // Сообщение после запуска фонового пересчёта
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
@@ -710,6 +398,7 @@ export function Prices() {
   // Загрузка настроек интеграций (эквайринг WB/Ozon, услуги Джем, скидка YM) — один раз при монтировании
   useEffect(() => {
     let cancelled = false;
+    setMpSettingsReady(false);
     const loadMpSettings = async () => {
       try {
         const [wbRes, ozonRes, ymRes] = await Promise.all([
@@ -757,6 +446,8 @@ export function Prices() {
           setOzonAcquiringPercent(null);
           setYmEarlyShipmentDiscountPp(null);
         }
+      } finally {
+        if (!cancelled) setMpSettingsReady(true);
       }
     };
     loadMpSettings();
@@ -783,6 +474,110 @@ export function Prices() {
     });
     setCalculatedPrices(prev => ({ ...prev, ...fromStored }));
   }, [products]);
+
+  const liveMinOpts = useMemo(() => ({
+    wbAcquiringPercent,
+    wbGemServicesPercent,
+    ozonAcquiringPercent,
+  }), [wbAcquiringPercent, wbGemServicesPercent, ozonAcquiringPercent]);
+
+  const liveMinsByProduct = useMemo(() => {
+    const map = {};
+    const orgId = filterOrganizationId || getApiSessionContext().organizationId || null;
+    for (const product of visibleProducts) {
+      const key = String(product.id ?? product.sku ?? '');
+      if (!key) continue;
+      const taxProfile = taxProfileForProduct(organizations, product, orgId);
+      const opts = { ...liveMinOpts, taxProfile };
+      map[key] = {
+        ozonFbs: liveMinPriceForProduct(product, 'ozon', 'FBS', opts),
+        ozonFbo: liveMinPriceForProduct(product, 'ozon', 'FBO', opts),
+        wbFbs: liveMinPriceForProduct(product, 'wb', 'FBS', opts),
+        wbFbo: liveMinPriceForProduct(product, 'wb', 'FBO', opts),
+      };
+    }
+    return map;
+  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId]);
+
+  // Сохраняем живой расчёт, если он разошёлся с БД — иначе «Отправить цены» уйдёт со старым значением.
+  useEffect(() => {
+    if (!mpSettingsReady || recalcAllLoading || recalcOneProductId) return;
+    if (persistInFlightRef.current || visibleProducts.length === 0) return;
+
+    const payload = [];
+    for (const product of visibleProducts) {
+      const productId = product.id;
+      if (productId == null) continue;
+      const key = String(product.id ?? product.sku ?? '');
+      const live = liveMinsByProduct[key];
+      if (!live) continue;
+      const item = { productId };
+      let dirty = false;
+
+      const applyIfChanged = (schemeKey, livePrice, storedPrice, details) => {
+        if (livePrice == null) return;
+        const stored = numOrNull(storedPrice);
+        if (stored == null) return;
+        if (Math.abs(livePrice - stored) < 1) return;
+        dirty = true;
+        item[schemeKey] = livePrice;
+        if (details) {
+          item[schemeKey.replace(/Fbs$|Fbo$/, 'Details$&')] = details;
+        }
+      };
+
+      applyIfChanged(
+        'wbFbo',
+        live.wbFbo,
+        product.storedMinPriceWbFbo ?? product.storedMinPriceWb ?? product.stored_min_price_wb,
+        pickStoredCalculator(product, 'wb', 'FBO')
+      );
+      applyIfChanged(
+        'wbFbs',
+        live.wbFbs,
+        product.storedMinPriceWbFbs,
+        pickStoredCalculator(product, 'wb', 'FBS')
+      );
+      applyIfChanged(
+        'ozonFbs',
+        live.ozonFbs,
+        product.storedMinPriceOzonFbs ?? product.storedMinPriceOzon ?? product.stored_min_price_ozon,
+        pickStoredCalculator(product, 'ozon', 'FBS')
+      );
+      applyIfChanged(
+        'ozonFbo',
+        live.ozonFbo,
+        product.storedMinPriceOzonFbo,
+        pickStoredCalculator(product, 'ozon', 'FBO')
+      );
+
+      if (dirty) payload.push(item);
+    }
+    if (!payload.length) return;
+    const persistSig = payload
+      .map((row) => `${row.productId}:${row.wbFbo ?? ''}:${row.wbFbs ?? ''}:${row.ozonFbs ?? ''}:${row.ozonFbo ?? ''}`)
+      .join('|');
+    if (persistDoneRef.current.has(persistSig)) return;
+    persistDoneRef.current.add(persistSig);
+
+    let cancelled = false;
+    persistInFlightRef.current = true;
+    (async () => {
+      try {
+        await pricesApi.saveBulk(payload);
+        if (!cancelled) loadListRef.current();
+      } catch (err) {
+        console.error('[Prices] persist live min prices failed:', err);
+      } finally {
+        persistInFlightRef.current = false;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mpSettingsReady, liveMinsByProduct, visibleProducts, recalcAllLoading, recalcOneProductId]);
+
+  const handleSaveMarketplaceMax = async ({ productId, marketplace, maxPrice }) => {
+    await pricesApi.saveCommercial([{ productId, marketplace, maxPrice }]);
+  };
 
   /** Пересчитать минимальные цены для одного товара на сервере (Ozon, WB, YM с учётом профиля). */
   const handleRecalcOne = async (productId) => {
@@ -942,6 +737,8 @@ export function Prices() {
       <p className="subtitle">
         Управление ценами товаров на маркетплейсах ·{' '}
         <Link to="/prices/strategies" style={{ color: 'var(--primary)' }}>Стратегии ценообразования</Link>
+        {' · '}
+        <Link to="/prices/history" style={{ color: 'var(--primary)' }}>История изменения цен</Link>
       </p>
 
       <div className="main-card mb-3 card">
@@ -1243,6 +1040,7 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
                   )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>макс.</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1256,6 +1054,7 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
                   )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>макс.</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1269,6 +1068,7 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
                   )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>макс.</th>
                 </tr>
               </thead>
               <tbody>
@@ -1276,38 +1076,41 @@ export function Prices() {
                   const productMerged = product;
                   const productKey = String(product.id ?? product.sku ?? '');
                   const raw = calculatedPrices[productKey] || {};
+                  const live = mpSettingsReady ? (liveMinsByProduct[productKey] || {}) : {};
                   const storedOzon = product.storedMinPriceOzon ?? product.stored_min_price_ozon;
                   const storedWb = product.storedMinPriceWb ?? product.stored_min_price_wb;
                   const storedYm = product.storedMinPriceYm ?? product.stored_min_price_ym;
                   const prices = {
-                    ozon: raw.ozon ?? storedOzon ?? null,
-                    wb: raw.wb ?? storedWb ?? null,
+                    ozon: live.ozonFbs ?? raw.ozon ?? storedOzon ?? null,
+                    wb: live.wbFbo ?? raw.wb ?? storedWb ?? null,
                     ym: raw.ym ?? storedYm ?? null,
-                    ozonFbs: raw.ozonFbs ?? product.storedMinPriceOzonFbs ?? storedOzon ?? null,
-                    ozonFbo: raw.ozonFbo ?? product.storedMinPriceOzonFbo ?? null,
-                    wbFbs: raw.wbFbs ?? product.storedMinPriceWbFbs ?? null,
-                    wbFbo: raw.wbFbo ?? product.storedMinPriceWbFbo ?? storedWb ?? null,
+                    ozonFbs: live.ozonFbs ?? raw.ozonFbs ?? product.storedMinPriceOzonFbs ?? storedOzon ?? null,
+                    ozonFbo: live.ozonFbo ?? raw.ozonFbo ?? product.storedMinPriceOzonFbo ?? null,
+                    wbFbs: live.wbFbs ?? raw.wbFbs ?? product.storedMinPriceWbFbs ?? null,
+                    wbFbo: live.wbFbo ?? raw.wbFbo ?? product.storedMinPriceWbFbo ?? storedWb ?? null,
                     ymFbs: raw.ymFbs ?? product.storedMinPriceYmFbs ?? storedYm ?? null,
                     ymFbo: raw.ymFbo ?? product.storedMinPriceYmFbo ?? null,
                   };
                   const openMinModal = (marketplace, scheme, price, detailsFallback) => {
                     const schemeKey = scheme === 'FBO' ? 'Fbo' : scheme === 'FBS' ? 'Fbs' : '';
+                    const mpCap = marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'Wb' : 'Ym';
                     const storedDetails =
-                      (schemeKey &&
-                        product[
-                          `storedCalculationDetails${marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'Wb' : 'Ym'}${schemeKey}`
-                        ]) ||
-                      (marketplace === 'ozon'
-                        ? product.storedCalculationDetailsOzon
-                        : marketplace === 'wb'
-                          ? product.storedCalculationDetailsWb
-                          : product.storedCalculationDetailsYm);
+                      (schemeKey && product[`storedCalculationDetails${mpCap}${schemeKey}`]) ||
+                      product[`storedCalculationDetails${mpCap}`] ||
+                      null;
+                    const fallbackPrice =
+                      price ??
+                      (scheme === 'FBS'
+                        ? (prices[`${marketplace}Fbo`] ?? prices[marketplace])
+                        : scheme === 'FBO'
+                          ? (prices[`${marketplace}Fbs`] ?? prices[marketplace])
+                          : prices[marketplace]);
                     setPriceModal({
                       isOpen: true,
                       product,
                       marketplace,
                       priceScheme: scheme || null,
-                      price,
+                      price: fallbackPrice,
                       calculatorData:
                         calculatorData[productKey]?.[marketplace] ||
                         detailsFallback ||
@@ -1339,11 +1142,12 @@ export function Prices() {
                             title="Открыть карточку товара"
                             style={{
                               padding: 0,
-                              border: 0,
-                              background: 'transparent',
+                              border: 'none',
+                              background: 'none',
                               color: 'inherit',
                               textDecoration: 'underline',
                               cursor: 'pointer',
+                              font: 'inherit',
                             }}
                           >
                             {product.sku || '—'}
@@ -1361,12 +1165,12 @@ export function Prices() {
                               title="Открыть карточку товара"
                               style={{
                                 padding: 0,
-                                border: 0,
-                                background: 'transparent',
+                                border: 'none',
+                                background: 'none',
                                 color: 'inherit',
                                 textDecoration: 'underline',
                                 cursor: 'pointer',
-                                textAlign: 'center',
+                                font: 'inherit',
                               }}
                             >
                               {product.name || 'Без названия'}
@@ -1477,11 +1281,13 @@ export function Prices() {
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
                         minOnly
+                        showMax
                         isLoading={isLoading}
                         hasSku={!!skuOzon}
                         skuBadge="OZ"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveMarketplaceMax}
                         onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
                         onOpenMinDetailsFbs={() => openMinModal('ozon', 'FBS', prices.ozonFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ozon', 'FBO', prices.ozonFbo)}
@@ -1495,14 +1301,16 @@ export function Prices() {
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
                         minOnly
+                        showMax
                         isLoading={isLoading}
                         hasSku={!!skuWb}
                         skuBadge="WB"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveMarketplaceMax}
                         onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
-                        onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs)}
-                        onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo)}
+                        onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs ?? prices.wb)}
+                        onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo ?? prices.wb)}
                       />
                       <MarketplacePriceCells
                         product={productMerged}
@@ -1513,11 +1321,13 @@ export function Prices() {
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
                         minOnly
+                        showMax
                         isLoading={isLoading}
                         hasSku={!!skuYm}
                         skuBadge="YM"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveMarketplaceMax}
                         onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}
@@ -1565,6 +1375,15 @@ export function Prices() {
                           >
                             {pushOneProductId === product.id ? '⏳' : '📤'}
                           </Button>
+                          <Link
+                            to={`/prices/history?productId=${product.id}`}
+                            className="btn btn-secondary btn-sm prices-row-action-btn"
+                            title="История изменения цен"
+                            aria-label="История изменения цен"
+                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                          >
+                            🕒
+                          </Link>
                         </div>
                       </td>
                     </tr>

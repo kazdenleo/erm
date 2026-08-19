@@ -92,6 +92,7 @@ export function FboPurchaseCalculation() {
   const [replaceSaving, setReplaceSaving] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [filterSupplierId, setFilterSupplierId] = useState('');
+  const [restoringCell, setRestoringCell] = useState(null);
 
   const load = useCallback(async () => {
     if (!sessionIdFromUrl && !supplyIds.length) {
@@ -193,6 +194,70 @@ export function FboPurchaseCalculation() {
     );
   };
 
+  const applyDeletedSupplyCell = useCallback(
+    (rows, { rowKey, supplyId, supplyItemId, restore, kitProductId }) =>
+      rows.map((r) => {
+        const c = r.supplyCells?.[supplyId];
+        const matchesItem = c?.supplyItemId === supplyItemId;
+        const matchesKitSibling =
+          Boolean(kitProductId) &&
+          r.rowType === 'component' &&
+          Number(r.kitProductId) === Number(kitProductId) &&
+          Number(c?.kitProductId) === Number(kitProductId);
+
+        if (!matchesItem && !matchesKitSibling) return r;
+
+        if (r.key === rowKey && matchesItem) {
+          return {
+            ...r,
+            supplyQty: { ...r.supplyQty, [supplyId]: 0 },
+            supplyCells: {
+              ...r.supplyCells,
+              [supplyId]: {
+                ...c,
+                supplyItemId: null,
+                quantity: 0,
+                deleted: true,
+                restore,
+              },
+            },
+          };
+        }
+
+        const supplyQty = { ...r.supplyQty };
+        const supplyCells = { ...r.supplyCells };
+        delete supplyQty[supplyId];
+        delete supplyCells[supplyId];
+        return { ...r, supplyQty, supplyCells };
+      }),
+    []
+  );
+
+  const handleRestoreSupplyCell = useCallback(
+    async (rowKey, supplyId) => {
+      const row = calc?.rows?.find((r) => r.key === rowKey);
+      const cell = row?.supplyCells?.[supplyId];
+      if (!cell?.deleted || !cell.restore?.productId) return;
+
+      const restoreQty = Math.max(1, Number(cell.restore.quantity) || 1);
+      const restoreKey = `${rowKey}:${supplyId}`;
+      setRestoringCell(restoreKey);
+      setErr(null);
+      try {
+        await fboSuppliesApi.addSupplyItem(supplyId, {
+          productId: cell.restore.productId,
+          quantity: restoreQty,
+        });
+        await load();
+      } catch (e) {
+        setErr(e.response?.data?.message || e.message || 'Не удалось восстановить позицию');
+      } finally {
+        setRestoringCell(null);
+      }
+    },
+    [calc?.rows, load]
+  );
+
   const handleSupplyQtyBlur = useCallback(
     async (rowKey, supplyId) => {
     const row = calc?.rows?.find((r) => r.key === rowKey);
@@ -236,7 +301,21 @@ export function FboPurchaseCalculation() {
           kitQty
         );
         if (result.deleted) {
-          await load();
+          const restore = {
+            productId: row.productId,
+            quantity: Math.max(1, savedKitQty || 1),
+          };
+          updateRows((rows) =>
+            recalcPurchaseRows(
+              applyDeletedSupplyCell(rows, {
+                rowKey: row.key,
+                supplyId,
+                supplyItemId: cell.supplyItemId,
+                restore,
+                kitProductId: row.productId || row.kitProductId,
+              })
+            )
+          );
         } else {
           await load();
         }
@@ -298,18 +377,37 @@ export function FboPurchaseCalculation() {
         kitQtyToSave
       );
       const savedKitQty = result.deleted ? 0 : result.quantity;
+      if (result.deleted) {
+        const restoreProductId = isKitCell ? cell.kitProductId : row.productId;
+        const restoreQty = isKitCell
+          ? Math.max(1, Number(cell.quantity) || 1)
+          : Math.max(1, savedComponentQty || 1);
+        const restore = { productId: restoreProductId, quantity: restoreQty };
+        updateRows((rows) =>
+          recalcPurchaseRows(
+            applyDeletedSupplyCell(rows, {
+              rowKey: isKitCell
+                ? rows.find(
+                    (r) =>
+                      (r.rowType === 'kit' || r.isKitHeader) &&
+                      Number(r.productId) === Number(cell.kitProductId) &&
+                      r.supplyCells?.[supplyId]?.supplyItemId === cell.supplyItemId
+                  )?.key || row.key
+                : row.key,
+              supplyId,
+              supplyItemId: cell.supplyItemId,
+              restore,
+              kitProductId: isKitCell ? cell.kitProductId : null,
+            })
+          )
+        );
+        return;
+      }
       updateRows((rows) =>
         recalcPurchaseRows(
           rows.map((r) => {
             const c = r.supplyCells?.[supplyId];
             if (!c || c.supplyItemId !== cell.supplyItemId) return r;
-            if (result.deleted) {
-              const supplyQty = { ...r.supplyQty };
-              const supplyCells = { ...r.supplyCells };
-              delete supplyQty[supplyId];
-              delete supplyCells[supplyId];
-              return { ...r, supplyQty, supplyCells };
-            }
             if (c.isKitComponent) {
               const pk = Math.max(1, Number(c.perKit) || 1);
               return {
@@ -348,7 +446,7 @@ export function FboPurchaseCalculation() {
       setSavingCell(null);
     }
     },
-    [calc?.rows, updateRows, load]
+    [calc?.rows, updateRows, load, applyDeletedSupplyCell]
   );
 
   const openReplace = (row, supply, cell) => {
@@ -547,9 +645,11 @@ export function FboPurchaseCalculation() {
 
       {calc?.fboWarehouse ? (
         <p className="fbo-packing-hint">
-          Склад FBO: <strong>{calc.fboWarehouse.label}</strong>. К закупке = потребность − наличие − в пути −
-          уже оформлено. Отметьте галочками позиции и создайте закупку у нужного поставщика; можно
-          несколько закупок на одну сессию. Комплекты показаны отдельной строкой; ниже — комплектующие к закупке.
+          Склад FBO: <strong>{calc.fboWarehouse.label}</strong>. Колонка «В поставках» — сумма по
+          поставкам. К закупке = в поставках − наличие − в пути − уже оформлено. Позиция уходит вниз,
+          только когда во всех поставках 0. Удалённую (0) позицию можно восстановить кнопкой ↶.
+          Отметьте галочками позиции и создайте закупку у нужного поставщика; можно несколько закупок
+          на одну сессию. Комплекты показаны отдельной строкой; ниже — комплектующие к закупке.
         </p>
       ) : null}
 
@@ -606,6 +706,7 @@ export function FboPurchaseCalculation() {
                 </th>
                 <th className="fbo-pc-sticky-col">Товар</th>
                 <th>Артикул</th>
+                <th title="Сумма количеств по всем поставкам">В поставках</th>
                 <th>К закупке</th>
                 <th>Закуплено</th>
                 <th>Наличие</th>
@@ -663,6 +764,13 @@ export function FboPurchaseCalculation() {
                     {isKitHeader ? (
                       <span className="text-muted">—</span>
                     ) : (
+                      <strong>{row.supplyQtyTotal ?? 0}</strong>
+                    )}
+                  </td>
+                  <td>
+                    {isKitHeader ? (
+                      <span className="text-muted">—</span>
+                    ) : (
                       <>
                         <strong>{row.remainingToPurchase ?? row.toPurchase}</strong>
                         {row.isKitComponentRow && row.perKit > 1 ? (
@@ -679,8 +787,32 @@ export function FboPurchaseCalculation() {
                     const cellKey = cell?.supplyItemId
                       ? `${s.id}:${cell.supplyItemId}`
                       : null;
+                    const restoreKey = `${row.key}:${s.id}`;
                     const isSaving = savingCell === cellKey;
+                    const isRestoring = restoringCell === restoreKey;
                     const val = row.supplyQty[s.id];
+
+                    if (cell?.deleted && cell.restore) {
+                      return (
+                        <td key={s.id} className="text-center">
+                          <div className="fbo-pc-supply-cell">
+                            <span className="text-muted">0</span>
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              className="fbo-pc-restore-btn"
+                              disabled={isRestoring || replaceSaving}
+                              title="Восстановить позицию в поставке"
+                              aria-label="Восстановить позицию в поставке"
+                              onClick={() => handleRestoreSupplyCell(row.key, s.id)}
+                            >
+                              {isRestoring ? '…' : '↶'}
+                            </Button>
+                          </div>
+                        </td>
+                      );
+                    }
+
                     const readOnlyCell =
                       !cell?.supplyItemId ||
                       cell.multiSource ||
@@ -752,6 +884,9 @@ export function FboPurchaseCalculation() {
               <tr className="fbo-purchase-calc-tfoot">
                 <th colSpan={3} className="text-end">
                   Итого к закупке
+                </th>
+                <th>
+                  <strong>{calc.totals.supplyQtyTotal ?? 0}</strong>
                 </th>
                 <th>
                   <strong>{calc.totals.toPurchaseQty}</strong>

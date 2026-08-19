@@ -1,7 +1,8 @@
 /**
  * Превью комиссий по схемам продаж для сопоставленных категорий Ozon и Яндекс.Маркет.
  * Ozon: через калькулятор цен по товару-образцу из ERP-категории.
- * YM: через pricesService.getYMPrices по товару-образцу из ERP-категории (как в расчёте цен).
+ * YM: официальный FEE из POST /v2/tariffs/calculate по categoryId (FBS + FBY),
+ *     без товара-образца — иначе часто подтягивается заниженный % (FBY/кэш образца).
  * Результаты сохраняются в marketplace_category_commission_cache (ночное обновление / кнопка).
  */
 
@@ -46,6 +47,13 @@ const YM_REFERENCE = {
   height: 10,
   weight: 1,
 };
+
+/** Пауза между live-запросами YM tariffs/calculate (лимит ~420). */
+const YM_TARIFF_GAP_MS = 350;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function normalizeOzonCategoryId(id) {
   if (id == null || id === '') return '';
@@ -694,6 +702,18 @@ async function findYmSampleByUserCategory(userCategoryId) {
 
 function ymSchemesFromCalculator(calc) {
   const schemes = [];
+  const program = String(calc?.sellingProgram || '').toUpperCase();
+  // Калькулятор FBY не использовать как FBS (типичная регрессия: 37% вместо 44%).
+  if (program === 'FBY' || program === 'FBO') {
+    const fby = calc?.commissions?.FBO?.percent ?? calc?.commissions?.FBY?.percent;
+    if (fby != null && Number.isFinite(Number(fby))) {
+      schemes.push({
+        ...ymProgramLabel('FBY'),
+        percent: Number(fby),
+      });
+    }
+    return schemes;
+  }
   const fbs = calc?.commissions?.FBS?.percent;
   if (fbs != null && Number.isFinite(Number(fbs))) {
     schemes.push({
@@ -701,6 +721,13 @@ function ymSchemesFromCalculator(calc) {
       label: 'FBS (для расчёта цен)',
       shortLabel: 'FBS',
       percent: Number(fbs),
+    });
+  }
+  const fbo = calc?.commissions?.FBO?.percent;
+  if (fbo != null && Number.isFinite(Number(fbo)) && Number(fbo) !== Number(fbs)) {
+    schemes.push({
+      ...ymProgramLabel('FBY'),
+      percent: Number(fbo),
     });
   }
   return schemes;
@@ -781,11 +808,53 @@ async function getYmCategoryCommissionsLive(ymCategoryId, scope, userCategoryId 
     return { schemes: [], note: 'Не указана категория Яндекс.Маркет' };
   }
 
-  const cacheKey = `ym_cat_v2:${id}:${userCategoryId ?? ''}`;
+  // v3: источник FEE — тариф категории (не калькулятор товара-образца)
+  const cacheKey = `ym_cat_v3:${id}`;
   const cached = getCached(YM_CACHE_NS, cacheKey);
   if (cached) return cached;
 
   let lastError = null;
+  const schemes = [];
+
+  const tFbs = await fetchYmTariff(id, 'FBS', scope);
+  if (tFbs.error) lastError = tFbs.error;
+  if (tFbs.percent != null && Number.isFinite(Number(tFbs.percent))) {
+    schemes.push({
+      ...ymProgramLabel('FBS'),
+      label: 'FBS (для расчёта цен)',
+      shortLabel: 'FBS',
+      percent: Number(tFbs.percent),
+    });
+  }
+
+  await sleep(YM_TARIFF_GAP_MS);
+  const tFby = await fetchYmTariff(id, 'FBY', scope);
+  if (tFby.error && !lastError) lastError = tFby.error;
+  if (tFby.percent != null && Number.isFinite(Number(tFby.percent))) {
+    schemes.push({
+      ...ymProgramLabel('FBY'),
+      percent: Number(tFby.percent),
+    });
+  }
+
+  if (schemes.length > 0) {
+    const result = {
+      schemes,
+      note:
+        'Из тарифа YM FEE по категории (POST /v2/tariffs/calculate). В расчёте мин. цен — FBS; FBY справочно. Без оверлея early-ship (0 = не применяется).',
+      sampleOfferId: null,
+      source: 'ym_category_tariff',
+    };
+    setCached(YM_CACHE_NS, cacheKey, result, CACHE_TTL_MS);
+    return result;
+  }
+
+  const fromDb = await readCommissionsFromDb('ym', [id]);
+  if (fromDb[id]?.schemes?.length) {
+    return fromDb[id];
+  }
+
+  // Запасной путь: калькулятор товара-образца (может быть занижен относительно тарифа категории)
   const sample = await findYmSampleForCategory(id, userCategoryId);
   if (sample?.offer_id) {
     const calc = await loadYmCalculatorForProduct(
@@ -797,40 +866,21 @@ async function getYmCategoryCommissionsLive(ymCategoryId, scope, userCategoryId 
     );
     const fromCalc = calc ? ymCommissionResultFromCalculator(calc, sample.offer_id) : null;
     if (fromCalc) {
+      fromCalc.note = `${fromCalc.note || ''} (fallback: образец — предпочтителен тариф категории)`.trim();
+      fromCalc.source = 'ym_sample_product_fallback';
       setCached(YM_CACHE_NS, cacheKey, fromCalc, CACHE_TTL_MS);
       return fromCalc;
     }
-    lastError = 'Не удалось получить калькулятор YM по товару категории';
-  }
-
-  const fromDb = await readCommissionsFromDb('ym', [id]);
-  if (fromDb[id]?.schemes?.length) {
-    return fromDb[id];
-  }
-
-  // Эталонный тариф по categoryId — даже если образец есть, но без габаритов/веса
-  const t = await fetchYmTariff(id, 'FBS', scope);
-  if (t.error) lastError = t.error;
-  if (t.percent != null && Number.isFinite(Number(t.percent))) {
-    const result = {
-      schemes: [{ ...ymProgramLabel('FBS'), percent: Number(t.percent) }],
-      note: sample?.offer_id
-        ? `Тариф YM FEE по категории (товар ${sample.offer_id} без полного калькулятора). В расчёте цен — после заполнения габаритов/веса.`
-        : 'Ориентировочно (эталонный товар). Добавьте товар YM с габаритами — комиссия будет как в расчёте цен.',
-    };
-    setCached(YM_CACHE_NS, cacheKey, result, CACHE_TTL_MS);
-    return result;
+    lastError = lastError || 'Не удалось получить калькулятор YM по товару категории';
   }
 
   const result = {
     schemes: [],
-    note: sample?.offer_id
-      ? lastError || 'Комиссия YM не получена из калькулятора (проверьте артикул, габариты и интеграцию)'
-      : lastError
-        ? lastError.includes('403')
-          ? 'Тариф YM: доступ запрещён (403). Проверьте Api-Key в «Интеграции → Яндекс.Маркет».'
-          : `Тариф YM: ${lastError}`
-        : 'Добавьте товар с артикулом YM в эту категорию — комиссия будет как в расчёте цен',
+    note: lastError
+      ? lastError.includes('403')
+        ? 'Тариф YM: доступ запрещён (403). Проверьте Api-Key в «Интеграции → Яндекс.Маркет».'
+        : `Тариф YM: ${lastError}`
+      : 'Не удалось получить FEE категории YM (tariffs/calculate)',
   };
 
   return result;
@@ -905,7 +955,9 @@ async function refreshAllCommissions(scope, source = 'manual') {
     if (Array.isArray(data?.schemes) && data.schemes.length > 0) filledNow += 1;
     else emptyNow += 1;
   }
-  for (const item of ym) {
+  for (let i = 0; i < ym.length; i += 1) {
+    const item = ym[i];
+    if (i > 0) await sleep(YM_TARIFF_GAP_MS);
     const data = await getYmCategoryCommissionsLive(item.id, scope, item.userCategoryId);
     const writeResult = await upsertCommissionToDb('ym', item.id, data, source);
     if (writeResult === 'skipped_empty') skippedEmptyOverwrite += 1;
@@ -987,6 +1039,7 @@ export default {
   checkAndNotifyStaleCache,
   getOzonCategoryCommissions: getOzonCategoryCommissionsLive,
   getYmCategoryCommissions: getYmCategoryCommissionsLive,
+  fetchYmTariff,
   ozonCategoryIdVariants,
   normalizeOzonCategoryId,
 };

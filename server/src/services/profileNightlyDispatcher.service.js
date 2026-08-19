@@ -186,6 +186,21 @@ function buildNightlyJobs() {
     });
   }
 
+  if (envFlagEnabled('BUYOUT_RATE_DAILY_ENABLED', true)) {
+    jobs.push({
+      key: 'buyout-rate-daily',
+      enabled: true,
+      cron: envCron('BUYOUT_RATE_DAILY_CRON', '40 5 * * *'),
+      fallbackHm: { hour: 5, minute: 40 },
+      scope: 'profile',
+      run: async ({ profileId }) => {
+        const { recalculateBuyoutRatesForProfile } = await import('./buyoutRateDaily.service.js');
+        const result = await recalculateBuyoutRatesForProfile(profileId);
+        logger.info('[NightlyTZ] Buyout rate daily', { profileId, ...result });
+      },
+    });
+  }
+
   jobs.push({
     key: 'marketplace-api-check',
     enabled: true,
@@ -208,6 +223,25 @@ function buildNightlyJobs() {
         if (!repositoryFactory.isUsingPostgreSQL()) return;
         const deleted = await repositoryFactory.getCacheEntriesRepository().clearExpired();
         logger.info('[NightlyTZ] cache_entries clearExpired', { deleted: Number(deleted) || 0 });
+      },
+    });
+  }
+
+  if (envFlagEnabled('WB_CLOSED_SHIPMENTS_PRUNE_ENABLED', true)) {
+    jobs.push({
+      key: 'wb-closed-shipments-prune',
+      enabled: true,
+      cron: envCron('WB_CLOSED_SHIPMENTS_PRUNE_CRON', '55 3 * * *'),
+      fallbackHm: { hour: 3, minute: 55 },
+      scope: 'timezone',
+      run: async () => {
+        const { pruneExpiredClosedWbShipments, wbClosedShipmentRetentionDays } = await import(
+          './shipments.service.js'
+        );
+        const result = await pruneExpiredClosedWbShipments({
+          days: wbClosedShipmentRetentionDays(),
+        });
+        logger.info('[NightlyTZ] WB closed shipments prune', result);
       },
     });
   }

@@ -44,5 +44,6 @@ export function getMarketplacePricePack(product, marketplace) {
     priceBeforeDiscount: mp.priceBeforeDiscount ?? mp.price_before_discount ?? null,
     discountPercent: mp.discountPercent ?? mp.discount_percent ?? null,
     sellingPriceManual: mp.sellingPriceManual === true || mp.selling_price_manual === true,
+    maxPrice: mp.maxPrice ?? mp.max_price ?? null,
   };
 }

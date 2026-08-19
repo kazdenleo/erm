@@ -180,7 +180,8 @@ class OrdersLabelsService {
         const mp = normalizeMarketplaceForLabel(order?.marketplace);
         const isWB = mp === 'wildberries';
         const isOzon = mp === 'ozon';
-        const maxAttempts = isWB ? 4 : isOzon ? 3 : 1;
+        const isYandex = mp === 'yandex';
+        const maxAttempts = isWB ? 4 : isOzon ? 3 : isYandex ? 2 : 1;
         const org = normalizeOrgId(organizationId);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
@@ -691,18 +692,40 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
   } else if (Array.isArray(campaignIds)) {
     for (const c of campaignIds) campaignsFlat.push(Number(c));
   }
-  // Если в интеграции указан campaign_id — используем его приоритетно, чтобы не попадать в "чужую" кампанию.
+
+  // У заказа YM в delivery_address часто лежит campaignId (для warehouse_mappings).
+  const orderCampaignRaw =
+    order.campaignId ??
+    order.campaign_id ??
+    order.deliveryAddress ??
+    order.delivery_address ??
+    null;
+  const orderCampaignId = (() => {
+    if (orderCampaignRaw == null || String(orderCampaignRaw).trim() === '') return null;
+    const n = Number(String(orderCampaignRaw).trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
+
   const configuredCampaignIdRaw = ym?.campaign_id ?? ym?.campaignId ?? null;
-  const configuredCampaignId = configuredCampaignIdRaw != null && String(configuredCampaignIdRaw).trim() !== ''
-    ? Number(configuredCampaignIdRaw)
-    : null;
-  const uniqSet = new Set(campaignsFlat.filter(n => !Number.isNaN(n) && n > 0));
+  const configuredCampaignId =
+    configuredCampaignIdRaw != null && String(configuredCampaignIdRaw).trim() !== ''
+      ? Number(configuredCampaignIdRaw)
+      : null;
+
+  const uniqSet = new Set(campaignsFlat.filter((n) => !Number.isNaN(n) && n > 0));
+  // Приоритет: кампания заказа → доступные по ключу → (устаревший) campaign_id из интеграции.
+  // Иначе при неверном campaign_id в настройках сразу получаем 403 и этикетка «висит».
   const unique = [];
-  if (configuredCampaignId && Number.isFinite(configuredCampaignId) && configuredCampaignId > 0) {
-    unique.push(configuredCampaignId);
-    uniqSet.delete(configuredCampaignId);
-  }
-  for (const cid of uniqSet) unique.push(cid);
+  const pushUnique = (cid) => {
+    if (!cid || !Number.isFinite(cid) || cid < 1) return;
+    if (unique.includes(cid)) return;
+    unique.push(cid);
+    uniqSet.delete(cid);
+  };
+  pushUnique(orderCampaignId);
+  for (const cid of uniqSet) pushUnique(cid);
+  pushUnique(configuredCampaignId);
+
   if (unique.length === 0) {
     logLabelEvent('[YM] нет campaign_id (настройте интеграцию / GET v2/campaigns)');
     throw new Error('Яндекс.Маркет: не удалось определить кампанию (campaign_id)');
@@ -713,12 +736,13 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
   const format = 'A9_HORIZONTALLY';
 
   let lastErr = '';
+  let saw403 = false;
   for (const campaignId of unique) {
     const bases = [
       `https://api.partner.market.yandex.ru/v2/campaigns/${campaignId}/orders/${orderIdNum}/delivery/labels?format=${encodeURIComponent(format)}`,
       `https://api.partner.market.yandex.ru/v2/campaigns/${campaignId}/orders/${orderIdNum}/delivery/labels`
     ];
-    let campaignFailed404 = false;
+    let tryNextCampaign = false;
     for (const url of bases) {
       const response = await fetch(url, {
         method: 'GET',
@@ -751,14 +775,13 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
         `[YM] labels ${campaignId}/${orderIdNum}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''} -> ${lastErr}`
       );
       if (response.status === 403) {
-        const err = new Error(
-          'Яндекс.Маркет: доступ запрещён (403) при запросе этикетки. Проверьте Api-Key и права (FBS/DBS/communication) в «Интеграции → Яндекс.Маркет», а также campaign_id.'
-        );
-        err.statusCode = 403;
-        throw err;
+        // Неверный/устаревший campaign_id в интеграции часто даёт 403 — пробуем следующую кампанию.
+        saw403 = true;
+        tryNextCampaign = true;
+        break;
       }
       if (response.status === 404) {
-        campaignFailed404 = true;
+        tryNextCampaign = true;
         break;
       }
       if (response.status === 400) {
@@ -768,11 +791,8 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
           const parsed = JSON.parse(text);
           const code = parsed?.errors?.[0]?.code || parsed?.code || '';
           if (String(code).toUpperCase() === 'CAMPAIGN_TYPE_NOT_SUPPORTED') {
-            const err = new Error(
-              'Яндекс.Маркет: тип кампании не поддерживает генерацию этикеток. Разрешены только FBS/DBS/EXPRESS.'
-            );
-            err.statusCode = 501;
-            throw err;
+            tryNextCampaign = true;
+            break;
           }
         } catch (e) {
           if (e?.statusCode) throw e;
@@ -781,7 +801,15 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
       }
       throw new Error(`Яндекс.Маркет: этикетка (${response.status})`);
     }
-    if (campaignFailed404) continue;
+    if (tryNextCampaign) continue;
+  }
+
+  if (saw403 && String(lastErr || '').trim().startsWith('403:')) {
+    const err = new Error(
+      'Яндекс.Маркет: доступ запрещён (403) при запросе этикетки. Проверьте Api-Key и права (FBS/DBS/communication) в «Интеграции → Яндекс.Маркет», а также campaign_id (сейчас в настройках может быть устаревший).'
+    );
+    err.statusCode = 403;
+    throw err;
   }
 
   const err = new Error(

@@ -15,5 +15,8 @@ router.get('/sync/:productId', wrapAsync(buyoutRateController.syncForProduct.bin
 // Синхронизировать процент выкупа для всех товаров
 router.post('/sync/all', wrapAsync(buyoutRateController.syncForAll.bind(buyoutRateController)));
 
+// Пересчёт из заказов FBS + отчётов FBO
+router.post('/recalculate-daily', wrapAsync(buyoutRateController.recalculateDaily.bind(buyoutRateController)));
+
 export default router;
 

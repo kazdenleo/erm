@@ -37,8 +37,11 @@ import {
   searchProductsCombined,
 } from '../../utils/productSearch';
 import { MarketplaceReturnsPanel } from '../../components/returns/MarketplaceReturnsPanel';
+import { MarketplaceReturnClaimsPanel } from '../../components/returns/MarketplaceReturnClaimsPanel';
+import { marketplaceReturnClaimsApi } from '../../services/marketplaceReturnClaims.api';
 import { orderRowCatalogSku } from '../../utils/orderActions.js';
 import './WarehouseOperations.css';
+import '../../pages/Returns/Returns.css';
 
 const MODE_TABLE = 'table';
 const MODE_RECEIPT = 'receipt';
@@ -443,6 +446,8 @@ export function WarehouseOperations({
     [ownWarehouses, receiptEditForm?.organizationId]
   );
   const [customerReturnList, setCustomerReturnList] = useState([]);
+  const [customerReturnsInnerTab, setCustomerReturnsInnerTab] = useState('claims'); // 'claims' | 'pickup'
+  const [claimsPendingCount, setClaimsPendingCount] = useState(0);
   const customerReturnScanDebounceRef = useRef(null);
   const customerReturnScanInputRef = useRef(null);
   const customerReturnScanDedupRef = useRef({ key: '', at: 0 });
@@ -590,7 +595,7 @@ export function WarehouseOperations({
     (forMode = mode) => {
       const documentType = RECEIPT_DOCUMENT_TYPE_BY_MODE[forMode];
       if (!documentType) return;
-      setReceiptsLoading(true);
+    setReceiptsLoading(true);
       const params = { limit: 200, documentType };
       if (forMode === MODE_WRITEOFF) {
         if (writeoffFilterOrgId) params.organizationId = writeoffFilterOrgId;
@@ -602,14 +607,14 @@ export function WarehouseOperations({
       }
       receiptsApi
         .getList(params)
-        .then(({ list }) => {
-          setReceiptsList(Array.isArray(list) ? list : []);
-        })
+      .then(({ list }) => {
+        setReceiptsList(Array.isArray(list) ? list : []);
+      })
         .catch((err) => {
-          console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
-          setReceiptsList([]);
-        })
-        .finally(() => setReceiptsLoading(false));
+        console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
+        setReceiptsList([]);
+      })
+      .finally(() => setReceiptsLoading(false));
     },
     [mode, writeoffFilterOrgId, writeoffFilterWhId, transferFilterOrgId, transferFilterWhId]
   );
@@ -630,8 +635,32 @@ export function WarehouseOperations({
   useEffect(() => {
     if (mode === MODE_WRITEOFF) writeoffScanInputRef.current?.focus();
     if (mode === MODE_RETURN_SUPPLIER) returnScanInputRef.current?.focus();
-    if (mode === MODE_RETURN_CUSTOMER) customerReturnScanInputRef.current?.focus();
+    if (mode === MODE_RETURN_CUSTOMER && customerReturnsInnerTab === 'pickup') {
+      customerReturnScanInputRef.current?.focus();
+    }
     if (mode === MODE_TRANSFER) transferScanInputRef.current?.focus();
+  }, [mode, customerReturnsInnerTab]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return undefined;
+    let cancelled = false;
+    const loadClaimsBadge = async () => {
+      try {
+        const s = await marketplaceReturnClaimsApi.getStats();
+        if (!cancelled) {
+          setClaimsPendingCount(typeof s.pendingCount === 'number' ? s.pendingCount : 0);
+        }
+      } catch {
+        if (!cancelled) setClaimsPendingCount(0);
+      }
+    };
+    loadClaimsBadge();
+    const onRefresh = () => loadClaimsBadge();
+    window.addEventListener('marketplace-return-claims-stats-refresh', onRefresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('marketplace-return-claims-stats-refresh', onRefresh);
+    };
   }, [mode]);
 
   useEffect(() => {
@@ -858,13 +887,13 @@ export function WarehouseOperations({
         setOpMessage('Нет свободного остатка на складе-источнике');
         return 0;
       }
-      const pid = String(product.id);
-      const sku = String(product.sku || product.article || product.vendorCode || '').trim();
-      const name = String(product.name || product.title || '—').trim();
+    const pid = String(product.id);
+    const sku = String(product.sku || product.article || product.vendorCode || '').trim();
+    const name = String(product.name || product.title || '—').trim();
       let added = 0;
-      setTransferList((prev) => {
-        const out = Array.isArray(prev) ? [...prev] : [];
-        const idx = out.findIndex((x) => String(x.productId) === pid);
+    setTransferList((prev) => {
+      const out = Array.isArray(prev) ? [...prev] : [];
+      const idx = out.findIndex((x) => String(x.productId) === pid);
         if (idx >= 0) {
           const nextQty = Math.min(Number(out[idx].quantity || 0) + 1, maxQty);
           if (nextQty <= Number(out[idx].quantity || 0)) return prev;
@@ -874,8 +903,8 @@ export function WarehouseOperations({
           added = 1;
           out.push({ productId: pid, sku, name, quantity: 1, warehouseMaxQty: maxQty });
         }
-        return out;
-      });
+      return out;
+    });
       return added;
     },
     [transferFromWarehouseId]
@@ -930,7 +959,7 @@ export function WarehouseOperations({
           productId: it.productId,
           quantity: Number(it.quantity),
         })),
-      });
+        });
       const receiptNo =
         res?.data?.receipt?.receipt_number ||
         res?.receipt?.receipt_number ||
@@ -944,8 +973,8 @@ export function WarehouseOperations({
         receiptNo
           ? `Перемещение ${receiptNo} оформлено (${items.length} поз.)${route ? `: ${route}` : ''}`
           : route
-            ? `Перемещение выполнено (${items.length} поз.): ${route}`
-            : `Перемещение выполнено (${items.length} поз.)`
+          ? `Перемещение выполнено (${items.length} поз.): ${route}`
+          : `Перемещение выполнено (${items.length} поз.)`
       );
       loadReceiptsList(MODE_TRANSFER);
       onRefresh?.();
@@ -1086,10 +1115,10 @@ export function WarehouseOperations({
       return items.map((it) => {
         const prevRow = byPid.get(String(it.productId));
         return {
-          productId: it.productId,
-          sku: it.sku || '—',
-          name: it.name || 'Без названия',
-          quantity: Number(it.quantity) || 0,
+        productId: it.productId,
+        sku: it.sku || '—',
+        name: it.name || 'Без названия',
+        quantity: Number(it.quantity) || 0,
           cost: it.cost ?? '',
           _boxQtyInput: prevRow?._boxQtyInput ?? '',
         };
@@ -1818,7 +1847,7 @@ export function WarehouseOperations({
   const handleReceiptScan = useCallback(
     (code) => {
       if (receiptSuppressScanRef.current) return;
-      setLookupError(null);
+    setLookupError(null);
       lookupByBarcodeOrSkuThenReceiptOne(code);
       scanInputRef.current?.focus();
     },
@@ -2076,7 +2105,7 @@ export function WarehouseOperations({
         playEventSound(SOUND_EVENTS.scan_error);
       } finally {
         setBoxAddBusy(false);
-        scanInputRef.current?.focus();
+      scanInputRef.current?.focus();
       }
     },
     [
@@ -2329,7 +2358,7 @@ export function WarehouseOperations({
   const handleReturnScan = useCallback(
     (code) => {
       if (returnSuppressScanRef.current) return;
-      setLookupError(null);
+    setLookupError(null);
       lookupByBarcodeOrSkuThenReturnOne(code);
       returnScanInputRef.current?.focus();
     },
@@ -2360,17 +2389,17 @@ export function WarehouseOperations({
         returnSuppressScanRef.current = true;
         clearScanField(returnScanInputRef.current);
         try {
-          if (!returnWarehouseId) {
+    if (!returnWarehouseId) {
             setLookupError('Сначала выберите склад списания');
             playEventSound(SOUND_EVENTS.scan_error);
-            return;
-          }
+      return;
+    }
           const available = await warehouseQtyForProduct(p, returnWarehouseId);
           if (available < 1) {
             setLookupError('Нет остатка на выбранном складе');
             playEventSound(SOUND_EVENTS.scan_error);
-            return;
-          }
+      return;
+    }
           await addToReturnList(p, 1);
           setLookupError(null);
           setOpMessage(`В список возврата: +1 шт — ${p.name || p.sku}`);
@@ -2403,8 +2432,8 @@ export function WarehouseOperations({
       const matches = await resolveTransferMatches(qq);
       if (matches.length === 0) {
         if (suggestContext === 'transfer_scan') closeSuggest();
-        return;
-      }
+      return;
+    }
       openSuggest('transfer_scan', 'Выберите товар', matches, async (p) => {
         if (!p) return;
         const added = await addTransferItemFromProduct(p);
@@ -2561,7 +2590,7 @@ export function WarehouseOperations({
   const handleCustomerReturnScan = useCallback(
     (code) => {
       if (customerReturnSuppressScanRef.current) return;
-      setLookupError(null);
+    setLookupError(null);
       lookupByBarcodeOrSkuThenCustomerReturnOne(code);
       customerReturnScanInputRef.current?.focus();
     },
@@ -2591,14 +2620,14 @@ export function WarehouseOperations({
         if (!p) return;
         customerReturnSuppressScanRef.current = true;
         clearScanField(customerReturnScanInputRef.current);
-        if (!customerReturnWarehouseId) {
+    if (!customerReturnWarehouseId) {
           setLookupError('Сначала выберите склад приёмки возврата');
           window.setTimeout(() => {
             customerReturnSuppressScanRef.current = false;
             customerReturnScanInputRef.current?.focus();
           }, 500);
-          return;
-        }
+      return;
+    }
         addToCustomerReturnList(p, 1);
         setLookupError(null);
         setOpMessage(`В список возврата от клиента: +1 шт — ${p.name || p.sku}`);
@@ -2618,6 +2647,7 @@ export function WarehouseOperations({
 
   const handleAcceptMarketplaceReturn = useCallback(
     (row) => {
+      setCustomerReturnsInnerTab('pickup');
       scrollToCustomerReturnAccept();
       const scanCode = String(row?.barcode || row?.sku || '').trim();
       if (!scanCode) {
@@ -3026,12 +3056,12 @@ export function WarehouseOperations({
   const handleInventoryScan = useCallback(
     (code) => {
       if (inventorySuppressScanRef.current) return;
-      if (!inventorySessionWarehouseId) {
-        setLookupError('Сначала выберите склад инвентаризации');
-        setOpMessage(null);
-        playEventSound(SOUND_EVENTS.scan_error);
-        return;
-      }
+    if (!inventorySessionWarehouseId) {
+      setLookupError('Сначала выберите склад инвентаризации');
+      setOpMessage(null);
+      playEventSound(SOUND_EVENTS.scan_error);
+      return;
+    }
       setLookupError(null);
       lookupByBarcodeOrSkuThenInventoryNewOne(code);
     },
@@ -3052,11 +3082,11 @@ export function WarehouseOperations({
         await scanInventoryLive(String(product.id));
         setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       } else {
-        await addOneToInventoryNewRow(product);
-        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+    await addOneToInventoryNewRow(product);
+    setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
       setLookupError(null);
-      inventoryNewScanInputRef.current?.focus();
+    inventoryNewScanInputRef.current?.focus();
       return true;
     } catch (e) {
       const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
@@ -3078,8 +3108,8 @@ export function WarehouseOperations({
       matches = mergeProductLists(matches, remote);
       if (matches.length === 0) {
         if (suggestContext === 'inventory_scan') closeSuggest();
-        return;
-      }
+      return;
+    }
       openSuggest('inventory_scan', 'Выберите товар', matches, async (p) => {
         if (!p?.id) return;
         inventorySuppressScanRef.current = true;
@@ -3449,32 +3479,32 @@ export function WarehouseOperations({
             </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
-                Склад списания <span className="warehouse-ops-required-star">*</span>
+            Склад списания <span className="warehouse-ops-required-star">*</span>
               </label>
-              <select
-                className="warehouse-ops-select"
-                value={writeoffWarehouseId}
-                onChange={(e) => {
-                  setWriteoffWarehouseId(e.target.value);
+            <select
+              className="warehouse-ops-select"
+              value={writeoffWarehouseId}
+              onChange={(e) => {
+                setWriteoffWarehouseId(e.target.value);
                   setWriteoffList([]);
-                  setOpMessage(null);
-                }}
+                setOpMessage(null);
+              }}
                 disabled={!writeoffOrganizationId}
               >
                 <option value="">
                   {writeoffOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
                 </option>
                 {writeoffWarehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
+                <option key={w.id} value={w.id}>
+                  {w.address || w.name || `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
             </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
                 Причина списания <span className="warehouse-ops-required-star">*</span>
-              </label>
+          </label>
               <select
                 className="warehouse-ops-select"
                 value={writeoffReason}
@@ -3509,10 +3539,10 @@ export function WarehouseOperations({
                 <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
                   <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
                   <div className="warehouse-ops-suggest-list">
-                    {(suggestList || []).map((p) => (
-                      <button
-                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
-                        type="button"
+                  {(suggestList || []).map((p) => (
+                    <button
+                      key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                      type="button"
                         className="warehouse-ops-suggest-item"
                         onMouseDown={(ev) => {
                           ev.preventDefault();
@@ -3521,15 +3551,15 @@ export function WarehouseOperations({
                           window.setTimeout(() => {
                             writeoffSuppressScanRef.current = false;
                           }, 500);
-                          const fn = suggestOnPickRef.current;
-                          closeSuggest();
-                          if (typeof fn === 'function') fn(p);
-                        }}
+                        const fn = suggestOnPickRef.current;
+                        closeSuggest();
+                        if (typeof fn === 'function') fn(p);
+                      }}
                       >
                         <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
-                      </button>
-                    ))}
+                    </button>
+                  ))}
                   </div>
                 </div>
               )}
@@ -3538,7 +3568,7 @@ export function WarehouseOperations({
               {lookupError ? (
                 <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--error">
                   {lookupError}
-                </div>
+              </div>
               ) : opMessage ? (
                 <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--success">
                   {opMessage}
@@ -3578,9 +3608,9 @@ export function WarehouseOperations({
                             <td className="sku-cell">{item.sku}</td>
                             <td className="name-cell">{item.name}</td>
                             <td>
-                              <input
-                                type="number"
-                                min={1}
+                <input
+                  type="number"
+                  min={1}
                                 max={maxQty}
                                 value={item.quantity}
                                 onChange={(e) => updateWriteoffQuantity(index, e.target.value)}
@@ -3624,11 +3654,11 @@ export function WarehouseOperations({
                   </Button>
                   <Button variant="secondary" onClick={clearWriteoffList} disabled={opLoading}>
                     Очистить список
-                  </Button>
-                </div>
+                </Button>
+              </div>
               </>
-            )}
-          </div>
+          )}
+        </div>
 
           {renderWarehouseDocumentsList({
             title: 'Оформленные списания',
@@ -3637,16 +3667,16 @@ export function WarehouseOperations({
             showReasonColumn: true,
             filterControls: (
               <div className="warehouse-ops-return-org-supplier" style={{ marginBottom: 12 }}>
-                <div className="warehouse-ops-receipt-supplier-row">
+            <div className="warehouse-ops-receipt-supplier-row">
                   <label>Фильтр: организация</label>
-                  <select
+              <select
                     value={writeoffFilterOrgId}
                     onChange={(e) => {
                       setWriteoffFilterOrgId(e.target.value);
                       setWriteoffFilterWhId('');
                     }}
-                    className="warehouse-ops-select"
-                  >
+                className="warehouse-ops-select"
+              >
                     <option value="">— Все организации —</option>
                     {(organizationOptions || []).map((org) => (
                       <option key={org.id} value={org.id}>
@@ -3664,12 +3694,12 @@ export function WarehouseOperations({
                   >
                     <option value="">— Все склады —</option>
                     {writeoffFilterWarehouses.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.address || w.name || `Склад #${w.id}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
               </div>
             ),
           })}
@@ -3742,8 +3772,8 @@ export function WarehouseOperations({
                 onManualQuery={handleReturnManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Штрихкод, артикул или название"
-                disabled={!returnWarehouseId}
+                  placeholder="Штрихкод, артикул или название"
+                  disabled={!returnWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'return_scan') closeSuggest();
@@ -3775,9 +3805,9 @@ export function WarehouseOperations({
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
                       </button>
                     ))}
-                  </div>
-                </div>
-              )}
+              </div>
+            </div>
+          )}
             </div>
           </form>
 
@@ -3863,16 +3893,46 @@ export function WarehouseOperations({
 
       {mode === MODE_RETURN_CUSTOMER && (
         <>
-          <MarketplaceReturnsPanel embedded onAcceptReturn={handleAcceptMarketplaceReturn} />
-          <div
-            ref={customerReturnAcceptRef}
-            id="warehouse-customer-return-accept"
-            className="warehouse-ops-panel return-customer-panel"
-          >
-          <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
-          <p className="warehouse-ops-hint">
-            Сначала выберите организацию и склад приёмки, затем добавьте товары: скан (1 шт) или ввод артикула / названия. Количество укажите в таблице ниже.
-          </p>
+          <div className="mp-returns-inner-tabs" role="tablist" aria-label="Разделы возвратов от клиентов">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={customerReturnsInnerTab === 'claims'}
+              className={`mp-returns-inner-tab${customerReturnsInnerTab === 'claims' ? ' is-active' : ''}`}
+              onClick={() => setCustomerReturnsInnerTab('claims')}
+            >
+              Заявки
+              {claimsPendingCount > 0 ? (
+                <span className="mp-returns-inner-tab__count">
+                  {claimsPendingCount > 99 ? '99+' : claimsPendingCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={customerReturnsInnerTab === 'pickup'}
+              className={`mp-returns-inner-tab${customerReturnsInnerTab === 'pickup' ? ' is-active' : ''}`}
+              onClick={() => setCustomerReturnsInnerTab('pickup')}
+            >
+              Ждут забора
+            </button>
+          </div>
+
+          {customerReturnsInnerTab === 'claims' ? (
+            <MarketplaceReturnClaimsPanel embedded />
+          ) : (
+            <>
+              <MarketplaceReturnsPanel embedded onAcceptReturn={handleAcceptMarketplaceReturn} />
+              <div
+                ref={customerReturnAcceptRef}
+                id="warehouse-customer-return-accept"
+                className="warehouse-ops-panel return-customer-panel"
+              >
+              <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
+              <p className="warehouse-ops-hint">
+                Сначала выберите организацию и склад приёмки, затем добавьте товары: скан (1 шт) или ввод артикула / названия. Количество укажите в таблице ниже.
+              </p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
@@ -3921,8 +3981,8 @@ export function WarehouseOperations({
                 onManualQuery={handleCustomerReturnManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Штрихкод, артикул или название"
-                disabled={!customerReturnWarehouseId}
+                  placeholder="Штрихкод, артикул или название"
+                  disabled={!customerReturnWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'customer_return_scan') closeSuggest();
@@ -3954,9 +4014,9 @@ export function WarehouseOperations({
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
                       </button>
                     ))}
-                  </div>
-                </div>
-              )}
+              </div>
+            </div>
+          )}
             </div>
           </form>
 
@@ -4028,7 +4088,9 @@ export function WarehouseOperations({
             emptyText: 'Нет документов возврата от клиентов.',
             showSupplier: false
           })}
-          </div>
+        </div>
+            </>
+          )}
         </>
       )}
 
@@ -4244,33 +4306,33 @@ export function WarehouseOperations({
                         busy={inviteBusy}
                         excludeUserId={user?.id ?? user?.userId}
                         onInvite={async (uid) => {
-                          const sid = String(inventoryLiveSessionId || '').trim();
+                              const sid = String(inventoryLiveSessionId || '').trim();
                           if (!sid || inviteBusy) return;
-                          try {
-                            setInviteBusy(true);
-                            await inventorySessionsApi.inviteToSession(sid, { userId: uid });
-                            setOpMessage('Приглашение отправлено в уведомления.');
-                          } catch (ex) {
-                            setLookupError(
-                              ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
-                            );
-                          } finally {
-                            setInviteBusy(false);
-                          }
-                        }}
+                              try {
+                                setInviteBusy(true);
+                                await inventorySessionsApi.inviteToSession(sid, { userId: uid });
+                                setOpMessage('Приглашение отправлено в уведомления.');
+                              } catch (ex) {
+                                setLookupError(
+                                  ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
+                                );
+                              } finally {
+                                setInviteBusy(false);
+                              }
+                            }}
                       />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => {
-                          leaveInventoryLiveSession(true);
-                          if (!inventoryEditingSessionId) {
-                            setInventoryNewRows([]);
-                          }
-                        }}
-                      >
-                        Выйти из совместного пересчёта
-                      </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => {
+                            leaveInventoryLiveSession(true);
+                            if (!inventoryEditingSessionId) {
+                              setInventoryNewRows([]);
+                            }
+                          }}
+                        >
+                          Выйти из совместного пересчёта
+                        </Button>
                     </>
                   )}
                 </div>
@@ -4302,7 +4364,7 @@ export function WarehouseOperations({
                     debounceMs={160}
                     manualDebounceMs={400}
                     placeholder="Штрихкод, артикул или название"
-                    disabled={!inventorySessionWarehouseId}
+                  disabled={!inventorySessionWarehouseId}
                     onBlur={() => {
                       setTimeout(() => {
                         if (suggestContext === 'inventory_scan') closeSuggest();
@@ -4632,9 +4694,9 @@ export function WarehouseOperations({
                   {transferList.map((row, index) => {
                     const maxQty = Math.max(1, Number(row.warehouseMaxQty) || 1);
                     return (
-                      <tr key={row.productId}>
-                        <td>{row.sku || '—'}</td>
-                        <td>{row.name || '—'}</td>
+                    <tr key={row.productId}>
+                      <td>{row.sku || '—'}</td>
+                      <td>{row.name || '—'}</td>
                         <td className="text-end">
                           <input
                             type="number"
@@ -4646,17 +4708,17 @@ export function WarehouseOperations({
                             disabled={opLoading}
                           />
                         </td>
-                        <td className="text-end">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            onClick={() => removeTransferItem(row.productId)}
-                            disabled={opLoading}
-                          >
-                            Удалить
-                          </Button>
-                        </td>
-                      </tr>
+                      <td className="text-end">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => removeTransferItem(row.productId)}
+                          disabled={opLoading}
+                        >
+                          Удалить
+                        </Button>
+                      </td>
+                    </tr>
                     );
                   })}
                 </tbody>
@@ -5310,52 +5372,52 @@ export function WarehouseOperations({
                 ))}
               </select>
             </div>
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
-                Склад приёмки <span className="warehouse-ops-required-star">*</span>
-              </label>
-              {receiptSessionEnabled && receiptSessionId ? (
+          <div className="warehouse-ops-receipt-supplier-row">
+            <label>
+              Склад приёмки <span className="warehouse-ops-required-star">*</span>
+            </label>
+            {receiptSessionEnabled && receiptSessionId ? (
                 <div className="warehouse-ops-select warehouse-ops-select--readonly">
-                  {receiptWarehouseLabel || (receiptWarehouseId ? `Склад #${receiptWarehouseId}` : 'Загрузка…')}
-                  {isReceiptSessionGuest ? (
+                {receiptWarehouseLabel || (receiptWarehouseId ? `Склад #${receiptWarehouseId}` : 'Загрузка…')}
+                {isReceiptSessionGuest ? (
                     <span className="muted warehouse-ops-select-hint">
-                      Склад задан создателем общей приёмки
-                    </span>
-                  ) : null}
-                </div>
-              ) : (
-                <select
-                  value={receiptWarehouseId}
-                  onChange={(e) => setReceiptWarehouseId(e.target.value)}
-                  className="warehouse-ops-select"
-                >
-                  <option value="">— Выберите склад —</option>
-                  {ownWarehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.address || w.name || `Склад #${w.id}`}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+                    Склад задан создателем общей приёмки
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+            <select
+              value={receiptWarehouseId}
+              onChange={(e) => setReceiptWarehouseId(e.target.value)}
+              className="warehouse-ops-select"
+            >
+              <option value="">— Выберите склад —</option>
+              {ownWarehouses.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.address || w.name || `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
+            )}
+          </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
                 Поставщик <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
+            </label>
+                <select
                 value={receiptSupplierId}
                 onChange={(e) => setReceiptSupplierId(e.target.value)}
-                className="warehouse-ops-select"
+                  className="warehouse-ops-select"
               >
                 <option value="">— Выберите поставщика —</option>
                 {(suppliers || []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name || s.code || s.id}
-                  </option>
-                ))}
-              </select>
+                      </option>
+                    ))}
+                </select>
+              </div>
             </div>
-          </div>
           {isReceiptSessionGuest && (
             <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
               Вы приглашены в общую приёмку: сканируйте товары — они попадут в общий список. Оформить документ может только создатель.
@@ -5372,8 +5434,8 @@ export function WarehouseOperations({
                 onManualQuery={handleReceiptManualQuery}
                 debounceMs={160}
                 manualDebounceMs={400}
-                placeholder="Штрихкод, артикул или название"
-                disabled={!receiptWarehouseId}
+                  placeholder="Штрихкод, артикул или название"
+                  disabled={!receiptWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'receipt_modal_scan') closeSuggest();
@@ -5405,9 +5467,9 @@ export function WarehouseOperations({
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
                       </button>
                     ))}
-                  </div>
-                </div>
-              )}
+              </div>
+            </div>
+          )}
             </div>
           </form>
 

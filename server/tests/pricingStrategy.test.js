@@ -67,4 +67,45 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     });
     expect(r.sellingPrice).toBeGreaterThan(1000);
   });
+
+  test('ceiling caps strategy above max price', () => {
+    const r = computeSellingPriceFromInputs({
+      mode: 'competitor',
+      config: defaultStrategyConfig('competitor'),
+      floor: 800,
+      cost: 300,
+      competitorPrices: [2000],
+      marketplace: 'wb',
+      ceiling: 1200,
+    });
+    // min 2000 * 0.99 = 1980 → потолок 1200
+    expect(r.sellingPrice).toBe(1200);
+    expect(r.ceiling).toBe(1200);
+    expect(r.cappedByCeiling).toBe(true);
+  });
+
+  test('ceiling wins even if below floor', () => {
+    const r = computeSellingPriceFromInputs({
+      mode: 'floor',
+      config: {},
+      floor: 1500,
+      cost: 300,
+      ceiling: 1000,
+    });
+    expect(r.sellingPrice).toBe(1000);
+    expect(r.cappedByCeiling).toBe(true);
+  });
+
+  test('band hold does not keep previous above ceiling', () => {
+    const r = computeSellingPriceFromInputs({
+      mode: 'floor',
+      config: { band_percent: 10, max_change_percent: null },
+      floor: 1000,
+      cost: 300,
+      previousSelling: 1005,
+      ceiling: 1000,
+    });
+    expect(r.sellingPrice).toBe(1000);
+    expect(r.heldByBand).toBe(false);
+  });
 });

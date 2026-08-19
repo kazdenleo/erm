@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { searchApi } from '../../../services/search.api';
+import { productCardPath } from '../../../utils/productCardPath.js';
 import { getOrderStatusLabel } from '../../../constants/orderStatuses';
 import './GlobalSearch.css';
 
@@ -102,7 +103,7 @@ export function GlobalSearch() {
   }, []);
 
   const openProduct = (p) => {
-    navigate(`/products?open=${p.id}`);
+    navigate(productCardPath(p.id));
     closeSearch();
   };
 

@@ -4,6 +4,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { productCardPath, rewriteLegacyProductCardUrl } from '../../utils/productCardPath.js';
 import { useEmployeeTasks } from '../../hooks/useEmployeeTasks';
 import { useAuth } from '../../context/AuthContext';
 import { usersApi } from '../../services/users.api';
@@ -357,9 +358,9 @@ export function Tasks() {
     const isDimensions = task.task_type === 'dimensions_check';
     const isProductCreate = task.task_type === 'product_create';
     const productUrl =
-      task.meta?.url ||
-      (task.product_id ? `/products?open=${task.product_id}` : null) ||
-      (dimItems[0]?.product_id ? `/products?open=${dimItems[0].product_id}` : null);
+      rewriteLegacyProductCardUrl(task.meta?.url) ||
+      (task.product_id ? productCardPath(task.product_id) : null) ||
+      (dimItems[0]?.product_id ? productCardPath(dimItems[0].product_id) : null);
 
     return (
       <div className="card">
@@ -396,7 +397,7 @@ export function Tasks() {
             <ul className="task-sku-list">
               {dimItems.map((it) => {
                 const sku = it.sku || `#${it.product_id}`;
-                const href = it.product_id ? `/products?open=${it.product_id}` : null;
+                const href = it.product_id ? productCardPath(it.product_id) : null;
                 const mps = Array.isArray(it.marketplaces)
                   ? it.marketplaces
                   : it.marketplace
@@ -435,7 +436,7 @@ export function Tasks() {
               ).map((it) => (
                 <li key={it.sku}>
                   {it.exists && it.product_id ? (
-                    <Link to={`/products?open=${it.product_id}`}>{it.sku}</Link>
+                    <Link to={productCardPath(it.product_id)}>{it.sku}</Link>
                   ) : (
                     it.sku
                   )}

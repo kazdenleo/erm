@@ -1,6 +1,7 @@
 /**
  * Protected Route
- * Редирект на /login при отсутствии авторизации
+ * Редирект на /login при отсутствии авторизации.
+ * Системный admin (role=admin) — только /platform/*; пользователи аккаунта — только ERP.
  */
 
 import React from 'react';
@@ -30,7 +31,16 @@ export function ProtectedRoute({ children }) {
     return <Navigate to={FIRST_PASSWORD_PATH} replace state={{ from: location }} />;
   }
   if (!mustChange && location.pathname === FIRST_PASSWORD_PATH) {
-    return <Navigate to="/" replace />;
+    const home = user.role === 'admin' ? '/platform/accounts' : '/';
+    return <Navigate to={home} replace />;
+  }
+
+  const isSystemAdmin = user.role === 'admin';
+  const onPlatform = location.pathname === '/platform' || location.pathname.startsWith('/platform/');
+
+  // Системный администратор продукта не входит в интерфейс аккаунта (ERP).
+  if (isSystemAdmin && !onPlatform) {
+    return <Navigate to="/platform/accounts" replace />;
   }
 
   return children;

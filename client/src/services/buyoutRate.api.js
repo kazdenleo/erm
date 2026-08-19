@@ -28,6 +28,11 @@ export const buyoutRateApi = {
   async syncForAll(options = {}) {
     const response = await api.post('/buyout-rate/sync/all', options);
     return response.data;
-  }
+  },
+
+  async recalculateDaily(options = {}) {
+    const response = await api.post('/buyout-rate/recalculate-daily', options);
+    return response.data;
+  },
 };
 

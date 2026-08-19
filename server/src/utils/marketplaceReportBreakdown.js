@@ -115,11 +115,16 @@ export function buildWbLineBreakdown(line) {
   };
 
   if (op === 'Продажа') {
-    pushPart(parts.retail, 'Реализация (retail_amount)', line?.retail_amount ?? raw?.retail_amount);
-    if (toNum(raw?.retail_price) > 0 && toNum(raw?.retail_price) !== toNum(raw?.retail_amount)) {
-      pushPart(parts.retail, 'Цена до скидки (retail_price)', raw.retail_price);
+    pushPart(parts.retail, 'Цена для комиссии WB (retail_price)', line?.retail_amount ?? raw?.retail_price);
+    if (toNum(raw?.retail_amount) > 0 && toNum(raw?.retail_amount) !== toNum(line?.retail_amount ?? raw?.retail_price)) {
+      pushPart(parts.retail, 'Оплата покупателя (retail_amount)', raw.retail_amount);
     }
-    pushPart(parts.commission, 'Комиссия WB (ppvz_sales_commission)', line?.commission_amount ?? raw?.ppvz_sales_commission);
+    const pct = toNum(raw?.commission_percent);
+    if (pct > 0) {
+      pushPart(parts.commission, `Комиссия WB ${pct}%`, line?.commission_amount);
+    } else {
+      pushPart(parts.commission, 'Комиссия WB (ppvz_sales_commission)', line?.commission_amount ?? raw?.ppvz_sales_commission);
+    }
     if (toNum(raw?.acquiring_fee) > 0) pushPart(parts.acquiring, 'Эквайринг', raw.acquiring_fee);
   } else if (op === 'Логистика') {
     pushPart(parts.logistics, 'Логистика (delivery_rub)', line?.logistics_amount ?? raw?.delivery_rub);
@@ -144,10 +149,22 @@ export function buildWbLineBreakdown(line) {
   return parts;
 }
 
+function ymBreakdownLabel(raw, serviceName, opLabel, { preferSource = false } = {}) {
+  const src = String(raw?.transactionSource || raw?.TRANSACTION_SOURCE || '').trim();
+  const name = String(serviceName || '').trim();
+  if (preferSource && src) return src;
+  const cat = name ? categorizeYmServiceName(name) : 'other';
+  if (name && cat !== 'other') return name;
+  if (src) return src;
+  return name || opLabel || 'Удержание Яндекса';
+}
+
 export function buildYmLineBreakdown(line) {
   const raw = line?.raw_json || line?.rawJson || {};
   const src = String(raw?.transactionSource || raw?.TRANSACTION_SOURCE || '');
+  const srcLc = src.toLowerCase();
   const typ = String(raw?.transactionType || raw?.TRANSACTION_TYPE || '');
+  const typLc = typ.toLowerCase();
   const serviceName = String(raw?.offerOrServiceName || raw?.OFFER_OR_SERVICE_NAME || '').trim();
   const opLabel = [typ, src].filter(Boolean).join(' / ') || line?.operation_type;
   const parts = {
@@ -160,10 +177,16 @@ export function buildYmLineBreakdown(line) {
     other: [],
   };
 
-  if (src.includes('Плат') && src.includes('покупател')) {
+  if (srcLc.includes('плат') && srcLc.includes('покупател')) {
     pushPart(parts.retail, 'Платёж покупателя', line?.retail_amount ?? raw?.transactionSum);
-  } else if (src.includes('услуг') && (src.includes('Яндекс') || src.includes('Маркет'))) {
-    const label = serviceName || opLabel;
+  } else if (srcLc.includes('баллы') && (typLc.includes('начисл') || toNum(raw?.transactionSum) > 0)) {
+    pushPart(
+      parts.retail,
+      src || 'Баллы за скидку Маркета',
+      line?.retail_amount ?? raw?.transactionSum
+    );
+  } else if (srcLc.includes('услуг') && (srcLc.includes('яндекс') || srcLc.includes('маркет'))) {
+    const label = ymBreakdownLabel(raw, serviceName, opLabel);
     const cat = categorizeYmServiceName(serviceName);
     const bucket =
       cat === 'commission'
@@ -178,14 +201,20 @@ export function buildYmLineBreakdown(line) {
                 ? parts.penalty
                 : parts.other;
     pushPart(bucket, label, Math.abs(toNum(raw?.transactionSum ?? line?.payout_amount)));
-  } else if (src.includes('Скидка') || src.includes('Баллы')) {
-    pushPart(parts.other, serviceName || opLabel, line?.other_deductions ?? raw?.transactionSum);
+  } else if (srcLc.includes('скидк') || srcLc.includes('баллы')) {
+    pushPart(
+      parts.other,
+      ymBreakdownLabel(raw, serviceName, opLabel, { preferSource: true }),
+      line?.other_deductions ?? raw?.transactionSum
+    );
   } else {
     if (toNum(line?.commission_amount) > 0) pushPart(parts.commission, opLabel, line.commission_amount);
     if (toNum(line?.logistics_amount) > 0) pushPart(parts.logistics, opLabel, line.logistics_amount);
     if (toNum(line?.acquiring_amount) > 0) pushPart(parts.acquiring, opLabel, line.acquiring_amount);
     if (toNum(line?.penalty_amount) > 0) pushPart(parts.penalty, opLabel, line.penalty_amount);
-    if (toNum(line?.other_deductions) > 0) pushPart(parts.other, opLabel, line.other_deductions);
+    if (toNum(line?.other_deductions) > 0) {
+      pushPart(parts.other, ymBreakdownLabel(raw, serviceName, opLabel), line.other_deductions);
+    }
   }
 
   return parts;

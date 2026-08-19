@@ -1,5 +1,9 @@
 /**
  * Разбор сумм строк reportDetailByPeriod Wildberries.
+ *
+ * У продажи WB комиссия и к перечислению считаются от retail_price (цена до скидки МП),
+ * а не от retail_amount (сколько заплатил покупатель после скидки).
+ * payout_amount = как в отчёте (ppvz_for_pay), логистику не вычитаем.
  */
 
 function toNum(v) {
@@ -7,14 +11,29 @@ function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function isWbSaleOrReturn(oper) {
+  return oper.includes('продаж') || oper.includes('возврат');
+}
+
+/** База комиссии / цены продажи в аналитике. */
+export function wbSalePriceForCommission(row, oper) {
+  const amount = toNum(row?.retail_amount);
+  if (!isWbSaleOrReturn(oper)) return amount;
+  const unitPrice = toNum(row?.retail_price);
+  if (unitPrice <= 0) return amount;
+  const qty = toNum(row?.quantity);
+  return unitPrice * Math.max(qty, 1);
+}
+
 /** @param {object} row — строка WB API / raw_json */
 export function extractWbFinanceAmounts(row) {
   const oper = String(row?.supplier_oper_name || row?.doc_type_name || '').toLowerCase();
   const qty = toNum(row?.quantity);
-  const retail = toNum(row?.retail_amount);
+  const retail = wbSalePriceForCommission(row, oper);
+  const pct = row?.commission_percent;
   const commission =
-    retail > 0 && row?.commission_percent != null
-      ? (retail * toNum(row.commission_percent)) / 100
+    retail > 0 && pct != null && String(pct).trim() !== ''
+      ? (retail * toNum(pct)) / 100
       : toNum(row?.ppvz_sales_commission);
   let logistics = toNum(row?.delivery_rub ?? row?.delivery_amount);
   const storage = toNum(row?.storage_fee);
@@ -34,7 +53,7 @@ export function extractWbFinanceAmounts(row) {
     logistics = rebill || logistics;
   } else if (oper.includes('пвз')) {
     logistics = ppvzReward || logistics;
-  } else if (oper.includes('продаж') || oper.includes('возврат')) {
+  } else if (isWbSaleOrReturn(oper)) {
     // commission/logistics on sale/return rows from standard fields
   } else if (oper.includes('штраф')) {
     // penalty handled below
@@ -48,11 +67,11 @@ export function extractWbFinanceAmounts(row) {
 
   return {
     quantity: qty,
-    retail_amount: oper.includes('продаж') ? retail : oper.includes('возврат') ? retail : 0,
+    retail_amount: isWbSaleOrReturn(oper) ? retail : 0,
     commission_amount: Math.abs(commission),
     logistics_amount: Math.abs(logistics),
     storage_amount: Math.abs(storage),
-    penalty_amount: Math.abs(oper.includes('штраф') ? penalty || retail : penalty),
+    penalty_amount: Math.abs(oper.includes('штраф') ? penalty || toNum(row?.retail_amount) : penalty),
     acquiring_amount: Math.abs(acquiring),
     other_deductions: Math.abs(other),
     payout_amount: payout,

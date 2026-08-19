@@ -1,5 +1,6 @@
 .prices-table-container {
   overflow-x: auto;
+  overflow-y: clip;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -96,6 +97,10 @@
 
 .mp-col-min {
   min-width: 64px;
+}
+
+.mp-col-max {
+  min-width: 72px;
 }
 
 .mp-col-actual {

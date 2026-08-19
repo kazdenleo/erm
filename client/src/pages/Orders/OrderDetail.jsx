@@ -4,12 +4,13 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
+import { productCardPath } from '../../utils/productCardPath.js';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
+import { OrderEconomicsPanel } from '../../components/orders/OrderEconomicsPanel';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import {
@@ -879,19 +880,12 @@ function formatAssemblyWho(assembly) {
 
 /** Ссылка в каталог ERM по product_id из локальной строки заказа */
 function ProductTitleLink({ productId, children }) {
-  const { openProductCardFromClick } = useProductCardModal();
   const raw = productId != null && productId !== '' ? Number(productId) : NaN;
   if (!Number.isInteger(raw) || raw < 1) return <>{children}</>;
   return (
-    <button
-      type="button"
-      onClick={(e) => openProductCardFromClick(raw, e)}
-      className="order-detail-product-link"
-      title="Открыть карточку товара"
-      style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
-    >
+    <Link to={productCardPath(raw)} className="order-detail-product-link" title="Открыть карточку товара">
       {children}
-    </button>
+    </Link>
   );
 }
 
@@ -1121,6 +1115,10 @@ export function OrderDetail() {
         }}
       />
 
+      {mpKey !== 'manual' ? (
+        <OrderEconomicsPanel marketplace={marketplace} orderId={orderId} scheme="fbs" />
+      ) : null}
+
       <OrderReservePanel
         marketplace={marketplace}
         orderId={orderId}
@@ -1222,6 +1220,10 @@ export function OrderDetailContent({
         onChanged={onReserveChange}
       />
     ) : null;
+  const economicsBlock =
+    orderId && data.marketplace && mpNorm !== 'manual' ? (
+      <OrderEconomicsPanel marketplace={data.marketplace} orderId={orderId} scheme="fbs" />
+    ) : null;
   const assemblyBlock = <OrderAssemblySection assembly={assembly} />;
   const localLinesBlock =
     localLines?.length > 0 ? (
@@ -1245,6 +1247,7 @@ export function OrderDetailContent({
     return (
       <>
         {manualReturnBlock}
+        {economicsBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
@@ -1255,6 +1258,7 @@ export function OrderDetailContent({
     return (
       <>
         {manualReturnBlock}
+        {economicsBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
@@ -1275,6 +1279,7 @@ export function OrderDetailContent({
     return (
       <>
         {manualReturnBlock}
+        {economicsBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}

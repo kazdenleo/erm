@@ -12,7 +12,25 @@ import {
   privateClientPriceParts,
   resolveMarketplaceMinProfit,
 } from '../../utils/marketplaceMinProfit.js';
+import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
+import { calculateMinPrice } from '../../utils/calculateMinPrice.js';
 import './PriceDetailsModal.css';
+
+function toFiniteNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function PriceRangeMax({ amount, title }) {
+  const n = toFiniteNumber(amount);
+  if (n == null) return null;
+  return (
+    <span className="price-range-max" title={title}>
+      {n.toFixed(2)} ₽
+    </span>
+  );
+}
 
 /** Сумма в строке расходов; формула расчёта — в title (показ по hover). */
 function PriceBreakdownValue({ children, formula, className = '', style, extra = null }) {
@@ -32,7 +50,72 @@ function PriceBreakdownValue({ children, formula, className = '', style, extra =
   );
 }
 
-export function PriceDetailsModal({
+class PriceDetailsModalErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    console.error('[PriceDetailsModal] render error', error);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) return this.props.fallback;
+    return this.props.children;
+  }
+}
+
+export function PriceDetailsModal(props) {
+  const { isOpen, onClose, product, marketplace, priceData, priceScheme } = props;
+  if (!isOpen || !product || !marketplace) return null;
+
+  const shownPrice = Number(priceData);
+  const fallback = (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Минимальная цена"
+      size="medium"
+    >
+      <div className="price-details" style={{ padding: '20px' }}>
+        <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
+          {product.sku && <span style={{ color: 'var(--muted)', marginRight: '8px' }}>{product.sku}</span>}
+          {product.name || 'Товар'}
+        </div>
+        {Number.isFinite(shownPrice) && shownPrice >= 0 && (
+          <div style={{ marginBottom: '16px', fontSize: '24px', fontWeight: 700 }}>
+            {Math.round(shownPrice)} ₽
+          </div>
+        )}
+        <p style={{ color: 'var(--muted)', fontSize: '13px', margin: 0 }}>
+          Не удалось показать детальный расчёт. Пересчитайте минимальные цены и откройте снова.
+        </p>
+      </div>
+    </Modal>
+  );
+
+  return (
+    <PriceDetailsModalErrorBoundary
+      resetKey={`${product.id}-${marketplace}-${priceScheme}-${shownPrice}`}
+      fallback={fallback}
+    >
+      <PriceDetailsModalInner {...props} />
+    </PriceDetailsModalErrorBoundary>
+  );
+}
+
+function PriceDetailsModalInner({
   isOpen,
   onClose,
   product,
@@ -194,10 +277,10 @@ export function PriceDetailsModal({
     (calculatorData.commissions && typeof calculatorData.commissions === 'object' &&
       (marketplace === 'wb' ? (calculatorData.commissions.FBS != null || calculatorData.commissions.FBO != null) : true));
 
-  // Нет данных калькулятора — показываем только сохранённую цену (из БД или после пересчёта в другой сессии)
+  // Нет данных калькулятора — показываем сохранённую цену или пояснение, окно не закрываем
   if (!hasValidDetails) {
-    const price = priceData != null ? Number(priceData) : null;
-    if (price == null || isNaN(price)) return null;
+    const price = priceData != null && priceData !== '' ? Number(priceData) : null;
+    const priceOk = price != null && !isNaN(price) && price > 0;
     return (
       <Modal
         isOpen={isOpen}
@@ -210,10 +293,16 @@ export function PriceDetailsModal({
             {product.sku && <span style={{ color: 'var(--muted)', marginRight: '8px' }}>{product.sku}</span>}
             {product.name || 'Товар'}
           </div>
-          <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(255,255,255,0.06)', borderRadius: '8px' }}>
-            <div style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '4px' }}>Минимальная рекомендуемая цена</div>
-            <div style={{ fontSize: '24px', fontWeight: 700 }}>{Math.round(price)} ₽</div>
-          </div>
+          {priceOk ? (
+            <div style={{ marginBottom: '24px', padding: '16px', background: 'rgba(255,255,255,0.06)', borderRadius: '8px' }}>
+              <div style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '4px' }}>Минимальная рекомендуемая цена</div>
+              <div style={{ fontSize: '24px', fontWeight: 700 }}>{Math.round(price)} ₽</div>
+            </div>
+          ) : (
+            <div style={{ marginBottom: '16px', color: 'var(--muted)', fontSize: '14px' }}>
+              Для этой схемы сохранённой мин. цены нет.
+            </div>
+          )}
           <p style={{ color: 'var(--muted)', fontSize: '13px', margin: 0 }}>
             Детальный расчёт (комиссии, логистика, эквайринг) доступен после нажатия «Пересчитать и сохранить все минимальные цены» на странице цен.
           </p>
@@ -251,9 +340,31 @@ export function PriceDetailsModal({
     );
   }
   
-  if (!priceData) {
-    return null;
+  const calculatedPriceStored = Number(priceData);
+  if (!Number.isFinite(calculatedPriceStored) || calculatedPriceStored <= 0) {
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title={`Минимальная цена — ${marketplaceName}${titleScheme}`}
+        size="medium"
+      >
+        <div className="price-details" style={{ padding: '20px' }}>
+          <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
+            {product.sku && <span style={{ color: 'var(--muted)', marginRight: '8px' }}>{product.sku}</span>}
+            {product.name || 'Товар'}
+          </div>
+          <p style={{ color: 'var(--muted)', fontSize: '13px', margin: 0 }}>
+            Для этой схемы нет сохранённой мин. цены (в базе 0 — заглушка до успешного пересчёта).
+            Ночной автопересчёт пишет цену только если есть комиссия категории и себестоимость.
+            Нажмите «Пересчитать и сохранить все минимальные цены» на странице цен.
+          </p>
+        </div>
+      </Modal>
+    );
   }
+
+  let calculatedPrice = calculatedPriceStored;
 
   // Извлекаем данные из калькулятора. Схема: priceScheme или дефолт (WB→FBO, остальные→FBS).
   const commissions = resolvedCalculatorData.commissions || {};
@@ -284,7 +395,6 @@ export function PriceDetailsModal({
   const costBase = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
   const additionalExpenses = Number(product.additionalExpenses ?? product.additional_expenses ?? 0) || 0;
   const basePrice = costBase + additionalExpenses;
-  const calculatedPrice = Number(priceData) || 0;
   
   // Фиксированные расходы (преобразуем в числа)
   // WB / Ozon: процент эквайринга из настроек интеграции, если задан; иначе из API/калькулятора
@@ -300,7 +410,7 @@ export function PriceDetailsModal({
   }
   // Обработка заказа: используем значение из API
   console.log(`[PriceDetailsModal] ========== PROCESSING COST DEBUG ==========`);
-  console.log(`[PriceDetailsModal] Full resolvedCalculatorData:`, JSON.stringify(resolvedCalculatorData, null, 2));
+  console.log(`[PriceDetailsModal] calculator keys:`, resolvedCalculatorData && Object.keys(resolvedCalculatorData));
   console.log(`[PriceDetailsModal] resolvedCalculatorData.processing_cost:`, resolvedCalculatorData.processing_cost);
   console.log(`[PriceDetailsModal] resolvedCalculatorData.processing_cost type:`, typeof resolvedCalculatorData.processing_cost);
   console.log(`[PriceDetailsModal] resolvedCalculatorData.commissions:`, resolvedCalculatorData.commissions);
@@ -309,10 +419,16 @@ export function PriceDetailsModal({
   
   // Обработка заказа: Ozon — из API; YM — SORTING; WB — нет
   let processingCost = 0;
-  if (marketplace === 'ozon') {
+  let processingCostMax = null;
+  if (marketplace === 'ozon' && wantFbo) {
+    processingCost = 0;
+  } else if (marketplace === 'ozon') {
     processingCost = resolvedCalculatorData.processing_cost !== undefined && resolvedCalculatorData.processing_cost !== null
       ? Number(resolvedCalculatorData.processing_cost)
       : 0;
+    processingCostMax = toFiniteNumber(resolvedCalculatorData.processing_cost_max)
+      ?? toFiniteNumber(commission.first_mile_amount_max);
+    if (processingCostMax != null) processingCostMax = Math.round(processingCostMax);
     console.log(`[PriceDetailsModal] Ozon processing cost (from API): ${processingCost}`);
   } else if (marketplace === 'ym') {
     processingCost = resolvedCalculatorData.processing_cost !== undefined && resolvedCalculatorData.processing_cost !== null
@@ -324,28 +440,65 @@ export function PriceDetailsModal({
   
   // Логистика: пересчитываем для WB с учетом округления, для других маркетплейсов используем значение из API
   let logisticsCost = 0;
-  if (marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined) {
-    // Для WB пересчитываем логистику с учетом округления (volume - 1) вверх
+  let logisticsCostMax = null;
+  const wbSchemeKey = wantFbo ? 'fbo' : 'fbs';
+  const wbLogisticsBase = toFiniteNumber(resolvedCalculatorData[`logistics_base_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_base);
+  const wbLogisticsLiter = toFiniteNumber(resolvedCalculatorData[`logistics_liter_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_liter);
+  const wbLogisticsPrecomputed = toFiniteNumber(resolvedCalculatorData[`logistics_cost_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_cost);
+  if (marketplace === 'wb' && wbLogisticsBase != null) {
     const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
-    
-    if (volume && volume > 1) {
-      const additionalLiters = Math.ceil(volume - 1);
-      logisticsCost = resolvedCalculatorData.logistics_base + resolvedCalculatorData.logistics_liter * additionalLiters;
+    const liter = wbLogisticsLiter ?? 0;
+    if (volume > 1) {
+      logisticsCost = wbLogisticsBase + liter * Math.ceil(volume - 1);
+    } else if (volume > 0) {
+      logisticsCost = wbLogisticsBase;
     } else {
-      logisticsCost = resolvedCalculatorData.logistics_base;
+      logisticsCost = wbLogisticsPrecomputed != null && wbLogisticsPrecomputed > 0
+        ? wbLogisticsPrecomputed
+        : wbLogisticsBase;
+    }
+  } else if (marketplace === 'ozon') {
+    const ozonRaw = resolvedCalculatorData.fullCommissions || resolvedCalculatorData.rawCommissions || {};
+    if (wantFbo) {
+      const fboMin = toFiniteNumber(commission.direct_flow_trans_amount)
+        ?? toFiniteNumber(resolvedCalculatorData.logistics_cost_fbo)
+        ?? 0;
+      logisticsCost = fboMin > 0 ? Math.round(fboMin) : 0;
+      logisticsCostMax = toFiniteNumber(commission.direct_flow_trans_amount_max)
+        ?? toFiniteNumber(resolvedCalculatorData.logistics_cost_fbo_max)
+        ?? toFiniteNumber(ozonRaw.fbo_direct_flow_trans_max_amount);
+    } else {
+      logisticsCost = resolvedCalculatorData.logistics_cost !== undefined && resolvedCalculatorData.logistics_cost !== null
+        ? Number(resolvedCalculatorData.logistics_cost)
+        : 0;
+      if (logisticsCost > 0) {
+        const logisticsCostBefore = logisticsCost;
+        logisticsCost = Math.round(logisticsCost);
+        console.log(`[PriceDetailsModal] Ozon logistics cost rounded: ${logisticsCostBefore} → ${logisticsCost}`);
+      }
+      logisticsCostMax = toFiniteNumber(commission.direct_flow_trans_amount_max)
+        ?? toFiniteNumber(resolvedCalculatorData.logistics_cost_max)
+        ?? toFiniteNumber(ozonRaw.fbs_direct_flow_trans_max_amount);
+    }
+    if (logisticsCostMax != null && logisticsCostMax > 0) {
+      logisticsCostMax = Math.round(logisticsCostMax);
+    }
+    if (logisticsCostMax != null && logisticsCostMax <= logisticsCost) {
+      logisticsCostMax = null;
+    }
+    if (processingCostMax != null && processingCostMax <= processingCost) {
+      processingCostMax = null;
     }
   } else {
-    // Для других маркетплейсов используем значение из API
     logisticsCost = resolvedCalculatorData.logistics_cost !== undefined && resolvedCalculatorData.logistics_cost !== null
       ? Number(resolvedCalculatorData.logistics_cost)
       : 0;
-    // Для Ozon: округляем логистику до целого числа
-    if (marketplace === 'ozon' && logisticsCost > 0) {
-      const logisticsCostBefore = logisticsCost;
-      logisticsCost = Math.round(logisticsCost);
-      console.log(`[PriceDetailsModal] Ozon logistics cost rounded: ${logisticsCostBefore} → ${logisticsCost}`);
-    }
   }
+  logisticsCost = Number(logisticsCost);
+  if (!Number.isFinite(logisticsCost)) logisticsCost = 0;
   
   // Доставка до клиента: для YM пересчитываем по valueType (relative = % от цены, absolute = фикс.)
   let deliveryToCustomer = (commission.delivery_amount !== undefined && commission.delivery_amount !== null)
@@ -365,14 +518,13 @@ export function PriceDetailsModal({
   }
 
   const quantity = Number(product.quantity) || 1;
-  // Возвраты: только если в карточке указан процент выкупа (buyout_rate)
-  const hasBuyoutRate = product.buyout_rate != null && product.buyout_rate !== '' && !isNaN(Number(product.buyout_rate));
-  const buyoutRateInput = hasBuyoutRate ? Number(product.buyout_rate) : null;
+  const buyoutRateInput = resolveMarketplaceBuyoutRate(product, marketplace);
+  const hasBuyoutRate = buyoutRateInput != null;
   const buyoutRate = buyoutRateInput != null ? buyoutRateInput / 100 : 1;
   const returnRate = buyoutRateInput != null && buyoutRateInput < 100 ? (1 - buyoutRate) : 0;
 
   console.log(`[PriceDetailsModal] Returns for ${marketplace}:`, {
-    buyoutRateFromProduct: product.buyout_rate,
+    buyoutRateFromProduct: buyoutRateInput,
     buyoutRateInput,
     returnRate: (returnRate * 100).toFixed(2) + '%',
     basePrice
@@ -476,6 +628,10 @@ export function PriceDetailsModal({
       commissionDisplayPercent = storedCommissionPercent;
       commissionNetPercent = Math.max(0, storedCommissionPercent - earlyShipmentDiscountPp);
     }
+  } else if (marketplace === 'ym' && Number.isFinite(commissionPercentBefore) && commissionPercentBefore > 0) {
+    // Скидка в интеграциях очищена, но в details ещё «запечён» нетто — показываем живую базу
+    commissionDisplayPercent = commissionPercentBefore;
+    commissionNetPercent = commissionPercentBefore;
   }
   const marketplaceCommissionPercent = commissionNetPercent / 100;
   const acquiringPercent = (acquiring || 0) / 100;
@@ -485,6 +641,26 @@ export function PriceDetailsModal({
   if (marketplace === 'wb' && wbGemServicesPercent !== null && wbGemServicesPercent !== undefined) {
     gemServicesPercent = (Number(wbGemServicesPercent) || 0) / 100;
     console.log(`[PriceDetailsModal] WB gem services percent from settings: ${wbGemServicesPercent}% (${gemServicesPercent})`);
+  }
+
+  const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
+  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+  if (marketplace !== 'ym' && targetProfit != null && targetProfit >= 0) {
+    const calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
+      ? { ...resolvedCalculatorData, acquiring: Number(ozonAcquiringPercent) || 0 }
+      : resolvedCalculatorData;
+    const solved = calculateMinPrice(
+      basePrice,
+      calcForSolve,
+      marketplace,
+      targetProfit,
+      product,
+      wbAcquiringPercent,
+      wbGemServicesPercent,
+      profile,
+      priceScheme
+    );
+    if (solved != null) calculatedPrice = solved;
   }
   
   // ВАЖНО: Для WB проверяем, что используется FBS комиссия, а не FBO
@@ -557,7 +733,6 @@ export function PriceDetailsModal({
     totalExpenses: totalExpenses.toFixed(2)
   });
   
-  const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
   const mpExpensesWithoutBase =
     commissionAmount +
     effectiveAcquiringAmount +
@@ -594,6 +769,25 @@ export function PriceDetailsModal({
     }
     return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (прибыль до налога: цена − расходы − НДС)`;
   })();
+
+  const extraOzonFixed =
+    marketplace === 'ozon'
+      ? (logisticsCostMax != null && logisticsCostMax > logisticsCost ? logisticsCostMax - logisticsCost : 0)
+        + (processingCostMax != null && processingCostMax > processingCost ? processingCostMax - processingCost : 0)
+      : 0;
+  let maxCalculatedPrice = null;
+  if (extraOzonFixed > 0 && calculatedPrice > 0) {
+    const variableRate =
+      marketplaceCommissionPercent + acquiringPercent + brandPromotionPercent + adsPromotionPercent;
+    const vatR = Number(profile.vatRate) || 0;
+    const incR = Number(profile.incomeTaxRate) || 0;
+    let seedDenom = profile.incomeTaxOnRevenue
+      ? 1 - variableRate - vatR - incR
+      : 1 - variableRate - vatR;
+    if (!(seedDenom > 0.01)) seedDenom = Math.max(0.15, 1 - variableRate);
+    const estimated = Math.round(calculatedPrice + extraOzonFixed / seedDenom);
+    if (estimated > calculatedPrice) maxCalculatedPrice = estimated;
+  }
 
   const isEstimatedTariffs = marketplace === 'wb' && resolvedCalculatorData._estimatedTariffs;
 
@@ -671,7 +865,23 @@ export function PriceDetailsModal({
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">Обработка заказа:</span>
                 <PriceBreakdownValue
-                  formula={`= ${processingCost.toFixed(2)} ₽ ${marketplace === 'ozon' ? '(обработка заказа FBS из API Ozon)' : marketplace === 'ym' ? '(тариф YM SORTING — обработка заказа)' : '(из API)'}`}
+                  formula={
+                    marketplace === 'ozon'
+                      ? processingCostMax != null
+                        ? `В расчёт: ${processingCost.toFixed(2)} ₽ (min). Макс. из API: ${processingCostMax.toFixed(2)} ₽`
+                        : `= ${processingCost.toFixed(2)} ₽ (fbs_first_mile_min_amount из API Ozon)`
+                      : marketplace === 'ym'
+                        ? `= ${processingCost.toFixed(2)} ₽ (тариф YM SORTING — обработка заказа)`
+                        : `= ${processingCost.toFixed(2)} ₽ (из API)`
+                  }
+                  extra={
+                    marketplace === 'ozon' && processingCostMax != null ? (
+                      <PriceRangeMax
+                        amount={processingCostMax}
+                        title="Максимальный тариф API; в расчёт берётся минимум"
+                      />
+                    ) : null
+                  }
                 >
                   {processingCost.toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -684,20 +894,32 @@ export function PriceDetailsModal({
               </span>
               <PriceBreakdownValue
                 formula={
-                  marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined
+                  marketplace === 'wb' && wbLogisticsBase != null
                     ? (() => {
                         const volume = productVolume;
+                        const base = wbLogisticsBase;
+                        const liter = wbLogisticsLiter ?? 0;
                         if (!volume || volume <= 1) {
-                          return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
+                          return `= ${base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
                         }
                         const additionalLiters = Math.ceil(volume - 1);
-                        const additionalCost = resolvedCalculatorData.logistics_liter * additionalLiters;
-                        const recalculatedLogisticsCost = resolvedCalculatorData.logistics_base + additionalCost;
-                        return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ + ${resolvedCalculatorData.logistics_liter.toFixed(2)} ₽ × ${additionalLiters} л = ${resolvedCalculatorData.logistics_base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
+                        const additionalCost = liter * additionalLiters;
+                        const recalculatedLogisticsCost = base + additionalCost;
+                        return `= ${base.toFixed(2)} ₽ + ${liter.toFixed(2)} ₽ × ${additionalLiters} л = ${base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
                       })()
                     : marketplace === 'ozon'
-                      ? `= ${logisticsCost.toFixed(2)} ₽ (fbs_direct_flow_trans_min_amount из API Ozon)`
+                      ? logisticsCostMax != null
+                        ? `В расчёт: ${logisticsCost.toFixed(2)} ₽ (min). Макс. из API: ${logisticsCostMax.toFixed(2)} ₽`
+                        : `= ${logisticsCost.toFixed(2)} ₽ (${wantFbo ? 'fbo' : 'fbs'}_direct_flow_trans_min_amount из API Ozon)`
                       : `= ${logisticsCost.toFixed(2)} ₽ (из API YM)`
+                }
+                extra={
+                  marketplace === 'ozon' && logisticsCostMax != null ? (
+                    <PriceRangeMax
+                      amount={logisticsCostMax}
+                      title="Максимальный тариф логистики API; в расчёт берётся минимум"
+                    />
+                  ) : null
                 }
               >
                 {logisticsCost.toFixed(2)} ₽
@@ -1009,9 +1231,19 @@ export function PriceDetailsModal({
           <div className="price-details-final-row">
             <span className="price-details-final-label">Минимальная рекомендуемая цена:</span>
             <span className="price-details-final-value">
-              {calculatedPrice.toFixed(2)} ₽
-              <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic'}}>
-                Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса
+              <span className="price-details-final-amounts">
+                {calculatedPrice.toFixed(2)} ₽
+                {maxCalculatedPrice != null && (
+                  <PriceRangeMax
+                    amount={maxCalculatedPrice}
+                    title="Оценка минимальной цены при максимальном тарифе Ozon; в расчёт берётся минимум"
+                  />
+                )}
+              </span>
+              <div className="price-details-final-hint">
+                {maxCalculatedPrice != null
+                  ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
+                  : 'Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса'}
               </div>
             </span>
           </div>

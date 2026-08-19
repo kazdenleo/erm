@@ -9,6 +9,10 @@ import { ORDER_PRODUCT_LATERAL_SUBQUERY_SQL } from '../constants/orderProductMat
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService, { runWithProductStockLock } from './stockMovements.service.js';
 import {
+  freeIncomingFromSupply,
+  clampReserveSplitToFreeIncoming,
+} from '../utils/reserveIncomingSplit.js';
+import {
   isKitProductId,
   applyKitOrderReserve,
   computeMaxKitUnitsReservable,
@@ -259,6 +263,50 @@ const RESERVE_META_INCOMING_SUM_SQL = `
     WHEN sm.type = 'unreserve' THEN -COALESCE(NULLIF(TRIM(sm.meta->>'reserve_from_incoming'), '')::int, 0)
     ELSE 0
   END)`;
+
+/**
+ * Сколько «в пути» уже занято meta reserve_from_incoming (нетто по журналу).
+ * Нужно, чтобы два заказа не повесили incoming-резерв на одну единицу ожидания.
+ */
+export async function getProductNetMetaIncomingReservedWithClient(client, productId, opts = {}) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? Number(whRaw)
+      : null;
+  try {
+    if (Number.isFinite(whId) && whId > 0) {
+      const r = await run(
+        `SELECT GREATEST(0, COALESCE((
+           SELECT ${RESERVE_META_INCOMING_SUM_SQL}
+           FROM stock_movements sm
+           WHERE sm.product_id = $1
+             AND sm.type IN ('reserve', 'unreserve')
+             AND sm.warehouse_id = $2
+         ), 0))::int AS v`,
+        [pid, whId]
+      );
+      return Math.max(0, Number(r.rows?.[0]?.v) || 0);
+    }
+    const r = await run(
+      `SELECT GREATEST(0, COALESCE((
+         SELECT ${RESERVE_META_INCOMING_SUM_SQL}
+         FROM stock_movements sm
+         WHERE sm.product_id = $1
+           AND sm.type IN ('reserve', 'unreserve')
+       ), 0))::int AS v`,
+      [pid]
+    );
+    return Math.max(0, Number(r.rows?.[0]?.v) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+export { freeIncomingFromSupply, clampReserveSplitToFreeIncoming };
 
 /**
  * Покрытие резерва по фактическим meta движений (приоритет над FIFO-снимком остатков).
@@ -1387,12 +1435,29 @@ class OrdersService {
            AND sm.meta ? 'order_id'
            AND (sm.meta->>'order_id') ~ '^[0-9]+$'
          GROUP BY (sm.meta->>'order_id')::bigint
+       ),
+       linked_open AS (
+         SELECT DISTINCT NULLIF(TRIM(src->>'orderId'), '') AS mp_order_id
+         FROM purchase_items pi
+         INNER JOIN purchases p ON p.id = pi.purchase_id
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS src
+         WHERE pi.product_id = $1
+           AND p.status = 'open'
+           AND GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0)) > 0
        )
        SELECT o.id AS order_row_id, o.order_id, o.marketplace, o.status, n.net_r
        FROM nets n
        JOIN orders o ON o.id = n.oid
        WHERE n.net_r > 0
        ORDER BY
+         CASE
+           WHEN EXISTS (
+             SELECT 1 FROM linked_open lo
+             WHERE lo.mp_order_id IS NOT NULL
+               AND lo.mp_order_id = TRIM(o.order_id::text)
+           ) THEN 1
+           ELSE 0
+         END ASC,
          CASE LOWER(TRIM(COALESCE(o.status, '')))
            WHEN 'assembled' THEN 3
            WHEN 'in_assembly' THEN 3
@@ -1950,7 +2015,7 @@ class OrdersService {
     const allowIncoming = kitReserveIncomingAllowed(meta);
     let reserveFromOnHand;
     let reserveFromIncoming;
-    if (hasKitPrealloc) {
+      if (hasKitPrealloc) {
       const breakdown = await computeKitReservableBreakdown(productId, {
         warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
         allowIncomingReserve: allowIncoming,
@@ -1979,6 +2044,24 @@ class OrdersService {
         qty = reserveFromOnHand;
         if (qty <= 0) return;
       }
+    }
+
+    if (allowIncoming && reserveFromIncoming > 0) {
+      const freeIncoming = freeIncomingFromSupply({
+        onHand: snapBeforeReserve.onHand,
+        incoming: snapBeforeReserve.incoming,
+        reserved: snapBeforeReserve.reservedRaw ?? snapBeforeReserve.reserved,
+      });
+      const clamped = clampReserveSplitToFreeIncoming(qty, {
+        reserveFromOnHand,
+        reserveFromIncoming,
+        freeIncoming,
+        onHandHeadroom: headroomFromSnap(snapBeforeReserve),
+      });
+      qty = clamped.qty;
+      reserveFromOnHand = clamped.reserveFromOnHand;
+      reserveFromIncoming = clamped.reserveFromIncoming;
+      if (qty <= 0) return;
     }
 
     await stockMovementsService.applyChange(productId, {
@@ -3324,6 +3407,8 @@ class OrdersService {
         .map((id) => Number(id))
         .filter((n) => Number.isFinite(n) && n > 0)
     );
+    const queueLimitRaw = parseInt(process.env.RESERVE_FIFO_QUEUE_LIMIT || '40', 10);
+    const queueLimit = Math.min(Math.max(1, Number.isFinite(queueLimitRaw) ? queueLimitRaw : 40), 120);
     const isKit = await isKitProductId(pid);
     const snapProduct = await getProductSupplySnapshotWithClient(null, pid);
     if (!isKit) {
@@ -3340,7 +3425,7 @@ class OrdersService {
       if (!Number.isFinite(fp) || fp < 1) return;
       const q =
         typeof this.repository.findReserveQueueOrdersByProductId === 'function'
-          ? await this.repository.findReserveQueueOrdersByProductId(fp, 500)
+          ? await this.repository.findReserveQueueOrdersByProductId(fp, queueLimit)
           : [];
       const queueIsKit = await isKitProductId(fp);
       for (const o of q) {
@@ -3390,7 +3475,8 @@ class OrdersService {
 
   async getAll(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const items = await this.repository.findAll(options);
+      let items = await this.repository.findAll(options);
+      items = await this._expandOrderGroupSiblings(items, options.profileId);
       // Список: снимок резерва уже в строках БД (без тяжёлого enrich).
       if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
         await enrichOrdersAssemblyCompositionLines(items, this);
@@ -3401,6 +3487,41 @@ class OrdersService {
       // Старое хранилище
       return await this.repository.findAll();
     }
+  }
+
+  /**
+   * Подтянуть остальные позиции того же order_group_id (YM/Ozon multi-item),
+   * чтобы UI склеил один заказ на несколько товаров даже при разных статусах строк.
+   */
+  async _expandOrderGroupSiblings(items, profileId = null) {
+    if (!Array.isArray(items) || items.length === 0) return items || [];
+    if (typeof this.repository.findByOrderGroupIds !== 'function') return items;
+    const gids = [
+      ...new Set(
+        items
+          .map((o) => String(o?.orderGroupId ?? o?.order_group_id ?? '').trim())
+          .filter((g) => g !== '')
+      ),
+    ];
+    if (!gids.length) return items;
+    const siblings = await this.repository.findByOrderGroupIds(gids, profileId);
+    if (!siblings.length) return items;
+    const byId = new Map();
+    for (const o of items) {
+      const id = Number(o?.id);
+      if (Number.isFinite(id) && id > 0) byId.set(id, o);
+    }
+    for (const s of siblings) {
+      const id = Number(s?.id);
+      if (!Number.isFinite(id) || id < 1) continue;
+      if (!byId.has(id)) byId.set(id, s);
+    }
+    return [...byId.values()].sort((a, b) => {
+      const ta = new Date(a.createdAt || a.created_at || 0).getTime();
+      const tb = new Date(b.createdAt || b.created_at || 0).getTime();
+      if (tb !== ta) return tb - ta;
+      return Number(a.id || 0) - Number(b.id || 0);
+    });
   }
 
   /**
@@ -3906,7 +4027,7 @@ class OrdersService {
    * Дозарезервировать строки списка, где есть остаток, но резерв неполный.
    * @returns {Promise<number>} сколько строк обработано
    */
-  async _ensureReservesForUnderReservedOrders(orders) {
+  async _ensureReservesForUnderReservedOrders(orders, opts = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders) || !orders.length) {
       return 0;
     }
@@ -3924,12 +4045,16 @@ class OrdersService {
       })
       .slice(0, MAX_PER_LIST);
     if (!rows.length) return 0;
-    await this._reapplyReserveForOrderRows(rows);
+    // Страховка/список: только эти строки, без FIFO-каскада на другие заказы.
+    await this._reapplyReserveForOrderRows(rows, {
+      allowDespiteManualUnreserve: opts.allowDespiteManualUnreserve === true,
+      refillOtherOrders: false,
+    });
     return rows.length;
   }
 
   /**
-   * Фоновый авторезерв по расписанию / после синка (без открытия UI).
+   * Редкий страховочный проход (крон). Основной авторезерв — при импорте нового заказа с МП.
    */
   async runScheduledAutoReserve({ profileId = null, limit = 80 } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return { checked: 0, reapplied: 0 };
@@ -3944,7 +4069,7 @@ class OrdersService {
     return { checked: rows.length, reapplied };
   }
 
-  async runScheduledAutoReserveAllProfiles({ limitPerProfile = 50 } = {}) {
+  async runScheduledAutoReserveAllProfiles({ limitPerProfile = 20 } = {}) {
     const profilesRepo = repositoryFactory.getProfilesRepository();
     const profiles = await profilesRepo.findAll();
     let checked = 0;
@@ -3965,19 +4090,14 @@ class OrdersService {
         typeof this.repository.countAll === 'function'
           ? this.repository.countAll(options)
           : Promise.resolve(null);
-      const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
-      // Снимок резерва уже в колонках orders.*; тяжёлый enrich только если авторезерв что-то дозаполнил.
+      const [rawItems, total] = await Promise.all([this.repository.findAll(options), countPromise]);
+      // Снимок резерва уже в колонках orders.*; авторезерв при открытии списка отключён
+      // (делается при синке нового заказа / поступлении остатка).
+      const items = await this._expandOrderGroupSiblings(rawItems, options.profileId);
       if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
         await enrichOrdersAssemblyCompositionLines(items, this);
       }
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
-      if (!options.skipAutoReserve) {
-        const reapplied = await this._ensureReservesForUnderReservedOrders(items);
-        if (reapplied > 0) {
-          await this.enrichOrdersReserveMetrics(items, { light: true, listOnly: true });
-          await this.persistReserveSnapshotsFromEnriched(items);
-        }
-      }
       return { items, total: total ?? items.length };
     }
     const items = await this.repository.findAll();
@@ -4670,7 +4790,16 @@ class OrdersService {
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
-  async _reapplyReserveForOrderRows(rows, { allowDespiteManualUnreserve = false } = {}) {
+  /**
+   * @param {object[]} rows
+   * @param {{ allowDespiteManualUnreserve?: boolean, refillOtherOrders?: boolean }} [opts]
+   *   refillOtherOrders — после резерва этих строк ещё FIFO-очередь по товару/комплектующим.
+   *   Нужен при освобождении/поступлении остатка; при новом заказе с МП — false (иначе шторм SQL).
+   */
+  async _reapplyReserveForOrderRows(
+    rows,
+    { allowDespiteManualUnreserve = false, refillOtherOrders = false } = {}
+  ) {
     const list = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
       const qa = Math.max(1, parseInt(a?.quantity ?? a?.qty ?? 1, 10) || 1);
       const qb = Math.max(1, parseInt(b?.quantity ?? b?.qty ?? 1, 10) || 1);
@@ -4708,6 +4837,7 @@ class OrdersService {
           /* ignore */
         }
       }
+      if (!refillOtherOrders) continue;
       try {
         const kitId = await this._resolveProductIdForOrderStock(row);
         if (kitId != null && (await isKitProductId(kitId))) {
@@ -5014,16 +5144,34 @@ class OrdersService {
 
     const upd = await query(
       `
-      WITH refs(marketplace, order_id) AS (VALUES ${values.join(',')})
+      WITH refs(marketplace, order_id) AS (VALUES ${values.join(',')}),
+      seed AS (
+        SELECT o.marketplace, o.order_id, o.order_group_id, o.profile_id
+        FROM orders o
+        INNER JOIN refs r ON o.marketplace = r.marketplace AND o.order_id = r.order_id
+        ${profileSql}
+      ),
+      expanded AS (
+        SELECT marketplace, order_id FROM seed
+        UNION
+        SELECT o.marketplace, o.order_id
+        FROM orders o
+        INNER JOIN seed s
+          ON o.marketplace = s.marketplace
+         AND o.order_group_id IS NOT NULL
+         AND TRIM(o.order_group_id) <> ''
+         AND o.order_group_id = s.order_group_id
+         AND (s.profile_id IS NULL OR o.profile_id IS NOT DISTINCT FROM s.profile_id)
+      )
       UPDATE orders o
       SET status = 'in_assembly',
           returned_to_new_at = NULL,
           assembled_at = NULL,
           assembled_by_user_id = NULL,
           updated_at = CURRENT_TIMESTAMP
-      FROM refs r
-      WHERE o.marketplace = r.marketplace
-        AND o.order_id = r.order_id
+      FROM expanded e
+      WHERE o.marketplace = e.marketplace
+        AND o.order_id = e.order_id
         AND (o.status IS NULL OR NOT (o.status::text = ANY($${preserveIdx}::text[])))
       ${profileSql}
       RETURNING o.*

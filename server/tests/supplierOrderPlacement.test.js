@@ -7,6 +7,7 @@ import {
   shouldSkipSupplierSubmit,
   shouldMarkPurchaseSupplierSubmitted,
   filterPendingSupplierSubmitLines,
+  purchaseLinesFullySubmitted,
 } from '../src/services/supplierOrderPlacement.service.js';
 
 describe('shouldSkipSupplierSubmit', () => {
@@ -120,6 +121,53 @@ describe('filterPendingSupplierSubmitLines', () => {
     ];
     const pending = filterPendingSupplierSubmitLines(purchase, lines);
     expect(pending[0].expected_quantity).toBe(2);
+  });
+
+  test('без supplier_submitted_at — пропускаем строки с отправленными source_orders', () => {
+    const lines = [
+      {
+        product_id: 71,
+        expected_quantity: 1,
+        source_orders: [
+          {
+            orderId: '66851065-0312-5',
+            marketplace: 'ozon',
+            supplierSubmittedAt: '2026-08-16T18:04:49.103Z',
+          },
+        ],
+      },
+      {
+        product_id: 72,
+        expected_quantity: 1,
+        source_orders: [{ orderId: 'new-order', marketplace: 'ozon' }],
+      },
+    ];
+    const pending = filterPendingSupplierSubmitLines({}, lines);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].product_id).toBe(72);
+  });
+});
+
+describe('purchaseLinesFullySubmitted', () => {
+  test('true когда все source_orders отправлены', () => {
+    expect(
+      purchaseLinesFullySubmitted([
+        {
+          source_orders: [{ orderId: 'a', marketplace: 'ozon', supplierSubmittedAt: '2026-01-01' }],
+        },
+      ])
+    ).toBe(true);
+  });
+
+  test('false если есть pending или нет source_orders', () => {
+    expect(
+      purchaseLinesFullySubmitted([
+        {
+          source_orders: [{ orderId: 'a', marketplace: 'ozon' }],
+        },
+      ])
+    ).toBe(false);
+    expect(purchaseLinesFullySubmitted([{ expected_quantity: 1 }])).toBe(false);
   });
 });
 

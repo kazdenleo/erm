@@ -1898,26 +1898,51 @@ export function Orders() {
     return out;
   }, [uniqueStatuses]);
 
-  const filteredOrders = useMemo(() => orders.filter(o => {
-    const orderMarketplace = normalizeMarketplaceForUI(o.marketplace);
-    const byMarketplace =
-      marketplaceFilter === 'all' || orderMarketplace === marketplaceFilter;
-    const q = String(orderSearchQuery || '').trim();
-    const orderIdStr = String(o.orderId || '');
-    const groupIdStr = String(o.orderGroupId || o.order_group_id || '');
-    const bySearch = !q || orderIdStr.includes(q) || groupIdStr.includes(q);
-    const mpLower = String(o.marketplace || '').toLowerCase();
-    const isWb = mpLower === 'wb' || mpLower === 'wildberries';
-    const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
-    // Пока грузится новая вкладка — не прячем старые строки (иначе «Заказы не найдены» при медленном API).
-    const byStatus =
-      !listFiltersSettled ||
-      statusFilter === 'all' ||
-      stNorm === statusFilter ||
-      (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
-      (!isWb && o.status === statusFilter);
-    return byMarketplace && byStatus && bySearch;
-  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery, listFiltersSettled]);
+  const filteredOrders = useMemo(() => {
+    const matched = orders.filter((o) => {
+      const orderMarketplace = normalizeMarketplaceForUI(o.marketplace);
+      const byMarketplace =
+        marketplaceFilter === 'all' || orderMarketplace === marketplaceFilter;
+      const q = String(orderSearchQuery || '').trim();
+      const orderIdStr = String(o.orderId || '');
+      const groupIdStr = String(o.orderGroupId || o.order_group_id || '');
+      const bySearch = !q || orderIdStr.includes(q) || groupIdStr.includes(q);
+      const mpLower = String(o.marketplace || '').toLowerCase();
+      const isWb = mpLower === 'wb' || mpLower === 'wildberries';
+      const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
+      // Пока грузится новая вкладка — не прячем старые строки (иначе «Заказы не найдены» при медленном API).
+      const byStatus =
+        !listFiltersSettled ||
+        statusFilter === 'all' ||
+        stNorm === statusFilter ||
+        (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
+        (!isWb && o.status === statusFilter);
+      return byMarketplace && byStatus && bySearch;
+    });
+    if (!listFiltersSettled || statusFilter === 'all' || matched.length === 0) {
+      return matched;
+    }
+    // YM/Ozon multi-item: если в фильтр попала одна позиция группы — показываем все товары заказа.
+    const keepGroupKeys = new Set();
+    for (const o of matched) {
+      const gid = orderGroupKey(o);
+      if (gid) keepGroupKeys.add(`${normalizeMarketplaceForUI(o.marketplace)}|${gid}`);
+    }
+    if (keepGroupKeys.size === 0) return matched;
+    const byId = new Map(matched.map((o) => [orderKey(o), o]));
+    for (const o of orders) {
+      const orderMarketplace = normalizeMarketplaceForUI(o.marketplace);
+      const byMarketplace =
+        marketplaceFilter === 'all' || orderMarketplace === marketplaceFilter;
+      if (!byMarketplace) continue;
+      const gid = orderGroupKey(o);
+      if (!gid) continue;
+      if (!keepGroupKeys.has(`${orderMarketplace}|${gid}`)) continue;
+      const k = orderKey(o);
+      if (!byId.has(k)) byId.set(k, o);
+    }
+    return [...byId.values()];
+  }, [orders, marketplaceFilter, statusFilter, orderSearchQuery, listFiltersSettled]);
 
   const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
 

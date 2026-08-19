@@ -93,6 +93,30 @@ class BuyoutRateController {
       });
     }
   }
+
+  /**
+   * Пересчитать % выкупа из FBS-заказов и FBO-отчётов (как ночной крон).
+   * POST /api/buyout-rate/recalculate-daily
+   */
+  async recalculateDaily(req, res) {
+    try {
+      const { recalculateBuyoutRatesForProfile } = await import('../services/buyoutRateDaily.service.js');
+      const profileId = req.user?.profileId != null ? Number(req.user.profileId) : null;
+      if (!Number.isFinite(profileId) || profileId < 1) {
+        return res.status(400).json({ ok: false, error: 'Профиль не определён' });
+      }
+      const windowDays = req.body?.windowDays ?? req.body?.window_days;
+      const minUnits = req.body?.minUnits ?? req.body?.min_units;
+      const result = await recalculateBuyoutRatesForProfile(profileId, { windowDays, minUnits });
+      res.json({ ok: true, data: result });
+    } catch (error) {
+      console.error('[Buyout Rate Controller] recalculateDaily:', error);
+      res.status(500).json({
+        ok: false,
+        error: error.message || 'Внутренняя ошибка сервера'
+      });
+    }
+  }
 }
 
 export default new BuyoutRateController();

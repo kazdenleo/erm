@@ -182,8 +182,8 @@ const OZON_SUPPLY_LIST_STATES = [
   'OVERDUE',
 ];
 
-/** Вкладка Ozon «Подготовка к поставке» → «Заполнение данных». */
-const OZON_SUPPLY_IMPORT_STATES = ['DATA_FILLING'];
+/** Вкладки Ozon «Подготовка к поставке»: заполнение данных и готово к отгрузке. */
+const OZON_SUPPLY_IMPORT_STATES = ['DATA_FILLING', 'READY_TO_SUPPLY'];
 
 const OZON_SUPPLY_TERMINAL_STATES = new Set([
   'COMPLETED',

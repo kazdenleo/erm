@@ -5,8 +5,8 @@
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { Link } from 'react-router-dom';
+import { productCardPath } from '../../utils/productCardPath.js';
 import { Button } from '../../components/common/Button/Button';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
 import { ordersApi, assemblyApi } from '../../services/orders.api';
@@ -209,7 +209,6 @@ function assemblyCompositionParts(item, quantityOverride) {
 }
 
 export function Assembly() {
-  const { openProductCardFromClick } = useProductCardModal();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1134,15 +1133,13 @@ export function Assembly() {
                     {line.productId ? (
                       <>
                         {line.externalId ? `${line.externalId}, ` : ''}
-                        <button
-                          type="button"
-                          onClick={(e) => openProductCardFromClick(line.productId, e)}
+                        <Link
+                          to={productCardPath(line.productId)}
                           className="assembly-product-link"
                           title="Открыть карточку товара"
-                          style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                         >
                           {line.name}
-                        </button>
+                        </Link>
                         {` - ${line.q}шт`}
                       </>
                     ) : (
@@ -1337,15 +1334,13 @@ export function Assembly() {
                           return (
                             <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
                               {erpPid ? (
-                                <button
-                                  type="button"
-                                  onClick={(e) => openProductCardFromClick(erpPid, e)}
+                                <Link
+                                  to={productCardPath(erpPid)}
                                   className="assembly-product-link"
                                   title="Открыть карточку товара"
-                                  style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                                 >
                                   {name}
-                                </button>
+                                </Link>
                               ) : (
                                 name
                               )}
@@ -1501,15 +1496,13 @@ export function Assembly() {
                           return (
                             <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
                               {erpPid ? (
-                                <button
-                                  type="button"
-                                  onClick={(e) => openProductCardFromClick(erpPid, e)}
+                                <Link
+                                  to={productCardPath(erpPid)}
                                   className="assembly-product-link"
                                   title="Открыть карточку товара"
-                                  style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                                 >
                                   {name}
-                                </button>
+                                </Link>
                               ) : (
                                 name
                               )}

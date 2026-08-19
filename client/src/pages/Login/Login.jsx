@@ -14,7 +14,7 @@ export function Login({ mode = 'user' }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || (mode === 'platform' ? '/platform/accounts' : '/');
@@ -32,6 +32,7 @@ export function Login({ mode = 'user' }) {
       // Раздельные входы: platform-login → только в админку продукта; login → только в ERP.
       if (mode === 'platform') {
         if (result?.user?.role && String(result.user.role) !== 'admin') {
+          logout();
           setError('Этот пользователь не является администратором продукта. Используйте обычный вход.');
           return;
         }
@@ -39,10 +40,11 @@ export function Login({ mode = 'user' }) {
         return;
       }
       if (result?.user?.role && String(result.user.role) === 'admin') {
+        logout();
         setError('Для администратора продукта используйте отдельный вход: /platform-login');
         return;
       }
-      navigate(from, { replace: true });
+      navigate(from && from.startsWith('/platform') ? '/' : from, { replace: true });
     } catch (err) {
       const status = err?.response?.status;
       const serverMsg = err?.response?.data?.message;

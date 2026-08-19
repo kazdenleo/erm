@@ -242,4 +242,26 @@ describe('reconcileWarehouseIncomingWithPurchasePending', () => {
       })
     ).toBe(10);
   });
+
+  test('docNet только открытой закупки = journal — без двойного счёта pending', () => {
+    // Баг CN1139K-2: docNet по всей истории был 0 (закрытые +1/−1), pending=1, journal=1 → 2.
+    // С корректным docNet открытой закупки: other=0 + pending=1 → 1.
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 1,
+        purchaseDocNet: 1,
+        purchasePending: 1,
+      })
+    ).toBe(1);
+  });
+
+  test('ошибочный docNet=0 при journal=pending раздувает incoming (контракт вызова SQL)', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 1,
+        purchaseDocNet: 0,
+        purchasePending: 1,
+      })
+    ).toBe(2);
+  });
 });

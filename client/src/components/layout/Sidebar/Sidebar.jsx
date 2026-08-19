@@ -165,15 +165,6 @@ export function Sidebar({ onNavigate }) {
   const [returnsClaimsPendingCount, setReturnsClaimsPendingCount] = useState(0);
   const [tasksOpenCount, setTasksOpenCount] = useState(0);
 
-  const onLeafClick = useCallback((item) => {
-    if (!item?.path) return;
-    // Если мы уже на /products и открыта карточка (модалка), переход по тому же route не сработает.
-    // Поэтому отправляем событие, чтобы страница могла закрыть карточку и обновить состояние.
-    if (item.path === '/products') {
-      window.dispatchEvent(new Event('products-nav-click'));
-    }
-  }, []);
-
   const loadQuestionsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
       setQuestionsNewCount(0);
@@ -424,7 +415,6 @@ export function Sidebar({ onNavigate }) {
                       to={item.path}
                       className={active ? 'mm-active' : ''}
                       onClick={() => {
-                        onLeafClick(item);
                         onNavigate?.();
                       }}
                     >

@@ -64,6 +64,11 @@ if [ -f "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" ]; then
   bash "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" || echo "WARN: nginx timeout patch skipped (run with sudo if needed)"
 fi
 
+echo "==> nginx body size (413 fix for uploads)"
+if [ -f "$APP_ROOT/scripts/vps-fix-nginx-body-size.sh" ]; then
+  bash "$APP_ROOT/scripts/vps-fix-nginx-body-size.sh" || echo "WARN: nginx body size patch skipped"
+fi
+
 echo "==> nginx gzip (static assets)"
 if [ -f "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" ]; then
   bash "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" || echo "WARN: nginx gzip patch skipped"

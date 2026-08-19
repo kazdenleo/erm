@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import { useProducts } from '../../hooks/useProducts';
 import { useCategories } from '../../hooks/useCategories';
 import { useBrands } from '../../hooks/useBrands';
@@ -12,11 +12,11 @@ import { useOrganizations } from '../../hooks/useOrganizations';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
-import { ProductForm } from '../../components/forms/ProductForm/ProductForm';
 import { ProductLabelPrintModal } from '../../components/products/ProductLabelPrintModal.jsx';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
+import { productCardPath, shouldOpenProductCardInNewTab } from '../../utils/productCardPath.js';
 import {
   canUsePrintHelper,
   openProductLabelPrintTab,
@@ -109,8 +109,6 @@ export function Products() {
     loading,
     listRefreshing,
     error,
-    createProduct,
-    updateProduct,
     deleteProduct,
     archiveProduct,
     unarchiveProduct,
@@ -119,9 +117,6 @@ export function Products() {
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const productFormRef = useRef(null);
-  const [editingProduct, setEditingProduct] = useState(null);
   const [printHelperUrl, setPrintHelperUrl] = useState('');
   const [labelPrintProduct, setLabelPrintProduct] = useState(null);
   const {
@@ -179,16 +174,6 @@ export function Products() {
   const selectAllCheckboxRef = useRef(null);
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
-
-  useEffect(() => {
-    const onNav = () => {
-      // Повторный клик по меню «Товары» должен закрывать карточку, даже если мы уже на /products.
-      setIsModalOpen(false);
-      setEditingProduct(null);
-    };
-    window.addEventListener('products-nav-click', onNav);
-    return () => window.removeEventListener('products-nav-click', onNav);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -487,7 +472,6 @@ export function Products() {
   const openProductIdParam = searchParams.get('open');
   const openProductTabParam = searchParams.get('tab');
   const searchFromUrl = searchParams.get('search');
-  const [formInitialTab, setFormInitialTab] = useState('main');
 
   useEffect(() => {
     if (searchFromUrl == null) return;
@@ -498,74 +482,29 @@ export function Products() {
   useEffect(() => {
     if (!openProductIdParam) return;
     const id = Number(openProductIdParam);
-    if (!Number.isInteger(id) || id < 1) {
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete('open');
-          next.delete('tab');
-          return next;
-        },
-        { replace: true }
-      );
+    if (Number.isInteger(id) && id >= 1) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('open');
+        next.delete('tab');
+        return next;
+      },
+      { replace: true }
+    );
+  }, [openProductIdParam, setSearchParams]);
+
+  const openProductCard = (productId, e) => {
+    const path = productCardPath(productId);
+    if (shouldOpenProductCardInNewTab(e)) {
+      window.open(path, '_blank', 'noopener,noreferrer');
       return;
     }
-    let cancelled = false;
-    (async () => {
-      try {
-        await loadCategories({ silent: categories.length > 0 });
-        const response = await productsApi.getById(id);
-        const full = response?.data ?? response;
-        if (cancelled || !full?.id) return;
-        const tab = String(openProductTabParam || 'main').trim();
-        setFormInitialTab(
-          ['main', 'ozon', 'wb', 'ym', 'competitors'].includes(tab) ? tab : 'main'
-        );
-        setEditingProduct(full);
-        setIsModalOpen(true);
-      } catch (err) {
-        if (!cancelled) console.error('Open product from URL:', err);
-      } finally {
-        if (!cancelled) {
-          setSearchParams(
-            (prev) => {
-              const next = new URLSearchParams(prev);
-              next.delete('open');
-              next.delete('tab');
-              return next;
-            },
-            { replace: true }
-          );
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadCategories из useCategories не стабилен по ссылке
-  }, [openProductIdParam, openProductTabParam, categories.length, setSearchParams]);
-
-  const handleCreate = () => {
-    setEditingProduct(null);
-    setFormInitialTab('main');
-    void loadCategories({ silent: categories.length > 0 });
-    setIsModalOpen(true);
+    navigate(path);
   };
 
-  const handleEdit = async (product) => {
-    try {
-      await loadCategories({ silent: categories.length > 0 });
-      const response = await productsApi.getById(product.id);
-      const fullProduct = response?.data ?? response;
-      setFormInitialTab('main');
-      setEditingProduct(fullProduct || product);
-      setIsModalOpen(true);
-    } catch (err) {
-      console.error('Error loading product details:', err);
-      setFormInitialTab('main');
-      setEditingProduct(product);
-      setIsModalOpen(true);
-    }
+  const handleCreate = () => {
+    navigate('/products/new');
   };
 
   /** Открытие карточки по клику по строке — не при выделении текста для копирования. */
@@ -578,58 +517,7 @@ export function Products() {
     ) {
       return;
     }
-    void handleEdit(product);
-  };
-
-  const handleProductUpdate = (updatedProduct) => {
-    setEditingProduct(updatedProduct);
-    void loadList();
-  };
-
-  const handleSubmit = async (productData, opts = {}) => {
-    const closeAfter = opts.close !== false;
-    try {
-      let saved = null;
-      if (editingProduct) {
-        const updated = await updateProduct(editingProduct.id, productData);
-        console.log('[Products] Product updated, returned product:', updated);
-        console.log('[Products] Updated product buyout_rate:', updated?.buyout_rate);
-        if (updated) {
-          setEditingProduct(updated);
-          saved = updated;
-        }
-        await loadList();
-      } else {
-        const created = await createProduct(productData);
-        console.log('[Products] Product created, returned product:', created);
-        if (created) {
-          setEditingProduct(created);
-          saved = created;
-        }
-        await loadList();
-      }
-      if (closeAfter) {
-        setIsModalOpen(false);
-        setEditingProduct(null);
-      }
-      return saved;
-    } catch (error) {
-      console.error('Error saving product:', error);
-      const message =
-        error.response?.data?.details
-          ?.map((d) => {
-            const path = Array.isArray(d.path) ? d.path.join('.') : '';
-            const msg = d.message || '';
-            return path ? `${path}: ${msg}` : msg;
-          })
-          .filter(Boolean)
-          .join('; ')
-        || error.response?.data?.message
-        || error.message
-        || 'Неизвестная ошибка';
-      alert('Ошибка сохранения товара: ' + message);
-      throw error;
-    }
+    openProductCard(product.id, e);
   };
 
   const handleDelete = async (id) => {
@@ -961,6 +849,11 @@ export function Products() {
       },
     });
   };
+
+  const openLegacyId = Number(openProductIdParam);
+  if (openProductIdParam && Number.isInteger(openLegacyId) && openLegacyId >= 1) {
+    return <Navigate to={productCardPath(openLegacyId, { tab: openProductTabParam })} replace />;
+  }
 
   return (
     <div>
@@ -1563,7 +1456,7 @@ export function Products() {
                           <Button 
                             variant="secondary" 
                             size="small"
-                            onClick={() => handleEdit(product)}
+                            onClick={(e) => openProductCard(product.id, e)}
                             title="Редактировать"
                             className="btn-icon btn-icon-only"
                           >
@@ -1760,61 +1653,6 @@ export function Products() {
             {exportLoading ? '⏳ Формирование…' : 'Скачать .xlsx'}
           </Button>
         </div>
-      </Modal>
-
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => {
-          if (productFormRef.current?.requestClose) {
-            void productFormRef.current.requestClose();
-            return;
-          }
-          setIsModalOpen(false);
-          setEditingProduct(null);
-        }}
-        title={editingProduct ? 'Редактировать товар' : 'Создать товар'}
-        size="full"
-        closeOnBackdropClick={false}
-        usePortal={false}
-      >
-        <ProductForm
-          ref={productFormRef}
-          product={editingProduct}
-          categories={categories}
-          brands={brands}
-          organizations={organizations}
-          products={products}
-          productsListOrganizationId={filterOrganizationId}
-          initialTab={formInitialTab}
-          onSubmit={handleSubmit}
-          onCancel={() => {
-            setIsModalOpen(false);
-            setEditingProduct(null);
-          }}
-          onProductUpdate={handleProductUpdate}
-          onDeleteProduct={
-            editingProduct?.id
-              ? async (id) => {
-                  await handleDelete(id);
-                  setIsModalOpen(false);
-                  setEditingProduct(null);
-                }
-              : undefined
-          }
-          onArchiveProduct={
-            editingProduct?.id
-              ? async (id) => {
-                  await handleArchive(id);
-                  setIsModalOpen(false);
-                  setEditingProduct(null);
-                }
-              : undefined
-          }
-          canDeleteProduct={editingProduct?.canDelete === true}
-          canArchiveProduct={
-            Boolean(editingProduct?.hasParticipation) && !Boolean(editingProduct?.isArchived)
-          }
-        />
       </Modal>
 
       <ProductLabelPrintModal

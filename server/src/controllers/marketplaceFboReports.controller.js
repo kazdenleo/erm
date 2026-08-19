@@ -37,3 +37,14 @@ export async function getFboByOrder(req, res) {
   });
   return res.json({ ok: true, data });
 }
+
+export async function lookupFboOrder(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { marketplace, orderId } = req.query || {};
+  const data = await marketplaceFboReportsService.lookupByOrder({
+    profileId,
+    marketplace,
+    orderId,
+  });
+  return res.json({ ok: true, data });
+}

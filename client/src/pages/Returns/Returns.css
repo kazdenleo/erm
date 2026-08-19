@@ -133,10 +133,121 @@
 
 .mp-returns-embedded-toolbar {
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
 .mp-returns-actions-cell {
   white-space: nowrap;
+}
+
+.mp-claims-hint {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+.mp-claims-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mp-claims-comment {
+  max-width: 22rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mp-claims-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: min(100%, 28rem);
+}
+
+.mp-claims-modal__meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.mp-claims-modal__block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mp-claims-modal__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+}
+
+.mp-claims-select,
+.mp-claims-textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mp-claims-textarea {
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  resize: vertical;
+}
+
+.mp-claims-modal__photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mp-claims-modal__photos img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+.mp-claims-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.mp-returns-inner-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.mp-returns-inner-tab {
+  border: 1px solid var(--border, #cbd5e1);
+  background: var(--surface, #fff);
+  color: var(--text, #334155);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mp-returns-inner-tab.is-active {
+  border-color: var(--primary, #2563eb);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary, #2563eb);
+  font-weight: 600;
+}
+
+.mp-returns-inner-tab__count {
+  margin-left: 6px;
+  opacity: 0.75;
+  font-weight: 600;
 }

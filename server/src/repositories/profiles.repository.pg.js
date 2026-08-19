@@ -15,6 +15,7 @@ import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 const PROFILE_SCOPED_TABLES = Object.freeze([
   'brands',
   'category_label_templates',
+  'category_rich_content_templates',
   'employee_tasks',
   'fbo_purchase_calc_sessions',
   'fbo_supplies',
@@ -54,6 +55,7 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
 const TABLE_LABELS_RU = Object.freeze({
   brands: 'Бренды',
   category_label_templates: 'Шаблоны этикеток категорий',
+  category_rich_content_templates: 'Шаблоны Rich-контента категорий',
   employee_tasks: 'Задачи сотрудников',
   fbo_purchase_calc_sessions: 'Расчёты закупок FBO',
   fbo_supplies: 'Поставки FBO',
