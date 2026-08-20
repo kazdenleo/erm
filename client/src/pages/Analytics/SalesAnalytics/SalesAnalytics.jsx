@@ -164,8 +164,12 @@ export function SalesAnalytics() {
         </div>
         <div className="sales-analytics__card sales-analytics__card--cost">
           <div className="sales-analytics__card-label">Себестоимость</div>
-          <div className="sales-analytics__card-value">{formatRub(summary.costAmount)}</div>
-          <div className="sales-analytics__card-sub">Сумма по проданным товарам</div>
+          <div className="sales-analytics__card-value">
+            {formatRub((Number(summary.costAmount) || 0) + (Number(summary.additionalExpensesAmount) || 0))}
+          </div>
+          <div className="sales-analytics__card-sub">
+            Себест. {formatRub(summary.costAmount)} · доп. {formatRub(summary.additionalExpensesAmount)}
+          </div>
         </div>
         <div className="sales-analytics__card">
           <div className="sales-analytics__card-label">Налоги</div>

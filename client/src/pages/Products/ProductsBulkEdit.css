@@ -254,7 +254,7 @@
 
 
 .products-bulk-table {
-  --products-bulk-head-row1: 54px;
+  --products-bulk-head-row1: 32px;
   /* collapse ломает sticky одновременно по top и left у th */
   border-collapse: separate;
   border-spacing: 0;
@@ -272,7 +272,7 @@
   padding: 6px 8px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.12);
   white-space: nowrap;
-  vertical-align: top;
+  vertical-align: middle;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
 }
 
@@ -442,30 +442,32 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 0;
   max-width: 100%;
 }
 
-.products-bulk-th-top {
+.products-bulk-th-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: 100%;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 2px;
   width: 100%;
   min-width: 0;
 }
 
-.products-bulk-th-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 4px;
-  max-width: 100%;
+.products-bulk-th-toolbar .mp-field-link-toggles,
+.products-bulk-th-toolbar .mp-from-main-link {
+  margin-left: 0 !important;
+  flex: 0 0 auto;
 }
 
-.products-bulk-th-label .mp-field-link-toggles,
-.products-bulk-th-label .mp-from-main-link {
-  margin-left: 0 !important;
+.products-bulk-th-toolbar .mp-field-link-toggles {
+  gap: 2px !important;
+}
+
+.products-bulk-th-toolbar .products-bulk-fill-btn {
+  margin: 0;
   flex: 0 0 auto;
 }
 

@@ -736,23 +736,25 @@ function colHeaderWidthPx(col) {
 
   const isSelect = col?.key === SELECT_COL_KEY;
   const isSku = col?.key === DEFAULT_STICKY_COL_KEY;
-  let meta = 0;
+  let toolbar = 0;
   if (!isSelect && !isSku) {
-    meta += 36;
+    toolbar += 40;
   }
   if (col?.showLinkToggles) {
     const n =
       Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
         ? col.linkSupportedMps.length
         : 3;
-    meta += n * 18 + Math.max(0, n - 1) * 4;
+    toolbar += n * 20 + Math.max(0, n - 1) * 4;
   } else if (col?.mpBucket && (col.linkFieldKey || col.mappedMps?.length)) {
-    meta += 18;
+    toolbar += 20;
   }
-  if (meta) meta += pad;
+  if (!(col?.readonly || col?.noBulk)) {
+    toolbar += 26;
+  }
+  if (toolbar) toolbar += pad + 8;
 
-  const fillW = col?.readonly || col?.noBulk ? 18 : 28;
-  return Math.max(40, Math.min(220, Math.max(labelW, meta, fillW + pad)));
+  return Math.max(40, Math.min(260, Math.max(labelW, toolbar || 28)));
 }
 
 function colStickyWidthPx(col) {
@@ -5673,20 +5675,6 @@ export function ProductsBulkEdit() {
                       </th>
                     );
                   }
-                  const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
-                  const isPinned = pinnedColumnKeys.includes(col.key);
-                  const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
-                  const canMoveLeft = pinIdx > 0;
-                  const canMoveRight = pinIdx >= 0 && pinIdx < visiblePinnedKeys.length - 1;
-                  const canHide = !ALWAYS_VISIBLE_COL_KEYS.has(col.key);
-                  const showColActions = !isBaseSticky;
-                  const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
-                  const showFromMain = !!(
-                    !showLinkToggles &&
-                    col.mpBucket &&
-                    (col.linkFieldKey || col.mappedMps?.length)
-                  );
-                  const showThMeta = showColActions || showLinkToggles || showFromMain;
                   return (
                     <th
                       key={col.key}
@@ -5694,18 +5682,67 @@ export function ProductsBulkEdit() {
                       style={colStickyStyle(col, { header: true })}
                     >
                       <div className="products-bulk-th-label">
-                        <div className="products-bulk-th-top">
-                          <span
-                            className="products-bulk-th-text"
-                            title={col.title || col.hint || col.label || undefined}
-                          >
-                            {col.label}
-                          </span>
-                        </div>
-                        {showThMeta ? (
-                        <div className="products-bulk-th-meta">
-                          {showColActions ? (
-                            <span className="products-bulk-th-actions">
+                        <span
+                          className="products-bulk-th-text"
+                          title={col.title || col.hint || col.label || undefined}
+                        >
+                          {col.label}
+                        </span>
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+              <tr className="bulk-actions-row">
+                {displayColumns.map((col) => {
+                  const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
+                  const isPinned = pinnedColumnKeys.includes(col.key);
+                  const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
+                  const canMoveLeft = pinIdx > 0;
+                  const canMoveRight = pinIdx >= 0 && pinIdx < visiblePinnedKeys.length - 1;
+                  const canHide = !ALWAYS_VISIBLE_COL_KEYS.has(col.key);
+                  const showColActions = col.key !== SELECT_COL_KEY && !isBaseSticky;
+                  const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
+                  const showFromMain = !!(
+                    !showLinkToggles &&
+                    col.mpBucket &&
+                    (col.linkFieldKey || col.mappedMps?.length)
+                  );
+                  const canFill = !(col.readonly || col.noBulk);
+                  const showDash = !showColActions && !showLinkToggles && !showFromMain && !canFill;
+                  return (
+                  <th
+                    key={`bulk-${col.key}`}
+                    className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
+                    style={colStickyStyle(col, { header: true, headerRow: 'actions' })}
+                    title={col.title || undefined}
+                  >
+                    {showDash ? (
+                      <span className="text-muted" style={{ fontSize: 10 }}>
+                        —
+                      </span>
+                    ) : (
+                      <div className="products-bulk-th-toolbar">
+                        {showLinkToggles ? (
+                          <MpFieldLinkToggles
+                            fieldKey={col.linkFieldKey}
+                            links={headerLinksForField(col.linkFieldKey)}
+                            onToggle={toggleBulkHeaderFieldLink}
+                            supportedMps={col.linkSupportedMps}
+                            size={16}
+                          />
+                        ) : showFromMain ? (
+                          <MpFromMainLinkIcon
+                            linked={isMpFieldLinked(
+                              headerLinksForField(col.linkFieldKey || ''),
+                              col.linkFieldKey,
+                              col.mpBucket
+                            )}
+                            title="Значение берётся с вкладки «Основное»"
+                          />
+                        ) : null}
+                        {showColActions ? (
+                          <span className="products-bulk-th-actions">
                             {isPinned ? (
                               <button
                                 type="button"
@@ -5771,58 +5808,24 @@ export function ProductsBulkEdit() {
                                 <HideColumnIcon />
                               </button>
                             ) : null}
-                            </span>
-                          ) : null}
-                          {showLinkToggles ? (
-                          <MpFieldLinkToggles
-                            fieldKey={col.linkFieldKey}
-                            links={headerLinksForField(col.linkFieldKey)}
-                            onToggle={toggleBulkHeaderFieldLink}
-                            supportedMps={col.linkSupportedMps}
-                            size={18}
-                          />
-                          ) : showFromMain ? (
-                          <MpFromMainLinkIcon
-                            linked={isMpFieldLinked(
-                              headerLinksForField(col.linkFieldKey || ''),
-                              col.linkFieldKey,
-                              col.mpBucket
-                            )}
-                            title="Значение берётся с вкладки «Основное»"
-                          />
-                          ) : null}
-                        </div>
+                          </span>
+                        ) : null}
+                        {canFill ? (
+                          <button
+                            type="button"
+                            className="products-bulk-fill-btn"
+                            onClick={() => openBulk(col)}
+                            title={`Заполнить столбец «${col.label || col.key}»`}
+                            aria-label={`Заполнить столбец ${col.label || col.key}`}
+                          >
+                            <FillColumnIcon />
+                          </button>
                         ) : null}
                       </div>
-                    </th>
-                  );
-                })}
-              </tr>
-              <tr className="bulk-actions-row">
-                {displayColumns.map((col) => (
-                  <th
-                    key={`bulk-${col.key}`}
-                    className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
-                    style={colStickyStyle(col, { header: true, headerRow: 'actions' })}
-                    title={col.title || undefined}
-                  >
-                    {col.readonly || col.noBulk ? (
-                      <span className="text-muted" style={{ fontSize: 10 }}>
-                        —
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="products-bulk-fill-btn"
-                        onClick={() => openBulk(col)}
-                        title={`Заполнить столбец «${col.label || col.key}»`}
-                        aria-label={`Заполнить столбец ${col.label || col.key}`}
-                      >
-                        <FillColumnIcon />
-                      </button>
                     )}
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
