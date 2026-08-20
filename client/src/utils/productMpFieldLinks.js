@@ -300,41 +300,12 @@ export function defaultMpFieldLinks() {
   return emptyMpFieldLinks();
 }
 
-function mpsFromDedicatedSlot(slot) {
-  if (!slot || typeof slot !== 'object') return [];
-  return MP_FIELD_LINK_MPS.filter((m) => mpSlotIsLinked(slot[m]));
-}
-
-function unionMpLists(...lists) {
-  const set = new Set();
-  for (const list of lists) {
-    for (const m of list || []) set.add(String(m || '').toLowerCase());
-  }
-  return MP_FIELD_LINK_MPS.filter((m) => set.has(m));
-}
-
 /**
- * Поля Main↔МП: источник истины — категория. Ключи attr_* с карточки сохраняем.
+ * Связи Main↔МП на карточке не наследуются из категории.
+ * Категория задаёт только сопоставление характеристик; тумблеры синхронизации — на товаре, по умолчанию выкл.
  */
-export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks) {
-  const prod = normalizeMpFieldLinks(productLinks);
-  const cat = normalizeMpFieldLinks(categoryLinks);
-  const charc = normalizeCategoryDedicatedCharcLinks(categoryLinks);
-  const out = { ...prod };
-  for (const key of MP_FIELD_LINK_KEYS) {
-    out[key] = [...(cat[key] || [])];
-  }
-  out.product_dimensions = unionMpLists(
-    out.product_dimensions,
-    mpsFromDedicatedSlot(charc.product_dimensions),
-    ...DEDICATED_PRODUCT_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
-  );
-  out.dimensions = unionMpLists(
-    out.dimensions,
-    mpsFromDedicatedSlot(charc.dimensions),
-    ...DEDICATED_PACK_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
-  );
-  return out;
+export function overlayCategoryDedicatedMpLinks(productLinks, _categoryLinks) {
+  return normalizeMpFieldLinks(productLinks);
 }
 
 /**
@@ -505,7 +476,8 @@ export function isYmProductWeightOnlyParam(name) {
 export function isYmParamDuplicatingDedicatedField(name) {
   const n = ymParamNameKey(name);
   if (!n) return false;
-  if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
+  if (/страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n)) return true;
+  if (n === 'страна' || n === 'country') return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
@@ -537,6 +509,7 @@ export const MP_OFFER_FIELD_ATTRS = {
     { id: '__ym_vendor__', name: 'Бренд' },
     { id: '__ym_barcodes__', name: 'Штрихкод' },
     { id: '__ym_manufacturer__', name: 'Изготовитель' },
+    { id: '__ym_country__', name: 'Страна производства' },
     { id: '__ym_pack_length__', name: 'Длина упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
     { id: '__ym_pack_width__', name: 'Ширина упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
     { id: '__ym_pack_height__', name: 'Высота упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
@@ -568,6 +541,8 @@ function mpOfferFieldTarget(id) {
       return { kind: 'ym_barcodes' };
     case '__ym_manufacturer__':
       return { kind: 'ym_manufacturer' };
+    case '__ym_country__':
+      return { kind: 'ym_country' };
     case '__ozon_pack_length__':
       return { kind: 'ozon_pack', axis: 'length' };
     case '__ozon_pack_width__':
@@ -612,6 +587,12 @@ export function readMpOfferFieldValue(formData, id) {
   }
   if (target.kind === 'ym_manufacturer') {
     return String(getMpDraft(formData, 'ym').manufacturer ?? '');
+  }
+  if (target.kind === 'ym_country') {
+    if (isMpFieldLinked(formData?.mp_field_links, 'country', 'ym')) {
+      return String(formData?.country_of_origin ?? '');
+    }
+    return getYmDraftCountry(formData);
   }
   if (target.kind === 'ym_barcodes') {
     const draft = String(getMpDraft(formData, 'ym').barcode ?? '').trim();
@@ -669,6 +650,20 @@ export function applyMpOfferFieldToForm(prev, entryId, str, { onlyIfEmpty = fals
     if (onlyIfEmpty && String(d.manufacturer ?? '').trim()) return prev;
     if (String(d.manufacturer ?? '') === str) return prev;
     return { ...prev, ym_draft: { ...d, manufacturer: str } };
+  }
+  if (target.kind === 'ym_country') {
+    if (isMpFieldLinked(prev?.mp_field_links, 'country', 'ym')) {
+      if (onlyIfEmpty && String(prev.country_of_origin ?? '').trim()) return prev;
+      if (String(prev.country_of_origin ?? '') === str) return prev;
+      return applyLinkedMpFieldsFromMain(
+        { ...prev, country_of_origin: str },
+        prev.mp_field_links,
+        ['country']
+      );
+    }
+    if (onlyIfEmpty && getYmDraftCountry(prev)) return prev;
+    if (getYmDraftCountry(prev) === String(str || '').trim()) return prev;
+    return withYmDraftCountry(prev, str);
   }
   if (target.kind === 'ym_barcodes') {
     const d = parseDraftObj(prev?.ym_draft);
@@ -728,6 +723,16 @@ function offerFieldNameAliases(name) {
   if (n === 'бренд') keys.push('brand', 'торговая марка');
   if (n === 'штрихкод') keys.push('штрих код', 'barcode', 'ean', 'gtin');
   if (n === 'изготовитель') keys.push('производитель', 'manufacturer');
+  if (n === 'страна производства') {
+    keys.push(
+      'страна',
+      'страна производителя',
+      'страна изготовителя',
+      'страна изготовления',
+      'страна происхождения',
+      'country'
+    );
+  }
   if (n === 'длина упаковки') keys.push('глубина упаковки', 'длина упаковки, мм', 'глубина упаковки, мм');
   if (n === 'ширина упаковки') keys.push('ширина упаковки, мм');
   if (n === 'высота упаковки') keys.push('высота упаковки, мм');
@@ -768,7 +773,8 @@ export function withMpOfferFieldAttrs(mp, attrs) {
   for (const extra of extras) {
     if (ids.has(String(extra.id).toLowerCase())) continue;
     if ((extra.skipIfIds || []).some((sid) => ids.has(String(sid).toLowerCase()))) continue;
-    if (offerFieldNameAliases(extra.name).some((k) => names.has(k))) continue;
+    // YM: дубликаты категории уже сняты; alias вроде «страна» не должен прятать поле оффера.
+    if (code !== 'ym' && offerFieldNameAliases(extra.name).some((k) => names.has(k))) continue;
     const { skipIfIds: _skip, ...rest } = extra;
     list.push({ ...rest });
   }

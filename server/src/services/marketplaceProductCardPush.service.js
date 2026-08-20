@@ -1307,7 +1307,17 @@ async function pushYandexCard(product, categoryMm, ctx) {
   }
   const manufacturer = trimOrNull(ymDraft.manufacturer);
   const barcodeForParam = barcodeCodes[0] || null;
-  if (ymCategoryId && /^\d+$/.test(ymCategoryId) && (vendor || manufacturer || barcodeForParam)) {
+  const countryForParam = isMpFieldLinked(product.mp_field_links, 'country', 'ym')
+    ? trimOrNull(product.country_of_origin)
+    : (() => {
+        const list = Array.isArray(ymDraft.manufacturerCountries) ? ymDraft.manufacturerCountries : [];
+        return list.map((c) => trimOrNull(c)).find(Boolean) || null;
+      })();
+  if (
+    ymCategoryId &&
+    /^\d+$/.test(ymCategoryId) &&
+    (vendor || manufacturer || barcodeForParam || countryForParam)
+  ) {
     try {
       const schema = await integrationsService.getYandexCategoryContentParameters(ymCategoryId, {
         organizationId: ctx.organizationId ?? null,
@@ -1325,8 +1335,9 @@ async function pushYandexCard(product, categoryMm, ctx) {
       upsert('vendor', vendor);
       upsert('manufacturer', manufacturer);
       upsert('barcode', barcodeForParam);
+      upsert('country', countryForParam);
     } catch (e) {
-      logger.warn('[YM push] не удалось дополнить бренд/штрихкод/изготовитель из схемы категории', {
+      logger.warn('[YM push] не удалось дополнить бренд/штрихкод/изготовитель/страну из схемы категории', {
         offerId,
         err: e?.message,
       });

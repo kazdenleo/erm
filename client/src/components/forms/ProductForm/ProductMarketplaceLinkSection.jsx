@@ -8,6 +8,7 @@ import { productsApi } from '../../../services/products.api.js';
 import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
+import { MpFromMainLinkIcon } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 
 function isMarketplaceLinked(marketplace, formData) {
   if (marketplace === 'ozon') {
@@ -216,6 +217,7 @@ export function ProductMarketplaceLinkSection({
             <span>
               Артикул продавца
             </span>
+            <MpFromMainLinkIcon linked={skuLinked} />
           </label>
           <input
             id={inputId}

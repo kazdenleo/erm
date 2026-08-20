@@ -72,11 +72,38 @@ export function MpMappedMpBadges({ mps, size = 18 }) {
           readOnly
           size={size}
           color={mp.color}
-          title={`${mp.title}: связано с «Основным» в настройках категории`}
+          title={`${mp.title}: сопоставлено в настройках категории`}
         >
           {mp.label}
         </MarketplaceToggle>
       ))}
+    </span>
+  );
+}
+
+/** Иконка на поле МП: значение берётся с вкладки «Основное». */
+export function MpFromMainLinkIcon({ linked = false, title }) {
+  if (!linked) return null;
+  return (
+    <span
+      className="mp-from-main-link"
+      title={title || 'Значение берётся с вкладки «Основное»'}
+      aria-label="Связь с Основным"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: 6,
+        width: 18,
+        height: 18,
+        borderRadius: 4,
+        background: '#eef2ff',
+        color: '#4338ca',
+        verticalAlign: 'middle',
+        flexShrink: 0,
+      }}
+    >
+      <i className="pe-7s-link" aria-hidden style={{ fontSize: 14, fontWeight: 700, lineHeight: 1 }} />
     </span>
   );
 }

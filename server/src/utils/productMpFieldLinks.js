@@ -239,38 +239,9 @@ export function defaultMpFieldLinks() {
   return emptyMpFieldLinks();
 }
 
-export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks) {
-  const prod = normalizeMpFieldLinks(productLinks);
-  const cat = normalizeMpFieldLinks(categoryLinks);
-  const charc = normalizeCategoryDedicatedCharcLinks(categoryLinks);
-  const out = { ...prod };
-  for (const key of MP_FIELD_LINK_KEYS) {
-    out[key] = [...(cat[key] || [])];
-  }
-  out.product_dimensions = unionMpLists(
-    out.product_dimensions,
-    mpsFromDedicatedSlot(charc.product_dimensions),
-    ...DEDICATED_PRODUCT_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
-  );
-  out.dimensions = unionMpLists(
-    out.dimensions,
-    mpsFromDedicatedSlot(charc.dimensions),
-    ...DEDICATED_PACK_DIM_KEYS.map((key) => mpsFromDedicatedSlot(charc[key]))
-  );
-  return out;
-}
-
-function mpsFromDedicatedSlot(slot) {
-  if (!slot || typeof slot !== 'object') return [];
-  return MP_FIELD_LINK_MPS.filter((m) => mpSlotIsLinked(slot[m]));
-}
-
-function unionMpLists(...lists) {
-  const set = new Set();
-  for (const list of lists) {
-    for (const m of list || []) set.add(String(m || '').toLowerCase());
-  }
-  return MP_FIELD_LINK_MPS.filter((m) => set.has(m));
+/** Связи Main↔МП на карточке не наследуются из категории. */
+export function overlayCategoryDedicatedMpLinks(productLinks, _categoryLinks) {
+  return normalizeMpFieldLinks(productLinks);
 }
 
 export function normalizeMpFieldLinks(raw) {
@@ -365,7 +336,8 @@ export function isYmProductWeightOnlyParam(name) {
 export function isYmParamDuplicatingDedicatedField(name) {
   const n = ymParamNameKey(name);
   if (!n) return false;
-  if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
+  if (/страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n)) return true;
+  if (n === 'страна' || n === 'country') return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
@@ -383,6 +355,13 @@ export function ymParamMatchesOfferField(name, field) {
   }
   if (field === 'barcode') {
     return n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin';
+  }
+  if (field === 'country') {
+    return (
+      n === 'страна' ||
+      n === 'country' ||
+      /страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n)
+    );
   }
   return false;
 }

@@ -2,7 +2,7 @@
  * Массовое редактирование товаров: таблица полей + «Заполнить» по столбцам.
  */
 
-import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
@@ -33,12 +33,11 @@ import {
   isMpFieldLinked,
   setMpFieldLink,
   emptyMpFieldLinks,
-  MP_FIELD_LINK_TOGGLES,
   getMpDraftProductDimensionsMm,
+  erpAttrLinkFieldKey,
   isAttrMpFieldLinkKey,
   isDedicatedMpFieldLinkKey,
   isWbCharcDuplicatingDedicatedField,
-  overlayCategoryDedicatedMpLinks,
   normalizeCategoryDedicatedCharcLinks,
   DEDICATED_PACK_DIM_KEYS,
   DEDICATED_PRODUCT_DIM_KEYS,
@@ -51,7 +50,7 @@ import {
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MpFieldLinkToggles, MpMappedMpBadges } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -473,8 +472,12 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
   const erpCol = (erpAttrCols || []).find((c) => c.key === key && c.erpAttr);
   if (erpCol?.erpAttr) {
     let next = { ...row, [key]: value };
+    const fieldKey = erpCol.linkFieldKey;
+    const links = normalizeMpFieldLinks(row.mp_field_links);
     for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
-      next = copyErpAttrToLinkedMp(next, erpCol, mp);
+      if (fieldKey && isMpFieldLinked(links, fieldKey, mp)) {
+        next = copyErpAttrToLinkedMp(next, erpCol, mp);
+      }
     }
     return next;
   }
@@ -483,9 +486,16 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
   if (mpAttr) {
     const linkedErp = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
     if (linkedErp) {
+      const fieldKey = linkedErp.linkFieldKey;
+      const links = normalizeMpFieldLinks(row.mp_field_links);
+      if (!fieldKey || !isMpFieldLinked(links, fieldKey, mpAttr.mp)) {
+        return { ...row, [key]: value };
+      }
       let next = { ...row, [key]: value, [linkedErp.key]: value };
       for (const mp of mappedMpsFromAttrLinks(linkedErp.erpAttr?.mpLinks)) {
-        if (mp !== mpAttr.mp) next = copyErpAttrToLinkedMp(next, linkedErp, mp);
+        if (mp !== mpAttr.mp && isMpFieldLinked(links, fieldKey, mp)) {
+          next = copyErpAttrToLinkedMp(next, linkedErp, mp);
+        }
       }
       return next;
     }
@@ -770,8 +780,8 @@ function buildStickyLeftMap(displayCols, pinnedKeys) {
     map.set(key, {
       left,
       width,
-      /* выше обычных ячеек (0) и thead без pin (3), левее — выше соседей */
-      zIndex: 40 - i,
+      /* body: выше обычных ячеек, ниже всей шапки; левее — выше соседей */
+      zIndex: stickyKeys.length - i,
       isLast: i === stickyKeys.length - 1,
       isBase: key === DEFAULT_STICKY_COL_KEY,
     });
@@ -786,7 +796,7 @@ function buildStickyLeftMap(displayCols, pinnedKeys) {
 const COLUMNS = [
   /* ——— основная карточка (ERP) ——— */
   /* артикулы / идентификаторы */
-  { key: 'sku', label: 'Артикул', input: 'text', minW: 120, linkFieldKey: 'sku' },
+  { key: 'sku', label: 'Артикул', input: 'text', minW: 120, linkFieldKey: 'sku', showLinkToggles: true },
   { key: 'barcodes', label: 'ШК', title: 'Штрихкоды', input: 'textarea', minW: 120, hint: 'Через запятую или с новой строки' },
   { key: 'id', label: 'ID', readonly: true, noBulk: true, width: 56, minW: 56 },
   {
@@ -799,19 +809,19 @@ const COLUMNS = [
     minW: 64,
   },
   /* названия */
-  { key: 'name', label: 'Название', input: 'textarea', minW: 160, linkFieldKey: 'name' },
-  { key: 'brand', label: 'Бренд', title: 'Основное · Бренд. Тумблеры OZ/WB связывают бренд с МП', input: 'text', minW: 90, linkFieldKey: 'brand' },
+  { key: 'name', label: 'Название', input: 'textarea', minW: 160, linkFieldKey: 'name', showLinkToggles: true },
+  { key: 'brand', label: 'Бренд', title: 'Основное · Бренд. Тумблеры OZ/WB/ЯМ связывают бренд с МП', input: 'text', minW: 90, linkFieldKey: 'brand', showLinkToggles: true },
   /* описание */
-  { key: 'description', label: 'Описание', input: 'textarea', minW: 160, linkFieldKey: 'description' },
+  { key: 'description', label: 'Описание', input: 'textarea', minW: 160, linkFieldKey: 'description', showLinkToggles: true },
   /* габариты товара (без упаковки) — вкладка «Основное» */
-  { key: 'product_length', label: 'Длина тов.', title: 'Основное · Длина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_length' },
-  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_width' },
-  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_height' },
-  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_weight' },
-  { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'length' },
-  { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'width' },
-  { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'height' },
-  { key: 'weight', label: 'Вес уп.', title: 'Основное · Вес с упаковкой', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'weight' },
+  { key: 'product_length', label: 'Длина тов.', title: 'Основное · Длина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
+  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_dimensions' },
+  { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions', showLinkToggles: true },
+  { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'weight', label: 'Вес уп.', title: 'Основное · Вес с упаковкой', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'dimensions' },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 80 },
   { key: 'categoryId', label: 'Категория', title: 'Категория', input: 'select_category', minW: 120 },
@@ -821,42 +831,42 @@ const COLUMNS = [
   { key: 'additionalExpenses', label: 'Доп. р.', title: 'Доп. расходы', input: 'number', minW: 80 },
   { key: 'minPrice', label: 'Мин. ц.', title: 'Мин. цена', input: 'number', minW: 72 },
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
-  { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country' },
+  { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country', showLinkToggles: true },
   /* ——— Ozon ——— */
-  { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon' },
+  { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   /* Длина/ширина/высота товара Ozon — характеристики, не отдельные колонки */
-  { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight' },
-  { key: 'ozon_pack_length', label: 'Длина уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_width', label: 'Ширина уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_height', label: 'Высота уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length' },
-  { key: 'ozon_pack_weight', label: 'Вес уп.', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight' },
+  { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'product_dimensions' },
+  { key: 'ozon_pack_length', label: 'Длина уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ozon_pack_width', label: 'Ширина уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ozon_pack_height', label: 'Высота уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ozon_pack_weight', label: 'Вес уп.', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'dimensions' },
   /* Бренд, страна, название и аннотация Ozon — характеристики, не отдельные колонки */
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'name' },
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'description' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 80, mpBucket: 'wb' },
-  { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb' },
+  { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb', linkFieldKey: 'sku' },
   /* Длина/ширина/высота товара WB — характеристики, не отдельные колонки */
-  { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight' },
-  { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_width', label: 'Ширина уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_height', label: 'Высота уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length' },
-  { key: 'wb_pack_weight', label: 'Вес уп.', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight' },
-  { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 90, mpBucket: 'wb' },
-  { key: 'wb_country', label: 'Страна', title: 'Wildberries · Страна производителя', input: 'text', minW: 80, mpBucket: 'wb' },
+  { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'product_dimensions' },
+  { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'wb_pack_width', label: 'Ширина уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'wb_pack_height', label: 'Высота уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'wb_pack_weight', label: 'Вес уп.', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 90, mpBucket: 'wb', linkFieldKey: 'brand' },
+  { key: 'wb_country', label: 'Страна', title: 'Wildberries · Страна производителя', input: 'text', minW: 80, mpBucket: 'wb', linkFieldKey: 'country' },
   /* ——— Яндекс.Маркет ——— */
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
-  { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym' },
-          { key: 'ym_product_length', label: 'Длина тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_width', label: 'Ширина тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_product_height', label: 'Высота тов.', title: 'Яндекс.Маркет · Высота товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
-  { key: 'ym_pack_weight', label: 'Вес уп.', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight' },
-  { key: 'ym_country', label: 'Страна', title: 'Яндекс.Маркет · Страна производителя', input: 'text', minW: 80, mpBucket: 'ym' },
+  { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
+          { key: 'ym_product_length', label: 'Длина тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'ym_product_width', label: 'Ширина тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'ym_product_height', label: 'Высота тов.', title: 'Яндекс.Маркет · Высота товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
+  { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
+  { key: 'ym_pack_weight', label: 'Вес уп.', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'ym_country', label: 'Страна', title: 'Яндекс.Маркет · Страна производителя', input: 'text', minW: 80, mpBucket: 'ym', linkFieldKey: 'country' },
 ];
 
 function withDisplayUnitLabels(cols, lengthUnit) {
@@ -1896,7 +1906,7 @@ function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, pro
       key: erpAttrColKey(id),
       label: attr.name || `Атр. ${id}`,
       title: mapped.length
-        ? `Основное · ${attr.name || id}. Значки: связано с МП в настройках категории`
+        ? `Основное · ${attr.name || id}. Значки включают подстановку значения на сопоставленный МП`
         : `Основное · ${attr.name || id}`,
       headerClass: 'erp-attr-head',
       input: inputForErpAttrType(type),
@@ -1904,6 +1914,9 @@ function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, pro
       erpAttr: { id, type, dictionary_values: dict, mpLinks },
       dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
       mappedMps: mapped,
+      linkFieldKey: erpAttrLinkFieldKey(id),
+      linkSupportedMps: mapped,
+      showLinkToggles: mapped.length > 0,
     });
   }
   cols.sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'ru'));
@@ -1994,10 +2007,24 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
   }
   const merged = extra.length ? [...(mpCols || []), ...extra] : mpCols || [];
   return (merged || []).map((col) => {
-    if (col.mappedMps?.length || !col.mpAttr) return col;
-    const erp = findErpAttrColForMpAttr(erpCols, col.mpAttr.bucket, col.mpAttr.attrId);
-    if (!erp) return col;
-    return { ...col, mappedMps: [col.mpAttr.bucket] };
+    if (!col.mpAttr) return col;
+    let next = col;
+    if (!next.linkFieldKey && next.mpAttr.bucket === 'ozon') {
+      const fake = { id: next.mpAttr.attrId, name: next._humanName };
+      if (isOzonBrandAttr(fake)) next = { ...next, linkFieldKey: 'brand' };
+      else if (isOzonManufacturerCountryAttr(fake)) next = { ...next, linkFieldKey: 'country' };
+      else if (isOzonNameAttr(fake)) next = { ...next, linkFieldKey: 'name' };
+      else if (isOzonAnnotationAttr(fake)) next = { ...next, linkFieldKey: 'description' };
+    }
+    const erp = findErpAttrColForMpAttr(erpCols, next.mpAttr.bucket, next.mpAttr.attrId);
+    if (erp) {
+      next = {
+        ...next,
+        mappedMps: next.mappedMps?.length ? next.mappedMps : [next.mpAttr.bucket],
+        linkFieldKey: next.linkFieldKey || erp.linkFieldKey,
+      };
+    }
+    return next;
   });
 }
 
@@ -2217,12 +2244,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
-    mp_field_links: overlayCategoryDedicatedMpLinks(
-      emptyBulkMpFieldLinks(erpAttrColDefs),
-      (categories || []).find(
-        (c) => String(c.id) === String(p.categoryId ?? p.user_category_id ?? '')
-      )?.mp_field_links || p.mp_field_links
-    ),
+    mp_field_links: emptyBulkMpFieldLinks(erpAttrColDefs),
     ...ozPack,
     ...wbPack,
     ...ymPack,
@@ -3030,6 +3052,7 @@ export function ProductsBulkEdit() {
   const hasUnsavedChangesRef = useRef(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const bulkScrollRef = useRef(null);
+  const bulkHeadRow1Ref = useRef(null);
   const [bulkViewport, setBulkViewport] = useState({ top: 0, height: 640 });
   /** id товаров, изменённых в этой сессии (после успешного push снимаются) */
   const changedForPushIdsRef = useRef(new Set());
@@ -3370,18 +3393,23 @@ export function ProductsBulkEdit() {
   );
 
   const colStickyStyle = useCallback(
-    (col, { header = false } = {}) => {
+    (col, { header = false, headerRow = 'labels' } = {}) => {
       const meta = stickyLeftMap.get(col.key);
       const base = { minWidth: col.minW };
       if (!meta) return base;
+      /* top тоже inline: Chrome иначе игнорирует CSS-top, если left задан через style */
       return {
         ...base,
         left: meta.left,
+        top: header
+          ? headerRow === 'actions'
+            ? 'var(--products-bulk-head-row1)'
+            : 0
+          : 'auto',
         width: meta.width,
         minWidth: meta.width,
         maxWidth: meta.width,
-        /* шапка + pin: выше body-pin; body-pin выше прокручиваемых ячеек */
-        zIndex: header ? meta.zIndex + 40 : meta.zIndex,
+        zIndex: header ? 40 + meta.zIndex : meta.zIndex,
       };
     },
     [stickyLeftMap]
@@ -3837,6 +3865,21 @@ export function ProductsBulkEdit() {
       if (raf) window.cancelAnimationFrame(raf);
     };
   }, [categoryScopeReady, loading, rows.length, pageSize]);
+
+  useLayoutEffect(() => {
+    const row = bulkHeadRow1Ref.current;
+    const table = row?.closest('.products-bulk-table');
+    if (!row || !table) return undefined;
+    const apply = () => {
+      const h = Math.round(row.getBoundingClientRect().height);
+      if (h > 0) table.style.setProperty('--products-bulk-head-row1', `${h}px`);
+    };
+    apply();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(apply);
+    ro.observe(row);
+    return () => ro.disconnect();
+  }, [displayColumns, pinnedColumnKeys, loading, rows.length]);
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
@@ -4323,7 +4366,7 @@ export function ProductsBulkEdit() {
   const bulkLinkableFieldDefs = useMemo(() => {
     const seen = new Map();
     for (const col of displayColumns || []) {
-      if (!col.linkFieldKey || seen.has(col.linkFieldKey) || isDedicatedMpFieldLinkKey(col.linkFieldKey)) continue;
+      if (!col.showLinkToggles || !col.linkFieldKey || seen.has(col.linkFieldKey)) continue;
       seen.set(col.linkFieldKey, col.linkSupportedMps);
     }
     return [...seen.entries()].map(([fieldKey, supported]) => ({ fieldKey, supported }));
@@ -4331,10 +4374,9 @@ export function ProductsBulkEdit() {
 
   const toggleBulkHeaderFieldLink = useCallback(
     (fieldKey, mp) => {
-      if (isDedicatedMpFieldLinkKey(fieldKey)) return;
       if (!rows.length) return;
-      const col = (erpAttrColumnDefs || []).find((c) => c.linkFieldKey === fieldKey);
-      const supported = col?.linkSupportedMps;
+      const def = bulkLinkableFieldDefs.find((d) => d.fieldKey === fieldKey);
+      const supported = def?.supported;
       const anyOn = rows.some((r) =>
         isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
       );
@@ -4343,7 +4385,7 @@ export function ProductsBulkEdit() {
       markDirty();
       setRows((prev) => prev.map((r) => applyBulkLinkToRow(r, fieldKey, mp, enable, supported)));
     },
-    [rows, markChangedForPush, markDirty, erpAttrColumnDefs, applyBulkLinkToRow]
+    [rows, markChangedForPush, markDirty, bulkLinkableFieldDefs, applyBulkLinkToRow]
   );
 
   const toggleBulkMasterMpLink = useCallback(() => {
@@ -5454,7 +5496,7 @@ export function ProductsBulkEdit() {
             <div className="products-bulk-table-wrap">
           <table className="products-bulk-table">
             <thead>
-              <tr>
+              <tr ref={bulkHeadRow1Ref}>
                 {displayColumns.map((col) => {
                   if (col.key === SELECT_COL_KEY) {
                     return (
@@ -5562,15 +5604,22 @@ export function ProductsBulkEdit() {
                             </span>
                           )}
                         </div>
-                        {col.mappedMps?.length ? (
-                          <MpMappedMpBadges mps={col.mappedMps} size={18} />
-                        ) : col.linkFieldKey && !isDedicatedMpFieldLinkKey(col.linkFieldKey) ? (
+                        {col.showLinkToggles && col.linkFieldKey ? (
                           <MpFieldLinkToggles
                             fieldKey={col.linkFieldKey}
                             links={headerLinksForField(col.linkFieldKey)}
                             onToggle={toggleBulkHeaderFieldLink}
                             supportedMps={col.linkSupportedMps}
                             size={18}
+                          />
+                        ) : col.mpBucket && (col.linkFieldKey || col.mappedMps?.length) ? (
+                          <MpFromMainLinkIcon
+                            linked={isMpFieldLinked(
+                              headerLinksForField(col.linkFieldKey || ''),
+                              col.linkFieldKey,
+                              col.mpBucket
+                            )}
+                            title="Значение берётся с вкладки «Основное»"
                           />
                         ) : null}
                       </div>
@@ -5583,7 +5632,7 @@ export function ProductsBulkEdit() {
                   <th
                     key={`bulk-${col.key}`}
                     className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
-                    style={colStickyStyle(col, { header: true })}
+                    style={colStickyStyle(col, { header: true, headerRow: 'actions' })}
                     title={col.title || undefined}
                   >
                     {col.readonly || col.noBulk ? (

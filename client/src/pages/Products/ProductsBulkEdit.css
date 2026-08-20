@@ -214,13 +214,18 @@
 
 .products-bulk-table {
   --products-bulk-head-row1: 54px;
+  /* collapse ломает sticky одновременно по top и left у th */
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 .products-bulk-table thead th {
+  position: -webkit-sticky;
   position: sticky;
   top: 0;
-  z-index: 3;
+  z-index: 4;
   background: #f1f3f5;
+  background-clip: padding-box;
   color: #495057;
   font-weight: 600;
   padding: 6px 8px;
@@ -228,10 +233,6 @@
   white-space: nowrap;
   vertical-align: top;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
-}
-
-.products-bulk-table thead tr:first-child th {
-  height: var(--products-bulk-head-row1);
 }
 
 .products-bulk-table thead th.products-bulk-select-col {
@@ -258,7 +259,7 @@
 
 .products-bulk-table thead tr.bulk-actions-row th {
   top: var(--products-bulk-head-row1);
-  z-index: 2;
+  z-index: 4;
   padding: 4px 6px;
   background: #e9ecef;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
@@ -321,11 +322,23 @@
 }
 
 .products-bulk-table thead th.sticky-col-pin {
+  top: 0;
+  z-index: 6;
   background-color: #f1f3f5;
 }
 
 .products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin {
+  top: var(--products-bulk-head-row1);
+  z-index: 6;
   background-color: #e9ecef;
+}
+
+.products-bulk-table thead th.sticky-col-pin-edge {
+  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.22), 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.products-bulk-table thead tr.bulk-actions-row th.sticky-col-pin-edge {
+  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.22), 0 1px 0 rgba(0, 0, 0, 0.1);
 }
 
 /* Opaque tint ≈ прежние rgba на белом/сером — иначе pinned МП «просвечивают» */
@@ -350,6 +363,7 @@
 }
 
 .products-bulk-table tbody td.sticky-col-pin {
+  top: auto;
   background-color: #fff;
 }
 

@@ -64,7 +64,7 @@ import {
   strictestLinkedMainLimit,
 } from '../../../utils/marketplaceFieldLimits.js';
 import { useMarketplaceFieldLimits } from '../../../hooks/useMarketplaceFieldLimits.js';
-import { MpFieldLabel, MpMappedMpBadges, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   ATTR_MP_CODES,
   findLinkedMpAttributes,
@@ -109,6 +109,7 @@ import {
   cmToMm,
   createMpFieldLinks,
   emptyMpFieldLinks,
+  erpAttrLinkFieldKey,
   erpDimsToYmWeightDimensions,
   filterYmCategoryAttributesForForm,
   getMpDraft,
@@ -118,9 +119,7 @@ import {
   getYmDraftCountry,
   getYmDraftWeightDimensions,
   gramsToKg,
-  erpAttrLinkFieldKey,
   isAttrMpFieldLinkKey,
-  isDedicatedMpFieldLinkKey,
   isMpFieldLinked,
   isMpOfferFieldAttrId,
   isWbCharcDuplicatingDedicatedField,
@@ -132,7 +131,6 @@ import {
   normalizeCategoryDedicatedCharcLinks,
   normalizeMpFieldLinks,
   ozonAttrsForProductForm,
-  overlayCategoryDedicatedMpLinks,
   readMpOfferFieldValue,
   readMpSellerSku,
   setMpFieldLink,
@@ -187,7 +185,7 @@ import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
 
-function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
+function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, onToggle }) {
   const typeLabel = TYPE_LABELS[attr.type];
   const mapped = mappedMpsFromAttrLinks(attr.mp_links);
   const inner = (
@@ -196,7 +194,17 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
       {typeLabel ? (
         <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({typeLabel})</span>
       ) : null}
-      <MpMappedMpBadges mps={mapped} size={18} />
+      {mapped.length ? (
+        <MpFieldLinkToggles
+          fieldKey={erpAttrLinkFieldKey(attr.id)}
+          links={links}
+          onToggle={onToggle}
+          supportedMps={mapped}
+          size={18}
+        />
+      ) : (
+        <MpMappedMpBadges mps={mapped} size={18} />
+      )}
       <MpValueDiffBadges diffs={diffs} />
     </>
   );
@@ -218,7 +226,18 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
   );
 }
 
-function ozonAttrShowsMainSyncHint(attr, links) {
+function erpMappedAttrSyncOn(categoryAttributes, links, mp, attrId) {
+  const want = String(attrId ?? '');
+  if (!want) return false;
+  for (const erp of categoryAttributes || []) {
+    const entries = normalizeAttrMpLinks(erp?.mp_links)?.[mp] || [];
+    const hit = (Array.isArray(entries) ? entries : []).some((e) => String(e?.id || '') === want);
+    if (hit && isMpFieldLinked(links, erpAttrLinkFieldKey(erp.id), mp)) return true;
+  }
+  return false;
+}
+
+function ozonAttrShowsMainSyncHint(attr, links, categoryAttributes) {
   if (isOzonManufacturerCountryAttr(attr) && isMpFieldLinked(links, 'country', 'ozon')) return true;
   if (isOzonBrandAttr(attr) && isMpFieldLinked(links, 'brand', 'ozon')) return true;
   if (isOzonNameAttr(attr) && isMpFieldLinked(links, 'name', 'ozon')) return true;
@@ -237,7 +256,7 @@ function ozonAttrShowsMainSyncHint(attr, links) {
   ) {
     return true;
   }
-  return false;
+  return erpMappedAttrSyncOn(categoryAttributes, links, 'ozon', attr?.id);
 }
 
 function wbCharcName(a) {
@@ -250,15 +269,19 @@ function isWbCharcVisibleInForm(a) {
   return true;
 }
 
-function wbAttrShowsMainSyncHint(attr, links) {
+function wbAttrShowsMainSyncHint(attr, links, categoryAttributes) {
   const axis = wbProductDimAxis(attr);
-  return (
+  if (
     (axis === 'length' || axis === 'width' || axis === 'height') &&
     isMpFieldLinked(links, 'product_dimensions', 'wb')
-  );
+  ) {
+    return true;
+  }
+  const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
+  return erpMappedAttrSyncOn(categoryAttributes, links, 'wb', id);
 }
 
-function ymAttrShowsMainSyncHint(attr, links) {
+function ymAttrShowsMainSyncHint(attr, links, categoryAttributes) {
   const axis = ozonProductDimAxis(attr);
   if (
     (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') &&
@@ -267,10 +290,13 @@ function ymAttrShowsMainSyncHint(attr, links) {
     return true;
   }
   const packAxis = ozonPackDimAxis(attr);
-  return Boolean(
+  if (
     packAxis &&
-      (isMpFieldLinked(links, 'dimensions', 'ym') || isMpFieldLinked(links, packAxis, 'ym'))
-  );
+    (isMpFieldLinked(links, 'dimensions', 'ym') || isMpFieldLinked(links, packAxis, 'ym'))
+  ) {
+    return true;
+  }
+  return erpMappedAttrSyncOn(categoryAttributes, links, 'ym', attr?.id);
 }
 
 function richContentGenerateTargets(links, clickedMp) {
@@ -1051,11 +1077,7 @@ function YmPackagingDimensionFields({
         <>
           <div className="col-12" style={{ fontSize: 12, fontWeight: 600, marginTop: 8 }}>
             Габариты товара
-            {linkedProduct ? (
-              <span className="mp-field-linked-hint"> · синхрон с Основным</span>
-            ) : (
-              <span className="mp-field-linked-hint"> · только Яндекс</span>
-            )}
+            <MpFromMainLinkIcon linked={linkedProduct} />
           </div>
           {productDimFields.map((f) => {
             const id = `${idPrefix}-product-${f.key}`;
@@ -1254,11 +1276,7 @@ function MpSkuCountryDimsEditor({
       <div className="col-md-4">
         <label className="form-label" htmlFor={`${code}-tab-country`}>
           Страна
-          {linkedCountry ? (
-            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
-          ) : (
-            <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
-          )}
+          <MpFromMainLinkIcon linked={linkedCountry} />
         </label>
         <input
           id={`${code}-tab-country`}
@@ -1294,7 +1312,7 @@ function MpSkuCountryDimsEditor({
         >
           <span>Габариты товара</span>
           {linkedProductDims ? (
-            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+            <MpFromMainLinkIcon linked />
           ) : null}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
@@ -1315,7 +1333,7 @@ function MpSkuCountryDimsEditor({
                 <label className="form-label" htmlFor={`${code}-product-dim-${f.key}`}>
                   {f.label}
                   {linkedProductDims ? (
-                    <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                    <MpFromMainLinkIcon linked />
                   ) : null}
                 </label>
                 <input
@@ -1423,11 +1441,7 @@ function MpSkuCountryDimsEditor({
         >
           <span>Габариты упаковки</span>
           <OzonDimsLockMark locked={ozonDimsLocked} />
-          {linkedDims ? (
-            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
-          ) : (
-            <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
-          )}
+          <MpFromMainLinkIcon linked={linkedDims} />
         </div>
         {ozonDimsLocked ? (
           <div style={{ fontSize: 11, color: '#d97706', marginBottom: 8 }}>{OZON_DIMS_LOCK_TITLE}</div>
@@ -1918,14 +1932,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_ozon_name: currentProduct.mp_ozon_name || '',
         mp_ozon_description: currentProduct.mp_ozon_description || '',
         mp_ozon_brand: currentProduct.mp_ozon_brand || '',
-        mp_field_links: overlayCategoryDedicatedMpLinks(
-          currentProduct.mp_field_links,
-          categories.find(
-            (c) =>
-              String(c.id) ===
-              String(currentProduct.categoryId ?? currentProduct.user_category_id ?? '')
-          )?.mp_field_links || currentProduct.mp_field_links
-        ),
+        mp_field_links: emptyMpFieldLinks(),
         block_stock_ozon: currentProduct.block_stock_ozon === true,
         block_stock_wb: currentProduct.block_stock_wb === true,
         block_stock_ym: currentProduct.block_stock_ym === true,
@@ -2095,28 +2102,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
     if (!cid) return null;
     return categories.find((c) => String(c.id) === cid) || null;
   }, [categories, formData.categoryId]);
-
-  useEffect(() => {
-    const cid = String(formData.categoryId || '').trim();
-    if (cid && !categories.length) return;
-    let catLinks = emptyMpFieldLinks();
-    if (cid) {
-      const cat = categories.find((c) => String(c.id) === cid);
-      if (!cat) return;
-      catLinks = cat.mp_field_links;
-    }
-    setFormData((prev) => {
-      const nextLinks = overlayCategoryDedicatedMpLinks(prev.mp_field_links, catLinks);
-      const prevDedicated = JSON.stringify(
-        Object.fromEntries(Object.keys(emptyMpFieldLinks()).map((k) => [k, prev.mp_field_links?.[k] || []]))
-      );
-      const nextDedicated = JSON.stringify(
-        Object.fromEntries(Object.keys(emptyMpFieldLinks()).map((k) => [k, nextLinks[k] || []]))
-      );
-      if (prevDedicated === nextDedicated) return prev;
-      return applyLinkedMpFieldsFromMain({ ...prev, mp_field_links: nextLinks }, nextLinks);
-    });
-  }, [formData.categoryId, categories, currentProduct?.id]);
 
   const selectedBrandForCert = useMemo(() => {
     const b = String(formData.brand || '').trim().toLowerCase();
@@ -2907,7 +2892,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const ymFormAttributes = useMemo(() => {
     const schema = filterYmCategoryAttributesForForm(withYmOfferFieldAttrs(ymCategoryAttributes)).filter(
       (a) =>
-        !['__ym_name__', '__ym_description__', '__ym_shop_sku__', '__ym_vendor_code__', '__ym_vendor__', '__ym_barcodes__', '__ym_manufacturer__'].includes(
+        !['__ym_name__', '__ym_description__', '__ym_shop_sku__', '__ym_vendor_code__', '__ym_vendor__', '__ym_barcodes__', '__ym_manufacturer__', '__ym_country__'].includes(
           String(a?.id || '')
         )
     );
@@ -4674,7 +4659,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, []);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
-    if (isDedicatedMpFieldLinkKey(fieldKey)) return;
     const attrForLink = isAttrMpFieldLinkKey(fieldKey)
       ? categoryAttributes.find((a) => erpAttrLinkFieldKey(a.id) === fieldKey)
       : null;
@@ -5499,7 +5483,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const catLinks = normalizeAttrMpLinks(attrLike?.mp_links);
     const wantMp = (mp) => {
       if (onlyMp && onlyMp !== mp) return false;
-      return (catLinks[mp] || []).length > 0;
+      if (!(catLinks[mp] || []).length) return false;
+      if (onlyMp) return true;
+      const attrId = attrLike?.id;
+      if (attrId == null) return true;
+      return isMpFieldLinked(formData.mp_field_links, erpAttrLinkFieldKey(attrId), mp);
     };
     const str =
       value === true ? 'true' : value === false ? 'false' : value == null ? '' : String(value);
@@ -5582,7 +5570,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return next;
       });
     }
-  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName]);
+  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName, formData.mp_field_links]);
   applyErpAttrValueToLinkedMpRef.current = applyErpAttrValueToLinkedMp;
 
   useEffect(() => {
@@ -6039,6 +6027,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
         ).trim();
         const manufacturer = String(ymDraft.manufacturer || '').trim();
         const barcode = String(ymDraft.barcode || '').trim();
+        const country = String(
+          isMpFieldLinked(formData.mp_field_links, 'country', 'ym')
+            ? formData.country_of_origin || ''
+            : getYmDraftCountry(formData)
+        ).trim();
         for (const attr of ymCategoryAttributes || []) {
           const n = String(attr?.name || '')
             .trim()
@@ -6053,6 +6046,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
           }
           if (barcode && (n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean')) {
             cleaned[key] = barcode;
+          }
+          if (
+            country &&
+            (n === 'страна' ||
+              n === 'country' ||
+              /страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n))
+          ) {
+            cleaned[key] = country;
           }
         }
         return Object.keys(cleaned).length > 0 ? cleaned : undefined;
@@ -6294,7 +6295,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             htmlFor="name"
             fieldKey="name"
             links={formData.mp_field_links}
-            readOnly
+            onToggle={handleMpFieldLinkToggle}
             required
             diffs={mainCardFieldMpDiffs.name}
           >
@@ -6330,7 +6331,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             htmlFor="sku"
             fieldKey="sku"
             links={formData.mp_field_links}
-            readOnly
+            onToggle={handleMpFieldLinkToggle}
             required
             diffs={mainCardFieldMpDiffs.sku}
           >
@@ -6370,7 +6371,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           htmlFor="description"
           fieldKey="description"
           links={formData.mp_field_links}
-          readOnly
+          onToggle={handleMpFieldLinkToggle}
           diffs={mainCardFieldMpDiffs.description}
         >
           Описание
@@ -6928,7 +6929,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             htmlFor="brand"
             fieldKey="brand"
             links={formData.mp_field_links}
-            readOnly
+            onToggle={handleMpFieldLinkToggle}
             diffs={mainCardFieldMpDiffs.brand}
           >
             Бренд
@@ -6955,7 +6956,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             htmlFor="country_of_origin"
             fieldKey="country"
             links={formData.mp_field_links}
-            readOnly
+            onToggle={handleMpFieldLinkToggle}
             diffs={mainCardFieldMpDiffs.country}
           >
             Страна производства
@@ -6997,10 +6998,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
           }}
         >
           <span>Габариты товара</span>
-          <MpMappedMpBadges mps={formData.mp_field_links?.product_dimensions} size={18} />
+          <MpFieldLinkToggles
+            fieldKey="product_dimensions"
+            links={formData.mp_field_links}
+            onToggle={handleMpFieldLinkToggle}
+            size={18}
+          />
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Значки OZ / WB / ЯМ — если поле сопоставлено в категории.
+          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Значки OZ / WB / ЯМ включают подстановку с «Основного» на маркетплейс.
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-3">
@@ -7096,7 +7102,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
           }}
         >
           <span>Габариты упаковки</span>
-          <MpMappedMpBadges mps={formData.mp_field_links?.dimensions} size={18} />
+          <MpFieldLinkToggles
+            fieldKey="dimensions"
+            links={formData.mp_field_links}
+            onToggle={handleMpFieldLinkToggle}
+            size={18}
+          />
           <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
           <MpValueDiffBadges diffs={mainCardFieldMpDiffs.dimensions} />
         </div>
@@ -7104,7 +7115,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div style={{ fontSize: 11, color: '#d97706', marginBottom: 10 }}>{OZON_DIMS_LOCK_TITLE}</div>
         ) : (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-            В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. Значки OZ/WB/ЯМ — связь с вкладкой МП из настроек категории.
+            В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. Значки OZ/WB/ЯМ включают подстановку на вкладку МП.
             На маркетплейсы уходит в единицах кабинета МП.
           </div>
         )}
@@ -7232,7 +7243,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             Атрибуты категории
           </h4>
           <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
-            Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в категории. Цветные значки — у уже связанных атрибутов.
+            Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в категории. Значки OZ / WB / ЯМ включают подстановку значения с «Основного» на маркетплейс.
           </p>
           <div className="row g-3">
             {categoryAttributes.map((attr) => {
@@ -7250,7 +7261,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 ymAttributes: ymFormAttributes,
                 ymAttributeValues,
               });
-              const headingProps = { attr, diffs: attrDiffs };
+              const headingProps = { attr, diffs: attrDiffs, links: formData.mp_field_links, onToggle: handleMpFieldLinkToggle };
               if (attr.type === 'checkbox') {
                 const checked = rawValue === 'true' || rawValue === true;
                 return (
@@ -8042,8 +8053,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                             {attr.name}
                             {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                            {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links) ? (
-                              <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                            {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links, categoryAttributes) ? (
+                              <MpFromMainLinkIcon linked />
                             ) : null}
                             {attr.description && (
                               <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
@@ -8098,8 +8109,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                           {attr.name}
                           {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                          {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links) ? (
-                            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                          {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links, categoryAttributes) ? (
+                            <MpFromMainLinkIcon linked />
                           ) : null}
                           {attr.description && (
                             <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
@@ -8315,7 +8326,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="wb-tab-name-wb">
                     Название (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <input
@@ -8337,7 +8348,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="wb-tab-brand-wb">
                     Бренд (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <input
@@ -8360,7 +8371,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="wb-tab-description">
                     Описание (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'description', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <textarea
@@ -8464,8 +8475,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               {dictOpts ? (
                                 <span style={{ fontSize: '11px', color: 'var(--muted)' }}> (справочник)</span>
                               ) : null}
-                              {wbAttrShowsMainSyncHint(a, formData.mp_field_links) ? (
-                                <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                              {wbAttrShowsMainSyncHint(a, formData.mp_field_links, categoryAttributes) ? (
+                                <MpFromMainLinkIcon linked />
                               ) : null}
                             </label>
                             {dictOpts ? (
@@ -8514,8 +8525,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-attr-${key}`}>
                               {name}
-                              {wbAttrShowsMainSyncHint(c, formData.mp_field_links) ? (
-                                <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                              {wbAttrShowsMainSyncHint(c, formData.mp_field_links, categoryAttributes) ? (
+                                <MpFromMainLinkIcon linked />
                               ) : null}
                             </label>
                             <input
@@ -8660,11 +8671,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <div className="col-12 col-md-6">
                   <label className="form-label" htmlFor="ym-tab-country">
                     Страна производства
-                    {isMpFieldLinked(formData.mp_field_links, 'country', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
-                    ) : (
-                      <span className="mp-field-linked-hint"> · только Яндекс</span>
-                    )}
+                    <MpFromMainLinkIcon linked={isMpFieldLinked(formData.mp_field_links, 'country', 'ym')} />
                   </label>
                   <input
                     id="ym-tab-country"
@@ -8813,7 +8820,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="ym-tab-name">
                     Название (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <input
@@ -8835,7 +8842,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="ym-tab-description">
                     Описание (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'description', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <textarea
@@ -8870,7 +8877,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="ym-tab-vendor">
                     Бренд (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                      <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
                   <input
@@ -8952,7 +8959,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   ? `, схема категории: ${ymCategoryAttributes.length}`
                   : ''}
                 ), включая пустые. Обязательные сверху. Габариты и вес упаковки — поля оффера Маркета (не характеристики категории); их можно заполнить здесь и в блоке выше, они уходят в карточку при создании и обновлении.
-                «Бренд», «Штрихкод» и «Изготовитель» — поля оффера, их сопоставление в категории, не в этом списке.
+                «Бренд», «Штрихкод», «Изготовитель» и «Страна производства» — поля оффера, их сопоставление в категории, не в этом списке.
               </div>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
@@ -9029,8 +9036,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       return String(raw).trim();
                     })();
                     const setVal = (v) => handleYmAttributeChange(key, v, a);
-                    const ymSyncHint = ymAttrShowsMainSyncHint(a, formData.mp_field_links) ? (
-                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                    const ymSyncHint = ymAttrShowsMainSyncHint(a, formData.mp_field_links, categoryAttributes) ? (
+                      <MpFromMainLinkIcon linked />
                     ) : null;
 
                     if (a.type === 'dictionary' && Array.isArray(a.dictionary_options) && a.dictionary_options.length > 0) {
