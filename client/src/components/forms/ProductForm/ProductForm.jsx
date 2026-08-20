@@ -4251,12 +4251,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
   /** Габариты Ozon/WB: в UI — единицы настроек; в handler приходит уже мм/г. */
   const handleMpDimMetaChange = useCallback((mp, key, raw) => {
     const code = String(mp || '').toLowerCase();
+    let mmVal = '';
+    if (raw !== '' && raw != null) {
+      const n = Number(raw);
+      mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
+    }
     setFormData((prev) => {
-      let mmVal = '';
-      if (raw !== '' && raw != null) {
-        const n = Number(raw);
-        mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
-      }
       let next;
       if (isMpFieldLinked(prev.mp_field_links, 'dimensions', code)) {
         next = { ...prev, [key]: mmVal };
