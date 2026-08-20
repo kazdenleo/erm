@@ -17,23 +17,27 @@ export function ImageLightbox({ urls, index = 0, onClose, onIndexChange, alt = '
     const onKey = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         onClose?.();
         return;
       }
       if (e.key === 'ArrowLeft' && list.length > 1) {
         e.preventDefault();
+        e.stopPropagation();
         onIndexChange?.((safeIndex - 1 + list.length) % list.length);
         return;
       }
       if (e.key === 'ArrowRight' && list.length > 1) {
         e.preventDefault();
+        e.stopPropagation();
         onIndexChange?.((safeIndex + 1) % list.length);
       }
     };
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     return () => {
       document.body.style.overflow = prevOverflow;
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
     };
   }, [src, list.length, safeIndex, onClose, onIndexChange]);
 

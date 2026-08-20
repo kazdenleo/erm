@@ -1,7 +1,8 @@
 .image-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 1080;
+  /* Выше product overlay (1100), footer (1110), stacked modal (1150) и шапки (1200). */
+  z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
