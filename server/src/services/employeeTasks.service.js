@@ -59,6 +59,7 @@ export async function createTextTask({
   assigneeId,
   createdById,
   skuList,
+  taskType,
 }) {
   const trimmedTitle = String(title || '').trim();
   if (!trimmedTitle) {
@@ -78,14 +79,26 @@ export async function createTextTask({
     }
   }
   const normalizedSkuList = normalizeSkuList(skuList);
+  const requestedType = String(taskType || '').trim().toLowerCase();
+  let resolvedType = 'text';
+  if (requestedType === 'product_create' || normalizedSkuList.length > 0) {
+    resolvedType = 'product_create';
+  } else if (requestedType === 'text') {
+    resolvedType = 'text';
+  }
+  if (resolvedType === 'product_create' && normalizedSkuList.length === 0) {
+    const err = new Error('Для задачи на создание товаров укажите список артикулов');
+    err.statusCode = 400;
+    throw err;
+  }
   return employeeTasksRepository.create({
     profileId,
     title: trimmedTitle,
     description: description != null ? String(description).trim() || null : null,
-    taskType: normalizedSkuList.length > 0 ? 'product_create' : 'text',
+    taskType: resolvedType,
     assigneeId: assignee,
     createdById: createdById ?? null,
-    meta: normalizedSkuList.length > 0 ? { sku_list: normalizedSkuList } : {},
+    meta: resolvedType === 'product_create' ? { sku_list: normalizedSkuList } : {},
   });
 }
 
@@ -255,12 +268,26 @@ export async function completeTask(task, userId) {
 
 export async function getProductCreateTaskStatus(task, profileId) {
   if (!task || task.task_type !== 'product_create') {
-    return { items: [], total: 0, createdCount: 0, missingCount: 0 };
+    return {
+      items: [],
+      total: 0,
+      createdCount: 0,
+      missingCount: 0,
+      marketplaceCount: 0,
+      marketplacePendingCount: 0,
+    };
   }
   const meta = parseTaskMeta(task.meta);
   const skuList = normalizeSkuList(meta.sku_list);
   if (skuList.length === 0) {
-    return { items: [], total: 0, createdCount: 0, missingCount: 0 };
+    return {
+      items: [],
+      total: 0,
+      createdCount: 0,
+      missingCount: 0,
+      marketplaceCount: 0,
+      marketplacePendingCount: 0,
+    };
   }
 
   const products = await productsService.getBySkus(skuList, { profileId });
@@ -270,20 +297,33 @@ export async function getProductCreateTaskStatus(task, profileId) {
     if (key && !productBySku.has(key)) productBySku.set(key, product);
   }
 
+  const productIds = products.map((p) => p.id).filter((id) => id != null);
+  const linkFlagsById = await productsService.getMarketplaceLinkFlagsByProductIds(productIds);
+
   const items = skuList.map((sku) => {
     const product = productBySku.get(String(sku).trim().toLowerCase());
+    const exists = !!product;
+    const flags = exists ? linkFlagsById.get(String(product.id)) : null;
+    const marketplaces = Array.isArray(flags?.marketplaces) ? flags.marketplaces : [];
     return {
       sku,
-      exists: !!product,
+      exists,
       product_id: product?.id ?? null,
       product_name: product?.name ?? null,
+      on_marketplace: marketplaces.length > 0,
+      marketplaces,
     };
   });
+
+  const createdCount = items.filter((x) => x.exists).length;
+  const marketplaceCount = items.filter((x) => x.on_marketplace).length;
   return {
     items,
     total: items.length,
-    createdCount: items.filter((x) => x.exists).length,
-    missingCount: items.filter((x) => !x.exists).length,
+    createdCount,
+    missingCount: items.length - createdCount,
+    marketplaceCount,
+    marketplacePendingCount: createdCount - marketplaceCount,
   };
 }
 
@@ -293,6 +333,7 @@ export async function updateTask(task, {
   description,
   assigneeId,
   skuList,
+  taskType,
 }) {
   if (!task || task.status !== 'open') {
     const err = new Error('Задача уже закрыта');
@@ -330,7 +371,17 @@ export async function updateTask(task, {
   if (task.task_type !== 'dimensions_check') {
     const normalizedSkuList = normalizeSkuList(skuList);
     const meta = parseTaskMeta(task.meta);
-    if (normalizedSkuList.length > 0) {
+    const requestedType = String(taskType || '').trim().toLowerCase();
+    const wantProductCreate =
+      requestedType === 'product_create' ||
+      (requestedType !== 'text' && (task.task_type === 'product_create' || normalizedSkuList.length > 0));
+
+    if (wantProductCreate) {
+      if (normalizedSkuList.length === 0) {
+        const err = new Error('Для задачи на создание товаров укажите список артикулов');
+        err.statusCode = 400;
+        throw err;
+      }
       updates.taskType = 'product_create';
       updates.meta = { ...meta, sku_list: normalizedSkuList };
     } else {

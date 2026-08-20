@@ -93,12 +93,49 @@
   color: var(--muted);
 }
 
+.task-create-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.task-create-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.task-create-check-label {
+  min-width: 190px;
+  color: var(--muted);
+}
+
 .task-create-state.is-exists {
   color: #86efac;
 }
 
 .task-create-state.is-missing {
   color: #fca5a5;
+}
+
+.task-sku-status-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.task-form-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .task-sku-list {

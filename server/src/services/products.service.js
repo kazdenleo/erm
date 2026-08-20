@@ -1087,6 +1087,17 @@ class ProductsService {
     return scoped.filter((p) => wanted.has(String(p.sku || '').trim().toLowerCase()));
   }
 
+  /**
+   * @param {Array<number|string>} productIds
+   * @returns {Promise<Map<string, { ozon: boolean, wb: boolean, ym: boolean, marketplaces: string[] }>>}
+   */
+  async getMarketplaceLinkFlagsByProductIds(productIds) {
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      return await this.repository.findMarketplaceLinkFlagsByProductIds(productIds);
+    }
+    return new Map();
+  }
+
   async getByBarcode(barcode) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       return await this.repository.findByBarcode(barcode);

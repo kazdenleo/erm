@@ -2183,6 +2183,81 @@ class ProductsRepositoryPG {
     return result.rows;
   }
 
+  /**
+   * Флаги связи с маркетплейсами для списка товаров (как в фильтрах linkedMp).
+   * @param {Array<number|string>} productIds
+   * @returns {Promise<Map<string, { ozon: boolean, wb: boolean, ym: boolean, marketplaces: string[] }>>}
+   */
+  async findMarketplaceLinkFlagsByProductIds(productIds) {
+    const ids = [
+      ...new Set(
+        (Array.isArray(productIds) ? productIds : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    const out = new Map();
+    for (const id of ids) {
+      out.set(String(id), { ozon: false, wb: false, ym: false, marketplaces: [] });
+    }
+    if (ids.length === 0) return out;
+
+    const [skusResult, draftResult] = await Promise.all([
+      query(
+        `SELECT product_id, marketplace, sku, marketplace_product_id
+         FROM product_skus
+         WHERE product_id = ANY($1::bigint[])`,
+        [ids]
+      ),
+      query(
+        `SELECT id, wb_draft
+         FROM products
+         WHERE id = ANY($1::bigint[])
+           AND wb_draft IS NOT NULL`,
+        [ids]
+      ),
+    ]);
+
+    for (const row of skusResult.rows || []) {
+      const key = String(row.product_id);
+      const flags = out.get(key);
+      if (!flags) continue;
+      const mp = String(row.marketplace || '').toLowerCase();
+      const skuTrim = String(row.sku ?? '').trim();
+      if (mp === 'ozon') {
+        if (skuTrim || row.marketplace_product_id != null) flags.ozon = true;
+      } else if (mp === 'wb') {
+        if (/^[0-9]+$/.test(skuTrim)) flags.wb = true;
+      } else if (mp === 'ym') {
+        if (skuTrim) flags.ym = true;
+      }
+    }
+
+    for (const row of draftResult.rows || []) {
+      const key = String(row.id);
+      const flags = out.get(key);
+      if (!flags || flags.wb) continue;
+      const draftText =
+        typeof row.wb_draft === 'string'
+          ? row.wb_draft
+          : row.wb_draft != null
+            ? JSON.stringify(row.wb_draft)
+            : '';
+      if (/"(?:nmId|nmID|nm_id)"\s*:\s*"?\d+/i.test(draftText)) {
+        flags.wb = true;
+      }
+    }
+
+    for (const flags of out.values()) {
+      const marketplaces = [];
+      if (flags.ozon) marketplaces.push('ozon');
+      if (flags.wb) marketplaces.push('wb');
+      if (flags.ym) marketplaces.push('ym');
+      flags.marketplaces = marketplaces;
+    }
+    return out;
+  }
+
   /** Варианты EAN для сканера (12↔13 цифр, ведущий ноль). */
   _barcodeDigitVariants(digits) {
     const out = [];

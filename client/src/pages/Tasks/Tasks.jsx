@@ -89,6 +89,7 @@ export function Tasks() {
   const [editingId, setEditingId] = useState(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [taskType, setTaskType] = useState('text');
   const [skuListText, setSkuListText] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
   const [candidates, setCandidates] = useState([]);
@@ -160,6 +161,8 @@ export function Tasks() {
             total: 0,
             createdCount: 0,
             missingCount: 0,
+            marketplaceCount: 0,
+            marketplacePendingCount: 0,
             error: e?.message || String(e),
           });
         }
@@ -181,6 +184,7 @@ export function Tasks() {
     setEditingId(null);
     setTitle('');
     setDescription('');
+    setTaskType('text');
     setSkuListText('');
     const defaultManager = candidates.find(
       (c) => String(c.account_role || '').toLowerCase() === 'warehouse_manager'
@@ -199,6 +203,13 @@ export function Tasks() {
     setEditingId(task.id);
     setTitle(task.title || '');
     setDescription(task.description || '');
+    setTaskType(
+      task.task_type === 'product_create'
+        ? 'product_create'
+        : task.task_type === 'dimensions_check'
+          ? 'dimensions_check'
+          : 'text'
+    );
     setSkuListText(
       task.task_type === 'dimensions_check' ? '' : productCreateSkuListOf(task).join('\n')
     );
@@ -212,10 +223,15 @@ export function Tasks() {
       alert('Укажите название задачи');
       return;
     }
+    if (taskType === 'product_create' && !skuListText.trim()) {
+      alert('Для задачи на создание товаров укажите список артикулов');
+      return;
+    }
     const payload = {
       title: title.trim(),
       description: description.trim() || null,
-      skuList: skuListText,
+      taskType: taskType === 'dimensions_check' ? undefined : taskType,
+      skuList: taskType === 'product_create' ? skuListText : '',
       assigneeId: assigneeId ? Number(assigneeId) : null,
     };
     try {
@@ -267,7 +283,9 @@ export function Tasks() {
     editingId != null
       ? tasks.find((t) => Number(t.id) === Number(editingId)) || null
       : null;
-  const hideSkuField = editingTask?.task_type === 'dimensions_check';
+  const hideSkuField = editingTask?.task_type === 'dimensions_check' || taskType === 'dimensions_check';
+  const showProductCreateFields = !hideSkuField && taskType === 'product_create';
+  const typeSelectDisabled = editingTask?.task_type === 'dimensions_check';
 
   const formModal = (
     <Modal
@@ -277,6 +295,20 @@ export function Tasks() {
       size="md"
     >
       <form className="task-form" onSubmit={handleSave}>
+        <label>
+          Тип задачи
+          <select
+            value={taskType === 'dimensions_check' ? 'dimensions_check' : taskType}
+            onChange={(e) => setTaskType(e.target.value)}
+            disabled={typeSelectDisabled}
+          >
+            <option value="text">Текстовая</option>
+            <option value="product_create">Создание товаров</option>
+            {taskType === 'dimensions_check' && (
+              <option value="dimensions_check">Проверка габаритов</option>
+            )}
+          </select>
+        </label>
         <label>
           Название
           <input
@@ -296,16 +328,23 @@ export function Tasks() {
             placeholder="Подробности (необязательно)"
           />
         </label>
-        {!hideSkuField && (
-          <label>
-            Артикулы для создания товаров
-            <textarea
-              rows={5}
-              value={skuListText}
-              onChange={(e) => setSkuListText(e.target.value)}
-              placeholder="По одному на строку или через запятую"
-            />
-          </label>
+        {showProductCreateFields && (
+          <>
+            <label>
+              Артикулы для создания товаров
+              <textarea
+                rows={5}
+                value={skuListText}
+                onChange={(e) => setSkuListText(e.target.value)}
+                placeholder="По одному на строку или через запятую"
+                required
+              />
+            </label>
+            <div className="task-form-hint">
+              В задаче отслеживается создание в программе и создание на маркетплейсах
+              (по появлению связей Ozon / WB / Яндекс.Маркет).
+            </div>
+          </>
         )}
         <label>
           Исполнитель
@@ -418,38 +457,88 @@ export function Tasks() {
         ) : isProductCreate ? (
           <div className="task-desc">
             <div style={{ marginBottom: 8 }}>
-              Список артикулов для создания товаров:
+              Создание товаров: статус в программе и на маркетплейсах
             </div>
             {productCreateStatus?.error ? (
               <div className="task-create-status-summary">Ошибка проверки: {productCreateStatus.error}</div>
             ) : productCreateLoading ? (
               <div className="task-create-status-summary">Сверяем с базой...</div>
             ) : (
-              <div className="task-create-status-summary">
-                Уже созданы: {productCreateStatus?.createdCount || 0} · Ещё не созданы: {productCreateStatus?.missingCount || 0}
+              <div className="task-create-checklist">
+                <div className="task-create-check-row">
+                  <span className="task-create-check-label">Создание в программе</span>
+                  <span>
+                    {productCreateStatus?.createdCount || 0} из {productCreateStatus?.total || 0}
+                    {(productCreateStatus?.missingCount || 0) > 0
+                      ? ` · ещё нет: ${productCreateStatus.missingCount}`
+                      : ''}
+                  </span>
+                </div>
+                <div className="task-create-check-row">
+                  <span className="task-create-check-label">Создание на маркетплейсах</span>
+                  <span>
+                    {productCreateStatus?.marketplaceCount || 0} из {productCreateStatus?.total || 0}
+                    {(productCreateStatus?.marketplacePendingCount || 0) > 0
+                      ? ` · без связи с МП: ${productCreateStatus.marketplacePendingCount}`
+                      : ''}
+                  </span>
+                </div>
               </div>
             )}
             <ul className="task-sku-list">
               {(productCreateStatus?.items?.length
                 ? productCreateStatus.items
-                : productCreateSkuListOf(task).map((sku) => ({ sku, exists: null }))
-              ).map((it) => (
-                <li key={it.sku}>
-                  {it.exists && it.product_id ? (
-                    <Link to={productCardPath(it.product_id)}>{it.sku}</Link>
-                  ) : (
-                    it.sku
-                  )}
-                  {' — '}
-                  <span className={`task-create-state ${it.exists === true ? 'is-exists' : it.exists === false ? 'is-missing' : ''}`}>
-                    {it.exists === true
-                      ? `уже создан${it.product_name ? ` (${it.product_name})` : ''}`
-                      : it.exists === false
-                        ? 'ещё не создан'
-                        : 'проверяем'}
-                  </span>
-                </li>
-              ))}
+                : productCreateSkuListOf(task).map((sku) => ({
+                    sku,
+                    exists: null,
+                    on_marketplace: null,
+                    marketplaces: [],
+                  }))
+              ).map((it) => {
+                const mpLabels = Array.isArray(it.marketplaces)
+                  ? it.marketplaces.map((m) => String(m).toUpperCase())
+                  : [];
+                return (
+                  <li key={it.sku}>
+                    {it.exists && it.product_id ? (
+                      <Link to={productCardPath(it.product_id)}>{it.sku}</Link>
+                    ) : (
+                      it.sku
+                    )}
+                    {it.product_name ? ` — ${it.product_name}` : ''}
+                    <div className="task-sku-status-lines">
+                      <span
+                        className={`task-create-state ${
+                          it.exists === true ? 'is-exists' : it.exists === false ? 'is-missing' : ''
+                        }`}
+                      >
+                        {it.exists === true
+                          ? 'в программе'
+                          : it.exists === false
+                            ? 'ещё нет в программе'
+                            : 'проверяем программу'}
+                      </span>
+                      <span
+                        className={`task-create-state ${
+                          it.on_marketplace === true
+                            ? 'is-exists'
+                            : it.exists === true && it.on_marketplace === false
+                              ? 'is-missing'
+                              : ''
+                        }`}
+                      >
+                        {it.on_marketplace === true
+                          ? `на маркетплейсах (${mpLabels.join(', ')})`
+                          : it.exists === true
+                            ? 'ещё нет на маркетплейсах'
+                            : it.exists === false
+                              ? 'на маркетплейсах — после создания в программе'
+                              : 'проверяем маркетплейсы'}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ) : (

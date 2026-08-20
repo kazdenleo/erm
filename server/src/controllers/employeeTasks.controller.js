@@ -73,7 +73,7 @@ export const employeeTasksController = {
     try {
       const profileId = requireProfile(req, res);
       if (profileId == null) return;
-      const { title, description, assigneeId, assignee_id, skuList, sku_list } = req.body || {};
+      const { title, description, assigneeId, assignee_id, skuList, sku_list, taskType, task_type } = req.body || {};
       const task = await employeeTasksService.createTextTask({
         profileId,
         title,
@@ -81,6 +81,7 @@ export const employeeTasksController = {
         assigneeId: assigneeId ?? assignee_id,
         createdById: req.user?.id ?? null,
         skuList: skuList ?? sku_list,
+        taskType: taskType ?? task_type,
       });
       res.status(201).json({ ok: true, data: task });
     } catch (error) {
@@ -102,13 +103,14 @@ export const employeeTasksController = {
       if (task.status !== 'open') {
         return res.status(400).json({ ok: false, message: 'Задача уже закрыта' });
       }
-      const { title, description, assigneeId, assignee_id, skuList, sku_list } = req.body || {};
+      const { title, description, assigneeId, assignee_id, skuList, sku_list, taskType, task_type } = req.body || {};
       const updated = await employeeTasksService.updateTask(task, {
         profileId,
         title,
         description,
         assigneeId: assigneeId ?? assignee_id,
         skuList: skuList ?? sku_list,
+        taskType: taskType ?? task_type,
       });
       res.json({ ok: true, data: updated });
     } catch (error) {
