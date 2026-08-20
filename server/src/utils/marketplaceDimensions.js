@@ -252,9 +252,14 @@ export function productDimAttrStoredFromMm(attrOrName, mmVal, mp) {
   const n = Number(mmVal);
   if (!Number.isFinite(n) || n <= 0) return '';
   const code = String(mp || '').toLowerCase();
-  if (code === 'ozon') return String(Math.round(n));
   const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
   const s = String(name || '').toLowerCase();
+  if (ozonProductDimAxis(attrOrName) === 'weight') {
+    if (code === 'ozon') return String(Math.round(n));
+    if (/кг|\bkg\b/.test(s)) return String(Math.round((n / 1000) * 1000) / 1000);
+    return String(Math.round(n));
+  }
+  if (code === 'ozon') return String(Math.round(n));
   if (code !== 'wb' && /мм|\bmm\b/.test(s)) return String(Math.round(n));
   return String(Math.max(1, Math.round(n / 10)));
 }

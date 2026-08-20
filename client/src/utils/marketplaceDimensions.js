@@ -251,16 +251,22 @@ export function wbProductDimAxis(attr) {
 }
 
 /**
- * Значение характеристики L/W/H товара: Ozon — мм; WB — см; YM — см, если в названии нет «мм».
+ * Значение характеристики товара: L/W/H — Ozon мм, WB/YM см (YM мм, если в названии «мм»);
+ * вес — граммы, для YM в кг если в названии «кг».
  */
 export function productDimAttrStoredFromMm(attrOrName, mmVal, mp) {
   if (mmVal === '' || mmVal == null) return '';
   const n = Number(mmVal);
   if (!Number.isFinite(n) || n <= 0) return '';
   const code = String(mp || '').toLowerCase();
-  if (code === 'ozon') return String(Math.round(n));
   const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
   const s = String(name || '').toLowerCase();
+  if (ozonProductDimAxis(attrOrName) === 'weight') {
+    if (code === 'ozon') return String(Math.round(n));
+    if (/кг|\bkg\b/.test(s)) return String(Math.round((n / 1000) * 1000) / 1000);
+    return String(Math.round(n));
+  }
+  if (code === 'ozon') return String(Math.round(n));
   if (code !== 'wb' && /мм|\bmm\b/.test(s)) return String(Math.round(n));
   return String(Math.max(1, Math.round(n / 10)));
 }

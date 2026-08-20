@@ -327,10 +327,8 @@ export function isMpFieldLinked(links, fieldKey, mp) {
   return list.includes(String(mp || '').toLowerCase());
 }
 
-/**
- * YM-параметры категории, которые уже редактируются отдельными полями ERP/оффера.
- */
-export function isYmParamDuplicatingDedicatedField(name) {
+/** YM-параметры упаковки оффера (weightDimensions), не категорийные parameterValues. */
+export function isYmPackOfferParam(name) {
   const n = String(name || '')
     .trim()
     .toLowerCase()
@@ -338,10 +336,21 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (!n) return false;
   if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return true;
   if (/^вес\s+(с\s+)?упаковк/.test(n)) return true;
-  if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return true;
-  if (/^габарит(ы|ы\s+упаковк)/.test(n)) return true;
-  if (/^вес\s+товар/.test(n) || /^вес\s+без\s+упаковк/.test(n)) return true;
-  if (/^габарит(ы)?\s+товар/.test(n)) return true;
+  if (/^вес\s+товара\s+(с|в)\s+упаковк/.test(n)) return true;
+  if (/^габарит(ы)?\s+упаковк/.test(n)) return true;
+  return false;
+}
+
+/**
+ * YM-параметры категории, которые уже редактируются отдельными полями карточки
+ * (название / описание / страна). Габариты и вес в списке показываем.
+ */
+export function isYmParamDuplicatingDedicatedField(name) {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!n) return false;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;

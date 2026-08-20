@@ -264,5 +264,8 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
     expect(productDimAttrStoredFromMm({ name: 'Длина' }, 120, 'wb')).toBe('12');
     expect(productDimAttrStoredFromMm({ name: 'Длина товара' }, 120, 'ym')).toBe('12');
     expect(productDimAttrStoredFromMm({ name: 'Длина, мм' }, 120, 'ym')).toBe('120');
+    expect(productDimAttrStoredFromMm({ name: 'Вес товара' }, 1289, 'ozon')).toBe('1289');
+    expect(productDimAttrStoredFromMm({ name: 'Вес товара' }, 1289, 'ym')).toBe('1289');
+    expect(productDimAttrStoredFromMm({ name: 'Вес товара, кг' }, 1289, 'ym')).toBe('1.289');
   });
 });
