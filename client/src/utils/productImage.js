@@ -75,3 +75,10 @@ export function getPrimaryProductImageUrl(product) {
   const chosen = primary || list.find((img) => withUrl(img));
   return resolveProductImageUrl(chosen ? withUrl(chosen) : '');
 }
+
+/** Можно вернуть исходный файл после «Сделать 3:4». */
+export function canRestoreImageAspect3x4(img) {
+  if (!img || typeof img !== 'object') return false;
+  if (img.aspect_3x4 !== true) return false;
+  return String(img.aspect_3x4_from || '').trim().length > 0;
+}

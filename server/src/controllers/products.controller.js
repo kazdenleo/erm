@@ -869,16 +869,26 @@ class ProductsController {
       const { id, imageId } = req.params;
       const product = await productsService.getById(id);
       const current = Array.isArray(product?.images) ? [...product.images] : [];
+      const removed = current.find(
+        (img) => String(img?.id || img?.filename || '') === String(imageId)
+      );
       const nextImages = current.filter((img) => String(img?.id || img?.filename || '') !== String(imageId));
       if (nextImages.length > 0 && !nextImages.some((img) => img.primary === true)) {
         nextImages[0] = { ...nextImages[0], primary: true };
       }
 
-      // try delete file from disk
+      // try delete file from disk (текущее + сохранённый оригинал после 3:4)
       const filePath = path.resolve(this._rootDir, 'uploads', 'products', String(id), String(imageId));
       try {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } catch (_) {}
+      const origName = String(removed?.aspect_3x4_from || '').trim();
+      if (origName && !origName.includes('..') && !origName.includes('/') && !origName.includes('\\')) {
+        const origPath = path.resolve(this._rootDir, 'uploads', 'products', String(id), origName);
+        try {
+          if (origPath !== filePath && fs.existsSync(origPath)) fs.unlinkSync(origPath);
+        } catch (_) {}
+      }
 
       const updated = await productsService.update(id, { images: nextImages });
       return res.status(200).json({ ok: true, data: updated?.images ?? nextImages });
@@ -954,6 +964,32 @@ class ProductsController {
         data: updated?.images ?? result.images,
         image: result.image,
         meta: result.meta,
+      });
+    } catch (error) {
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({ ok: false, error: error.message });
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * Вернуть исходное фото после приведения к 3:4.
+   */
+  async restoreImageAspect3x4(req, res, next) {
+    try {
+      const { id, imageId } = req.params;
+      const product = await productsService.getById(id);
+      if (!product) {
+        return res.status(404).json({ ok: false, error: 'Товар не найден' });
+      }
+      const { restoreProductImageFrom3x4 } = await import('../services/productImageAspect.service.js');
+      const result = await restoreProductImageFrom3x4(id, imageId, product.images || []);
+      const updated = await productsService.update(id, { images: result.images });
+      return res.status(200).json({
+        ok: true,
+        data: updated?.images ?? result.images,
+        image: result.image,
       });
     } catch (error) {
       if (error?.statusCode) {

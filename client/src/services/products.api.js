@@ -558,6 +558,15 @@ export const productsApi = {
     );
     return response.data;
   },
+  /** Вернуть исходное фото после приведения к 3:4. */
+  restoreImageAspect3x4: async (id, imageId) => {
+    const response = await api.post(
+      `/products/${id}/images/${encodeURIComponent(String(imageId))}/restore-3x4`,
+      null,
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
   deleteImage: async (id, imageId) => {
     const response = await api.delete(`/products/${id}/images/${encodeURIComponent(String(imageId))}`);
     return response.data;

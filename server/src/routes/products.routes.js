@@ -176,6 +176,11 @@ router.post(
   validateProductId,
   wrapAsync(productsController.fitImageAspect3x4.bind(productsController))
 );
+router.post(
+  '/:id/images/:imageId/restore-3x4',
+  validateProductId,
+  wrapAsync(productsController.restoreImageAspect3x4.bind(productsController))
+);
 
 // Обогащение карточки (PartsAPI) — до PUT /:id
 router.post(

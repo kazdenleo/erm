@@ -108,18 +108,101 @@ export function emptyCategoryDedicatedCharcLinks() {
   return out;
 }
 
-export function normalizeCategoryDedicatedCharcLinks(raw) {
-  const out = emptyCategoryDedicatedCharcLinks();
+/** Какие поля Main явно добавлены в категорию (даже без связей с МП). */
+export const DEDICATED_ADDED_KEYS_FIELD = '_added';
+
+function parseDedicatedLinksObject(raw) {
+  if (raw == null || raw === '') return null;
   let obj = raw;
-  if (raw == null || raw === '') return out;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return null;
+  return obj;
+}
+
+function dedicatedSlotHasAny(slot) {
+  if (slot == null || slot === '') return false;
+  if (Array.isArray(slot) && slot.every((x) => typeof x === 'string')) {
+    return slot.some((x) => x === 'ozon' || x === 'wb' || x === 'ym');
+  }
+  if (typeof slot !== 'object') return false;
+  return (
+    parseDedicatedCharcList(slot.ozon).length > 0 ||
+    parseDedicatedCharcList(slot.wb).length > 0 ||
+    parseDedicatedCharcList(slot.ym).length > 0
+  );
+}
+
+function sanitizeAddedDedicatedKeys(list) {
+  const seen = new Set();
+  const out = [];
+  for (const item of Array.isArray(list) ? list : []) {
+    const key = String(item || '').trim();
+    if (!DEDICATED_MAIN_MAP_KEYS.includes(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+export function listAddedDedicatedMainKeys(raw) {
+  const obj = parseDedicatedLinksObject(raw);
+  if (!obj) return [];
+  if (Object.prototype.hasOwnProperty.call(obj, DEDICATED_ADDED_KEYS_FIELD)) {
+    return sanitizeAddedDedicatedKeys(obj[DEDICATED_ADDED_KEYS_FIELD]);
+  }
+  return DEDICATED_MAIN_MAP_KEYS.filter((key) => dedicatedSlotHasAny(obj[key]));
+}
+
+function copyDedicatedSlot(slot) {
+  return {
+    ozon: Array.isArray(slot?.ozon) ? slot.ozon : [],
+    wb: Array.isArray(slot?.wb) ? slot.wb : [],
+    ym: Array.isArray(slot?.ym) ? slot.ym : [],
+  };
+}
+
+export function serializeCategoryDedicatedCharcLinks(raw, addedKeys) {
+  const normalized = normalizeCategoryDedicatedCharcLinks(raw);
+  const keys = sanitizeAddedDedicatedKeys(
+    Array.isArray(addedKeys) ? addedKeys : listAddedDedicatedMainKeys(raw)
+  );
+  const out = { [DEDICATED_ADDED_KEYS_FIELD]: keys };
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    const slot = normalized[key];
+    const keep =
+      keys.includes(key) ||
+      (!DEDICATED_MAIN_MAP_KEYS.includes(key) && dedicatedSlotHasAny(slot));
+    if (!keep) continue;
+    out[key] = copyDedicatedSlot(slot);
+  }
+  return out;
+}
+
+export function normalizeCategoryDedicatedCharcLinks(raw) {
+  const out = emptyCategoryDedicatedCharcLinks();
+  let obj = raw;
+  if (raw == null || raw === '') {
+    out[DEDICATED_ADDED_KEYS_FIELD] = [];
+    return out;
+  }
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      out[DEDICATED_ADDED_KEYS_FIELD] = [];
       return out;
     }
   }
-  if (typeof obj !== 'object' || Array.isArray(obj)) return out;
+  if (typeof obj !== 'object' || Array.isArray(obj)) {
+    out[DEDICATED_ADDED_KEYS_FIELD] = [];
+    return out;
+  }
   for (const key of DEDICATED_MAIN_STORED_KEYS) {
     const v = obj[key];
     if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
@@ -136,6 +219,7 @@ export function normalizeCategoryDedicatedCharcLinks(raw) {
       ym: parseDedicatedCharcList(v?.ym),
     };
   }
+  out[DEDICATED_ADDED_KEYS_FIELD] = listAddedDedicatedMainKeys(obj);
   return out;
 }
 

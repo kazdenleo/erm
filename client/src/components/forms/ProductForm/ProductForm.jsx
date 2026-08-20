@@ -10,6 +10,7 @@ import { ImageLightbox } from '../../common/ImageLightbox/ImageLightbox';
 import { productAttributesApi } from '../../../services/productAttributes.api';
 import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
+import { canRestoreImageAspect3x4 } from '../../../utils/productImage.js';
 import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
@@ -4851,6 +4852,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, [currentProduct?.id]);
 
+  const restoreImageAspect3x4 = useCallback(async (imageId) => {
+    if (!currentProduct?.id || !imageId) return;
+    setImageError('');
+    setImageAspectLoadingId(String(imageId));
+    try {
+      const r = await productsApi.restoreImageAspect3x4(currentProduct.id, imageId);
+      const list = extractImagesFromApiPayload(r);
+      setProductImages(normalizeProductImagesOrder(list));
+    } catch (e) {
+      setImageError(e?.response?.data?.error || e?.message || 'Не удалось вернуть исходное фото');
+    } finally {
+      setImageAspectLoadingId('');
+    }
+  }, [currentProduct?.id]);
+
   const persistImageOrder = useCallback(
     async (nextOrdered) => {
       if (!currentProduct?.id) return;
@@ -6026,7 +6042,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px' }}>
           Карточки перетаскивайте для порядка (первое — главное). Файлы с компьютера — в пунктирную область или на карточку; одна или несколько.
-          Под каждым фото — кнопка <strong>Сделать 3:4</strong>.
+          Под каждым фото — кнопка <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>. Нажмите на фото, чтобы увеличить.
         </div>
         {!currentProduct?.id ? (
           <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Сначала сохраните товар, затем можно загружать изображения.</div>
@@ -6098,6 +6114,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   const mp = img?.marketplaces || {};
                   const isMain = index === 0;
                   const aspectBusy = imageAspectLoadingId === id;
+                  const canRestore = canRestoreImageAspect3x4(img);
                   return (
                     <div
                       key={id}
@@ -6292,7 +6309,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         disabled={aspectBusy || imageUploadLoading}
                         onClick={(e) => {
                           e.stopPropagation();
-                          fitImageAspect3x4(id);
+                          if (canRestore) restoreImageAspect3x4(id);
+                          else fitImageAspect3x4(id);
                         }}
                         onMouseDown={(e) => e.stopPropagation()}
                         style={{
@@ -6303,7 +6321,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           borderRadius: 8,
                           background: aspectBusy
                             ? 'rgba(99, 102, 241, 0.22)'
-                            : 'rgba(255,255,255,0.05)',
+                            : canRestore
+                              ? 'rgba(245, 158, 11, 0.16)'
+                              : 'rgba(255,255,255,0.05)',
                           color: '#fff',
                           fontSize: '12px',
                           fontWeight: 600,
@@ -6311,7 +6331,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           opacity: aspectBusy || imageUploadLoading ? 0.8 : 1,
                         }}
                       >
-                        {aspectBusy ? 'Приведение к 3:4…' : 'Сделать 3:4'}
+                        {aspectBusy
+                          ? (canRestore ? 'Возврат оригинала…' : 'Приведение к 3:4…')
+                          : (canRestore ? 'Вернуть оригинал' : 'Сделать 3:4')}
                       </button>
                     </div>
                   );

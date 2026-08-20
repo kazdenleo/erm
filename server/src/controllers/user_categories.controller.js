@@ -10,7 +10,7 @@ import categoryMarketplaceCommissionsService from '../services/categoryMarketpla
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
-import { normalizeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
+import { normalizeCategoryDedicatedCharcLinks, serializeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -366,7 +366,7 @@ class UserCategoriesController {
           certificate_valid_from || null,
           certificate_valid_to || null,
           skipMpStock === true,
-          JSON.stringify(normalizeCategoryDedicatedCharcLinks(mp_field_links)),
+          JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)),
         ]
       );
       
@@ -464,7 +464,7 @@ class UserCategoriesController {
 
       if (mp_field_links !== undefined) {
         updateFields.push(`mp_field_links = $${paramIndex++}::jsonb`);
-        params.push(JSON.stringify(normalizeCategoryDedicatedCharcLinks(mp_field_links)));
+        params.push(JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)));
       }
       
       if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined && mp_field_links === undefined) {

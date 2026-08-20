@@ -25,8 +25,10 @@ import { attrMpLinksHasAny, emptyAttrMpLinks, formatAttrMpLinksSummary, mappedMp
 import {
   DEDICATED_MAIN_MAP_KEYS,
   emptyCategoryDedicatedCharcLinks,
+  listAddedDedicatedMainKeys,
   MP_FIELD_LINK_FIELD_LABELS,
   normalizeCategoryDedicatedCharcLinks,
+  serializeCategoryDedicatedCharcLinks,
   withMpOfferFieldAttrs,
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
@@ -814,7 +816,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setAttributeMpLinks(parseAttributeMpLinksMap(category.attribute_mp_links));
       const dedicated = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
       setDedicatedMpLinks(dedicated);
-      setAddedDedicatedKeys(DEDICATED_MAIN_MAP_KEYS.filter((key) => attrMpLinksHasAny(dedicated[key])));
+      setAddedDedicatedKeys(listAddedDedicatedMainKeys(category.mp_field_links));
       setPickerValue('');
       setExpandedMapKeys({});
     } else {
@@ -959,7 +961,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       parent_id: formData.parentId || null,
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
       attribute_mp_links: attributeMpLinks,
-      mp_field_links: dedicatedMpLinks,
+      mp_field_links: serializeCategoryDedicatedCharcLinks(dedicatedMpLinks, addedDedicatedKeys),
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,

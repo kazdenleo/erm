@@ -149,13 +149,17 @@ export async function fitProductImageTo3x4(productId, imageId, images, opts = {}
   const inputBuf = fs.readFileSync(local.abs);
   const { buffer, meta } = await fitImageBufferTo3x4(inputBuf, opts);
 
+  const originalName = String(list[idx].aspect_3x4_from || '').trim() || local.filename;
   const base = path.parse(local.filename).name.replace(/_3x4$/i, '');
   const newName = `${base}_3x4_${crypto.randomBytes(3).toString('hex')}.jpg`;
   const newAbs = path.join(UPLOADS_PRODUCTS_ROOT, String(productId), newName);
   fs.writeFileSync(newAbs, buffer);
 
   try {
-    if (fs.existsSync(local.abs) && local.abs !== newAbs) fs.unlinkSync(local.abs);
+    const originalAbs = path.join(UPLOADS_PRODUCTS_ROOT, String(productId), originalName);
+    if (local.abs !== newAbs && local.abs !== originalAbs && fs.existsSync(local.abs)) {
+      fs.unlinkSync(local.abs);
+    }
   } catch (_) {
     /* ignore */
   }
@@ -168,12 +172,62 @@ export async function fitProductImageTo3x4(productId, imageId, images, opts = {}
     url: rel,
     updated_at: new Date().toISOString(),
     aspect_3x4: true,
+    aspect_3x4_from: originalName,
   };
 
   return { images: list, meta, image: list[idx] };
 }
 
+/**
+ * Вернуть исходный файл после приведения к 3:4.
+ */
+export async function restoreProductImageFrom3x4(productId, imageId, images) {
+  const list = Array.isArray(images) ? images.map((x) => ({ ...x })) : [];
+  const idStr = String(imageId || '');
+  const idx = list.findIndex(
+    (img) => String(img?.id || '') === idStr || String(img?.filename || '') === idStr
+  );
+  if (idx < 0) {
+    const err = new Error('Изображение не найдено');
+    err.statusCode = 404;
+    throw err;
+  }
+  const originalName = String(list[idx].aspect_3x4_from || '').trim();
+  if (!originalName) {
+    const err = new Error('Нет сохранённого оригинала для отката 3:4');
+    err.statusCode = 400;
+    throw err;
+  }
+  const original = resolveLocalImagePath(productId, { filename: originalName });
+  if (!original) {
+    const err = new Error('Файл оригинала не найден');
+    err.statusCode = 400;
+    throw err;
+  }
+  const current = resolveLocalImagePath(productId, list[idx]);
+  const rel = `/uploads/products/${String(productId)}/${original.filename}`;
+  const next = { ...list[idx] };
+  delete next.aspect_3x4;
+  delete next.aspect_3x4_from;
+  list[idx] = {
+    ...next,
+    id: original.filename,
+    filename: original.filename,
+    url: rel,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    if (current && current.abs !== original.abs && fs.existsSync(current.abs)) {
+      fs.unlinkSync(current.abs);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return { images: list, image: list[idx] };
+}
+
 export default {
   fitImageBufferTo3x4,
   fitProductImageTo3x4,
+  restoreProductImageFrom3x4,
 };

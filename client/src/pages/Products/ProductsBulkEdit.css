@@ -672,6 +672,15 @@
   cursor: not-allowed;
 }
 
+.products-bulk-images-aspect-btn.is-restore {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.products-bulk-images-aspect-btn.is-restore:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.22);
+}
+
 .products-bulk-images-card-media {
   position: relative;
   width: 100%;

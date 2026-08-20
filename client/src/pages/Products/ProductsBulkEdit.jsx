@@ -20,6 +20,7 @@ import {
   extractImagesFromApiPayload,
   filterDroppedImageFiles,
   resolveProductImageUrl,
+  canRestoreImageAspect3x4,
 } from '../../utils/productImage.js';
 import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 import {
@@ -4120,6 +4121,26 @@ export function ProductsBulkEdit() {
     [imagesModal.productId, applyImagesToRow]
   );
 
+  const handleBulkRestoreImageAspect3x4 = useCallback(
+    async (imageId) => {
+      const productId = imagesModal.productId;
+      if (!productId || !imageId) return;
+      setImagesModal((m) => ({ ...m, aspectLoadingId: String(imageId), error: '' }));
+      try {
+        const r = await productsApi.restoreImageAspect3x4(productId, imageId);
+        const list = applyImagesToRow(productId, extractImagesFromApiPayload(r));
+        setImagesModal((m) => ({ ...m, images: list, aspectLoadingId: '', error: '' }));
+      } catch (e) {
+        setImagesModal((m) => ({
+          ...m,
+          aspectLoadingId: '',
+          error: e?.response?.data?.error || e?.message || 'Не удалось вернуть исходное фото',
+        }));
+      }
+    },
+    [imagesModal.productId, applyImagesToRow]
+  );
+
   /** OZ/WB/ЯМ на фото: какие МП получают это изображение при выгрузке (как в карточке товара). */
   const handleBulkUpdateImageMarketplaces = useCallback(
     async (imageId, patch) => {
@@ -5598,18 +5619,15 @@ export function ProductsBulkEdit() {
                             <button
                               type="button"
                               className="products-bulk-thumb products-bulk-thumb--btn"
-                              onClick={() => {
-                                if (url) openImageLightbox(row._productRef?.images, 0);
-                                else openImagesModal(row);
-                              }}
+                              onClick={() => openImagesModal(row)}
                               title={
                                 url
-                                  ? 'Увеличить фото'
+                                  ? 'Управление изображениями'
                                   : 'Добавить изображения'
                               }
                               aria-label={
                                 url
-                                  ? `Увеличить фото товара ${row.sku || row.id}`
+                                  ? `Управление изображениями товара ${row.sku || row.id}`
                                   : `Добавить изображения для ${row.sku || row.id}`
                               }
                             >
@@ -5726,7 +5744,8 @@ export function ProductsBulkEdit() {
           </div>
           <p className="text-muted small mb-2">
             Значки <strong>OZ / WB / ЯМ</strong> на фото — на какие маркетплейсы отправлять изображение при выгрузке.
-            Кнопка <strong>Сделать 3:4</strong> под каждым фото — привести изображение к формату 3:4.
+            Кнопка <strong>Сделать 3:4</strong> под каждым фото — привести изображение к формату 3:4;
+            после этого можно <strong>Вернуть оригинал</strong>. Нажмите на фото, чтобы увеличить.
           </p>
           {imagesModal.error ? (
             <div className="alert alert-danger py-2" role="alert">
@@ -5742,6 +5761,7 @@ export function ProductsBulkEdit() {
                 const url = resolveProductImageUrl(img?.url || img?.src || img?.link || '');
                 const mp = img?.marketplaces || {};
                 const aspectBusy = imagesModal.aspectLoadingId === id;
+                const canRestore = canRestoreImageAspect3x4(img);
                 return (
                   <div key={id || `img-${index}`} className="products-bulk-images-card">
                     <div className="products-bulk-images-card-media">
@@ -5813,11 +5833,17 @@ export function ProductsBulkEdit() {
                     </div>
                     <button
                       type="button"
-                      className="products-bulk-images-aspect-btn"
+                      className={`products-bulk-images-aspect-btn${canRestore ? ' is-restore' : ''}`}
                       disabled={imagesModal.loading || aspectBusy || !id}
-                      onClick={() => void handleBulkFitImageAspect3x4(id)}
+                      onClick={() =>
+                        void (canRestore
+                          ? handleBulkRestoreImageAspect3x4(id)
+                          : handleBulkFitImageAspect3x4(id))
+                      }
                     >
-                      {aspectBusy ? 'Приведение к 3:4…' : 'Сделать 3:4'}
+                      {aspectBusy
+                        ? (canRestore ? 'Возврат оригинала…' : 'Приведение к 3:4…')
+                        : (canRestore ? 'Вернуть оригинал' : 'Сделать 3:4')}
                     </button>
                   </div>
                 );
