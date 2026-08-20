@@ -10,7 +10,6 @@ import {
   isProfileFboEnabled,
   isProfileKitsEnabled,
   isProfileProductionEnabled,
-  isProfileProductEnrichmentEnabled,
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
@@ -102,17 +101,7 @@ const menuItems = [
     iconClass: 'pe-7s-graph2',
     children: analyticsChildren,
   },
-  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products', children: [
-    { path: '/products', label: 'Список', iconClass: 'pe-7s-angle-right', sectionKey: 'products' },
-    {
-      path: '/products/enrichment',
-      label: 'Обогащение',
-      iconClass: 'pe-7s-magic-wand',
-      sectionKey: 'products',
-      requiresEnrichment: true,
-    },
-    { path: '/products/rich-content', label: 'Rich-контент', iconClass: 'pe-7s-photo', sectionKey: 'products' },
-  ]},
+  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
@@ -165,7 +154,6 @@ export function Sidebar({ onNavigate }) {
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
   const fboMenuEnabled = isProfileFboEnabled(profile);
-  const enrichmentMenuEnabled = isProfileProductEnrichmentEnabled(profile);
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [reviewsNewCount, setReviewsNewCount] = useState(0);
@@ -364,7 +352,6 @@ export function Sidebar({ onNavigate }) {
         if (sub.adminOnly && !canManageUsers) return false;
         if (sub.requiresProduction && !productionMenuEnabled) return false;
         if (sub.requiresFbo && !fboMenuEnabled) return false;
-        if (sub.requiresEnrichment && !enrichmentMenuEnabled) return false;
         if (!navAllowed(sub.sectionKey)) return false;
         return true;
       });
@@ -377,7 +364,7 @@ export function Sidebar({ onNavigate }) {
       .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, enrichmentMenuEnabled, navAllowed]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, navAllowed]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 
