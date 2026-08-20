@@ -97,11 +97,13 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { useMarketplaceFieldLimitsByOrg } from '../../hooks/useMarketplaceFieldLimits.js';
 import {
   bulkCellLimitHit,
+  bulkCellLimitInfo,
   collectBulkRowLimitViolations,
   confirmFieldLimitViolations,
   emptyFieldLimitsByMp,
   expandPushMarketplaces,
 } from '../../utils/marketplaceFieldLimits.js';
+import { MarketplaceFieldLimitHint } from '../../components/common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -724,12 +726,37 @@ function readHiddenColumnKeys() {
   }
 }
 
+function colHeaderWidthPx(col) {
+  const explicit = Number(col?.width);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+  const pad = 16;
+  const label = String(col?.label || '').trim();
+  const labelW = label ? Math.ceil(label.length * 7.6) + pad : 0;
+
+  const isSelect = col?.key === SELECT_COL_KEY;
+  const isSku = col?.key === DEFAULT_STICKY_COL_KEY;
+  let meta = 0;
+  if (!isSelect && !isSku) {
+    meta += 36;
+  }
+  if (col?.showLinkToggles) {
+    const n =
+      Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
+        ? col.linkSupportedMps.length
+        : 3;
+    meta += n * 18 + Math.max(0, n - 1) * 4;
+  } else if (col?.mpBucket && (col.linkFieldKey || col.mappedMps?.length)) {
+    meta += 18;
+  }
+  if (meta) meta += pad;
+
+  const fillW = col?.readonly || col?.noBulk ? 18 : 28;
+  return Math.max(40, Math.min(220, Math.max(labelW, meta, fillW + pad)));
+}
+
 function colStickyWidthPx(col) {
-  const w = Number(col?.width);
-  if (Number.isFinite(w) && w > 0) return w;
-  const m = Number(col?.minW);
-  if (Number.isFinite(m) && m > 0) return m;
-  return 120;
+  return colHeaderWidthPx(col);
 }
 
 /**
@@ -2896,6 +2923,29 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
   );
 }
 
+function isPopupTextColumn(col) {
+  if (!col) return false;
+  const k = String(col.key || '');
+  if (
+    k === 'name' ||
+    k === 'description' ||
+    k === 'mp_wb_name' ||
+    k === 'mp_wb_description' ||
+    k === 'mp_ym_name' ||
+    k === 'mp_ym_description' ||
+    k === 'mp_ozon_name' ||
+    k === 'mp_ozon_description'
+  ) {
+    return true;
+  }
+  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return true;
+  if (col.mpAttr?.bucket === 'ozon') {
+    const attr = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+    return isOzonNameAttr(attr) || isOzonAnnotationAttr(attr);
+  }
+  return false;
+}
+
 function PinIcon() {
   return (
     <svg
@@ -2909,6 +2959,46 @@ function PinIcon() {
       <path
         fill="currentColor"
         d="M16 3a1 1 0 0 1 .8 1.6l-2.2 2.93 1.47 4.42a1 1 0 0 1-.34 1.1l-1.73 1.38V21a1 1 0 1 1-2 0v-6.57l-1.73-1.38a1 1 0 0 1-.34-1.1l1.47-4.42L9.2 4.6A1 1 0 0 1 10 3h6z"
+      />
+    </svg>
+  );
+}
+
+function HideColumnIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      aria-hidden
+      focusable="false"
+      className="products-bulk-hide-icon"
+    >
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 3l18 18M10.6 10.6A2 2 0 0 0 13.4 13.4M9.9 5.1A10.5 10.5 0 0 1 21 12c-.7 1.3-1.7 2.5-3 3.5M6.1 6.1A10.5 10.5 0 0 0 3 12c1.6 3.4 5.4 6 9 6 1.3 0 2.6-.3 3.7-.9"
+      />
+    </svg>
+  );
+}
+
+function FillColumnIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      aria-hidden
+      focusable="false"
+      className="products-bulk-fill-icon"
+    >
+      <path
+        fill="currentColor"
+        d="M19.14 9.46 12.7 3.03a1 1 0 0 0-1.41 0L3.03 11.3a1 1 0 0 0 0 1.41l6.43 6.43a1 1 0 0 0 1.41 0l2.12-2.12 4.6-4.6a3.2 3.2 0 0 0 1.55-2.96zM9.15 17.43 4.44 12.72l7.05-7.05 4.71 4.71-7.05 7.05zM20.5 14.2c0 1.7-2.5 4.3-2.5 4.3s-2.5-2.6-2.5-4.3a2.5 2.5 0 1 1 5 0z"
       />
     </svg>
   );
@@ -3030,6 +3120,7 @@ export function ProductsBulkEdit() {
 
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
+  const [textPopup, setTextPopup] = useState({ open: false, rowId: null, col: null, draft: '' });
   const [imagesModal, setImagesModal] = useState({
     open: false,
     productId: null,
@@ -3369,6 +3460,13 @@ export function ProductsBulkEdit() {
     setColumnsSearch('');
   }, []);
 
+  const hideColumnFromHeader = useCallback((colKey) => {
+    const key = String(colKey || '');
+    if (!key || ALWAYS_VISIBLE_COL_KEYS.has(key)) return;
+    setPinnedColumnKeys((prev) => prev.filter((k) => k !== key));
+    setHiddenColumnKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+  }, []);
+
   const filteredColumnMenuItems = useMemo(() => {
     const q = String(columnsSearch || '').trim();
     return (visibleColumns || []).filter((col) => {
@@ -3394,8 +3492,9 @@ export function ProductsBulkEdit() {
 
   const colStickyStyle = useCallback(
     (col, { header = false, headerRow = 'labels' } = {}) => {
+      const w = colHeaderWidthPx(col);
+      const base = { minWidth: w, width: w, maxWidth: w };
       const meta = stickyLeftMap.get(col.key);
-      const base = { minWidth: col.minW };
       if (!meta) return base;
       /* top тоже inline: Chrome иначе игнорирует CSS-top, если left задан через style */
       return {
@@ -4717,55 +4816,12 @@ export function ProductsBulkEdit() {
   };
 
   const subtitle = useMemo(() => {
-    if (!categoryScopeReady) {
-      return 'Выберите категорию в списке ниже (или «Все категории») — затем загрузится таблица для редактирования.';
-    }
+    if (!categoryScopeReady) return 'Выберите категорию';
     const n = rows.length;
     const sel = appliedSelectedIds.length;
-    if (sel > 0) {
-      return `Редактирование выбранных товаров (${n} на странице из ${sel}). Фильтры ниже сужают выборку; выбранные id с «Товаров» по-прежнему ограничивают список.`;
-    }
-    return `До ${pageSize} товаров на странице по фильтрам ниже. Отметьте строки на странице «Товары» и откройте массовое редактирование, чтобы править только выбранные.`;
-  }, [categoryScopeReady, rows.length, appliedSelectedIds.length, pageSize]);
-
-  const categoryScopeSelect = (
-    <div className="products-bulk-category-scope">
-      <label className="text-muted small mb-1 d-block" htmlFor="bulk-category-scope-pick">
-        Категория для редактирования
-      </label>
-      <select
-        id="bulk-category-scope-pick"
-        className="form-select form-select-sm products-bulk-category-scope-select"
-        value={categoryScopeReady ? categoryPickDraft : CATEGORY_SCOPE_UNSET}
-        onChange={handleCategoryScopeChange}
-        disabled={appliedSelectedIds.length > 0}
-        aria-label="Выберите категорию для массового редактирования"
-      >
-        {!categoryScopeReady ? (
-          <option value={CATEGORY_SCOPE_UNSET} disabled>
-            — Выберите категорию —
-          </option>
-        ) : null}
-        <option value={CATEGORY_SCOPE_ALL}>Все категории</option>
-        {pickerHasUncategorized || showUncategorizedCategoryOption === true ? (
-          <option value={FILTER_CATEGORY_NONE}>Без категории</option>
-        ) : null}
-        {[...(categories || [])]
-          .filter((c) => c && c.id != null)
-          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
-          .map((c) => (
-            <option key={c.id} value={String(c.id)}>
-              {c.name || `Категория #${c.id}`}
-            </option>
-          ))}
-      </select>
-      {!categoryScopeReady ? (
-        <p className="text-muted small mb-0 mt-2">
-          Товары появятся после выбора категории. Можно выбрать «Все категории».
-        </p>
-      ) : null}
-    </div>
-  );
+    if (sel > 0) return `${n} на странице из ${sel} выбранных`;
+    return `${n} на странице`;
+  }, [categoryScopeReady, rows.length, appliedSelectedIds.length]);
 
   const renderInput = (col, row) => {
     const orig = originals[row.id];
@@ -4794,6 +4850,9 @@ export function ProductsBulkEdit() {
     const linked = isBulkLinkedMpReadonly(row, col.key, erpAttrColumnDefs);
     const v = linked ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs) : row[col.key];
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
+    const limitInfo = isPopupTextColumn(col)
+      ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
+      : null;
     const common = {
       className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}${
         dimDirty ? ' products-bulk-dim-dirty' : ''
@@ -4819,6 +4878,40 @@ export function ProductsBulkEdit() {
           onChange={(e) => updateCell(row.id, col.key, e.target.checked ? 'true' : 'false')}
           title={col.title || col.label}
         />
+      );
+    }
+    if (isPopupTextColumn(col)) {
+      const preview = String(v ?? '').trim();
+      const countOver = !!(limitInfo?.maxLength && limitInfo.over);
+      return (
+        <button
+          type="button"
+          className={`products-bulk-text-popup-btn${countOver ? ' is-over-limit' : ''}${
+            linked ? ' is-linked' : ''
+          }`}
+          onClick={() => {
+            setTextPopup({
+              open: true,
+              rowId: row.id,
+              col,
+              draft: String(v ?? ''),
+            });
+          }}
+          title={
+            countOver
+              ? `${limitInfo.mpLabel}: ${limitInfo.length} / ${limitInfo.maxLength}`
+              : linked
+                ? 'Связано с «Основным». Нажмите, чтобы править (правка отвяжет поле)'
+                : 'Открыть редактирование'
+          }
+        >
+          <span className="products-bulk-text-popup-preview">{preview || '—'}</span>
+          <span className={`products-bulk-text-popup-count${countOver ? ' is-over' : ''}`}>
+            {limitInfo?.maxLength
+              ? `${limitInfo.length} / ${limitInfo.maxLength}`
+              : `${String(v ?? '').length}`}
+          </span>
+        </button>
       );
     }
     if (col.input === 'date') {
@@ -4964,6 +5057,17 @@ export function ProductsBulkEdit() {
   };
 
   const bulkModalCol = bulkModal.column;
+  const textPopupRow = textPopup.open
+    ? rows.find((r) => str(r.id) === str(textPopup.rowId))
+    : null;
+  const textPopupLimit =
+    textPopupRow && textPopup.col
+      ? bulkCellLimitInfo(textPopupRow, textPopup.col, limitsForRow(textPopupRow), textPopup.draft)
+      : null;
+  const textPopupIsDesc =
+    textPopup.col &&
+    (textPopup.col.linkFieldKey === 'description' ||
+      String(textPopup.col.key || '').includes('description'));
 
   return (
     <div key={location.key} className="products-bulk-page">
@@ -5076,14 +5180,43 @@ export function ProductsBulkEdit() {
             <div className="card-body p-0">
               <div className="products-list-toolbar">
                 <div className="products-bulk-toolbar-inner">
-                  {categoryScopeSelect}
-                  {categoryScopeReady ? (
-                  <div className="products-bulk-scoped-ui">
-                  <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
+                  <div className="products-bulk-toolbar-row">
+                    <div className="products-bulk-category-scope">
+                      <select
+                        id="bulk-category-scope-pick"
+                        className="form-select form-select-sm products-bulk-category-scope-select"
+                        value={categoryScopeReady ? categoryPickDraft : CATEGORY_SCOPE_UNSET}
+                        onChange={handleCategoryScopeChange}
+                        disabled={appliedSelectedIds.length > 0}
+                        aria-label="Категория для массового редактирования"
+                        title={
+                          appliedSelectedIds.length > 0
+                            ? 'Категория зафиксирована выбранными товарами'
+                            : 'Категория для редактирования'
+                        }
+                      >
+                        {!categoryScopeReady ? (
+                          <option value={CATEGORY_SCOPE_UNSET} disabled>
+                            Категория…
+                          </option>
+                        ) : null}
+                        <option value={CATEGORY_SCOPE_ALL}>Все категории</option>
+                        {pickerHasUncategorized || showUncategorizedCategoryOption === true ? (
+                          <option value={FILTER_CATEGORY_NONE}>Без категории</option>
+                        ) : null}
+                        {[...(categories || [])]
+                          .filter((c) => c && c.id != null)
+                          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+                          .map((c) => (
+                            <option key={c.id} value={String(c.id)}>
+                              {c.name || `Категория #${c.id}`}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    {categoryScopeReady ? (
+                      <>
                     <div className="products-bulk-toolbar-search">
-                      <label className="text-muted small mb-1 d-block" htmlFor="bulk-products-search">
-                        Поиск по списку
-                      </label>
                       <input
                         id="bulk-products-search"
                         type="search"
@@ -5096,21 +5229,14 @@ export function ProductsBulkEdit() {
                         aria-busy={loading}
                       />
                     </div>
-                    <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                       <div className="products-bulk-columns-menu" ref={columnsMenuRef}>
-                        <label className="text-muted small mb-1 d-block" htmlFor="bulk-columns-search">
-                          Столбцы
-                          {hiddenColumnKeys.length > 0 ? (
-                            <span className="badge bg-secondary ms-1 rounded-pill">{hiddenColumnKeys.length}</span>
-                          ) : null}
-                        </label>
                         <div className="products-bulk-columns-toolbar">
                           <input
                             ref={columnsSearchRef}
                             id="bulk-columns-search"
                             type="search"
                             className="form-control form-control-sm products-bulk-columns-search"
-                            placeholder="Найти столбец…"
+                            placeholder="Столбцы…"
                             value={columnsSearch}
                             onChange={(e) => {
                               setColumnsSearch(e.target.value);
@@ -5126,6 +5252,11 @@ export function ProductsBulkEdit() {
                             aria-expanded={columnsMenuOpen}
                             aria-controls="bulk-columns-list"
                           />
+                          {hiddenColumnKeys.length > 0 ? (
+                            <span className="badge bg-secondary rounded-pill" title="Скрыто столбцов">
+                              {hiddenColumnKeys.length}
+                            </span>
+                          ) : null}
                           <button
                             type="button"
                             className="btn btn-outline-secondary btn-sm products-bulk-columns-show-all"
@@ -5136,7 +5267,7 @@ export function ProductsBulkEdit() {
                             disabled={hiddenColumnKeys.length === 0}
                             title="Показать все скрытые столбцы"
                           >
-                            Показать все
+                            Все
                           </button>
                         </div>
                         {columnsMenuOpen ? (
@@ -5176,18 +5307,21 @@ export function ProductsBulkEdit() {
                         type="button"
                         variant="secondary"
                         size="small"
-                        className="btn-shadow"
+                        className="btn-shadow products-bulk-filters-btn"
                         onClick={() => setFiltersOpen((o) => !o)}
                         aria-expanded={filtersOpen}
-                        title="Организация, бренд, тип, связь с МП"
+                        title="Организация, бренд, тип, связь с МП, столбцы атрибутов"
                       >
                         {filtersOpen ? '▼ Фильтры' : '▶ Фильтры'}
                         {activeFiltersCount > 0 ? (
                           <span className="badge bg-primary ms-1 rounded-pill">{activeFiltersCount}</span>
                         ) : null}
                       </Button>
-                    </div>
+                      </>
+                    ) : null}
                   </div>
+                  {categoryScopeReady ? (
+                  <div className="products-bulk-scoped-ui">
                   {filtersOpen ? (
                     <div className="products-filters-panel">
                       <div className="products-bulk-filters-row">
@@ -5302,6 +5436,64 @@ export function ProductsBulkEdit() {
                           </div>
                         </div>
                       </div>
+                      <div className="products-bulk-filters-row products-bulk-filters-row--attrs">
+                        <div className="products-bulk-filter-item products-bulk-filter-item--attrs">
+                          <span className="text-muted small d-block mb-1">Атрибуты МП</span>
+                          <div className="d-flex flex-wrap align-items-center gap-2 gap-md-3">
+                            <div className="form-check form-switch mb-0">
+                              <input
+                                className="form-check-input"
+                                type="checkbox"
+                                role="switch"
+                                id="bulk-show-mp-ozon"
+                                checked={showMpOzon}
+                                onChange={(e) => setShowMpOzon(e.target.checked)}
+                              />
+                              <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-ozon" title="Столбцы JSON-атрибутов Ozon">
+                                Ozon
+                              </label>
+                            </div>
+                            <div className="form-check form-switch mb-0">
+                              <input
+                                className="form-check-input"
+                                type="checkbox"
+                                role="switch"
+                                id="bulk-show-mp-wb"
+                                checked={showMpWb}
+                                onChange={(e) => setShowMpWb(e.target.checked)}
+                              />
+                              <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-wb" title="Столбцы JSON-атрибутов Wildberries">
+                                WB
+                              </label>
+                            </div>
+                            <div className="form-check form-switch mb-0">
+                              <input
+                                className="form-check-input"
+                                type="checkbox"
+                                role="switch"
+                                id="bulk-show-mp-ym"
+                                checked={showMpYm}
+                                onChange={(e) => setShowMpYm(e.target.checked)}
+                              />
+                              <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-ym" title="Столбцы JSON-атрибутов Яндекс.Маркет">
+                                Я.Маркет
+                              </label>
+                            </div>
+                            {mpAttrColumnDefs.length > 0 ? (
+                              <span
+                                className="text-muted small text-nowrap"
+                                title="Число видимых столбцов по JSON-атрибутам маркетплейсов (включённые тумблеры)"
+                              >
+                                {visibleMpAttrColumnDefs.length > 0
+                                  ? `столбцов: ${visibleMpAttrColumnDefs.length}`
+                                  : 'скрыты'}
+                              </span>
+                            ) : (
+                              <span className="text-muted small text-nowrap">не найдены</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                       {activeFiltersCount > 0 ? (
                         <div className="mt-2">
                           <button type="button" className="btn btn-link btn-sm p-0 text-decoration-none" onClick={applyClearListFilters}>
@@ -5311,60 +5503,7 @@ export function ProductsBulkEdit() {
                       ) : null}
                     </div>
                   ) : null}
-                  <div className="products-bulk-mp-toggles-row d-flex flex-wrap align-items-center gap-2 gap-md-3">
-                    <div className="form-check form-switch mb-0">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        role="switch"
-                        id="bulk-show-mp-ozon"
-                        checked={showMpOzon}
-                        onChange={(e) => setShowMpOzon(e.target.checked)}
-                      />
-                      <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-ozon" title="Столбцы JSON-атрибутов Ozon">
-                        Атрибуты Ozon
-                      </label>
-                    </div>
-                    <div className="form-check form-switch mb-0">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        role="switch"
-                        id="bulk-show-mp-wb"
-                        checked={showMpWb}
-                        onChange={(e) => setShowMpWb(e.target.checked)}
-                      />
-                      <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-wb" title="Столбцы JSON-атрибутов Wildberries">
-                        Атрибуты WB
-                      </label>
-                    </div>
-                    <div className="form-check form-switch mb-0">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        role="switch"
-                        id="bulk-show-mp-ym"
-                        checked={showMpYm}
-                        onChange={(e) => setShowMpYm(e.target.checked)}
-                      />
-                      <label className="form-check-label small mb-0 text-nowrap" htmlFor="bulk-show-mp-ym" title="Столбцы JSON-атрибутов Яндекс.Маркет">
-                        Атрибуты Я.Маркет
-                      </label>
-                    </div>
-                    {mpAttrColumnDefs.length > 0 ? (
-                      <span
-                        className="text-muted small text-nowrap"
-                        title="Число видимых столбцов по JSON-атрибутам маркетплейсов (включённые тумблеры)"
-                      >
-                        {visibleMpAttrColumnDefs.length > 0
-                          ? `столбцов МП: ${visibleMpAttrColumnDefs.length}`
-                          : 'атрибуты МП скрыты'}
-                      </span>
-                    ) : (
-                      <span className="text-muted small text-nowrap">атрибуты МП не найдены</span>
-                    )}
-                  </div>
-                  <div className="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
+                  <div className="products-bulk-mp-toggles-row d-flex flex-wrap align-items-center gap-2">
                     <span
                       className="text-muted small text-nowrap me-1"
                       title={
@@ -5539,17 +5678,33 @@ export function ProductsBulkEdit() {
                   const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
                   const canMoveLeft = pinIdx > 0;
                   const canMoveRight = pinIdx >= 0 && pinIdx < visiblePinnedKeys.length - 1;
+                  const canHide = !ALWAYS_VISIBLE_COL_KEYS.has(col.key);
+                  const showColActions = !isBaseSticky;
+                  const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
+                  const showFromMain = !!(
+                    !showLinkToggles &&
+                    col.mpBucket &&
+                    (col.linkFieldKey || col.mappedMps?.length)
+                  );
+                  const showThMeta = showColActions || showLinkToggles || showFromMain;
                   return (
                     <th
                       key={col.key}
                       className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
                       style={colStickyStyle(col, { header: true })}
-                      title={col.title || col.hint || col.label || undefined}
                     >
                       <div className="products-bulk-th-label">
                         <div className="products-bulk-th-top">
-                          <span className="products-bulk-th-text">{col.label}</span>
-                          {isBaseSticky ? null : (
+                          <span
+                            className="products-bulk-th-text"
+                            title={col.title || col.hint || col.label || undefined}
+                          >
+                            {col.label}
+                          </span>
+                        </div>
+                        {showThMeta ? (
+                        <div className="products-bulk-th-meta">
+                          {showColActions ? (
                             <span className="products-bulk-th-actions">
                             {isPinned ? (
                               <button
@@ -5601,10 +5756,24 @@ export function ProductsBulkEdit() {
                                 ›
                               </button>
                             ) : null}
+                            {canHide ? (
+                              <button
+                                type="button"
+                                className="products-bulk-pin-btn products-bulk-hide-btn"
+                                title="Скрыть столбец"
+                                aria-label={`Скрыть столбец ${col.label || col.key}`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  hideColumnFromHeader(col.key);
+                                }}
+                              >
+                                <HideColumnIcon />
+                              </button>
+                            ) : null}
                             </span>
-                          )}
-                        </div>
-                        {col.showLinkToggles && col.linkFieldKey ? (
+                          ) : null}
+                          {showLinkToggles ? (
                           <MpFieldLinkToggles
                             fieldKey={col.linkFieldKey}
                             links={headerLinksForField(col.linkFieldKey)}
@@ -5612,7 +5781,7 @@ export function ProductsBulkEdit() {
                             supportedMps={col.linkSupportedMps}
                             size={18}
                           />
-                        ) : col.mpBucket && (col.linkFieldKey || col.mappedMps?.length) ? (
+                          ) : showFromMain ? (
                           <MpFromMainLinkIcon
                             linked={isMpFieldLinked(
                               headerLinksForField(col.linkFieldKey || ''),
@@ -5621,6 +5790,8 @@ export function ProductsBulkEdit() {
                             )}
                             title="Значение берётся с вкладки «Основное»"
                           />
+                          ) : null}
+                        </div>
                         ) : null}
                       </div>
                     </th>
@@ -5640,8 +5811,14 @@ export function ProductsBulkEdit() {
                         —
                       </span>
                     ) : (
-                      <button type="button" className="products-bulk-fill-btn" onClick={() => openBulk(col)}>
-                        Заполнить
+                      <button
+                        type="button"
+                        className="products-bulk-fill-btn"
+                        onClick={() => openBulk(col)}
+                        title={`Заполнить столбец «${col.label || col.key}»`}
+                        aria-label={`Заполнить столбец ${col.label || col.key}`}
+                      >
+                        <FillColumnIcon />
                       </button>
                     )}
                   </th>
@@ -5938,6 +6115,63 @@ export function ProductsBulkEdit() {
       </Modal>
 
       <Modal
+        isOpen={!!(textPopup.open && textPopup.col && textPopupRow)}
+        onClose={() => setTextPopup({ open: false, rowId: null, col: null, draft: '' })}
+        title={
+          textPopup.col
+            ? `${String(textPopup.col.title || textPopup.col.label || 'Текст').split('\n')[0].trim()}${
+                textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''
+              }`
+            : ''
+        }
+        size="large"
+      >
+        {textPopup.col && textPopupRow ? (
+          <div>
+            <textarea
+              className={`form-control products-bulk-text-editor${
+                textPopupLimit?.over ? ' is-over-limit' : ''
+              }`}
+              value={textPopup.draft}
+              onChange={(e) => setTextPopup((prev) => ({ ...prev, draft: e.target.value }))}
+              rows={textPopupIsDesc ? 14 : 6}
+              autoFocus
+            />
+            {textPopupLimit?.maxLength ? (
+              <MarketplaceFieldLimitHint
+                value={textPopup.draft}
+                maxLength={textPopupLimit.maxLength}
+                mpLabel={textPopupLimit.mpLabel}
+              />
+            ) : (
+              <div className="mp-field-limit-hint">{String(textPopup.draft || '').length}</div>
+            )}
+            <div className="d-flex justify-content-end gap-2 mt-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="small"
+                onClick={() => setTextPopup({ open: false, rowId: null, col: null, draft: '' })}
+              >
+                Отмена
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                size="small"
+                onClick={() => {
+                  updateCell(textPopup.rowId, textPopup.col.key, textPopup.draft);
+                  setTextPopup({ open: false, rowId: null, col: null, draft: '' });
+                }}
+              >
+                Готово
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
         isOpen={bulkModal.open && bulkModalCol != null}
         onClose={() => setBulkModal({ open: false, column: null })}
         title={
@@ -6017,13 +6251,36 @@ export function ProductsBulkEdit() {
                 <option value="false">Нет</option>
               </select>
             ) : bulkModalCol.input === 'textarea' ? (
+              <>
               <textarea
-                className="form-control products-bulk-modal-field"
+                className={`form-control products-bulk-modal-field${
+                  isPopupTextColumn(bulkModalCol) &&
+                  bulkCellLimitInfo(rows[0], bulkModalCol, limitsForRow(rows[0] || {}), bulkDraft)?.over
+                    ? ' is-over-limit'
+                    : ''
+                }`}
                 value={bulkDraft}
                 onChange={(e) => setBulkDraft(e.target.value)}
-                rows={6}
+                rows={isPopupTextColumn(bulkModalCol) ? 10 : 6}
                 autoFocus
               />
+              {isPopupTextColumn(bulkModalCol) ? (
+                (() => {
+                  const info = rows[0]
+                    ? bulkCellLimitInfo(rows[0], bulkModalCol, limitsForRow(rows[0]), bulkDraft)
+                    : { length: String(bulkDraft || '').length, maxLength: null };
+                  return info.maxLength ? (
+                    <MarketplaceFieldLimitHint
+                      value={bulkDraft}
+                      maxLength={info.maxLength}
+                      mpLabel={info.mpLabel}
+                    />
+                  ) : (
+                    <div className="mp-field-limit-hint">{String(bulkDraft || '').length}</div>
+                  );
+                })()
+              ) : null}
+              </>
             ) : bulkModalCol.input === 'number' ? (
               <input
                 className="form-control products-bulk-modal-field"
@@ -6200,7 +6457,6 @@ export function ProductsBulkEdit() {
         />
       ) : null}
 
-      {!loading && (rows.length > 0 || totalProducts > 0) ? renderBulkListPager('bottom') : null}
       </div>
       ) : null}
     </div>

@@ -223,6 +223,19 @@ export function strictestLinkedMainLimit(limitsByMp, field, links) {
   return best;
 }
 
+/** Самый строгий настроенный лимит поля по всем кабинетам (связи не учитываются). */
+export function strictestFieldLimit(limitsByMp, field) {
+  let best = null;
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const rule = findFieldLimit(limitsByMp, mp, field);
+    if (!rule) continue;
+    if (!best || rule.max_length < best.maxLength) {
+      best = { mp, field, maxLength: rule.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS[mp] };
+    }
+  }
+  return best;
+}
+
 export function formControlLimitHit(limitsByMp, formData, controlKey, extras = {}) {
   const links = normalizeMpFieldLinks(formData?.mp_field_links);
   const { ozonAttributes, ozonAttributeValues } = extras;
@@ -369,10 +382,13 @@ export function collectBulkRowLimitViolations(row, limitsByMp, { mpAttrColumnDef
   return violations;
 }
 
-export function bulkCellLimitHit(row, col, limitsByMp, displayedValue) {
-  if (!col) return null;
-  const k = String(col.key || '');
+/** Лимит колонки и текущая длина (даже если лимит не превышен). */
+export function bulkCellLimitInfo(row, col, limitsByMp, displayedValue) {
+  const k = String(col?.key || '');
   const value = displayedValue !== undefined ? displayedValue : row?.[k];
+  const length = textCharLength(value);
+  const empty = { length, maxLength: null, mpLabel: '', over: false };
+  if (!col) return empty;
   const links = normalizeMpFieldLinks(row?.mp_field_links);
 
   const dedicated = {
@@ -387,46 +403,39 @@ export function bulkCellLimitHit(row, col, limitsByMp, displayedValue) {
     mp_ozon_brand: { mp: 'ozon', field: 'brand' },
   };
 
+  let rule = null;
   if (dedicated[k]) {
     const { mp, field } = dedicated[k];
-    const rule = findFieldLimit(limitsByMp, mp, field);
-    if (!rule) return null;
-    const length = textCharLength(value);
-    if (length <= rule.max_length) return null;
-    return { mp, field, length, maxLength: rule.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS[mp] };
-  }
-
-  if (k === 'name' || k === 'description' || k === 'brand') {
-    const linked = strictestLinkedMainLimit(limitsByMp, k, links);
-    if (!linked) return null;
-    const length = textCharLength(value);
-    if (length <= linked.maxLength) return null;
-    return { ...linked, length };
-  }
-
-  if (k === 'sku') {
-    const linked = strictestLinkedMainLimit(limitsByMp, 'vendor_code', links);
-    if (!linked) return null;
-    const length = textCharLength(value);
-    if (length <= linked.maxLength) return null;
-    return { ...linked, length };
-  }
-
-  if (col.mpAttr?.bucket === 'ozon') {
+    const found = findFieldLimit(limitsByMp, mp, field);
+    if (found) rule = { mp, field, maxLength: found.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS[mp] };
+  } else if (k === 'name' || k === 'description') {
+    rule = strictestLinkedMainLimit(limitsByMp, k, links) || strictestFieldLimit(limitsByMp, k);
+  } else if (k === 'brand') {
+    rule = strictestLinkedMainLimit(limitsByMp, k, links);
+  } else if (k === 'sku') {
+    rule = strictestLinkedMainLimit(limitsByMp, 'vendor_code', links);
+  } else if (col.mpAttr?.bucket === 'ozon') {
     const attr = { id: col.mpAttr.attrId, name: col._humanName || col.label };
     let field = null;
     if (isOzonNameAttr(attr)) field = 'name';
     else if (isOzonAnnotationAttr(attr)) field = 'description';
     else if (isOzonBrandAttr(attr)) field = 'brand';
-    if (!field) return null;
-    const rule = findFieldLimit(limitsByMp, 'ozon', field);
-    if (!rule) return null;
-    const length = textCharLength(value);
-    if (length <= rule.max_length) return null;
-    return { mp: 'ozon', field, length, maxLength: rule.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS.ozon };
+    if (field) {
+      const found = findFieldLimit(limitsByMp, 'ozon', field);
+      if (found) {
+        rule = { mp: 'ozon', field, maxLength: found.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS.ozon };
+      }
+    }
   }
 
-  return null;
+  if (!rule?.maxLength) return empty;
+  return { ...rule, length, over: length > rule.maxLength };
+}
+
+export function bulkCellLimitHit(row, col, limitsByMp, displayedValue) {
+  const info = bulkCellLimitInfo(row, col, limitsByMp, displayedValue);
+  if (!info?.maxLength || info.length <= info.maxLength) return null;
+  return info;
 }
 
 export function formatFieldLimitViolations(violations, { maxItems = 8 } = {}) {

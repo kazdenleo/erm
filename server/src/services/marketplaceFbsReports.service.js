@@ -1664,6 +1664,7 @@ class MarketplaceFbsReportsService {
             Number(summaryRow.penalty_amount) +
             Number(summaryRow.acquiring_amount) +
             Number(summaryRow.other_deductions) || 0,
+        costAmount: itemsResolved.reduce((s, r) => s + (Number(r.costAmount) || 0), 0),
         taxAmount: itemsResolved.reduce((s, r) => s + (Number(r.taxAmount) || 0), 0),
         netIncome: itemsResolved.reduce((s, r) => s + (Number(r.netIncome) || 0), 0),
       },

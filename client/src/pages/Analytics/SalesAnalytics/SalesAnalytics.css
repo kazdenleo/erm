@@ -76,6 +76,14 @@
   border-left: 4px solid #d97706;
 }
 
+.sales-analytics__card--cost {
+  border-left: 4px solid #64748b;
+}
+
+.sales-analytics__card--net {
+  border-left: 4px solid #2563eb;
+}
+
 .sales-analytics__table-wrap {
   overflow: auto;
   max-height: calc(100vh - var(--erm-header-height, 60px) - 12rem);

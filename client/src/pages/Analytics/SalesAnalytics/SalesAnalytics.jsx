@@ -162,6 +162,23 @@ export function SalesAnalytics() {
           <div className="sales-analytics__card-value">{formatRub(summary.payoutAmount)}</div>
           <div className="sales-analytics__card-sub">{formatQty(summary.ordersCount)} заказов с продажей</div>
         </div>
+        <div className="sales-analytics__card sales-analytics__card--cost">
+          <div className="sales-analytics__card-label">Себестоимость</div>
+          <div className="sales-analytics__card-value">{formatRub(summary.costAmount)}</div>
+          <div className="sales-analytics__card-sub">Сумма по проданным товарам</div>
+        </div>
+        <div className="sales-analytics__card">
+          <div className="sales-analytics__card-label">Налоги</div>
+          <div className="sales-analytics__card-value">{formatRub(summary.taxAmount)}</div>
+          <div className="sales-analytics__card-sub">
+            {taxMeta?.taxSystemLabel || 'По схеме организации'}
+          </div>
+        </div>
+        <div className="sales-analytics__card sales-analytics__card--net">
+          <div className="sales-analytics__card-label">Чистая прибыль</div>
+          <div className="sales-analytics__card-value">{formatRub(summary.netIncome)}</div>
+          <div className="sales-analytics__card-sub">Выручка − налоги</div>
+        </div>
       </div>
 
       <div className="fbo-sales-analytics__view-tabs">

@@ -5,6 +5,31 @@
   background: var(--bs-light, #f8f9fa);
 }
 
+.products-bulk-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.products-bulk-selection-bar__count {
+  font-size: 13px;
+  color: var(--bs-body-color, #212529);
+}
+
+.products-bulk-selection-bar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .products-filters-panel {
   margin-top: 14px;
   padding: 16px 20px 18px;

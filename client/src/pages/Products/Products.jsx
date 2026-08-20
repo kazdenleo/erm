@@ -172,6 +172,7 @@ export function Products() {
   });
   /** id выбранных строк в текущем отфильтрованном списке */
   const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
   const selectAllCheckboxRef = useRef(null);
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
@@ -525,6 +526,11 @@ export function Products() {
     if (!window.confirm('Вы уверены, что хотите удалить этот товар?')) return;
     try {
       await deleteProduct(id);
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev);
+        next.delete(String(id));
+        return next;
+      });
       await loadList();
     } catch (error) {
       console.error('Error deleting product:', error);
@@ -537,6 +543,11 @@ export function Products() {
     if (!window.confirm('Отправить товар в архив? Он скроется из списка по умолчанию, история сохранится.')) return;
     try {
       await archiveProduct(id);
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev);
+        next.delete(String(id));
+        return next;
+      });
       await loadList();
     } catch (error) {
       console.error('Error archiving product:', error);
@@ -549,12 +560,81 @@ export function Products() {
     if (!window.confirm('Вернуть товар из архива?')) return;
     try {
       await unarchiveProduct(id);
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev);
+        next.delete(String(id));
+        return next;
+      });
       await loadList();
     } catch (error) {
       console.error('Error unarchiving product:', error);
       const message = error.response?.data?.message || error.message || 'Неизвестная ошибка';
       alert('Ошибка восстановления товара: ' + message);
     }
+  };
+
+  const runBulkProductAction = async ({ ids, confirmText, action, successVerb }) => {
+    if (!ids.length || bulkActionBusy) return;
+    if (!window.confirm(confirmText)) return;
+    setBulkActionBusy(true);
+    let ok = 0;
+    const errors = [];
+    try {
+      for (const id of ids) {
+        try {
+          await action(id);
+          ok += 1;
+        } catch (error) {
+          const message = error?.response?.data?.message || error?.message || 'Неизвестная ошибка';
+          errors.push(`${id}: ${message}`);
+        }
+      }
+      setSelectedProductIds(new Set());
+      await loadList();
+      if (errors.length) {
+        alert(
+          `${successVerb}: ${ok} из ${ids.length}.\nНе удалось (${errors.length}):\n` +
+            errors.slice(0, 8).join('\n') +
+            (errors.length > 8 ? `\n…и ещё ${errors.length - 8}` : '')
+        );
+      }
+    } finally {
+      setBulkActionBusy(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedProductIds];
+    await runBulkProductAction({
+      ids,
+      confirmText:
+        `Удалить выбранные товары (${ids.length})?\n` +
+        'Удалятся только товары без документов и операций в ERP. Остальные будут пропущены с сообщением об ошибке.',
+      action: deleteProduct,
+      successVerb: 'Удалено',
+    });
+  };
+
+  const handleBulkArchive = async () => {
+    const ids = [...selectedProductIds];
+    await runBulkProductAction({
+      ids,
+      confirmText:
+        `Отправить в архив выбранные товары (${ids.length})?\n` +
+        'Они скрываются из списка по умолчанию, история сохраняется.',
+      action: archiveProduct,
+      successVerb: 'В архиве',
+    });
+  };
+
+  const handleBulkUnarchive = async () => {
+    const ids = [...selectedProductIds];
+    await runBulkProductAction({
+      ids,
+      confirmText: `Вернуть из архива выбранные товары (${ids.length})?`,
+      action: unarchiveProduct,
+      successVerb: 'Восстановлено',
+    });
   };
 
   const handleRefreshSupplierStocks = async () => {
@@ -1006,6 +1086,62 @@ export function Products() {
                 </Button>
               </div>
             </div>
+            {selectedProductIds.size > 0 ? (
+              <div className="products-bulk-selection-bar" role="region" aria-label="Действия с выбранными товарами">
+                <span className="products-bulk-selection-bar__count">
+                  Выбрано: <strong>{selectedProductIds.size}</strong>
+                </span>
+                <div className="products-bulk-selection-bar__actions">
+                  {filterArchiveMode !== 'only' ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      className="btn-shadow"
+                      disabled={bulkActionBusy || loading}
+                      onClick={handleBulkArchive}
+                      title="Скрыть выбранные товары в архив"
+                    >
+                      В архив
+                    </Button>
+                  ) : null}
+                  {filterArchiveMode === 'only' || filterArchiveMode === 'include' ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      className="btn-shadow"
+                      disabled={bulkActionBusy || loading}
+                      onClick={handleBulkUnarchive}
+                      title="Вернуть выбранные товары из архива"
+                    >
+                      Вернуть из архива
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="small"
+                    className="btn-shadow"
+                    disabled={bulkActionBusy || loading}
+                    onClick={handleBulkDelete}
+                    title="Удалить выбранные товары без документов"
+                  >
+                    Удалить
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    disabled={bulkActionBusy}
+                    onClick={() => setSelectedProductIds(new Set())}
+                    title="Снять выделение"
+                  >
+                    Снять
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             {filtersOpen ? (
               <div className="products-filters-panel">
                 <div className="row g-2 g-md-3 align-items-end">
