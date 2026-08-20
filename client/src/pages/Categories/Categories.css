@@ -152,5 +152,101 @@
   margin-top: 2px;
 }
 
-/* Общие стили наследуются из pages.css и tables.css */
+.category-attr-map-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.category-attr-map-toolbar-btn {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.category-attr-map-toolbar-btn:hover {
+  color: var(--text, #111827);
+  text-decoration: underline;
+}
+
+.category-attr-map-card {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px 8px;
+}
+
+.category-attr-map-card.is-expanded {
+  padding: 10px 12px;
+}
+
+.category-attr-map-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.category-attr-map-card__toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.category-attr-map-card__chevron {
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--muted, #6b7280);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.category-attr-map-card__title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.category-attr-map-card__remove {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.category-attr-map-card__remove:hover {
+  color: #b91c1c;
+}
+
+.category-attr-map-card__summary {
+  margin: 2px 0 0 20px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted, #6b7280);
+}
+
+.category-attr-map-card__body {
+  margin-top: 8px;
+}
+
+.category-attr-map-card__body .attribute-mp-links {
+  margin-top: 0;
+}
 

@@ -2671,6 +2671,14 @@ class IntegrationsService {
       name: offer.name != null ? String(offer.name).trim() : null,
       description: offer.description != null ? String(offer.description).trim() : null,
       vendor: offer.vendor != null ? String(offer.vendor).trim() : null,
+      vendorCode:
+        offer.vendorCode != null && String(offer.vendorCode).trim()
+          ? String(offer.vendorCode).trim()
+          : offerCard?.vendorCode != null && String(offerCard.vendorCode).trim()
+            ? String(offerCard.vendorCode).trim()
+            : offerCard?.offer?.vendorCode != null && String(offerCard.offer.vendorCode).trim()
+              ? String(offerCard.offer.vendorCode).trim()
+              : null,
       manufacturerCountries,
       barcodes: normalizeIntegrationOfferBarcodes(offer.barcodes),
       parameterValues,

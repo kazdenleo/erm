@@ -3,9 +3,10 @@
  * Форма создания/редактирования категории
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
+import { Modal } from '../../common/Modal/Modal';
 import { categoriesApi } from '../../../services/categories.api';
 import { categoryMappingsApi } from '../../../services/categoryMappings.api';
 import { integrationsApi } from '../../../services/integrations.api';
@@ -20,13 +21,13 @@ import {
 import api from '../../../services/api';
 import { AttributeMpLinkFields } from '../../common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
 import { MpMappedMpBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
-import { attrMpLinksHasAny, emptyAttrMpLinks, mappedMpsFromAttrLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
+import { attrMpLinksHasAny, emptyAttrMpLinks, formatAttrMpLinksSummary, mappedMpsFromAttrLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
 import {
   DEDICATED_MAIN_MAP_KEYS,
   emptyCategoryDedicatedCharcLinks,
   MP_FIELD_LINK_FIELD_LABELS,
   normalizeCategoryDedicatedCharcLinks,
-  withYmOfferFieldAttrs,
+  withMpOfferFieldAttrs,
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
 
@@ -181,7 +182,42 @@ function parseAttributeMpLinksMap(raw) {
   return next;
 }
 
-export function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onRefreshWbCategories, onSubmit, onCancel }) {
+function CategoryAttrMapCard({ title, links, expanded, onToggle, onRemove, children }) {
+  const summary = formatAttrMpLinksSummary(links);
+  return (
+    <div className={`category-attr-map-card${expanded ? ' is-expanded' : ''}`}>
+      <div className="category-attr-map-card__head">
+        <button
+          type="button"
+          className="category-attr-map-card__toggle"
+          onClick={onToggle}
+          aria-expanded={expanded}
+        >
+          <span className="category-attr-map-card__chevron" aria-hidden>
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span className="category-attr-map-card__title">{title}</span>
+          <MpMappedMpBadges mps={mappedMpsFromAttrLinks(links)} size={16} />
+        </button>
+        <button
+          type="button"
+          className="category-attr-map-card__remove"
+          onClick={onRemove}
+          aria-label="Удалить"
+        >
+          ×
+        </button>
+      </div>
+      {!expanded ? (
+        <div className="category-attr-map-card__summary">{summary}</div>
+      ) : (
+        <div className="category-attr-map-card__body">{children}</div>
+      )}
+    </div>
+  );
+}
+
+export const CategoryForm = forwardRef(function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onRefreshWbCategories, onSubmit, onCancel }, ref) {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -196,11 +232,18 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
   const [dedicatedMpLinks, setDedicatedMpLinks] = useState(() => emptyCategoryDedicatedCharcLinks());
   const [addedDedicatedKeys, setAddedDedicatedKeys] = useState([]);
   const [pickerValue, setPickerValue] = useState('');
-  const [ozonMpAttrs, setOzonMpAttrs] = useState([]);
-  const [wbMpAttrs, setWbMpAttrs] = useState([]);
-  const [ymMpAttrs, setYmMpAttrs] = useState(() => withYmOfferFieldAttrs([]));
+  const [expandedMapKeys, setExpandedMapKeys] = useState({});
+  const [ozonMpAttrs, setOzonMpAttrs] = useState(() => withMpOfferFieldAttrs('ozon', []));
+  const [wbMpAttrs, setWbMpAttrs] = useState(() => withMpOfferFieldAttrs('wb', []));
+  const [ymMpAttrs, setYmMpAttrs] = useState(() => withMpOfferFieldAttrs('ym', []));
   
   const [errors, setErrors] = useState({});
+  const [leavePromptOpen, setLeavePromptOpen] = useState(false);
+  const [leavePromptSaving, setLeavePromptSaving] = useState(false);
+  const isDirtyRef = useRef(false);
+  const markDirty = () => {
+    isDirtyRef.current = true;
+  };
   const [loadingCategories, setLoadingCategories] = useState({
     wb: false,
     ozon: false,
@@ -773,6 +816,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       setDedicatedMpLinks(dedicated);
       setAddedDedicatedKeys(DEDICATED_MAIN_MAP_KEYS.filter((key) => attrMpLinksHasAny(dedicated[key])));
       setPickerValue('');
+      setExpandedMapKeys({});
     } else {
       setFormData({
         name: '',
@@ -788,6 +832,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       setDedicatedMpLinks(emptyCategoryDedicatedCharcLinks());
       setAddedDedicatedKeys([]);
       setPickerValue('');
+      setExpandedMapKeys({});
       setOzonSelectedCategory(null);
       setOzonSearchQuery('');
       setWbSelectedCategory(null);
@@ -833,9 +878,9 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       }
 
       if (!cancelled) {
-        setOzonMpAttrs(ozon);
-        setWbMpAttrs(wb);
-        setYmMpAttrs(withYmOfferFieldAttrs(ym));
+        setOzonMpAttrs(withMpOfferFieldAttrs('ozon', ozon));
+        setWbMpAttrs(withMpOfferFieldAttrs('wb', wb));
+        setYmMpAttrs(withMpOfferFieldAttrs('ym', ym));
       }
     })();
 
@@ -845,6 +890,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
   }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId]);
 
   const handleChange = (field, value) => {
+    markDirty();
     setFormData(prev => ({ ...prev, [field]: value }));
     if (errors[field]) {
       setErrors(prev => {
@@ -866,11 +912,9 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
+  const submitCategory = async () => {
     if (!validate()) {
-      return;
+      return false;
     }
 
     // Преобразуем ID категорий
@@ -939,14 +983,58 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       ozonCategoryIdType: typeof ozonCategoryId
     });
 
-    // Передаем данные в onSubmit, который сохранит категорию и маппинги
     await onSubmit(payload);
+    isDirtyRef.current = false;
+    return true;
   };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    await submitCategory();
+  };
+
+  const requestClose = useCallback(() => {
+    if (leavePromptSaving) return;
+    if (!isDirtyRef.current) {
+      onCancel?.();
+      return;
+    }
+    setLeavePromptOpen(true);
+  }, [leavePromptSaving, onCancel]);
+
+  const closeLeavePrompt = () => {
+    if (leavePromptSaving) return;
+    setLeavePromptOpen(false);
+  };
+
+  const handleLeaveDiscard = () => {
+    if (leavePromptSaving) return;
+    isDirtyRef.current = false;
+    setLeavePromptOpen(false);
+    onCancel?.();
+  };
+
+  const handleLeaveSave = async () => {
+    if (leavePromptSaving) return;
+    setLeavePromptSaving(true);
+    try {
+      const ok = await submitCategory();
+      if (ok) setLeavePromptOpen(false);
+      else setLeavePromptOpen(false);
+    } catch {
+      setLeavePromptOpen(false);
+    } finally {
+      setLeavePromptSaving(false);
+    }
+  };
+
+  useImperativeHandle(ref, () => ({ requestClose }), [requestClose]);
 
   // Фильтруем категории, исключая текущую (при редактировании)
   const availableCategories = categories.filter(cat => !category || cat.id !== category.id);
 
   return (
+    <>
     <form className="category-form" onSubmit={handleSubmit}>
       <div className="field">
         <label className="label" htmlFor="categoryName">
@@ -1060,6 +1148,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
             size="small"
             onClick={() => {
               if (!pickerValue) return;
+              markDirty();
               if (pickerValue.startsWith('main:')) {
                 const key = pickerValue.slice(5);
                 if (!DEDICATED_MAIN_MAP_KEYS.includes(key)) return;
@@ -1068,6 +1157,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                   ...prev,
                   [key]: prev[key] && attrMpLinksHasAny(prev[key]) ? prev[key] : emptyAttrMpLinks(),
                 }));
+                setExpandedMapKeys((prev) => ({ ...prev, [`d:${key}`]: true }));
                 setPickerValue('');
                 return;
               }
@@ -1079,6 +1169,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                   if (prev[id] && attrMpLinksHasAny(prev[id])) return prev;
                   return { ...prev, [id]: emptyAttrMpLinks() };
                 });
+                setExpandedMapKeys((prev) => ({ ...prev, [`a:${id}`]: true }));
                 setPickerValue('');
               }
             }}
@@ -1086,6 +1177,33 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
           >
             Добавить
           </Button>
+          {addedDedicatedKeys.length + attributeIds.length > 1 ? (
+            <>
+              <button
+                type="button"
+                className="category-attr-map-toolbar-btn"
+                onClick={() => {
+                  const next = {};
+                  addedDedicatedKeys.forEach((key) => {
+                    next[`d:${key}`] = true;
+                  });
+                  attributeIds.forEach((id) => {
+                    next[`a:${id}`] = true;
+                  });
+                  setExpandedMapKeys(next);
+                }}
+              >
+                Развернуть все
+              </button>
+              <button
+                type="button"
+                className="category-attr-map-toolbar-btn"
+                onClick={() => setExpandedMapKeys({})}
+              >
+                Свернуть все
+              </button>
+            </>
+          ) : null}
         </div>
         {allAttributes.length === 0 ? (
           <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
@@ -1100,102 +1218,84 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         {addedDedicatedKeys.length === 0 && attributeIds.length === 0 ? (
           <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Ничего не добавлено</span>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {addedDedicatedKeys.map((key) => (
-              <div
-                key={`dedicated-${key}`}
-                style={{
-                  padding: '12px',
-                  border: '1px solid var(--border, #e5e7eb)',
-                  borderRadius: '8px',
-                  background: '#fff',
-                }}
-              >
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                  {MP_FIELD_LINK_FIELD_LABELS[key] || key}
-                  <MpMappedMpBadges mps={mappedMpsFromAttrLinks(dedicatedMpLinks[key])} size={18} />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddedDedicatedKeys((prev) => prev.filter((x) => x !== key));
-                      setDedicatedMpLinks((prev) => ({ ...prev, [key]: emptyAttrMpLinks() }));
-                    }}
-                    aria-label="Удалить"
-                    style={{
-                      marginLeft: 'auto',
-                      padding: '0 4px',
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      color: 'var(--muted, #6b7280)',
-                      fontSize: '16px',
-                      lineHeight: 1,
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-                <AttributeMpLinkFields
-                  links={dedicatedMpLinks[key] || emptyAttrMpLinks()}
-                  onChange={(next) => setDedicatedMpLinks((prev) => ({ ...prev, [key]: next }))}
-                  ozonOptions={ozonMpAttrs}
-                  wbOptions={wbMpAttrs}
-                  ymOptions={ymMpAttrs}
-                  getWbId={wbAttrKey}
-                  getWbName={wbAttrName}
-                />
-              </div>
-            ))}
-            {attributeIds.map((id) => {
-              const attr = allAttributes.find((a) => String(a.id) === id);
+          <div className="category-attr-map-list">
+            {addedDedicatedKeys.map((key) => {
+              const mapKey = `d:${key}`;
               return (
-                <div
-                  key={`mp-${id}`}
-                  style={{
-                    padding: '12px',
-                    border: '1px solid var(--border, #e5e7eb)',
-                    borderRadius: '8px',
-                    background: '#fff',
+                <CategoryAttrMapCard
+                  key={`dedicated-${key}`}
+                  title={MP_FIELD_LINK_FIELD_LABELS[key] || key}
+                  links={dedicatedMpLinks[key] || emptyAttrMpLinks()}
+                  expanded={!!expandedMapKeys[mapKey]}
+                  onToggle={() =>
+                    setExpandedMapKeys((prev) => ({ ...prev, [mapKey]: !prev[mapKey] }))
+                  }
+                  onRemove={() => {
+                    markDirty();
+                    setAddedDedicatedKeys((prev) => prev.filter((x) => x !== key));
+                    setDedicatedMpLinks((prev) => ({ ...prev, [key]: emptyAttrMpLinks() }));
+                    setExpandedMapKeys((prev) => {
+                      const next = { ...prev };
+                      delete next[mapKey];
+                      return next;
+                    });
                   }}
                 >
-                  <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                    {attr?.name || id}
-                    <MpMappedMpBadges mps={mappedMpsFromAttrLinks(attributeMpLinks[id])} size={18} />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAttributeIds((prev) => prev.filter((x) => x !== id));
-                        setAttributeMpLinks((prev) => {
-                          const next = { ...prev };
-                          delete next[id];
-                          return next;
-                        });
-                      }}
-                      aria-label="Удалить"
-                      style={{
-                        marginLeft: 'auto',
-                        padding: '0 4px',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        color: 'var(--muted, #6b7280)',
-                        fontSize: '16px',
-                        lineHeight: 1,
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
                   <AttributeMpLinkFields
-                    links={attributeMpLinks[id] || emptyAttrMpLinks()}
-                    onChange={(next) => setAttributeMpLinks((prev) => ({ ...prev, [id]: next }))}
+                    links={dedicatedMpLinks[key] || emptyAttrMpLinks()}
+                    onChange={(next) => {
+                      markDirty();
+                      setDedicatedMpLinks((prev) => ({ ...prev, [key]: next }));
+                    }}
                     ozonOptions={ozonMpAttrs}
                     wbOptions={wbMpAttrs}
                     ymOptions={ymMpAttrs}
                     getWbId={wbAttrKey}
                     getWbName={wbAttrName}
                   />
-                </div>
+                </CategoryAttrMapCard>
+              );
+            })}
+            {attributeIds.map((id) => {
+              const attr = allAttributes.find((a) => String(a.id) === id);
+              const mapKey = `a:${id}`;
+              return (
+                <CategoryAttrMapCard
+                  key={`mp-${id}`}
+                  title={attr?.name || id}
+                  links={attributeMpLinks[id] || emptyAttrMpLinks()}
+                  expanded={!!expandedMapKeys[mapKey]}
+                  onToggle={() =>
+                    setExpandedMapKeys((prev) => ({ ...prev, [mapKey]: !prev[mapKey] }))
+                  }
+                  onRemove={() => {
+                    markDirty();
+                    setAttributeIds((prev) => prev.filter((x) => x !== id));
+                    setAttributeMpLinks((prev) => {
+                      const next = { ...prev };
+                      delete next[id];
+                      return next;
+                    });
+                    setExpandedMapKeys((prev) => {
+                      const next = { ...prev };
+                      delete next[mapKey];
+                      return next;
+                    });
+                  }}
+                >
+                  <AttributeMpLinkFields
+                    links={attributeMpLinks[id] || emptyAttrMpLinks()}
+                    onChange={(next) => {
+                      markDirty();
+                      setAttributeMpLinks((prev) => ({ ...prev, [id]: next }));
+                    }}
+                    ozonOptions={ozonMpAttrs}
+                    wbOptions={wbMpAttrs}
+                    ymOptions={ymMpAttrs}
+                    getWbId={wbAttrKey}
+                    getWbName={wbAttrName}
+                  />
+                </CategoryAttrMapCard>
               );
             })}
           </div>
@@ -1628,10 +1728,34 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       )}
 
       <div className="d-flex justify-content-end gap-2 mt-4">
-        <Button type="button" variant="secondary" onClick={onCancel}>Отмена</Button>
+        <Button type="button" variant="secondary" onClick={requestClose}>Отмена</Button>
         <Button type="submit" variant="primary">{category ? 'Сохранить' : 'Добавить категорию'}</Button>
       </div>
     </form>
+    <Modal
+      isOpen={leavePromptOpen}
+      onClose={closeLeavePrompt}
+      title="Несохранённые изменения"
+      size="small"
+      closeOnBackdropClick={!leavePromptSaving}
+      closeOnEscape={!leavePromptSaving}
+    >
+      <p className="mb-3">
+        В форме есть несохранённые изменения. Сохранить их перед закрытием?
+      </p>
+      <div className="d-flex flex-wrap gap-2 justify-content-end">
+        <Button type="button" variant="secondary" size="small" onClick={closeLeavePrompt} disabled={leavePromptSaving}>
+          Остаться
+        </Button>
+        <Button type="button" variant="secondary" size="small" onClick={handleLeaveDiscard} disabled={leavePromptSaving}>
+          Не сохранять
+        </Button>
+        <Button type="button" variant="primary" size="small" onClick={handleLeaveSave} disabled={leavePromptSaving}>
+          {leavePromptSaving ? 'Сохранение…' : 'Сохранить'}
+        </Button>
+      </div>
+    </Modal>
+    </>
   );
-}
+});
 

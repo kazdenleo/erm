@@ -175,9 +175,11 @@ function normalizeDimAttrName(name) {
 export function classifyMarketplaceDimAttrName(name) {
   const n = normalizeDimAttrName(name);
   if (!n) return null;
-  if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return 'pack';
+  if (/^(длина|ширина|высота|глубина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return 'pack';
   if (/^вес\s+(с\s+)?упаковк/.test(n)) return 'pack';
+  if (/^вес\s+в\s+упаковк/.test(n)) return 'pack';
   if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return 'pack';
+  if (/^вес\s+товара\s+в\s+упаковк/.test(n)) return 'pack';
   if (/^габарит(ы)?\s+упаковк/.test(n)) return 'pack';
   if (/^(длина|ширина|высота)\s+товар/.test(n)) return 'product';
   if (/^вес\s+товар/.test(n)) return 'product';
@@ -198,6 +200,37 @@ export function ozonProductDimAxis(attrOrName) {
     attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName
   );
   if (!n || classifyMarketplaceDimAttrName(n) !== 'product') return null;
+  if (/^(длина|глубина|length|depth)(?:$|[\s,:(])/.test(n)) return 'length';
+  if (/^(ширина|width)(?:$|[\s,:(])/.test(n)) return 'width';
+  if (/^(высота|height)(?:$|[\s,:(])/.test(n)) return 'height';
+  if (/^(вес|weight)(?:$|[\s,:(])/.test(n)) return 'weight';
+  return null;
+}
+
+/** Известные id атрибутов упаковки Ozon. */
+export const OZON_PACK_DIM_ATTR_IDS = {
+  length: ['9802'],
+  width: ['6605', '9799'],
+  height: ['6606', '6859'],
+  weight: ['4497', '4383'],
+};
+
+/** Ось габарита упаковки Ozon: length | width | height | weight. */
+export function ozonPackDimAxis(attrOrName) {
+  const id = String(
+    attrOrName && typeof attrOrName === 'object'
+      ? attrOrName.id ?? attrOrName.attribute_id ?? ''
+      : ''
+  );
+  if (id) {
+    for (const [axis, ids] of Object.entries(OZON_PACK_DIM_ATTR_IDS)) {
+      if (ids.includes(id)) return axis;
+    }
+  }
+  const n = normalizeDimAttrName(
+    attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName
+  );
+  if (!n || classifyMarketplaceDimAttrName(n) !== 'pack') return null;
   if (/^(длина|глубина|length|depth)(?:$|[\s,:(])/.test(n)) return 'length';
   if (/^(ширина|width)(?:$|[\s,:(])/.test(n)) return 'width';
   if (/^(высота|height)(?:$|[\s,:(])/.test(n)) return 'height';

@@ -15,7 +15,7 @@ import {
   formatAttrMpLinksSummary,
   normalizeAttrMpLinks,
 } from '../../utils/productAttributeMpLinks.js';
-import { withYmOfferFieldAttrs } from '../../utils/productMpFieldLinks.js';
+import { withMpOfferFieldAttrs } from '../../utils/productMpFieldLinks.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -136,7 +136,9 @@ function CategoryMpLinksPanel({ attributeId }) {
       return undefined;
     }
     setLinks(linksOfCategory(cat, attributeId));
-    setYmOptions(withYmOfferFieldAttrs([]));
+    setOzonOptions(withMpOfferFieldAttrs('ozon', []));
+    setWbOptions(withMpOfferFieldAttrs('wb', []));
+    setYmOptions(withMpOfferFieldAttrs('ym', []));
     let cancelled = false;
     Promise.all([
       userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon').catch(() => null),
@@ -144,9 +146,9 @@ function CategoryMpLinksPanel({ attributeId }) {
       userCategoriesApi.getMarketplaceAttributes(cat.id, 'ym').catch(() => null),
     ]).then(([oz, wb, ym]) => {
       if (cancelled) return;
-      setOzonOptions(mpAttrsFromResponse(oz));
-      setWbOptions(mpAttrsFromResponse(wb));
-      setYmOptions(withYmOfferFieldAttrs(mpAttrsFromResponse(ym)));
+      setOzonOptions(withMpOfferFieldAttrs('ozon', mpAttrsFromResponse(oz)));
+      setWbOptions(withMpOfferFieldAttrs('wb', mpAttrsFromResponse(wb)));
+      setYmOptions(withMpOfferFieldAttrs('ym', mpAttrsFromResponse(ym)));
     });
     return () => {
       cancelled = true;

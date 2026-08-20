@@ -1262,6 +1262,23 @@ async function pushYandexCard(product, categoryMm, ctx) {
   const offer = { offerId };
   if (name) offer.name = name;
   if (description) offer.description = description;
+  const ymVendorCode = (() => {
+    const draft =
+      product.ym_draft && typeof product.ym_draft === 'object' && !Array.isArray(product.ym_draft)
+        ? product.ym_draft
+        : typeof product.ym_draft === 'string'
+          ? (() => {
+              try {
+                const o = JSON.parse(product.ym_draft);
+                return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+    return trimOrNull(draft?.vendorCode);
+  })();
+  if (ymVendorCode) offer.vendorCode = ymVendorCode;
 
   const ymAttrs = parseJsonObject(product.ym_attributes);
   const parameterValues = Object.entries(ymAttrs)

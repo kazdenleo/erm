@@ -522,6 +522,11 @@
   resize: vertical;
 }
 
+.products-bulk-thumb-wrap {
+  position: relative;
+  width: 44px;
+}
+
 .products-bulk-thumb {
   width: 44px;
   aspect-ratio: 3 / 4;
@@ -548,6 +553,10 @@
   box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.12);
 }
 
+.products-bulk-thumb--btn:has(img) {
+  cursor: zoom-in;
+}
+
 .products-bulk-thumb-empty {
   font-size: 18px;
   font-weight: 600;
@@ -559,9 +568,11 @@
   position: absolute;
   right: 2px;
   bottom: 2px;
+  z-index: 1;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
+  border: none;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.65);
   color: #fff;
@@ -569,6 +580,11 @@
   font-weight: 700;
   line-height: 16px;
   text-align: center;
+  cursor: pointer;
+}
+
+.products-bulk-thumb-count:hover {
+  background: rgba(13, 110, 253, 0.9);
 }
 
 .products-bulk-thumb img {
@@ -674,6 +690,16 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.products-bulk-images-zoom {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
 }
 
 .products-bulk-images-delete {

@@ -8,6 +8,7 @@ import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { ImageLightbox } from '../../components/common/ImageLightbox/ImageLightbox';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -2982,6 +2983,7 @@ export function ProductsBulkEdit() {
   });
   const imagesFileInputRef = useRef(null);
   const [imagesDropActive, setImagesDropActive] = useState(false);
+  const [imageLightbox, setImageLightbox] = useState({ urls: [], index: 0 });
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [pushOfferOpen, setPushOfferOpen] = useState(false);
   const [pushOfferSavedCount, setPushOfferSavedCount] = useState(0);
@@ -4035,6 +4037,19 @@ export function ProductsBulkEdit() {
     });
     setImagesDropActive(false);
     if (imagesFileInputRef.current) imagesFileInputRef.current.value = '';
+  }, []);
+
+  const openImageLightbox = useCallback((images, index = 0) => {
+    const list = normalizeProductImagesOrder(parseProductImages(images));
+    const urls = list
+      .map((img) => resolveProductImageUrl(img?.url || img?.src || img?.link || ''))
+      .filter(Boolean);
+    if (!urls.length) return;
+    const clicked = resolveProductImageUrl(
+      list[index]?.url || list[index]?.src || list[index]?.link || ''
+    );
+    const i = clicked ? urls.indexOf(clicked) : index;
+    setImageLightbox({ urls, index: i >= 0 ? i : 0 });
   }, []);
 
   const handleBulkUploadImages = useCallback(
@@ -5579,26 +5594,46 @@ export function ProductsBulkEdit() {
                           className={colStickyClass(col) || undefined}
                           style={colStickyStyle(col)}
                         >
-                          <button
-                            type="button"
-                            className="products-bulk-thumb products-bulk-thumb--btn"
-                            onClick={() => openImagesModal(row)}
-                            title={
-                              count > 0
-                                ? `Фото (${count}) — открыть, загрузить или удалить; OZ/WB/ЯМ — куда выгружать`
-                                : 'Добавить изображения'
-                            }
-                            aria-label={
-                              count > 0
-                                ? `Управление изображениями товара ${row.sku || row.id}`
-                                : `Добавить изображения для ${row.sku || row.id}`
-                            }
-                          >
-                            {url ? <img src={url} alt="" loading="lazy" /> : <span className="products-bulk-thumb-empty">+</span>}
-                            {count > 1 ? (
-                              <span className="products-bulk-thumb-count">{count}</span>
+                          <div className="products-bulk-thumb-wrap">
+                            <button
+                              type="button"
+                              className="products-bulk-thumb products-bulk-thumb--btn"
+                              onClick={() => {
+                                if (url) openImageLightbox(row._productRef?.images, 0);
+                                else openImagesModal(row);
+                              }}
+                              title={
+                                url
+                                  ? 'Увеличить фото'
+                                  : 'Добавить изображения'
+                              }
+                              aria-label={
+                                url
+                                  ? `Увеличить фото товара ${row.sku || row.id}`
+                                  : `Добавить изображения для ${row.sku || row.id}`
+                              }
+                            >
+                              {url ? <img src={url} alt="" loading="lazy" /> : <span className="products-bulk-thumb-empty">+</span>}
+                            </button>
+                            {count > 0 ? (
+                              <button
+                                type="button"
+                                className="products-bulk-thumb-count"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openImagesModal(row);
+                                }}
+                                title={
+                                  count > 1
+                                    ? `Фото (${count}) — загрузить или удалить; OZ/WB/ЯМ — куда выгружать`
+                                    : 'Управление изображениями'
+                                }
+                                aria-label={`Управление изображениями товара ${row.sku || row.id}`}
+                              >
+                                {count}
+                              </button>
                             ) : null}
-                          </button>
+                          </div>
                         </td>
                       );
                     }
@@ -5710,7 +5745,19 @@ export function ProductsBulkEdit() {
                 return (
                   <div key={id || `img-${index}`} className="products-bulk-images-card">
                     <div className="products-bulk-images-card-media">
-                      {url ? <img src={url} alt="" /> : <span className="text-muted">∅</span>}
+                      {url ? (
+                        <button
+                          type="button"
+                          className="products-bulk-images-zoom"
+                          title="Увеличить"
+                          aria-label="Увеличить изображение"
+                          onClick={() => openImageLightbox(imagesModal.images, index)}
+                        >
+                          <img src={url} alt="" />
+                        </button>
+                      ) : (
+                        <span className="text-muted">∅</span>
+                      )}
                       <button
                         type="button"
                         className="products-bulk-images-delete"
@@ -6033,6 +6080,15 @@ export function ProductsBulkEdit() {
           </Button>
         </div>
       </Modal>
+
+      {imageLightbox.urls.length > 0 ? (
+        <ImageLightbox
+          urls={imageLightbox.urls}
+          index={imageLightbox.index}
+          onIndexChange={(i) => setImageLightbox((prev) => ({ ...prev, index: i }))}
+          onClose={() => setImageLightbox({ urls: [], index: 0 })}
+        />
+      ) : null}
 
       {!loading && (rows.length > 0 || totalProducts > 0) ? renderBulkListPager('bottom') : null}
       </div>

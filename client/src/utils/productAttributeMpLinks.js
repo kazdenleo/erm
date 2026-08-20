@@ -5,7 +5,7 @@
  */
 
 import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
-import { isYmOfferFieldAttrId } from './productMpFieldLinks.js';
+import { isMpOfferFieldAttrId, readMpOfferFieldValue } from './productMpFieldLinks.js';
 
 export const ATTR_MP_CODES = ['ozon', 'wb', 'ym'];
 
@@ -173,8 +173,24 @@ function displayMpAttrValue(raw, attr, resolveDisplay) {
 export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
   const links = normalizeAttrMpLinks(attr?.mp_links);
   const out = [];
+  const formLike = ctx.formData || ctx;
+  for (const mp of ATTR_MP_CODES) {
+    for (const entry of links[mp] || []) {
+      const id = String(entry?.id || '');
+      if (!isMpOfferFieldAttrId(id)) continue;
+      const text = readMpOfferFieldValue(formLike, id);
+      if (attrValuesDiffer(mainValue, text)) {
+        out.push({
+          mp,
+          label: MP_SHORT[mp],
+          title: `${MP_TITLE[mp]}: «${text}»`,
+          value: text,
+        });
+      }
+    }
+  }
   for (const ozonHit of findLinkedMpAttributes(links.ozon, ctx.ozonAttributes)) {
-    if (ozonHit?.id == null) continue;
+    if (ozonHit?.id == null || isMpOfferFieldAttrId(ozonHit.id)) continue;
     const raw = ctx.ozonAttributeValues?.[String(ozonHit.id)];
     const text = displayMpAttrValue(raw, ozonHit, ctx.resolveOzonDisplay);
     if (attrValuesDiffer(mainValue, text)) {
@@ -187,6 +203,7 @@ export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
     }
   }
   for (const wbHit of findLinkedMpAttributes(links.wb, ctx.wbAttributes, ctx.wbAttrKey, ctx.wbAttrName)) {
+    if (isMpOfferFieldAttrId(wbHit?.id ?? wbHit?.charcID)) continue;
     const key = ctx.wbAttrKey ? ctx.wbAttrKey(wbHit) : String(wbHit.id ?? '');
     const raw = ctx.wbAttributeValues?.[key];
     const text = raw == null ? '' : String(raw);
@@ -199,23 +216,8 @@ export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
       });
     }
   }
-  for (const entry of links.ym || []) {
-    const id = String(entry?.id || '');
-    if (!isYmOfferFieldAttrId(id)) continue;
-    const text = id === '__ym_name__'
-      ? String(ctx.mpYmName ?? '')
-      : String(ctx.mpYmDescription ?? '');
-    if (attrValuesDiffer(mainValue, text)) {
-      out.push({
-        mp: 'ym',
-        label: MP_SHORT.ym,
-        title: `${MP_TITLE.ym}: «${text}»`,
-        value: text,
-      });
-    }
-  }
   for (const ymHit of findLinkedMpAttributes(links.ym, ctx.ymAttributes)) {
-    if (ymHit?.id == null || isYmOfferFieldAttrId(ymHit.id)) continue;
+    if (ymHit?.id == null || isMpOfferFieldAttrId(ymHit.id)) continue;
     const raw = ctx.ymAttributeValues?.[String(ymHit.id)];
     const text = displayMpAttrValue(raw, ymHit, ctx.resolveYmDisplay);
     if (attrValuesDiffer(mainValue, text)) {

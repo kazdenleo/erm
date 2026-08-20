@@ -259,8 +259,6 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (/^вес\s+товар/.test(n) || /^вес\s+без\s+упаковк/.test(n)) return true;
   if (/^габарит(ы)?\s+товар/.test(n)) return true;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
-  if (/артикул\s+производител/.test(n)) return true;
-  if (n === 'vendor' || n === 'vendorcode' || n === 'vendor code' || n === 'mpn') return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   return false;

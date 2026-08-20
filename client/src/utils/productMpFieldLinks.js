@@ -392,25 +392,134 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (/^вес\s+товар/.test(n) || /^вес\s+без\s+упаковк/.test(n)) return true;
   if (/^габарит(ы)?\s+товар/.test(n)) return true;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
-  if (/артикул\s+производител/.test(n)) return true;
-  if (n === 'vendor' || n === 'vendorcode' || n === 'vendor code' || n === 'mpn') return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   return false;
 }
 
-/** Название и описание оффера YM — не параметры категории, поэтому их нет в API-списке. */
-export const YM_OFFER_FIELD_ATTRS = [
-  { id: '__ym_name__', name: 'Название' },
-  { id: '__ym_description__', name: 'Описание' },
-];
+/**
+ * Поля оффера, которых нет среди характеристик категории API.
+ * Показываем в выпадающих списках привязки в категории / атрибутах.
+ */
+export const MP_OFFER_FIELD_ATTRS = {
+  ozon: [
+    { id: '__ozon_offer_id__', name: 'Артикул продавца' },
+    { id: '__ozon_pack_length__', name: 'Длина упаковки', skipIfIds: ['9802'] },
+    { id: '__ozon_pack_width__', name: 'Ширина упаковки', skipIfIds: ['6605', '9799'] },
+    { id: '__ozon_pack_height__', name: 'Высота упаковки', skipIfIds: ['6606', '6859'] },
+  ],
+  wb: [{ id: '__wb_vendor_code__', name: 'Артикул продавца' }],
+  ym: [
+    { id: '__ym_name__', name: 'Название' },
+    { id: '__ym_description__', name: 'Описание' },
+    { id: '__ym_shop_sku__', name: 'Артикул продавца' },
+    { id: '__ym_vendor_code__', name: 'Артикул производителя' },
+  ],
+};
 
-export function isYmOfferFieldAttrId(id) {
-  const s = String(id || '');
-  return s === '__ym_name__' || s === '__ym_description__';
+export const YM_OFFER_FIELD_ATTRS = MP_OFFER_FIELD_ATTRS.ym;
+
+function mpOfferFieldTarget(id) {
+  switch (String(id || '')) {
+    case '__ozon_offer_id__':
+      return { kind: 'field', field: 'sku_ozon' };
+    case '__wb_vendor_code__':
+      return { kind: 'field', field: 'mp_wb_vendor_code' };
+    case '__ym_name__':
+      return { kind: 'field', field: 'mp_ym_name' };
+    case '__ym_description__':
+      return { kind: 'field', field: 'mp_ym_description' };
+    case '__ym_shop_sku__':
+      return { kind: 'field', field: 'sku_ym' };
+    case '__ym_vendor_code__':
+      return { kind: 'ym_vendor_code' };
+    case '__ozon_pack_length__':
+      return { kind: 'ozon_pack', axis: 'length' };
+    case '__ozon_pack_width__':
+      return { kind: 'ozon_pack', axis: 'width' };
+    case '__ozon_pack_height__':
+      return { kind: 'ozon_pack', axis: 'height' };
+    case '__ozon_pack_weight__':
+      return { kind: 'ozon_pack', axis: 'weight' };
+    default:
+      return null;
+  }
 }
 
-export function withYmOfferFieldAttrs(attrs) {
+export function isMpOfferFieldAttrId(id) {
+  return mpOfferFieldTarget(id) != null;
+}
+
+export function isYmOfferFieldAttrId(id) {
+  return String(id || '').startsWith('__ym_') && isMpOfferFieldAttrId(id);
+}
+
+export function readMpOfferFieldValue(formData, id) {
+  const target = mpOfferFieldTarget(id);
+  if (!target) return '';
+  if (target.kind === 'field') return String(formData?.[target.field] ?? '');
+  if (target.kind === 'ym_vendor_code') {
+    return String(getMpDraft(formData, 'ym').vendorCode ?? '');
+  }
+  if (target.kind === 'ozon_pack') {
+    const dims = getMpDraft(formData, 'ozon').dimensions || {};
+    const v = dims[target.axis];
+    return v == null ? '' : String(v);
+  }
+  return '';
+}
+
+export function applyMpOfferFieldToForm(prev, entryId, str, { onlyIfEmpty = false } = {}) {
+  const target = mpOfferFieldTarget(entryId);
+  if (!target) return prev;
+  if (target.kind === 'field') {
+    if (onlyIfEmpty && String(prev[target.field] ?? '').trim()) return prev;
+    if (String(prev[target.field] ?? '') === str) return prev;
+    return { ...prev, [target.field]: str };
+  }
+  if (target.kind === 'ym_vendor_code') {
+    const d = parseDraftObj(prev?.ym_draft);
+    if (onlyIfEmpty && String(d.vendorCode ?? '').trim()) return prev;
+    if (String(d.vendorCode ?? '') === str) return prev;
+    return { ...prev, ym_draft: { ...d, vendorCode: str } };
+  }
+  if (target.kind === 'ozon_pack') {
+    const d = parseDraftObj(prev?.ozon_draft);
+    const dims =
+      d.dimensions && typeof d.dimensions === 'object' && !Array.isArray(d.dimensions)
+        ? { ...d.dimensions }
+        : {};
+    const n = Number(String(str || '').replace(',', '.'));
+    const nextVal = Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+    if (onlyIfEmpty && Number(dims[target.axis]) > 0) return prev;
+    if ((dims[target.axis] ?? null) === nextVal) return prev;
+    if (nextVal == null) delete dims[target.axis];
+    else dims[target.axis] = nextVal;
+    return { ...prev, ozon_draft: { ...d, dimensions: dims } };
+  }
+  return prev;
+}
+
+function offerFieldNameAliases(name) {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  const keys = [n, `${n} товара`];
+  if (n === 'артикул продавца') {
+    keys.push('код продавца', 'код товара продавца', 'offer id', 'offer_id', 'shopsku', 'shop sku');
+  }
+  if (n === 'артикул производителя') {
+    keys.push('vendorcode', 'vendor code', 'mpn', 'партномер');
+  }
+  if (n === 'длина упаковки') keys.push('глубина упаковки', 'длина упаковки, мм', 'глубина упаковки, мм');
+  if (n === 'ширина упаковки') keys.push('ширина упаковки, мм');
+  if (n === 'высота упаковки') keys.push('высота упаковки, мм');
+  return keys;
+}
+
+export function withMpOfferFieldAttrs(mp, attrs) {
+  const extras = MP_OFFER_FIELD_ATTRS[mp] || [];
   const list = Array.isArray(attrs) ? [...attrs] : [];
   const ids = new Set(list.map((a) => String(a?.id ?? '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(
@@ -418,12 +527,18 @@ export function withYmOfferFieldAttrs(attrs) {
       .map((a) => String(a?.name || '').trim().toLowerCase().replace(/\s+/g, ' '))
       .filter(Boolean)
   );
-  for (const extra of YM_OFFER_FIELD_ATTRS) {
-    const nameKey = extra.name.toLowerCase();
-    if (ids.has(extra.id) || names.has(nameKey) || names.has(`${nameKey} товара`)) continue;
-    list.push({ ...extra });
+  for (const extra of extras) {
+    if (ids.has(String(extra.id).toLowerCase())) continue;
+    if ((extra.skipIfIds || []).some((sid) => ids.has(String(sid).toLowerCase()))) continue;
+    if (offerFieldNameAliases(extra.name).some((k) => names.has(k))) continue;
+    const { skipIfIds: _skip, ...rest } = extra;
+    list.push({ ...rest });
   }
   return list;
+}
+
+export function withYmOfferFieldAttrs(attrs) {
+  return withMpOfferFieldAttrs('ym', attrs);
 }
 
 /** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. L/W/H товара оставляем. */

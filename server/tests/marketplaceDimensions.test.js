@@ -1,6 +1,7 @@
 import {
   classifyMarketplaceDimAttrName,
   isWbPackDimCharcId,
+  ozonPackDimAxis,
   ozonProductDimAxis,
   productDimAttrStoredFromMm,
   resolveMarketplaceDimensionsMm,
@@ -244,7 +245,13 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
 
   test('packaging attrs stay pack', () => {
     expect(classifyMarketplaceDimAttrName('Длина упаковки')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Глубина упаковки')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Вес в упаковке')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Вес товара в упаковке')).toBe('pack');
     expect(ozonProductDimAxis({ name: 'Длина упаковки' })).toBeNull();
+    expect(ozonPackDimAxis({ id: 9802 })).toBe('length');
+    expect(ozonPackDimAxis({ id: '6605', name: 'Ширина упаковки' })).toBe('width');
+    expect(ozonPackDimAxis({ name: 'Вес в упаковке' })).toBe('weight');
   });
 
   test('WB item charc ids are product axes; pack ids are not', () => {

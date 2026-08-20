@@ -3,7 +3,7 @@
  * Страница управления категориями
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useUserCategories } from '../../hooks/useUserCategories';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { productAttributesApi } from '../../services/productAttributes.api';
@@ -61,6 +61,7 @@ export function Categories() {
   const [categoryForForm, setCategoryForForm] = useState(null);
   const [allAttributes, setAllAttributes] = useState([]);
   const [categoriesWithMappings, setCategoriesWithMappings] = useState([]);
+  const categoryFormRef = useRef(null);
 
   const wbNameMap = useMemo(() => new Map(), []);
 
@@ -305,6 +306,20 @@ export function Categories() {
     }
   };
 
+  const closeCategoryModal = () => {
+    setIsModalOpen(false);
+    setEditingCategory(null);
+    setCategoryForForm(null);
+  };
+
+  const requestCloseCategoryModal = () => {
+    if (typeof categoryFormRef.current?.requestClose === 'function') {
+      categoryFormRef.current.requestClose();
+      return;
+    }
+    closeCategoryModal();
+  };
+
   if (loading) {
     return <div className="loading">Загрузка категорий...</div>;
   }
@@ -477,25 +492,18 @@ export function Categories() {
 
       <Modal
         isOpen={isModalOpen}
-        onClose={() => {
-          setIsModalOpen(false);
-          setEditingCategory(null);
-          setCategoryForForm(null);
-        }}
+        onClose={requestCloseCategoryModal}
         title={editingCategory ? 'Редактировать категорию' : 'Добавить категорию'}
         size="large"
         scrollable
       >
         <CategoryForm
+          ref={categoryFormRef}
           category={categoryForFormMerged}
           categories={categoriesWithMappings.length > 0 ? categoriesWithMappings : categories}
           allAttributes={allAttributes}
           onSubmit={handleSubmit}
-          onCancel={() => {
-            setIsModalOpen(false);
-            setEditingCategory(null);
-            setCategoryForForm(null);
-          }}
+          onCancel={closeCategoryModal}
         />
       </Modal>
     </div>
