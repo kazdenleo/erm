@@ -43,6 +43,8 @@ import {
   DEDICATED_PACK_DIM_KEYS,
   DEDICATED_PRODUCT_DIM_KEYS,
   supportedMpsForFieldKey,
+  isMpOfferFieldAttrId,
+  applyMpOfferFieldToForm,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -151,7 +153,6 @@ const PRODUCT_DIM_ALIAS = {
     'product_weight',
     'ozon_product_weight',
     'wb_product_weight',
-    'ym_product_weight',
   ],
 };
 
@@ -349,6 +350,16 @@ function copyErpAttrToLinkedMp(row, erpCol, mp) {
   let next = row;
   for (const entry of entries) {
     if (!entry?.id) continue;
+    if (isMpOfferFieldAttrId(entry.id)) {
+      const seeded = {
+        ...next,
+        ym_draft: next.ym_draft || next._ymDraftBaseline,
+        ozon_draft: next.ozon_draft || next._ozonDraftBaseline,
+        wb_draft: next.wb_draft || next._wbDraftBaseline,
+      };
+      next = applyMpOfferFieldToForm(seeded, entry.id, String(next[erpCol.key] ?? ''));
+      continue;
+    }
     next = { ...next, [mpAttrColKey(mp, entry.id)]: row[erpCol.key] ?? '' };
   }
   return next;
@@ -838,8 +849,9 @@ const COLUMNS = [
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym' },
-  /* Длина/ширина/высота товара YM — характеристики, не отдельные колонки */
-  { key: 'ym_product_weight', label: 'Вес тов.', title: 'Яндекс.Маркет · Вес товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight' },
+          { key: 'ym_product_length', label: 'Длина тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_width', label: 'Ширина тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
+  { key: 'ym_product_height', label: 'Высота тов.', title: 'Яндекс.Маркет · Высота товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
   { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length' },
@@ -996,9 +1008,15 @@ function collectAttrKeySets(products) {
   const ym = new Set();
   for (const p of products) {
     if (!p) continue;
-    Object.keys(normalizeJsonAttrs(p.ozon_attributes)).forEach((k) => oz.add(String(k)));
-    Object.keys(normalizeJsonAttrs(p.wb_attributes)).forEach((k) => wb.add(String(k)));
-    Object.keys(normalizeJsonAttrs(p.ym_attributes)).forEach((k) => ym.add(String(k)));
+    Object.keys(normalizeJsonAttrs(p.ozon_attributes)).forEach((k) => {
+      if (!String(k).startsWith('__')) oz.add(String(k));
+    });
+    Object.keys(normalizeJsonAttrs(p.wb_attributes)).forEach((k) => {
+      if (!String(k).startsWith('__')) wb.add(String(k));
+    });
+    Object.keys(normalizeJsonAttrs(p.ym_attributes)).forEach((k) => {
+      if (!String(k).startsWith('__')) ym.add(String(k));
+    });
   }
   return { oz, wb, ym };
 }
@@ -1666,6 +1684,7 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк/.test(h)) return true;
+    if ((h === 'вес' || h === 'вес товара' || /^вес товара\b/.test(h)) && !/упаковк/.test(h)) return true;
     return false;
   }
 
@@ -2053,7 +2072,6 @@ function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
     ym_product_length: ym.length,
     ym_product_width: ym.width,
     ym_product_height: ym.height,
-    ym_product_weight: ym.weight,
   };
 }
 
@@ -2548,7 +2566,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       !eq(original[`${mp}_product_length`], current[`${mp}_product_length`]) ||
       !eq(original[`${mp}_product_width`], current[`${mp}_product_width`]) ||
       !eq(original[`${mp}_product_height`], current[`${mp}_product_height`]) ||
-      !eq(original[`${mp}_product_weight`], current[`${mp}_product_weight`]);
+      (mp !== 'ym' && !eq(original[`${mp}_product_weight`], current[`${mp}_product_weight`]));
     for (const mp of ['ozon', 'wb', 'ym']) {
       const linked = isMpFieldLinked(links, 'product_dimensions', mp);
       if (mpProductChanged(mp) && !linked) {
@@ -2557,7 +2575,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
             current[`${mp}_product_length`],
             current[`${mp}_product_width`],
             current[`${mp}_product_height`],
-            current[`${mp}_product_weight`]
+            mp === 'ym' ? '' : current[`${mp}_product_weight`]
           ),
         });
       } else if (productDimsTouched && linked) {
@@ -2566,7 +2584,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
             current.product_length,
             current.product_width,
             current.product_height,
-            current.product_weight
+            mp === 'ym' ? '' : current.product_weight
           ),
         });
       }
@@ -2686,6 +2704,22 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     }
   }
 
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const draftKey = `${mp}_draft`;
+    const baselineKey =
+      mp === 'ozon' ? '_ozonDraftBaseline' : mp === 'wb' ? '_wbDraftBaseline' : '_ymDraftBaseline';
+    const fromRow = current[draftKey];
+    if (!fromRow || typeof fromRow !== 'object' || Array.isArray(fromRow)) continue;
+    const prev =
+      payload[draftKey] && typeof payload[draftKey] === 'object'
+        ? payload[draftKey]
+        : parseDraftBaseline(original[baselineKey] ?? original._productRef?.[draftKey]);
+    const merged = { ...prev, ...fromRow };
+    if (stableAttrJson(prev) !== stableAttrJson(merged)) {
+      touch(draftKey, merged);
+    }
+  }
+
   return payload;
 }
 
@@ -2695,6 +2729,7 @@ function sanitizeMpAttrsForApi(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
   for (const [k, v] of Object.entries(obj)) {
     if (v == null) continue;
+    if (String(k).startsWith('__')) continue;
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       out[k] = v;
       continue;

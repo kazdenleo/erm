@@ -7,6 +7,7 @@ import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
 import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
+import { isOzonManufacturerArticleAttr } from '../utils/ozonManufacturerArticle.js';
 import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
 import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 import {
@@ -363,7 +364,13 @@ function enrichOzonUpdatesFromAttributes(updates, product, attrs) {
     country = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['4389']);
   }
 
-  if (packL != null || packW != null || packH != null || packWt != null || country) {
+  let vendorCode = trimStr(prevDraft.vendorCode);
+  if (!vendorCode) {
+    const a = findOzonAttr(list, isOzonManufacturerArticleAttr);
+    vendorCode = a ? ozonAttrDisplayText(a) : '';
+  }
+
+  if (packL != null || packW != null || packH != null || packWt != null || country || vendorCode) {
     updates.ozon_draft = {
       ...prevDraft,
       dimensions: {
@@ -374,6 +381,7 @@ function enrichOzonUpdatesFromAttributes(updates, product, attrs) {
         ...(packWt != null ? { weight: packWt } : {}),
       },
       ...(country ? { country } : {}),
+      ...(vendorCode ? { vendorCode } : {}),
     };
   }
 }
@@ -625,8 +633,26 @@ function mapYmCardToUpdates(product, data) {
   if (description) updates.mp_ym_description = description;
 
   const vendor = trimStr(data.vendor);
-  if (vendor && isEmptyVal(product.brand)) {
-    updates.brand = vendor;
+  const prevDraft = parseJsonObject(product.ym_draft);
+  const nextDraft = { ...prevDraft };
+  if (vendor) {
+    nextDraft.vendor = vendor;
+    if (isEmptyVal(product.brand)) updates.brand = vendor;
+  }
+  const manufacturerFromParams = Array.isArray(data.parameterValues)
+    ? data.parameterValues.find((pv) => {
+        const n = String(pv?.parameterName ?? pv?.name ?? '')
+          .trim()
+          .toLowerCase();
+        return n === 'изготовитель' || n === 'производитель' || n === 'manufacturer';
+      })
+    : null;
+  const manufacturerVal =
+    manufacturerFromParams?.value ??
+    manufacturerFromParams?.valueId ??
+    null;
+  if (manufacturerVal != null && String(manufacturerVal).trim()) {
+    nextDraft.manufacturer = String(manufacturerVal).trim();
   }
 
   const countries = Array.isArray(data.manufacturerCountries) ? data.manufacturerCountries : [];
@@ -644,16 +670,15 @@ function mapYmCardToUpdates(product, data) {
     if (dims.weight != null && isEmptyVal(product.weight)) updates.weight = dims.weight;
   }
   if (data.weightDimensions && typeof data.weightDimensions === 'object') {
-    const prevDraft = parseJsonObject(product.ym_draft);
-    updates.ym_draft = {
-      ...prevDraft,
-      weightDimensions: {
-        length: data.weightDimensions.length,
-        width: data.weightDimensions.width,
-        height: data.weightDimensions.height,
-        ...(data.weightDimensions.weight != null ? { weight: data.weightDimensions.weight } : {}),
-      },
+    nextDraft.weightDimensions = {
+      length: data.weightDimensions.length,
+      width: data.weightDimensions.width,
+      height: data.weightDimensions.height,
+      ...(data.weightDimensions.weight != null ? { weight: data.weightDimensions.weight } : {}),
     };
+  }
+  if (Object.keys(nextDraft).length) {
+    updates.ym_draft = nextDraft;
   }
 
   const prevAttrs = parseJsonObject(product.ym_attributes);

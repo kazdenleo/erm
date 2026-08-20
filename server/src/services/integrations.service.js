@@ -14,6 +14,7 @@ import { findAll as findAllMarketplaceCabinets } from '../repositories/marketpla
 import { extractWbWarehouseList, hasWbTariffsWarehouseList } from '../utils/wbTariffs.js';
 import { normWbVendorCode, sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { coerceBarcodeString } from '../utils/productBarcodes.js';
+import { dedupeYmCategoryParamsByName } from '../utils/productMpFieldLinks.js';
 import {
   isOzonBlockAutoPromotionsEnabled,
   pickOzonCredentials,
@@ -4002,6 +4003,8 @@ class IntegrationsService {
       description: p.description ? String(p.description) : '',
       required: Boolean(p.required),
       multivalue: Boolean(p.multivalue),
+      filtering: Boolean(p.filtering),
+      distinctive: Boolean(p.distinctive),
       ym_parameter_type: ymType,
       type,
       dictionary_options,
@@ -4055,7 +4058,7 @@ class IntegrationsService {
     const forceRefresh = this._isTruthy(opts.forceRefresh || opts.force_refresh || opts.force);
     const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
     const cache_type = 'mp_attributes';
-    const cache_key = `ym:${catIdStr}:${businessId || 0}`;
+    const cache_key = `ym:v3:${catIdStr}:${businessId || 0}`;
 
     if (!forceRefresh) {
       const cached = await this._cacheGet({ cache_type, cache_key });
@@ -4103,9 +4106,9 @@ class IntegrationsService {
 
     const result = data.result ?? data;
     const rawParams = Array.isArray(result?.parameters) ? result.parameters : [];
-    const normalized = rawParams
-      .map((p) => this._normalizeYandexCategoryParameter(p))
-      .filter(Boolean);
+    const normalized = dedupeYmCategoryParamsByName(
+      rawParams.map((p) => this._normalizeYandexCategoryParameter(p)).filter(Boolean)
+    );
 
     await this._cacheSet({ cache_type, cache_key, cache_value: normalized, ttl_ms: CACHE_TTL_MS }).catch((e) => {
       logger.warn('[Integrations Service] Failed to cache Yandex category parameters', { cache_key, err: e?.message });

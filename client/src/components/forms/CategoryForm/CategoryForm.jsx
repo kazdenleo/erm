@@ -19,6 +19,7 @@ import {
   resolveMpCommissionEntry,
 } from '../../../utils/marketplaceCategoryCommissions';
 import api from '../../../services/api';
+import { useAuth } from '../../../context/AuthContext.jsx';
 import { AttributeMpLinkFields } from '../../common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
 import { MpMappedMpBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import { attrMpLinksHasAny, emptyAttrMpLinks, formatAttrMpLinksSummary, mappedMpsFromAttrLinks, normalizeAttrMpLinks } from '../../../utils/productAttributeMpLinks.js';
@@ -220,6 +221,7 @@ function CategoryAttrMapCard({ title, links, expanded, onToggle, onRemove, child
 }
 
 export const CategoryForm = forwardRef(function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onRefreshWbCategories, onSubmit, onCancel }, ref) {
+  const { selectedOrganizationId } = useAuth();
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -872,8 +874,11 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         const [wbRes, ymRes] = await Promise.all([
           userCategoriesApi.getMarketplaceAttributes(category.id, 'wb', {
             subjectId: wbSubjectId > 0 ? wbSubjectId : undefined,
+            organizationId: selectedOrganizationId || undefined,
           }).catch(() => null),
-          userCategoriesApi.getMarketplaceAttributes(category.id, 'ym').catch(() => null),
+          userCategoriesApi.getMarketplaceAttributes(category.id, 'ym', {
+            organizationId: selectedOrganizationId || undefined,
+          }).catch(() => null),
         ]);
         wb = mpAttrsFromResponse(wbRes);
         ym = mpAttrsFromResponse(ymRes);
@@ -889,7 +894,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
     return () => {
       cancelled = true;
     };
-  }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId]);
+  }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId, selectedOrganizationId]);
 
   const handleChange = (field, value) => {
     markDirty();

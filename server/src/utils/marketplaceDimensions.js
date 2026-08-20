@@ -175,7 +175,11 @@ function normalizeDimAttrName(name) {
 export function classifyMarketplaceDimAttrName(name) {
   const n = normalizeDimAttrName(name);
   if (!n) return null;
-  if (/^(длина|ширина|высота|глубина)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return 'pack';
+  // «… без упаковки» — габариты товара; иначе любое «с/в упаковке» — логистика, не категория «товар».
+  if (!/без\s+упаковк/.test(n) && /упаковк/.test(n)) {
+    if (/^(длина|ширина|высота|глубина|вес|габарит)/.test(n)) return 'pack';
+  }
+  if (/^(длина|ширина|высота|глубина)\s+(упаковк|товара\s+(в|с)\s+упаковк)/.test(n)) return 'pack';
   if (/^вес\s+(с\s+)?упаковк/.test(n)) return 'pack';
   if (/^вес\s+в\s+упаковк/.test(n)) return 'pack';
   if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return 'pack';

@@ -248,10 +248,15 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
     expect(classifyMarketplaceDimAttrName('Глубина упаковки')).toBe('pack');
     expect(classifyMarketplaceDimAttrName('Вес в упаковке')).toBe('pack');
     expect(classifyMarketplaceDimAttrName('Вес товара в упаковке')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Длина товара с упаковкой')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Габариты товара с упаковкой')).toBe('pack');
+    expect(classifyMarketplaceDimAttrName('Ширина товара в упаковке')).toBe('pack');
     expect(ozonProductDimAxis({ name: 'Длина упаковки' })).toBeNull();
+    expect(ozonProductDimAxis({ name: 'Длина товара с упаковкой' })).toBeNull();
     expect(ozonPackDimAxis({ id: 9802 })).toBe('length');
     expect(ozonPackDimAxis({ id: '6605', name: 'Ширина упаковки' })).toBe('width');
     expect(ozonPackDimAxis({ name: 'Вес в упаковке' })).toBe('weight');
+    expect(ozonPackDimAxis({ name: 'Длина товара с упаковкой' })).toBe('length');
   });
 
   test('WB item charc ids are product axes; pack ids are not', () => {

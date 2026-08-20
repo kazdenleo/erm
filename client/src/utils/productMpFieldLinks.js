@@ -4,6 +4,8 @@
  * Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
+import { classifyMarketplaceDimAttrName, ozonPackDimAxis } from './marketplaceDimensions.js';
+
 export const MP_FIELD_LINK_KEYS = [
   'name',
   'sku',
@@ -478,19 +480,38 @@ export function isYmPackOfferParam(name) {
   return false;
 }
 
-/**
- * YM-параметры категории, которые уже редактируются отдельными полями карточки
- * (название / описание / страна). Габариты и вес упаковки и товара в списке показываем.
- */
-export function isYmParamDuplicatingDedicatedField(name) {
-  const n = String(name || '')
+function ymParamNameKey(name) {
+  return String(name || '')
     .trim()
     .toLowerCase()
+    .replace(/ё/g, 'е')
     .replace(/\s+/g, ' ');
+}
+
+/** Вес товара без упаковки: у Маркета такого параметра нет, только weightDimensions.weight. */
+export function isYmProductWeightOnlyParam(name) {
+  const n = ymParamNameKey(name);
+  if (!n || /упаковк/.test(n)) return false;
+  if (/^(вес|weight)(\s+товара)?(\s*[,:(–-]\s*(г|кг|g|kg))?$/.test(n)) return true;
+  if (/^вес\s+товара\b/.test(n)) return true;
+  if (/^product\s+weight$/.test(n)) return true;
+  return false;
+}
+
+/**
+ * YM-параметры категории, которые уже редактируются отдельными полями карточки
+ * (название / описание / страна / бренд / штрихкод / изготовитель).
+ */
+export function isYmParamDuplicatingDedicatedField(name) {
+  const n = ymParamNameKey(name);
   if (!n) return false;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
+  if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
+  if (n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin') return true;
+  if (n === 'изготовитель' || n === 'производитель' || n === 'manufacturer') return true;
+  if (isYmProductWeightOnlyParam(n)) return true;
   return false;
 }
 
@@ -500,10 +521,12 @@ export function isYmParamDuplicatingDedicatedField(name) {
  */
 export const MP_OFFER_FIELD_ATTRS = {
   ozon: [
-    { id: '__ozon_offer_id__', name: 'Артикул продавца' },
+    { id: '__ozon_offer_id__', name: 'Артикул продавца', description: 'offer_id карточки в кабинете Ozon' },
+    { id: '__ozon_vendor_code__', name: 'Артикул производителя', description: 'Партномер / OEM; уходит в характеристику категории, если она есть' },
     { id: '__ozon_pack_length__', name: 'Длина упаковки', skipIfIds: ['9802'] },
     { id: '__ozon_pack_width__', name: 'Ширина упаковки', skipIfIds: ['6605', '9799'] },
     { id: '__ozon_pack_height__', name: 'Высота упаковки', skipIfIds: ['6606', '6859'] },
+    { id: '__ozon_pack_weight__', name: 'Вес с упаковкой', skipIfIds: ['4497', '4383'] },
   ],
   wb: [{ id: '__wb_vendor_code__', name: 'Артикул продавца' }],
   ym: [
@@ -511,6 +534,13 @@ export const MP_OFFER_FIELD_ATTRS = {
     { id: '__ym_description__', name: 'Описание' },
     { id: '__ym_shop_sku__', name: 'Артикул продавца' },
     { id: '__ym_vendor_code__', name: 'Артикул производителя' },
+    { id: '__ym_vendor__', name: 'Бренд' },
+    { id: '__ym_barcodes__', name: 'Штрихкод' },
+    { id: '__ym_manufacturer__', name: 'Изготовитель' },
+    { id: '__ym_pack_length__', name: 'Длина упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
+    { id: '__ym_pack_width__', name: 'Ширина упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
+    { id: '__ym_pack_height__', name: 'Высота упаковки', type: 'number', description: 'Поле оффера Маркета, см' },
+    { id: '__ym_pack_weight__', name: 'Вес товара в упаковке', type: 'number', description: 'Поле оффера Маркета (weightDimensions.weight), кг' },
   ],
 };
 
@@ -520,6 +550,8 @@ function mpOfferFieldTarget(id) {
   switch (String(id || '')) {
     case '__ozon_offer_id__':
       return { kind: 'field', field: 'sku_ozon' };
+    case '__ozon_vendor_code__':
+      return { kind: 'ozon_vendor_code' };
     case '__wb_vendor_code__':
       return { kind: 'field', field: 'mp_wb_vendor_code' };
     case '__ym_name__':
@@ -530,6 +562,12 @@ function mpOfferFieldTarget(id) {
       return { kind: 'field', field: 'sku_ym' };
     case '__ym_vendor_code__':
       return { kind: 'ym_vendor_code' };
+    case '__ym_vendor__':
+      return { kind: 'ym_vendor' };
+    case '__ym_barcodes__':
+      return { kind: 'ym_barcodes' };
+    case '__ym_manufacturer__':
+      return { kind: 'ym_manufacturer' };
     case '__ozon_pack_length__':
       return { kind: 'ozon_pack', axis: 'length' };
     case '__ozon_pack_width__':
@@ -538,6 +576,14 @@ function mpOfferFieldTarget(id) {
       return { kind: 'ozon_pack', axis: 'height' };
     case '__ozon_pack_weight__':
       return { kind: 'ozon_pack', axis: 'weight' };
+    case '__ym_pack_length__':
+      return { kind: 'ym_pack', axis: 'length' };
+    case '__ym_pack_width__':
+      return { kind: 'ym_pack', axis: 'width' };
+    case '__ym_pack_height__':
+      return { kind: 'ym_pack', axis: 'height' };
+    case '__ym_pack_weight__':
+      return { kind: 'ym_pack', axis: 'weight' };
     default:
       return null;
   }
@@ -558,9 +604,36 @@ export function readMpOfferFieldValue(formData, id) {
   if (target.kind === 'ym_vendor_code') {
     return String(getMpDraft(formData, 'ym').vendorCode ?? '');
   }
+  if (target.kind === 'ym_vendor') {
+    if (isMpFieldLinked(formData?.mp_field_links, 'brand', 'ym')) {
+      return String(formData?.brand ?? '');
+    }
+    return String(getMpDraft(formData, 'ym').vendor ?? '');
+  }
+  if (target.kind === 'ym_manufacturer') {
+    return String(getMpDraft(formData, 'ym').manufacturer ?? '');
+  }
+  if (target.kind === 'ym_barcodes') {
+    const draft = String(getMpDraft(formData, 'ym').barcode ?? '').trim();
+    if (draft) return draft;
+    const rows = Array.isArray(formData?.barcodes) ? formData.barcodes : [];
+    for (const row of rows) {
+      const code = typeof row === 'string' ? row : row?.barcode;
+      if (code != null && String(code).trim()) return String(code).trim();
+    }
+    return '';
+  }
+  if (target.kind === 'ozon_vendor_code') {
+    return String(getMpDraft(formData, 'ozon').vendorCode ?? '');
+  }
   if (target.kind === 'ozon_pack') {
     const dims = getMpDraft(formData, 'ozon').dimensions || {};
     const v = dims[target.axis];
+    return v == null ? '' : String(v);
+  }
+  if (target.kind === 'ym_pack') {
+    const wd = getYmDraftWeightDimensions(formData) || {};
+    const v = wd[target.axis];
     return v == null ? '' : String(v);
   }
   return '';
@@ -580,6 +653,35 @@ export function applyMpOfferFieldToForm(prev, entryId, str, { onlyIfEmpty = fals
     if (String(d.vendorCode ?? '') === str) return prev;
     return { ...prev, ym_draft: { ...d, vendorCode: str } };
   }
+  if (target.kind === 'ym_vendor') {
+    if (isMpFieldLinked(prev?.mp_field_links, 'brand', 'ym')) {
+      if (onlyIfEmpty && String(prev.brand ?? '').trim()) return prev;
+      if (String(prev.brand ?? '') === str) return prev;
+      return applyLinkedMpFieldsFromMain({ ...prev, brand: str }, prev.mp_field_links, ['brand']);
+    }
+    const d = parseDraftObj(prev?.ym_draft);
+    if (onlyIfEmpty && String(d.vendor ?? '').trim()) return prev;
+    if (String(d.vendor ?? '') === str) return prev;
+    return { ...prev, ym_draft: { ...d, vendor: str } };
+  }
+  if (target.kind === 'ym_manufacturer') {
+    const d = parseDraftObj(prev?.ym_draft);
+    if (onlyIfEmpty && String(d.manufacturer ?? '').trim()) return prev;
+    if (String(d.manufacturer ?? '') === str) return prev;
+    return { ...prev, ym_draft: { ...d, manufacturer: str } };
+  }
+  if (target.kind === 'ym_barcodes') {
+    const d = parseDraftObj(prev?.ym_draft);
+    if (onlyIfEmpty && String(d.barcode ?? '').trim()) return prev;
+    if (String(d.barcode ?? '') === str) return prev;
+    return { ...prev, ym_draft: { ...d, barcode: str } };
+  }
+  if (target.kind === 'ozon_vendor_code') {
+    const d = parseDraftObj(prev?.ozon_draft);
+    if (onlyIfEmpty && String(d.vendorCode ?? '').trim()) return prev;
+    if (String(d.vendorCode ?? '') === str) return prev;
+    return { ...prev, ozon_draft: { ...d, vendorCode: str } };
+  }
   if (target.kind === 'ozon_pack') {
     const d = parseDraftObj(prev?.ozon_draft);
     const dims =
@@ -593,6 +695,20 @@ export function applyMpOfferFieldToForm(prev, entryId, str, { onlyIfEmpty = fals
     if (nextVal == null) delete dims[target.axis];
     else dims[target.axis] = nextVal;
     return { ...prev, ozon_draft: { ...d, dimensions: dims } };
+  }
+  if (target.kind === 'ym_pack') {
+    const d = parseDraftObj(prev?.ym_draft);
+    const wd =
+      d.weightDimensions && typeof d.weightDimensions === 'object' && !Array.isArray(d.weightDimensions)
+        ? { ...d.weightDimensions }
+        : {};
+    const n = Number(String(str || '').replace(',', '.'));
+    const nextVal = Number.isFinite(n) && n > 0 ? n : null;
+    if (onlyIfEmpty && Number(wd[target.axis]) > 0) return prev;
+    if ((wd[target.axis] ?? null) === nextVal) return prev;
+    if (nextVal == null) delete wd[target.axis];
+    else wd[target.axis] = nextVal;
+    return { ...prev, ym_draft: { ...d, weightDimensions: wd } };
   }
   return prev;
 }
@@ -609,15 +725,40 @@ function offerFieldNameAliases(name) {
   if (n === 'артикул производителя') {
     keys.push('vendorcode', 'vendor code', 'mpn', 'партномер');
   }
+  if (n === 'бренд') keys.push('brand', 'торговая марка');
+  if (n === 'штрихкод') keys.push('штрих код', 'barcode', 'ean', 'gtin');
+  if (n === 'изготовитель') keys.push('производитель', 'manufacturer');
   if (n === 'длина упаковки') keys.push('глубина упаковки', 'длина упаковки, мм', 'глубина упаковки, мм');
   if (n === 'ширина упаковки') keys.push('ширина упаковки, мм');
   if (n === 'высота упаковки') keys.push('высота упаковки, мм');
+  if (n === 'вес с упаковкой' || n === 'вес товара в упаковке') {
+    keys.push(
+      'вес с упаковкой',
+      'вес товара в упаковке',
+      'вес упаковки',
+      'вес в упаковке',
+      'вес товара с упаковкой'
+    );
+  }
   return keys;
 }
 
 export function withMpOfferFieldAttrs(mp, attrs) {
   const extras = MP_OFFER_FIELD_ATTRS[mp] || [];
-  const list = Array.isArray(attrs) ? [...attrs] : [];
+  let list = dedupeYmCategoryParamsByName(mp, Array.isArray(attrs) ? [...attrs] : []);
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ym') {
+    list = list.filter(
+      (a) =>
+        !isYmParamDuplicatingDedicatedField(a?.name) &&
+        !isYmPackOfferParam(a?.name) &&
+        !isYmProductWeightOnlyParam(a?.name)
+    );
+  }
+  if (code === 'ozon') {
+    // Упаковка на Ozon — поля карточки, не характеристики категории («товар с упаковкой» нет).
+    list = list.filter((a) => classifyMarketplaceDimAttrName(a?.name) !== 'pack' && !ozonPackDimAxis(a));
+  }
   const ids = new Set(list.map((a) => String(a?.id ?? '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(
     list
@@ -638,10 +779,91 @@ export function withYmOfferFieldAttrs(attrs) {
   return withMpOfferFieldAttrs('ym', attrs);
 }
 
-/** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля (название/описание/страна). Габариты и вес оставляем. */
+function ymParamDedupeScore(p) {
+  let s = 0;
+  if (p?.required) s += 100;
+  const ymType = String(p?.ym_parameter_type || p?.type || '').toUpperCase();
+  if (ymType === 'ENUM' || ymType === 'DICTIONARY' || p?.type === 'dictionary') s += 50;
+  const optCount = Array.isArray(p?.dictionary_options) ? p.dictionary_options.length : 0;
+  s += Math.min(optCount, 40);
+  if (p?.filtering) s += 25;
+  if (p?.distinctive) s += 10;
+  return s;
+}
+
+/** Одинаковые названия YM (часто «Модель автомобиля»): оставляем ENUM/обязательный/фильтр. */
+export function dedupeYmCategoryParamsByName(mp, attrs) {
+  const source = Array.isArray(attrs) ? attrs : [];
+  if (String(mp || '').toLowerCase() !== 'ym') return source;
+  const groups = new Map();
+  for (const a of source) {
+    const k = ymParamNameKey(a?.name);
+    if (!k || String(a?.id || '').startsWith('__')) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  const seen = new Set();
+  const out = [];
+  for (const a of source) {
+    if (String(a?.id || '').startsWith('__')) {
+      out.push(a);
+      continue;
+    }
+    const k = ymParamNameKey(a?.name);
+    if (!k) {
+      out.push(a);
+      continue;
+    }
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const g = groups.get(k) || [a];
+    if (g.length === 1) {
+      out.push(g[0]);
+      continue;
+    }
+    g.sort(
+      (x, y) =>
+        ymParamDedupeScore(y) - ymParamDedupeScore(x) || Number(x.id) - Number(y.id)
+    );
+    out.push(g[0]);
+  }
+  return out;
+}
+
+const OZON_SKU_OFFER_FIELD_IDS = ['__ozon_offer_id__', '__ozon_vendor_code__'];
+
+/** Характеристики Ozon для карточки товара: артикулы продавца/производителя сверху; упаковка — отдельный блок. */
+export function ozonAttrsForProductForm(attrs) {
+  const list = withMpOfferFieldAttrs('ozon', Array.isArray(attrs) ? attrs : []).filter(
+    (a) => !String(a?.id || '').startsWith('__ozon_pack_')
+  );
+  const pinned = [];
+  for (const id of OZON_SKU_OFFER_FIELD_IDS) {
+    const hit = list.find((a) => String(a?.id) === id);
+    if (hit) pinned.push(hit);
+  }
+  const rest = list.filter((a) => !OZON_SKU_OFFER_FIELD_IDS.includes(String(a?.id)));
+  return [...pinned, ...rest];
+}
+
+/** Артикул продавца на вкладке МП с учётом связи с «Основным». */
+export function readMpSellerSku(formData, mp) {
+  const code = String(mp || '').toLowerCase();
+  if (isMpFieldLinked(formData?.mp_field_links, 'sku', code)) {
+    return String(formData?.sku ?? '');
+  }
+  if (code === 'ozon') return String(formData?.sku_ozon ?? '');
+  if (code === 'wb') return String(formData?.mp_wb_vendor_code ?? '');
+  if (code === 'ym') return String(formData?.sku_ym ?? '');
+  return '';
+}
+
+/** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля и несуществующий «вес товара». */
 export function filterYmCategoryAttributesForForm(attrs) {
   if (!Array.isArray(attrs)) return [];
-  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
+  return attrs.filter(
+    (a) => !isYmParamDuplicatingDedicatedField(a?.name) && !isYmProductWeightOnlyParam(a?.name)
+  );
 }
 
 function normalizeWbCharcName(name) {
@@ -892,6 +1114,15 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
     const v = String(prev.brand || '');
     if (isMpFieldLinked(normalized, 'brand', 'ozon')) next.mp_ozon_brand = v;
     if (isMpFieldLinked(normalized, 'brand', 'wb')) next.mp_wb_brand = v;
+    if (isMpFieldLinked(normalized, 'brand', 'ym')) {
+      const prevDraft =
+        next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+          ? next.ym_draft
+          : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+            ? prev.ym_draft
+            : {};
+      next.ym_draft = { ...prevDraft, vendor: v };
+    }
   }
   if (want('sku')) {
     const v = String(prev.sku || '');

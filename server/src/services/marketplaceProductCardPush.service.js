@@ -21,6 +21,7 @@ import {
   resolveDimensionsMmForPush,
   resolveProductDimensionsMmForPush,
   shouldPushDimensions,
+  ymParamMatchesOfferField,
 } from '../utils/productMpFieldLinks.js';
 import {
   getProductImageUrlsForMarketplace,
@@ -35,6 +36,7 @@ import {
   withOzonDraftDimensionsLock,
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
+import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -1262,84 +1264,97 @@ async function pushYandexCard(product, categoryMm, ctx) {
   const offer = { offerId };
   if (name) offer.name = name;
   if (description) offer.description = description;
-  const ymVendorCode = (() => {
-    const draft =
-      product.ym_draft && typeof product.ym_draft === 'object' && !Array.isArray(product.ym_draft)
-        ? product.ym_draft
-        : typeof product.ym_draft === 'string'
-          ? (() => {
-              try {
-                const o = JSON.parse(product.ym_draft);
-                return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
-              } catch {
-                return null;
-              }
-            })()
-          : null;
-    return trimOrNull(draft?.vendorCode);
+  const ymDraft = (() => {
+    const raw = product.ym_draft;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+    if (typeof raw === 'string') {
+      try {
+        const o = JSON.parse(raw);
+        return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+      } catch {
+        return {};
+      }
+    }
+    return {};
   })();
+  const ymVendorCode = trimOrNull(ymDraft.vendorCode);
   if (ymVendorCode) offer.vendorCode = ymVendorCode;
-
-  const ymAttrs = parseJsonObject(product.ym_attributes);
-  const parameterValues = Object.entries(ymAttrs)
-    .filter(([, v]) => v != null && String(v).trim() !== '')
-    .map(([paramId, v]) => ({
-      parameterId: Number(paramId),
-      value: String(v).trim()
-    }))
-    .filter((p) => Number.isFinite(p.parameterId) && p.parameterId > 0);
-  if (parameterValues.length > 0) {
-    offer.parameterValues = parameterValues;
-  }
+  const vendor = resolveCardTextForPush(product, 'ym', 'brand');
+  if (vendor) offer.vendor = vendor;
+  const barcodeCodes = (() => {
+    const out = [];
+    const draftBc = trimOrNull(ymDraft.barcode);
+    if (draftBc) out.push(draftBc);
+    for (const row of normalizeBarcodeRows(product.barcodes)) {
+      if (row.barcode && !out.includes(row.barcode)) out.push(row.barcode);
+    }
+    return out;
+  })();
+  if (barcodeCodes.length) offer.barcodes = barcodeCodes;
 
   const ymCategoryId = trimOrNull(categoryMm?.ym ?? categoryMm?.yandex);
   if (ymCategoryId && /^\d+$/.test(ymCategoryId)) {
     offer.marketCategoryId = Number(ymCategoryId);
   }
 
-  // YM Partner API: length/width/height — см, weight — кг
-  // Связь вкл. → из ERP; выкл. → из ym_draft.weightDimensions (если есть)
-  {
-    const links = normalizeMpFieldLinks(product.mp_field_links);
-    let wd = null;
-    if (isMpFieldLinked(links, 'dimensions', 'ym')) {
-      const L = mmToCm(product.length);
-      const W = mmToCm(product.width);
-      const H = mmToCm(product.height);
-      const Wt = gramsToKg(product.weight);
-      if (L != null && W != null && H != null) {
-        wd = { length: L, width: W, height: H, ...(Wt != null ? { weight: Wt } : {}) };
-      }
-    } else {
-      const draft =
-        product.ym_draft && typeof product.ym_draft === 'object' && !Array.isArray(product.ym_draft)
-          ? product.ym_draft
-          : typeof product.ym_draft === 'string'
-            ? (() => {
-                try {
-                  return JSON.parse(product.ym_draft);
-                } catch {
-                  return null;
-                }
-              })()
-            : null;
-      const raw = draft?.weightDimensions;
-      if (raw && typeof raw === 'object') {
-        const L = Number(raw.length);
-        const W = Number(raw.width);
-        const H = Number(raw.height);
-        const Wt = Number(raw.weight);
-        if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
-          wd = {
-            length: L,
-            width: W,
-            height: H,
-            ...(Number.isFinite(Wt) && Wt > 0 ? { weight: Wt } : {}),
-          };
+  const ymAttrs = parseJsonObject(product.ym_attributes);
+  const parameterById = new Map();
+  for (const [paramId, v] of Object.entries(ymAttrs)) {
+    if (v == null || String(v).trim() === '') continue;
+    const id = Number(paramId);
+    if (!Number.isFinite(id) || id < 1) continue;
+    parameterById.set(id, { parameterId: id, value: String(v).trim() });
+  }
+  const manufacturer = trimOrNull(ymDraft.manufacturer);
+  const barcodeForParam = barcodeCodes[0] || null;
+  if (ymCategoryId && /^\d+$/.test(ymCategoryId) && (vendor || manufacturer || barcodeForParam)) {
+    try {
+      const schema = await integrationsService.getYandexCategoryContentParameters(ymCategoryId, {
+        organizationId: ctx.organizationId ?? null,
+        profileId: ctx.profileId ?? null,
+      });
+      const upsert = (field, value) => {
+        if (!value) return;
+        for (const p of schema || []) {
+          if (!ymParamMatchesOfferField(p?.name, field)) continue;
+          const id = Number(p.id);
+          if (!Number.isFinite(id) || id < 1) continue;
+          parameterById.set(id, { parameterId: id, value });
         }
+      };
+      upsert('vendor', vendor);
+      upsert('manufacturer', manufacturer);
+      upsert('barcode', barcodeForParam);
+    } catch (e) {
+      logger.warn('[YM push] не удалось дополнить бренд/штрихкод/изготовитель из схемы категории', {
+        offerId,
+        err: e?.message,
+      });
+    }
+  }
+  const parameterValues = [...parameterById.values()];
+  if (parameterValues.length > 0) {
+    offer.parameterValues = parameterValues;
+  }
+
+  // YM Partner API: length/width/height — см, weight — кг
+  // Связь или заполненный ym_draft.weightDimensions; иначе габариты из «Основного»
+  {
+    const dimsMm = resolveDimensionsMmForPush(product, 'ym');
+    if (dimsMm && Number(dimsMm.length) > 0 && Number(dimsMm.width) > 0 && Number(dimsMm.height) > 0) {
+      const L = mmToCm(dimsMm.length);
+      const W = mmToCm(dimsMm.width);
+      const H = mmToCm(dimsMm.height);
+      const Wt = dimsMm.weight != null ? gramsToKg(dimsMm.weight) : null;
+      if (L != null && W != null && H != null) {
+        offer.weightDimensions = {
+          length: L,
+          width: W,
+          height: H,
+          ...(Wt != null ? { weight: Wt } : {}),
+        };
       }
     }
-    if (wd) offer.weightDimensions = wd;
   }
 
   if (isMpFieldLinked(product.mp_field_links, 'country', 'ym')) {

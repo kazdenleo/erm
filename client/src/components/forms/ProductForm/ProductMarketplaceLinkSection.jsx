@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
-import { isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
+import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 
@@ -48,6 +48,7 @@ export function ProductMarketplaceLinkSection({
   erpSku,
   onLinked,
   vendorCodeClassName,
+  onManufacturerArticleChange,
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -247,6 +248,26 @@ export function ProductMarketplaceLinkSection({
             </div>
           ) : null}
         </div>
+        {marketplace === 'ozon' ? (
+          <div className="col-12 col-md-8">
+            <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku">
+              Артикул производителя
+            </label>
+            <input
+              id="mp-link-ozon-manufacturer-sku"
+              type="text"
+              className="form-control form-control-sm"
+              autoComplete="off"
+              placeholder="Партномер / OEM"
+              value={String(getMpDraft(formData, 'ozon').vendorCode || '')}
+              onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
+            />
+            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35, color: 'var(--muted)' }}>
+              Не путать с артикулом продавца (offer_id). Если в категории есть «Партномер» или «Артикул»,
+              значение уйдёт туда при сохранении.
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

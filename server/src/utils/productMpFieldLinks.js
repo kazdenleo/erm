@@ -341,25 +341,102 @@ export function isYmPackOfferParam(name) {
   return false;
 }
 
+function ymParamNameKey(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ');
+}
+
+export function isYmProductWeightOnlyParam(name) {
+  const n = ymParamNameKey(name);
+  if (!n || /упаковк/.test(n)) return false;
+  if (/^(вес|weight)(\s+товара)?(\s*[,:(–-]\s*(г|кг|g|kg))?$/.test(n)) return true;
+  if (/^вес\s+товара\b/.test(n)) return true;
+  if (/^product\s+weight$/.test(n)) return true;
+  return false;
+}
+
 /**
  * YM-параметры категории, которые уже редактируются отдельными полями карточки
  * (название / описание / страна). Габариты и вес в списке показываем.
  */
 export function isYmParamDuplicatingDedicatedField(name) {
-  const n = String(name || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
+  const n = ymParamNameKey(name);
   if (!n) return false;
   if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
+  if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
+  if (n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin') return true;
+  if (n === 'изготовитель' || n === 'производитель' || n === 'manufacturer') return true;
+  if (isYmProductWeightOnlyParam(n)) return true;
+  return false;
+}
+
+export function ymParamMatchesOfferField(name, field) {
+  const n = ymParamNameKey(name);
+  if (field === 'vendor') return n === 'бренд' || n === 'brand' || n === 'торговая марка';
+  if (field === 'manufacturer') {
+    return n === 'изготовитель' || n === 'производитель' || n === 'manufacturer';
+  }
+  if (field === 'barcode') {
+    return n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin';
+  }
   return false;
 }
 
 export function filterYmCategoryAttributesForForm(attrs) {
   if (!Array.isArray(attrs)) return [];
-  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
+  return attrs.filter(
+    (a) => !isYmParamDuplicatingDedicatedField(a?.name) && !isYmProductWeightOnlyParam(a?.name)
+  );
+}
+
+function ymParamDedupeScore(p) {
+  let s = 0;
+  if (p?.required) s += 100;
+  const ymType = String(p?.ym_parameter_type || p?.type || '').toUpperCase();
+  if (ymType === 'ENUM' || ymType === 'DICTIONARY' || p?.type === 'dictionary') s += 50;
+  const optCount = Array.isArray(p?.dictionary_options) ? p.dictionary_options.length : 0;
+  s += Math.min(optCount, 40);
+  if (p?.filtering) s += 25;
+  if (p?.distinctive) s += 10;
+  return s;
+}
+
+export function dedupeYmCategoryParamsByName(attrs) {
+  const source = Array.isArray(attrs) ? attrs : [];
+  const groups = new Map();
+  for (const a of source) {
+    const k = ymParamNameKey(a?.name);
+    if (!k) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  const seen = new Set();
+  const out = [];
+  for (const a of source) {
+    const k = ymParamNameKey(a?.name);
+    if (!k) {
+      out.push(a);
+      continue;
+    }
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const g = groups.get(k) || [a];
+    if (g.length === 1) {
+      out.push(g[0]);
+      continue;
+    }
+    g.sort(
+      (x, y) =>
+        ymParamDedupeScore(y) - ymParamDedupeScore(x) || Number(x.id) - Number(y.id)
+    );
+    out.push(g[0]);
+  }
+  return out;
 }
 
 function normalizeWbCharcName(name) {
@@ -478,8 +555,11 @@ export function resolveCardTextForPush(product, mp, fieldKey) {
         ? trimOrNull(product.mp_ozon_brand)
         : mp === 'wb'
           ? trimOrNull(product.mp_wb_brand)
-          : null;
+          : mp === 'ym'
+            ? trimOrNull(parseDraftObj(product?.ym_draft).vendor)
+            : null;
     if (mpVal) return mpVal;
+    if (mp === 'ym') return trimOrNull(product.brand);
     return linked ? trimOrNull(product.brand) : null;
   }
   if (fieldKey === 'sku') {
@@ -540,7 +620,16 @@ export function resolveDimensionsMmForPush(product, mp) {
   }
   if (code === 'ym') {
     const draft = parseDraftObj(product?.ym_draft);
-    return ymWeightDimensionsToErp(draft.weightDimensions);
+    const fromOffer = ymWeightDimensionsToErp(draft.weightDimensions);
+    if (fromOffer && Number(fromOffer.length) > 0 && Number(fromOffer.width) > 0 && Number(fromOffer.height) > 0) {
+      return fromOffer;
+    }
+    const erp = {};
+    if (product.length != null && Number(product.length) > 0) erp.length = Number(product.length);
+    if (product.width != null && Number(product.width) > 0) erp.width = Number(product.width);
+    if (product.height != null && Number(product.height) > 0) erp.height = Number(product.height);
+    if (product.weight != null && Number(product.weight) > 0) erp.weight = Number(product.weight);
+    return Object.keys(erp).length ? erp : fromOffer;
   }
   const draft = parseDraftObj(code === 'ozon' ? product?.ozon_draft : product?.wb_draft);
   const d = draft.dimensions;

@@ -16,6 +16,7 @@ import {
   normalizeAttrMpLinks,
 } from '../../utils/productAttributeMpLinks.js';
 import { withMpOfferFieldAttrs } from '../../utils/productMpFieldLinks.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -74,6 +75,7 @@ function patchCategoryAttributeState(cat, attributeId, nextLinks) {
 }
 
 function CategoryMpLinksPanel({ attributeId }) {
+  const { selectedOrganizationId } = useAuth();
   const [categories, setCategories] = useState([]);
   const [openCatId, setOpenCatId] = useState('');
   const [addCatId, setAddCatId] = useState('');
@@ -141,9 +143,15 @@ function CategoryMpLinksPanel({ attributeId }) {
     setYmOptions(withMpOfferFieldAttrs('ym', []));
     let cancelled = false;
     Promise.all([
-      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon').catch(() => null),
-      userCategoriesApi.getMarketplaceAttributes(cat.id, 'wb').catch(() => null),
-      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ym').catch(() => null),
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ozon', {
+        organizationId: selectedOrganizationId || undefined,
+      }).catch(() => null),
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'wb', {
+        organizationId: selectedOrganizationId || undefined,
+      }).catch(() => null),
+      userCategoriesApi.getMarketplaceAttributes(cat.id, 'ym', {
+        organizationId: selectedOrganizationId || undefined,
+      }).catch(() => null),
     ]).then(([oz, wb, ym]) => {
       if (cancelled) return;
       setOzonOptions(withMpOfferFieldAttrs('ozon', mpAttrsFromResponse(oz)));
@@ -154,7 +162,7 @@ function CategoryMpLinksPanel({ attributeId }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openCatId, attributeId]);
+  }, [openCatId, attributeId, selectedOrganizationId]);
 
   const persistLinks = async (cat, next) => {
     setSaving(true);
