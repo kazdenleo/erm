@@ -28,7 +28,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled, isProfileProductEnrichmentEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './Products.css';
@@ -101,6 +101,7 @@ export function Products() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const enrichmentEnabled = isProfileProductEnrichmentEnabled(profile);
   const { suppliers } = useSuppliers();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -881,15 +882,17 @@ export function Products() {
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
               + Добавить
             </Button>
-            <Button
-              className="btn-shadow me-2"
-              variant="secondary"
-              size="small"
-              onClick={() => navigate('/products/enrichment')}
-              title="Сбор контента карточек по бренду и артикулу (PartsIndex)"
-            >
-              Обогащение
-            </Button>
+            {enrichmentEnabled ? (
+              <Button
+                className="btn-shadow me-2"
+                variant="secondary"
+                size="small"
+                onClick={() => navigate('/products/enrichment')}
+                title="Сбор контента карточек по бренду и артикулу (PartsIndex)"
+              >
+                Обогащение
+              </Button>
+            ) : null}
             <Button
               className="btn-shadow me-2"
               variant="secondary"
