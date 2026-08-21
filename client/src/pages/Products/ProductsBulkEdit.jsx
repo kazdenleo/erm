@@ -2455,20 +2455,6 @@ function emptyBulkMpFieldLinks(erpAttrColDefs = []) {
   return links;
 }
 
-/** Связи товара + слоты attr_* из колонок ERP (по умолчанию выкл.). */
-function bulkMpFieldLinksFromProduct(p, erpAttrColDefs = []) {
-  const links = {
-    ...emptyBulkMpFieldLinks(erpAttrColDefs),
-    ...normalizeMpFieldLinks(p?.mp_field_links),
-  };
-  for (const col of erpAttrColDefs || []) {
-    const key = col?.linkFieldKey;
-    if (!isAttrMpFieldLinkKey(key)) continue;
-    if (!Array.isArray(links[key])) links[key] = [];
-  }
-  return links;
-}
-
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -2521,7 +2507,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
-    mp_field_links: bulkMpFieldLinksFromProduct(p, erpAttrColDefs),
+    mp_field_links: emptyBulkMpFieldLinks(erpAttrColDefs),
     ...ozPack,
     ...wbPack,
     ...ymPack,

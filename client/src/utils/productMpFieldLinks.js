@@ -342,10 +342,18 @@ export function normalizeMpFieldLinks(raw) {
 }
 
 function mpSlotIsLinked(slot) {
-  if (slot == null || slot === false || slot === '') return false;
-  if (Array.isArray(slot)) return slot.length > 0;
-  if (typeof slot === 'object') return true;
-  return true;
+  if (slot == null || slot === false || slot === '' || slot === 0) return false;
+  if (slot === true || slot === 1 || slot === '1' || slot === 'true') return true;
+  // Массив объектов [{id,name}] — сопоставление характеристик категории, не тумблер связи.
+  if (Array.isArray(slot)) {
+    if (!slot.length) return false;
+    if (slot.every((x) => x != null && typeof x === 'object')) return false;
+    return slot.some((x) => {
+      const s = String(x || '').toLowerCase();
+      return s === '1' || s === 'true' || MP_FIELD_LINK_MPS.includes(s);
+    });
+  }
+  return false;
 }
 
 function parseFieldMpList(v, supported) {
@@ -874,10 +882,10 @@ export function filterYmCategoryAttributesForForm(attrs) {
 
 function normalizeWbCharcName(name) {
   return String(name || '')
-    .trim()
-    .toLowerCase()
+      .trim()
+      .toLowerCase()
     .replace(/ё/g, 'е')
-    .replace(/\s+/g, ' ');
+      .replace(/\s+/g, ' ');
 }
 
 /** Страна на WB — характеристика кабинета + dedicated-поле «Страна» на вкладке. */
