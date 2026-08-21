@@ -151,7 +151,7 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
 
 export function ProductEnrichment() {
   const navigate = useNavigate();
-  const { profile, isTenantAccountAdmin } = useAuth();
+  const { profile, isTenantAccountAdmin, refreshUser } = useAuth();
   const { brands, createBrand, loadBrands } = useBrands();
   const { categories, createCategory } = useCategories();
   const { organizations } = useOrganizations();
