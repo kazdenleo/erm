@@ -39,6 +39,7 @@ import {
   isDedicatedMpFieldLinkKey,
   isWbCharcDuplicatingDedicatedField,
   normalizeCategoryDedicatedCharcLinks,
+  DEDICATED_MAIN_MAP_KEYS,
   DEDICATED_PACK_DIM_KEYS,
   DEDICATED_PRODUCT_DIM_KEYS,
   supportedMpsForFieldKey,
@@ -50,7 +51,11 @@ import {
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import {
+  MpFieldLinkToggles,
+  MpFromMainLinkIcon,
+  MpMappedMpBadges,
+} from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -794,7 +799,12 @@ function colHeaderWidthPx(col, widthOverrides) {
         ? 4
         : Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
           ? col.linkSupportedMps.length
-          : 3;
+          : Array.isArray(col.mappedMps) && col.mappedMps.length
+            ? col.mappedMps.length
+            : 3;
+    w = Math.max(w, 8 + n * 18);
+  } else if (Array.isArray(col?.mappedMps) && col.mappedMps.length) {
+    const n = col.mappedMps.length;
     w = Math.max(w, 8 + n * 18);
   } else if (!(col?.readonly || col?.noBulk) || key !== DEFAULT_STICKY_COL_KEY) {
     w = Math.max(w, 54); // скрыть + закрепить + заполнить
@@ -1913,20 +1923,30 @@ function parseErpAttributeValues(product) {
   return out;
 }
 
+/** Ключи слотов category.mp_field_links, из которых берём сопоставление для столбца. */
+function dedicatedMapLookupKeys(fieldKey) {
+  const key = String(fieldKey || '');
+  if (!key) return [];
+  const keys = [key];
+  if (key === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(key)) {
+    keys.push('product_dimensions', ...DEDICATED_PRODUCT_DIM_KEYS);
+  } else if (key === 'dimensions' || DEDICATED_PACK_DIM_KEYS.includes(key)) {
+    keys.push('dimensions', ...DEDICATED_PACK_DIM_KEYS);
+  } else if (key === 'country') {
+    keys.push('country');
+  }
+  return [...new Set(keys)];
+}
+
 function dedicatedMappedMpsFromCategories(categories, filterCategoryId, products, fieldKey) {
   const cats = categories || [];
   const catId = String(filterCategoryId || '').trim();
   const union = new Set();
+  const lookupKeys = dedicatedMapLookupKeys(fieldKey);
   const add = (cat) => {
     const links = normalizeCategoryDedicatedCharcLinks(cat?.mp_field_links);
-    for (const mp of mappedMpsFromAttrLinks(links[fieldKey])) union.add(mp);
-    const groupKey = DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)
-      ? 'product_dimensions'
-      : DEDICATED_PACK_DIM_KEYS.includes(fieldKey)
-        ? 'dimensions'
-        : null;
-    if (groupKey) {
-      for (const mp of mappedMpsFromAttrLinks(links[groupKey])) union.add(mp);
+    for (const k of lookupKeys) {
+      for (const mp of mappedMpsFromAttrLinks(links[k])) union.add(mp);
     }
   };
   if (catId && catId !== FILTER_CATEGORY_NONE) {
@@ -3459,14 +3479,20 @@ export function ProductsBulkEdit() {
     }
     const labeled = withDisplayUnitLabels(out, lengthUnit, weightUnit);
     return labeled.map((col) => {
-      if (col.mpBucket || !col.linkFieldKey || !isDedicatedMpFieldLinkKey(col.linkFieldKey)) return col;
+      if (col.mpBucket || col.erpAttr) return col;
+      const lookupKey =
+        (DEDICATED_MAIN_MAP_KEYS.includes(col.key) && col.key) ||
+        (col.linkFieldKey && isDedicatedMpFieldLinkKey(col.linkFieldKey) && col.linkFieldKey) ||
+        '';
+      if (!lookupKey) return col;
       const mapped = dedicatedMappedMpsFromCategories(
         categories,
         filterCategoryId,
         rows,
-        col.linkFieldKey
+        lookupKey
       );
-      return mapped.length ? { ...col, mappedMps: mapped } : col;
+      if (!mapped.length) return col;
+      return { ...col, mappedMps: mapped };
     });
   }, [
     visibleMpAttrColumnDefs,
@@ -5759,13 +5785,21 @@ export function ProductsBulkEdit() {
                 {displayColumns.map((col) => {
                   const showMasterMp = col.key === DEFAULT_STICKY_COL_KEY;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
+                  // Значки сопоставления из категории — если нет тумблеров (оси габаритов и т.п.).
+                  // Для ERP-атрибутов с тумблерами бейджи не дублируем.
+                  const showMappedBadges = !!(
+                    !showLinkToggles &&
+                    Array.isArray(col.mappedMps) &&
+                    col.mappedMps.length > 0
+                  );
                   const showFromMain = !!(
                     !showLinkToggles &&
+                    !showMappedBadges &&
                     col.mpBucket &&
                     (col.linkFieldKey || col.mappedMps?.length)
                   );
                   const canFill = !(col.readonly || col.noBulk);
-                  const showMpRow = showMasterMp || showLinkToggles || showFromMain;
+                  const showMpRow = showMasterMp || showLinkToggles || showMappedBadges || showFromMain;
                   const showChromeRow =
                     (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
                   const showPinHide =
@@ -5965,9 +5999,12 @@ export function ProductsBulkEdit() {
                                   fieldKey={col.linkFieldKey}
                                   links={headerLinksForField(col.linkFieldKey)}
                                   onToggle={toggleBulkHeaderFieldLink}
-                                  supportedMps={col.linkSupportedMps}
+                                  supportedMps={col.linkSupportedMps || col.mappedMps}
                                   size={14}
                                 />
+                              ) : null}
+                              {showMappedBadges ? (
+                                <MpMappedMpBadges mps={col.mappedMps} size={14} />
                               ) : null}
                               {showFromMain ? (
                                 <MpFromMainLinkIcon
