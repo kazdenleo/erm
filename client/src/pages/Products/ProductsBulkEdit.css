@@ -439,20 +439,33 @@
 
 .products-bulk-th-label {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
   max-width: 100%;
+}
+
+.products-bulk-th-label-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0;
 }
 
 .products-bulk-th-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 4px;
   width: 100%;
   min-width: 0;
+}
+
+.products-bulk-th-toolbar--single {
+  flex-direction: row;
 }
 
 .products-bulk-th-toolbar-row {
@@ -465,12 +478,54 @@
   min-width: 0;
 }
 
-.products-bulk-th-toolbar-row--links {
-  gap: 4px;
+.products-bulk-table thead th:not(.sticky-col-pin) {
+  position: relative;
 }
 
-.products-bulk-th-toolbar-row--chrome {
-  opacity: 0.95;
+.products-bulk-table thead th.products-bulk-th--draggable {
+  cursor: grab;
+}
+
+.products-bulk-table thead th.products-bulk-th--draggable:active {
+  cursor: grabbing;
+}
+
+.products-bulk-table thead th.is-col-drag-over {
+  box-shadow: inset 3px 0 0 #0d6efd;
+}
+
+.products-bulk-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 5;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.products-bulk-col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+
+.products-bulk-table thead th:hover > .products-bulk-col-resizer::after,
+.products-bulk-col-resizer:hover::after {
+  background: rgba(13, 110, 253, 0.45);
+}
+
+body.products-bulk-col-resizing,
+body.products-bulk-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .products-bulk-th-toolbar .mp-field-link-toggles,
@@ -509,25 +564,6 @@
   align-items: center;
   flex: 0 0 auto;
   gap: 0;
-}
-
-.products-bulk-move-btn {
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 2px 3px;
-  min-width: 16px;
-  opacity: 0.55;
-}
-
-.products-bulk-move-btn:hover:not(:disabled) {
-  opacity: 1;
-}
-
-.products-bulk-move-btn:disabled {
-  opacity: 0.15;
-  cursor: default;
-  pointer-events: none;
 }
 
 .products-bulk-pin-btn {

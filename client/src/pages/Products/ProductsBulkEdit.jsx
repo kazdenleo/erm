@@ -601,6 +601,12 @@ const SESSION_MP_YM = 'productsBulkShowMpYm';
 const SESSION_PINNED_COLS = 'productsBulkPinnedCols';
 /** Скрытые столбцы (ключи) */
 const SESSION_HIDDEN_COLS = 'productsBulkHiddenCols';
+/** Пользовательские ширины столбцов: { [key]: px } */
+const SESSION_COL_WIDTHS = 'productsBulkColWidths';
+/** Порядок незакреплённых столбцов (ключи) */
+const SESSION_COL_ORDER = 'productsBulkColOrder';
+const COL_WIDTH_MIN_PX = 40;
+const COL_WIDTH_MAX_PX = 480;
 /** Базовый sticky-столбец — всегда слева, пользовательские пины не левее него */
 const DEFAULT_STICKY_COL_KEY = 'sku';
 /** Выбор строк для выгрузки/загрузки с МП (всегда первый sticky) */
@@ -726,45 +732,103 @@ function readHiddenColumnKeys() {
   }
 }
 
-function colHeaderWidthPx(col) {
-  const explicit = Number(col?.width);
-  if (Number.isFinite(explicit) && explicit > 0) return explicit;
-
-  const pad = 16;
-  const label = String(col?.label || '').trim();
-  const labelW = label ? Math.ceil(label.length * 7.6) + pad : 0;
-
-  const isSelect = col?.key === SELECT_COL_KEY;
-  const isSku = col?.key === DEFAULT_STICKY_COL_KEY;
-  let toolbar = 0;
-  if (!isSelect && !isSku) {
-    toolbar += 40;
+function readColumnWidths() {
+  try {
+    if (typeof sessionStorage === 'undefined') return {};
+    const raw = sessionStorage.getItem(SESSION_COL_WIDTHS);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const key = String(k || '').trim();
+      const n = Number(v);
+      if (!key || !Number.isFinite(n)) continue;
+      out[key] = Math.max(COL_WIDTH_MIN_PX, Math.min(COL_WIDTH_MAX_PX, Math.round(n)));
+    }
+    return out;
+  } catch {
+    return {};
   }
-  if (col?.showLinkToggles) {
-    const n =
-      Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
-        ? col.linkSupportedMps.length
-        : 3;
-    toolbar += n * 20 + Math.max(0, n - 1) * 4;
-  } else if (col?.mpBucket && (col.linkFieldKey || col.mappedMps?.length)) {
-    toolbar += 20;
-  }
-  if (!(col?.readonly || col?.noBulk)) {
-    toolbar += 26;
-  }
-  if (toolbar) toolbar += pad + 8;
-
-  return Math.max(40, Math.min(260, Math.max(labelW, toolbar || 28)));
 }
 
-function colStickyWidthPx(col) {
-  return colHeaderWidthPx(col);
+function readColumnOrderKeys() {
+  try {
+    if (typeof sessionStorage === 'undefined') return [];
+    const raw = sessionStorage.getItem(SESSION_COL_ORDER);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((k) => String(k || '').trim())
+      .filter((k) => k && k !== SELECT_COL_KEY && k !== DEFAULT_STICKY_COL_KEY);
+  } catch {
+    return [];
+  }
+}
+
+function clampColWidthPx(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return COL_WIDTH_MIN_PX;
+  return Math.max(COL_WIDTH_MIN_PX, Math.min(COL_WIDTH_MAX_PX, v));
+}
+
+/** Ширина по названию столбца; явный width у col и пользовательский override имеют приоритет. */
+function colHeaderWidthPx(col, widthOverrides) {
+  const key = col?.key;
+  const ovr = key != null ? Number(widthOverrides?.[key]) : NaN;
+  if (Number.isFinite(ovr) && ovr > 0) return clampColWidthPx(ovr);
+
+  const explicit = Number(col?.width);
+  if (Number.isFinite(explicit) && explicit > 0) return clampColWidthPx(explicit);
+
+  if (key === SELECT_COL_KEY) return 42;
+
+  const label = String(col?.label || '').trim();
+  if (!label) return 56;
+  // ~8px на символ + поля; без раздувания под тулбар — иконки переносятся
+  const labelW = Math.ceil(label.length * 8) + 20;
+  return Math.max(56, Math.min(220, labelW));
+}
+
+function colStickyWidthPx(col, widthOverrides) {
+  return colHeaderWidthPx(col, widthOverrides);
+}
+
+function applyColumnOrder(cols, orderKeys) {
+  const list = Array.isArray(cols) ? cols : [];
+  if (!Array.isArray(orderKeys) || orderKeys.length === 0) return list;
+  const byKey = new Map(list.map((c) => [c.key, c]));
+  const used = new Set();
+  const out = [];
+  for (const key of orderKeys) {
+    const col = byKey.get(key);
+    if (!col || used.has(key)) continue;
+    out.push(col);
+    used.add(key);
+  }
+  for (const col of list) {
+    if (used.has(col.key)) continue;
+    out.push(col);
+  }
+  return out;
+}
+
+function reorderKeyList(keys, fromKey, toKey) {
+  const arr = (keys || []).map((k) => String(k));
+  const from = arr.indexOf(fromKey);
+  const to = arr.indexOf(toKey);
+  if (from < 0 || to < 0 || from === to) return keys || [];
+  const next = [...arr];
+  next.splice(from, 1);
+  next.splice(to, 0, fromKey);
+  return next;
 }
 
 /**
- * Артикул всегда слева; закреплённые — сразу после него; остальные в исходном порядке.
+ * Артикул всегда слева; закреплённые — сразу после него; остальные в исходном / пользовательском порядке.
  */
-function orderColumnsWithPins(cols, pinnedKeys) {
+function orderColumnsWithPins(cols, pinnedKeys, columnOrderKeys) {
   const list = Array.isArray(cols) ? cols : [];
   const byKey = new Map(list.map((c) => [c.key, c]));
   const base = byKey.get(DEFAULT_STICKY_COL_KEY);
@@ -777,7 +841,10 @@ function orderColumnsWithPins(cols, pinnedKeys) {
     pinned.push(col);
     pinnedSet.add(key);
   }
-  const rest = list.filter((c) => !pinnedSet.has(c.key));
+  const rest = applyColumnOrder(
+    list.filter((c) => !pinnedSet.has(c.key)),
+    columnOrderKeys
+  );
   const out = [];
   if (base) out.push(base);
   out.push(...pinned);
@@ -785,7 +852,7 @@ function orderColumnsWithPins(cols, pinnedKeys) {
   return out;
 }
 
-function buildStickyLeftMap(displayCols, pinnedKeys) {
+function buildStickyLeftMap(displayCols, pinnedKeys, widthOverrides) {
   const pinnedSet = new Set(
     (pinnedKeys || []).filter((k) => k && k !== DEFAULT_STICKY_COL_KEY && k !== SELECT_COL_KEY)
   );
@@ -805,7 +872,7 @@ function buildStickyLeftMap(displayCols, pinnedKeys) {
   let left = 0;
   stickyKeys.forEach((key, i) => {
     const col = displayCols.find((c) => c.key === key);
-    const width = colStickyWidthPx(col);
+    const width = colStickyWidthPx(col, widthOverrides);
     map.set(key, {
       left,
       width,
@@ -3254,10 +3321,15 @@ export function ProductsBulkEdit() {
   const [showMpYm, setShowMpYm] = useState(() => readMpBucketVisibility().ym);
   const [pinnedColumnKeys, setPinnedColumnKeys] = useState(() => readPinnedColumnKeys());
   const [hiddenColumnKeys, setHiddenColumnKeys] = useState(() => readHiddenColumnKeys());
+  const [columnWidths, setColumnWidths] = useState(() => readColumnWidths());
+  const [columnOrderKeys, setColumnOrderKeys] = useState(() => readColumnOrderKeys());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const [columnsSearch, setColumnsSearch] = useState('');
   const columnsMenuRef = useRef(null);
   const columnsSearchRef = useRef(null);
+  const colDragKeyRef = useRef(null);
+  const colResizeRef = useRef(null);
+  const [colDragOverKey, setColDragOverKey] = useState(null);
 
   useEffect(() => {
     try {
@@ -3304,6 +3376,24 @@ export function ProductsBulkEdit() {
       /* ignore */
     }
   }, [hiddenColumnKeys]);
+  useEffect(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(SESSION_COL_WIDTHS, JSON.stringify(columnWidths));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [columnWidths]);
+  useEffect(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(SESSION_COL_ORDER, JSON.stringify(columnOrderKeys));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [columnOrderKeys]);
 
   useEffect(() => {
     if (!columnsMenuOpen) return undefined;
@@ -3382,50 +3472,89 @@ export function ProductsBulkEdit() {
     rows,
   ]);
 
-  /** Сдвиг закреплённого столбца среди пинов (артикул всегда левее). dir: -1 влево, +1 вправо */
-  const movePinnedColumn = useCallback(
-    (colKey, dir) => {
-      const key = String(colKey || '');
-      if (!key || key === DEFAULT_STICKY_COL_KEY) return;
-      const step = dir < 0 ? -1 : 1;
-      setPinnedColumnKeys((prev) => {
-        const visibleKeySet = new Set((visibleColumns || []).map((c) => c.key));
-        const active = prev.filter((k) => visibleKeySet.has(k));
-        const inactive = prev.filter((k) => !visibleKeySet.has(k));
-        const i = active.indexOf(key);
-        if (i < 0) return prev;
-        const j = i + step;
-        if (j < 0 || j >= active.length) return prev;
-        const next = [...active];
-        const tmp = next[i];
-        next[i] = next[j];
-        next[j] = tmp;
-        return [...next, ...inactive];
+  /** Сдвиг закреплённого / незакреплённого столбца перетаскиванием заголовка */
+  const moveColumnByDrag = useCallback(
+    (fromKey, toKey) => {
+      const from = String(fromKey || '');
+      const to = String(toKey || '');
+      if (!from || !to || from === to) return;
+      if (from === SELECT_COL_KEY || from === DEFAULT_STICKY_COL_KEY) return;
+      if (to === SELECT_COL_KEY || to === DEFAULT_STICKY_COL_KEY) return;
+
+      const fromPinned = pinnedColumnKeys.includes(from);
+      const toPinned = pinnedColumnKeys.includes(to);
+      if (fromPinned !== toPinned) return;
+
+      if (fromPinned) {
+        setPinnedColumnKeys((prev) => reorderKeyList(prev, from, to));
+        return;
+      }
+
+      setColumnOrderKeys((prev) => {
+        const pinnedSet = new Set(pinnedColumnKeys || []);
+        const restKeys = (visibleColumns || [])
+          .map((c) => c.key)
+          .filter((k) => k && k !== DEFAULT_STICKY_COL_KEY && !pinnedSet.has(k));
+        const base = applyColumnOrder(
+          restKeys.map((k) => ({ key: k })),
+          prev
+        ).map((c) => c.key);
+        return reorderKeyList(base, from, to);
       });
     },
-    [visibleColumns]
+    [pinnedColumnKeys, visibleColumns]
   );
 
-  const visiblePinnedKeys = useMemo(() => {
-    const vis = new Set((visibleColumns || []).map((c) => c.key));
-    return (pinnedColumnKeys || []).filter((k) => vis.has(k));
-  }, [pinnedColumnKeys, visibleColumns]);
+  const startColumnResize = useCallback((e, colKey, startW) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const key = String(colKey || '');
+    if (!key || key === SELECT_COL_KEY) return;
+    colResizeRef.current = {
+      key,
+      startX: e.clientX,
+      startW: clampColWidthPx(startW),
+    };
+    colDragKeyRef.current = null;
+    setColDragOverKey(null);
+    document.body.classList.add('products-bulk-col-resizing');
+
+    const onMove = (ev) => {
+      const st = colResizeRef.current;
+      if (!st) return;
+      const next = clampColWidthPx(st.startW + (ev.clientX - st.startX));
+      setColumnWidths((prev) => {
+        if (prev[st.key] === next) return prev;
+        return { ...prev, [st.key]: next };
+      });
+    };
+    const onUp = () => {
+      colResizeRef.current = null;
+      document.body.classList.remove('products-bulk-col-resizing');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
 
   const displayColumns = useMemo(() => {
     const hidden = new Set(hiddenColumnKeys || []);
     const pinned = new Set(pinnedColumnKeys || []);
     const q = String(columnsSearch || '').trim();
-    const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys).filter((c) => {
-      if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
-      if (q) return columnMatchesSearchQuery(c, q);
-      return !hidden.has(c.key);
-    });
+    const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys, columnOrderKeys).filter(
+      (c) => {
+        if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
+        if (q) return columnMatchesSearchQuery(c, q);
+        return !hidden.has(c.key);
+      }
+    );
     return [SELECT_COL, ...ordered];
-  }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch]);
+  }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch, columnOrderKeys]);
 
   const stickyLeftMap = useMemo(
-    () => buildStickyLeftMap(displayColumns, pinnedColumnKeys),
-    [displayColumns, pinnedColumnKeys]
+    () => buildStickyLeftMap(displayColumns, pinnedColumnKeys, columnWidths),
+    [displayColumns, pinnedColumnKeys, columnWidths]
   );
 
   const bulkVirtRange = useMemo(() => {
@@ -3494,7 +3623,7 @@ export function ProductsBulkEdit() {
 
   const colStickyStyle = useCallback(
     (col, { header = false, headerRow = 'labels' } = {}) => {
-      const w = colHeaderWidthPx(col);
+      const w = colHeaderWidthPx(col, columnWidths);
       const base = { minWidth: w, width: w, maxWidth: w };
       const meta = stickyLeftMap.get(col.key);
       if (!meta) return base;
@@ -3513,7 +3642,7 @@ export function ProductsBulkEdit() {
         zIndex: header ? 40 + meta.zIndex : meta.zIndex,
       };
     },
-    [stickyLeftMap]
+    [stickyLeftMap, columnWidths]
   );
 
   const activeFiltersCount =
@@ -3980,7 +4109,7 @@ export function ProductsBulkEdit() {
     const ro = new ResizeObserver(apply);
     ro.observe(row);
     return () => ro.disconnect();
-  }, [displayColumns, pinnedColumnKeys, loading, rows.length]);
+  }, [displayColumns, pinnedColumnKeys, columnWidths, loading, rows.length]);
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
@@ -5665,8 +5794,76 @@ export function ProductsBulkEdit() {
                   return (
                     <th
                       key={col.key}
-                      className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
+                      className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)} ${
+                        colDragOverKey === col.key ? 'is-col-drag-over' : ''
+                      } ${
+                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
+                          ? 'products-bulk-th--draggable'
+                          : ''
+                      }`.trim()}
                       style={colStickyStyle(col, { header: true })}
+                      draggable={
+                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
+                      }
+                      onDragStart={(e) => {
+                        if (colResizeRef.current) {
+                          e.preventDefault();
+                          return;
+                        }
+                        if (col.key === SELECT_COL_KEY || col.key === DEFAULT_STICKY_COL_KEY) {
+                          e.preventDefault();
+                          return;
+                        }
+                        colDragKeyRef.current = col.key;
+                        try {
+                          e.dataTransfer.setData('text/plain', col.key);
+                          e.dataTransfer.effectAllowed = 'move';
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      onDragEnd={() => {
+                        colDragKeyRef.current = null;
+                        setColDragOverKey(null);
+                      }}
+                      onDragOver={(e) => {
+                        const from = colDragKeyRef.current;
+                        if (!from || from === col.key) return;
+                        if (col.key === SELECT_COL_KEY || col.key === DEFAULT_STICKY_COL_KEY) return;
+                        const fromPinned = pinnedColumnKeys.includes(from);
+                        const toPinned = pinnedColumnKeys.includes(col.key);
+                        if (fromPinned !== toPinned) return;
+                        e.preventDefault();
+                        try {
+                          e.dataTransfer.dropEffect = 'move';
+                        } catch {
+                          /* ignore */
+                        }
+                        if (colDragOverKey !== col.key) setColDragOverKey(col.key);
+                      }}
+                      onDragLeave={() => {
+                        if (colDragOverKey === col.key) setColDragOverKey(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const from =
+                          colDragKeyRef.current ||
+                          (() => {
+                            try {
+                              return e.dataTransfer.getData('text/plain');
+                            } catch {
+                              return '';
+                            }
+                          })();
+                        setColDragOverKey(null);
+                        colDragKeyRef.current = null;
+                        moveColumnByDrag(from, col.key);
+                      }}
+                      title={
+                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
+                          ? `${col.title || col.label || ''} — перетащите для смены порядка`
+                          : col.title || undefined
+                      }
                     >
                       <div className="products-bulk-th-label">
                         <span
@@ -5675,20 +5872,70 @@ export function ProductsBulkEdit() {
                         >
                           {col.label}
                         </span>
+                        {col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY ? (
+                          <span className="products-bulk-th-label-actions">
+                            <button
+                              type="button"
+                              className={`products-bulk-pin-btn${
+                                pinnedColumnKeys.includes(col.key) ? ' is-pinned' : ''
+                              }`}
+                              title={
+                                pinnedColumnKeys.includes(col.key)
+                                  ? 'Открепить столбец'
+                                  : 'Закрепить столбец слева (после артикула)'
+                              }
+                              aria-label={
+                                pinnedColumnKeys.includes(col.key)
+                                  ? 'Открепить столбец'
+                                  : 'Закрепить столбец'
+                              }
+                              aria-pressed={pinnedColumnKeys.includes(col.key)}
+                              draggable={false}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                togglePinColumn(col.key);
+                              }}
+                            >
+                              <PinIcon />
+                            </button>
+                            {!ALWAYS_VISIBLE_COL_KEYS.has(col.key) ? (
+                              <button
+                                type="button"
+                                className="products-bulk-pin-btn products-bulk-hide-btn"
+                                title="Скрыть столбец"
+                                aria-label={`Скрыть столбец ${col.label || col.key}`}
+                                draggable={false}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  hideColumnFromHeader(col.key);
+                                }}
+                              >
+                                <HideColumnIcon />
+                              </button>
+                            ) : null}
+                          </span>
+                        ) : null}
                       </div>
+                      {col.key !== SELECT_COL_KEY ? (
+                        <span
+                          className="products-bulk-col-resizer"
+                          title="Изменить ширину столбца"
+                          onMouseDown={(e) =>
+                            startColumnResize(e, col.key, colHeaderWidthPx(col, columnWidths))
+                          }
+                          onDragStart={(e) => e.preventDefault()}
+                        />
+                      ) : null}
                     </th>
                   );
                 })}
               </tr>
               <tr className="bulk-actions-row">
                 {displayColumns.map((col) => {
-                  const isBaseSticky = col.key === DEFAULT_STICKY_COL_KEY;
-                  const isPinned = pinnedColumnKeys.includes(col.key);
-                  const pinIdx = isPinned ? visiblePinnedKeys.indexOf(col.key) : -1;
-                  const canMoveLeft = pinIdx > 0;
-                  const canMoveRight = pinIdx >= 0 && pinIdx < visiblePinnedKeys.length - 1;
-                  const canHide = !ALWAYS_VISIBLE_COL_KEYS.has(col.key);
-                  const showColActions = col.key !== SELECT_COL_KEY && !isBaseSticky;
                   const showMasterMp = col.key === SELECT_COL_KEY;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
                   const showFromMain = !!(
@@ -5697,9 +5944,7 @@ export function ProductsBulkEdit() {
                     (col.linkFieldKey || col.mappedMps?.length)
                   );
                   const canFill = !(col.readonly || col.noBulk);
-                  const showLinksRow = showLinkToggles || showMasterMp;
-                  const showChromeRow = showColActions || canFill || showFromMain;
-                  const showDash = !showChromeRow && !showLinksRow;
+                  const showActions = showMasterMp || showLinkToggles || showFromMain || canFill;
                   return (
                   <th
                     key={`bulk-${col.key}`}
@@ -5707,138 +5952,69 @@ export function ProductsBulkEdit() {
                     style={colStickyStyle(col, { header: true, headerRow: 'actions' })}
                     title={col.title || undefined}
                   >
-                    {showDash ? (
+                    {showActions ? (
+                      <div className="products-bulk-th-toolbar products-bulk-th-toolbar--single">
+                        {showMasterMp ? (
+                          <MarketplaceToggle
+                            active={headerMasterMpActive}
+                            size={18}
+                            color="#334155"
+                            title={
+                              headerMasterMpActive
+                                ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
+                                : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
+                            }
+                            onToggle={toggleBulkMasterMpLink}
+                          >
+                            МП
+                          </MarketplaceToggle>
+                        ) : null}
+                        {showLinkToggles ? (
+                          <MpFieldLinkToggles
+                            fieldKey={col.linkFieldKey}
+                            links={headerLinksForField(col.linkFieldKey)}
+                            onToggle={toggleBulkHeaderFieldLink}
+                            supportedMps={col.linkSupportedMps}
+                            size={16}
+                          />
+                        ) : null}
+                        {showFromMain ? (
+                          <MpFromMainLinkIcon
+                            linked={isMpFieldLinked(
+                              headerLinksForField(col.linkFieldKey || ''),
+                              col.linkFieldKey,
+                              col.mpBucket
+                            )}
+                            title="Значение берётся с вкладки «Основное»"
+                          />
+                        ) : null}
+                        {canFill ? (
+                          <button
+                            type="button"
+                            className="products-bulk-fill-btn"
+                            onClick={() => openBulk(col)}
+                            title={`Заполнить столбец «${col.label || col.key}»`}
+                            aria-label={`Заполнить столбец ${col.label || col.key}`}
+                          >
+                            <FillColumnIcon />
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : (
                       <span className="text-muted" style={{ fontSize: 10 }}>
                         —
                       </span>
-                    ) : (
-                      <div className="products-bulk-th-toolbar">
-                        {showLinksRow ? (
-                          <div className="products-bulk-th-toolbar-row products-bulk-th-toolbar-row--links">
-                            {showMasterMp ? (
-                              <MarketplaceToggle
-                                active={headerMasterMpActive}
-                                size={18}
-                                color="#334155"
-                                title={
-                                  headerMasterMpActive
-                                    ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
-                                    : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
-                                }
-                                onToggle={toggleBulkMasterMpLink}
-                              >
-                                МП
-                              </MarketplaceToggle>
-                            ) : null}
-                            {showLinkToggles ? (
-                              <MpFieldLinkToggles
-                                fieldKey={col.linkFieldKey}
-                                links={headerLinksForField(col.linkFieldKey)}
-                                onToggle={toggleBulkHeaderFieldLink}
-                                supportedMps={col.linkSupportedMps}
-                                size={16}
-                              />
-                            ) : null}
-                          </div>
-                        ) : null}
-                        {showChromeRow ? (
-                          <div className="products-bulk-th-toolbar-row products-bulk-th-toolbar-row--chrome">
-                            <span className="products-bulk-th-actions">
-                              {showFromMain ? (
-                                <MpFromMainLinkIcon
-                                  linked={isMpFieldLinked(
-                                    headerLinksForField(col.linkFieldKey || ''),
-                                    col.linkFieldKey,
-                                    col.mpBucket
-                                  )}
-                                  title="Значение берётся с вкладки «Основное»"
-                                />
-                              ) : null}
-                              {canFill ? (
-                                <button
-                                  type="button"
-                                  className="products-bulk-fill-btn"
-                                  onClick={() => openBulk(col)}
-                                  title={`Заполнить столбец «${col.label || col.key}»`}
-                                  aria-label={`Заполнить столбец ${col.label || col.key}`}
-                                >
-                                  <FillColumnIcon />
-                                </button>
-                              ) : null}
-                              {showColActions ? (
-                                <>
-                                  {isPinned ? (
-                                    <button
-                                      type="button"
-                                      className="products-bulk-pin-btn products-bulk-move-btn"
-                                      title="Сдвинуть закреплённый столбец влево"
-                                      aria-label="Сдвинуть столбец влево"
-                                      disabled={!canMoveLeft}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        movePinnedColumn(col.key, -1);
-                                      }}
-                                    >
-                                      ‹
-                                    </button>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
-                                    title={
-                                      isPinned
-                                        ? 'Открепить столбец'
-                                        : 'Закрепить столбец слева (после артикула)'
-                                    }
-                                    aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
-                                    aria-pressed={isPinned}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      togglePinColumn(col.key);
-                                    }}
-                                  >
-                                    <PinIcon />
-                                  </button>
-                                  {isPinned ? (
-                                    <button
-                                      type="button"
-                                      className="products-bulk-pin-btn products-bulk-move-btn"
-                                      title="Сдвинуть закреплённый столбец вправо"
-                                      aria-label="Сдвинуть столбец вправо"
-                                      disabled={!canMoveRight}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        movePinnedColumn(col.key, 1);
-                                      }}
-                                    >
-                                      ›
-                                    </button>
-                                  ) : null}
-                                  {canHide ? (
-                                    <button
-                                      type="button"
-                                      className="products-bulk-pin-btn products-bulk-hide-btn"
-                                      title="Скрыть столбец"
-                                      aria-label={`Скрыть столбец ${col.label || col.key}`}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        hideColumnFromHeader(col.key);
-                                      }}
-                                    >
-                                      <HideColumnIcon />
-                                    </button>
-                                  ) : null}
-                                </>
-                              ) : null}
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
                     )}
+                    {col.key !== SELECT_COL_KEY ? (
+                      <span
+                        className="products-bulk-col-resizer"
+                        title="Изменить ширину столбца"
+                        onMouseDown={(e) =>
+                          startColumnResize(e, col.key, colHeaderWidthPx(col, columnWidths))
+                        }
+                        onDragStart={(e) => e.preventDefault()}
+                      />
+                    ) : null}
                   </th>
                   );
                 })}
