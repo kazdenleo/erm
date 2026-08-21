@@ -2,7 +2,7 @@
  * Массовое редактирование товаров: таблица полей + «Заполнить» по столбцам.
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
@@ -782,13 +782,25 @@ function colHeaderWidthPx(col, widthOverrides) {
   const explicit = Number(col?.width);
   if (Number.isFinite(explicit) && explicit > 0) return clampColWidthPx(explicit);
 
-  if (key === SELECT_COL_KEY) return 42;
+  if (key === SELECT_COL_KEY) return 40;
 
   const label = String(col?.label || '').trim();
-  if (!label) return 56;
-  // ~8px на символ + поля; без раздувания под тулбар — иконки переносятся
-  const labelW = Math.ceil(label.length * 8) + 20;
-  return Math.max(56, Math.min(220, labelW));
+  const labelW = label ? Math.ceil(label.length * 7.2) + 12 : 44;
+  // иконки в отдельных строках — ширина в основном от названия / ряда МП
+  let w = Math.max(48, labelW);
+  if (key === DEFAULT_STICKY_COL_KEY || col?.showLinkToggles) {
+    const n =
+      key === DEFAULT_STICKY_COL_KEY
+        ? 4
+        : Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
+          ? col.linkSupportedMps.length
+          : 3;
+    w = Math.max(w, 8 + n * 18);
+  } else if (!(col?.readonly || col?.noBulk) || key !== DEFAULT_STICKY_COL_KEY) {
+    w = Math.max(w, 54); // скрыть + закрепить + заполнить
+  }
+
+  return Math.max(48, Math.min(200, w));
 }
 
 function colStickyWidthPx(col, widthOverrides) {
@@ -3212,7 +3224,6 @@ export function ProductsBulkEdit() {
   const hasUnsavedChangesRef = useRef(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const bulkScrollRef = useRef(null);
-  const bulkHeadRow1Ref = useRef(null);
   const [bulkViewport, setBulkViewport] = useState({ top: 0, height: 640 });
   /** id товаров, изменённых в этой сессии (после успешного push снимаются) */
   const changedForPushIdsRef = useRef(new Set());
@@ -3622,7 +3633,7 @@ export function ProductsBulkEdit() {
   );
 
   const colStickyStyle = useCallback(
-    (col, { header = false, headerRow = 'labels' } = {}) => {
+    (col, { header = false } = {}) => {
       const w = colHeaderWidthPx(col, columnWidths);
       const base = { minWidth: w, width: w, maxWidth: w };
       const meta = stickyLeftMap.get(col.key);
@@ -3631,11 +3642,7 @@ export function ProductsBulkEdit() {
       return {
         ...base,
         left: meta.left,
-        top: header
-          ? headerRow === 'actions'
-            ? 'var(--products-bulk-head-row1)'
-            : 0
-          : 'auto',
+        top: header ? 0 : 'auto',
         width: meta.width,
         minWidth: meta.width,
         maxWidth: meta.width,
@@ -4095,21 +4102,6 @@ export function ProductsBulkEdit() {
       if (raf) window.cancelAnimationFrame(raf);
     };
   }, [categoryScopeReady, loading, rows.length, pageSize]);
-
-  useLayoutEffect(() => {
-    const row = bulkHeadRow1Ref.current;
-    const table = row?.closest('.products-bulk-table');
-    if (!row || !table) return undefined;
-    const apply = () => {
-      const h = Math.round(row.getBoundingClientRect().height);
-      if (h > 0) table.style.setProperty('--products-bulk-head-row1', `${h}px`);
-    };
-    apply();
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const ro = new ResizeObserver(apply);
-    ro.observe(row);
-    return () => ro.disconnect();
-  }, [displayColumns, pinnedColumnKeys, columnWidths, loading, rows.length]);
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
@@ -4985,7 +4977,7 @@ export function ProductsBulkEdit() {
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
       : null;
     const common = {
-      className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}${
+      className: `products-bulk-cell-input${
         dimDirty ? ' products-bulk-dim-dirty' : ''
       }${linked ? ' products-bulk-cell-linked' : ''}${overLimit ? ' products-bulk-cell-over-limit' : ''}`,
       value: v ?? '',
@@ -5108,7 +5100,7 @@ export function ProductsBulkEdit() {
       );
     }
     if (col.input === 'textarea') {
-      return <textarea {...common} rows={2} />;
+      return <input {...common} type="text" autoComplete="off" />;
     }
     if (col.input === 'number') {
       if (!isDimCol) {
@@ -5139,7 +5131,6 @@ export function ProductsBulkEdit() {
           className="products-bulk-cell-input"
           value={v}
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-          style={{ maxWidth: 220 }}
         >
           <option value="">—</option>
           {categories.map((c) => (
@@ -5156,7 +5147,6 @@ export function ProductsBulkEdit() {
           className="products-bulk-cell-input"
           value={v}
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-          style={{ maxWidth: 220 }}
         >
           <option value="">—</option>
           {organizations.map((o) => (
@@ -5173,7 +5163,6 @@ export function ProductsBulkEdit() {
           className="products-bulk-cell-input"
           value={v}
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-          style={{ maxWidth: 220 }}
         >
           <option value="">— Не привязан —</option>
           {activeSuppliers.map((s) => (
@@ -5766,8 +5755,22 @@ export function ProductsBulkEdit() {
             <div className="products-bulk-table-wrap">
           <table className="products-bulk-table">
             <thead>
-              <tr ref={bulkHeadRow1Ref}>
+              <tr>
                 {displayColumns.map((col) => {
+                  const showMasterMp = col.key === DEFAULT_STICKY_COL_KEY;
+                  const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
+                  const showFromMain = !!(
+                    !showLinkToggles &&
+                    col.mpBucket &&
+                    (col.linkFieldKey || col.mappedMps?.length)
+                  );
+                  const canFill = !(col.readonly || col.noBulk);
+                  const showMpRow = showMasterMp || showLinkToggles || showFromMain;
+                  const showChromeRow =
+                    (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
+                  const showPinHide =
+                    col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY;
+
                   if (col.key === SELECT_COL_KEY) {
                     return (
                       <th
@@ -5776,41 +5779,42 @@ export function ProductsBulkEdit() {
                         style={colStickyStyle(col, { header: true })}
                         scope="col"
                       >
-                        <div className="products-bulk-select-head">
-                          <input
-                            ref={selectAllCheckboxRef}
-                            type="checkbox"
-                            className="form-check-input m-0"
-                            checked={allPageSelected}
-                            onChange={toggleSelectAllVisible}
-                            onClick={(e) => e.stopPropagation()}
-                            aria-label="Выбрать все товары на странице"
-                            title="Выбрать все на странице"
-                          />
+                        <div className="products-bulk-th-stack">
+                          <div className="products-bulk-th-row products-bulk-th-row--title products-bulk-select-head">
+                            <input
+                              ref={selectAllCheckboxRef}
+                              type="checkbox"
+                              className="form-check-input m-0"
+                              checked={allPageSelected}
+                              onChange={toggleSelectAllVisible}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label="Выбрать все товары на странице"
+                              title="Выбрать все на странице"
+                            />
+                          </div>
+                          <div className="products-bulk-th-row products-bulk-th-row--chrome" aria-hidden="true" />
+                          <div className="products-bulk-th-row products-bulk-th-row--mp" aria-hidden="true" />
                         </div>
                       </th>
                     );
                   }
+
                   return (
                     <th
                       key={col.key}
                       className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)} ${
                         colDragOverKey === col.key ? 'is-col-drag-over' : ''
                       } ${
-                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
-                          ? 'products-bulk-th--draggable'
-                          : ''
+                        col.key !== DEFAULT_STICKY_COL_KEY ? 'products-bulk-th--draggable' : ''
                       }`.trim()}
                       style={colStickyStyle(col, { header: true })}
-                      draggable={
-                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
-                      }
+                      draggable={col.key !== DEFAULT_STICKY_COL_KEY}
                       onDragStart={(e) => {
                         if (colResizeRef.current) {
                           e.preventDefault();
                           return;
                         }
-                        if (col.key === SELECT_COL_KEY || col.key === DEFAULT_STICKY_COL_KEY) {
+                        if (col.key === DEFAULT_STICKY_COL_KEY) {
                           e.preventDefault();
                           return;
                         }
@@ -5829,7 +5833,7 @@ export function ProductsBulkEdit() {
                       onDragOver={(e) => {
                         const from = colDragKeyRef.current;
                         if (!from || from === col.key) return;
-                        if (col.key === SELECT_COL_KEY || col.key === DEFAULT_STICKY_COL_KEY) return;
+                        if (col.key === DEFAULT_STICKY_COL_KEY) return;
                         const fromPinned = pinnedColumnKeys.includes(from);
                         const toPinned = pinnedColumnKeys.includes(col.key);
                         if (fromPinned !== toPinned) return;
@@ -5860,152 +5864,125 @@ export function ProductsBulkEdit() {
                         moveColumnByDrag(from, col.key);
                       }}
                       title={
-                        col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY
+                        col.key !== DEFAULT_STICKY_COL_KEY
                           ? `${col.title || col.label || ''} — перетащите для смены порядка`
                           : col.title || undefined
                       }
                     >
-                      <div className="products-bulk-th-label">
-                        <span
-                          className="products-bulk-th-text"
-                          title={col.title || col.hint || col.label || undefined}
-                        >
-                          {col.label}
-                        </span>
-                        {col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY ? (
-                          <span className="products-bulk-th-label-actions">
-                            <button
-                              type="button"
-                              className={`products-bulk-pin-btn${
-                                pinnedColumnKeys.includes(col.key) ? ' is-pinned' : ''
-                              }`}
-                              title={
-                                pinnedColumnKeys.includes(col.key)
-                                  ? 'Открепить столбец'
-                                  : 'Закрепить столбец слева (после артикула)'
-                              }
-                              aria-label={
-                                pinnedColumnKeys.includes(col.key)
-                                  ? 'Открепить столбец'
-                                  : 'Закрепить столбец'
-                              }
-                              aria-pressed={pinnedColumnKeys.includes(col.key)}
-                              draggable={false}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                togglePinColumn(col.key);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                            {!ALWAYS_VISIBLE_COL_KEYS.has(col.key) ? (
-                              <button
-                                type="button"
-                                className="products-bulk-pin-btn products-bulk-hide-btn"
-                                title="Скрыть столбец"
-                                aria-label={`Скрыть столбец ${col.label || col.key}`}
-                                draggable={false}
-                                onMouseDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  hideColumnFromHeader(col.key);
-                                }}
-                              >
-                                <HideColumnIcon />
-                              </button>
-                            ) : null}
+                      <div className="products-bulk-th-stack">
+                        <div className="products-bulk-th-row products-bulk-th-row--title">
+                          <span
+                            className="products-bulk-th-text"
+                            title={col.title || col.hint || col.label || undefined}
+                          >
+                            {col.label}
                           </span>
-                        ) : null}
+                        </div>
+                        <div className="products-bulk-th-row products-bulk-th-row--chrome">
+                          {showChromeRow ? (
+                            <>
+                              {showPinHide && !ALWAYS_VISIBLE_COL_KEYS.has(col.key) ? (
+                                <button
+                                  type="button"
+                                  className="products-bulk-pin-btn products-bulk-hide-btn"
+                                  title="Скрыть столбец"
+                                  aria-label={`Скрыть столбец ${col.label || col.key}`}
+                                  draggable={false}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    hideColumnFromHeader(col.key);
+                                  }}
+                                >
+                                  <HideColumnIcon />
+                                </button>
+                              ) : null}
+                              {showPinHide ? (
+                                <button
+                                  type="button"
+                                  className={`products-bulk-pin-btn${
+                                    pinnedColumnKeys.includes(col.key) ? ' is-pinned' : ''
+                                  }`}
+                                  title={
+                                    pinnedColumnKeys.includes(col.key)
+                                      ? 'Открепить столбец'
+                                      : 'Закрепить столбец слева (после артикула)'
+                                  }
+                                  aria-label={
+                                    pinnedColumnKeys.includes(col.key)
+                                      ? 'Открепить столбец'
+                                      : 'Закрепить столбец'
+                                  }
+                                  aria-pressed={pinnedColumnKeys.includes(col.key)}
+                                  draggable={false}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    togglePinColumn(col.key);
+                                  }}
+                                >
+                                  <PinIcon />
+                                </button>
+                              ) : null}
+                              {canFill ? (
+                                <button
+                                  type="button"
+                                  className="products-bulk-fill-btn"
+                                  onClick={() => openBulk(col)}
+                                  title={`Заполнить столбец «${col.label || col.key}»`}
+                                  aria-label={`Заполнить столбец ${col.label || col.key}`}
+                                  draggable={false}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                >
+                                  <FillColumnIcon />
+                                </button>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
+                        <div className="products-bulk-th-row products-bulk-th-row--mp">
+                          {showMpRow ? (
+                            <>
+                              {showMasterMp ? (
+                                <MarketplaceToggle
+                                  active={headerMasterMpActive}
+                                  size={14}
+                                  color="#334155"
+                                  title={
+                                    headerMasterMpActive
+                                      ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
+                                      : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
+                                  }
+                                  onToggle={toggleBulkMasterMpLink}
+                                >
+                                  МП
+                                </MarketplaceToggle>
+                              ) : null}
+                              {showLinkToggles ? (
+                                <MpFieldLinkToggles
+                                  fieldKey={col.linkFieldKey}
+                                  links={headerLinksForField(col.linkFieldKey)}
+                                  onToggle={toggleBulkHeaderFieldLink}
+                                  supportedMps={col.linkSupportedMps}
+                                  size={14}
+                                />
+                              ) : null}
+                              {showFromMain ? (
+                                <MpFromMainLinkIcon
+                                  linked={isMpFieldLinked(
+                                    headerLinksForField(col.linkFieldKey || ''),
+                                    col.linkFieldKey,
+                                    col.mpBucket
+                                  )}
+                                  title="Значение берётся с вкладки «Основное»"
+                                />
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
                       </div>
-                      {col.key !== SELECT_COL_KEY ? (
-                        <span
-                          className="products-bulk-col-resizer"
-                          title="Изменить ширину столбца"
-                          onMouseDown={(e) =>
-                            startColumnResize(e, col.key, colHeaderWidthPx(col, columnWidths))
-                          }
-                          onDragStart={(e) => e.preventDefault()}
-                        />
-                      ) : null}
-                    </th>
-                  );
-                })}
-              </tr>
-              <tr className="bulk-actions-row">
-                {displayColumns.map((col) => {
-                  const showMasterMp = col.key === SELECT_COL_KEY;
-                  const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
-                  const showFromMain = !!(
-                    !showLinkToggles &&
-                    col.mpBucket &&
-                    (col.linkFieldKey || col.mappedMps?.length)
-                  );
-                  const canFill = !(col.readonly || col.noBulk);
-                  const showActions = showMasterMp || showLinkToggles || showFromMain || canFill;
-                  return (
-                  <th
-                    key={`bulk-${col.key}`}
-                    className={`${colStickyClass(col)} ${col.headerClass || ''} ${mpColClassName(col)}`.trim()}
-                    style={colStickyStyle(col, { header: true, headerRow: 'actions' })}
-                    title={col.title || undefined}
-                  >
-                    {showActions ? (
-                      <div className="products-bulk-th-toolbar products-bulk-th-toolbar--single">
-                        {showMasterMp ? (
-                          <MarketplaceToggle
-                            active={headerMasterMpActive}
-                            size={18}
-                            color="#334155"
-                            title={
-                              headerMasterMpActive
-                                ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
-                                : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
-                            }
-                            onToggle={toggleBulkMasterMpLink}
-                          >
-                            МП
-                          </MarketplaceToggle>
-                        ) : null}
-                        {showLinkToggles ? (
-                          <MpFieldLinkToggles
-                            fieldKey={col.linkFieldKey}
-                            links={headerLinksForField(col.linkFieldKey)}
-                            onToggle={toggleBulkHeaderFieldLink}
-                            supportedMps={col.linkSupportedMps}
-                            size={16}
-                          />
-                        ) : null}
-                        {showFromMain ? (
-                          <MpFromMainLinkIcon
-                            linked={isMpFieldLinked(
-                              headerLinksForField(col.linkFieldKey || ''),
-                              col.linkFieldKey,
-                              col.mpBucket
-                            )}
-                            title="Значение берётся с вкладки «Основное»"
-                          />
-                        ) : null}
-                        {canFill ? (
-                          <button
-                            type="button"
-                            className="products-bulk-fill-btn"
-                            onClick={() => openBulk(col)}
-                            title={`Заполнить столбец «${col.label || col.key}»`}
-                            aria-label={`Заполнить столбец ${col.label || col.key}`}
-                          >
-                            <FillColumnIcon />
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <span className="text-muted" style={{ fontSize: 10 }}>
-                        —
-                      </span>
-                    )}
-                    {col.key !== SELECT_COL_KEY ? (
                       <span
                         className="products-bulk-col-resizer"
                         title="Изменить ширину столбца"
@@ -6014,8 +5991,7 @@ export function ProductsBulkEdit() {
                         }
                         onDragStart={(e) => e.preventDefault()}
                       />
-                    ) : null}
-                  </th>
+                    </th>
                   );
                 })}
               </tr>
