@@ -39,6 +39,7 @@ import {
   isDedicatedMpFieldLinkKey,
   isWbCharcDuplicatingDedicatedField,
   normalizeCategoryDedicatedCharcLinks,
+  DEDICATED_ADDED_KEYS_FIELD,
   DEDICATED_MAIN_MAP_KEYS,
   DEDICATED_PACK_DIM_KEYS,
   DEDICATED_PRODUCT_DIM_KEYS,
@@ -51,11 +52,7 @@ import {
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import {
-  MpFieldLinkToggles,
-  MpFromMainLinkIcon,
-  MpMappedMpBadges,
-} from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -1379,9 +1376,10 @@ function mergeWbAttrSchema(list, into) {
 function mergeYmAttrSchema(list, into) {
   if (!Array.isArray(list) || !into) return;
   for (const a of list) {
-    const id = a?.id != null ? String(a.id) : '';
+    const idRaw = a?.id ?? a?.parameterId ?? a?.parameter_id;
+    const id = idRaw != null ? String(idRaw) : '';
     if (!id) continue;
-    const name = String(a?.name || '').trim();
+    const name = String(a?.name || a?.title || a?.description || '').trim();
     const options = extractYmDictionaryOptions(a);
     const kind = ymSchemaKind(a, options);
     const prev = into[id];
@@ -1393,6 +1391,85 @@ function mergeYmAttrSchema(list, into) {
       if (!prev.kind || prev.kind === 'text') prev.kind = kind;
     }
   }
+}
+
+/** Имена характеристик из сопоставлений категории (пока схема МП не подгрузилась). */
+function seedMpLabelMapsFromCategoryLinks(categories, filterCategoryId, products, erpCols = []) {
+  const maps = { ozon: {}, wb: {}, ym: {} };
+  const put = (mp, id, name) => {
+    const aid = String(id || '').trim();
+    const n = String(name || '').trim();
+    if (!aid || !n || !maps[mp]) return;
+    const prev = maps[mp][aid];
+    if (!prev) maps[mp][aid] = { name: n };
+    else if (!prev.name) prev.name = n;
+  };
+  for (const erp of erpCols || []) {
+    const links = erp?.erpAttr?.mpLinks || {};
+    for (const mp of ATTR_MP_CODES) {
+      for (const entry of normalizeAttrMpLinkList(links[mp])) {
+        put(mp, entry.id, entry.name);
+      }
+    }
+  }
+  const cats = categories || [];
+  const catId = String(filterCategoryId || '').trim();
+  const catIds = new Set();
+  if (catId && catId !== FILTER_CATEGORY_NONE) {
+    catIds.add(catId);
+  } else if (!catId) {
+    for (const p of products || []) {
+      const cid = p.categoryId ?? p.user_category_id;
+      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
+    }
+  }
+  for (const c of cats) {
+    if (catIds.size && !catIds.has(String(c.id))) continue;
+    const attrMap = c?.attribute_mp_links && typeof c.attribute_mp_links === 'object' ? c.attribute_mp_links : {};
+    for (const raw of Object.values(attrMap)) {
+      const links = normalizeAttrMpLinks(raw);
+      for (const mp of ATTR_MP_CODES) {
+        for (const entry of links[mp] || []) put(mp, entry.id, entry.name);
+      }
+    }
+    const dedicated = normalizeCategoryDedicatedCharcLinks(c?.mp_field_links);
+    for (const [key, slot] of Object.entries(dedicated)) {
+      if (key === DEDICATED_ADDED_KEYS_FIELD || !slot || typeof slot !== 'object' || Array.isArray(slot)) {
+        continue;
+      }
+      for (const mp of ATTR_MP_CODES) {
+        for (const entry of normalizeAttrMpLinkList(slot[mp])) put(mp, entry.id, entry.name);
+      }
+    }
+  }
+  return maps;
+}
+
+function mergeMpLabelMaps(...parts) {
+  const out = { ozon: {}, wb: {}, ym: {}, ozonPairs: [] };
+  for (const part of parts) {
+    if (!part) continue;
+    for (const mp of ['ozon', 'wb', 'ym']) {
+      for (const [id, meta] of Object.entries(part[mp] || {})) {
+        const prev = out[mp][id];
+        if (!prev) {
+          out[mp][id] = { ...(typeof meta === 'object' && meta ? meta : { name: String(meta || '') }) };
+          continue;
+        }
+        const name = schemaAttrName(meta);
+        if (name && !schemaAttrName(prev)) prev.name = name;
+        if (meta && typeof meta === 'object') {
+          if (!prev.options?.length && meta.options?.length) prev.options = meta.options;
+          if (!prev.dictionaryId && meta.dictionaryId) prev.dictionaryId = meta.dictionaryId;
+          if ((!prev.kind || prev.kind === 'text') && meta.kind) prev.kind = meta.kind;
+        }
+      }
+    }
+    if (Array.isArray(part.ozonPairs) && part.ozonPairs.length) {
+      out.ozonPairs = [...out.ozonPairs, ...part.ozonPairs];
+    }
+  }
+  return out;
 }
 
 function schemaAttrName(meta) {
@@ -1737,6 +1814,15 @@ function formatMpColumnLabel(attrId, humanName, bucket = '') {
   }
   if (h) return h;
   return `id ${id}`;
+}
+
+/** Подпись вида «id 123» — ещё не резолвнули имя характеристики. */
+function isUnresolvedMpAttrLabel(label, attrId) {
+  const id = String(attrId ?? '').trim();
+  const s = String(label || '').trim();
+  if (!s) return true;
+  if (id && (s === id || s === `id ${id}` || s === `Параметр ${id}`)) return true;
+  return /^id\s+\d+$/i.test(s);
 }
 
 function mpColumnTitleAttr(bucket, attrId, humanName, isDict) {
@@ -2097,8 +2183,26 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
 
 /** Колонки характеристик МП, на которые ссылаются связи ручных атрибутов категории. */
 function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
-  const have = new Set((mpCols || []).map((c) => `${c.mpAttr?.bucket}:${c.mpAttr?.attrId}`));
+  const byKey = new Map((mpCols || []).map((c) => [`${c.mpAttr?.bucket}:${c.mpAttr?.attrId}`, c]));
+  const have = new Set(byKey.keys());
   const extra = [];
+  const upgradeLabel = (col, humanName) => {
+    if (!col?.mpAttr) return col;
+    const human = String(humanName || '').trim();
+    if (!human) return col;
+    if (!isUnresolvedMpAttrLabel(col.label, col.mpAttr.attrId) && String(col._humanName || '').trim()) {
+      return col;
+    }
+    const bucket = col.mpAttr.bucket;
+    const id = col.mpAttr.attrId;
+    const isDict = Number(col.dictionaryId) > 0 || col.input === 'select_dict';
+    return {
+      ...col,
+      label: formatMpColumnLabel(id, human, bucket),
+      title: mpColumnTitleAttr(bucket, id, human, isDict),
+      _humanName: human,
+    };
+  };
   for (const erp of erpCols || []) {
     const links = erp.erpAttr?.mpLinks || {};
     for (const mp of ATTR_MP_CODES) {
@@ -2106,10 +2210,21 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
       for (const entry of entries) {
         if (!entry?.id) continue;
         const k = `${mp}:${entry.id}`;
-        if (have.has(k)) continue;
+        const maps = labelMaps?.[mp] || {};
+        const meta = maps[entry.id] || maps[String(entry.id)];
+        const human = schemaAttrName(meta) || entry.name || '';
+        if (have.has(k)) {
+          const prev = byKey.get(k);
+          const next = upgradeLabel(prev, human);
+          if (next !== prev) byKey.set(k, next);
+          continue;
+        }
         have.add(k);
-        const col = extraLinkedMpAttrColumn(mp, entry.id, entry.name, labelMaps);
-        if (col) extra.push(col);
+        const col = extraLinkedMpAttrColumn(mp, entry.id, human || entry.name, labelMaps);
+        if (col) {
+          extra.push(col);
+          byKey.set(k, col);
+        }
       }
     }
   }
@@ -2119,21 +2234,41 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
     { mp: 'ozon', id: String(OZON_ANNOTATION_ATTR_ID), name: 'Аннотация' },
   ]) {
     const k = `${known.mp}:${known.id}`;
-    if (have.has(k)) continue;
+    if (have.has(k)) {
+      const prev = byKey.get(k);
+      const next = upgradeLabel(prev, known.name);
+      if (next !== prev) byKey.set(k, next);
+      continue;
+    }
     have.add(k);
     const col = extraLinkedMpAttrColumn(known.mp, known.id, known.name, labelMaps);
-    if (col) extra.push(col);
+    if (col) {
+      extra.push(col);
+      byKey.set(k, col);
+    }
   }
   for (const [id, meta] of Object.entries(labelMaps?.ozon || {})) {
     const human = schemaAttrName(meta);
     if (!isOzonNameAttr({ id, name: human }) && !isOzonAnnotationAttr({ id, name: human })) continue;
     const k = `ozon:${id}`;
-    if (have.has(k)) continue;
+    if (have.has(k)) {
+      const prev = byKey.get(k);
+      const next = upgradeLabel(prev, human);
+      if (next !== prev) byKey.set(k, next);
+      continue;
+    }
     have.add(k);
     const col = extraLinkedMpAttrColumn('ozon', id, human, labelMaps);
-    if (col) extra.push(col);
+    if (col) {
+      extra.push(col);
+      byKey.set(k, col);
+    }
   }
-  const merged = extra.length ? [...(mpCols || []), ...extra] : mpCols || [];
+  const base = (mpCols || []).map((c) => {
+    const k = `${c.mpAttr?.bucket}:${c.mpAttr?.attrId}`;
+    return c.mpAttr ? byKey.get(k) || c : c;
+  });
+  const merged = extra.length ? [...base, ...extra.filter((c) => !base.some((b) => b.key === c.key))] : base;
   return (merged || []).map((col) => {
     if (!col.mpAttr) return col;
     let next = col;
@@ -3492,6 +3627,15 @@ export function ProductsBulkEdit() {
         lookupKey
       );
       if (!mapped.length) return col;
+      // Тумблеры связи (по умолчанию выкл.) — не «горящие» бейджи сопоставления.
+      if (col.linkFieldKey) {
+        return {
+          ...col,
+          mappedMps: mapped,
+          linkSupportedMps: mapped,
+          showLinkToggles: true,
+        };
+      }
       return { ...col, mappedMps: mapped };
     });
   }, [
@@ -3942,9 +4086,11 @@ export function ProductsBulkEdit() {
       if (partial.page !== undefined) setCurrentPage(safePage);
 
       const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, list);
+      const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, list, erpCols);
       const mpColsInitial = mergeLinkedMpAttrColumns(
-        buildMpAttrColumnDefs(list, { ozon: {}, wb: {}, ym: {} }),
-        erpCols
+        buildMpAttrColumnDefs(list, seedMaps),
+        erpCols,
+        seedMaps
       );
       if (gen !== loadGenRef.current) return;
       setMpAttrColumnDefs(mpColsInitial);
@@ -3966,10 +4112,11 @@ export function ProductsBulkEdit() {
         fetchMpAttributeLabelMaps(list)
           .then(async (maps) => {
             if (gen !== loadGenRef.current) return;
+            const mergedMaps = mergeMpLabelMaps(seedMaps, maps);
             const mpColsLabeled = mergeLinkedMpAttrColumns(
-              buildMpAttrColumnDefs(list, maps),
+              buildMpAttrColumnDefs(list, mergedMaps),
               erpCols,
-              maps
+              mergedMaps
             );
             setMpAttrColumnDefs(mpColsLabeled);
 
@@ -3990,7 +4137,7 @@ export function ProductsBulkEdit() {
                   .map((c) => String(c.mpAttr.attrId))
               ),
             ];
-            const pairs = Array.isArray(maps.ozonPairs) ? maps.ozonPairs : [];
+            const pairs = Array.isArray(mergedMaps.ozonPairs) ? mergedMaps.ozonPairs : [];
             if (ozonDictAttrIds.length === 0 || pairs.length === 0) {
               setOzonBulkDictOptions({});
               return;
@@ -5785,21 +5932,13 @@ export function ProductsBulkEdit() {
                 {displayColumns.map((col) => {
                   const showMasterMp = col.key === DEFAULT_STICKY_COL_KEY;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
-                  // Значки сопоставления из категории — если нет тумблеров (оси габаритов и т.п.).
-                  // Для ERP-атрибутов с тумблерами бейджи не дублируем.
-                  const showMappedBadges = !!(
-                    !showLinkToggles &&
-                    Array.isArray(col.mappedMps) &&
-                    col.mappedMps.length > 0
-                  );
                   const showFromMain = !!(
                     !showLinkToggles &&
-                    !showMappedBadges &&
                     col.mpBucket &&
                     (col.linkFieldKey || col.mappedMps?.length)
                   );
                   const canFill = !(col.readonly || col.noBulk);
-                  const showMpRow = showMasterMp || showLinkToggles || showMappedBadges || showFromMain;
+                  const showMpRow = showMasterMp || showLinkToggles || showFromMain;
                   const showChromeRow =
                     (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
                   const showPinHide =
@@ -6002,9 +6141,6 @@ export function ProductsBulkEdit() {
                                   supportedMps={col.linkSupportedMps || col.mappedMps}
                                   size={14}
                                 />
-                              ) : null}
-                              {showMappedBadges ? (
-                                <MpMappedMpBadges mps={col.mappedMps} size={14} />
                               ) : null}
                               {showFromMain ? (
                                 <MpFromMainLinkIcon
