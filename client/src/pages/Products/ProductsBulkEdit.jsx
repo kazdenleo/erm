@@ -50,7 +50,7 @@ import {
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -746,7 +746,11 @@ function colHeaderWidthPx(col) {
         ? col.linkSupportedMps.length
         : 3;
     toolbar += n * 20 + Math.max(0, n - 1) * 4;
-  } else if (col?.mpBucket && (col.linkFieldKey || col.mappedMps?.length)) {
+  }
+  if (Array.isArray(col?.mappedMps) && col.mappedMps.length && !col?.mpBucket) {
+    toolbar = Math.max(toolbar, col.mappedMps.length * 20 + Math.max(0, col.mappedMps.length - 1) * 4);
+  }
+  if (col?.mpBucket && (col.linkFieldKey || col.mappedMps?.length)) {
     toolbar += 20;
   }
   if (!(col?.readonly || col?.noBulk)) {
@@ -5703,13 +5707,21 @@ export function ProductsBulkEdit() {
                   const canHide = !ALWAYS_VISIBLE_COL_KEYS.has(col.key);
                   const showColActions = col.key !== SELECT_COL_KEY && !isBaseSticky;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
+                  const showMappedBadges = !!(
+                    !col.mpBucket &&
+                    Array.isArray(col.mappedMps) &&
+                    col.mappedMps.length > 0 &&
+                    // У ERP-атрибутов тумблеры уже показывают те же МП
+                    !(showLinkToggles && col.erpAttr)
+                  );
                   const showFromMain = !!(
                     !showLinkToggles &&
                     col.mpBucket &&
                     (col.linkFieldKey || col.mappedMps?.length)
                   );
                   const canFill = !(col.readonly || col.noBulk);
-                  const showDash = !showColActions && !showLinkToggles && !showFromMain && !canFill;
+                  const showLinksRow = showLinkToggles || showMappedBadges || showFromMain || canFill;
+                  const showDash = !showColActions && !showLinksRow;
                   return (
                   <th
                     key={`bulk-${col.key}`}
@@ -5723,103 +5735,113 @@ export function ProductsBulkEdit() {
                       </span>
                     ) : (
                       <div className="products-bulk-th-toolbar">
-                        {showLinkToggles ? (
-                          <MpFieldLinkToggles
-                            fieldKey={col.linkFieldKey}
-                            links={headerLinksForField(col.linkFieldKey)}
-                            onToggle={toggleBulkHeaderFieldLink}
-                            supportedMps={col.linkSupportedMps}
-                            size={16}
-                          />
-                        ) : showFromMain ? (
-                          <MpFromMainLinkIcon
-                            linked={isMpFieldLinked(
-                              headerLinksForField(col.linkFieldKey || ''),
-                              col.linkFieldKey,
-                              col.mpBucket
-                            )}
-                            title="Значение берётся с вкладки «Основное»"
-                          />
+                        {showLinksRow ? (
+                          <div className="products-bulk-th-toolbar-row products-bulk-th-toolbar-row--links">
+                            {showMappedBadges ? (
+                              <MpMappedMpBadges mps={col.mappedMps} size={16} />
+                            ) : null}
+                            {showLinkToggles ? (
+                              <MpFieldLinkToggles
+                                fieldKey={col.linkFieldKey}
+                                links={headerLinksForField(col.linkFieldKey)}
+                                onToggle={toggleBulkHeaderFieldLink}
+                                supportedMps={col.linkSupportedMps || col.mappedMps}
+                                size={16}
+                              />
+                            ) : null}
+                            {showFromMain ? (
+                              <MpFromMainLinkIcon
+                                linked={isMpFieldLinked(
+                                  headerLinksForField(col.linkFieldKey || ''),
+                                  col.linkFieldKey,
+                                  col.mpBucket
+                                )}
+                                title="Значение берётся с вкладки «Основное»"
+                              />
+                            ) : null}
+                            {canFill ? (
+                              <button
+                                type="button"
+                                className="products-bulk-fill-btn"
+                                onClick={() => openBulk(col)}
+                                title={`Заполнить столбец «${col.label || col.key}»`}
+                                aria-label={`Заполнить столбец ${col.label || col.key}`}
+                              >
+                                <FillColumnIcon />
+                              </button>
+                            ) : null}
+                          </div>
                         ) : null}
                         {showColActions ? (
-                          <span className="products-bulk-th-actions">
-                            {isPinned ? (
+                          <div className="products-bulk-th-toolbar-row products-bulk-th-toolbar-row--chrome">
+                            <span className="products-bulk-th-actions">
+                              {isPinned ? (
+                                <button
+                                  type="button"
+                                  className="products-bulk-pin-btn products-bulk-move-btn"
+                                  title="Сдвинуть закреплённый столбец влево"
+                                  aria-label="Сдвинуть столбец влево"
+                                  disabled={!canMoveLeft}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    movePinnedColumn(col.key, -1);
+                                  }}
+                                >
+                                  ‹
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
-                                className="products-bulk-pin-btn products-bulk-move-btn"
-                                title="Сдвинуть закреплённый столбец влево"
-                                aria-label="Сдвинуть столбец влево"
-                                disabled={!canMoveLeft}
+                                className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
+                                title={
+                                  isPinned
+                                    ? 'Открепить столбец'
+                                    : 'Закрепить столбец слева (после артикула)'
+                                }
+                                aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
+                                aria-pressed={isPinned}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  movePinnedColumn(col.key, -1);
+                                  togglePinColumn(col.key);
                                 }}
                               >
-                                ‹
+                                <PinIcon />
                               </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              className={`products-bulk-pin-btn${isPinned ? ' is-pinned' : ''}`}
-                              title={
-                                isPinned
-                                  ? 'Открепить столбец'
-                                  : 'Закрепить столбец слева (после артикула)'
-                              }
-                              aria-label={isPinned ? 'Открепить столбец' : 'Закрепить столбец'}
-                              aria-pressed={isPinned}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                togglePinColumn(col.key);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                            {isPinned ? (
-                              <button
-                                type="button"
-                                className="products-bulk-pin-btn products-bulk-move-btn"
-                                title="Сдвинуть закреплённый столбец вправо"
-                                aria-label="Сдвинуть столбец вправо"
-                                disabled={!canMoveRight}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  movePinnedColumn(col.key, 1);
-                                }}
-                              >
-                                ›
-                              </button>
-                            ) : null}
-                            {canHide ? (
-                              <button
-                                type="button"
-                                className="products-bulk-pin-btn products-bulk-hide-btn"
-                                title="Скрыть столбец"
-                                aria-label={`Скрыть столбец ${col.label || col.key}`}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  hideColumnFromHeader(col.key);
-                                }}
-                              >
-                                <HideColumnIcon />
-                              </button>
-                            ) : null}
-                          </span>
-                        ) : null}
-                        {canFill ? (
-                          <button
-                            type="button"
-                            className="products-bulk-fill-btn"
-                            onClick={() => openBulk(col)}
-                            title={`Заполнить столбец «${col.label || col.key}»`}
-                            aria-label={`Заполнить столбец ${col.label || col.key}`}
-                          >
-                            <FillColumnIcon />
-                          </button>
+                              {isPinned ? (
+                                <button
+                                  type="button"
+                                  className="products-bulk-pin-btn products-bulk-move-btn"
+                                  title="Сдвинуть закреплённый столбец вправо"
+                                  aria-label="Сдвинуть столбец вправо"
+                                  disabled={!canMoveRight}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    movePinnedColumn(col.key, 1);
+                                  }}
+                                >
+                                  ›
+                                </button>
+                              ) : null}
+                              {canHide ? (
+                                <button
+                                  type="button"
+                                  className="products-bulk-pin-btn products-bulk-hide-btn"
+                                  title="Скрыть столбец"
+                                  aria-label={`Скрыть столбец ${col.label || col.key}`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    hideColumnFromHeader(col.key);
+                                  }}
+                                >
+                                  <HideColumnIcon />
+                                </button>
+                              ) : null}
+                            </span>
+                          </div>
                         ) : null}
                       </div>
                     )}
