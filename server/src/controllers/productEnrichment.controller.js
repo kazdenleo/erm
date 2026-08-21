@@ -8,7 +8,9 @@ import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 class ProductEnrichmentController {
   async status(req, res, next) {
     try {
-      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const profileId =
+        (await resolveEffectiveProfileId(req, req.user)) ??
+        (req.user?.profileId != null ? Number(req.user.profileId) : null);
       const data = await productEnrichmentService.getEnrichmentStatusForProfile(profileId);
       res.json({ success: true, data });
     } catch (error) {

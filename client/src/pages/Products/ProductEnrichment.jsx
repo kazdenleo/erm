@@ -151,7 +151,7 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
 
 export function ProductEnrichment() {
   const navigate = useNavigate();
-  const { profile, isTenantAccountAdmin, refreshUser } = useAuth();
+  const { profile, isTenantAccountAdmin } = useAuth();
   const { brands, createBrand, loadBrands } = useBrands();
   const { categories, createCategory } = useCategories();
   const { organizations } = useOrganizations();
@@ -166,7 +166,8 @@ export function ProductEnrichment() {
   const lengthLbl = lengthUnitLabel(lengthUnit);
   const weightLbl = weightUnitLabel(weightUnit);
   const [statusEnabled, setStatusEnabled] = useState(null);
-  const enabled = statusEnabled === true || (statusEnabled == null && flagEnabled);
+  // Не затираем флаг профиля ложным ответом статуса (гонка/пустой контекст).
+  const enabled = flagEnabled || statusEnabled === true;
   const canEditKeys = isTenantAccountAdmin;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -224,10 +225,6 @@ export function ProductEnrichment() {
   useEffect(() => {
     reloadStatus();
   }, [reloadStatus]);
-
-  useEffect(() => {
-    refreshUser?.();
-  }, [refreshUser]);
 
   useEffect(() => {
     if (!canEditKeys || !settingsOpen) return;

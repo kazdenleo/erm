@@ -16,7 +16,7 @@ const orgRepo = repositoryFactory.getOrganizationsRepository();
  */
 export async function resolveEffectiveProfileId(req, userRow) {
   if (!userRow) return null;
-  let pid = profileIdFromDb(userRow.profile_id);
+  let pid = profileIdFromDb(userRow.profile_id ?? userRow.profileId);
   if (pid != null) return pid;
 
   /** Без profile_id в users: профиль из выбранной организации или из последнего обращения (не путать с админом аккаунта — у него в БД должен быть profile_id при role=user). */
