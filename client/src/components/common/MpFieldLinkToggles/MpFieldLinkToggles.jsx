@@ -83,16 +83,12 @@ export function MpMappedMpBadges({ mps, size = 18 }) {
 
 /** Иконка на поле МП: значение берётся с вкладки «Основное». */
 export function MpFromMainLinkIcon({ linked = false, title }) {
+  if (!linked) return null;
   return (
     <span
-      className={`mp-from-main-link${linked ? ' is-linked' : ''}`}
-      title={
-        title ||
-        (linked
-          ? 'Значение берётся с вкладки «Основное»'
-          : 'Связь с «Основным» выключена — своё значение на МП')
-      }
-      aria-label={linked ? 'Связь с Основным включена' : 'Связь с Основным выключена'}
+      className="mp-from-main-link"
+      title={title || 'Значение берётся с вкладки «Основное»'}
+      aria-label="Связь с Основным"
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -101,11 +97,10 @@ export function MpFromMainLinkIcon({ linked = false, title }) {
         width: 18,
         height: 18,
         borderRadius: 4,
-        background: linked ? '#eef2ff' : 'rgba(0,0,0,0.04)',
-        color: linked ? '#4338ca' : '#94a3b8',
+        background: '#eef2ff',
+        color: '#4338ca',
         verticalAlign: 'middle',
         flexShrink: 0,
-        opacity: linked ? 1 : 0.55,
       }}
     >
       <i className="pe-7s-link" aria-hidden style={{ fontSize: 14, fontWeight: 700, lineHeight: 1 }} />

@@ -282,9 +282,8 @@
 
 .products-bulk-select-head {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
 }
 
 /* Цвета МП — как в минимальных ценах */
@@ -304,7 +303,7 @@
   padding: 4px 6px;
   background: #e9ecef;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-  vertical-align: middle;
+  vertical-align: top;
   height: auto;
 }
 
@@ -450,7 +449,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 4px;
   width: 100%;
   min-width: 0;
