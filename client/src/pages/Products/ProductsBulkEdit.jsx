@@ -2938,10 +2938,9 @@ function emptyBulkMpFieldLinks(erpAttrColDefs = []) {
   return links;
 }
 
-function bulkMpFieldLinksFromProduct(p, erpAttrColDefs = []) {
-  const base = emptyBulkMpFieldLinks(erpAttrColDefs);
-  const saved = normalizeMpFieldLinks(p?.mp_field_links);
-  return normalizeMpFieldLinks({ ...base, ...saved });
+/** Связи Main↔МП в сессии массового редактирования — всегда выкл. при загрузке (не из карточки товара). */
+function bulkSessionMpFieldLinks(erpAttrColDefs = []) {
+  return emptyBulkMpFieldLinks(erpAttrColDefs);
 }
 
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
@@ -2996,7 +2995,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
-    mp_field_links: bulkMpFieldLinksFromProduct(p, erpAttrColDefs),
+    mp_field_links: bulkSessionMpFieldLinks(erpAttrColDefs),
     ...ozPack,
     ...wbPack,
     ...ymPack,
