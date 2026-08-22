@@ -31,9 +31,16 @@ npm run migrate
 
 echo "==> client build"
 cd "$APP_ROOT/client"
+JS_ARCHIVE="$APP_ROOT/client/.js-bundle-archive"
+mkdir -p "$JS_ARCHIVE"
+if [ -d "$APP_ROOT/client/build/static/js" ]; then
+  cp -f "$APP_ROOT/client/build/static/js/main."*.js "$JS_ARCHIVE/" 2>/dev/null || true
+fi
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
 umask 022
 npm run build
+# Сохраняем предыдущие main.*.js — иначе после деплоя F5 с закэшированным index.html даёт 404 и белый экран
+cp -f "$JS_ARCHIVE/"main.*.js "$APP_ROOT/client/build/static/js/" 2>/dev/null || true
 # postbuild в package.json тоже выставляет права; дублируем на случай старого package.json
 bash "$APP_ROOT/scripts/vps-fix-client-build-perms.sh" 2>/dev/null \
   || { chmod 755 "$APP_ROOT/client"; chmod -R a+rX "$APP_ROOT/client/build"; } 2>/dev/null \

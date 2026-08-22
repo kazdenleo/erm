@@ -485,7 +485,12 @@ function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps)
   if (!entries.length) return row;
   let next = row;
   for (const entry of entries) {
-    const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+    let target;
+    try {
+      target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+    } catch {
+      target = null;
+    }
     if (!target) continue;
     if (target.kind === 'offer') {
       const seeded = {
@@ -2654,7 +2659,12 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
     for (const mp of ATTR_MP_CODES) {
       const entries = normalizeAttrMpLinkList(links[mp]);
       for (const entry of entries) {
-        const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+        let target;
+        try {
+          target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+        } catch {
+          target = null;
+        }
         if (!target) continue;
         if (target.kind === 'offer') {
           const offerKey = `offer:${target.offerId}`;
@@ -3027,7 +3037,11 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     const erpVal = str(row[erpCol.key]).trim();
     if (!erpVal) continue;
     for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
-      row = copyErpAttrToLinkedMp(row, erpCol, mp);
+      try {
+        row = copyErpAttrToLinkedMp(row, erpCol, mp);
+      } catch {
+        /* ignore bad mapping for one cell */
+      }
     }
   }
   return syncOfferFieldColsOnRow(row, mpAttrColDefs);
@@ -4369,7 +4383,15 @@ export function ProductsBulkEdit() {
         return !hidden.has(c.key);
       }
     );
-    return [SELECT_COL, ...ordered];
+    const out = [SELECT_COL];
+    const seen = new Set([SELECT_COL_KEY]);
+    for (const col of ordered) {
+      const key = String(col?.key || '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(col);
+    }
+    return out;
   }, [visibleColumns, pinnedColumnKeys, hiddenColumnKeys, columnsSearch, columnOrderKeys]);
 
   const stickyLeftMap = useMemo(

@@ -8,6 +8,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
+import { ErrorBoundary } from './components/common/ErrorBoundary/ErrorBoundary.jsx';
 import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';
 import { PublicRegister } from './pages/Register/PublicRegister.jsx';
@@ -19,8 +20,8 @@ import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesA
 import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
 import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
 import { Products } from './pages/Products/Products';
-import { ProductCard } from './pages/Products/ProductCard';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
+import { ProductCard } from './pages/Products/ProductCard';
 import { ProductEnrichment } from './pages/Products/ProductEnrichment';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
@@ -107,8 +108,9 @@ function RedirectSettingsRichContent() {
 function App() {
   return (
     <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <AuthProvider>
-        <Routes>
+      <ErrorBoundary>
+        <AuthProvider>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/platform-login" element={<Login mode="platform" />} />
           <Route path="/register" element={<PublicRegister />} />
@@ -199,6 +201,7 @@ function App() {
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />
         </Routes>
       </AuthProvider>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }
