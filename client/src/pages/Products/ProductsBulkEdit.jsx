@@ -38,6 +38,7 @@ import {
   isAttrMpFieldLinkKey,
   isDedicatedMpFieldLinkKey,
   isWbCharcDuplicatingDedicatedField,
+  isYmParamDuplicatingDedicatedField,
   normalizeCategoryDedicatedCharcLinks,
   DEDICATED_ADDED_KEYS_FIELD,
   DEDICATED_MAIN_MAP_KEYS,
@@ -138,19 +139,16 @@ const PRODUCT_DIM_ALIAS = {
     'product_length',
     'ozon_product_length',
     'wb_product_length',
-    'ym_product_length',
   ],
   product_width: [
     'product_width',
     'ozon_product_width',
     'wb_product_width',
-    'ym_product_width',
   ],
   product_height: [
     'product_height',
     'ozon_product_height',
     'wb_product_height',
-    'ym_product_height',
   ],
   product_weight: [
     'product_weight',
@@ -369,9 +367,17 @@ function copyErpAttrToLinkedMp(row, erpCol, mp) {
 }
 
 /** Ячейка МП связана с «Основным» — в UI показываем зеркало Main, правка отвязывает. */
-function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = []) {
+function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) {
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
+    const col = (mpAttrCols || []).find((c) => c.key === colKey);
+    if (col?.linkFieldKey && isDedicatedMpFieldLinkKey(col.linkFieldKey)) {
+      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), col.linkFieldKey, mpAttr.mp);
+    }
+    const erpCol = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
+    if (erpCol?.linkFieldKey) {
+      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mpAttr.mp);
+    }
     return false;
   }
   const fieldKey = bulkLinkFieldForColumn(colKey);
@@ -380,10 +386,30 @@ function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = []) {
   return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp);
 }
 
+function productDimAxisForMpAttr(meta, mp) {
+  return mp === 'wb' ? wbProductDimAxis(meta) || ozonProductDimAxis(meta) : ozonProductDimAxis(meta);
+}
+
+function mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit) {
+  if (axis === 'weight') return row.product_weight ?? '';
+  if (axis === 'length') return row.product_length ?? '';
+  if (axis === 'width') return row.product_width ?? '';
+  if (axis === 'height') return row.product_height ?? '';
+  return '';
+}
+
 /** Значение колонки МП при включённой связи: как на «Основном». */
-function bulkLinkedMirrorValue(row, colKey, erpAttrCols = []) {
+function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], lengthUnit = 'mm', weightUnit = 'g') {
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
+    const col = (mpAttrCols || []).find((c) => c.key === colKey);
+    if (col?.linkFieldKey === 'product_dimensions') {
+      const meta = { id: mpAttr.attrId, name: col._humanName || col.label };
+      const axis = productDimAxisForMpAttr(meta, mpAttr.mp);
+      if (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') {
+        return mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit);
+      }
+    }
     const erpCol = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
     if (erpCol) return row[erpCol.key] ?? '';
   }
@@ -596,6 +622,8 @@ function linksSignature(links) {
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
 const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
+/** Фильтры списка и выбор категории — переживают F5 */
+const SESSION_BULK_FILTERS = 'productsBulkEditFilters';
 const SESSION_MP_OZON = 'productsBulkShowMpOzon';
 const SESSION_MP_WB = 'productsBulkShowMpWb';
 const SESSION_MP_YM = 'productsBulkShowMpYm';
@@ -673,6 +701,83 @@ function readBulkPageSize() {
   } catch {
     return 100;
   }
+}
+
+function readBulkEditFiltersStorage() {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const raw = sessionStorage.getItem(SESSION_BULK_FILTERS);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBulkEditFiltersStorage(payload) {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(SESSION_BULK_FILTERS, JSON.stringify(payload));
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Слияние сохранённых фильтров с переданными при переходе со страницы «Товары». */
+function mergeBulkEditFilters(stored, navFilters) {
+  const base = stored && typeof stored === 'object' ? { ...stored } : {};
+  const nav = navFilters && typeof navFilters === 'object' ? navFilters : null;
+  if (!nav) return base;
+  const out = { ...base };
+  if (nav.organizationId != null) out.organizationId = String(nav.organizationId);
+  if (nav.brandId != null) out.brandId = String(nav.brandId);
+  if (nav.categoryId != null) out.categoryId = String(nav.categoryId);
+  if (nav.productType != null) out.productType = String(nav.productType).trim();
+  if (nav.search != null) out.search = String(nav.search);
+  if (nav.unlinkedMp != null) out.unlinkedMp = nav.unlinkedMp;
+  if (nav.linkedMp != null) out.linkedMp = nav.linkedMp;
+  return out;
+}
+
+function resolveInitialCategoryScope(locationState, filters) {
+  if (locationState?.createMode) {
+    const cat =
+      filters?.categoryId != null && String(filters.categoryId).trim() !== ''
+        ? String(filters.categoryId)
+        : '';
+    return cat !== '';
+  }
+  const ids = locationState?.selectedIds;
+  if (Array.isArray(ids) && ids.length > 0) return true;
+  const pick = filters?.categoryPickDraft;
+  if (pick && String(pick) !== CATEGORY_SCOPE_UNSET) return true;
+  const cat = filters?.categoryId;
+  return cat != null && String(cat).trim() !== '';
+}
+
+function resolveInitialCategoryPickDraft(locationState, filters) {
+  if (locationState?.createMode) {
+    const cat =
+      filters?.categoryId != null && String(filters.categoryId).trim() !== ''
+        ? String(filters.categoryId)
+        : '';
+    return cat === '' ? CATEGORY_SCOPE_UNSET : cat;
+  }
+  const ids = locationState?.selectedIds;
+  if (Array.isArray(ids) && ids.length > 0) {
+    const cat =
+      filters?.categoryId != null && String(filters.categoryId).trim() !== ''
+        ? String(filters.categoryId)
+        : '';
+    return cat === '' ? CATEGORY_SCOPE_ALL : cat;
+  }
+  const pick = filters?.categoryPickDraft;
+  if (pick && String(pick) !== CATEGORY_SCOPE_UNSET) return String(pick);
+  const cat = filters?.categoryId;
+  if (cat != null && String(cat).trim() !== '') return String(cat);
+  return CATEGORY_SCOPE_UNSET;
 }
 
 function readMpBucketVisibility() {
@@ -928,9 +1033,9 @@ const COLUMNS = [
   { key: 'description', label: 'Описание', input: 'textarea', minW: 160, linkFieldKey: 'description', showLinkToggles: true },
   /* габариты товара (без упаковки) — вкладка «Основное» */
   { key: 'product_length', label: 'Длина тов.', title: 'Основное · Длина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
-  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_dimensions' },
+  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
+  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
+  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_dimensions', showLinkToggles: true },
   { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions', showLinkToggles: true },
   { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
   { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
@@ -972,9 +1077,6 @@ const COLUMNS = [
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
-          { key: 'ym_product_length', label: 'Длина тов.', title: 'Яндекс.Маркет · Длина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'ym_product_width', label: 'Ширина тов.', title: 'Яндекс.Маркет · Ширина товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
-  { key: 'ym_product_height', label: 'Высота тов.', title: 'Яндекс.Маркет · Высота товара', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'product_dimensions' },
   { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
   { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
   { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
@@ -1123,6 +1225,38 @@ function attrsFromRow(row, mpAttrColDefs, bucket) {
     else base[attrId] = parsed;
   }
   return base;
+}
+
+/** При связи product_dimensions дописать L/W/H/вес в JSON-атрибуты МП (в т.ч. скрытые дубликаты). */
+function mergeLinkedProductDimIntoMpAttrs(
+  attrs,
+  row,
+  mpAttrColDefs,
+  bucket,
+  links,
+  lengthUnit,
+  weightUnit
+) {
+  if (!isMpFieldLinked(links, 'product_dimensions', bucket)) return attrs;
+  const out = { ...(attrs || {}) };
+  const mmOf = {
+    length: lengthDisplayToMm(row.product_length, lengthUnit),
+    width: lengthDisplayToMm(row.product_width, lengthUnit),
+    height: lengthDisplayToMm(row.product_height, lengthUnit),
+    weight: weightDisplayToG(row.product_weight, weightUnit),
+  };
+  const seen = new Set((mpAttrColDefs || []).filter((c) => c.mpAttr?.bucket === bucket).map((c) => String(c.mpAttr.attrId)));
+  for (const id of Object.keys(row._mpAttrBaseline?.[bucket] || {})) seen.add(String(id));
+  for (const id of seen) {
+    const col = (mpAttrColDefs || []).find((c) => c.mpAttr?.bucket === bucket && String(c.mpAttr.attrId) === id);
+    const meta = { id, name: col?._humanName || col?.label || knownMpAttrLabel(bucket, id) };
+    const axis = productDimAxisForMpAttr(meta, bucket);
+    if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
+    const stored = productDimAttrStoredFromMm(meta, mmOf[axis], bucket);
+    if (stored === '') delete out[id];
+    else out[id] = stored;
+  }
+  return out;
 }
 
 function collectAttrKeySets(products) {
@@ -1377,7 +1511,7 @@ function mergeYmAttrSchema(list, into) {
     const idRaw = a?.id ?? a?.parameterId ?? a?.parameter_id;
     const id = idRaw != null ? String(idRaw) : '';
     if (!id) continue;
-    const name = String(a?.name || a?.title || a?.description || '').trim();
+    const name = String(a?.name || a?.title || a?.description || '').trim() || `Параметр ${id}`;
     const options = extractYmDictionaryOptions(a);
     const kind = ymSchemaKind(a, options);
     const prev = into[id];
@@ -1389,6 +1523,19 @@ function mergeYmAttrSchema(list, into) {
       if (!prev.kind || prev.kind === 'text') prev.kind = kind;
     }
   }
+}
+
+/** Категории, для которых в массовом редактировании нужна схема МП и сопоставления. */
+function resolveBulkEditCategoryIds(categories, filterCategoryId, products) {
+  const catId = String(filterCategoryId || '').trim();
+  if (catId === FILTER_CATEGORY_NONE) return [];
+  if (catId) return [catId];
+  const out = new Set();
+  for (const p of products || []) {
+    const cid = p?.user_category_id ?? p?.categoryId;
+    if (cid != null && String(cid).trim() !== '') out.add(String(cid));
+  }
+  return [...out];
 }
 
 /** Имена характеристик из сопоставлений категории (пока схема МП не подгрузилась). */
@@ -1411,16 +1558,7 @@ function seedMpLabelMapsFromCategoryLinks(categories, filterCategoryId, products
     }
   }
   const cats = categories || [];
-  const catId = String(filterCategoryId || '').trim();
-  const catIds = new Set();
-  if (catId && catId !== FILTER_CATEGORY_NONE) {
-    catIds.add(catId);
-  } else if (!catId) {
-    for (const p of products || []) {
-      const cid = p.categoryId ?? p.user_category_id;
-      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
-    }
-  }
+  const catIds = new Set(resolveBulkEditCategoryIds(categories, filterCategoryId, products));
   for (const c of cats) {
     if (catIds.size && !catIds.has(String(c.id))) continue;
     const attrMap = c?.attribute_mp_links && typeof c.attribute_mp_links === 'object' ? c.attribute_mp_links : {};
@@ -1481,24 +1619,22 @@ function schemaAttrName(meta) {
  * Ozon: dictionary_id + пары desc/type для подгрузки значений.
  * YM/WB: options из схемы, если есть.
  */
-async function fetchMpAttributeLabelMaps(products) {
+async function fetchMpAttributeLabelMaps(products, categories, filterCategoryId, fallbackOrganizationId) {
   const maps = { ozon: {}, wb: {}, ym: {}, ozonPairs: [] };
-  const catIds = [
-    ...new Set(
-      products
-        .map((p) => String(p?.user_category_id ?? p?.categoryId ?? '').trim())
-        .filter(Boolean)
-    ),
-  ];
+  const catIds = resolveBulkEditCategoryIds(categories, filterCategoryId, products);
   if (catIds.length === 0) return maps;
 
   const orgByCat = new Map();
-  let fallbackOrg = '';
+  let fallbackOrg = String(fallbackOrganizationId || '').trim();
   for (const p of products || []) {
     const cid = String(p?.user_category_id ?? p?.categoryId ?? '').trim();
     const oid = String(p.organizationId ?? p.organization_id ?? '').trim();
     if (oid && !fallbackOrg) fallbackOrg = oid;
     if (cid && oid && !orgByCat.has(cid)) orgByCat.set(cid, oid);
+  }
+  for (const cid of catIds) {
+    if (orgByCat.has(cid) || !fallbackOrg) continue;
+    orgByCat.set(cid, fallbackOrg);
   }
 
   const markets = /** @type {const} */ (['ozon', 'wb', 'ym']);
@@ -1703,13 +1839,14 @@ function applyLinkedOzonTextAttrColumns(row, text, fieldKey, matchAttr, mpAttrCo
   return next;
 }
 
-function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') {
+function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm', weightUnit = 'g') {
   const links = normalizeMpFieldLinks(row?.mp_field_links);
   if (!Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
   const mmOf = {
     length: lengthDisplayToMm(row.product_length, lengthUnit),
     width: lengthDisplayToMm(row.product_width, lengthUnit),
     height: lengthDisplayToMm(row.product_height, lengthUnit),
+    weight: weightDisplayToG(row.product_weight, weightUnit),
   };
   let next = row;
   let changed = false;
@@ -1718,8 +1855,8 @@ function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') 
     if (mp !== 'ozon' && mp !== 'wb' && mp !== 'ym') continue;
     if (!isMpFieldLinked(links, 'product_dimensions', mp)) continue;
     const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-    const axis = mp === 'wb' ? wbProductDimAxis(meta) : ozonProductDimAxis(meta);
-    if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+    const axis = productDimAxisForMpAttr(meta, mp);
+    if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
     const value = productDimAttrStoredFromMm(meta, mmOf[axis], mp);
     if (str(next[col.key]) === str(value)) continue;
     if (!changed) {
@@ -1731,11 +1868,11 @@ function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') 
   return next;
 }
 
-function applyLinkedOzonProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm') {
-  return applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit);
+function applyLinkedOzonProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm', weightUnit = 'g') {
+  return applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit, weightUnit);
 }
 
-function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols, lengthUnit = 'mm') {
+function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols, lengthUnit = 'mm', weightUnit = 'g') {
   let next = applyLinkedOzonTextAttrColumns(row, row?.name, 'name', isOzonNameAttr, mpAttrCols);
   next = applyLinkedOzonTextAttrColumns(
     next,
@@ -1744,7 +1881,7 @@ function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols, lengthUnit = '
     isOzonAnnotationAttr,
     mpAttrCols
   );
-  return applyLinkedOzonProductDimAttrColumns(next, mpAttrCols, lengthUnit);
+  return applyLinkedOzonProductDimAttrColumns(next, mpAttrCols, lengthUnit, weightUnit);
 }
 
 function hydrateMpAttrCellsFromBaseline(row, mpAttrCols) {
@@ -1789,6 +1926,7 @@ function unlinkProductDimsIfMpDimAttrEdited(row, col) {
 function knownMpAttrLabel(bucket, attrId) {
   const id = String(attrId ?? '');
   const b = String(bucket || '').toLowerCase();
+  if (b === 'ym' && id === '72668284') return 'Маркировка ТН ВЭД';
   if (b === 'wb') {
     if (id === WB_ITEM_DIM_CHARC.length) return 'Длина';
     if (id === WB_ITEM_DIM_CHARC.width) return 'Ширина';
@@ -1892,8 +2030,7 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
     if ((h.includes('описание') && (h.includes('товар') || h.includes('карточк'))) || h === 'описание товара') return true;
     const kind = classifyMarketplaceDimAttrName(raw);
     if (kind === 'pack') return true;
-    const axis = ozonProductDimAxis(raw);
-    if (kind === 'product' && axis !== 'length' && axis !== 'width' && axis !== 'height') return true;
+    if (kind === 'product') return true;
     if (/(длина|ширина|высота)/.test(h) && /упаковк|габарит/.test(h)) return true;
     if (/вес/.test(h) && /упаковк/.test(h)) return true;
     if ((h === 'вес' || h === 'вес товара' || /^вес товара\b/.test(h)) && !/упаковк/.test(h)) return true;
@@ -1982,6 +2119,43 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     });
   }
   return cols;
+}
+
+/** Добавить столбцы по схеме категории МП (ТН ВЭД и др.), даже если ни у одного товара ещё нет значения. */
+function mergeCategorySchemaMpAttrColumns(mpCols, labelMaps = {}) {
+  const byKey = new Map(
+    (mpCols || [])
+      .filter((c) => c.mpAttr?.bucket && c.mpAttr?.attrId)
+      .map((c) => [`${c.mpAttr.bucket}:${c.mpAttr.attrId}`, c])
+  );
+  const extra = [];
+  for (const mp of ATTR_MP_CODES) {
+    for (const [id, meta] of Object.entries(labelMaps?.[mp] || {})) {
+      const k = `${mp}:${id}`;
+      if (byKey.has(k)) continue;
+      const human =
+        schemaAttrName(meta) || knownMpAttrLabel(mp, id) || (String(id).trim() ? `Параметр ${id}` : '');
+      if (!String(id).trim()) continue;
+      if (mp === 'ym' && human && isYmParamDuplicatingDedicatedField(human)) continue;
+      if (mp === 'wb' && human && isWbCharcDuplicatingDedicatedField(human)) continue;
+      const col = extraLinkedMpAttrColumn(mp, id, human, labelMaps);
+      if (col) {
+        extra.push(col);
+        byKey.set(k, col);
+      }
+    }
+  }
+  if (!extra.length) return mpCols || [];
+  const baseKeys = new Set((mpCols || []).map((c) => c.key));
+  return [...(mpCols || []), ...extra.filter((c) => !baseKeys.has(c.key))];
+}
+
+function buildBulkMpAttrColumnDefs(products, erpCols, seedMaps, schemaMaps) {
+  const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
+  return mergeCategorySchemaMpAttrColumns(
+    mergeLinkedMpAttrColumns(buildMpAttrColumnDefs(products, mergedMaps), erpCols, mergedMaps),
+    mergedMaps
+  );
 }
 
 function erpAttrColKey(attrId) {
@@ -2276,6 +2450,16 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
       else if (isOzonManufacturerCountryAttr(fake)) next = { ...next, linkFieldKey: 'country' };
       else if (isOzonNameAttr(fake)) next = { ...next, linkFieldKey: 'name' };
       else if (isOzonAnnotationAttr(fake)) next = { ...next, linkFieldKey: 'description' };
+      else if (ozonProductDimAxis(fake) && classifyMarketplaceDimAttrName(next._humanName || fake.name) === 'product') {
+        next = { ...next, linkFieldKey: 'product_dimensions' };
+      }
+    }
+    if (!next.linkFieldKey && next.mpAttr.bucket === 'wb') {
+      const fake = { id: next.mpAttr.attrId, name: next._humanName, charcID: next.mpAttr.attrId };
+      const axis = productDimAxisForMpAttr(fake, 'wb');
+      if (axis && classifyMarketplaceDimAttrName(next._humanName || fake.name) === 'product') {
+        next = { ...next, linkFieldKey: 'product_dimensions' };
+      }
     }
     const erp = findErpAttrColForMpAttr(erpCols, next.mpAttr.bucket, next.mpAttr.attrId);
     if (erp) {
@@ -2893,7 +3077,16 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       const defs = mpAttrColDefs.filter((c) => c.mpAttr?.bucket === bucket);
       if (defs.length === 0) continue;
       const before = attrsFromRow(original, mpAttrColDefs, bucket);
-      const after = attrsFromRow(current, mpAttrColDefs, bucket);
+      let after = attrsFromRow(current, mpAttrColDefs, bucket);
+      after = mergeLinkedProductDimIntoMpAttrs(
+        after,
+        current,
+        mpAttrColDefs,
+        bucket,
+        normalizeMpFieldLinks(current.mp_field_links),
+        lengthUnit,
+        weightUnit
+      );
       if (stableAttrJson(before) !== stableAttrJson(after)) {
         touch(map[bucket], after);
       }
@@ -3294,6 +3487,12 @@ export function ProductsBulkEdit() {
   const location = useLocation();
   const navigate = useNavigate();
   const createMode = location.state?.createMode === true;
+  const initialBulkFilters = useMemo(
+    () => mergeBulkEditFilters(readBulkEditFiltersStorage(), location.state?.filters),
+    // только первый mount: location.state есть при переходе с «Товаров», после F5 — из sessionStorage
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
@@ -3315,29 +3514,12 @@ export function ProductsBulkEdit() {
   const [rows, setRows] = useState([]);
   const [originals, setOriginals] = useState({});
   /** Пока false — товары не грузим: сначала выбор категории (или «все»). */
-  const [categoryScopeReady, setCategoryScopeReady] = useState(() => {
-    if (location.state?.createMode) {
-      const f = location.state?.filters;
-      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
-      return cat !== '';
-    }
-    const ids = location.state?.selectedIds;
-    return Array.isArray(ids) && ids.length > 0;
-  });
-  const [categoryPickDraft, setCategoryPickDraft] = useState(() => {
-    if (location.state?.createMode) {
-      const f = location.state?.filters;
-      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
-      return cat === '' ? CATEGORY_SCOPE_UNSET : cat;
-    }
-    const ids = location.state?.selectedIds;
-    if (Array.isArray(ids) && ids.length > 0) {
-      const f = location.state?.filters;
-      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
-      return cat === '' ? CATEGORY_SCOPE_ALL : cat;
-    }
-    return CATEGORY_SCOPE_UNSET;
-  });
+  const [categoryScopeReady, setCategoryScopeReady] = useState(() =>
+    resolveInitialCategoryScope(location.state, initialBulkFilters)
+  );
+  const [categoryPickDraft, setCategoryPickDraft] = useState(() =>
+    resolveInitialCategoryPickDraft(location.state, initialBulkFilters)
+  );
   const [pickerHasUncategorized, setPickerHasUncategorized] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -3352,8 +3534,8 @@ export function ProductsBulkEdit() {
   const [totalProducts, setTotalProducts] = useState(0);
 
   const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
-    const f = location.state?.filters;
-    return f?.organizationId != null && f.organizationId !== '' ? String(f.organizationId) : '';
+    const v = initialBulkFilters?.organizationId;
+    return v != null && v !== '' ? String(v) : '';
   });
   const bulkLimitOrgIds = useMemo(() => {
     const ids = new Set();
@@ -3373,16 +3555,16 @@ export function ProductsBulkEdit() {
     [filterOrganizationId, limitsByOrg]
   );
   const [filterBrandId, setFilterBrandId] = useState(() => {
-    const f = location.state?.filters;
-    return f?.brandId != null && f.brandId !== '' ? String(f.brandId) : '';
+    const v = initialBulkFilters?.brandId;
+    return v != null && v !== '' ? String(v) : '';
   });
   const [filterCategoryId, setFilterCategoryId] = useState(() => {
-    const f = location.state?.filters;
-    return f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+    const v = initialBulkFilters?.categoryId;
+    return v != null && v !== '' ? String(v) : '';
   });
   const [filterProductType, setFilterProductType] = useState(() => {
-    const f = location.state?.filters;
-    return f?.productType != null && String(f.productType).trim() !== '' ? String(f.productType).trim() : '';
+    const v = initialBulkFilters?.productType;
+    return v != null && String(v).trim() !== '' ? String(v).trim() : '';
   });
   useEffect(() => {
     if (!kitsEnabled && filterProductType) {
@@ -3390,16 +3572,16 @@ export function ProductsBulkEdit() {
     }
   }, [kitsEnabled, filterProductType]);
   const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() =>
-    mpFilterSetFromState(location.state?.filters?.unlinkedMp)
+    mpFilterSetFromState(initialBulkFilters?.unlinkedMp)
   );
   const [filterLinkedMp, setFilterLinkedMp] = useState(() =>
-    mpFilterSetFromState(location.state?.filters?.linkedMp)
+    mpFilterSetFromState(initialBulkFilters?.linkedMp)
   );
   const [listSearch, setListSearch] = useState(() => {
-    const f = location.state?.filters;
-    return f?.search != null ? String(f.search) : '';
+    const v = initialBulkFilters?.search;
+    return v != null ? String(v) : '';
   });
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(() => initialBulkFilters?.filtersOpen === true);
   /** null — до первой загрузки; при выборке с «Товаров» учитываются только выбранные id */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [appliedSelectedIds] = useState(() =>
@@ -3407,6 +3589,33 @@ export function ProductsBulkEdit() {
       ? [...new Set(location.state.selectedIds.map((x) => str(x)).filter(Boolean))]
       : []
   );
+
+  const bulkFilterUnlinkedKey = [...filterUnlinkedMp].sort().join(',');
+  const bulkFilterLinkedKey = [...filterLinkedMp].sort().join(',');
+
+  useEffect(() => {
+    writeBulkEditFiltersStorage({
+      organizationId: filterOrganizationId || '',
+      brandId: filterBrandId || '',
+      categoryId: filterCategoryId || '',
+      categoryPickDraft: categoryPickDraft || CATEGORY_SCOPE_UNSET,
+      productType: filterProductType || '',
+      search: listSearch || '',
+      unlinkedMp: [...filterUnlinkedMp],
+      linkedMp: [...filterLinkedMp],
+      filtersOpen: !!filtersOpen,
+    });
+  }, [
+    filterOrganizationId,
+    filterBrandId,
+    filterCategoryId,
+    categoryPickDraft,
+    filterProductType,
+    listSearch,
+    bulkFilterUnlinkedKey,
+    bulkFilterLinkedKey,
+    filtersOpen,
+  ]);
 
   const listSearchDebounceRef = useRef(null);
   const loadGenRef = useRef(0);
@@ -3688,13 +3897,25 @@ export function ProductsBulkEdit() {
         rows,
         lookupKey
       );
+      if (col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions') {
+        return {
+          ...col,
+          mappedMps: mapped.length ? mapped : col.mappedMps,
+          linkSupportedMps: supportedMpsForFieldKey(col.linkFieldKey),
+          showLinkToggles: true,
+        };
+      }
       if (!mapped.length) return col;
       // Тумблеры связи (по умолчанию выкл.) — не «горящие» бейджи сопоставления.
       if (col.linkFieldKey) {
+        const fullSupported =
+          col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions'
+            ? supportedMpsForFieldKey(col.linkFieldKey)
+            : mapped;
         return {
           ...col,
           mappedMps: mapped,
-          linkSupportedMps: mapped,
+          linkSupportedMps: fullSupported,
           showLinkToggles: true,
         };
       }
@@ -4149,16 +4370,14 @@ export function ProductsBulkEdit() {
 
       const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, list);
       const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, list, erpCols);
-      const mpColsInitial = mergeLinkedMpAttrColumns(
-        buildMpAttrColumnDefs(list, seedMaps),
-        erpCols,
-        seedMaps
-      );
+      const schemaMaps = await fetchMpAttributeLabelMaps(list, cats || [], cat, org);
       if (gen !== loadGenRef.current) return;
-      setMpAttrColumnDefs(mpColsInitial);
+      const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
+      const mpCols = buildBulkMpAttrColumnDefs(list, erpCols, seedMaps, schemaMaps);
+      setMpAttrColumnDefs(mpCols);
       setErpAttrColumnDefs(erpCols);
       const nextRows = list.filter(Boolean).map((p) =>
-        productToRow(p, mpColsInitial, lengthUnit, weightUnit, erpCols, cats || [])
+        productToRow(p, mpCols, lengthUnit, weightUnit, erpCols, cats || [])
       );
       const orig = {};
       for (const r of nextRows) {
@@ -4171,40 +4390,17 @@ export function ProductsBulkEdit() {
       setOzonBulkDictOptions({});
 
       queueMicrotask(() => {
-        fetchMpAttributeLabelMaps(list)
-          .then(async (maps) => {
-            if (gen !== loadGenRef.current) return;
-            const mergedMaps = mergeMpLabelMaps(seedMaps, maps);
-            const mpColsLabeled = mergeLinkedMpAttrColumns(
-              buildMpAttrColumnDefs(list, mergedMaps),
-              erpCols,
-              mergedMaps
-            );
-            setMpAttrColumnDefs(mpColsLabeled);
-
-            setRows((prev) =>
-              prev.map((r) =>
-                applyLinkedOzonNameAndAnnotationColumns(
-                  hydrateMpAttrCellsFromBaseline(r, mpColsLabeled),
-                  mpColsLabeled,
-                  lengthUnit
-                )
-              )
-            );
-
-            const ozonDictAttrIds = [
-              ...new Set(
-                mpColsLabeled
-                  .filter((c) => c.mpAttr?.bucket === 'ozon' && Number(c.dictionaryId) > 0)
-                  .map((c) => String(c.mpAttr.attrId))
-              ),
-            ];
-            const pairs = Array.isArray(mergedMaps.ozonPairs) ? mergedMaps.ozonPairs : [];
-            if (ozonDictAttrIds.length === 0 || pairs.length === 0) {
-              setOzonBulkDictOptions({});
-              return;
-            }
-
+        void (async () => {
+          const ozonDictAttrIds = [
+            ...new Set(
+              mpCols
+                .filter((c) => c.mpAttr?.bucket === 'ozon' && Number(c.dictionaryId) > 0)
+                .map((c) => String(c.mpAttr.attrId))
+            ),
+          ];
+          const pairs = Array.isArray(mergedMaps.ozonPairs) ? mergedMaps.ozonPairs : [];
+          let dictOut = {};
+          if (ozonDictAttrIds.length > 0 && pairs.length > 0) {
             const merged = {};
             const tasks = [];
             for (const pair of pairs) {
@@ -4238,46 +4434,34 @@ export function ProductsBulkEdit() {
               }
             }
             if (gen !== loadGenRef.current) return;
-            const out = {};
             for (const [attrId, m] of Object.entries(merged)) {
-              out[attrId] = [...m.values()].sort((a, b) =>
+              dictOut[attrId] = [...m.values()].sort((a, b) =>
                 String(a.label).localeCompare(String(b.label), 'ru')
               );
             }
-            setOzonBulkDictOptions(out);
+          }
+          if (gen !== loadGenRef.current) return;
+          setOzonBulkDictOptions(dictOut);
 
-            // После загрузки справочников — дописать связанные страну/бренд в dict-колонки Ozon
-            setRows((prev) =>
-              prev.map((r) => {
-                const links = normalizeMpFieldLinks(r.mp_field_links);
-                let next = r;
-                if (['ozon', 'wb', 'ym'].some((mp) => isMpFieldLinked(links, 'country', mp))) {
-                  const countryText = str(r.country_of_origin).trim();
-                  if (countryText) {
-                    next = applyLinkedCountryToDictAttrColumns(
-                      next,
-                      countryText,
-                      mpColsLabeled,
-                      out
-                    );
-                  }
+          // После загрузки справочников — дописать связанные страну/бренд в dict-колонки Ozon
+          setRows((prev) =>
+            prev.map((r) => {
+              const links = normalizeMpFieldLinks(r.mp_field_links);
+              let next = r;
+              if (['ozon', 'wb', 'ym'].some((mp) => isMpFieldLinked(links, 'country', mp))) {
+                const countryText = str(r.country_of_origin).trim();
+                if (countryText) {
+                  next = applyLinkedCountryToDictAttrColumns(next, countryText, mpCols, dictOut);
                 }
-                if (isMpFieldLinked(links, 'brand', 'ozon') && str(r.brand).trim()) {
-                  next = applyLinkedBrandToOzonAttrColumns(
-                    next,
-                    r.brand,
-                    mpColsLabeled,
-                    out
-                  );
-                }
-                next = applyLinkedOzonNameAndAnnotationColumns(next, mpColsLabeled, lengthUnit);
-                return next;
-              })
-            );
-          })
-          .catch(() => {
-            /* оставляем подписи по id */
-          });
+              }
+              if (isMpFieldLinked(links, 'brand', 'ozon') && str(r.brand).trim()) {
+                next = applyLinkedBrandToOzonAttrColumns(next, r.brand, mpCols, dictOut);
+              }
+              next = applyLinkedOzonNameAndAnnotationColumns(next, mpCols, lengthUnit);
+              return next;
+            })
+          );
+        })();
       });
     } catch (e) {
       if (gen !== loadGenRef.current) return;
@@ -4339,11 +4523,9 @@ export function ProductsBulkEdit() {
       const cat = filterCategoryId;
       const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, []);
       const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, [], erpCols);
-      const mpColsInitial = mergeLinkedMpAttrColumns(
-        buildMpAttrColumnDefs([], seedMaps),
-        erpCols,
-        seedMaps
-      );
+      const schemaMaps = await fetchMpAttributeLabelMaps([], cats || [], cat, filterOrganizationId);
+      if (gen !== loadGenRef.current) return;
+      const mpColsInitial = buildBulkMpAttrColumnDefs([], erpCols, seedMaps, schemaMaps);
       setMpAttrColumnDefs(mpColsInitial);
       setErpAttrColumnDefs(erpCols);
       setShowUncategorizedCategoryOption(false);
@@ -4852,7 +5034,7 @@ export function ProductsBulkEdit() {
           bulkLinkFieldForColumn(key) === 'description' ||
           bulkLinkFieldForColumn(key) === 'product_dimensions'
         ) {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
+          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
         }
         const bulkCol = mpAttrColumnDefs.find((c) => c.key === key);
         if (bulkCol) {
@@ -4893,7 +5075,7 @@ export function ProductsBulkEdit() {
           bulkLinkFieldForColumn(key) === 'description' ||
           bulkLinkFieldForColumn(key) === 'product_dimensions'
         ) {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
+          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
         }
         const attrCol = mpAttrColumnDefs.find((c) => c.key === key);
         if (attrCol) {
@@ -4903,7 +5085,7 @@ export function ProductsBulkEdit() {
         return next;
       })
     );
-  }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit]);
+  }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
 
   /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
   const applyBulkLinkToRow = useCallback(
@@ -4931,14 +5113,14 @@ export function ProductsBulkEdit() {
         );
       }
       if ((fieldKey === 'name' || fieldKey === 'description') && mp === 'ozon') {
-        next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit);
+        next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
       }
       if (fieldKey === 'product_dimensions') {
-        next = applyLinkedMpProductDimAttrColumns(next, mpAttrColumnDefs, lengthUnit);
+        next = applyLinkedMpProductDimAttrColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
       }
       return next;
     },
-    [erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit]
+    [erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit]
   );
 
   const bulkLinkableFieldDefs = useMemo(() => {
@@ -4954,7 +5136,10 @@ export function ProductsBulkEdit() {
     (fieldKey, mp) => {
       if (!rows.length) return;
       const def = bulkLinkableFieldDefs.find((d) => d.fieldKey === fieldKey);
-      const supported = def?.supported;
+      const supported =
+        fieldKey === 'product_dimensions' || fieldKey === 'dimensions'
+          ? undefined
+          : def?.supported;
       const anyOn = rows.some((r) =>
         isMpFieldLinked(normalizeMpFieldLinks(r.mp_field_links), fieldKey, mp)
       );
@@ -5399,8 +5584,10 @@ export function ProductsBulkEdit() {
         </span>
       );
     }
-    const linked = isBulkLinkedMpReadonly(row, col.key, erpAttrColumnDefs);
-    const v = linked ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs) : row[col.key];
+    const linked = isBulkLinkedMpReadonly(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs);
+    const v = linked
+      ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit)
+      : row[col.key];
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
     const limitInfo = isPopupTextColumn(col)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
