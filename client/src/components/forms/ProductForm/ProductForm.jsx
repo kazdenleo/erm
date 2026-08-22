@@ -70,6 +70,10 @@ import {
   findLinkedMpAttributes,
   getLinkedAttrMpDiffs,
   mappedMpsFromAttrLinks,
+  mappedMpsFromDedicatedMainField,
+  isMpSchemaAttrLinkedInCategory,
+  isMpOfferFieldLinkedInCategory,
+  MP_CATEGORY_LINK_ICON_TITLE,
   normalizeAttrMpLinks,
 } from '../../../utils/productAttributeMpLinks.js';
 import { useAuth } from '../../../context/AuthContext.jsx';
@@ -185,7 +189,7 @@ import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
 
-function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, onToggle }) {
+function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
   const typeLabel = TYPE_LABELS[attr.type];
   const mapped = mappedMpsFromAttrLinks(attr.mp_links);
   const inner = (
@@ -194,17 +198,7 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, on
       {typeLabel ? (
         <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({typeLabel})</span>
       ) : null}
-      {mapped.length ? (
-        <MpFieldLinkToggles
-          fieldKey={erpAttrLinkFieldKey(attr.id)}
-          links={links}
-          onToggle={onToggle}
-          supportedMps={mapped}
-          size={18}
-        />
-      ) : (
-        <MpMappedMpBadges mps={mapped} size={18} />
-      )}
+      <MpMappedMpBadges mps={mapped} size={18} />
       <MpValueDiffBadges diffs={diffs} />
     </>
   );
@@ -226,37 +220,42 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, on
   );
 }
 
-function erpMappedAttrSyncOn(categoryAttributes, links, mp, attrId) {
-  const want = String(attrId ?? '');
-  if (!want) return false;
-  for (const erp of categoryAttributes || []) {
-    const entries = normalizeAttrMpLinks(erp?.mp_links)?.[mp] || [];
-    const hit = (Array.isArray(entries) ? entries : []).some((e) => String(e?.id || '') === want);
-    if (hit && isMpFieldLinked(links, erpAttrLinkFieldKey(erp.id), mp)) return true;
+function ozonAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks) {
+  if (isMpOfferFieldAttrId(attr?.id)) {
+    return isMpOfferFieldLinkedInCategory(categoryAttributes, 'ozon', attr.id, labelMaps);
   }
-  return false;
-}
-
-function ozonAttrShowsMainSyncHint(attr, links, categoryAttributes) {
-  if (isOzonManufacturerCountryAttr(attr) && isMpFieldLinked(links, 'country', 'ozon')) return true;
-  if (isOzonBrandAttr(attr) && isMpFieldLinked(links, 'brand', 'ozon')) return true;
-  if (isOzonNameAttr(attr) && isMpFieldLinked(links, 'name', 'ozon')) return true;
-  if (isOzonAnnotationAttr(attr) && isMpFieldLinked(links, 'description', 'ozon')) return true;
-  const dimAxis = ozonProductDimAxis(attr);
+  if (isMpSchemaAttrLinkedInCategory(categoryAttributes, 'ozon', attr?.id, labelMaps, attr?.name)) {
+    return true;
+  }
+  if (isOzonBrandAttr(attr) && mappedMpsFromDedicatedMainField(dedicatedLinks, 'brand').includes('ozon')) {
+    return true;
+  }
   if (
-    (dimAxis === 'length' || dimAxis === 'width' || dimAxis === 'height' || dimAxis === 'weight') &&
-    isMpFieldLinked(links, 'product_dimensions', 'ozon')
+    isOzonManufacturerCountryAttr(attr) &&
+    mappedMpsFromDedicatedMainField(dedicatedLinks, 'country').includes('ozon')
   ) {
     return true;
+  }
+  if (isOzonNameAttr(attr) && mappedMpsFromDedicatedMainField(dedicatedLinks, 'name').includes('ozon')) {
+    return true;
+  }
+  if (
+    isOzonAnnotationAttr(attr) &&
+    mappedMpsFromDedicatedMainField(dedicatedLinks, 'description').includes('ozon')
+  ) {
+    return true;
+  }
+  const dimAxis = ozonProductDimAxis(attr);
+  if (dimAxis && classifyMarketplaceDimAttrName(attr?.name) === 'product') {
+    if (mappedMpsFromDedicatedMainField(dedicatedLinks, `product_${dimAxis}`).includes('ozon')) {
+      return true;
+    }
   }
   const packAxis = ozonPackDimAxis(attr);
-  if (
-    packAxis &&
-    (isMpFieldLinked(links, 'dimensions', 'ozon') || isMpFieldLinked(links, packAxis, 'ozon'))
-  ) {
+  if (packAxis && mappedMpsFromDedicatedMainField(dedicatedLinks, packAxis).includes('ozon')) {
     return true;
   }
-  return erpMappedAttrSyncOn(categoryAttributes, links, 'ozon', attr?.id);
+  return false;
 }
 
 function wbCharcName(a) {
@@ -269,34 +268,34 @@ function isWbCharcVisibleInForm(a) {
   return true;
 }
 
-function wbAttrShowsMainSyncHint(attr, links, categoryAttributes) {
-  const axis = wbProductDimAxis(attr);
-  if (
-    (axis === 'length' || axis === 'width' || axis === 'height') &&
-    isMpFieldLinked(links, 'product_dimensions', 'wb')
-  ) {
-    return true;
-  }
+function wbAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks) {
   const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
-  return erpMappedAttrSyncOn(categoryAttributes, links, 'wb', id);
+  const name = wbCharcName(attr);
+  if (isMpSchemaAttrLinkedInCategory(categoryAttributes, 'wb', id, labelMaps, name)) return true;
+  const axis = wbProductDimAxis(attr);
+  if (axis && ['length', 'width', 'height'].includes(axis)) {
+    if (mappedMpsFromDedicatedMainField(dedicatedLinks, `product_${axis}`).includes('wb')) return true;
+  }
+  return false;
 }
 
-function ymAttrShowsMainSyncHint(attr, links, categoryAttributes) {
-  const axis = ozonProductDimAxis(attr);
-  if (
-    (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') &&
-    isMpFieldLinked(links, 'product_dimensions', 'ym')
-  ) {
+function ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks) {
+  if (isMpSchemaAttrLinkedInCategory(categoryAttributes, 'ym', attr?.id, labelMaps, attr?.name)) {
     return true;
+  }
+  const axis = ozonProductDimAxis(attr);
+  if (axis && classifyMarketplaceDimAttrName(attr?.name) === 'product') {
+    if (mappedMpsFromDedicatedMainField(dedicatedLinks, `product_${axis}`).includes('ym')) return true;
   }
   const packAxis = ozonPackDimAxis(attr);
-  if (
-    packAxis &&
-    (isMpFieldLinked(links, 'dimensions', 'ym') || isMpFieldLinked(links, packAxis, 'ym'))
-  ) {
+  if (packAxis && mappedMpsFromDedicatedMainField(dedicatedLinks, packAxis).includes('ym')) {
     return true;
   }
-  return erpMappedAttrSyncOn(categoryAttributes, links, 'ym', attr?.id);
+  return false;
+}
+
+function MpCategoryLinkIcon() {
+  return <MpFromMainLinkIcon linked title={MP_CATEGORY_LINK_ICON_TITLE} />;
 }
 
 function richContentGenerateTargets(links, clickedMp) {
@@ -2927,6 +2926,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
     });
   }, [ymCategoryAttributes, ymAttributeValues, ymFetchedProduct]);
 
+  const mpAttrLabelMaps = useMemo(() => {
+    const ozon = {};
+    for (const a of ozonAttributes || []) {
+      if (a?.id != null) ozon[String(a.id)] = a;
+    }
+    const wb = {};
+    for (const a of wbCategoryAttributes || []) {
+      const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id;
+      if (id != null) wb[String(id)] = a;
+    }
+    const ym = {};
+    for (const a of ymFormAttributes || []) {
+      if (a?.id != null) ym[String(a.id)] = a;
+    }
+    return { ozon, wb, ym };
+  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes]);
+
   useEffect(() => {
     if (!ymCategoryAttributes?.length) return;
     if (!isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')) return;
@@ -4822,6 +4838,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.length, formData.width, formData.height, formData.weight, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, ymCategoryAttributes, categoryAttributes]);
 
+  const mainFieldMpLabelProps = useCallback(
+    (fieldKey) => {
+      const mapped = mappedMpsFromDedicatedMainField(categoryDedicatedCharcLinks, fieldKey);
+      if (mapped.length) {
+        return { readOnly: true, links: { [fieldKey]: mapped }, supportedMps: mapped };
+      }
+      return { links: formData.mp_field_links, onToggle: handleMpFieldLinkToggle };
+    },
+    [categoryDedicatedCharcLinks, formData.mp_field_links, handleMpFieldLinkToggle]
+  );
+
   const handleBrandSelect = useCallback(
     (brandName) => {
       const name = String(brandName || '').trim();
@@ -6294,8 +6321,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <MpFieldLabel
             htmlFor="name"
             fieldKey="name"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
+            {...mainFieldMpLabelProps('name')}
             required
             diffs={mainCardFieldMpDiffs.name}
           >
@@ -6330,8 +6356,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <MpFieldLabel
             htmlFor="sku"
             fieldKey="sku"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
+            {...mainFieldMpLabelProps('sku')}
             required
             diffs={mainCardFieldMpDiffs.sku}
           >
@@ -6370,8 +6395,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         <MpFieldLabel
           htmlFor="description"
           fieldKey="description"
-          links={formData.mp_field_links}
-          onToggle={handleMpFieldLinkToggle}
+          {...mainFieldMpLabelProps('description')}
           diffs={mainCardFieldMpDiffs.description}
         >
           Описание
@@ -6928,8 +6952,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <MpFieldLabel
             htmlFor="brand"
             fieldKey="brand"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
+            {...mainFieldMpLabelProps('brand')}
             diffs={mainCardFieldMpDiffs.brand}
           >
             Бренд
@@ -6955,8 +6978,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <MpFieldLabel
             htmlFor="country_of_origin"
             fieldKey="country"
-            links={formData.mp_field_links}
-            onToggle={handleMpFieldLinkToggle}
+            {...mainFieldMpLabelProps('country')}
             diffs={mainCardFieldMpDiffs.country}
           >
             Страна производства
@@ -7261,7 +7283,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 ymAttributes: ymFormAttributes,
                 ymAttributeValues,
               });
-              const headingProps = { attr, diffs: attrDiffs, links: formData.mp_field_links, onToggle: handleMpFieldLinkToggle };
+              const headingProps = { attr, diffs: attrDiffs };
               if (attr.type === 'checkbox') {
                 const checked = rawValue === 'true' || rawValue === true;
                 return (
@@ -8053,8 +8075,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                             {attr.name}
                             {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                            {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links, categoryAttributes) ? (
-                              <MpFromMainLinkIcon linked />
+                            {ozonAttrShowsCategoryLinkIcon(
+                              attr,
+                              categoryAttributes,
+                              mpAttrLabelMaps,
+                              categoryDedicatedCharcLinks
+                            ) ? (
+                              <MpCategoryLinkIcon />
                             ) : null}
                             {attr.description && (
                               <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
@@ -8096,6 +8123,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             <label className="form-check-label" htmlFor={`ozon-attr-${attr.id}`}>
                               {attr.name}
                               {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
+                              {ozonAttrShowsCategoryLinkIcon(
+                                attr,
+                                categoryAttributes,
+                                mpAttrLabelMaps,
+                                categoryDedicatedCharcLinks
+                              ) ? (
+                                <MpCategoryLinkIcon />
+                              ) : null}
                             </label>
         </div>
                           {attr.description && (
@@ -8109,8 +8144,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                           {attr.name}
                           {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                          {ozonAttrShowsMainSyncHint(attr, formData.mp_field_links, categoryAttributes) ? (
-                            <MpFromMainLinkIcon linked />
+                          {ozonAttrShowsCategoryLinkIcon(
+                            attr,
+                            categoryAttributes,
+                            mpAttrLabelMaps,
+                            categoryDedicatedCharcLinks
+                          ) ? (
+                            <MpCategoryLinkIcon />
                           ) : null}
                           {attr.description && (
                             <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
@@ -8475,8 +8515,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               {dictOpts ? (
                                 <span style={{ fontSize: '11px', color: 'var(--muted)' }}> (справочник)</span>
                               ) : null}
-                              {wbAttrShowsMainSyncHint(a, formData.mp_field_links, categoryAttributes) ? (
-                                <MpFromMainLinkIcon linked />
+                              {wbAttrShowsCategoryLinkIcon(
+                                a,
+                                categoryAttributes,
+                                mpAttrLabelMaps,
+                                categoryDedicatedCharcLinks
+                              ) ? (
+                                <MpCategoryLinkIcon />
                               ) : null}
                             </label>
                             {dictOpts ? (
@@ -8525,8 +8570,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-attr-${key}`}>
                               {name}
-                              {wbAttrShowsMainSyncHint(c, formData.mp_field_links, categoryAttributes) ? (
-                                <MpFromMainLinkIcon linked />
+                              {wbAttrShowsCategoryLinkIcon(
+                                c,
+                                categoryAttributes,
+                                mpAttrLabelMaps,
+                                categoryDedicatedCharcLinks
+                              ) ? (
+                                <MpCategoryLinkIcon />
                               ) : null}
                             </label>
                             <input
@@ -9036,8 +9086,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       return String(raw).trim();
                     })();
                     const setVal = (v) => handleYmAttributeChange(key, v, a);
-                    const ymSyncHint = ymAttrShowsMainSyncHint(a, formData.mp_field_links, categoryAttributes) ? (
-                      <MpFromMainLinkIcon linked />
+                    const ymSyncHint = ymAttrShowsCategoryLinkIcon(
+                      a,
+                      categoryAttributes,
+                      mpAttrLabelMaps,
+                      categoryDedicatedCharcLinks
+                    ) ? (
+                      <MpCategoryLinkIcon />
                     ) : null;
 
                     if (a.type === 'dictionary' && Array.isArray(a.dictionary_options) && a.dictionary_options.length > 0) {

@@ -21,6 +21,15 @@ export function normalizeAttrCompareName(s) {
     .trim();
 }
 
+/** Сопоставление подписей характеристик МП (допускает «Партномер» ↔ «Партномер (артикул производителя)»). */
+export function attrLinkNamesMatch(linkName, attrName) {
+  const a = normalizeAttrCompareName(linkName);
+  const b = normalizeAttrCompareName(attrName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.includes(b) || b.includes(a);
+}
+
 export function normalizeAttrCompareValue(v) {
   if (v === undefined || v === null) return '';
   if (typeof v === 'boolean') return v ? 'true' : 'false';

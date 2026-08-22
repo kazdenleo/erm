@@ -4,7 +4,7 @@
  * Старый формат { ozon: { id, name } } читается как массив из одного элемента.
  */
 
-import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
+import { attrValuesDiffer, normalizeAttrCompareName, attrLinkNamesMatch } from './productAttrMpDiff.js';
 import {
   isMpOfferFieldAttrId,
   readMpOfferFieldValue,
@@ -75,6 +75,94 @@ export function attrMpLinksHasAny(raw) {
 export function mappedMpsFromAttrLinks(raw) {
   const links = normalizeAttrMpLinks(raw);
   return ATTR_MP_CODES.filter((mp) => links[mp].length > 0);
+}
+
+export const MP_CATEGORY_LINK_ICON_TITLE = 'Связано с основным атрибутом в настройках категории';
+
+/** ERP-атрибут категории, сопоставленный с полем/характеристикой МП. */
+export function findErpAttrLinkedToMpTarget(categoryAttributes, mp, target, labelMaps = {}) {
+  const code = String(mp || '').toLowerCase();
+  if (!ATTR_MP_CODES.includes(code) || !target || typeof target !== 'object') return null;
+  const wantAttrId = target.kind === 'attr' ? String(target.attrId ?? '') : '';
+  const wantOfferId = target.kind === 'offer' ? String(target.offerId ?? '') : '';
+  const wantAttrName = target.kind === 'attr' ? normalizeAttrCompareName(target.attrName) : '';
+  for (const erp of categoryAttributes || []) {
+    const links = normalizeAttrMpLinks(erp?.mp_links);
+    for (const entry of links[code] || []) {
+      const e = normalizeAttrMpLinkEntry(entry);
+      if (!e) continue;
+      if (target.kind === 'attr' && wantAttrId && e.id && !isMpOfferFieldAttrId(e.id)) {
+        if (String(e.id) === wantAttrId) return erp;
+      }
+      if (target.kind === 'offer' && wantOfferId && e.id) {
+        if (String(e.id) === wantOfferId) return erp;
+      }
+      if (target.kind === 'attr' && wantAttrName && e.name) {
+        if (attrLinkNamesMatch(e.name, target.attrName)) return erp;
+      }
+      let resolved;
+      try {
+        resolved = resolveAttrMpLinkTarget(entry, code, labelMaps);
+      } catch {
+        resolved = null;
+      }
+      if (!resolved) continue;
+      if (
+        target.kind === 'attr' &&
+        resolved.kind === 'attr' &&
+        wantAttrId &&
+        String(resolved.attrId) === wantAttrId
+      ) {
+        return erp;
+      }
+      if (
+        target.kind === 'offer' &&
+        resolved.kind === 'offer' &&
+        wantOfferId &&
+        String(resolved.offerId) === wantOfferId
+      ) {
+        return erp;
+      }
+    }
+  }
+  return null;
+}
+
+export function isMpSchemaAttrLinkedInCategory(
+  categoryAttributes,
+  mp,
+  attrId,
+  labelMaps = {},
+  attrName = ''
+) {
+  return !!findErpAttrLinkedToMpTarget(
+    categoryAttributes,
+    mp,
+    { kind: 'attr', attrId: String(attrId ?? ''), attrName: String(attrName || '') },
+    labelMaps
+  );
+}
+
+export function isMpOfferFieldLinkedInCategory(categoryAttributes, mp, offerId, labelMaps = {}) {
+  return !!findErpAttrLinkedToMpTarget(
+    categoryAttributes,
+    mp,
+    { kind: 'offer', offerId: String(offerId ?? '') },
+    labelMaps
+  );
+}
+
+export function dedicatedCharcLinksForMainField(dedicatedLinks, fieldKey) {
+  const key = String(fieldKey || '').trim();
+  if (!key || !dedicatedLinks || typeof dedicatedLinks !== 'object') return null;
+  if (dedicatedLinks[key]) return dedicatedLinks[key];
+  if (key === 'country' && dedicatedLinks.country_of_origin) return dedicatedLinks.country_of_origin;
+  if (key === 'country_of_origin' && dedicatedLinks.country) return dedicatedLinks.country;
+  return null;
+}
+
+export function mappedMpsFromDedicatedMainField(dedicatedLinks, fieldKey) {
+  return mappedMpsFromAttrLinks(dedicatedCharcLinksForMainField(dedicatedLinks, fieldKey));
 }
 
 function mpSchemaAttrName(meta) {
