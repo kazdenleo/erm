@@ -432,6 +432,8 @@ function findErpAttrColForMpOfferField(erpAttrCols, offerId, labelMaps = bulkEdi
 
 const BULK_DEDICATED_OFFER_FIELD_BY_COL = {
   sku_ozon: '__ozon_offer_id__',
+  mp_wb_vendor_code: '__wb_vendor_code__',
+  sku_ym: '__ym_shop_sku__',
 };
 
 function erpColsAsCategoryAttributes(erpCols) {

@@ -723,7 +723,7 @@ function offerFieldNameAliases(name) {
     .replace(/\s+/g, ' ');
   const keys = [n, `${n} товара`];
   if (n === 'артикул продавца') {
-    keys.push('код продавца', 'код товара продавца', 'offer id', 'offer_id', 'shopsku', 'shop sku');
+    keys.push('код продавца', 'код товара продавца', 'offer id', 'offer_id', 'shopsku', 'shop sku', 'sku');
   }
   if (n === 'артикул производителя') {
     keys.push('vendorcode', 'vendor code', 'mpn', 'партномер');

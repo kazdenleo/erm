@@ -6,7 +6,9 @@
 
 import { attrValuesDiffer, normalizeAttrCompareName, attrLinkNamesMatch } from './productAttrMpDiff.js';
 import {
+  DEDICATED_ADDED_KEYS_FIELD,
   isMpOfferFieldAttrId,
+  normalizeCategoryDedicatedCharcLinks,
   readMpOfferFieldValue,
   resolveMpOfferFieldIdByName,
 } from './productMpFieldLinks.js';
@@ -152,6 +154,49 @@ export function isMpOfferFieldLinkedInCategory(categoryAttributes, mp, offerId, 
   );
 }
 
+function mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps = {}) {
+  const code = String(mp || '').toLowerCase();
+  const e = normalizeAttrMpLinkEntry(entry);
+  if (!e || !target || typeof target !== 'object') return false;
+  if (target.kind === 'offer' && e.id && isMpOfferFieldAttrId(e.id)) {
+    if (String(e.id) === String(target.offerId ?? '')) return true;
+  }
+  if (target.kind === 'attr') {
+    const wantAttrId = String(target.attrId ?? '');
+    const wantAttrName = target.attrName ? normalizeAttrCompareName(target.attrName) : '';
+    if (wantAttrId && e.id && !isMpOfferFieldAttrId(e.id) && String(e.id) === wantAttrId) return true;
+    if (wantAttrName && e.name && attrLinkNamesMatch(e.name, target.attrName)) return true;
+  }
+  let resolved;
+  try {
+    resolved = resolveAttrMpLinkTarget(e, code, labelMaps);
+  } catch {
+    resolved = null;
+  }
+  if (!resolved) return false;
+  if (target.kind === 'attr' && resolved.kind === 'attr' && target.attrId) {
+    return String(resolved.attrId) === String(target.attrId);
+  }
+  if (target.kind === 'offer' && resolved.kind === 'offer' && target.offerId) {
+    return String(resolved.offerId) === String(target.offerId);
+  }
+  return false;
+}
+
+/** Связь через category.mp_field_links (поля Main: артикул, бренд и т.д.). */
+export function isMpTargetLinkedInDedicatedCharcLinks(dedicatedLinks, mp, target, labelMaps = {}) {
+  const code = String(mp || '').toLowerCase();
+  if (!ATTR_MP_CODES.includes(code) || !target || typeof target !== 'object') return false;
+  const links = normalizeCategoryDedicatedCharcLinks(dedicatedLinks);
+  for (const [key, slot] of Object.entries(links)) {
+    if (key === DEDICATED_ADDED_KEYS_FIELD) continue;
+    for (const entry of normalizeAttrMpLinkList(slot?.[code])) {
+      if (mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps)) return true;
+    }
+  }
+  return false;
+}
+
 /** Есть ли в attribute_mp_links категорий сопоставление с полем/характеристикой МП. */
 export function isMpTargetLinkedInCategoryCategories(
   categories,
@@ -168,10 +213,14 @@ export function isMpTargetLinkedInCategoryCategories(
     const cid = String(cat?.id ?? '');
     if (ids.size && !ids.has(cid)) continue;
     const am = cat?.attribute_mp_links;
-    if (!am || typeof am !== 'object' || Array.isArray(am)) continue;
-    for (const raw of Object.values(am)) {
-      const pseudo = [{ mp_links: normalizeAttrMpLinks(raw) }];
-      if (findErpAttrLinkedToMpTarget(pseudo, mp, target, labelMaps)) return true;
+    if (am && typeof am === 'object' && !Array.isArray(am)) {
+      for (const raw of Object.values(am)) {
+        const pseudo = [{ mp_links: normalizeAttrMpLinks(raw) }];
+        if (findErpAttrLinkedToMpTarget(pseudo, mp, target, labelMaps)) return true;
+      }
+    }
+    if (isMpTargetLinkedInDedicatedCharcLinks(cat?.mp_field_links, mp, target, labelMaps)) {
+      return true;
     }
   }
   return false;

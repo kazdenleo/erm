@@ -73,6 +73,7 @@ import {
   mappedMpsFromDedicatedMainField,
   isMpSchemaAttrLinkedInCategory,
   isMpOfferFieldLinkedInCategory,
+  isMpTargetLinkedInDedicatedCharcLinks,
   MP_CATEGORY_LINK_ICON_TITLE,
   normalizeAttrMpLinks,
 } from '../../../utils/productAttributeMpLinks.js';
@@ -228,11 +229,40 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, on
   );
 }
 
+function ozonOfferFieldCategoryLinked(offerId, categoryAttributes, labelMaps, dedicatedLinks) {
+  const id = String(offerId || '');
+  if (!id) return false;
+  if (isMpOfferFieldLinkedInCategory(categoryAttributes, 'ozon', id, labelMaps)) return true;
+  return isMpTargetLinkedInDedicatedCharcLinks(
+    dedicatedLinks,
+    'ozon',
+    { kind: 'offer', offerId: id },
+    labelMaps
+  );
+}
+
 function ozonAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks) {
   if (isMpOfferFieldAttrId(attr?.id)) {
-    return isMpOfferFieldLinkedInCategory(categoryAttributes, 'ozon', attr.id, labelMaps);
+    return ozonOfferFieldCategoryLinked(attr.id, categoryAttributes, labelMaps, dedicatedLinks);
   }
   if (isMpSchemaAttrLinkedInCategory(categoryAttributes, 'ozon', attr?.id, labelMaps, attr?.name)) {
+    return true;
+  }
+  if (
+    isOzonManufacturerArticleAttr(attr) &&
+    isMpTargetLinkedInDedicatedCharcLinks(
+      dedicatedLinks,
+      'ozon',
+      { kind: 'attr', attrId: String(attr?.id ?? ''), attrName: String(attr?.name || '') },
+      labelMaps
+    )
+  ) {
+    return true;
+  }
+  if (
+    isOzonManufacturerArticleAttr(attr) &&
+    ozonOfferFieldCategoryLinked('__ozon_vendor_code__', categoryAttributes, labelMaps, dedicatedLinks)
+  ) {
     return true;
   }
   if (isOzonBrandAttr(attr) && mappedMpsFromDedicatedMainField(dedicatedLinks, 'brand').includes('ozon')) {
@@ -276,10 +306,25 @@ function isWbCharcVisibleInForm(a) {
   return true;
 }
 
+function wbVendorCodeCategoryLinked(categoryAttributes, labelMaps, dedicatedLinks) {
+  if (isMpOfferFieldLinkedInCategory(categoryAttributes, 'wb', '__wb_vendor_code__', labelMaps)) {
+    return true;
+  }
+  return isMpTargetLinkedInDedicatedCharcLinks(
+    dedicatedLinks,
+    'wb',
+    { kind: 'offer', offerId: '__wb_vendor_code__' },
+    labelMaps
+  );
+}
+
 function wbAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks) {
   const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
   const name = wbCharcName(attr);
   if (isMpSchemaAttrLinkedInCategory(categoryAttributes, 'wb', id, labelMaps, name)) return true;
+  if (/^sku$/i.test(String(name || '').trim()) && wbVendorCodeCategoryLinked(categoryAttributes, labelMaps, dedicatedLinks)) {
+    return true;
+  }
   const axis = wbProductDimAxis(attr);
   if (axis && ['length', 'width', 'height'].includes(axis)) {
     if (mappedMpsFromDedicatedMainField(dedicatedLinks, `product_${axis}`).includes('wb')) return true;
@@ -7838,6 +7883,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
             onManufacturerArticleChange={handleOzonManufacturerArticleChange}
+            sellerSkuCategoryLinked={ozonOfferFieldCategoryLinked(
+              '__ozon_offer_id__',
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
+            manufacturerArticleCategoryLinked={ozonOfferFieldCategoryLinked(
+              '__ozon_vendor_code__',
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
           />
           <div className="card mt-3 border-secondary">
             <div className="card-header">Габариты упаковки (Ozon)</div>
@@ -8326,6 +8383,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
             vendorCodeClassName={mpFieldClass('form-control form-control-sm', 'mp_wb_vendor_code')}
+            sellerSkuCategoryLinked={wbVendorCodeCategoryLinked(
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
           />
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
             <div

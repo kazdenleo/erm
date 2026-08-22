@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
 import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
+import { MP_CATEGORY_LINK_ICON_TITLE } from '../../../utils/productAttributeMpLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 import { MpFromMainLinkIcon } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
@@ -50,6 +51,8 @@ export function ProductMarketplaceLinkSection({
   onLinked,
   vendorCodeClassName,
   onManufacturerArticleChange,
+  sellerSkuCategoryLinked = false,
+  manufacturerArticleCategoryLinked = false,
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -218,6 +221,9 @@ export function ProductMarketplaceLinkSection({
               Артикул продавца
             </span>
             <MpFromMainLinkIcon linked={skuLinked} />
+            {sellerSkuCategoryLinked ? (
+              <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
+            ) : null}
           </label>
           <input
             id={inputId}
@@ -252,8 +258,11 @@ export function ProductMarketplaceLinkSection({
         </div>
         {marketplace === 'ozon' ? (
           <div className="col-12 col-md-8">
-            <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku">
+            <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
               Артикул производителя
+              {manufacturerArticleCategoryLinked ? (
+                <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
+              ) : null}
             </label>
             <input
               id="mp-link-ozon-manufacturer-sku"
