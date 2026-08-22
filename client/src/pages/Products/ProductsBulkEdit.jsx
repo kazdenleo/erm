@@ -554,6 +554,22 @@ function attachOfferFieldLinkMeta(col, erpCols) {
   };
 }
 
+function attachDedicatedOfferColumnLinkMeta(col, erpCols) {
+  const offerId = BULK_DEDICATED_OFFER_FIELD_BY_COL[col.key];
+  if (!offerId) return col;
+  const erp = findErpAttrColForMpOfferField(erpCols, offerId);
+  if (!erp) return col;
+  const attrMapped = mappedMpsFromAttrLinks(erp.erpAttr?.mpLinks);
+  return {
+    ...col,
+    linkFieldKey: erp.linkFieldKey,
+    categoryLinked: true,
+    mappedMps: attrMapped.length ? attrMapped : col.mappedMps,
+    linkSupportedMps: attrMapped.length ? attrMapped : col.linkSupportedMps,
+    showLinkToggles: true,
+  };
+}
+
 function extraLinkedMpOfferColumn(mp, offerId, humanName) {
   const id = String(offerId);
   if (!isMpOfferFieldAttrId(id)) return null;
@@ -652,6 +668,14 @@ function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) 
     }
     return false;
   }
+  const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
+  if (dedicatedOfferId) {
+    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, dedicatedOfferId);
+    const mp = bulkMpCodeForColumn(colKey);
+    if (erpCol?.linkFieldKey && mp) {
+      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mp);
+    }
+  }
   const fieldKey = bulkLinkFieldForColumn(colKey);
   const mp = bulkMpCodeForColumn(colKey);
   if (!fieldKey || !mp) return false;
@@ -702,6 +726,18 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
   if (fieldKey === 'product_dimensions') {
     const base = productDimBaseKey(colKey);
     return base ? row[base] ?? '' : row[colKey];
+  }
+  const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
+  if (dedicatedOfferId) {
+    const mp = bulkMpCodeForColumn(colKey);
+    const links = normalizeMpFieldLinks(row.mp_field_links);
+    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, dedicatedOfferId);
+    if (erpCol?.linkFieldKey && mp && isMpFieldLinked(links, erpCol.linkFieldKey, mp)) {
+      return row[erpCol.key] ?? '';
+    }
+    if (mp && isMpFieldLinked(links, 'sku', mp)) {
+      return row.sku ?? '';
+    }
   }
   return row[colKey];
 }
@@ -4398,6 +4434,9 @@ export function ProductsBulkEdit() {
     const labeled = withDisplayUnitLabels(out, lengthUnit, weightUnit);
     return labeled.map((col) => {
       let next = col;
+      if (col.mpBucket && BULK_DEDICATED_OFFER_FIELD_BY_COL[col.key]) {
+        next = attachDedicatedOfferColumnLinkMeta(next, erpAttrColumnDefs);
+      }
       if (!col.mpBucket && !col.erpAttr && !col.mpAttr && !col.mpOfferField) {
         const lookupKey =
           (DEDICATED_MAIN_MAP_KEYS.includes(col.key) && col.key) ||

@@ -6,7 +6,7 @@ import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
 import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
-import { MP_CATEGORY_LINK_ICON_TITLE } from '../../../utils/productAttributeMpLinks.js';
+import { MP_CATEGORY_LINK_ICON_TITLE, resolveLinkedErpAttrMirror } from '../../../utils/productAttributeMpLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 import { MpFromMainLinkIcon } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
@@ -28,14 +28,46 @@ function isMarketplaceLinked(marketplace, formData) {
   return false;
 }
 
-function sellerSkuValue(marketplace, formData) {
+function sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps) {
   if (isMpFieldLinked(formData?.mp_field_links, 'sku', marketplace)) {
     return formData?.sku || '';
+  }
+  const offerId =
+    marketplace === 'ozon'
+      ? '__ozon_offer_id__'
+      : marketplace === 'wb'
+        ? '__wb_vendor_code__'
+        : marketplace === 'ym'
+          ? '__ym_shop_sku__'
+          : '';
+  if (offerId && categoryAttributes?.length) {
+    const mirror = resolveLinkedErpAttrMirror(
+      formData,
+      categoryAttributes,
+      marketplace,
+      { kind: 'offer', offerId },
+      attrLabelMaps
+    );
+    if (mirror != null) return mirror;
   }
   if (marketplace === 'ozon') return formData?.sku_ozon || '';
   if (marketplace === 'wb') return formData?.mp_wb_vendor_code || '';
   if (marketplace === 'ym') return formData?.sku_ym || '';
   return '';
+}
+
+function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps) {
+  const mirror = categoryAttributes?.length
+    ? resolveLinkedErpAttrMirror(
+        formData,
+        categoryAttributes,
+        'ozon',
+        { kind: 'offer', offerId: '__ozon_vendor_code__' },
+        attrLabelMaps
+      )
+    : null;
+  if (mirror != null) return mirror;
+  return String(getMpDraft(formData, 'ozon').vendorCode || '');
 }
 
 export function ProductMarketplaceLinkSection({
@@ -53,6 +85,8 @@ export function ProductMarketplaceLinkSection({
   onManufacturerArticleChange,
   sellerSkuCategoryLinked = false,
   manufacturerArticleCategoryLinked = false,
+  categoryAttributes = [],
+  attrLabelMaps = {},
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -232,7 +266,7 @@ export function ProductMarketplaceLinkSection({
             maxLength={maxLen}
             placeholder="Артикул продавца на площадке"
             autoComplete="off"
-            value={sellerSkuValue(marketplace, formData)}
+            value={sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps)}
             onChange={(e) => handleSellerSkuChange(e.target.value)}
             onBlur={
               marketplace === 'wb' && !skuLinked
@@ -270,7 +304,7 @@ export function ProductMarketplaceLinkSection({
               className="form-control form-control-sm"
               autoComplete="off"
               placeholder="Партномер / OEM"
-              value={String(getMpDraft(formData, 'ozon').vendorCode || '')}
+              value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps)}
               onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
             />
             <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35, color: 'var(--muted)' }}>

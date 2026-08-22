@@ -67,6 +67,7 @@ import { useMarketplaceFieldLimits } from '../../../hooks/useMarketplaceFieldLim
 import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   ATTR_MP_CODES,
+  collectAttrMpLinkOfferFieldIds,
   findLinkedMpAttributes,
   getLinkedAttrMpDiffs,
   mappedMpsFromAttrLinks,
@@ -76,6 +77,7 @@ import {
   isMpTargetLinkedInDedicatedCharcLinks,
   MP_CATEGORY_LINK_ICON_TITLE,
   normalizeAttrMpLinks,
+  resolveLinkedErpAttrMirror,
 } from '../../../utils/productAttributeMpLinks.js';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import {
@@ -5670,9 +5672,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
     };
     const str =
       value === true ? 'true' : value === false ? 'false' : value == null ? '' : String(value);
+    const linkOpts = { labelMaps: mpAttrLabelMaps };
     if (wantMp('ozon')) {
-      const hits = findLinkedMpAttributes(catLinks.ozon, ozonAttributes)
-        .filter((hit) => hit?.id != null && !isMpOfferFieldAttrId(hit.id));
+      const hits = findLinkedMpAttributes(catLinks.ozon, ozonAttributes, undefined, undefined, {
+        ...linkOpts,
+        mp: 'ozon',
+      }).filter((hit) => hit?.id != null && !isMpOfferFieldAttrId(hit.id));
       if (hits.length) {
         setOzonAttributeValues((prev) => {
           let next = prev;
@@ -5700,11 +5705,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
     }
     if (wantMp('wb')) {
-      const hits = findLinkedMpAttributes(catLinks.wb, wbCategoryAttributes, wbAttrKey, wbAttrName)
-        .filter((hit) => {
-          const id = hit?.charcID ?? hit?.characteristic_id ?? hit?.id ?? hit?.attribute_id;
-          return !isMpOfferFieldAttrId(id);
-        });
+      const hits = findLinkedMpAttributes(catLinks.wb, wbCategoryAttributes, wbAttrKey, wbAttrName, {
+        ...linkOpts,
+        mp: 'wb',
+      }).filter((hit) => {
+        const id = hit?.charcID ?? hit?.characteristic_id ?? hit?.id ?? hit?.attribute_id;
+        return !isMpOfferFieldAttrId(id);
+      });
       if (hits.length) {
         setWbAttributeValues((prev) => {
           let next = prev;
@@ -5721,8 +5728,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
     }
     if (wantMp('ym')) {
-      const hits = findLinkedMpAttributes(catLinks.ym, ymFormAttributes)
-        .filter((hit) => hit?.id != null && !isMpOfferFieldAttrId(hit.id));
+      const hits = findLinkedMpAttributes(catLinks.ym, ymFormAttributes, undefined, undefined, {
+        ...linkOpts,
+        mp: 'ym',
+      }).filter((hit) => hit?.id != null && !isMpOfferFieldAttrId(hit.id));
       if (hits.length) {
         setYmAttributeValues((prev) => {
           let next = prev;
@@ -5737,19 +5746,31 @@ export const ProductForm = React.forwardRef(function ProductForm({
         });
       }
     }
-    const offerEntries = ATTR_MP_CODES.flatMap((mp) =>
-      wantMp(mp) ? (catLinks[mp] || []).filter((e) => isMpOfferFieldAttrId(e?.id)) : []
+    const offerIds = ATTR_MP_CODES.flatMap((mp) =>
+      wantMp(mp) ? collectAttrMpLinkOfferFieldIds(catLinks[mp], mp, mpAttrLabelMaps) : []
     );
-    if (offerEntries.length) {
+    if (offerIds.length) {
       setFormData((prev) => {
         let next = prev;
-        for (const entry of offerEntries) {
-          next = applyMpOfferFieldToForm(next, entry.id, str, { onlyIfEmpty });
+        for (const entryId of offerIds) {
+          next = applyMpOfferFieldToForm(next, entryId, str, { onlyIfEmpty });
         }
         return next;
       });
+      if (offerIds.includes('__ozon_vendor_code__') && str) {
+        syncOzonManufacturerArticleAttrs(str);
+      }
     }
-  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes, wbAttrKey, wbAttrName, formData.mp_field_links]);
+  }, [
+    ozonAttributes,
+    wbCategoryAttributes,
+    ymFormAttributes,
+    wbAttrKey,
+    wbAttrName,
+    formData.mp_field_links,
+    mpAttrLabelMaps,
+    syncOzonManufacturerArticleAttrs,
+  ]);
   applyErpAttrValueToLinkedMpRef.current = applyErpAttrValueToLinkedMp;
 
   useEffect(() => {
@@ -7993,6 +8014,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
               mpAttrLabelMaps,
               categoryDedicatedCharcLinks
             )}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
           />
           <div className="card mt-3 border-secondary">
             <div className="card-header">Габариты упаковки (Ozon)</div>
@@ -8208,11 +8231,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     .map((attr) => {
                     const key = String(attr.id);
                     const isOfferField = isMpOfferFieldAttrId(key);
-                    const value = isOfferField
-                      ? (key === '__ozon_offer_id__'
-                          ? readMpSellerSku(formData, 'ozon')
-                          : readMpOfferFieldValue(formData, key))
-                      : ozonAttributeValues[key];
+                    const linkedMirror = resolveLinkedErpAttrMirror(
+                      formData,
+                      categoryAttributes,
+                      'ozon',
+                      isOfferField
+                        ? { kind: 'offer', offerId: key }
+                        : { kind: 'attr', attrId: key, attrName: attr.name },
+                      mpAttrLabelMaps
+                    );
+                    const value =
+                      linkedMirror != null
+                        ? linkedMirror
+                        : isOfferField
+                          ? key === '__ozon_offer_id__'
+                            ? readMpSellerSku(formData, 'ozon')
+                            : readMpOfferFieldValue(formData, key)
+                          : ozonAttributeValues[key];
                     const rawValue = value !== undefined && value !== null ? value : '';
                     const colClass = isOzonAnnotationAttr(attr) || isOzonNameAttr(attr)
                       ? 'col-12'
@@ -8486,6 +8521,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
               mpAttrLabelMaps,
               categoryDedicatedCharcLinks
             )}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
           />
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
             <div
@@ -8864,6 +8901,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             organizationId={formData.organizationId}
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
           />
           {ymSyncError && (
             <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
