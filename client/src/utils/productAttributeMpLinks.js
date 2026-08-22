@@ -220,8 +220,8 @@ export function resolveAttrMpLinkTarget(entry, mp, labelMaps = {}) {
   if (want) {
     const maps = labelMaps?.[code] || {};
     for (const [attrId, meta] of Object.entries(maps)) {
-      const metaName = normalizeAttrCompareName(mpSchemaAttrName(meta));
-      if (metaName && metaName === want) {
+      const label = mpSchemaAttrName(meta);
+      if (label && attrLinkNamesMatch(e.name, label)) {
         return { kind: 'attr', attrId: String(attrId) };
       }
     }

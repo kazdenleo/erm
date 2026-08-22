@@ -56,7 +56,7 @@ import {
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -2651,16 +2651,18 @@ function erpAttrMpLinksForId(categories, filterCategoryId, products, attrId, sco
     const cat = cats.find((c) => String(c.id) === catId);
     return cat ? pick(cat) : normalizeAttrMpLinks(null);
   }
-  const merged = normalizeAttrMpLinks(null);
+  let merged = normalizeAttrMpLinks(null);
   const catIds = new Set(
     resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds)
   );
   for (const c of cats) {
     if (catIds.size && !catIds.has(String(c.id))) continue;
     const links = pick(c);
+    const next = normalizeAttrMpLinks(null);
     for (const mp of ATTR_MP_CODES) {
-      if (!merged[mp] && links[mp]) merged[mp] = links[mp];
+      next[mp] = normalizeAttrMpLinkList([...(merged[mp] || []), ...(links[mp] || [])]);
     }
+    merged = next;
   }
   return merged;
 }
@@ -7045,17 +7047,10 @@ export function ProductsBulkEdit() {
                       )
                     : false;
                   const canFill = !(col.readonly || col.noBulk);
-                  const showErpOrMainBadges = !!(
-                    (col.erpAttr || (!col.mpBucket && !col.mpAttr && !col.mpOfferField)) &&
-                    Array.isArray(col.mappedMps) &&
-                    col.mappedMps.length
-                  );
-                  const showMappedBadges = showErpOrMainBadges;
                   const showMpRow =
                     showMasterMp ||
                     showLinkToggles ||
                     showFromMain ||
-                    showMappedBadges ||
                     showCategoryLinkIcon;
                   const showChromeRow =
                     (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
@@ -7273,9 +7268,6 @@ export function ProductsBulkEdit() {
                               ) : null}
                               {showCategoryLinkIcon ? (
                                 <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
-                              ) : null}
-                              {showMappedBadges ? (
-                                <MpMappedMpBadges mps={col.mappedMps} size={14} />
                               ) : null}
                             </>
                           ) : null}

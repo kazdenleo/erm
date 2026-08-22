@@ -64,7 +64,7 @@ import {
   strictestLinkedMainLimit,
 } from '../../../utils/marketplaceFieldLimits.js';
 import { useMarketplaceFieldLimits } from '../../../hooks/useMarketplaceFieldLimits.js';
-import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   ATTR_MP_CODES,
   findLinkedMpAttributes,
@@ -189,7 +189,7 @@ import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
 
-function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
+function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, onToggle }) {
   const typeLabel = TYPE_LABELS[attr.type];
   const mapped = mappedMpsFromAttrLinks(attr.mp_links);
   const inner = (
@@ -198,7 +198,15 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false }) {
       {typeLabel ? (
         <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({typeLabel})</span>
       ) : null}
-      <MpMappedMpBadges mps={mapped} size={18} />
+      {mapped.length > 0 && links && onToggle ? (
+        <MpFieldLinkToggles
+          fieldKey={erpAttrLinkFieldKey(attr.id)}
+          links={links}
+          onToggle={onToggle}
+          supportedMps={mapped}
+          size={18}
+        />
+      ) : null}
       <MpValueDiffBadges diffs={diffs} />
     </>
   );
@@ -4841,10 +4849,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const mainFieldMpLabelProps = useCallback(
     (fieldKey) => {
       const mapped = mappedMpsFromDedicatedMainField(categoryDedicatedCharcLinks, fieldKey);
-      if (mapped.length) {
-        return { readOnly: true, links: { [fieldKey]: mapped }, supportedMps: mapped };
-      }
-      return { links: formData.mp_field_links, onToggle: handleMpFieldLinkToggle };
+      return {
+        links: formData.mp_field_links,
+        onToggle: handleMpFieldLinkToggle,
+        ...(mapped.length ? { supportedMps: mapped } : {}),
+      };
     },
     [categoryDedicatedCharcLinks, formData.mp_field_links, handleMpFieldLinkToggle]
   );
@@ -7032,9 +7041,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
         <div className="row g-3 mb-3">
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_length" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+            <label className="form-label" htmlFor="product_length">
               Длина товара ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.product_length)} size={16} />
             </label>
             <input
               id="product_length"
@@ -7050,9 +7058,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_width" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+            <label className="form-label" htmlFor="product_width">
               Ширина товара ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.product_width)} size={16} />
             </label>
             <input
               id="product_width"
@@ -7068,9 +7075,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_height" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+            <label className="form-label" htmlFor="product_height">
               Высота товара ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.product_height)} size={16} />
             </label>
             <input
               id="product_height"
@@ -7086,9 +7092,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             />
           </div>
           <div className="col-6 col-md-3">
-            <label className="form-label" htmlFor="product_weight" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+            <label className="form-label" htmlFor="product_weight">
               Вес товара ({weightLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.product_weight)} size={16} />
             </label>
             <input
               id="product_weight"
@@ -7145,7 +7150,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="length">
               Длина упаковки ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.length)} size={16} />
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -7168,7 +7172,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="width">
               Ширина упаковки ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.width)} size={16} />
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -7191,7 +7194,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div className="col-6 col-md-2">
             <label className="form-label" htmlFor="height">
               Высота упаковки ({lengthLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.height)} size={16} />
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -7214,7 +7216,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <div className="col-6 col-md-3">
             <label className="form-label" htmlFor="weight">
               Вес с упаковкой ({weightLbl})
-              <MpMappedMpBadges mps={mappedMpsFromAttrLinks(categoryDedicatedCharcLinks.weight)} size={16} />
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -7283,7 +7284,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 ymAttributes: ymFormAttributes,
                 ymAttributeValues,
               });
-              const headingProps = { attr, diffs: attrDiffs };
+              const headingProps = {
+                attr,
+                diffs: attrDiffs,
+                links: formData.mp_field_links,
+                onToggle: handleMpFieldLinkToggle,
+              };
               if (attr.type === 'checkbox') {
                 const checked = rawValue === 'true' || rawValue === true;
                 return (
