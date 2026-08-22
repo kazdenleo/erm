@@ -6865,12 +6865,12 @@ export function ProductsBulkEdit() {
                       )
                     : false;
                   const canFill = !(col.readonly || col.noBulk);
-                  const showMpRow = showMasterMp || showLinkToggles || showFromMain || showMappedBadges;
                   const showMappedBadges = !!(
                     Array.isArray(col.mappedMps) &&
                     col.mappedMps.length &&
                     (showFromMain || (col.mpOfferField && !showLinkToggles))
                   );
+                  const showMpRow = showMasterMp || showLinkToggles || showFromMain || showMappedBadges;
                   const showChromeRow =
                     (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
                   const showPinHide =
