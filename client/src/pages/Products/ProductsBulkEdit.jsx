@@ -47,6 +47,8 @@ import {
   supportedMpsForFieldKey,
   isMpOfferFieldAttrId,
   applyMpOfferFieldToForm,
+  readMpOfferFieldValue,
+  MP_OFFER_FIELD_ATTRS,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -296,6 +298,8 @@ function bulkLinkFieldForColumn(colKey) {
 
 function bulkMpCodeForColumn(colKey) {
   const k = String(colKey || '');
+  const mpOffer = parseMpOfferFieldColKey(k);
+  if (mpOffer) return mpBucketFromOfferFieldId(mpOffer.offerId);
   const mpAttr = k.match(/^__mpAttr__(ozon|wb|ym)__/);
   if (mpAttr) return mpAttr[1];
   if (
@@ -345,6 +349,122 @@ function findErpAttrColForMpAttr(erpAttrCols, mp, attrId) {
   }) || null;
 }
 
+const MP_OFFER_COL_PREFIX = '__mpOffer__';
+
+function mpOfferFieldColKey(offerId) {
+  return `${MP_OFFER_COL_PREFIX}${String(offerId || '')}`;
+}
+
+function parseMpOfferFieldColKey(colKey) {
+  const s = String(colKey || '');
+  if (!s.startsWith(MP_OFFER_COL_PREFIX)) return null;
+  const offerId = s.slice(MP_OFFER_COL_PREFIX.length);
+  return isMpOfferFieldAttrId(offerId) ? { offerId } : null;
+}
+
+function mpBucketFromOfferFieldId(offerId) {
+  const id = String(offerId || '');
+  if (id.startsWith('__ym_')) return 'ym';
+  if (id.startsWith('__ozon_')) return 'ozon';
+  if (id.startsWith('__wb_')) return 'wb';
+  return null;
+}
+
+function offerFieldDisplayName(offerId, humanName) {
+  const h = String(humanName || '').trim();
+  if (h) return h;
+  for (const list of Object.values(MP_OFFER_FIELD_ATTRS)) {
+    const hit = (list || []).find((x) => x.id === offerId);
+    if (hit?.name) return hit.name;
+  }
+  return String(offerId || '');
+}
+
+function rowAsOfferFieldForm(row) {
+  return {
+    ...row,
+    ym_draft: row.ym_draft || row._ymDraftBaseline,
+    ozon_draft: row.ozon_draft || row._ozonDraftBaseline,
+    wb_draft: row.wb_draft || row._wbDraftBaseline,
+    barcodes: parseBarcodesCell(row.barcodes).map((b) => ({ barcode: b })),
+  };
+}
+
+function findErpAttrColForMpOfferField(erpAttrCols, offerId) {
+  const want = String(offerId);
+  return (
+    (erpAttrCols || []).find((c) => {
+      const links = c?.erpAttr?.mpLinks || {};
+      for (const mp of ATTR_MP_CODES) {
+        if (normalizeAttrMpLinkList(links[mp]).some((e) => String(e.id || '') === want)) return true;
+      }
+      return false;
+    }) || null
+  );
+}
+
+function attachOfferFieldLinkMeta(col, erpCols) {
+  if (!col?.mpOfferField) return col;
+  const erp = findErpAttrColForMpOfferField(erpCols, col.mpOfferField.offerId);
+  if (!erp) return col;
+  const attrMapped = mappedMpsFromAttrLinks(erp.erpAttr?.mpLinks);
+  const linkFieldKey = erp.linkFieldKey;
+  if (!isAttrMpFieldLinkKey(linkFieldKey) || !attrMapped.length) return col;
+  return {
+    ...col,
+    mappedMps: col.mappedMps?.length ? col.mappedMps : [col.mpOfferField.mp],
+    linkFieldKey,
+    showLinkToggles: true,
+    linkSupportedMps: attrMapped,
+  };
+}
+
+function extraLinkedMpOfferColumn(mp, offerId, humanName) {
+  const id = String(offerId);
+  if (!isMpOfferFieldAttrId(id)) return null;
+  const bucket = mpBucketFromOfferFieldId(id);
+  if (bucket && bucket !== mp) return null;
+  const label = offerFieldDisplayName(id, humanName);
+  const ru = mp === 'ozon' ? 'Ozon' : mp === 'wb' ? 'Wildberries' : 'Яндекс.Маркет';
+  return {
+    key: mpOfferFieldColKey(id),
+    label,
+    title: `${ru} · ${label}`,
+    headerClass: 'mp-attr-head',
+    input: 'text',
+    minW: 120,
+    mpBucket: mp,
+    mpOfferField: { mp, offerId: id },
+    _humanName: label,
+  };
+}
+
+function syncOfferFieldColsOnRow(row, mpAttrColDefs = []) {
+  let next = row;
+  for (const col of mpAttrColDefs) {
+    if (!col.mpOfferField) continue;
+    const val = readMpOfferFieldValue(rowAsOfferFieldForm(next), col.mpOfferField.offerId);
+    if (str(next[col.key]) === str(val)) continue;
+    next = { ...next, [col.key]: val };
+  }
+  return next;
+}
+
+function patchPayloadFromOfferFieldForm(payload, touch, formBefore, formAfter) {
+  const eq = (a, b) => str(a) === str(b);
+  if (!eq(formBefore.sku_ym, formAfter.sku_ym)) touch('sku_ym', normTextOrNull(formAfter.sku_ym));
+  if (!eq(formBefore.sku_ozon, formAfter.sku_ozon)) touch('sku_ozon', normTextOrNull(formAfter.sku_ozon));
+  if (!eq(formBefore.mp_wb_vendor_code, formAfter.mp_wb_vendor_code)) {
+    touch('mp_wb_vendor_code', normTextOrNull(formAfter.mp_wb_vendor_code));
+  }
+  for (const mp of ['ozon', 'wb', 'ym']) {
+    const k = `${mp}_draft`;
+    if (stableAttrJson(formBefore[k]) !== stableAttrJson(formAfter[k])) {
+      touch(k, formAfter[k]);
+    }
+  }
+}
+
 function copyErpAttrToLinkedMp(row, erpCol, mp) {
   const entries = normalizeAttrMpLinkList(erpCol?.erpAttr?.mpLinks?.[mp]);
   if (!entries.length) return row;
@@ -368,6 +488,16 @@ function copyErpAttrToLinkedMp(row, erpCol, mp) {
 
 /** Ячейка МП связана с «Основным» — в UI показываем зеркало Main, правка отвязывает. */
 function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) {
+  const mpOffer = parseMpOfferFieldColKey(colKey);
+  if (mpOffer) {
+    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
+    if (erpCol?.linkFieldKey) {
+      const mp = mpBucketFromOfferFieldId(mpOffer.offerId);
+      if (!mp) return false;
+      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mp);
+    }
+    return false;
+  }
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
     const col = (mpAttrCols || []).find((c) => c.key === colKey);
@@ -400,6 +530,11 @@ function mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit) {
 
 /** Значение колонки МП при включённой связи: как на «Основном». */
 function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], lengthUnit = 'mm', weightUnit = 'g') {
+  const mpOffer = parseMpOfferFieldColKey(colKey);
+  if (mpOffer) {
+    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
+    if (erpCol) return row[erpCol.key] ?? '';
+  }
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
     const col = (mpAttrCols || []).find((c) => c.key === colKey);
@@ -498,7 +633,7 @@ function copyMainFieldToMp(row, fieldKey, mp, erpAttrCols = []) {
  * После правки ячейки: при активной связи копируем значение в «Основное» и связанные МП.
  * Единицы в таблице уже display — ozon/wb/ym pack совпадают с ERP-колонками.
  */
-function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
+function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs = []) {
   const erpCol = (erpAttrCols || []).find((c) => c.key === key && c.erpAttr);
   if (erpCol?.erpAttr) {
     let next = { ...row, [key]: value };
@@ -509,7 +644,28 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
         next = copyErpAttrToLinkedMp(next, erpCol, mp);
       }
     }
-    return next;
+    return syncOfferFieldColsOnRow(next, mpAttrColDefs);
+  }
+
+  const mpOffer = parseMpOfferFieldColKey(key);
+  if (mpOffer) {
+    const linkedErp = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
+    const mp = mpBucketFromOfferFieldId(mpOffer.offerId);
+    let next = applyMpOfferFieldToForm(rowAsOfferFieldForm({ ...row, [key]: value }), mpOffer.offerId, value);
+    next = { ...next, [key]: value };
+    if (linkedErp && mp) {
+      const fieldKey = linkedErp.linkFieldKey;
+      const links = normalizeMpFieldLinks(row.mp_field_links);
+      if (fieldKey && isMpFieldLinked(links, fieldKey, mp)) {
+        next = { ...next, [linkedErp.key]: value };
+        for (const syncMp of mappedMpsFromAttrLinks(linkedErp.erpAttr?.mpLinks)) {
+          if (syncMp !== mp && isMpFieldLinked(links, fieldKey, syncMp)) {
+            next = copyErpAttrToLinkedMp(next, linkedErp, syncMp);
+          }
+        }
+      }
+    }
+    return syncOfferFieldColsOnRow(next, mpAttrColDefs);
   }
 
   const mpAttr = parseMpAttrColKey(key);
@@ -527,7 +683,7 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = []) {
           next = copyErpAttrToLinkedMp(next, linkedErp, mp);
         }
       }
-      return next;
+      return syncOfferFieldColsOnRow(next, mpAttrColDefs);
     }
   }
 
@@ -1355,6 +1511,7 @@ function mpAttrSortRankFromHuman(humanName) {
 
 function dedicatedMpColSortRank(col) {
   const k = String(col?.key || '');
+  if (k.startsWith(MP_OFFER_COL_PREFIX)) return 2;
   if (/_name$/.test(k) || k.endsWith('_name')) return 0;
   if (/description/.test(k)) return 1;
   if (/^sku_|vendor_code|product_id|offer/.test(k) || k.includes('product_id')) return 2;
@@ -1370,15 +1527,17 @@ function sortMpSectionColumns(dedicatedCols, attrCols) {
     ...dedicatedCols.map((c) => ({ c, rank: dedicatedMpColSortRank(c), tie: String(c.key) })),
     ...attrCols.map((c) => ({
       c,
-      rank: mpAttrSortRankFromHuman(c._humanName || c.label || ''),
-      tie: String(c.mpAttr?.attrId || c.key),
+      rank: c.mpOfferField
+        ? dedicatedMpColSortRank(c)
+        : mpAttrSortRankFromHuman(c._humanName || c.label || ''),
+      tie: String(c.mpAttr?.attrId || c.mpOfferField?.offerId || c.key),
     })),
   ];
   tagged.sort((a, b) => {
     if (a.rank !== b.rank) return a.rank - b.rank;
-    // внутри одного ранга: сначала dedicated, потом attrs
-    const ad = a.c.mpAttr ? 1 : 0;
-    const bd = b.c.mpAttr ? 1 : 0;
+    // внутри одного ранга: сначала dedicated, потом attrs / offer
+    const ad = a.c.mpAttr || a.c.mpOfferField ? 1 : 0;
+    const bd = b.c.mpAttr || b.c.mpOfferField ? 1 : 0;
     if (ad !== bd) return ad - bd;
     return a.tie.localeCompare(b.tie, undefined, { numeric: true });
   });
@@ -2477,6 +2636,20 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
       const entries = normalizeAttrMpLinkList(links[mp]);
       for (const entry of entries) {
         if (!entry?.id) continue;
+        if (isMpOfferFieldAttrId(entry.id)) {
+          const offerKey = `offer:${entry.id}`;
+          const maps = labelMaps?.[mp] || {};
+          const meta = maps[entry.id] || maps[String(entry.id)];
+          const human = schemaAttrName(meta) || entry.name || '';
+          if (have.has(offerKey)) continue;
+          have.add(offerKey);
+          const offerCol = attachOfferFieldLinkMeta(
+            extraLinkedMpOfferColumn(mp, entry.id, human || entry.name),
+            erpCols
+          );
+          if (offerCol) extra.push(offerCol);
+          continue;
+        }
         const k = `${mp}:${entry.id}`;
         const maps = labelMaps?.[mp] || {};
         const meta = maps[entry.id] || maps[String(entry.id)];
@@ -2538,6 +2711,7 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
   });
   const merged = extra.length ? [...base, ...extra.filter((c) => !base.some((b) => b.key === c.key))] : base;
   return (merged || []).map((col) => {
+    if (col.mpOfferField) return attachOfferFieldLinkMeta(col, erpCols);
     if (!col.mpAttr) return col;
     let next = col;
     if (!next.linkFieldKey && next.mpAttr.bucket === 'ozon') {
@@ -2828,7 +3002,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
   }
-  return row;
+  return syncOfferFieldColsOnRow(row, mpAttrColDefs);
 }
 
 function parseBarcodesCell(text) {
@@ -3202,6 +3376,34 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         touch(map[bucket], after);
       }
     }
+  }
+
+  for (const col of mpAttrColDefs) {
+    if (!col.mpOfferField) continue;
+    if (eq(original[col.key], current[col.key])) continue;
+    const formBefore = rowAsOfferFieldForm({
+      ...original,
+      ozon_draft:
+        payload.ozon_draft ??
+        parseDraftBaseline(original._ozonDraftBaseline ?? original._productRef?.ozon_draft),
+      wb_draft:
+        payload.wb_draft ??
+        parseDraftBaseline(original._wbDraftBaseline ?? original._productRef?.wb_draft),
+      ym_draft:
+        payload.ym_draft ??
+        parseDraftBaseline(original._ymDraftBaseline ?? original._productRef?.ym_draft),
+    });
+    const formAfter = applyMpOfferFieldToForm(
+      rowAsOfferFieldForm({
+        ...current,
+        ozon_draft: formBefore.ozon_draft,
+        wb_draft: formBefore.wb_draft,
+        ym_draft: formBefore.ym_draft,
+      }),
+      col.mpOfferField.offerId,
+      str(current[col.key])
+    );
+    patchPayloadFromOfferFieldForm(payload, touch, formBefore, formAfter);
   }
 
   if ((erpAttrColDefs || []).length > 0) {
@@ -4002,7 +4204,9 @@ export function ProductsBulkEdit() {
     for (const bucket of ['ozon', 'wb', 'ym']) {
       if (!bucketVisible(bucket)) continue;
       const dedicated = COLUMNS.filter((c) => c.mpBucket === bucket);
-      const attrs = visibleMpAttrColumnDefs.filter((c) => c.mpAttr?.bucket === bucket);
+      const attrs = visibleMpAttrColumnDefs.filter(
+        (c) => c.mpAttr?.bucket === bucket || c.mpOfferField?.mp === bucket
+      );
       out.push(...sortMpSectionColumns(dedicated, attrs));
     }
     const labeled = withDisplayUnitLabels(out, lengthUnit, weightUnit);
@@ -5191,7 +5395,7 @@ export function ProductsBulkEdit() {
     markDirty();
     setRows((prev) =>
       prev.map((r) => {
-        let next = withSyncedLinkedFields(r, key, bulkDraft, erpAttrColumnDefs);
+        let next = withSyncedLinkedFields(r, key, bulkDraft, erpAttrColumnDefs, mpAttrColumnDefs);
         if (bulkLinkFieldForColumn(key) === 'country') {
           next = applyLinkedCountryToDictAttrColumns(
             next,
@@ -5232,7 +5436,7 @@ export function ProductsBulkEdit() {
     setRows((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
-        let next = withSyncedLinkedFields(r, key, value, erpAttrColumnDefs);
+        let next = withSyncedLinkedFields(r, key, value, erpAttrColumnDefs, mpAttrColumnDefs);
         if (bulkLinkFieldForColumn(key) === 'country') {
           next = applyLinkedCountryToDictAttrColumns(
             next,
@@ -5297,7 +5501,7 @@ export function ProductsBulkEdit() {
       if (fieldKey === 'product_dimensions') {
         next = applyLinkedMpProductDimAttrColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
       }
-      return next;
+      return syncOfferFieldColsOnRow(next, mpAttrColumnDefs);
     },
     [erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit]
   );
