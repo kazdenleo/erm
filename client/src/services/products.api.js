@@ -193,6 +193,41 @@ export const productsApi = {
     return response.data;
   },
 
+  /** DISTINCT ERP-категории по фильтрам списка (столбцы МП в массовом редактировании). */
+  getDistinctUserCategoryIds: async (options = {}) => {
+    const params = { ...(options.cacheBust ? { _t: Date.now() } : {}) };
+    if (options.organizationId != null && options.organizationId !== '') {
+      params.organizationId = options.organizationId;
+    }
+    if (options.brandId != null && options.brandId !== '') params.brandId = String(options.brandId);
+    if (options.categoryId != null && options.categoryId !== '') params.categoryId = options.categoryId;
+    if (options.search != null && String(options.search).trim() !== '') {
+      params.search = String(options.search).trim();
+    }
+    if (options.productType != null && String(options.productType).trim() !== '') {
+      params.productType = String(options.productType).trim();
+    }
+    if (options.unlinkedMp != null && options.unlinkedMp !== '') {
+      const list = Array.isArray(options.unlinkedMp)
+        ? options.unlinkedMp
+        : String(options.unlinkedMp).split(',');
+      const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+      if (cleaned.length) params.unlinkedMp = cleaned.join(',');
+    }
+    if (options.linkedMp != null && options.linkedMp !== '') {
+      const list = Array.isArray(options.linkedMp)
+        ? options.linkedMp
+        : String(options.linkedMp).split(',');
+      const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+      if (cleaned.length) params.linkedMp = cleaned.join(',');
+    }
+    if (Array.isArray(options.ids) && options.ids.length > 0) {
+      params.ids = options.ids.map((x) => String(x)).filter(Boolean).join(',');
+    }
+    const response = await api.get('/products/distinct-user-category-ids', { params });
+    return response.data;
+  },
+
   /**
    * Скачать Excel с товарами (маркетплейсы, JSON-атрибуты). Фильтры опциональны.
    * @returns {Promise<ArrayBuffer>}

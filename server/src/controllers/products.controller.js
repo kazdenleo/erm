@@ -444,6 +444,65 @@ class ProductsController {
     }
   }
 
+  /** DISTINCT user_category_id по фильтрам списка (столбцы МП в массовом редактировании). */
+  async getDistinctUserCategoryIds(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const options = {};
+      if (tid != null) options.profileId = tid;
+      if (req.query.organizationId != null && req.query.organizationId !== '') {
+        options.organizationId = req.query.organizationId;
+      }
+      const brandParsed = parseProductListBrandId(req.query.brandId);
+      if (brandParsed != null) options.brandId = brandParsed;
+      const catParsed = parseProductListCategoryId(req.query.categoryId);
+      if (catParsed != null) options.categoryId = catParsed;
+      if (req.query.search != null && req.query.search !== '') options.search = req.query.search;
+      if (req.query.productType != null && String(req.query.productType).trim() !== '') {
+        options.productType = String(req.query.productType).trim();
+      }
+      const accessScope = await getRequestAccessScope(req);
+      if (options.organizationId != null && !isOrganizationAllowed(accessScope, options.organizationId)) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      if (accessScope.organizationIds != null && options.organizationId == null) {
+        options.organizationIds = accessScope.organizationIds;
+      }
+      if (req.query.unlinkedMp != null && String(req.query.unlinkedMp).trim() !== '') {
+        const raw = req.query.unlinkedMp;
+        const parts = Array.isArray(raw)
+          ? raw.flatMap((x) => String(x).split(','))
+          : String(raw).split(',');
+        const allowed = new Set(['ozon', 'wb', 'ym']);
+        const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
+        if (list.length) options.unlinkedMp = list;
+      }
+      if (req.query.linkedMp != null && String(req.query.linkedMp).trim() !== '') {
+        const raw = req.query.linkedMp;
+        const parts = Array.isArray(raw)
+          ? raw.flatMap((x) => String(x).split(','))
+          : String(raw).split(',');
+        const allowed = new Set(['ozon', 'wb', 'ym']);
+        const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
+        if (list.length) options.linkedMp = list;
+      }
+      if (req.query.ids != null && String(req.query.ids).trim() !== '') {
+        const parts = String(req.query.ids).split(',');
+        const ids = parts
+          .map((x) => (typeof x === 'string' ? parseInt(x.trim(), 10) : Number(x)))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (ids.length) options.productIds = ids;
+      }
+      const data = await productsService.getDistinctUserCategoryIds(options);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /** Лёгкий ответ для UI категорий: { [user_category_id]: productId[] } без полных карточек товаров */
   async getProductIdsGroupedByUserCategory(req, res, next) {
     try {

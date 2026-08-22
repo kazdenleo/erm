@@ -539,6 +539,11 @@ class ProductsService {
     return await this.repository.getProductIdsGroupedByUserCategory(options);
   }
 
+  /** DISTINCT ERP-категории по фильтрам списка (массовое редактирование). */
+  async getDistinctUserCategoryIds(options = {}) {
+    return await this.repository.findDistinctUserCategoryIds(options);
+  }
+
   /**
    * Excel (.xlsx) с товарами и полями маркетплейсов (только PostgreSQL).
    * @param {{ organizationId?: string, categoryId?: string, search?: string, profileId?: number|string, exportOptions?: object }} filters

@@ -88,10 +88,15 @@ router.get(
   wrapAsync(productsController.getMarketplaceNumberByOffer.bind(productsController))
 );
 
-// ID товаров по ERP-категории (до /:id)
+// ID товаров по ERP-kategorии (до /:id)
 router.get(
   '/grouped-by-user-category',
   wrapAsync(productsController.getProductIdsGroupedByUserCategory.bind(productsController))
+);
+
+router.get(
+  '/distinct-user-category-ids',
+  wrapAsync(productsController.getDistinctUserCategoryIds.bind(productsController))
 );
 
 // Получить товар по ID (с деталями: баркоды, SKU маркетплейсов, комплектующие)

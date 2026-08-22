@@ -1526,10 +1526,12 @@ function mergeYmAttrSchema(list, into) {
 }
 
 /** Категории, для которых в массовом редактировании нужна схема МП и сопоставления. */
-function resolveBulkEditCategoryIds(categories, filterCategoryId, products) {
+function resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds) {
   const catId = String(filterCategoryId || '').trim();
   if (catId === FILTER_CATEGORY_NONE) return [];
   if (catId) return [catId];
+  const scoped = [...new Set((scopeCategoryIds || []).map((x) => String(x).trim()).filter(Boolean))];
+  if (scoped.length) return scoped;
   const out = new Set();
   for (const p of products || []) {
     const cid = p?.user_category_id ?? p?.categoryId;
@@ -1538,8 +1540,32 @@ function resolveBulkEditCategoryIds(categories, filterCategoryId, products) {
   return [...out];
 }
 
+/** Загрузить DISTINCT ERP-категории по текущим фильтрам списка (не только текущая страница). */
+async function fetchBulkEditScopeCategoryIds(baseParams, selectedIds, filterCategoryId) {
+  const catId = String(filterCategoryId || '').trim();
+  if (catId === FILTER_CATEGORY_NONE) return [];
+  if (catId) return [catId];
+  try {
+    const res = await productsApi.getDistinctUserCategoryIds({
+      ...baseParams,
+      ids: Array.isArray(selectedIds) && selectedIds.length > 0 ? selectedIds : undefined,
+      cacheBust: true,
+    });
+    const data = res?.data ?? res;
+    return Array.isArray(data) ? data.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Имена характеристик из сопоставлений категории (пока схема МП не подгрузилась). */
-function seedMpLabelMapsFromCategoryLinks(categories, filterCategoryId, products, erpCols = []) {
+function seedMpLabelMapsFromCategoryLinks(
+  categories,
+  filterCategoryId,
+  products,
+  erpCols = [],
+  scopeCategoryIds = []
+) {
   const maps = { ozon: {}, wb: {}, ym: {} };
   const put = (mp, id, name) => {
     const aid = String(id || '').trim();
@@ -1558,7 +1584,9 @@ function seedMpLabelMapsFromCategoryLinks(categories, filterCategoryId, products
     }
   }
   const cats = categories || [];
-  const catIds = new Set(resolveBulkEditCategoryIds(categories, filterCategoryId, products));
+  const catIds = new Set(
+    resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds)
+  );
   for (const c of cats) {
     if (catIds.size && !catIds.has(String(c.id))) continue;
     const attrMap = c?.attribute_mp_links && typeof c.attribute_mp_links === 'object' ? c.attribute_mp_links : {};
@@ -1619,9 +1647,20 @@ function schemaAttrName(meta) {
  * Ozon: dictionary_id + пары desc/type для подгрузки значений.
  * YM/WB: options из схемы, если есть.
  */
-async function fetchMpAttributeLabelMaps(products, categories, filterCategoryId, fallbackOrganizationId) {
+async function fetchMpAttributeLabelMaps(
+  products,
+  categories,
+  filterCategoryId,
+  fallbackOrganizationId,
+  scopeCategoryIds = []
+) {
   const maps = { ozon: {}, wb: {}, ym: {}, ozonPairs: [] };
-  const catIds = resolveBulkEditCategoryIds(categories, filterCategoryId, products);
+  const catIds = resolveBulkEditCategoryIds(
+    categories,
+    filterCategoryId,
+    products,
+    scopeCategoryIds
+  );
   if (catIds.length === 0) return maps;
 
   const orgByCat = new Map();
@@ -2196,7 +2235,13 @@ function dedicatedMapLookupKeys(fieldKey) {
   return [...new Set(keys)];
 }
 
-function dedicatedMappedMpsFromCategories(categories, filterCategoryId, products, fieldKey) {
+function dedicatedMappedMpsFromCategories(
+  categories,
+  filterCategoryId,
+  products,
+  fieldKey,
+  scopeCategoryIds = []
+) {
   const cats = categories || [];
   const catId = String(filterCategoryId || '').trim();
   const union = new Set();
@@ -2212,13 +2257,9 @@ function dedicatedMappedMpsFromCategories(categories, filterCategoryId, products
     if (cat) add(cat);
     return [...union];
   }
-  const catIds = new Set();
-  if (!catId) {
-    for (const p of products || []) {
-      const cid = p.categoryId ?? p.user_category_id;
-      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
-    }
-  }
+  const catIds = new Set(
+    resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds)
+  );
   for (const c of cats) {
     if (catIds.size && !catIds.has(String(c.id))) continue;
     add(c);
@@ -2226,7 +2267,7 @@ function dedicatedMappedMpsFromCategories(categories, filterCategoryId, products
   return [...union];
 }
 
-function erpAttrMpLinksForId(categories, filterCategoryId, products, attrId) {
+function erpAttrMpLinksForId(categories, filterCategoryId, products, attrId, scopeCategoryIds = []) {
   const aid = String(attrId);
   const cats = categories || [];
   const pick = (cat) =>
@@ -2237,13 +2278,9 @@ function erpAttrMpLinksForId(categories, filterCategoryId, products, attrId) {
     return cat ? pick(cat) : normalizeAttrMpLinks(null);
   }
   const merged = normalizeAttrMpLinks(null);
-  const catIds = new Set();
-  if (!catId) {
-    for (const p of products || []) {
-      const cid = p.categoryId ?? p.user_category_id;
-      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
-    }
-  }
+  const catIds = new Set(
+    resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds)
+  );
   for (const c of cats) {
     if (catIds.size && !catIds.has(String(c.id))) continue;
     const links = pick(c);
@@ -2254,7 +2291,13 @@ function erpAttrMpLinksForId(categories, filterCategoryId, products, attrId) {
   return merged;
 }
 
-function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, products) {
+function buildErpAttrColumnDefs(
+  allAttributes,
+  categories,
+  filterCategoryId,
+  products,
+  scopeCategoryIds = []
+) {
   const attrById = new Map((allAttributes || []).map((a) => [String(a.id), a]));
   const ids = new Set();
   const addFromCat = (cat) => {
@@ -2267,10 +2310,10 @@ function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, pro
     const cat = (categories || []).find((c) => String(c.id) === catId);
     if (cat) addFromCat(cat);
   } else if (!catId) {
-    const catIds = new Set();
+    const catIds = new Set(
+      resolveBulkEditCategoryIds(categories, filterCategoryId, products, scopeCategoryIds)
+    );
     for (const p of products || []) {
-      const cid = p.categoryId ?? p.user_category_id;
-      if (cid != null && String(cid).trim() !== '') catIds.add(String(cid));
       const av = p.attribute_values;
       if (av && typeof av === 'object' && !Array.isArray(av)) {
         Object.keys(av).forEach((k) => ids.add(String(k)));
@@ -2286,7 +2329,13 @@ function buildErpAttrColumnDefs(allAttributes, categories, filterCategoryId, pro
     if (!attr) continue;
     const type = attr.type || 'text';
     const dict = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
-    const mpLinks = erpAttrMpLinksForId(categories, filterCategoryId, products, id);
+    const mpLinks = erpAttrMpLinksForId(
+      categories,
+      filterCategoryId,
+      products,
+      id,
+      scopeCategoryIds
+    );
     const mapped = mappedMpsFromAttrLinks(mpLinks);
     cols.push({
       key: erpAttrColKey(id),
@@ -3581,6 +3630,8 @@ export function ProductsBulkEdit() {
     const v = initialBulkFilters?.search;
     return v != null ? String(v) : '';
   });
+  /** ERP-категории всей выборки по фильтрам (не только текущая страница) — для столбцов МП. */
+  const [filterScopeCategoryIds, setFilterScopeCategoryIds] = useState([]);
   const [filtersOpen, setFiltersOpen] = useState(() => initialBulkFilters?.filtersOpen === true);
   /** null — до первой загрузки; при выборке с «Товаров» учитываются только выбранные id */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
@@ -3895,7 +3946,8 @@ export function ProductsBulkEdit() {
         categories,
         filterCategoryId,
         rows,
-        lookupKey
+        lookupKey,
+        filterScopeCategoryIds
       );
       if (col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions') {
         return {
@@ -3933,6 +3985,7 @@ export function ProductsBulkEdit() {
     weightUnit,
     categories,
     filterCategoryId,
+    filterScopeCategoryIds,
     rows,
   ]);
 
@@ -4368,9 +4421,35 @@ export function ProductsBulkEdit() {
       setTotalProducts(total);
       if (partial.page !== undefined) setCurrentPage(safePage);
 
-      const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, list);
-      const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, list, erpCols);
-      const schemaMaps = await fetchMpAttributeLabelMaps(list, cats || [], cat, org);
+      const scopeCategoryIds = await fetchBulkEditScopeCategoryIds(
+        baseParams,
+        selectedIds,
+        cat
+      );
+      if (gen !== loadGenRef.current) return;
+      setFilterScopeCategoryIds(scopeCategoryIds);
+
+      const erpCols = buildErpAttrColumnDefs(
+        erpAttrs,
+        cats || [],
+        cat,
+        list,
+        scopeCategoryIds
+      );
+      const seedMaps = seedMpLabelMapsFromCategoryLinks(
+        cats || [],
+        cat,
+        list,
+        erpCols,
+        scopeCategoryIds
+      );
+      const schemaMaps = await fetchMpAttributeLabelMaps(
+        list,
+        cats || [],
+        cat,
+        org,
+        scopeCategoryIds
+      );
       if (gen !== loadGenRef.current) return;
       const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
       const mpCols = buildBulkMpAttrColumnDefs(list, erpCols, seedMaps, schemaMaps);
@@ -4521,9 +4600,38 @@ export function ProductsBulkEdit() {
       if (gen !== loadGenRef.current) return;
       const erpAttrs = Array.isArray(attrRes?.data) ? attrRes.data : [];
       const cat = filterCategoryId;
-      const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, []);
-      const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, [], erpCols);
-      const schemaMaps = await fetchMpAttributeLabelMaps([], cats || [], cat, filterOrganizationId);
+      const scopeCategoryIds = await fetchBulkEditScopeCategoryIds(
+        {
+          organizationId: filterOrganizationId || undefined,
+          categoryId: cat || undefined,
+          productType: filterProductType || undefined,
+        },
+        [],
+        cat
+      );
+      if (gen !== loadGenRef.current) return;
+      setFilterScopeCategoryIds(scopeCategoryIds);
+      const erpCols = buildErpAttrColumnDefs(
+        erpAttrs,
+        cats || [],
+        cat,
+        [],
+        scopeCategoryIds
+      );
+      const seedMaps = seedMpLabelMapsFromCategoryLinks(
+        cats || [],
+        cat,
+        [],
+        erpCols,
+        scopeCategoryIds
+      );
+      const schemaMaps = await fetchMpAttributeLabelMaps(
+        [],
+        cats || [],
+        cat,
+        filterOrganizationId,
+        scopeCategoryIds
+      );
       if (gen !== loadGenRef.current) return;
       const mpColsInitial = buildBulkMpAttrColumnDefs([], erpCols, seedMaps, schemaMaps);
       setMpAttrColumnDefs(mpColsInitial);

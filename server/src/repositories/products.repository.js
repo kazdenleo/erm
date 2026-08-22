@@ -31,6 +31,22 @@ class ProductsRepository {
     return out;
   }
 
+  async findDistinctUserCategoryIds(options = {}) {
+    const { productIds } = options;
+    const idSet =
+      Array.isArray(productIds) && productIds.length > 0
+        ? new Set(productIds.map((x) => String(x)))
+        : null;
+    const products = await this.findAll();
+    const out = new Set();
+    for (const p of products) {
+      if (idSet && !idSet.has(String(p.id))) continue;
+      const cid = p.user_category_id ?? p.categoryId;
+      if (cid != null && String(cid).trim() !== '') out.add(String(cid));
+    }
+    return [...out];
+  }
+
   async findAll() {
     let products = await readData('products');
     if (!Array.isArray(products)) {

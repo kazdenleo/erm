@@ -1849,6 +1849,38 @@ class ProductsRepositoryPG {
     );
     return Number(result.rows?.[0]?.total || 0);
   }
+
+  /**
+   * DISTINCT user_category_id для текущих фильтров списка (массовое редактирование — схема столбцов МП).
+   * @param {{ productIds?: number[] }} [options]
+   * @returns {Promise<string[]>}
+   */
+  async findDistinctUserCategoryIds(options = {}) {
+    const { productIds } = options;
+    const { whereSql, params } = buildFindAllFilters({
+      ...options,
+      inStockOnly: false,
+    });
+    let sql = `
+      SELECT DISTINCT p.user_category_id::text AS cid
+      FROM products p
+      ${whereSql}
+        AND p.user_category_id IS NOT NULL`;
+    const qParams = [...params];
+    if (Array.isArray(productIds) && productIds.length > 0) {
+      const ids = productIds
+        .map((x) => (typeof x === 'string' ? parseInt(x, 10) : Number(x)))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (ids.length > 0) {
+        sql += ` AND p.id = ANY($${qParams.length + 1})`;
+        qParams.push(ids);
+      }
+    }
+    const result = await query(sql, qParams);
+    return (result.rows || [])
+      .map((row) => String(row.cid || '').trim())
+      .filter(Boolean);
+  }
   
   /**
    * Получить товар по ID
