@@ -2022,19 +2022,12 @@ function knownMpAttrLabel(bucket, attrId) {
   return '';
 }
 
+/** Подпись столбца МП — как в схеме маркетплейса (без переименований вроде «Аналоги»). */
 function formatMpColumnLabel(attrId, humanName, bucket = '') {
   const id = String(attrId);
   const h = humanName && String(humanName).trim()
     ? String(humanName).trim()
     : knownMpAttrLabel(bucket, id);
-  const n = h.toLowerCase().replace(/ё/g, 'е');
-  if (String(bucket).toLowerCase() === 'ozon') {
-    if (isOzonAnnotationAttr({ id, name: h })) return 'Описание';
-    if (/аннотация/.test(n) || n === 'annotation') return 'Описание';
-    if (/альтернативн/.test(n) && /артикул/.test(n)) return 'Аналоги';
-    if (/аналогичн/.test(n) && /артикул/.test(n)) return 'Аналоги';
-    if (/^альтернативные артикулы/.test(n)) return 'Аналоги';
-  }
   if (h) return h;
   return `id ${id}`;
 }
@@ -2352,6 +2345,12 @@ function buildErpAttrColumnDefs(
     for (const id of cat?.attribute_ids || []) {
       if (id != null && String(id).trim() !== '') ids.add(String(id));
     }
+    const am = cat?.attribute_mp_links;
+    if (am && typeof am === 'object' && !Array.isArray(am)) {
+      for (const id of Object.keys(am)) {
+        if (id != null && String(id).trim() !== '') ids.add(String(id));
+      }
+    }
   };
   const catId = String(filterCategoryId || '').trim();
   if (catId && catId !== FILTER_CATEGORY_NONE) {
@@ -2560,11 +2559,20 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
     }
     const erp = findErpAttrColForMpAttr(erpCols, next.mpAttr.bucket, next.mpAttr.attrId);
     if (erp) {
+      const attrMapped = mappedMpsFromAttrLinks(erp.erpAttr?.mpLinks);
+      const linkFieldKey = next.linkFieldKey || erp.linkFieldKey;
       next = {
         ...next,
         mappedMps: next.mappedMps?.length ? next.mappedMps : [next.mpAttr.bucket],
-        linkFieldKey: next.linkFieldKey || erp.linkFieldKey,
+        linkFieldKey,
       };
+      if (isAttrMpFieldLinkKey(linkFieldKey) && attrMapped.length) {
+        next = {
+          ...next,
+          showLinkToggles: true,
+          linkSupportedMps: attrMapped,
+        };
+      }
     }
     return next;
   });
@@ -2734,6 +2742,12 @@ function emptyBulkMpFieldLinks(erpAttrColDefs = []) {
   return links;
 }
 
+function bulkMpFieldLinksFromProduct(p, erpAttrColDefs = []) {
+  const base = emptyBulkMpFieldLinks(erpAttrColDefs);
+  const saved = normalizeMpFieldLinks(p?.mp_field_links);
+  return normalizeMpFieldLinks({ ...base, ...saved });
+}
+
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -2786,7 +2800,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     mp_wb_brand: str(p.mp_wb_brand),
     mp_ym_name: str(p.mp_ym_name),
     mp_ym_description: str(p.mp_ym_description),
-    mp_field_links: emptyBulkMpFieldLinks(erpAttrColDefs),
+    mp_field_links: bulkMpFieldLinksFromProduct(p, erpAttrColDefs),
     ...ozPack,
     ...wbPack,
     ...ymPack,
