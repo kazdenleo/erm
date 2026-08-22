@@ -295,7 +295,7 @@ function ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedica
 }
 
 function MpCategoryLinkIcon() {
-  return <MpFromMainLinkIcon linked title={MP_CATEGORY_LINK_ICON_TITLE} />;
+  return <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />;
 }
 
 function richContentGenerateTargets(links, clickedMp) {

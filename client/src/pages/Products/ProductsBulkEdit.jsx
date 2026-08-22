@@ -83,6 +83,7 @@ import {
   MP_CATEGORY_LINK_ICON_TITLE,
   isMpSchemaAttrLinkedInCategory,
   isMpOfferFieldLinkedInCategory,
+  isMpTargetLinkedInCategoryCategories,
   normalizeAttrMpLinkList,
   normalizeAttrMpLinks,
   resolveAttrMpLinkTarget,
@@ -440,6 +441,12 @@ function erpColsAsCategoryAttributes(erpCols) {
   }));
 }
 
+function bulkEditCategoryIdSet(categories, filterCategoryId, rows, scopeCategoryIds) {
+  const catId = String(filterCategoryId || '').trim();
+  if (catId && catId !== FILTER_CATEGORY_NONE) return new Set([catId]);
+  return new Set(resolveBulkEditCategoryIds(categories, filterCategoryId, rows, scopeCategoryIds));
+}
+
 function bulkMpColumnCategoryLinked(
   col,
   erpCols,
@@ -453,9 +460,12 @@ function bulkMpColumnCategoryLinked(
   const mp = col.mpBucket || bulkMpCodeForColumn(col.key);
   if (!mp) return false;
 
+  const catIds = bulkEditCategoryIdSet(categories, filterCategoryId, rows, scopeCategoryIds);
   const attrId = col.mpAttr?.attrId;
   const attrName = col._humanName || col.label || '';
   if (attrId) {
+    const target = { kind: 'attr', attrId: String(attrId), attrName: String(attrName || '') };
+    if (isMpTargetLinkedInCategoryCategories(categories, catIds, mp, target, labelMaps)) return true;
     if (findErpAttrColForMpAttr(erpCols, mp, attrId, labelMaps, attrName)) return true;
     if (
       isMpSchemaAttrLinkedInCategory(erpColsAsCategoryAttributes(erpCols), mp, attrId, labelMaps, attrName)
@@ -469,6 +479,8 @@ function bulkMpColumnCategoryLinked(
     BULK_DEDICATED_OFFER_FIELD_BY_COL[col.key] ||
     (isMpOfferFieldAttrId(col.key) ? col.key : '');
   if (offerId) {
+    const target = { kind: 'offer', offerId: String(offerId) };
+    if (isMpTargetLinkedInCategoryCategories(categories, catIds, mp, target, labelMaps)) return true;
     if (findErpAttrColForMpOfferField(erpCols, offerId, labelMaps)) return true;
     if (isMpOfferFieldLinkedInCategory(erpColsAsCategoryAttributes(erpCols), mp, offerId, labelMaps)) {
       return true;
@@ -478,6 +490,10 @@ function bulkMpColumnCategoryLinked(
   const parsed = parseMpAttrColKey(col.key);
   if (parsed) {
     const human = col._humanName || col.label || '';
+    const target = { kind: 'attr', attrId: String(parsed.attrId), attrName: String(human || '') };
+    if (isMpTargetLinkedInCategoryCategories(categories, catIds, parsed.bucket, target, labelMaps)) {
+      return true;
+    }
     if (findErpAttrColForMpAttr(erpCols, parsed.bucket, parsed.attrId, labelMaps, human)) return true;
     if (
       isMpSchemaAttrLinkedInCategory(
@@ -519,9 +535,6 @@ function attachBulkCategoryLinkIndicators(
   if (bulkMpColumnCategoryLinked(col, erpCols, labelMaps, categories, filterCategoryId, rows, scopeCategoryIds)) {
     return { ...col, categoryLinked: true };
   }
-  if (col?.erpAttr) {
-    return { ...col, showLinkToggles: false };
-  }
   return col;
 }
 
@@ -530,12 +543,10 @@ function attachOfferFieldLinkMeta(col, erpCols) {
   const erp = findErpAttrColForMpOfferField(erpCols, col.mpOfferField.offerId);
   if (!erp) return col;
   const attrMapped = mappedMpsFromAttrLinks(erp.erpAttr?.mpLinks);
-  const linkFieldKey = erp.linkFieldKey;
-  if (!isAttrMpFieldLinkKey(linkFieldKey) || !attrMapped.length) return col;
   return {
     ...col,
     mappedMps: attrMapped.length ? attrMapped : col.mappedMps?.length ? col.mappedMps : [col.mpOfferField.mp],
-    linkFieldKey,
+    linkFieldKey: erp.linkFieldKey,
     categoryLinked: true,
     linkSupportedMps: attrMapped,
   };
@@ -2720,6 +2731,7 @@ function buildErpAttrColumnDefs(
       mappedMps: mapped,
       linkFieldKey: erpAttrLinkFieldKey(id),
       linkSupportedMps: mapped,
+      showLinkToggles: mapped.length > 0,
     });
   }
   cols.sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'ru'));
@@ -4415,7 +4427,7 @@ export function ProductsBulkEdit() {
                 col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions'
                   ? supportedMpsForFieldKey(col.linkFieldKey)
                   : mapped,
-              showLinkToggles: false,
+              showLinkToggles: col.showLinkToggles !== false,
             };
           }
         }
@@ -5705,8 +5717,21 @@ export function ProductsBulkEdit() {
   const bulkLinkableFieldDefs = useMemo(() => {
     const seen = new Map();
     for (const col of displayColumns || []) {
-      if (!col.showLinkToggles || !col.linkFieldKey || seen.has(col.linkFieldKey)) continue;
-      seen.set(col.linkFieldKey, col.linkSupportedMps);
+      if (!col.linkFieldKey || seen.has(col.linkFieldKey)) continue;
+      const mapped = Array.isArray(col.mappedMps) ? col.mappedMps : [];
+      const canToggle =
+        col.showLinkToggles ||
+        (col.erpAttr && mapped.length > 0) ||
+        (mapped.length > 0 && !col.mpBucket && !col.mpAttr && !col.mpOfferField);
+      if (!canToggle) continue;
+      const supported =
+        col.linkSupportedMps ||
+        (col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions'
+          ? supportedMpsForFieldKey(col.linkFieldKey)
+          : mapped.length
+            ? mapped
+            : undefined);
+      seen.set(col.linkFieldKey, supported);
     }
     return [...seen.entries()].map(([fieldKey, supported]) => ({ fieldKey, supported }));
   }, [displayColumns]);
@@ -7025,11 +7050,7 @@ export function ProductsBulkEdit() {
                     Array.isArray(col.mappedMps) &&
                     col.mappedMps.length
                   );
-                  const showMappedBadges = showErpOrMainBadges || !!(
-                    Array.isArray(col.mappedMps) &&
-                    col.mappedMps.length &&
-                    (showFromMain || (col.mpOfferField && !showLinkToggles))
-                  );
+                  const showMappedBadges = showErpOrMainBadges;
                   const showMpRow =
                     showMasterMp ||
                     showLinkToggles ||
@@ -7251,7 +7272,7 @@ export function ProductsBulkEdit() {
                                 />
                               ) : null}
                               {showCategoryLinkIcon ? (
-                                <MpFromMainLinkIcon linked title={MP_CATEGORY_LINK_ICON_TITLE} />
+                                <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
                               ) : null}
                               {showMappedBadges ? (
                                 <MpMappedMpBadges mps={col.mappedMps} size={14} />

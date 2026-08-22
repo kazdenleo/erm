@@ -152,6 +152,31 @@ export function isMpOfferFieldLinkedInCategory(categoryAttributes, mp, offerId, 
   );
 }
 
+/** Есть ли в attribute_mp_links категорий сопоставление с полем/характеристикой МП. */
+export function isMpTargetLinkedInCategoryCategories(
+  categories,
+  categoryIds,
+  mp,
+  target,
+  labelMaps = {}
+) {
+  const ids =
+    categoryIds instanceof Set
+      ? categoryIds
+      : new Set((Array.isArray(categoryIds) ? categoryIds : []).map((id) => String(id)));
+  for (const cat of categories || []) {
+    const cid = String(cat?.id ?? '');
+    if (ids.size && !ids.has(cid)) continue;
+    const am = cat?.attribute_mp_links;
+    if (!am || typeof am !== 'object' || Array.isArray(am)) continue;
+    for (const raw of Object.values(am)) {
+      const pseudo = [{ mp_links: normalizeAttrMpLinks(raw) }];
+      if (findErpAttrLinkedToMpTarget(pseudo, mp, target, labelMaps)) return true;
+    }
+  }
+  return false;
+}
+
 export function dedicatedCharcLinksForMainField(dedicatedLinks, fieldKey) {
   const key = String(fieldKey || '').trim();
   if (!key || !dedicatedLinks || typeof dedicatedLinks !== 'object') return null;
