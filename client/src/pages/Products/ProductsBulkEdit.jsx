@@ -772,8 +772,8 @@ function copyMainFieldToMp(row, fieldKey, mp, erpAttrCols = []) {
 }
 
 /**
- * После правки ячейки: при активной связи копируем значение в «Основное» и связанные МП.
- * Единицы в таблице уже display — ozon/wb/ym pack совпадают с ERP-колонками.
+ * После правки ячейки: при активной связи копируем значение в связанные МП только с «Основного».
+ * Правка колонки МП — только эта ячейка (при связи отвязываем МП у строки).
  */
 function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs = []) {
   const erpCol = (erpAttrCols || []).find((c) => c.key === key && c.erpAttr);
@@ -799,12 +799,10 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
       const fieldKey = linkedErp.linkFieldKey;
       const links = normalizeMpFieldLinks(row.mp_field_links);
       if (fieldKey && isMpFieldLinked(links, fieldKey, mp)) {
-        next = { ...next, [linkedErp.key]: value };
-        for (const syncMp of mappedMpsFromAttrLinks(linkedErp.erpAttr?.mpLinks)) {
-          if (syncMp !== mp && isMpFieldLinked(links, fieldKey, syncMp)) {
-            next = copyErpAttrToLinkedMp(next, linkedErp, syncMp);
-          }
-        }
+        next = {
+          ...next,
+          mp_field_links: setMpFieldLink(next.mp_field_links, fieldKey, mp, false),
+        };
       }
     }
     return syncOfferFieldColsOnRow(next, mpAttrColDefs);
@@ -813,20 +811,17 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
   const mpAttr = parseMpAttrColKey(key);
   if (mpAttr) {
     const linkedErp = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
-    if (linkedErp) {
-      const fieldKey = linkedErp.linkFieldKey;
-      const links = normalizeMpFieldLinks(row.mp_field_links);
-      if (!fieldKey || !isMpFieldLinked(links, fieldKey, mpAttr.mp)) {
-        return { ...row, [key]: value };
-      }
-      let next = { ...row, [key]: value, [linkedErp.key]: value };
-      for (const mp of mappedMpsFromAttrLinks(linkedErp.erpAttr?.mpLinks)) {
-        if (mp !== mpAttr.mp && isMpFieldLinked(links, fieldKey, mp)) {
-          next = copyErpAttrToLinkedMp(next, linkedErp, mp);
-        }
-      }
-      return syncOfferFieldColsOnRow(next, mpAttrColDefs);
+    const col = (mpAttrColDefs || []).find((c) => c.key === key);
+    const fieldKey = linkedErp?.linkFieldKey || col?.linkFieldKey;
+    const links = normalizeMpFieldLinks(row.mp_field_links);
+    if (fieldKey && isMpFieldLinked(links, fieldKey, mpAttr.mp)) {
+      return {
+        ...row,
+        [key]: value,
+        mp_field_links: setMpFieldLink(row.mp_field_links, fieldKey, mpAttr.mp, false),
+      };
     }
+    return { ...row, [key]: value };
   }
 
   const fieldKey = bulkLinkFieldForColumn(key);
@@ -860,11 +855,8 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
         if (isMpFieldLinked(links, fieldKey, mp)) next[colsByMp[mp]] = value;
       }
     } else if (isMpFieldLinked(links, fieldKey, editedMp)) {
-      next[mainKey] = value;
-      for (const mp of Object.keys(colsByMp)) {
-        if (mp === 'main' || mp === editedMp) continue;
-        if (isMpFieldLinked(links, fieldKey, mp)) next[colsByMp[mp]] = value;
-      }
+      next[colsByMp[editedMp]] = value;
+      next.mp_field_links = setMpFieldLink(next.mp_field_links, fieldKey, editedMp, false);
     }
   };
 
@@ -903,12 +895,8 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
         }
       }
     } else if (isMpFieldLinked(links, 'dimensions', editedMp)) {
-      next[dimKey] = value;
-      for (const mp of ['ozon', 'wb', 'ym']) {
-        if (mp !== editedMp && isMpFieldLinked(links, 'dimensions', mp)) {
-          next[BULK_PACK_COLS[mp][dimKey]] = value;
-        }
-      }
+      next[BULK_PACK_COLS[editedMp][dimKey]] = value;
+      next.mp_field_links = setMpFieldLink(next.mp_field_links, 'dimensions', editedMp, false);
     }
   }
   return next;

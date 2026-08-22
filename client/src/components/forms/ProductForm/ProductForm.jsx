@@ -2651,8 +2651,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (id === '__ozon_offer_id__') {
         setFormData((prev) => {
           if (isMpFieldLinked(prev.mp_field_links, 'sku', 'ozon')) {
-            const next = { ...prev, sku: value };
-            return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['sku']);
+            return {
+              ...prev,
+              mp_field_links: setMpFieldLink(prev.mp_field_links, 'sku', 'ozon', false),
+              sku_ozon: String(value ?? ''),
+            };
           }
           return applyMpOfferFieldToForm(prev, id, String(value ?? ''));
         });
@@ -2746,8 +2749,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setFormData((prev) => applyMpOfferFieldToForm(prev, '__ozon_vendor_code__', String(value ?? '')));
       syncOzonManufacturerArticleAttrs(value);
     }
+    const ozKey = String(attrId);
+    for (const erp of categoryAttributes) {
+      const linkKey = erpAttrLinkFieldKey(erp.id);
+      if (!isMpFieldLinked(formData.mp_field_links, linkKey, 'ozon')) continue;
+      const hits = findLinkedMpAttributes(normalizeAttrMpLinks(erp.mp_links).ozon, ozonAttributes).filter(
+        (h) => h?.id != null && !isMpOfferFieldAttrId(h.id)
+      );
+      if (hits.some((h) => String(h.id) === ozKey)) {
+        setFormData((prev) => ({
+          ...prev,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, linkKey, 'ozon', false),
+        }));
+        break;
+      }
+    }
     setOzonAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
-  }, [ozonAttributes, formData.mp_field_links, syncOzonManufacturerArticleAttrs]);
+  }, [ozonAttributes, formData.mp_field_links, syncOzonManufacturerArticleAttrs, categoryAttributes]);
 
   const loadOzonDictValues = useCallback((attrId) => {
     if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return Promise.resolve([]);
@@ -4487,15 +4505,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
   };
 
   /**
-   * Текст карточки МП всегда редактируем (mp_*).
-   * При связи с «Основным» — двусторонняя синхронизация только с Main (не с другими МП).
+   * Текст карточки МП (mp_*). При связи с «Основным» показывается зеркало Main;
+   * правка на МП отвязывает только этот МП, не меняя Main и другие площадки.
    */
   const handleMpCardFieldChange = useCallback((mpField, mainField, linkKey, mp, value) => {
     setFormData((prev) => {
       const next = { ...prev, [mpField]: value };
       if (!isMpFieldLinked(prev.mp_field_links, linkKey, mp)) return next;
-      next[mainField] = value;
-      return applyLinkedMpFieldsFromMain(next, next.mp_field_links, [linkKey]);
+      return {
+        ...next,
+        mp_field_links: setMpFieldLink(prev.mp_field_links, linkKey, mp, false),
+      };
     });
   }, []);
 
@@ -4523,8 +4543,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
         isMpFieldLinked(prev.mp_field_links, 'product_dimensions', 'ym') ||
         isMpFieldLinked(prev.mp_field_links, field, 'ym');
       if (linked) {
-        const next = { ...prev, [field]: mmVal === '' || mmVal == null ? '' : String(mmVal) };
-        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['product_dimensions', field]);
+        const prevDims = getMpDraftProductDimensionsMm(prev, 'ym') || {};
+        const nextDims = { ...prevDims };
+        if (mmVal === '' || mmVal == null) delete nextDims[axis];
+        else nextDims[axis] = Number(mmVal);
+        let next = withMpDraftPatch(prev, 'ym', { productDimensions: nextDims });
+        next = {
+          ...next,
+          mp_field_links: setMpFieldLink(
+            setMpFieldLink(next.mp_field_links, 'product_dimensions', 'ym', false),
+            field,
+            'ym',
+            false
+          ),
+        };
+        return next;
       }
       const prevDims = getMpDraftProductDimensionsMm(prev, 'ym') || {};
       const nextDims = { ...prevDims };
@@ -4556,8 +4589,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
         isMpFieldLinked(prev.mp_field_links, 'product_dimensions', code) ||
         isMpFieldLinked(prev.mp_field_links, field, code);
       if (linked) {
-        const next = { ...prev, [field]: mmVal };
-        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['product_dimensions', field]);
+        const prevDims = getMpDraftProductDimensionsMm(prev, code) || {};
+        const nextDims = { ...prevDims };
+        if (mmVal === '') delete nextDims[key];
+        else nextDims[key] = Number(mmVal);
+        let next = withMpDraftPatch(prev, code, { productDimensions: nextDims });
+        next = {
+          ...next,
+          mp_field_links: setMpFieldLink(
+            setMpFieldLink(next.mp_field_links, 'product_dimensions', code, false),
+            field,
+            code,
+            false
+          ),
+        };
+        return next;
       }
       const prevDims = getMpDraftProductDimensionsMm(prev, code) || {};
       const nextDims = { ...prevDims };
@@ -4577,13 +4623,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, [ozonAttributes]);
 
-  /** Артикул продавца на вкладке Ozon/WB/YM: связь вкл. → Main.sku; выкл. → sku_ozon / mp_wb_vendor_code / sku_ym. */
+  /** Артикул продавца на вкладке Ozon/WB/YM: связь вкл. → зеркало Main; правка на МП отвязывает только этот МП. */
   const handleMpSkuMetaChange = useCallback((mp, value) => {
     const code = String(mp || '').toLowerCase();
     setFormData((prev) => {
       if (isMpFieldLinked(prev.mp_field_links, 'sku', code)) {
-        const next = { ...prev, sku: value };
-        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['sku']);
+        const next = {
+          ...prev,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, 'sku', code, false),
+        };
+        if (code === 'ozon') return { ...next, sku_ozon: value };
+        if (code === 'wb') return { ...next, mp_wb_vendor_code: value };
+        if (code === 'ym') return { ...next, sku_ym: value };
+        return next;
       }
       if (code === 'ozon') return { ...prev, sku_ozon: value };
       if (code === 'wb') return { ...prev, mp_wb_vendor_code: value };
@@ -4595,11 +4647,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const handleMpCountryMetaChange = useCallback((mp, value) => {
     const code = String(mp || '').toLowerCase();
     setFormData((prev) => {
+      const next = withMpDraftPatch(prev, code, { country: value });
       if (isMpFieldLinked(prev.mp_field_links, 'country', code)) {
-        const next = { ...prev, country_of_origin: value };
-        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['country']);
+        return {
+          ...next,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, 'country', code, false),
+        };
       }
-      return withMpDraftPatch(prev, code, { country: value });
+      return next;
     });
   }, []);
 
@@ -4614,8 +4669,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setFormData((prev) => {
       let next;
       if (isMpFieldLinked(prev.mp_field_links, 'dimensions', code)) {
-        next = { ...prev, [key]: mmVal };
-        next = applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['dimensions']);
+        next = {
+          ...prev,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, 'dimensions', code, false),
+        };
+        const prevDims = getMpDraftDimensionsMm(next, code) || {};
+        const nextDims = { ...prevDims };
+        if (mmVal === '') delete nextDims[key];
+        else nextDims[key] = Number(mmVal);
+        next = withMpDraftPatch(next, code, { dimensions: nextDims });
       } else {
         const prevDims = getMpDraftDimensionsMm(prev, code) || {};
         const nextDims = { ...prevDims };
@@ -4663,8 +4725,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return withMpDraftPatch(next, 'wb', { productDimensions: nextDims });
       });
     }
+    const wbKey = String(attrId);
+    for (const erp of categoryAttributes) {
+      const linkKey = erpAttrLinkFieldKey(erp.id);
+      if (!isMpFieldLinked(formData.mp_field_links, linkKey, 'wb')) continue;
+      const hits = findLinkedMpAttributes(
+        normalizeAttrMpLinks(erp.mp_links).wb,
+        wbCategoryAttributes,
+        wbAttrKey,
+        wbAttrName
+      ).filter((h) => {
+        const id = h?.charcID ?? h?.characteristic_id ?? h?.id ?? h?.attribute_id;
+        return !isMpOfferFieldAttrId(id);
+      });
+      if (hits.some((h) => wbAttrKey(h) === wbKey)) {
+        setFormData((prev) => ({
+          ...prev,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, linkKey, 'wb', false),
+        }));
+        break;
+      }
+    }
     setWbAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
-  }, []);
+  }, [categoryAttributes, formData.mp_field_links, wbCategoryAttributes, wbAttrKey, wbAttrName]);
 
   const handleYmAttributeChange = useCallback((attrId, value, attr) => {
     const axis = ozonProductDimAxis(attr);
@@ -4724,8 +4807,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return applyYmPackagingDimChange(next, packAxis, offerVal);
       });
     }
+    const ymKey = String(attrId);
+    for (const erp of categoryAttributes) {
+      const linkKey = erpAttrLinkFieldKey(erp.id);
+      if (!isMpFieldLinked(formData.mp_field_links, linkKey, 'ym')) continue;
+      const hits = findLinkedMpAttributes(normalizeAttrMpLinks(erp.mp_links).ym, ymFormAttributes).filter(
+        (h) => h?.id != null && !isMpOfferFieldAttrId(h.id)
+      );
+      if (hits.some((h) => String(h.id) === ymKey)) {
+        setFormData((prev) => ({
+          ...prev,
+          mp_field_links: setMpFieldLink(prev.mp_field_links, linkKey, 'ym', false),
+        }));
+        break;
+      }
+    }
     setYmAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
-  }, []);
+  }, [categoryAttributes, formData.mp_field_links, ymFormAttributes]);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
     const attrForLink = isAttrMpFieldLinkKey(fieldKey)
@@ -9010,11 +9108,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     onChange={(e) =>
                       setFormData((prev) => {
                         if (isMpFieldLinked(prev.mp_field_links, 'brand', 'ym')) {
-                          return applyLinkedMpFieldsFromMain(
-                            { ...prev, brand: e.target.value },
-                            prev.mp_field_links,
-                            ['brand']
-                          );
+                          return {
+                            ...withMpDraftPatch(prev, 'ym', { vendor: e.target.value }),
+                            mp_field_links: setMpFieldLink(prev.mp_field_links, 'brand', 'ym', false),
+                          };
                         }
                         return withMpDraftPatch(prev, 'ym', { vendor: e.target.value });
                       })
