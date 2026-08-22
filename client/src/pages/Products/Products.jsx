@@ -509,6 +509,23 @@ export function Products() {
     navigate('/products/new');
   };
 
+  const handleCreateMany = () => {
+    navigate('/products/bulk-edit', {
+      state: {
+        createMode: true,
+        filters: {
+          organizationId: filterOrganizationId,
+          brandId: filterBrandId,
+          categoryId: filterCategoryId,
+          productType: filterProductType,
+          search: listSearch,
+          linkedMp: [...filterLinkedMp],
+          unlinkedMp: [...filterUnlinkedMp],
+        },
+      },
+    });
+  };
+
   /** Открытие карточки по клику по строке — не при выделении текста для копирования. */
   const handleProductRowClick = (product, e) => {
     if (
@@ -961,6 +978,15 @@ export function Products() {
           <>
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
               + Добавить
+            </Button>
+            <Button
+              className="btn-shadow me-2"
+              variant="secondary"
+              size="small"
+              onClick={handleCreateMany}
+              title="Создать несколько товаров в таблице массового редактирования"
+            >
+              + Добавить несколько
             </Button>
             {enrichmentEnabled ? (
               <Button

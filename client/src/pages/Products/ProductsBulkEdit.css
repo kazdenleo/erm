@@ -277,12 +277,16 @@
 }
 
 .products-bulk-table thead th.products-bulk-select-col {
-  vertical-align: middle;
+  vertical-align: top;
 }
 
 .products-bulk-select-head {
   display: flex;
   align-items: center;
+  justify-content: center;
+}
+
+.products-bulk-select-col .products-bulk-th-row--mp {
   justify-content: center;
 }
 

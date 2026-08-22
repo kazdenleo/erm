@@ -790,15 +790,13 @@ function colHeaderWidthPx(col, widthOverrides) {
   const labelW = label ? Math.ceil(label.length * 7.2) + 12 : 44;
   // иконки в отдельных строках — ширина в основном от названия / ряда МП
   let w = Math.max(48, labelW);
-  if (key === DEFAULT_STICKY_COL_KEY || col?.showLinkToggles) {
+  if (col?.showLinkToggles) {
     const n =
-      key === DEFAULT_STICKY_COL_KEY
-        ? 4
-        : Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
-          ? col.linkSupportedMps.length
-          : Array.isArray(col.mappedMps) && col.mappedMps.length
-            ? col.mappedMps.length
-            : 3;
+      Array.isArray(col.linkSupportedMps) && col.linkSupportedMps.length
+        ? col.linkSupportedMps.length
+        : Array.isArray(col.mappedMps) && col.mappedMps.length
+          ? col.mappedMps.length
+          : 3;
     w = Math.max(w, 8 + n * 18);
   } else if (Array.isArray(col?.mappedMps) && col.mappedMps.length) {
     const n = col.mappedMps.length;
@@ -3106,6 +3104,58 @@ function cloneRow(r) {
   };
 }
 
+const NEW_BULK_ROW_PREFIX = 'new:';
+const CREATE_MODE_INITIAL_ROWS = 5;
+
+function isNewBulkRowId(id) {
+  return String(id || '').startsWith(NEW_BULK_ROW_PREFIX);
+}
+
+function isBulkCreateRowSavable(row) {
+  return str(row?.name).trim() !== '' && str(row?.sku).trim() !== '';
+}
+
+function emptyProductStubForBulkRow(id, defaults = {}) {
+  return {
+    id,
+    name: '',
+    sku: '',
+    product_type: defaults.productType === 'kit' ? 'kit' : 'product',
+    categoryId: defaults.categoryId || null,
+    organization_id: defaults.organizationId || null,
+    supplier_id: defaults.supplierId || null,
+    brand: defaults.brand || '',
+    buyout_rate: 95,
+    min_price: 50,
+    barcodes: [],
+    ozon_draft: {},
+    wb_draft: {},
+    ym_draft: {},
+    ozon_attributes: {},
+    wb_attributes: {},
+    ym_attributes: {},
+  };
+}
+
+function buildCreatePayload(original, current, mpAttrColDefs, lengthUnit, weightUnit, erpAttrColDefs) {
+  if (!isBulkCreateRowSavable(current)) return null;
+  const payload = buildUpdatePayload(
+    original,
+    current,
+    mpAttrColDefs,
+    lengthUnit,
+    weightUnit,
+    erpAttrColDefs
+  );
+  payload.name = str(current.name).trim();
+  payload.sku = str(current.sku).trim();
+  if (!payload.product_type) {
+    payload.product_type = current.product_type === 'kit' ? 'kit' : 'product';
+  }
+  payload.unit = 'шт';
+  return payload;
+}
+
 /** Оценка высоты строки для виртуализации (фото 3:4 + textarea). */
 const BULK_ROW_ESTIMATE_PX = 60;
 const BULK_ROW_OVERSCAN = 12;
@@ -3243,6 +3293,7 @@ function FillColumnIcon() {
 export function ProductsBulkEdit() {
   const location = useLocation();
   const navigate = useNavigate();
+  const createMode = location.state?.createMode === true;
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
@@ -3265,10 +3316,20 @@ export function ProductsBulkEdit() {
   const [originals, setOriginals] = useState({});
   /** Пока false — товары не грузим: сначала выбор категории (или «все»). */
   const [categoryScopeReady, setCategoryScopeReady] = useState(() => {
+    if (location.state?.createMode) {
+      const f = location.state?.filters;
+      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+      return cat !== '';
+    }
     const ids = location.state?.selectedIds;
     return Array.isArray(ids) && ids.length > 0;
   });
   const [categoryPickDraft, setCategoryPickDraft] = useState(() => {
+    if (location.state?.createMode) {
+      const f = location.state?.filters;
+      const cat = f?.categoryId != null && f.categoryId !== '' ? String(f.categoryId) : '';
+      return cat === '' ? CATEGORY_SCOPE_UNSET : cat;
+    }
     const ids = location.state?.selectedIds;
     if (Array.isArray(ids) && ids.length > 0) {
       const f = location.state?.filters;
@@ -3349,6 +3410,7 @@ export function ProductsBulkEdit() {
 
   const listSearchDebounceRef = useRef(null);
   const loadGenRef = useRef(0);
+  const newBulkRowSeqRef = useRef(0);
   const currentPageRef = useRef(1);
   const pageSizeRef = useRef(pageSize);
   currentPageRef.current = currentPage;
@@ -4248,10 +4310,121 @@ export function ProductsBulkEdit() {
     clearDirty,
   ]);
 
+  const allocNewBulkRowId = useCallback(() => {
+    newBulkRowSeqRef.current += 1;
+    return `${NEW_BULK_ROW_PREFIX}${Date.now()}_${newBulkRowSeqRef.current}`;
+  }, []);
+
+  const buildCreateRowDefaults = useCallback(
+    () => ({
+      categoryId: filterCategoryId || '',
+      organizationId: filterOrganizationId || '',
+      productType: filterProductType || 'product',
+    }),
+    [filterCategoryId, filterOrganizationId, filterProductType]
+  );
+
+  const initCreateRows = useCallback(async () => {
+    const gen = ++loadGenRef.current;
+    setLoading(true);
+    setLoadError(null);
+    setSaveMessage(null);
+    try {
+      const [cats, attrRes] = await Promise.all([
+        loadCategories({ silent: true }),
+        productAttributesApi.getAll().catch(() => ({ data: [] })),
+      ]);
+      if (gen !== loadGenRef.current) return;
+      const erpAttrs = Array.isArray(attrRes?.data) ? attrRes.data : [];
+      const cat = filterCategoryId;
+      const erpCols = buildErpAttrColumnDefs(erpAttrs, cats || [], cat, []);
+      const seedMaps = seedMpLabelMapsFromCategoryLinks(cats || [], cat, [], erpCols);
+      const mpColsInitial = mergeLinkedMpAttrColumns(
+        buildMpAttrColumnDefs([], seedMaps),
+        erpCols,
+        seedMaps
+      );
+      setMpAttrColumnDefs(mpColsInitial);
+      setErpAttrColumnDefs(erpCols);
+      setShowUncategorizedCategoryOption(false);
+      setTotalProducts(CREATE_MODE_INITIAL_ROWS);
+      setCurrentPage(1);
+
+      const defaults = buildCreateRowDefaults();
+      const nextRows = [];
+      const orig = {};
+      for (let i = 0; i < CREATE_MODE_INITIAL_ROWS; i += 1) {
+        const id = allocNewBulkRowId();
+        const stub = emptyProductStubForBulkRow(id, defaults);
+        const row = productToRow(stub, mpColsInitial, lengthUnit, weightUnit, erpCols, cats || []);
+        nextRows.push(row);
+        orig[id] = cloneRow(row);
+      }
+      setRows(nextRows);
+      setOriginals(orig);
+      clearChangedForPush();
+      setOzonBulkDictOptions({});
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      setLoadError(e?.response?.data?.message || e?.message || 'Ошибка подготовки таблицы');
+      setRows([]);
+      setOriginals({});
+      setMpAttrColumnDefs([]);
+      setTotalProducts(0);
+    } finally {
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [
+    loadCategories,
+    filterCategoryId,
+    buildCreateRowDefaults,
+    allocNewBulkRowId,
+    lengthUnit,
+    weightUnit,
+    clearChangedForPush,
+  ]);
+
+  const addCreateRow = useCallback(() => {
+    const defaults = buildCreateRowDefaults();
+    const id = allocNewBulkRowId();
+    const stub = emptyProductStubForBulkRow(id, defaults);
+    const row = productToRow(
+      stub,
+      mpAttrColumnDefs,
+      lengthUnit,
+      weightUnit,
+      erpAttrColumnDefs,
+      categories || []
+    );
+    setOriginals((o) => ({ ...o, [id]: cloneRow(row) }));
+    setRows((list) => {
+      setTotalProducts(list.length + 1);
+      return [...list, row];
+    });
+    markDirty();
+  }, [
+    buildCreateRowDefaults,
+    allocNewBulkRowId,
+    mpAttrColumnDefs,
+    erpAttrColumnDefs,
+    categories,
+    lengthUnit,
+    weightUnit,
+    markDirty,
+  ]);
+
   useEffect(() => {
     if (!categoryScopeReady) return;
-    loadProducts();
-  }, [loadProducts, categoryScopeReady]);
+    if (createMode) {
+      initCreateRows();
+    } else {
+      loadProducts();
+    }
+  }, [loadProducts, initCreateRows, categoryScopeReady, createMode]);
 
   useEffect(() => {
     const el = bulkScrollRef.current;
@@ -4288,6 +4461,7 @@ export function ProductsBulkEdit() {
     requestLeaveGuard(() => {
       setFilterOrganizationId(v);
       setCurrentPage(1);
+      if (createMode) return;
       void loadProducts({ organizationId: v, page: 1 });
     });
   };
@@ -4297,6 +4471,7 @@ export function ProductsBulkEdit() {
     requestLeaveGuard(() => {
       setFilterBrandId(v);
       setCurrentPage(1);
+      if (createMode) return;
       void loadProducts({ brandId: v, page: 1 });
     });
   };
@@ -4306,6 +4481,7 @@ export function ProductsBulkEdit() {
     requestLeaveGuard(() => {
       setFilterProductType(v);
       setCurrentPage(1);
+      if (createMode) return;
       void loadProducts({ productType: v, page: 1 });
     });
   };
@@ -4321,6 +4497,7 @@ export function ProductsBulkEdit() {
       setFilterUnlinkedMp(nextUnlinked);
       setFilterLinkedMp(nextLinked);
       setCurrentPage(1);
+      if (createMode) return;
       void loadProducts({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
     });
   };
@@ -4336,6 +4513,7 @@ export function ProductsBulkEdit() {
       setFilterLinkedMp(nextLinked);
       setFilterUnlinkedMp(nextUnlinked);
       setCurrentPage(1);
+      if (createMode) return;
       void loadProducts({ linkedMp: nextLinked, unlinkedMp: nextUnlinked, page: 1 });
     });
   };
@@ -4343,6 +4521,7 @@ export function ProductsBulkEdit() {
   const handleListSearchChange = (e) => {
     const v = e.target.value;
     setListSearch(v);
+    if (createMode) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     listSearchDebounceRef.current = setTimeout(() => {
       requestLeaveGuard(() => {
@@ -4355,6 +4534,7 @@ export function ProductsBulkEdit() {
   const applyClearListFilters = () => {
     requestLeaveGuard(() => {
       clearListFilters();
+      if (createMode) return;
       void loadProducts({
         organizationId: '',
         brandId: '',
@@ -4370,6 +4550,7 @@ export function ProductsBulkEdit() {
   const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
 
   const goToPage = (page) => {
+    if (createMode) return;
     const next = Math.min(Math.max(1, page), totalPages);
     if (next === currentPage) return;
     requestLeaveGuard(() => {
@@ -4379,6 +4560,7 @@ export function ProductsBulkEdit() {
   };
 
   const handlePageSizeChange = (e) => {
+    if (createMode) return;
     const next = parseInt(e.target.value, 10);
     if (!BULK_PAGE_SIZES.includes(next)) return;
     requestLeaveGuard(() => {
@@ -4394,6 +4576,7 @@ export function ProductsBulkEdit() {
   };
 
   const renderBulkListPager = (placement) => {
+    if (createMode) return null;
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
     return (
       <div
@@ -4867,8 +5050,61 @@ export function ProductsBulkEdit() {
     const errors = [];
     const savedIds = [];
     let ok = 0;
+    let createdCount = 0;
+    let skippedEmpty = 0;
     try {
       for (const r of rows) {
+        if (isNewBulkRowId(r.id)) {
+          const orig = originals[r.id];
+          if (!orig) continue;
+          const payload = buildCreatePayload(
+            orig,
+            r,
+            mpAttrColumnDefs,
+            lengthUnit,
+            weightUnit,
+            erpAttrColumnDefs
+          );
+          if (!payload) {
+            skippedEmpty += 1;
+            continue;
+          }
+          try {
+            const wrap = await productsApi.create(payload);
+            const u = wrap?.data !== undefined ? wrap.data : wrap;
+            let nextRow = productToRow(
+              u,
+              mpAttrColumnDefs,
+              lengthUnit,
+              weightUnit,
+              erpAttrColumnDefs,
+              categories
+            );
+            nextRow = {
+              ...nextRow,
+              mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
+            };
+            nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, payload, lengthUnit, weightUnit);
+            const newId = str(u?.id ?? nextRow.id);
+            setOriginals((o) => {
+              const next = { ...o };
+              delete next[r.id];
+              next[newId] = cloneRow(nextRow);
+              return next;
+            });
+            setRows((list) =>
+              list.map((row) => (row.id === r.id ? { ...nextRow, id: newId, _productRef: u } : row))
+            );
+            markChangedForPush(newId);
+            savedIds.push(newId);
+            ok += 1;
+            createdCount += 1;
+          } catch (e) {
+            const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
+            errors.push({ id: r.id, sku: r.sku, msg });
+          }
+          continue;
+        }
         const orig = originals[r.id];
         if (!orig) continue;
         const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
@@ -4895,7 +5131,19 @@ export function ProductsBulkEdit() {
       }
       if (errors.length === 0) {
         clearDirty();
-        setSaveMessage(ok > 0 ? `Сохранено изменений: ${ok}.` : 'Нет изменений для сохранения.');
+        if (ok > 0) {
+          if (createMode && createdCount > 0) {
+            const parts = [`Создано товаров: ${createdCount}.`];
+            if (skippedEmpty > 0) parts.push(`Пропущено пустых строк: ${skippedEmpty}.`);
+            setSaveMessage(parts.join(' '));
+          } else {
+            setSaveMessage(ok > 0 ? `Сохранено изменений: ${ok}.` : 'Нет изменений для сохранения.');
+          }
+        } else if (createMode && skippedEmpty > 0) {
+          setSaveMessage('Заполните название и артикул (SKU) хотя бы в одной строке.');
+        } else {
+          setSaveMessage('Нет изменений для сохранения.');
+        }
       } else {
         setSaveMessage(
           `Сохранено: ${ok}. Ошибок: ${errors.length}. ` +
@@ -5112,12 +5360,20 @@ export function ProductsBulkEdit() {
   };
 
   const subtitle = useMemo(() => {
-    if (!categoryScopeReady) return 'Выберите категорию';
+    if (!categoryScopeReady) {
+      return createMode ? 'Выберите категорию для новых товаров' : 'Выберите категорию';
+    }
     const n = rows.length;
+    if (createMode) {
+      const draftCount = rows.filter((r) => isNewBulkRowId(r.id)).length;
+      return draftCount > 0
+        ? `${n} строк · ${draftCount} новых (заполните название и SKU, затем «Сохранить»)`
+        : `${n} строк`;
+    }
     const sel = appliedSelectedIds.length;
     if (sel > 0) return `${n} на странице из ${sel} выбранных`;
     return `${n} на странице`;
-  }, [categoryScopeReady, rows.length, appliedSelectedIds.length]);
+  }, [categoryScopeReady, createMode, rows, appliedSelectedIds.length]);
 
   const renderInput = (col, row) => {
     const orig = originals[row.id];
@@ -5367,7 +5623,7 @@ export function ProductsBulkEdit() {
       <PageTitle
         iconClass="pe-7s-box2"
         iconBgClass="bg-mean-fruit"
-        title="Массовое редактирование"
+        title={createMode ? 'Массовое добавление товаров' : 'Массовое редактирование'}
         subtitle={subtitle}
         actions={(
           <div className="d-flex flex-wrap align-items-center gap-2">
@@ -5376,15 +5632,30 @@ export function ProductsBulkEdit() {
                 {hasUnsavedChanges ? (
                   <span className="text-warning small d-none d-md-inline">Есть изменения</span>
                 ) : null}
+                {createMode ? (
+                  <Button
+                    className="btn-shadow"
+                    variant="secondary"
+                    size="small"
+                    type="button"
+                    onClick={addCreateRow}
+                    disabled={saving}
+                  >
+                    + Добавить строку
+                  </Button>
+                ) : null}
                 <Button
                   className="btn-shadow"
                   variant="primary"
                   size="small"
                   type="button"
                   onClick={handleSaveClick}
-                  disabled={saving || !hasUnsavedChanges}
+                  disabled={
+                    saving ||
+                    (!hasUnsavedChanges && !(createMode && rows.some((r) => isNewBulkRowId(r.id))))
+                  }
                 >
-                  {saving ? 'Сохранение…' : 'Сохранить'}
+                  {saving ? 'Сохранение…' : createMode ? 'Создать товары' : 'Сохранить'}
                 </Button>
               </>
             ) : null}
@@ -5481,11 +5752,17 @@ export function ProductsBulkEdit() {
                         value={categoryScopeReady ? categoryPickDraft : CATEGORY_SCOPE_UNSET}
                         onChange={handleCategoryScopeChange}
                         disabled={appliedSelectedIds.length > 0}
-                        aria-label="Категория для массового редактирования"
+                        aria-label={
+                          createMode
+                            ? 'Категория для новых товаров'
+                            : 'Категория для массового редактирования'
+                        }
                         title={
                           appliedSelectedIds.length > 0
                             ? 'Категория зафиксирована выбранными товарами'
-                            : 'Категория для редактирования'
+                            : createMode
+                              ? 'Категория определяет столбцы атрибутов для новых товаров'
+                              : 'Категория для редактирования'
                         }
                       >
                         {!categoryScopeReady ? (
@@ -5520,6 +5797,8 @@ export function ProductsBulkEdit() {
                         autoComplete="off"
                         aria-label="Поиск по названию, артикулу или штрихкоду"
                         aria-busy={loading}
+                        disabled={createMode}
+                        title={createMode ? 'Поиск недоступен при добавлении новых товаров' : undefined}
                       />
                     </div>
                       <div className="products-bulk-columns-menu" ref={columnsMenuRef}>
@@ -5796,6 +6075,8 @@ export function ProductsBulkEdit() {
                       ) : null}
                     </div>
                   ) : null}
+                  {!createMode ? (
+                  <>
                   <div className="products-bulk-mp-toggles-row d-flex flex-wrap align-items-center gap-2">
                     <span
                       className="text-muted small text-nowrap me-1"
@@ -5896,6 +6177,8 @@ export function ProductsBulkEdit() {
                   {pullMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pullMpMessage}</div>
                   ) : null}
+                  </>
+                  ) : null}
                   </div>
                   ) : null}
                 </div>
@@ -5910,18 +6193,33 @@ export function ProductsBulkEdit() {
       <div className="products-bulk-scroll-region" ref={bulkScrollRef}>
 
           {loading ? (
-            <p className="text-muted mb-0">Загрузка товаров…</p>
+            <p className="text-muted mb-0">{createMode ? 'Подготовка таблицы…' : 'Загрузка товаров…'}</p>
           ) : rows.length === 0 ? (
             <p className="text-muted mb-0">
-              Нет товаров для отображения.{' '}
-              <button
-                type="button"
-                className="btn btn-link btn-sm p-0 align-baseline"
-                onClick={() => requestLeaveGuard(() => navigate('/products'))}
-              >
-                Перейти в «Товары»
-              </button>
-              {', при необходимости выберите строки или задайте фильтры.'}
+              {createMode ? (
+                <>
+                  Нет строк для добавления.{' '}
+                  <button
+                    type="button"
+                    className="btn btn-link btn-sm p-0 align-baseline"
+                    onClick={addCreateRow}
+                  >
+                    Добавить строку
+                  </button>
+                </>
+              ) : (
+                <>
+                  Нет товаров для отображения.{' '}
+                  <button
+                    type="button"
+                    className="btn btn-link btn-sm p-0 align-baseline"
+                    onClick={() => requestLeaveGuard(() => navigate('/products'))}
+                  >
+                    Перейти в «Товары»
+                  </button>
+                  {', при необходимости выберите строки или задайте фильтры.'}
+                </>
+              )}
             </p>
           ) : (
             <div className="products-bulk-table-xclip">
@@ -5930,7 +6228,7 @@ export function ProductsBulkEdit() {
             <thead>
               <tr>
                 {displayColumns.map((col) => {
-                  const showMasterMp = col.key === DEFAULT_STICKY_COL_KEY;
+                  const showMasterMp = col.key === SELECT_COL_KEY;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
                   // Столбцы МП со связью к «Основному»: скрепка вместо значков OZ/WB/ЯМ.
                   const showFromMain = !!(
@@ -5974,7 +6272,23 @@ export function ProductsBulkEdit() {
                             />
                           </div>
                           <div className="products-bulk-th-row products-bulk-th-row--chrome" aria-hidden="true" />
-                          <div className="products-bulk-th-row products-bulk-th-row--mp" aria-hidden="true" />
+                          <div className="products-bulk-th-row products-bulk-th-row--mp">
+                            {rows.length > 0 && bulkLinkableFieldDefs.length > 0 ? (
+                              <MarketplaceToggle
+                                active={headerMasterMpActive}
+                                size={14}
+                                color="#334155"
+                                title={
+                                  headerMasterMpActive
+                                    ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
+                                    : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
+                                }
+                                onToggle={toggleBulkMasterMpLink}
+                              >
+                                МП
+                              </MarketplaceToggle>
+                            ) : null}
+                          </div>
                         </div>
                       </th>
                     );
@@ -6126,21 +6440,6 @@ export function ProductsBulkEdit() {
                         <div className="products-bulk-th-row products-bulk-th-row--mp">
                           {showMpRow ? (
                             <>
-                              {showMasterMp ? (
-                                <MarketplaceToggle
-                                  active={headerMasterMpActive}
-                                  size={14}
-                                  color="#334155"
-                                  title={
-                                    headerMasterMpActive
-                                      ? 'Снять связь со всеми полями «Основное» → Ozon / WB / ЯМ'
-                                      : 'Связать все поля «Основное» с Ozon / WB / ЯМ'
-                                  }
-                                  onToggle={toggleBulkMasterMpLink}
-                                >
-                                  МП
-                                </MarketplaceToggle>
-                              ) : null}
                               {showLinkToggles ? (
                                 <MpFieldLinkToggles
                                   fieldKey={col.linkFieldKey}
@@ -6215,7 +6514,7 @@ export function ProductsBulkEdit() {
                           className={`${colStickyClass(col)} text-muted`.trim()}
                           style={colStickyStyle(col)}
                         >
-                          {row.id}
+                          {isNewBulkRowId(row.id) ? 'новый' : row.id}
                         </td>
                       );
                     }
