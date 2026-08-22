@@ -132,6 +132,11 @@
   margin-right: 0;
 }
 
+.products-table .product-thumb-mp-badges .mp-badge:focus-visible {
+  outline: 2px solid rgba(0, 91, 255, 0.45);
+  outline-offset: 1px;
+}
+
 /* Миниатюра 3:4 (портрет, как типичная карточка товара) */
 .products-table .product-thumb {
   width: 42px;

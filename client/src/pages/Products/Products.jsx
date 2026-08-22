@@ -17,6 +17,7 @@ import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
 import { productCardPath, shouldOpenProductCardInNewTab } from '../../utils/productCardPath.js';
+import { sanitizeWbVendorCode } from '../../utils/wbVendorCode.js';
 import {
   canUsePrintHelper,
   openProductLabelPrintTab,
@@ -59,42 +60,79 @@ const MP_LINK_FILTER_TOGGLES = [
   { code: 'ym', label: 'ЯМ', name: 'Яндекс.Маркет', color: '#fc3f1d' },
 ];
 
-/** Бейджи МП слева от фото — по сохранённым sku / product_id в product_skus */
+/** Бейджи МП у миниатюры: всегда OZ / WB / YM; цвет — связь установлена, серый — нет. */
+const PRODUCT_LIST_MP_BADGES = [
+  { key: 'ozon', className: 'ozon', label: 'OZ', name: 'Ozon' },
+  { key: 'wb', className: 'wb', label: 'WB', name: 'Wildberries' },
+  { key: 'ym', className: 'ym', label: 'YM', name: 'Яндекс.Маркет' },
+];
+
 function getProductMarketplaceLinkBadges(product) {
-  const badges = [];
   const mpLinked = product?.mp_linked || {};
   const ozonSku = product?.sku_ozon != null ? String(product.sku_ozon).trim() : '';
   const ozonPid =
     product?.ozon_product_id != null && String(product.ozon_product_id).trim() !== ''
       ? String(product.ozon_product_id).trim()
       : '';
-  if (mpLinked.ozon === true) {
-    badges.push({
-      key: 'ozon',
-      className: 'ozon',
-      label: 'OZ',
-      title: ozonSku ? `Ozon: ${ozonSku}` : ozonPid ? `Ozon: product_id ${ozonPid}` : 'Ozon: связан',
-    });
-  }
   const wbSku = product?.sku_wb != null ? String(product.sku_wb).trim() : '';
-  if (mpLinked.wb === true) {
-    badges.push({
-      key: 'wb',
-      className: 'wb',
-      label: 'WB',
-      title: wbSku ? `Wildberries: ${wbSku}` : 'Wildberries: связан',
-    });
-  }
   const ymSku = product?.sku_ym != null ? String(product.sku_ym).trim() : '';
-  if (mpLinked.ym === true) {
-    badges.push({
-      key: 'ym',
-      className: 'ym',
-      label: 'YM',
-      title: ymSku ? `Яндекс.Маркет: ${ymSku}` : 'Яндекс.Маркет: связан',
-    });
+
+  return PRODUCT_LIST_MP_BADGES.map((def) => {
+    const linked = mpLinked[def.key] === true;
+    let title = linked ? `${def.name}: связан` : `${def.name}: не связан. Нажмите, чтобы связать`;
+    if (def.key === 'ozon' && linked) {
+      title = ozonSku ? `Ozon: ${ozonSku}` : ozonPid ? `Ozon: product_id ${ozonPid}` : title;
+    } else if (def.key === 'wb' && linked && wbSku) {
+      title = `Wildberries: ${wbSku}`;
+    } else if (def.key === 'ym' && linked && ymSku) {
+      title = `Яндекс.Маркет: ${ymSku}`;
+    }
+    return { ...def, linked, title };
+  });
+}
+
+function buildProductListMpLinkHints(product, marketplace) {
+  const hints = {};
+  const skuTrim = product?.sku != null ? String(product.sku).trim() : '';
+  if (marketplace === 'wb') {
+    const wbVendor = sanitizeWbVendorCode(product?.mp_wb_vendor_code || '');
+    if (wbVendor) hints.mp_wb_vendor_code = wbVendor;
+    const wbNm = String(product?.sku_wb || '').trim();
+    if (wbNm) hints.sku_wb = wbNm;
+    const ozonOffer = String(product?.sku_ozon || '').trim();
+    if (ozonOffer) hints.sku_ozon = ozonOffer;
+  } else if (marketplace === 'ozon') {
+    const ozonOffer = String(product?.sku_ozon || '').trim();
+    if (ozonOffer) hints.sku_ozon = ozonOffer;
+    const ozonPid = String(product?.ozon_product_id || '').trim();
+    if (ozonPid) hints.ozon_product_id = ozonPid;
+  } else if (marketplace === 'ym') {
+    const ymOffer = String(product?.sku_ym || '').trim();
+    if (ymOffer) hints.sku_ym = ymOffer;
   }
-  return badges;
+  if (skuTrim && !hints.sku_ozon && !hints.sku_wb && !hints.sku_ym && !hints.mp_wb_vendor_code) {
+    if (marketplace === 'ozon') hints.sku_ozon = skuTrim;
+    else if (marketplace === 'wb' && !hints.mp_wb_vendor_code) hints.mp_wb_vendor_code = sanitizeWbVendorCode(skuTrim);
+    else if (marketplace === 'ym') hints.sku_ym = skuTrim;
+  }
+  return hints;
+}
+
+function canLinkProductToMpFromList(product, marketplace) {
+  const orgTrim =
+    product?.organizationId != null && String(product.organizationId).trim() !== ''
+      ? String(product.organizationId).trim()
+      : product?.organization_id != null && String(product.organization_id).trim() !== ''
+        ? String(product.organization_id).trim()
+        : '';
+  if (!orgTrim) return { ok: false, reason: 'У товара не указана организация' };
+  const skuTrim = product?.sku != null ? String(product.sku).trim() : '';
+  const hints = buildProductListMpLinkHints(product, marketplace);
+  const hasHint = Object.keys(hints).length > 0;
+  if (!skuTrim && !hasHint) {
+    return { ok: false, reason: 'Нет артикула ERP или артикула на маркетплейсе' };
+  }
+  return { ok: true, hints };
 }
 
 export function Products() {
@@ -115,6 +153,7 @@ export function Products() {
     archiveProduct,
     unarchiveProduct,
     loadProducts,
+    mergeProductInList,
   } = useProducts({ autoLoad: false });
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
@@ -173,6 +212,8 @@ export function Products() {
   });
   /** id выбранных строк в текущем отфильтрованном списке */
   const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
+  /** `${productId}:${mp}` — идёт запрос связи с МП из списка */
+  const [mpListLinkingKey, setMpListLinkingKey] = useState('');
   const [bulkActionBusy, setBulkActionBusy] = useState(false);
   const selectAllCheckboxRef = useRef(null);
 
@@ -532,12 +573,46 @@ export function Products() {
     if (
       shouldIgnoreNavigationClick(e, {
         ignoreClosest:
-          'input, textarea, select, label, .products-table-select-cell, .product-actions-cell, .product-actions, [data-no-nav-click]',
+          'input, textarea, select, label, .products-table-select-cell, .product-actions-cell, .product-actions, .product-thumb-mp-badges, [data-no-nav-click]',
       })
     ) {
       return;
     }
     openProductCard(product.id, e);
+  };
+
+  const handleProductMpBadgeClick = async (product, marketplace, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (product?.mp_linked?.[marketplace] === true) return;
+    const linkKey = `${product.id}:${marketplace}`;
+    if (mpListLinkingKey === linkKey) return;
+    const check = canLinkProductToMpFromList(product, marketplace);
+    if (!check.ok) {
+      alert(check.reason);
+      return;
+    }
+    setMpListLinkingKey(linkKey);
+    try {
+      const body = await productsApi.linkMarketplace(product.id, marketplace, check.hints);
+      const payload = body?.data ?? body;
+      const updated = payload?.product ?? payload;
+      if (updated?.id != null) {
+        mergeProductInList(product.id, {
+          ...updated,
+          mp_linked: { [marketplace]: true, ...(updated.mp_linked || {}) },
+        });
+      } else {
+        mergeProductInList(product.id, {
+          mp_linked: { [marketplace]: true },
+        });
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.message || err?.message || 'Не удалось связать с маркетплейсом';
+      alert(msg);
+    } finally {
+      setMpListLinkingKey('');
+    }
   };
 
   const handleDelete = async (id) => {
@@ -1485,19 +1560,48 @@ export function Products() {
                       </td>
                       <td className="product-thumb-cell">
                         <div className="product-thumb-wrap">
-                          {mpLinkBadges.length > 0 && (
-                            <div className="product-thumb-mp-badges" aria-label="Связь с маркетплейсами">
-                              {mpLinkBadges.map((b) => (
+                          <div className="product-thumb-mp-badges" aria-label="Связь с маркетплейсами">
+                            {mpLinkBadges.map((b) => {
+                              const linking = mpListLinkingKey === `${product.id}:${b.key}`;
+                              const badgeClass = [
+                                'mp-badge',
+                                b.className,
+                                b.linked ? 'mp-badge--linked' : 'mp-badge--unlinked',
+                                linking ? 'mp-badge--linking' : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ');
+                              return (
                                 <span
                                   key={b.key}
-                                  className={`mp-badge ${b.className}`}
+                                  className={badgeClass}
                                   title={b.title}
+                                  role={b.linked ? undefined : 'button'}
+                                  tabIndex={b.linked ? undefined : 0}
+                                  aria-pressed={b.linked ? true : undefined}
+                                  aria-busy={linking || undefined}
+                                  onClick={
+                                    b.linked
+                                      ? (e) => {
+                                          e.stopPropagation();
+                                        }
+                                      : (e) => handleProductMpBadgeClick(product, b.key, e)
+                                  }
+                                  onKeyDown={
+                                    b.linked
+                                      ? undefined
+                                      : (e) => {
+                                          if (e.key === 'Enter' || e.key === ' ') {
+                                            handleProductMpBadgeClick(product, b.key, e);
+                                          }
+                                        }
+                                  }
                                 >
                                   {b.label}
                                 </span>
-                              ))}
-                            </div>
-                          )}
+                              );
+                            })}
+                          </div>
                           <div
                             className="product-thumb"
                             title={thumbUrl ? 'Изображение товара' : 'Нет изображения'}

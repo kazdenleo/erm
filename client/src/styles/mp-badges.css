@@ -33,6 +33,30 @@
   color: #000;
 }
 
+/** Список товаров: связь с МП не установлена */
+.mp-badge.mp-badge--unlinked {
+  background: #e9ecef;
+  color: #868e96;
+  border: 1px solid #ced4da;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.mp-badge.mp-badge--unlinked:hover {
+  background: #dee2e6;
+  color: #495057;
+  border-color: #adb5bd;
+}
+
+.mp-badge.mp-badge--unlinked.mp-badge--linking {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.mp-badge.mp-badge--linked {
+  cursor: default;
+}
+
 .mp-badge.manual {
   background: #6c757d;
   color: #fff;

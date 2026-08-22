@@ -213,6 +213,19 @@ export function useProducts(options = {}) {
     deleteProduct,
     archiveProduct,
     unarchiveProduct,
+    mergeProductInList: (id, patch) => {
+      const idStr = String(id);
+      setProducts((prev) =>
+        prev.filter(Boolean).map((p) => {
+          if (!p || String(p.id) !== idStr) return p;
+          const next = { ...p, ...patch };
+          if (patch?.mp_linked && typeof patch.mp_linked === 'object') {
+            next.mp_linked = { ...(p.mp_linked || {}), ...patch.mp_linked };
+          }
+          return next;
+        })
+      );
+    },
   };
 }
 
