@@ -62,35 +62,36 @@ const MP_LINK_FILTER_TOGGLES = [
 /** Бейджи МП слева от фото — по сохранённым sku / product_id в product_skus */
 function getProductMarketplaceLinkBadges(product) {
   const badges = [];
+  const mpLinked = product?.mp_linked || {};
   const ozonSku = product?.sku_ozon != null ? String(product.sku_ozon).trim() : '';
   const ozonPid =
     product?.ozon_product_id != null && String(product.ozon_product_id).trim() !== ''
       ? String(product.ozon_product_id).trim()
       : '';
-  if (ozonSku || ozonPid) {
+  if (mpLinked.ozon === true) {
     badges.push({
       key: 'ozon',
       className: 'ozon',
       label: 'OZ',
-      title: ozonSku ? `Ozon: ${ozonSku}` : `Ozon: product_id ${ozonPid}`,
+      title: ozonSku ? `Ozon: ${ozonSku}` : ozonPid ? `Ozon: product_id ${ozonPid}` : 'Ozon: связан',
     });
   }
   const wbSku = product?.sku_wb != null ? String(product.sku_wb).trim() : '';
-  if (wbSku) {
+  if (mpLinked.wb === true) {
     badges.push({
       key: 'wb',
       className: 'wb',
       label: 'WB',
-      title: `Wildberries: ${wbSku}`,
+      title: wbSku ? `Wildberries: ${wbSku}` : 'Wildberries: связан',
     });
   }
   const ymSku = product?.sku_ym != null ? String(product.sku_ym).trim() : '';
-  if (ymSku) {
+  if (mpLinked.ym === true) {
     badges.push({
       key: 'ym',
       className: 'ym',
       label: 'YM',
-      title: `Яндекс.Маркет: ${ymSku}`,
+      title: ymSku ? `Яндекс.Маркет: ${ymSku}` : 'Яндекс.Маркет: связан',
     });
   }
   return badges;

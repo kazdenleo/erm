@@ -593,37 +593,13 @@ function buildFindAllFilters(options = {}) {
   })();
 
   for (const mp of unlinkedList) {
-    if (mp === 'ozon') {
-      // Как бейдж в списке: нет offer_id и нет product_id
-      whereSql += ` AND NOT EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ozon'
-          AND (
-            COALESCE(TRIM(ps.sku::text), '') <> ''
-            OR ps.marketplace_product_id IS NOT NULL
-          )
-      )`;
-    } else if (mp === 'wb') {
-      // Как бейдж: есть nmId (цифровой sku в product_skus.wb или nmId в wb_draft)
-      whereSql += ` AND NOT EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'wb'
-          AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
-      )`;
-      whereSql += ` AND NOT (
-        p.wb_draft IS NOT NULL
-        AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
-      )`;
-    } else if (mp === 'ym') {
-      whereSql += ` AND NOT EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ym'
-          AND COALESCE(TRIM(ps.sku::text), '') <> ''
-      )`;
-    }
+    // Как бейдж в списке: нет явной связи (product_links.is_linked)
+    whereSql += ` AND NOT EXISTS (
+      SELECT 1 FROM product_links pl
+      WHERE pl.product_id = p.id
+        AND pl.marketplace = '${mp}'
+        AND pl.is_linked = true
+    )`;
   }
 
   const linkedList = (() => {
@@ -639,37 +615,12 @@ function buildFindAllFilters(options = {}) {
   })();
 
   for (const mp of linkedList) {
-    if (mp === 'ozon') {
-      whereSql += ` AND EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ozon'
-          AND (
-            COALESCE(TRIM(ps.sku::text), '') <> ''
-            OR ps.marketplace_product_id IS NOT NULL
-          )
-      )`;
-    } else if (mp === 'wb') {
-      whereSql += ` AND (
-        EXISTS (
-          SELECT 1 FROM product_skus ps
-          WHERE ps.product_id = p.id
-            AND ps.marketplace = 'wb'
-            AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
-        )
-        OR (
-          p.wb_draft IS NOT NULL
-          AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
-        )
-      )`;
-    } else if (mp === 'ym') {
-      whereSql += ` AND EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ym'
-          AND COALESCE(TRIM(ps.sku::text), '') <> ''
-      )`;
-    }
+    whereSql += ` AND EXISTS (
+      SELECT 1 FROM product_links pl
+      WHERE pl.product_id = p.id
+        AND pl.marketplace = '${mp}'
+        AND pl.is_linked = true
+    )`;
   }
 
   // Только товары с хотя бы одной связью Ozon/WB/YM (страница мин. цен без частных заказов)
@@ -679,32 +630,11 @@ function buildFindAllFilters(options = {}) {
     requireAnyMarketplaceLink === '1' ||
     requireAnyMarketplaceLink === 1;
   if (requireAnyMp && linkedList.length === 0) {
-    whereSql += ` AND (
-      EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ozon'
-          AND (
-            COALESCE(TRIM(ps.sku::text), '') <> ''
-            OR ps.marketplace_product_id IS NOT NULL
-          )
-      )
-      OR EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'wb'
-          AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
-      )
-      OR (
-        p.wb_draft IS NOT NULL
-        AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
-      )
-      OR EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id
-          AND ps.marketplace = 'ym'
-          AND COALESCE(TRIM(ps.sku::text), '') <> ''
-      )
+    whereSql += ` AND EXISTS (
+      SELECT 1 FROM product_links pl
+      WHERE pl.product_id = p.id
+        AND pl.is_linked = true
+        AND pl.marketplace IN ('ozon', 'wb', 'ym')
     )`;
   }
 
@@ -1296,7 +1226,16 @@ class ProductsRepositoryPG {
         `SELECT product_id, barcode, marketplaces FROM barcodes WHERE product_id = ANY($1) ORDER BY id`,
         [productIds]
       );
-      
+      let linksResult = { rows: [] };
+      try {
+        linksResult = await query(
+          `SELECT product_id, marketplace, is_linked FROM product_links WHERE product_id = ANY($1)`,
+          [productIds]
+        );
+      } catch (linksErr) {
+        console.warn('[Products Repository] product_links not loaded:', linksErr.message);
+      }
+
       const stocksResult = await query(
         `SELECT 
           product_id,
@@ -1456,7 +1395,13 @@ class ProductsRepositoryPG {
         if (!barcodesByProduct[key]) barcodesByProduct[key] = [];
         barcodesByProduct[key].push(mapped);
       });
-      
+      const linksByProduct = {};
+      linksResult.rows.forEach((row) => {
+        const key = String(row.product_id);
+        if (!linksByProduct[key]) linksByProduct[key] = {};
+        linksByProduct[key][row.marketplace] = row.is_linked;
+      });
+
       // Создаем мапу остатков и себестоимости по товарам
       const stocksByProduct = {};
       stocksResult.rows.forEach(row => {
@@ -1480,6 +1425,7 @@ class ProductsRepositoryPG {
         product.ozon_market_sku = skus.ozon_market_sku ?? null;
         product.ym_market_sku = skus.ym_market_sku ?? null;
         product.ym_product_id = skus.ym_product_id ?? null;
+        product.mp_linked = linksByProduct[String(product.id)] || {};
         applyWbListingFields(product);
         product.barcodes = barcodesByProduct[String(product.id)] || [];
         if (product.user_category_id) product.categoryId = product.user_category_id;
