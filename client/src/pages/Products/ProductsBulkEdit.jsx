@@ -85,6 +85,7 @@ import {
   resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
+import { isOzonManufacturerArticleAttr, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import {
   isOzonAnnotationAttr,
@@ -2412,13 +2413,45 @@ function mergeCategorySchemaMpAttrColumns(mpCols, labelMaps = {}) {
   return [...(mpCols || []), ...extra.filter((c) => !baseKeys.has(c.key))];
 }
 
+/** Как в карточке Ozon: offer_id → sku_ozon; партномер — JSON-атрибут категории, не дублируем полем оффера. */
+function dedupeOzonOfferFieldColumns(cols) {
+  const list = cols || [];
+  const hasMfrArticleAttr = list.some(
+    (c) =>
+      c.mpAttr?.bucket === 'ozon' &&
+      isOzonManufacturerArticleAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })
+  );
+  return list.filter((c) => {
+    const offerId = String(c.mpOfferField?.offerId || '');
+    if (offerId === '__ozon_offer_id__') return false;
+    if (offerId === '__ozon_vendor_code__' && hasMfrArticleAttr) return false;
+    return true;
+  });
+}
+
+/** Несколько характеристик «партномер / артикул производителя» в схеме — одна колонка (как в карточке). */
+function dedupeOzonManufacturerArticleAttrColumns(cols) {
+  const list = cols || [];
+  const mfr = list.filter(
+    (c) =>
+      c.mpAttr?.bucket === 'ozon' &&
+      isOzonManufacturerArticleAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })
+  );
+  if (mfr.length <= 1) return list;
+  const keep =
+    mfr.find((c) => String(c.mpAttr?.attrId) === String(OZON_PARTNUMBER_ATTR_ID)) || mfr[0];
+  const drop = new Set(mfr.filter((c) => c.key !== keep.key).map((c) => c.key));
+  return list.filter((c) => !drop.has(c.key));
+}
+
 function buildBulkMpAttrColumnDefs(products, erpCols, seedMaps, schemaMaps) {
   const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
   bulkEditMpLabelMaps = mergedMaps;
-  return mergeCategorySchemaMpAttrColumns(
+  const merged = mergeCategorySchemaMpAttrColumns(
     mergeLinkedMpAttrColumns(buildMpAttrColumnDefs(products, mergedMaps), erpCols, mergedMaps),
     mergedMaps
   );
+  return dedupeOzonManufacturerArticleAttrColumns(dedupeOzonOfferFieldColumns(merged));
 }
 
 function erpAttrColKey(attrId) {
