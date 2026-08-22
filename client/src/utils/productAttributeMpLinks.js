@@ -5,6 +5,7 @@
  */
 
 import { attrValuesDiffer, normalizeAttrCompareName, attrLinkNamesMatch } from './productAttrMpDiff.js';
+import { isOzonManufacturerArticleAttr } from './ozonManufacturerArticle.js';
 import {
   DEDICATED_ADDED_KEYS_FIELD,
   erpAttrLinkFieldKey,
@@ -360,10 +361,24 @@ export function collectAttrMpLinkOfferFieldIds(entries, mp, labelMaps = {}) {
 
 /** Значение ERP-атрибута для зеркала в поле/характеристике МП при включённой связи. */
 export function resolveLinkedErpAttrMirror(formData, categoryAttributes, mp, target, labelMaps = {}) {
-  const erp = findErpAttrLinkedToMpTarget(categoryAttributes, mp, target, labelMaps);
+  const code = String(mp || '').toLowerCase();
+  let erp = findErpAttrLinkedToMpTarget(categoryAttributes, code, target, labelMaps);
+  if (
+    !erp?.id &&
+    target?.kind === 'attr' &&
+    code === 'ozon' &&
+    isOzonManufacturerArticleAttr({ id: target.attrId, name: target.attrName })
+  ) {
+    erp = findErpAttrLinkedToMpTarget(
+      categoryAttributes,
+      code,
+      { kind: 'offer', offerId: '__ozon_vendor_code__' },
+      labelMaps
+    );
+  }
   if (!erp?.id) return null;
   const linkKey = erpAttrLinkFieldKey(erp.id);
-  if (!isMpFieldLinked(formData?.mp_field_links, linkKey, mp)) return null;
+  if (!isMpFieldLinked(formData?.mp_field_links, linkKey, code)) return null;
   const val = formData?.attributeValues?.[String(erp.id)];
   return val == null ? '' : String(val);
 }

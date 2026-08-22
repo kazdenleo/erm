@@ -349,8 +349,80 @@ function ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedica
   return false;
 }
 
-function MpCategoryLinkIcon() {
-  return <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />;
+function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
+  if (!ozonAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
+  const key = String(attr?.id ?? '');
+  const isOffer = isMpOfferFieldAttrId(key);
+  if (
+    resolveLinkedErpAttrMirror(
+      formData,
+      categoryAttributes,
+      'ozon',
+      isOffer ? { kind: 'offer', offerId: key } : { kind: 'attr', attrId: key, attrName: attr?.name },
+      labelMaps
+    ) != null
+  ) {
+    return true;
+  }
+  if (isOzonBrandAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')) return true;
+  if (isOzonNameAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')) return true;
+  if (isOzonAnnotationAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')) return true;
+  if (isOzonManufacturerCountryAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'country', 'ozon')) {
+    return true;
+  }
+  const dimAxis = ozonProductDimAxis(attr);
+  if (dimAxis && classifyMarketplaceDimAttrName(attr?.name) === 'product') {
+    if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) return true;
+  }
+  const packAxis = ozonPackDimAxis(attr);
+  if (packAxis && isMpFieldLinked(formData.mp_field_links, packAxis, 'ozon')) return true;
+  if (packAxis && isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon')) return true;
+  return false;
+}
+
+function wbAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
+  if (!wbAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
+  const name = wbCharcName(attr);
+  if (
+    /^sku$/i.test(String(name || '').trim()) &&
+    wbVendorCodeCategoryLinked(categoryAttributes, labelMaps, dedicatedLinks) &&
+    isMpFieldLinked(formData.mp_field_links, 'sku', 'wb')
+  ) {
+    return true;
+  }
+  const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
+  return (
+    resolveLinkedErpAttrMirror(
+      formData,
+      categoryAttributes,
+      'wb',
+      { kind: 'attr', attrId: String(id ?? ''), attrName: name },
+      labelMaps
+    ) != null
+  );
+}
+
+function ymAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
+  if (!ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
+  return (
+    resolveLinkedErpAttrMirror(
+      formData,
+      categoryAttributes,
+      'ym',
+      { kind: 'attr', attrId: String(attr?.id ?? ''), attrName: attr?.name },
+      labelMaps
+    ) != null
+  );
+}
+
+function MpAttrFromMainIcon({ linked, show }) {
+  if (!show) return null;
+  return (
+    <MpFromMainLinkIcon
+      linked={!!linked}
+      title={linked ? 'Значение берётся с «Основного»' : MP_CATEGORY_LINK_ICON_TITLE}
+    />
+  );
 }
 
 function richContentGenerateTargets(links, clickedMp) {
@@ -8299,14 +8371,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                             {attr.name}
                             {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                            {ozonAttrShowsCategoryLinkIcon(
-                              attr,
-                              categoryAttributes,
-                              mpAttrLabelMaps,
-                              categoryDedicatedCharcLinks
-                            ) ? (
-                              <MpCategoryLinkIcon />
-                            ) : null}
+                            <MpAttrFromMainIcon
+                              show={ozonAttrShowsCategoryLinkIcon(
+                                attr,
+                                categoryAttributes,
+                                mpAttrLabelMaps,
+                                categoryDedicatedCharcLinks
+                              )}
+                              linked={ozonAttrFromMainLinked(
+                                formData,
+                                attr,
+                                categoryAttributes,
+                                mpAttrLabelMaps,
+                                categoryDedicatedCharcLinks
+                              )}
+                            />
                             {attr.description && (
                               <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
                             )}
@@ -8347,14 +8426,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             <label className="form-check-label" htmlFor={`ozon-attr-${attr.id}`}>
                               {attr.name}
                               {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                              {ozonAttrShowsCategoryLinkIcon(
-                                attr,
-                                categoryAttributes,
-                                mpAttrLabelMaps,
-                                categoryDedicatedCharcLinks
-                              ) ? (
-                                <MpCategoryLinkIcon />
-                              ) : null}
+                              <MpAttrFromMainIcon
+                                show={ozonAttrShowsCategoryLinkIcon(
+                                  attr,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                                linked={ozonAttrFromMainLinked(
+                                  formData,
+                                  attr,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                              />
                             </label>
         </div>
                           {attr.description && (
@@ -8368,14 +8454,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
                           {attr.name}
                           {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
-                          {ozonAttrShowsCategoryLinkIcon(
-                            attr,
-                            categoryAttributes,
-                            mpAttrLabelMaps,
-                            categoryDedicatedCharcLinks
-                          ) ? (
-                            <MpCategoryLinkIcon />
-                          ) : null}
+                          <MpAttrFromMainIcon
+                            show={ozonAttrShowsCategoryLinkIcon(
+                              attr,
+                              categoryAttributes,
+                              mpAttrLabelMaps,
+                              categoryDedicatedCharcLinks
+                            )}
+                            linked={ozonAttrFromMainLinked(
+                              formData,
+                              attr,
+                              categoryAttributes,
+                              mpAttrLabelMaps,
+                              categoryDedicatedCharcLinks
+                            )}
+                          />
                           {attr.description && (
                             <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
                           )}
@@ -8746,14 +8839,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               {dictOpts ? (
                                 <span style={{ fontSize: '11px', color: 'var(--muted)' }}> (справочник)</span>
                               ) : null}
-                              {wbAttrShowsCategoryLinkIcon(
-                                a,
-                                categoryAttributes,
-                                mpAttrLabelMaps,
-                                categoryDedicatedCharcLinks
-                              ) ? (
-                                <MpCategoryLinkIcon />
-                              ) : null}
+                              <MpAttrFromMainIcon
+                                show={wbAttrShowsCategoryLinkIcon(
+                                  a,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                                linked={wbAttrFromMainLinked(
+                                  formData,
+                                  a,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                              />
                             </label>
                             {dictOpts ? (
                               <select
@@ -8801,14 +8901,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-attr-${key}`}>
                               {name}
-                              {wbAttrShowsCategoryLinkIcon(
-                                c,
-                                categoryAttributes,
-                                mpAttrLabelMaps,
-                                categoryDedicatedCharcLinks
-                              ) ? (
-                                <MpCategoryLinkIcon />
-                              ) : null}
+                              <MpAttrFromMainIcon
+                                show={wbAttrShowsCategoryLinkIcon(
+                                  c,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                                linked={wbAttrFromMainLinked(
+                                  formData,
+                                  c,
+                                  categoryAttributes,
+                                  mpAttrLabelMaps,
+                                  categoryDedicatedCharcLinks
+                                )}
+                              />
                             </label>
                             <input
                               id={`wb-attr-${key}`}
@@ -9318,14 +9425,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       return String(raw).trim();
                     })();
                     const setVal = (v) => handleYmAttributeChange(key, v, a);
-                    const ymSyncHint = ymAttrShowsCategoryLinkIcon(
-                      a,
-                      categoryAttributes,
-                      mpAttrLabelMaps,
-                      categoryDedicatedCharcLinks
-                    ) ? (
-                      <MpCategoryLinkIcon />
-                    ) : null;
+                    const ymSyncHint = (
+                      <MpAttrFromMainIcon
+                        show={ymAttrShowsCategoryLinkIcon(
+                          a,
+                          categoryAttributes,
+                          mpAttrLabelMaps,
+                          categoryDedicatedCharcLinks
+                        )}
+                        linked={ymAttrFromMainLinked(
+                          formData,
+                          a,
+                          categoryAttributes,
+                          mpAttrLabelMaps,
+                          categoryDedicatedCharcLinks
+                        )}
+                      />
+                    );
 
                     if (a.type === 'dictionary' && Array.isArray(a.dictionary_options) && a.dictionary_options.length > 0) {
                       const normalizeToken = (s) =>
