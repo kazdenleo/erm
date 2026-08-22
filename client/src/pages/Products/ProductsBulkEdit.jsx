@@ -622,7 +622,8 @@ function linksSignature(links) {
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
 const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
-/** Фильтры списка и выбор категории — переживают F5 */
+/** Фильтры списка и выбор категории — переживают F5 (localStorage; миграция из sessionStorage) */
+const LS_BULK_FILTERS = 'productsBulkEditFilters';
 const SESSION_BULK_FILTERS = 'productsBulkEditFilters';
 const SESSION_MP_OZON = 'productsBulkShowMpOzon';
 const SESSION_MP_WB = 'productsBulkShowMpWb';
@@ -705,11 +706,29 @@ function readBulkPageSize() {
 
 function readBulkEditFiltersStorage() {
   try {
-    if (typeof sessionStorage === 'undefined') return null;
-    const raw = sessionStorage.getItem(SESSION_BULK_FILTERS);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(LS_BULK_FILTERS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    }
+    if (typeof sessionStorage !== 'undefined') {
+      const leg = sessionStorage.getItem(SESSION_BULK_FILTERS);
+      if (leg) {
+        const parsed = JSON.parse(leg);
+        if (parsed && typeof parsed === 'object') {
+          writeBulkEditFiltersStorage(parsed);
+          try {
+            sessionStorage.removeItem(SESSION_BULK_FILTERS);
+          } catch {
+            /* ignore */
+          }
+          return parsed;
+        }
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -717,12 +736,33 @@ function readBulkEditFiltersStorage() {
 
 function writeBulkEditFiltersStorage(payload) {
   try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(SESSION_BULK_FILTERS, JSON.stringify(payload));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LS_BULK_FILTERS, JSON.stringify(payload));
     }
   } catch {
     /* ignore */
   }
+}
+
+function isBulkEditPageReload() {
+  try {
+    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
+      return false;
+    }
+    const nav = performance.getEntriesByType('navigation')[0];
+    return nav?.type === 'reload';
+  } catch {
+    return false;
+  }
+}
+
+/** Начальные фильтры: при F5 — только storage (history.state.filters устаревает). */
+function resolveInitialBulkFilters(locationState) {
+  const stored = readBulkEditFiltersStorage();
+  if (isBulkEditPageReload() && stored && typeof stored === 'object') {
+    return { ...stored };
+  }
+  return mergeBulkEditFilters(stored, locationState?.filters);
 }
 
 /** Слияние сохранённых фильтров с переданными при переходе со страницы «Товары». */
@@ -738,19 +778,24 @@ function mergeBulkEditFilters(stored, navFilters) {
   if (nav.search != null) out.search = String(nav.search);
   if (nav.unlinkedMp != null) out.unlinkedMp = nav.unlinkedMp;
   if (nav.linkedMp != null) out.linkedMp = nav.linkedMp;
+  if (nav.filtersOpen != null) out.filtersOpen = !!nav.filtersOpen;
+  if (nav.categoryPickDraft != null) out.categoryPickDraft = String(nav.categoryPickDraft);
   return out;
 }
 
 function resolveInitialCategoryScope(locationState, filters) {
-  if (locationState?.createMode) {
+  const fromReload = isBulkEditPageReload();
+  if (locationState?.createMode && !fromReload) {
     const cat =
       filters?.categoryId != null && String(filters.categoryId).trim() !== ''
         ? String(filters.categoryId)
         : '';
     return cat !== '';
   }
-  const ids = locationState?.selectedIds;
-  if (Array.isArray(ids) && ids.length > 0) return true;
+  if (!fromReload) {
+    const ids = locationState?.selectedIds;
+    if (Array.isArray(ids) && ids.length > 0) return true;
+  }
   const pick = filters?.categoryPickDraft;
   if (pick && String(pick) !== CATEGORY_SCOPE_UNSET) return true;
   const cat = filters?.categoryId;
@@ -758,20 +803,23 @@ function resolveInitialCategoryScope(locationState, filters) {
 }
 
 function resolveInitialCategoryPickDraft(locationState, filters) {
-  if (locationState?.createMode) {
+  const fromReload = isBulkEditPageReload();
+  if (locationState?.createMode && !fromReload) {
     const cat =
       filters?.categoryId != null && String(filters.categoryId).trim() !== ''
         ? String(filters.categoryId)
         : '';
     return cat === '' ? CATEGORY_SCOPE_UNSET : cat;
   }
-  const ids = locationState?.selectedIds;
-  if (Array.isArray(ids) && ids.length > 0) {
-    const cat =
-      filters?.categoryId != null && String(filters.categoryId).trim() !== ''
-        ? String(filters.categoryId)
-        : '';
-    return cat === '' ? CATEGORY_SCOPE_ALL : cat;
+  if (!fromReload) {
+    const ids = locationState?.selectedIds;
+    if (Array.isArray(ids) && ids.length > 0) {
+      const cat =
+        filters?.categoryId != null && String(filters.categoryId).trim() !== ''
+          ? String(filters.categoryId)
+          : '';
+      return cat === '' ? CATEGORY_SCOPE_ALL : cat;
+    }
   }
   const pick = filters?.categoryPickDraft;
   if (pick && String(pick) !== CATEGORY_SCOPE_UNSET) return String(pick);
@@ -3537,8 +3585,8 @@ export function ProductsBulkEdit() {
   const navigate = useNavigate();
   const createMode = location.state?.createMode === true;
   const initialBulkFilters = useMemo(
-    () => mergeBulkEditFilters(readBulkEditFiltersStorage(), location.state?.filters),
-    // только первый mount: location.state есть при переходе с «Товаров», после F5 — из sessionStorage
+    () => resolveInitialBulkFilters(location.state),
+    // только первый mount: location.state есть при переходе с «Товаров», после F5 — из storage
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
@@ -3667,6 +3715,15 @@ export function ProductsBulkEdit() {
     bulkFilterLinkedKey,
     filtersOpen,
   ]);
+
+  /** Снять filters из history.state — иначе F5 подставляет устаревшие фильтры «Товаров». */
+  useEffect(() => {
+    if (!location.state?.filters) return;
+    const nextState = { ...(location.state || {}) };
+    delete nextState.filters;
+    navigate('/products/bulk-edit', { replace: true, state: nextState });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const listSearchDebounceRef = useRef(null);
   const loadGenRef = useRef(0);
