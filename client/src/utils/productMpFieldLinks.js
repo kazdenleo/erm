@@ -756,6 +756,32 @@ function offerFieldNameAliases(name) {
   return keys;
 }
 
+function normOfferFieldLookupName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/** id поля оффера (__ym_shop_sku__ и т.д.) по подписи из схемы или категории. */
+export function resolveMpOfferFieldIdByName(mp, name) {
+  const code = String(mp || '').toLowerCase();
+  const list = MP_OFFER_FIELD_ATTRS[code] || [];
+  const want = normOfferFieldLookupName(name);
+  if (!want) return '';
+  for (const offer of list) {
+    if (normOfferFieldLookupName(offer.name) === want) return String(offer.id);
+    if (offerFieldNameAliases(offer.name).some((alias) => normOfferFieldLookupName(alias) === want)) {
+      return String(offer.id);
+    }
+  }
+  return '';
+}
+
+export function isYmOfferFieldParamName(name) {
+  return !!resolveMpOfferFieldIdByName('ym', name);
+}
+
 export function withMpOfferFieldAttrs(mp, attrs) {
   const extras = MP_OFFER_FIELD_ATTRS[mp] || [];
   let list = dedupeYmCategoryParamsByName(mp, Array.isArray(attrs) ? [...attrs] : []);

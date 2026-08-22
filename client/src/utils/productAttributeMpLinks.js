@@ -5,7 +5,11 @@
  */
 
 import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
-import { isMpOfferFieldAttrId, readMpOfferFieldValue } from './productMpFieldLinks.js';
+import {
+  isMpOfferFieldAttrId,
+  readMpOfferFieldValue,
+  resolveMpOfferFieldIdByName,
+} from './productMpFieldLinks.js';
 
 export const ATTR_MP_CODES = ['ozon', 'wb', 'ym'];
 
@@ -71,6 +75,46 @@ export function attrMpLinksHasAny(raw) {
 export function mappedMpsFromAttrLinks(raw) {
   const links = normalizeAttrMpLinks(raw);
   return ATTR_MP_CODES.filter((mp) => links[mp].length > 0);
+}
+
+function mpSchemaAttrName(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  return String(meta.name || meta.title || meta.label || '').trim();
+}
+
+/**
+ * Цель сопоставления ERP-атрибута с полем МП: поле оффера (__ym_shop_sku__) или param id категории.
+ * Поддерживает записи только с name (ручной ввод в категории).
+ */
+export function resolveAttrMpLinkTarget(entry, mp, labelMaps = {}) {
+  const e = normalizeAttrMpLinkEntry(entry);
+  if (!e) return null;
+  const code = String(mp || '').toLowerCase();
+  if (!ATTR_MP_CODES.includes(code)) return null;
+
+  if (e.id && isMpOfferFieldAttrId(e.id)) {
+    return { kind: 'offer', offerId: String(e.id) };
+  }
+
+  if (e.id) {
+    return { kind: 'attr', attrId: String(e.id) };
+  }
+
+  const offerId = resolveMpOfferFieldIdByName(code, e.name);
+  if (offerId) return { kind: 'offer', offerId };
+
+  const want = normalizeAttrCompareName(e.name);
+  if (want) {
+    const maps = labelMaps?.[code] || {};
+    for (const [attrId, meta] of Object.entries(maps)) {
+      const metaName = normalizeAttrCompareName(mpSchemaAttrName(meta));
+      if (metaName && metaName === want) {
+        return { kind: 'attr', attrId: String(attrId) };
+      }
+    }
+  }
+
+  return null;
 }
 
 export function formatAttrMpLinksSummary(raw) {
@@ -176,9 +220,9 @@ export function getLinkedAttrMpDiffs(attr, mainValue, ctx = {}) {
   const formLike = ctx.formData || ctx;
   for (const mp of ATTR_MP_CODES) {
     for (const entry of links[mp] || []) {
-      const id = String(entry?.id || '');
-      if (!isMpOfferFieldAttrId(id)) continue;
-      const text = readMpOfferFieldValue(formLike, id);
+      const target = resolveAttrMpLinkTarget(entry, mp, ctx.labelMaps || {});
+      if (target?.kind !== 'offer') continue;
+      const text = readMpOfferFieldValue(formLike, target.offerId);
       if (attrValuesDiffer(mainValue, text)) {
         out.push({
           mp,

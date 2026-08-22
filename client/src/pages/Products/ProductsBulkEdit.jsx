@@ -49,13 +49,14 @@ import {
   applyMpOfferFieldToForm,
   readMpOfferFieldValue,
   MP_OFFER_FIELD_ATTRS,
+  isYmOfferFieldParamName,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
   OZON_DIMS_LOCK_TITLE,
 } from '../../utils/ozonDimensionsLock.js';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MpFieldLinkToggles, MpFromMainLinkIcon } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges } from '../../components/common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   getProfileLengthUnit,
   getProfileWeightUnit,
@@ -81,6 +82,7 @@ import {
   mappedMpsFromAttrLinks,
   normalizeAttrMpLinkList,
   normalizeAttrMpLinks,
+  resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
@@ -341,12 +343,21 @@ function parseMpAttrColKey(colKey) {
   return { mp: m[1], attrId: m[2] };
 }
 
-function findErpAttrColForMpAttr(erpAttrCols, mp, attrId) {
+/** Карты подписей характеристик МП — обновляются при загрузке таблицы. */
+let bulkEditMpLabelMaps = { ozon: {}, wb: {}, ym: {} };
+
+function findErpAttrColForMpAttr(erpAttrCols, mp, attrId, labelMaps = bulkEditMpLabelMaps) {
   const want = String(attrId);
-  return (erpAttrCols || []).find((c) => {
-    const entries = normalizeAttrMpLinkList(c?.erpAttr?.mpLinks?.[mp]);
-    return entries.some((e) => String(e.id || '') === want);
-  }) || null;
+  return (
+    (erpAttrCols || []).find((c) => {
+      const entries = normalizeAttrMpLinkList(c?.erpAttr?.mpLinks?.[mp]);
+      return entries.some((entry) => {
+        if (String(entry.id || '') === want) return true;
+        const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+        return target?.kind === 'attr' && String(target.attrId) === want;
+      });
+    }) || null
+  );
 }
 
 const MP_OFFER_COL_PREFIX = '__mpOffer__';
@@ -390,13 +401,17 @@ function rowAsOfferFieldForm(row) {
   };
 }
 
-function findErpAttrColForMpOfferField(erpAttrCols, offerId) {
+function findErpAttrColForMpOfferField(erpAttrCols, offerId, labelMaps = bulkEditMpLabelMaps) {
   const want = String(offerId);
   return (
     (erpAttrCols || []).find((c) => {
       const links = c?.erpAttr?.mpLinks || {};
       for (const mp of ATTR_MP_CODES) {
-        if (normalizeAttrMpLinkList(links[mp]).some((e) => String(e.id || '') === want)) return true;
+        for (const entry of normalizeAttrMpLinkList(links[mp])) {
+          if (String(entry.id || '') === want) return true;
+          const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+          if (target?.kind === 'offer' && target.offerId === want) return true;
+        }
       }
       return false;
     }) || null
@@ -412,7 +427,7 @@ function attachOfferFieldLinkMeta(col, erpCols) {
   if (!isAttrMpFieldLinkKey(linkFieldKey) || !attrMapped.length) return col;
   return {
     ...col,
-    mappedMps: col.mappedMps?.length ? col.mappedMps : [col.mpOfferField.mp],
+    mappedMps: attrMapped.length ? attrMapped : col.mappedMps?.length ? col.mappedMps : [col.mpOfferField.mp],
     linkFieldKey,
     showLinkToggles: true,
     linkSupportedMps: attrMapped,
@@ -465,23 +480,25 @@ function patchPayloadFromOfferFieldForm(payload, touch, formBefore, formAfter) {
   }
 }
 
-function copyErpAttrToLinkedMp(row, erpCol, mp) {
+function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps) {
   const entries = normalizeAttrMpLinkList(erpCol?.erpAttr?.mpLinks?.[mp]);
   if (!entries.length) return row;
   let next = row;
   for (const entry of entries) {
-    if (!entry?.id) continue;
-    if (isMpOfferFieldAttrId(entry.id)) {
+    const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+    if (!target) continue;
+    if (target.kind === 'offer') {
       const seeded = {
         ...next,
         ym_draft: next.ym_draft || next._ymDraftBaseline,
         ozon_draft: next.ozon_draft || next._ozonDraftBaseline,
         wb_draft: next.wb_draft || next._wbDraftBaseline,
       };
-      next = applyMpOfferFieldToForm(seeded, entry.id, String(next[erpCol.key] ?? ''));
+      next = applyMpOfferFieldToForm(seeded, target.offerId, String(next[erpCol.key] ?? ''));
       continue;
     }
-    next = { ...next, [mpAttrColKey(mp, entry.id)]: row[erpCol.key] ?? '' };
+    if (!target.attrId) continue;
+    next = { ...next, [mpAttrColKey(mp, target.attrId)]: row[erpCol.key] ?? '' };
   }
   return next;
 }
@@ -2263,6 +2280,7 @@ function isDuplicateMpCardJsonAttr(bucket, humanName) {
   }
 
   if (bucket === 'ym') {
+    if (isYmOfferFieldParamName(raw)) return true;
     if (h === 'название' || h === 'название товара' || (h.startsWith('название') && !h.includes('модели') && !h.includes('группы'))) {
       return true;
     }
@@ -2391,6 +2409,7 @@ function mergeCategorySchemaMpAttrColumns(mpCols, labelMaps = {}) {
 
 function buildBulkMpAttrColumnDefs(products, erpCols, seedMaps, schemaMaps) {
   const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
+  bulkEditMpLabelMaps = mergedMaps;
   return mergeCategorySchemaMpAttrColumns(
     mergeLinkedMpAttrColumns(buildMpAttrColumnDefs(products, mergedMaps), erpCols, mergedMaps),
     mergedMaps
@@ -2635,24 +2654,27 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
     for (const mp of ATTR_MP_CODES) {
       const entries = normalizeAttrMpLinkList(links[mp]);
       for (const entry of entries) {
-        if (!entry?.id) continue;
-        if (isMpOfferFieldAttrId(entry.id)) {
-          const offerKey = `offer:${entry.id}`;
+        const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
+        if (!target) continue;
+        if (target.kind === 'offer') {
+          const offerKey = `offer:${target.offerId}`;
           const maps = labelMaps?.[mp] || {};
-          const meta = maps[entry.id] || maps[String(entry.id)];
+          const meta = maps[target.offerId] || maps[String(target.offerId)];
           const human = schemaAttrName(meta) || entry.name || '';
           if (have.has(offerKey)) continue;
           have.add(offerKey);
           const offerCol = attachOfferFieldLinkMeta(
-            extraLinkedMpOfferColumn(mp, entry.id, human || entry.name),
+            extraLinkedMpOfferColumn(mp, target.offerId, human || entry.name),
             erpCols
           );
           if (offerCol) extra.push(offerCol);
           continue;
         }
-        const k = `${mp}:${entry.id}`;
+        const attrId = target.attrId;
+        if (!attrId) continue;
+        const k = `${mp}:${attrId}`;
         const maps = labelMaps?.[mp] || {};
-        const meta = maps[entry.id] || maps[String(entry.id)];
+        const meta = maps[attrId] || maps[String(attrId)];
         const human = schemaAttrName(meta) || entry.name || '';
         if (have.has(k)) {
           const prev = byKey.get(k);
@@ -2661,7 +2683,7 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
           continue;
         }
         have.add(k);
-        const col = extraLinkedMpAttrColumn(mp, entry.id, human || entry.name, labelMaps);
+        const col = extraLinkedMpAttrColumn(mp, attrId, human || entry.name, labelMaps);
         if (col) {
           extra.push(col);
           byKey.set(k, col);
@@ -3001,6 +3023,13 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   for (const c of erpAttrColDefs) {
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
+  }
+  for (const erpCol of erpAttrColDefs) {
+    const erpVal = str(row[erpCol.key]).trim();
+    if (!erpVal) continue;
+    for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
+      row = copyErpAttrToLinkedMp(row, erpCol, mp);
+    }
   }
   return syncOfferFieldColsOnRow(row, mpAttrColDefs);
 }
@@ -4727,6 +4756,7 @@ export function ProductsBulkEdit() {
       );
       if (gen !== loadGenRef.current) return;
       const mergedMaps = mergeMpLabelMaps(seedMaps, schemaMaps);
+      bulkEditMpLabelMaps = mergedMaps;
       const mpCols = buildBulkMpAttrColumnDefs(list, erpCols, seedMaps, schemaMaps);
       setMpAttrColumnDefs(mpCols);
       setErpAttrColumnDefs(erpCols);
@@ -6814,7 +6844,12 @@ export function ProductsBulkEdit() {
                       )
                     : false;
                   const canFill = !(col.readonly || col.noBulk);
-                  const showMpRow = showMasterMp || showLinkToggles || showFromMain;
+                  const showMpRow = showMasterMp || showLinkToggles || showFromMain || showMappedBadges;
+                  const showMappedBadges = !!(
+                    Array.isArray(col.mappedMps) &&
+                    col.mappedMps.length &&
+                    (showFromMain || (col.mpOfferField && !showLinkToggles))
+                  );
                   const showChromeRow =
                     (col.key !== SELECT_COL_KEY && col.key !== DEFAULT_STICKY_COL_KEY) || canFill;
                   const showPinHide =
@@ -7028,6 +7063,9 @@ export function ProductsBulkEdit() {
                                       : 'Связь с «Основным» выключена — своё значение на МП'
                                   }
                                 />
+                              ) : null}
+                              {showMappedBadges ? (
+                                <MpMappedMpBadges mps={col.mappedMps} size={14} />
                               ) : null}
                             </>
                           ) : null}
