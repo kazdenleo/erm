@@ -5774,6 +5774,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
   applyErpAttrValueToLinkedMpRef.current = applyErpAttrValueToLinkedMp;
 
   useEffect(() => {
+    setFormData((prev) => {
+      const next = applyLinkedMpFieldsFromMain(prev, prev.mp_field_links);
+      return next === prev ? prev : next;
+    });
+    for (const attr of categoryAttributes) {
+      const lk = erpAttrLinkFieldKey(attr.id);
+      for (const mp of mappedMpsFromAttrLinks(attr.mp_links)) {
+        if (!isMpFieldLinked(formData.mp_field_links, lk, mp)) continue;
+        const val = formData.attributeValues?.[String(attr.id)];
+        applyErpAttrValueToLinkedMp(attr, val, { onlyMp: mp });
+      }
+    }
+  }, [formData.mp_field_links, categoryAttributes, applyErpAttrValueToLinkedMp, formData.attributeValues]);
+
+  useEffect(() => {
     if (!categoryAttributes.length) return;
     for (const attr of categoryAttributes) {
       const val = formData.attributeValues?.[String(attr.id)];
@@ -8231,15 +8246,28 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     .map((attr) => {
                     const key = String(attr.id);
                     const isOfferField = isMpOfferFieldAttrId(key);
-                    const linkedMirror = resolveLinkedErpAttrMirror(
-                      formData,
-                      categoryAttributes,
-                      'ozon',
-                      isOfferField
-                        ? { kind: 'offer', offerId: key }
-                        : { kind: 'attr', attrId: key, attrName: attr.name },
-                      mpAttrLabelMaps
-                    );
+                    const linkedMirror = (() => {
+                      const erpMirror = resolveLinkedErpAttrMirror(
+                        formData,
+                        categoryAttributes,
+                        'ozon',
+                        isOfferField
+                          ? { kind: 'offer', offerId: key }
+                          : { kind: 'attr', attrId: key, attrName: attr.name },
+                        mpAttrLabelMaps
+                      );
+                      if (erpMirror != null) return erpMirror;
+                      if (isOzonBrandAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')) {
+                        return String(formData.brand ?? '');
+                      }
+                      if (isOzonNameAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')) {
+                        return String(formData.mp_ozon_name ?? formData.name ?? '');
+                      }
+                      if (isOzonAnnotationAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')) {
+                        return String(formData.mp_ozon_description ?? formData.description ?? '');
+                      }
+                      return null;
+                    })();
                     const value =
                       linkedMirror != null
                         ? linkedMirror

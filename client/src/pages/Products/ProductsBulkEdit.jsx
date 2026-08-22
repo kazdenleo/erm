@@ -659,12 +659,9 @@ function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) 
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
     const col = (mpAttrCols || []).find((c) => c.key === colKey);
-    if (col?.linkFieldKey && isDedicatedMpFieldLinkKey(col.linkFieldKey)) {
-      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), col.linkFieldKey, mpAttr.mp);
-    }
-    const erpCol = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
-    if (erpCol?.linkFieldKey) {
-      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mpAttr.mp);
+    const linkKey = bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols);
+    if (linkKey) {
+      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), linkKey, mpAttr.mp);
     }
     return false;
   }
@@ -694,6 +691,37 @@ function mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit) {
   return '';
 }
 
+/** Зеркало значения поля «Основное» для связанной колонки МП. */
+function bulkMirrorFromMainFieldKey(row, fieldKey, colKey, lengthUnit, weightUnit) {
+  const key = String(fieldKey || '');
+  if (key === 'name') return row.name ?? '';
+  if (key === 'description') return row.description ?? '';
+  if (key === 'brand') return row.brand ?? '';
+  if (key === 'country') return row.country_of_origin ?? '';
+  if (key === 'sku') return row.sku ?? '';
+  if (key === 'dimensions') {
+    const dimKey = BULK_DIM_KEYS.find((d) => colKey === d || String(colKey).endsWith(`_pack_${d}`));
+    return dimKey ? row[dimKey] ?? '' : row[colKey];
+  }
+  if (key === 'product_dimensions') {
+    const base = productDimBaseKey(colKey);
+    return base ? row[base] ?? '' : row[colKey];
+  }
+  return row[colKey] ?? '';
+}
+
+function bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols) {
+  if (col?.linkFieldKey) return col.linkFieldKey;
+  const erpCol = findErpAttrColForMpAttr(
+    erpAttrCols,
+    mpAttr.mp,
+    mpAttr.attrId,
+    bulkEditMpLabelMaps,
+    col?._humanName || col?.label || ''
+  );
+  return erpCol?.linkFieldKey || '';
+}
+
 /** Значение колонки МП при включённой связи: как на «Основном». */
 function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], lengthUnit = 'mm', weightUnit = 'g') {
   const mpOffer = parseMpOfferFieldColKey(colKey);
@@ -711,7 +739,29 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
         return mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit);
       }
     }
-    const erpCol = findErpAttrColForMpAttr(erpAttrCols, mpAttr.mp, mpAttr.attrId);
+    const linkKey = bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols);
+    if (linkKey && isDedicatedMpFieldLinkKey(linkKey)) {
+      return bulkMirrorFromMainFieldKey(row, linkKey, colKey, lengthUnit, weightUnit);
+    }
+    if (linkKey && isAttrMpFieldLinkKey(linkKey)) {
+      const erpCol =
+        (erpAttrCols || []).find((c) => c.linkFieldKey === linkKey) ||
+        findErpAttrColForMpAttr(
+          erpAttrCols,
+          mpAttr.mp,
+          mpAttr.attrId,
+          bulkEditMpLabelMaps,
+          col?._humanName || col?.label || ''
+        );
+      if (erpCol) return row[erpCol.key] ?? '';
+    }
+    const erpCol = findErpAttrColForMpAttr(
+      erpAttrCols,
+      mpAttr.mp,
+      mpAttr.attrId,
+      bulkEditMpLabelMaps,
+      col?._humanName || col?.label || ''
+    );
     if (erpCol) return row[erpCol.key] ?? '';
   }
   const fieldKey = bulkLinkFieldForColumn(colKey);
@@ -2957,6 +3007,7 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
         linkFieldKey,
         categoryLinked: true,
         linkSupportedMps: attrMapped.length ? attrMapped : [next.mpAttr.bucket],
+        showLinkToggles: isAttrMpFieldLinkKey(linkFieldKey) ? true : next.showLinkToggles,
       };
     }
     return next;
@@ -7052,7 +7103,7 @@ export function ProductsBulkEdit() {
                 {displayColumns.map((col) => {
                   const showMasterMp = col.key === SELECT_COL_KEY;
                   const showLinkToggles = !!(col.showLinkToggles && col.linkFieldKey);
-                  const showCategoryLinkIcon = bulkMpColumnCategoryLinked(
+                  const categoryLinked = bulkMpColumnCategoryLinked(
                     col,
                     erpAttrColumnDefs,
                     mpLabelMaps,
@@ -7061,6 +7112,7 @@ export function ProductsBulkEdit() {
                     rows,
                     filterScopeCategoryIds
                   );
+                  const showCategoryLinkIcon = categoryLinked && !showLinkToggles;
                   // Столбцы МП со связью к «Основному»: скрепка вместо значков OZ/WB/ЯМ.
                   const showFromMain = !!(
                     !showLinkToggles &&
