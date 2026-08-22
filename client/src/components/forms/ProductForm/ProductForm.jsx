@@ -69,6 +69,7 @@ import {
   ATTR_MP_CODES,
   collectAttrMpLinkOfferFieldIds,
   findLinkedMpAttributes,
+  findErpAttrLinkedToMpTarget,
   getLinkedAttrMpDiffs,
   mappedMpsFromAttrLinks,
   mappedMpsFromDedicatedMainField,
@@ -353,16 +354,12 @@ function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, d
   if (!ozonAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
   const key = String(attr?.id ?? '');
   const isOffer = isMpOfferFieldAttrId(key);
-  if (
-    resolveLinkedErpAttrMirror(
-      formData,
-      categoryAttributes,
-      'ozon',
-      isOffer ? { kind: 'offer', offerId: key } : { kind: 'attr', attrId: key, attrName: attr?.name },
-      labelMaps
-    ) != null
-  ) {
-    return true;
+  const target = isOffer
+    ? { kind: 'offer', offerId: key }
+    : { kind: 'attr', attrId: key, attrName: attr?.name };
+  const erpLinked = findErpAttrLinkedToMpTarget(categoryAttributes, 'ozon', target, labelMaps);
+  if (erpLinked) {
+    return isMpFieldLinked(formData.mp_field_links, erpAttrLinkFieldKey(erpLinked.id), 'ozon');
   }
   if (isOzonBrandAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')) return true;
   if (isOzonNameAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')) return true;
@@ -383,6 +380,12 @@ function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, d
 function wbAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
   if (!wbAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
   const name = wbCharcName(attr);
+  const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
+  const target = { kind: 'attr', attrId: String(id ?? ''), attrName: name };
+  const erpLinked = findErpAttrLinkedToMpTarget(categoryAttributes, 'wb', target, labelMaps);
+  if (erpLinked) {
+    return isMpFieldLinked(formData.mp_field_links, erpAttrLinkFieldKey(erpLinked.id), 'wb');
+  }
   if (
     /^sku$/i.test(String(name || '').trim()) &&
     wbVendorCodeCategoryLinked(categoryAttributes, labelMaps, dedicatedLinks) &&
@@ -390,29 +393,21 @@ function wbAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, ded
   ) {
     return true;
   }
-  const id = attr?.charcID ?? attr?.characteristic_id ?? attr?.id ?? attr?.attribute_id;
-  return (
-    resolveLinkedErpAttrMirror(
-      formData,
-      categoryAttributes,
-      'wb',
-      { kind: 'attr', attrId: String(id ?? ''), attrName: name },
-      labelMaps
-    ) != null
-  );
+  return false;
 }
 
 function ymAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
   if (!ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
-  return (
-    resolveLinkedErpAttrMirror(
-      formData,
-      categoryAttributes,
-      'ym',
-      { kind: 'attr', attrId: String(attr?.id ?? ''), attrName: attr?.name },
-      labelMaps
-    ) != null
+  const erpLinked = findErpAttrLinkedToMpTarget(
+    categoryAttributes,
+    'ym',
+    { kind: 'attr', attrId: String(attr?.id ?? ''), attrName: attr?.name },
+    labelMaps
   );
+  if (erpLinked) {
+    return isMpFieldLinked(formData.mp_field_links, erpAttrLinkFieldKey(erpLinked.id), 'ym');
+  }
+  return false;
 }
 
 function MpAttrFromMainIcon({ linked, show }) {

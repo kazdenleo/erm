@@ -4,7 +4,7 @@
  * Старый формат { ozon: { id, name } } читается как массив из одного элемента.
  */
 
-import { attrValuesDiffer, normalizeAttrCompareName, attrLinkNamesMatch } from './productAttrMpDiff.js';
+import { attrValuesDiffer, normalizeAttrCompareName } from './productAttrMpDiff.js';
 import { isOzonManufacturerArticleAttr } from './ozonManufacturerArticle.js';
 import {
   DEDICATED_ADDED_KEYS_FIELD,
@@ -13,7 +13,6 @@ import {
   isMpOfferFieldAttrId,
   normalizeCategoryDedicatedCharcLinks,
   readMpOfferFieldValue,
-  resolveMpOfferFieldIdByName,
 } from './productMpFieldLinks.js';
 
 export const ATTR_MP_CODES = ['ozon', 'wb', 'ym'];
@@ -90,7 +89,6 @@ export function findErpAttrLinkedToMpTarget(categoryAttributes, mp, target, labe
   if (!ATTR_MP_CODES.includes(code) || !target || typeof target !== 'object') return null;
   const wantAttrId = target.kind === 'attr' ? String(target.attrId ?? '') : '';
   const wantOfferId = target.kind === 'offer' ? String(target.offerId ?? '') : '';
-  const wantAttrName = target.kind === 'attr' ? normalizeAttrCompareName(target.attrName) : '';
   for (const erp of categoryAttributes || []) {
     const links = normalizeAttrMpLinks(erp?.mp_links);
     for (const entry of links[code] || []) {
@@ -101,9 +99,6 @@ export function findErpAttrLinkedToMpTarget(categoryAttributes, mp, target, labe
       }
       if (target.kind === 'offer' && wantOfferId && e.id) {
         if (String(e.id) === wantOfferId) return erp;
-      }
-      if (target.kind === 'attr' && wantAttrName && e.name) {
-        if (attrLinkNamesMatch(e.name, target.attrName)) return erp;
       }
       let resolved;
       try {
@@ -166,9 +161,7 @@ function mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps = {}) {
   }
   if (target.kind === 'attr') {
     const wantAttrId = String(target.attrId ?? '');
-    const wantAttrName = target.attrName ? normalizeAttrCompareName(target.attrName) : '';
     if (wantAttrId && e.id && !isMpOfferFieldAttrId(e.id) && String(e.id) === wantAttrId) return true;
-    if (wantAttrName && e.name && attrLinkNamesMatch(e.name, target.attrName)) return true;
   }
   let resolved;
   try {
@@ -242,14 +235,9 @@ export function mappedMpsFromDedicatedMainField(dedicatedLinks, fieldKey) {
   return mappedMpsFromAttrLinks(dedicatedCharcLinksForMainField(dedicatedLinks, fieldKey));
 }
 
-function mpSchemaAttrName(meta) {
-  if (!meta || typeof meta !== 'object') return '';
-  return String(meta.name || meta.title || meta.label || '').trim();
-}
-
 /**
- * Цель сопоставления ERP-атрибута с полем МП: поле оффера (__ym_shop_sku__) или param id категории.
- * Поддерживает записи только с name (ручной ввод в категории).
+ * Цель сопоставления ERP-атрибута с полем МП: поле оффера (__ym_shop_sku__) или id характеристики категории.
+ * Только по id записи связи; подпись name — для отображения.
  */
 export function resolveAttrMpLinkTarget(entry, mp, labelMaps = {}) {
   const e = normalizeAttrMpLinkEntry(entry);
@@ -263,20 +251,6 @@ export function resolveAttrMpLinkTarget(entry, mp, labelMaps = {}) {
 
   if (e.id) {
     return { kind: 'attr', attrId: String(e.id) };
-  }
-
-  const offerId = resolveMpOfferFieldIdByName(code, e.name);
-  if (offerId) return { kind: 'offer', offerId };
-
-  const want = normalizeAttrCompareName(e.name);
-  if (want) {
-    const maps = labelMaps?.[code] || {};
-    for (const [attrId, meta] of Object.entries(maps)) {
-      const label = mpSchemaAttrName(meta);
-      if (label && attrLinkNamesMatch(e.name, label)) {
-        return { kind: 'attr', attrId: String(attrId) };
-      }
-    }
   }
 
   return null;
@@ -314,22 +288,13 @@ export function removeAttrMpLink(links, mp, entry) {
   };
 }
 
-function matchMpAttribute(entry, attributes, getId, getName) {
+function matchMpAttribute(entry, attributes, getId) {
   const e = normalizeAttrMpLinkEntry(entry);
   if (!e) return null;
   const list = Array.isArray(attributes) ? attributes : [];
   const idOf = typeof getId === 'function' ? getId : (a) => a?.id;
-  const nameOf = typeof getName === 'function' ? getName : (a) => a?.name;
   if (e.id && !isMpOfferFieldAttrId(e.id)) {
-    const hit = list.find((a) => String(idOf(a) ?? '') === String(e.id));
-    if (hit) return hit;
-  }
-  if (e.name) {
-    const hit = list.find((a) => attrLinkNamesMatch(e.name, nameOf(a))) || null;
-    if (hit) return hit;
-    const want = normalizeAttrCompareName(e.name);
-    if (!want) return null;
-    return list.find((a) => normalizeAttrCompareName(nameOf(a)) === want) || null;
+    return list.find((a) => String(idOf(a) ?? '') === String(e.id)) || null;
   }
   return null;
 }
@@ -390,10 +355,9 @@ export function findLinkedMpAttributes(link, attributes, getId, getName, opts = 
   const seen = new Set();
   const list = Array.isArray(attributes) ? attributes : [];
   const idOf = typeof getId === 'function' ? getId : (a) => a?.id;
-  const nameOf = typeof getName === 'function' ? getName : (a) => a?.name;
   for (const entry of entries) {
     if (isMpOfferFieldAttrId(entry?.id)) continue;
-    let hit = matchMpAttribute(entry, attributes, getId, getName);
+    let hit = matchMpAttribute(entry, attributes, getId);
     if (!hit && mp) {
       const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
       if (target?.kind === 'attr') {

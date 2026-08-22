@@ -88,7 +88,6 @@ import {
   normalizeAttrMpLinks,
   resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
-import { normalizeAttrCompareName, attrLinkNamesMatch } from '../../utils/productAttrMpDiff.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
 import { isOzonManufacturerArticleAttr, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
@@ -352,19 +351,13 @@ function parseMpAttrColKey(colKey) {
 /** Карты подписей характеристик МП — обновляются при загрузке таблицы. */
 let bulkEditMpLabelMaps = { ozon: {}, wb: {}, ym: {} };
 
-function findErpAttrColForMpAttr(erpAttrCols, mp, attrId, labelMaps = bulkEditMpLabelMaps, attrName = '') {
+function findErpAttrColForMpAttr(erpAttrCols, mp, attrId, labelMaps = bulkEditMpLabelMaps, _attrName = '') {
   const want = String(attrId);
-  const wantName = normalizeAttrCompareName(attrName);
   return (
     (erpAttrCols || []).find((c) => {
       const entries = normalizeAttrMpLinkList(c?.erpAttr?.mpLinks?.[mp]);
       return entries.some((entry) => {
-        if (String(entry.id || '') === want) return true;
-        if (wantName && entry.name && attrLinkNamesMatch(entry.name, attrName)) return true;
-        const meta = labelMaps?.[mp]?.[want];
-        if (wantName && entry.name && meta && attrLinkNamesMatch(entry.name, schemaAttrName(meta))) {
-          return true;
-        }
+        if (String(entry.id || '') === want && !isMpOfferFieldAttrId(entry.id)) return true;
         const target = resolveAttrMpLinkTarget(entry, mp, labelMaps);
         return target?.kind === 'attr' && String(target.attrId) === want;
       });
@@ -667,30 +660,26 @@ function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps,
 function isBulkLinkedMpReadonly(row, colKey, erpAttrCols = [], mpAttrCols = []) {
   const mpOffer = parseMpOfferFieldColKey(colKey);
   if (mpOffer) {
-    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
-    if (erpCol?.linkFieldKey) {
-      const mp = mpBucketFromOfferFieldId(mpOffer.offerId);
-      if (!mp) return false;
-      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mp);
-    }
+    const mp = mpBucketFromOfferFieldId(mpOffer.offerId);
+    const links = normalizeMpFieldLinks(row?.mp_field_links);
+    const pseudoCol = {
+      key: colKey,
+      mpBucket: mp,
+      mpOfferField: { mp, offerId: mpOffer.offerId },
+    };
+    if (bulkMpColumnLinkActive(links, pseudoCol, erpAttrCols)) return true;
     return false;
   }
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
     const col = (mpAttrCols || []).find((c) => c.key === colKey);
-    const linkKey = bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols);
-    if (linkKey) {
-      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), linkKey, mpAttr.mp);
-    }
+    if (col && bulkMpColumnLinkActive(row?.mp_field_links, col, erpAttrCols)) return true;
     return false;
   }
   const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
   if (dedicatedOfferId) {
-    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, dedicatedOfferId);
     const mp = bulkMpCodeForColumn(colKey);
-    if (erpCol?.linkFieldKey && mp) {
-      return isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), erpCol.linkFieldKey, mp);
-    }
+    return bulkMpColumnLinkActive(row?.mp_field_links, { key: colKey, mpBucket: mp }, erpAttrCols);
   }
   const fieldKey = bulkLinkFieldForColumn(colKey);
   const mp = bulkMpCodeForColumn(colKey);
@@ -745,16 +734,76 @@ function findErpColForMpAttrMirror(erpAttrCols, mpAttr, col) {
   return null;
 }
 
+/** Ключ связи для колонки МП: приоритет у ERP-атрибута (attr_*), не у brand/name/sku. */
+function resolveBulkMpColumnLinkFieldKey(col, erpAttrCols) {
+  if (col?.mpAttr) {
+    const erpCol = findErpColForMpAttrMirror(erpAttrCols, col.mpAttr, col);
+    if (erpCol?.linkFieldKey) return erpCol.linkFieldKey;
+  }
+  const offerId =
+    col?.mpOfferField?.offerId ||
+    (col?.key ? BULK_DEDICATED_OFFER_FIELD_BY_COL[col.key] : null);
+  if (offerId) {
+    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, offerId);
+    if (erpCol?.linkFieldKey) return erpCol.linkFieldKey;
+  }
+  return col?.linkFieldKey || '';
+}
+
+function bulkMpColumnLinkKeys(col, erpAttrCols) {
+  const keys = [];
+  const resolved = resolveBulkMpColumnLinkFieldKey(col, erpAttrCols);
+  if (resolved) keys.push(resolved);
+  const dedicatedKey = bulkLinkFieldForColumn(col?.key);
+  if (dedicatedKey && !keys.includes(dedicatedKey)) keys.push(dedicatedKey);
+  if (
+    col?.linkFieldKey &&
+    isDedicatedMpFieldLinkKey(col.linkFieldKey) &&
+    !keys.includes(col.linkFieldKey)
+  ) {
+    keys.push(col.linkFieldKey);
+  }
+  return keys;
+}
+
+function bulkMpColumnLinkActive(links, col, erpAttrCols) {
+  const mp = col.mpBucket || col.mpAttr?.bucket || col.mpOfferField?.mp || bulkMpCodeForColumn(col.key);
+  if (!mp) return false;
+  const normalized = normalizeMpFieldLinks(links);
+  return bulkMpColumnLinkKeys(col, erpAttrCols).some((k) => isMpFieldLinked(normalized, k, mp));
+}
+
+function bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit) {
+  if (isAttrMpFieldLinkKey(linkKey)) {
+    const erpCol = (erpAttrCols || []).find((c) => c.linkFieldKey === linkKey);
+    if (erpCol) return row[erpCol.key] ?? '';
+  }
+  if (isDedicatedMpFieldLinkKey(linkKey)) {
+    return bulkMirrorFromMainFieldKey(row, linkKey, colKey, lengthUnit, weightUnit);
+  }
+  return row[colKey] ?? '';
+}
+
 function bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols) {
-  if (col?.linkFieldKey) return col.linkFieldKey;
-  const erpCol = findErpColForMpAttrMirror(erpAttrCols, mpAttr, col);
-  return erpCol?.linkFieldKey || '';
+  const colWithAttr = col?.mpAttr ? col : mpAttr ? { ...col, mpAttr } : col;
+  return resolveBulkMpColumnLinkFieldKey(colWithAttr, erpAttrCols);
 }
 
 /** Значение колонки МП при включённой связи: как на «Основном». */
 function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], lengthUnit = 'mm', weightUnit = 'g') {
   const mpOffer = parseMpOfferFieldColKey(colKey);
   if (mpOffer) {
+    const mp = mpBucketFromOfferFieldId(mpOffer.offerId);
+    const links = normalizeMpFieldLinks(row.mp_field_links);
+    const pseudoCol = {
+      key: colKey,
+      mpBucket: mp,
+      mpOfferField: { mp, offerId: mpOffer.offerId },
+    };
+    for (const linkKey of bulkMpColumnLinkKeys(pseudoCol, erpAttrCols)) {
+      if (!mp || !isMpFieldLinked(links, linkKey, mp)) continue;
+      return bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit);
+    }
     const erpCol = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
     if (erpCol) return row[erpCol.key] ?? '';
   }
@@ -768,43 +817,37 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
         return mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit);
       }
     }
-    const linkKey = bulkMpAttrColumnLinkFieldKey(col, mpAttr, erpAttrCols);
-    if (linkKey && isDedicatedMpFieldLinkKey(linkKey)) {
-      return bulkMirrorFromMainFieldKey(row, linkKey, colKey, lengthUnit, weightUnit);
-    }
-    if (linkKey && isAttrMpFieldLinkKey(linkKey)) {
-      const erpCol =
-        (erpAttrCols || []).find((c) => c.linkFieldKey === linkKey) ||
-        findErpColForMpAttrMirror(erpAttrCols, mpAttr, col);
-      if (erpCol) return row[erpCol.key] ?? '';
+    const linkKeys = bulkMpColumnLinkKeys(col, erpAttrCols);
+    const links = normalizeMpFieldLinks(row.mp_field_links);
+    for (const linkKey of linkKeys) {
+      if (!isMpFieldLinked(links, linkKey, mpAttr.mp)) continue;
+      if (linkKey === 'product_dimensions') {
+        const meta = { id: mpAttr.attrId, name: col._humanName || col.label };
+        const axis = productDimAxisForMpAttr(meta, mpAttr.mp);
+        if (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') {
+          return mainProductDimDisplayForAxis(row, axis, lengthUnit, weightUnit);
+        }
+      }
+      return bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit);
     }
     const erpCol = findErpColForMpAttrMirror(erpAttrCols, mpAttr, col);
     if (erpCol) return row[erpCol.key] ?? '';
-  }
-  const fieldKey = bulkLinkFieldForColumn(colKey);
-  if (fieldKey === 'name') return row.name ?? '';
-  if (fieldKey === 'description') return row.description ?? '';
-  if (fieldKey === 'brand') return row.brand ?? '';
-  if (fieldKey === 'country') return row.country_of_origin ?? '';
-  if (fieldKey === 'dimensions') {
-    const dimKey = BULK_DIM_KEYS.find((d) => colKey === d || String(colKey).endsWith(`_pack_${d}`));
-    return dimKey ? row[dimKey] ?? '' : row[colKey];
-  }
-  if (fieldKey === 'product_dimensions') {
-    const base = productDimBaseKey(colKey);
-    return base ? row[base] ?? '' : row[colKey];
   }
   const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
   if (dedicatedOfferId) {
     const mp = bulkMpCodeForColumn(colKey);
     const links = normalizeMpFieldLinks(row.mp_field_links);
-    const erpCol = findErpAttrColForMpOfferField(erpAttrCols, dedicatedOfferId);
-    if (erpCol?.linkFieldKey && mp && isMpFieldLinked(links, erpCol.linkFieldKey, mp)) {
-      return row[erpCol.key] ?? '';
+    const pseudoCol = { key: colKey, mpBucket: mp };
+    for (const linkKey of bulkMpColumnLinkKeys(pseudoCol, erpAttrCols)) {
+      if (!mp || !isMpFieldLinked(links, linkKey, mp)) continue;
+      return bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit);
     }
-    if (mp && isMpFieldLinked(links, 'sku', mp)) {
-      return row.sku ?? '';
-    }
+  }
+  const fieldKey = bulkLinkFieldForColumn(colKey);
+  const mp = bulkMpCodeForColumn(colKey);
+  const links = normalizeMpFieldLinks(row.mp_field_links);
+  if (fieldKey && mp && isMpFieldLinked(links, fieldKey, mp)) {
+    return bulkMirrorFromMainFieldKey(row, fieldKey, colKey, lengthUnit, weightUnit);
   }
   return row[colKey];
 }
@@ -3017,7 +3060,7 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
     );
     if (erp) {
       const attrMapped = mappedMpsFromAttrLinks(erp.erpAttr?.mpLinks);
-      const linkFieldKey = next.linkFieldKey || erp.linkFieldKey;
+      const linkFieldKey = erp.linkFieldKey || next.linkFieldKey;
       next = {
         ...next,
         mappedMps: next.mappedMps?.length ? next.mappedMps : [next.mpAttr.bucket],
@@ -5884,7 +5927,20 @@ export function ProductsBulkEdit() {
   );
 
   const headerLinksByField = useMemo(() => {
-    const keys = [...new Set((displayColumns || []).map((c) => c.linkFieldKey).filter(Boolean))];
+    const keys = new Set();
+    for (const col of displayColumns || []) {
+      if (col.linkFieldKey) keys.add(col.linkFieldKey);
+      if (col.mpAttr || col.mpOfferField || col.mpBucket) {
+        const resolved = resolveBulkMpColumnLinkFieldKey(col, erpAttrColumnDefs);
+        if (resolved) keys.add(resolved);
+      }
+    }
+    for (const r of rows) {
+      const links = normalizeMpFieldLinks(r.mp_field_links);
+      for (const fk of Object.keys(links)) {
+        if (Array.isArray(links[fk]) && links[fk].length) keys.add(fk);
+      }
+    }
     const out = {};
     for (const fieldKey of keys) {
       const base = { ...emptyMpFieldLinks(), [fieldKey]: [] };
@@ -5903,7 +5959,7 @@ export function ProductsBulkEdit() {
     return out;
     // rows читаем при смене fingerprint (связи) или набора колонок
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mpLinksFingerprint, displayColumns, rows.length]);
+  }, [mpLinksFingerprint, displayColumns, erpAttrColumnDefs, rows.length]);
 
   const headerLinksForField = useCallback(
     (fieldKey) => headerLinksByField[fieldKey] || emptyMpFieldLinks(),
@@ -7129,35 +7185,16 @@ export function ProductsBulkEdit() {
                     rows,
                     filterScopeCategoryIds
                   );
-                  const mpLinkFieldKey =
-                    col.linkFieldKey ||
-                    (col.mpAttr
-                      ? bulkMpAttrColumnLinkFieldKey(
-                          col,
-                          col.mpAttr,
-                          erpAttrColumnDefs
-                        )
-                      : '');
+                  const mpCode = col.mpBucket || col.mpAttr?.bucket || col.mpOfferField?.mp || '';
                   const showCategoryLinkIcon = categoryLinked && !isMpDataColumn && !showLinkToggles;
-                  // Столбцы МП: скрепка (связь с «Основным»), не тумблеры OZ/WB/ЯМ.
-                  const showFromMain = !!(
-                    isMpDataColumn &&
-                    (mpLinkFieldKey || categoryLinked || col.mappedMps?.length)
-                  );
+                  // Столбцы МП: скрепка только если связь настроена в категории.
+                  const showFromMain = !!(isMpDataColumn && categoryLinked);
                   const fromMainLinked =
-                    showFromMain && mpLinkFieldKey && col.mpBucket
-                      ? isMpFieldLinked(
-                          headerLinksForField(mpLinkFieldKey),
-                          mpLinkFieldKey,
-                          col.mpBucket
+                    showFromMain && mpCode
+                      ? bulkMpColumnLinkKeys(col, erpAttrColumnDefs).some((k) =>
+                          isMpFieldLinked(headerLinksForField(k), k, mpCode)
                         )
-                      : showFromMain && mpLinkFieldKey && col.mpAttr
-                        ? isMpFieldLinked(
-                            headerLinksForField(mpLinkFieldKey),
-                            mpLinkFieldKey,
-                            col.mpAttr.bucket
-                          )
-                        : false;
+                      : false;
                   const canFill = !(col.readonly || col.noBulk);
                   const showMpRow =
                     showMasterMp ||
