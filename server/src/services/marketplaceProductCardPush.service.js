@@ -38,6 +38,9 @@ import {
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
 import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
+import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { refreshComputedAttributeValues } from './computedAttributes.service.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -427,6 +430,221 @@ async function fetchOzonProductInfoItem(offerId, productId, apiOpts) {
   );
 }
 
+function toPosPrice(v) {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(',', '.').replace(/\s/g, ''));
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
+function formatMoneyStr(n) {
+  return String(Math.round(Number(n) * 100) / 100);
+}
+
+/**
+ * «Цена до скидки» / «Цена после скидки» из системных атрибутов ERP + мин. цена МП.
+ */
+async function loadErpCardPrices(productId, marketplace) {
+  const out = { before: null, after: null, min: null };
+  try {
+    await refreshComputedAttributeValues(query, productId);
+  } catch (e) {
+    logger.warn('[CardPush] refresh computed prices failed', e?.message || e);
+  }
+  try {
+    const r = await query(
+      `SELECT pa.system_key, pav.value
+       FROM product_attributes pa
+       LEFT JOIN product_attribute_values pav
+         ON pav.attribute_id = pa.id AND pav.product_id = $1
+       WHERE pa.system_key IN ($2, $3)`,
+      [productId, SYSTEM_ATTR_KEYS.PRICE_BEFORE_DISCOUNT, SYSTEM_ATTR_KEYS.PRICE_AFTER_DISCOUNT]
+    );
+    for (const row of r.rows || []) {
+      const n = toPosPrice(row.value);
+      if (n == null) continue;
+      if (row.system_key === SYSTEM_ATTR_KEYS.PRICE_BEFORE_DISCOUNT) out.before = n;
+      if (row.system_key === SYSTEM_ATTR_KEYS.PRICE_AFTER_DISCOUNT) out.after = n;
+    }
+  } catch (e) {
+    logger.warn('[CardPush] load ERP price attributes failed', e?.message || e);
+  }
+  if (marketplace) {
+    try {
+      const r = await query(
+        `SELECT min_price FROM product_marketplace_prices
+         WHERE product_id = $1 AND marketplace = $2`,
+        [productId, marketplace]
+      );
+      out.min = toPosPrice(r.rows?.[0]?.min_price);
+    } catch (e) {
+      if (!String(e?.message || '').includes('min_price')) {
+        logger.warn('[CardPush] load stored min price failed', e?.message || e);
+      }
+    }
+  }
+  return out;
+}
+
+function sellingFromErpPrices(erp) {
+  return erp?.after ?? erp?.before ?? null;
+}
+
+/** YM: value и зачёркнутая цена — целые; скидка только 5–99%. */
+function ymPriceObject(erp) {
+  const after = sellingFromErpPrices(erp);
+  if (after == null) return null;
+  const value = Math.max(1, Math.round(after));
+  const price = { value, currencyId: 'RUR' };
+  const before = erp?.before != null ? Math.round(erp.before) : null;
+  if (before != null && before > value) {
+    const discountPct = (1 - value / before) * 100;
+    if (discountPct >= 5 && discountPct <= 99) price.discountBase = before;
+  }
+  return price;
+}
+
+function applyErpPricesToOzonImportItem(item, erp, existingFields = {}) {
+  const after = sellingFromErpPrices(erp);
+  if (after != null) {
+    item.price = formatMoneyStr(after);
+    if (erp.before != null && erp.before > after + 0.009) {
+      item.old_price = formatMoneyStr(erp.before);
+    } else {
+      delete item.old_price;
+    }
+  } else {
+    Object.assign(item, existingFields);
+  }
+  const priceN = toPosPrice(item.price);
+  const min = erp.min ?? toPosPrice(existingFields.min_price);
+  if (min != null && priceN != null && min > 0 && min < priceN) {
+    item.min_price = formatMoneyStr(min);
+  }
+}
+
+function wbListPriceAndDiscount(erp) {
+  const after = sellingFromErpPrices(erp);
+  const before = erp?.before ?? null;
+  if (after == null) return null;
+  if (before != null && before > after + 0.009) {
+    const discount = Math.round((1 - after / before) * 100);
+    return {
+      price: Math.max(1, Math.round(before)),
+      discount: Math.max(1, Math.min(99, discount)),
+    };
+  }
+  return { price: Math.max(1, Math.round(after)), discount: 0 };
+}
+
+function pricePushNote(priceRes) {
+  if (!priceRes) return '';
+  if (priceRes.ok) {
+    const bits = [];
+    if (priceRes.selling != null) bits.push(`цена ${priceRes.selling}`);
+    if (priceRes.before != null && priceRes.before > Number(priceRes.selling || 0)) {
+      bits.push(`до скидки ${priceRes.before}`);
+    }
+    return bits.length ? ` Цены из атрибутов ERP: ${bits.join(', ')}.` : ' Цены из атрибутов ERP отправлены.';
+  }
+  if (priceRes.skipped) return '';
+  if (priceRes.error) return ` Цены: ${priceRes.error}`;
+  return '';
+}
+
+async function pushOzonPricesFromErp(offerId, productId, erp, apiOpts) {
+  const after = sellingFromErpPrices(erp);
+  if (after == null) return { skipped: true, reason: 'no_attr_price' };
+  const entry = {
+    price: formatMoneyStr(after),
+    currency_code: 'RUB',
+    auto_action_enabled: 'DISABLED',
+    auto_add_to_ozon_actions_list_enabled: 'DISABLED',
+  };
+  if (erp.before != null && erp.before > after + 0.009) {
+    entry.old_price = formatMoneyStr(erp.before);
+  }
+  if (erp.min != null && erp.min > 0 && erp.min < after) {
+    entry.min_price = formatMoneyStr(erp.min);
+  }
+  const pid = productId != null ? Number(productId) : NaN;
+  if (Number.isFinite(pid) && pid > 0) entry.product_id = pid;
+  else entry.offer_id = offerId;
+  try {
+    await ozonApiPostWithRetry('/v1/product/import/prices', { prices: [entry] }, apiOpts);
+    return { ok: true, selling: after, before: erp.before };
+  } catch (e) {
+    return { ok: false, error: `Ozon import/prices: ${e?.message || String(e)}`.substring(0, 220) };
+  }
+}
+
+async function pushWbPricesFromErp(nmId, erp, ctx) {
+  const pack = wbListPriceAndDiscount(erp);
+  if (!pack || !nmId) return { skipped: true, reason: 'no_attr_price' };
+  const cfg = await integrationsService.getMarketplaceConfig('wildberries', {
+    profileId: ctx.profileId ?? null,
+    organizationId: ctx.organizationId ?? null,
+  });
+  const token = integrationsService._normalizeWbToken(cfg?.api_key ?? cfg?.apiKey);
+  if (!token) return { skipped: true, reason: 'no_credentials' };
+  const fetch = (await import('node-fetch')).default;
+  const payload = {
+    data: [{ nmID: Number(nmId), price: pack.price, discount: pack.discount }],
+  };
+  const response = await fetch('https://discounts-prices-api.wildberries.ru/api/v2/upload/task', {
+    method: 'POST',
+    headers: {
+      Authorization: String(token),
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    return { ok: false, error: `WB цены ${response.status}: ${String(text).substring(0, 180)}` };
+  }
+  return { ok: true, selling: erp.after ?? pack.price, before: erp.before ?? pack.price };
+}
+
+async function pushYmPricesFromErp(offerId, erp, ctx) {
+  const after = sellingFromErpPrices(erp);
+  if (after == null || !offerId) return { skipped: true, reason: 'no_attr_price' };
+  const cfg = await integrationsService.getMarketplaceConfig('yandex', {
+    profileId: ctx.profileId ?? null,
+    organizationId: ctx.organizationId ?? null,
+  });
+  const apiKey = integrationsService._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
+  const campaignId = String(cfg?.campaign_id ?? cfg?.campaignId ?? '').trim();
+  const businessIdRaw = cfg?.business_id ?? cfg?.businessId;
+  const businessId =
+    businessIdRaw != null && String(businessIdRaw).trim() !== '' ? String(businessIdRaw).trim() : '';
+  if (!apiKey || (!campaignId && !businessId)) return { skipped: true, reason: 'no_credentials' };
+  const useBusiness = Boolean(businessId);
+  const updatesPath = useBusiness
+    ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices/updates`
+    : `/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices/updates`;
+  const price = ymPriceObject(erp);
+  if (!price) return { skipped: true, reason: 'no_attr_price' };
+  const offerPayload = useBusiness ? { offerId, price } : { id: offerId, price };
+  const fetch = (await import('node-fetch')).default;
+  const agent = getYandexHttpsAgent();
+  const response = await fetch(`https://api.partner.market.yandex.ru${updatesPath}`, {
+    method: 'POST',
+    headers: {
+      'Api-Key': apiKey,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ offers: [offerPayload] }),
+    ...(agent ? { agent } : {}),
+  });
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    return { ok: false, error: `YM цены ${response.status}: ${String(text).substring(0, 180)}` };
+  }
+  return { ok: true, selling: after, before: erp.before };
+}
+
 function extractOzonPriceFields(infoItem) {
   if (!infoItem || typeof infoItem !== 'object') return {};
   const toPos = (v) => {
@@ -785,6 +1003,8 @@ async function pushOzonCard(product, categoryMm, ctx) {
     ozonOverride,
   };
 
+  const erpPrices = await loadErpCardPrices(product.id, 'ozon');
+
   // Цена обязательна в /v3/product/import: без неё кабинет часто пишет
   // «Цена не может быть отрицательной» / проблемы с min_price, а import/info — skipped.
   let ozonInfoBefore = null;
@@ -793,7 +1013,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
     ozonInfoBefore = await fetchOzonProductInfoItem(offerId, item.product_id ?? null, apiOpts);
     ozonExisted = !!(ozonInfoBefore && (ozonInfoBefore.id || ozonInfoBefore.offer_id));
     const priceFields = extractOzonPriceFields(ozonInfoBefore);
-    Object.assign(item, priceFields);
+    applyErpPricesToOzonImportItem(item, erpPrices, priceFields);
     if (ozonInfoBefore?.id != null && item.product_id == null) {
       const idNum = Number(ozonInfoBefore.id);
       if (Number.isFinite(idNum) && idNum > 0) item.product_id = idNum;
@@ -822,6 +1042,17 @@ async function pushOzonCard(product, categoryMm, ctx) {
       offerId,
       error: e?.message || String(e),
     });
+  }
+  if (item.price == null) {
+    applyErpPricesToOzonImportItem(item, erpPrices, {});
+  }
+  if (!ozonExisted && sellingFromErpPrices(erpPrices) == null && item.price == null) {
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      error:
+        'Для создания карточки Ozon задайте «Цену после скидки» или «Цену до скидки» в карточке товара',
+    };
   }
 
   // JPEG URL заранее: и в /v3/product/import, и в pictures/import
@@ -854,6 +1085,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
       hasDims: item.depth != null,
       weight: item.weight ?? null,
       price: item.price ?? null,
+      old_price: item.old_price ?? null,
       min_price: item.min_price ?? null,
       images: picUrls.length,
       nameLen: String(item.name || '').length,
@@ -1069,6 +1301,25 @@ async function pushOzonCard(product, categoryMm, ctx) {
         };
       } else {
         result = { ...result, created: !ozonExisted };
+      }
+      const ozonPidForPrice = Number(ozonInfoAfter?.id ?? item.product_id ?? ozonInfoBefore?.id ?? 0);
+      const priceRes = await pushOzonPricesFromErp(
+        offerId,
+        ozonPidForPrice,
+        erpPrices,
+        apiOpts
+      );
+      const note = pricePushNote(priceRes);
+      if (note) {
+        result = {
+          ...result,
+          message: `${result.message || ''}${note}`.trim(),
+        };
+        if (priceRes.ok === false && priceRes.error) {
+          result.warnings = result.warnings
+            ? `${result.warnings}\n${priceRes.error}`
+            : priceRes.error;
+        }
       }
     }
 
@@ -1479,6 +1730,17 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         ? ` (категория WB subjectId ${existing.subjectID} → ${subjectId} через API не меняется — только контент)`
         : '';
 
+    const erpPrices = await loadErpCardPrices(product.id, 'wb');
+    let priceNote = '';
+    if (nmId) {
+      try {
+        const priceRes = await pushWbPricesFromErp(nmId, erpPrices, ctx);
+        priceNote = pricePushNote(priceRes);
+      } catch (e) {
+        priceNote = ` Цены: ${e?.message || String(e)}`;
+      }
+    }
+
     if (creating) {
       const nmNote = nmId
         ? `nmId ${nmId}`
@@ -1487,7 +1749,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         marketplace: 'wb',
         ok: true,
         created: true,
-        message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}`,
+        message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}${priceNote}`,
         imagesPushed,
       };
     }
@@ -1496,7 +1758,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       marketplace: 'wb',
       ok: true,
       created: false,
-      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}`,
+      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}${priceNote}`,
       imagesPushed,
       subjectIdUnchanged:
         hasSubjectMapping &&
@@ -1683,6 +1945,13 @@ async function pushYandexCard(product, categoryMm, ctx) {
     offer.pictures = picUrls;
   }
 
+  const erpPrices = await loadErpCardPrices(product.id, 'ym');
+  const ymBasicPrice = ymPriceObject(erpPrices);
+  if (ymBasicPrice) {
+    offer.basicPrice = ymBasicPrice;
+    logger.info('[YM push] basicPrice from ERP', { offerId, ...ymBasicPrice });
+  }
+
   let existingYm = null;
   try {
     existingYm = await integrationsService.getYandexOfferByOfferId(offerId, {
@@ -1759,13 +2028,30 @@ async function pushYandexCard(product, categoryMm, ctx) {
         error: `Яндекс.Маркет вернул статус «${ymStatus}»`,
       };
     }
+    let priceNote = '';
+    if (ymBasicPrice) {
+      const bits = [`цена ${ymBasicPrice.value}`];
+      if (ymBasicPrice.discountBase) bits.push(`до скидки ${ymBasicPrice.discountBase}`);
+      priceNote = ` Цены из атрибутов ERP: ${bits.join(', ')}.`;
+    } else {
+      priceNote =
+        ' Цены ERP не найдены — задайте «Цену после скидки» или «Цену до скидки» в карточке товара.';
+    }
+    try {
+      const priceRes = await pushYmPricesFromErp(offerId, erpPrices, ctx);
+      if (priceRes?.ok === false && priceRes.error) {
+        priceNote += ` ${priceRes.error}`;
+      }
+    } catch (e) {
+      priceNote += ` Цены (витрина): ${e?.message || String(e)}`;
+    }
     return {
       marketplace: 'ym',
       ok: true,
       created: creating,
       message: creating
-        ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)`
-        : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет`,
+        ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)${priceNote}`
+        : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет${priceNote}`,
     };
   } catch (e) {
     return { marketplace: 'ym', ok: false, error: e?.message || String(e) };
