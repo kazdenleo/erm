@@ -186,10 +186,28 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
 
   const fromProducts = await collectMpBrandCandidatesFromProducts(brandId, profileId);
   const ozonSuggest = await suggestOzonBrandMapping(brand, profileId);
+  let wbFromDir = [];
+  try {
+    wbFromDir = await integrationsService.getWildberriesBrands({
+      q: brand.name,
+      profileId,
+    });
+  } catch {
+    wbFromDir = [];
+  }
+  const wbCandidates = [
+    ...wbFromDir.map((b) => ({
+      name: b.name,
+      mp_brand_id: b.id,
+      count: 0,
+      source: 'wb_directory',
+    })),
+    ...(fromProducts.wb || []),
+  ];
 
   const suggestions = {
     ozon: ozonSuggest.candidates,
-    wb: fromProducts.wb,
+    wb: wbCandidates,
     ym: fromProducts.ym,
     ozon_category_pair: ozonSuggest.pair,
   };
@@ -208,7 +226,7 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
   };
 
   await upsert('ozon', ozonSuggest.candidates[0]);
-  await upsert('wb', fromProducts.wb[0]);
+  await upsert('wb', wbCandidates[0]);
 
   return { suggestions, applied };
 }

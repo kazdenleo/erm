@@ -190,13 +190,30 @@ export const integrationsApi = {
       const response = await api.get('/integrations/marketplaces/wildberries/categories');
       return response.data;
     } catch (error) {
-      // Если ошибка 500 или таблица не существует, возвращаем пустой массив
       if (error.response?.status === 500 || error.response?.status === 404) {
         console.warn('[Integrations API] WB categories not available, returning empty array');
         return { ok: true, data: [] };
       }
       throw error;
     }
+  },
+
+  /**
+   * Справочник брендов WB (Miles → MILES).
+   * @param {{ q?: string, subjectId?: number|string, organizationId?: number|string }} params
+   */
+  getWildberriesBrands: async (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.q != null && String(params.q).trim() !== '') q.set('q', String(params.q).trim());
+    if (params.subjectId != null && String(params.subjectId).trim() !== '') {
+      q.set('subjectId', String(params.subjectId).trim());
+    }
+    if (params.organizationId != null && String(params.organizationId).trim() !== '') {
+      q.set('organizationId', String(params.organizationId).trim());
+    }
+    const response = await api.get(`/integrations/marketplaces/wildberries/brands?${q.toString()}`);
+    const list = response.data?.data ?? response.data;
+    return Array.isArray(list) ? list : [];
   },
 
   /**

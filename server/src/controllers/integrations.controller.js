@@ -758,6 +758,38 @@ class IntegrationsController {
   }
 
   /**
+   * GET /api/integrations/marketplaces/wildberries/brands?q=&subjectId=
+   * Справочник брендов WB (поиск без учёта регистра).
+   */
+  async getWildberriesBrands(req, res, next) {
+    try {
+      const q = String(req.query.q ?? req.query.pattern ?? req.query.name ?? '').trim();
+      const subjectId = req.query.subjectId ?? req.query.subject_id ?? null;
+      const organizationId =
+        req.query.organizationId ??
+        req.query.organization_id ??
+        req.get('x-organization-id') ??
+        req.get('X-Organization-Id') ??
+        null;
+      const tid = tenantListProfileId(req);
+      const brands = await integrationsService.getWildberriesBrands({
+        q,
+        subjectId,
+        organizationId,
+        profileId: tid === TENANT_LIST_EMPTY ? null : tid,
+      });
+      return res.status(200).json({ ok: true, data: Array.isArray(brands) ? brands : [] });
+    } catch (error) {
+      logger.error('[Integrations Controller] Error getting WB brands:', error);
+      return res.status(400).json({
+        ok: false,
+        error: error.message || 'Не удалось загрузить справочник брендов Wildberries',
+        data: [],
+      });
+    }
+  }
+
+  /**
    * GET /api/integrations/marketplaces/account-balances
    * Балансы Ozon (отчёт о движении средств), WB (Finance API), примечание по Я.Маркету.
    */

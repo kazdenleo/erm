@@ -10,6 +10,7 @@ import { Modal } from '../../common/Modal/Modal';
 import { certificatesApi } from '../../../services/certificates.api';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { brandsApi } from '../../../services/brands.api';
+import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
 
 const MP_MARKETPLACES = [
@@ -488,7 +489,7 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
         </div>
         <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
           Названия бренда на МП подставляются в карточку товара при выборе бренда в ERP.
-          «Загрузить и сопоставить» берёт данные из ваших товаров и поиска Ozon.
+          Для Wildberries укажите имя из справочника WB (регистр важен: MILES, не Miles).
         </div>
         {!brand?.id && (
           <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
@@ -501,12 +502,21 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               <div style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '10px' }}>
                 <div style={{ fontWeight: 600, fontSize: '12px', marginBottom: '8px' }}>{label}</div>
                 <label className="form-label" style={{ fontSize: '11px' }}>Название на МП</label>
-                <input
-                  className="form-control form-control-sm"
-                  value={mpMappings[key]?.mp_brand_name || ''}
-                  onChange={(e) => handleMpMappingChange(key, 'mp_brand_name', e.target.value)}
-                  placeholder="Как в кабинете МП"
-                />
+                {key === 'wb' ? (
+                  <WbBrandSuggest
+                    className="form-control form-control-sm"
+                    value={mpMappings[key]?.mp_brand_name || ''}
+                    onChange={(next) => handleMpMappingChange(key, 'mp_brand_name', next)}
+                    placeholder="Словарь WB, например MILES"
+                  />
+                ) : (
+                  <input
+                    className="form-control form-control-sm"
+                    value={mpMappings[key]?.mp_brand_name || ''}
+                    onChange={(e) => handleMpMappingChange(key, 'mp_brand_name', e.target.value)}
+                    placeholder="Как в кабинете МП"
+                  />
+                )}
                 {key === 'ozon' && (
                   <>
                     <label className="form-label" style={{ fontSize: '11px', marginTop: '8px' }}>ID в справочнике Ozon</label>

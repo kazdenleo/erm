@@ -28,6 +28,7 @@ import {
 } from '../../../utils/attributeFormula.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
+import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
 import {
   canUsePrintHelper,
   openProductLabelPrintTab,
@@ -9008,15 +9009,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       <MpFromMainLinkIcon linked />
                     ) : null}
                   </label>
-                  <input
+                  <WbBrandSuggest
                     id="wb-tab-brand-wb"
-                    type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_brand')}
                     value={formData.mp_wb_brand}
-                    onChange={(e) =>
-                      handleMpCardFieldChange('mp_wb_brand', 'brand', 'brand', 'wb', e.target.value)
+                    onChange={(next) =>
+                      handleMpCardFieldChange('mp_wb_brand', 'brand', 'brand', 'wb', next)
                     }
-                    placeholder="Текст для карточки WB"
+                    subjectId={effectiveWbSubjectId}
+                    organizationId={wbAttributesOrganizationId}
+                    placeholder="Словарь WB, например MILES"
                   />
                   <MarketplaceFieldLimitHint
                     value={formData.mp_wb_brand}

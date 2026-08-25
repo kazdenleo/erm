@@ -41,6 +41,7 @@ import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { refreshComputedAttributeValues } from './computedAttributes.service.js';
+import repositoryFactory from '../config/repository-factory.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -1642,34 +1643,41 @@ function pickWbDirectoryBrandName(list, wanted) {
   return starts || null;
 }
 
-async function resolveWbDirectoryBrand(brand, _subjectId, ctx) {
-  const wanted = trimOrNull(brand);
-  if (!wanted) return { brand: null, unmatched: false };
-  const q = encodeURIComponent(wanted);
-  const paths = [`/content/v2/directory/brands?pattern=${q}`, `/content/v2/directory/brands?name=${q}`];
-  let sawList = false;
-  for (const path of paths) {
-    try {
-      const data = await integrationsService._wbContentApiGet(path, {
-        profileId: ctx.profileId,
-        organizationId: ctx.organizationId,
-      });
-      const list = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.data)
-          ? data.data
-          : Array.isArray(data?.brands)
-            ? data.brands
-            : [];
-      if (Array.isArray(list)) sawList = true;
-      const hit = pickWbDirectoryBrandName(list, wanted);
-      if (hit) return { brand: hit, unmatched: false };
-    } catch (e) {
-      logger.warn('[MP Card Push] WB brands directory:', e?.message || e);
-    }
+async function resolveWbMappedBrandName(product) {
+  const brandId = Number(product?.brand_id ?? product?.brandId);
+  if (!Number.isFinite(brandId) || brandId < 1) return null;
+  try {
+    const repo = repositoryFactory.getBrandsRepository();
+    const mappings = repo?.findMarketplaceMappings ? await repo.findMarketplaceMappings(brandId) : [];
+    const wb = (mappings || []).find((m) => String(m.marketplace || '').toLowerCase() === 'wb');
+    return trimOrNull(wb?.mp_brand_name ?? wb?.mpBrandName);
+  } catch (e) {
+    logger.warn('[MP Card Push] WB brand mapping:', e?.message || e);
+    return null;
   }
-  if (!sawList) return { brand: wanted, unmatched: false };
-  return { brand: wanted, unmatched: true };
+}
+
+async function resolveWbDirectoryBrand(brand, subjectId, ctx, product) {
+  const wanted = trimOrNull(brand);
+  const mapped = await resolveWbMappedBrandName(product);
+  if (mapped && (!wanted || mapped.toLowerCase() === wanted.toLowerCase())) {
+    return { brand: mapped, unmatched: false };
+  }
+  if (!wanted) return { brand: null, unmatched: false };
+  try {
+    const list = await integrationsService.getWildberriesBrands({
+      q: wanted,
+      subjectId: Number.isFinite(Number(subjectId)) && Number(subjectId) >= 1 ? subjectId : undefined,
+      profileId: ctx.profileId ?? null,
+      organizationId: ctx.organizationId ?? null,
+    });
+    const hit = pickWbDirectoryBrandName(list, wanted);
+    if (hit) return { brand: hit, unmatched: false };
+    if (Array.isArray(list) && list.length > 0) return { brand: wanted, unmatched: true };
+  } catch (e) {
+    logger.warn('[MP Card Push] WB brands directory:', e?.message || e);
+  }
+  return { brand: wanted, unmatched: false };
 }
 
 async function pushWildberriesCard(product, categoryMm, ctx) {
@@ -1732,7 +1740,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   let brandForCard = brand;
   let brandNote = '';
   if (brandForCard) {
-    const resolved = await resolveWbDirectoryBrand(brandForCard, subjectId, ctx);
+    const resolved = await resolveWbDirectoryBrand(brandForCard, subjectId, ctx, product);
     if (resolved.brand) brandForCard = resolved.brand;
     if (resolved.unmatched) {
       brandNote = ` Бренд «${brand}» не найден в справочнике WB — отправлен как есть.`;

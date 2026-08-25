@@ -57,6 +57,9 @@ router.post('/marketplaces/wildberries/commissions/update', (req, res, next) =>
 router.get('/marketplaces/wildberries/categories', (req, res, next) =>
   integrationsController.getWildberriesCategories(req, res, next)
 );
+router.get('/marketplaces/wildberries/brands', (req, res, next) =>
+  integrationsController.getWildberriesBrands(req, res, next)
+);
 
 // Общие маршруты маркетплейсов
 router.get('/marketplaces/:type', (req, res, next) =>

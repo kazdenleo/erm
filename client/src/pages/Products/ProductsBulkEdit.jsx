@@ -105,6 +105,7 @@ import {
 } from '../../utils/ozonCardTextAttrs.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { integrationsApi } from '../../services/integrations.api.js';
+import { WbBrandSuggest } from '../../components/common/WbBrandSuggest/WbBrandSuggest.jsx';
 import {
   FILTER_CATEGORY_NONE,
   fetchHasUncategorizedProducts,
@@ -6662,6 +6663,19 @@ export function ProductsBulkEdit() {
           ? 'Связано с «Основным». Правка отвяжет это поле у строки'
           : col.title || undefined,
     };
+
+    if (col.key === 'mp_wb_brand') {
+      return (
+        <WbBrandSuggest
+          className={common.className}
+          value={str(v)}
+          onChange={(next) => updateCell(row.id, col.key, next)}
+          organizationId={row.organizationId || filterOrganizationId}
+          title={common.title}
+          disabled={linked}
+        />
+      );
+    }
 
     if (col.input === 'checkbox') {
       const checked = v === 'true' || v === true;

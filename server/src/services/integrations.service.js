@@ -44,6 +44,52 @@ function normalizeIntegrationOfferBarcodes(raw) {
   return out;
 }
 
+function normalizeWbBrandEntries(data) {
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data?.brands)
+        ? data.brands
+        : Array.isArray(data?.result)
+          ? data.result
+          : [];
+  const out = [];
+  const seen = new Set();
+  for (const b of list) {
+    const name = String(b?.name ?? b?.brand ?? (typeof b === 'string' ? b : '')).trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const id = b?.id ?? b?.brandId ?? b?.brand_id ?? null;
+    out.push({
+      name,
+      id: id != null && String(id).trim() !== '' ? String(id) : null,
+    });
+  }
+  return out;
+}
+
+function rankWbBrands(list, q) {
+  const nq = String(q || '').trim().toLowerCase();
+  const src = Array.isArray(list) ? list : [];
+  if (!nq) return src.slice(0, 50);
+  const scored = [];
+  for (const b of src) {
+    const ln = String(b?.name || '').toLowerCase();
+    if (!ln) continue;
+    let score = 0;
+    if (ln === nq) score = 3;
+    else if (ln.startsWith(nq)) score = 2;
+    else if (ln.includes(nq)) score = 1;
+    else continue;
+    scored.push({ ...b, score });
+  }
+  scored.sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name), 'ru'));
+  return scored.map(({ score, ...rest }) => rest).slice(0, 50);
+}
+
 class IntegrationsService {
   /** Ленивая инициализация — иначе цикл stockMovements/kitStock → integrations при загрузке repository-factory. */
   get repository() {
@@ -2062,6 +2108,83 @@ class IntegrationsService {
     });
 
     return normalized;
+  }
+
+  async _findErpWbBrandAliases(q) {
+    const s = String(q || '').trim();
+    if (s.length < 1) return [];
+    try {
+      const r = await query(
+        `SELECT name FROM (
+           SELECT TRIM(bmm.mp_brand_name) AS name
+           FROM brand_marketplace_mappings bmm
+           WHERE bmm.marketplace = 'wb'
+             AND bmm.mp_brand_name IS NOT NULL
+             AND LOWER(TRIM(bmm.mp_brand_name)) LIKE LOWER($1)
+           UNION
+           SELECT TRIM(bmm.mp_brand_name)
+           FROM brands b
+           JOIN brand_marketplace_mappings bmm
+             ON bmm.brand_id = b.id AND bmm.marketplace = 'wb'
+           WHERE LOWER(TRIM(b.name)) = LOWER($2)
+             AND bmm.mp_brand_name IS NOT NULL
+           UNION
+           SELECT TRIM(p.mp_wb_brand)
+           FROM products p
+           WHERE p.mp_wb_brand IS NOT NULL
+             AND LOWER(TRIM(p.mp_wb_brand)) = LOWER($2)
+         ) t
+         WHERE name IS NOT NULL AND name <> ''
+         LIMIT 40`,
+        [`%${s.replace(/%/g, '')}%`, s]
+      );
+      return (r.rows || []).map((row) => ({ name: String(row.name).trim(), id: null }));
+    } catch (e) {
+      logger.debug('[WB brands] ERP aliases failed', e?.message);
+      return [];
+    }
+  }
+
+  /**
+   * Справочник брендов WB: поиск без учёта регистра (Miles → MILES).
+   * @returns {Promise<Array<{ name: string, id: string|null }>>}
+   */
+  async getWildberriesBrands(opts = {}) {
+    const q = String(opts.q ?? opts.pattern ?? opts.name ?? '').trim();
+    const subjectId = Number(opts.subjectId ?? opts.subject_id ?? 0) || 0;
+    const merged = [];
+    const pushAll = (items) => {
+      for (const b of items || []) {
+        if (b?.name) merged.push(b);
+      }
+    };
+
+    if (q.length >= 1) {
+      for (const param of ['pattern', 'name']) {
+        try {
+          const data = await this._wbContentApiGet(
+            `/content/v2/directory/brands?${param}=${encodeURIComponent(q)}`,
+            opts
+          );
+          pushAll(normalizeWbBrandEntries(data));
+        } catch (e) {
+          logger.debug('[WB brands] directory search failed', { param, err: e?.message });
+        }
+      }
+      pushAll(await this._findErpWbBrandAliases(q));
+    }
+
+    if (subjectId > 0 && merged.length < 3) {
+      try {
+        const qs = new URLSearchParams({ subjectId: String(subjectId) });
+        const data = await this._wbContentApiGet(`/api/content/v1/brands?${qs.toString()}`, opts);
+        pushAll(normalizeWbBrandEntries(data));
+      } catch (e) {
+        logger.debug('[WB brands] subject list failed', e?.message);
+      }
+    }
+
+    return rankWbBrands(normalizeWbBrandEntries(merged), q);
   }
 
   _normalizeWbListCard(card, nmIdFallback = null) {
