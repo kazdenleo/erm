@@ -260,7 +260,7 @@ export function ProductMarketplaceLinkSection({
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}
 
       <div className="row g-3">
-        <div className="col-12 col-md-8">
+        <div className={marketplace === 'wb' ? 'col-12 col-md-7' : 'col-12 col-md-8'}>
           <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
             <span>
               Артикул продавца
@@ -286,7 +286,7 @@ export function ProductMarketplaceLinkSection({
             }
           />
           {sellerSkuError && <div className="text-danger small mt-1">{sellerSkuError}</div>}
-          {marketplaceIdHint ? (
+          {marketplaceIdHint && marketplace !== 'wb' ? (
             <div
               style={{
                 marginTop: 4,
@@ -301,6 +301,22 @@ export function ProductMarketplaceLinkSection({
             </div>
           ) : null}
         </div>
+        {marketplace === 'wb' ? (
+          <div className="col-12 col-md-5">
+            <label className="form-label" htmlFor="mp-link-wb-nmid">
+              nmId
+            </label>
+            <input
+              id="mp-link-wb-nmid"
+              type="text"
+              className="form-control form-control-sm"
+              readOnly
+              value={wbNmId}
+              placeholder="После отправки на WB"
+              title="Номенклатура Wildberries. Появится после создания карточки на WB"
+            />
+          </div>
+        ) : null}
         {marketplace === 'ozon' ? (
           <div className="col-12 col-md-8">
             <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>

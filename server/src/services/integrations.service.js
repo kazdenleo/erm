@@ -2543,6 +2543,54 @@ class IntegrationsService {
   }
 
   /**
+   * nmId только что созданной карточки: свежие cards/list (новые сверху), без полного скана каталога.
+   * textSearch после upload часто пустой несколько десятков секунд.
+   */
+  async findRecentWildberriesNmIdByVendorCode(vendorCode, opts = {}) {
+    const vc = sanitizeWbVendorCode(vendorCode);
+    if (!vc) return null;
+    const want = this._wbNormVendor(vc);
+    const scope = {
+      profileId: opts.profileId ?? opts.profile_id ?? null,
+      organizationId: opts.organizationId ?? opts.organization_id ?? null,
+      wbOverride: opts.wbOverride,
+    };
+    const pages = Number(opts.pages) > 0 ? Number(opts.pages) : 3;
+    const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 100;
+    let cursor = { limit };
+    for (let page = 0; page < pages; page += 1) {
+      let data;
+      try {
+        data = await this._wbContentApiPost(
+          '/content/v2/get/cards/list',
+          {
+            settings: {
+              sort: { ascending: false },
+              cursor,
+              filter: { withPhoto: -1 },
+            },
+          },
+          scope
+        );
+      } catch {
+        break;
+      }
+      const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+      if (!Array.isArray(cards) || cards.length === 0) break;
+      for (const c of cards) {
+        if (!this._wbCardVendorCodes(c).some((code) => this._wbNormVendor(code) === want)) continue;
+        const nm = Number(c?.nmID ?? c?.nmId ?? c?.nm_id);
+        if (Number.isFinite(nm) && nm >= 1) return nm;
+      }
+      const next = data?.cursor;
+      if (!next?.updatedAt || next?.nmID == null) break;
+      if (cards.length < limit) break;
+      cursor = { limit, updatedAt: next.updatedAt, nmID: next.nmID };
+    }
+    return null;
+  }
+
+  /**
    * Запрос offer-mappings Яндекс.Маркета по offerId.
    * @returns {Promise<object|null>} элемент offerMappings или null
    */

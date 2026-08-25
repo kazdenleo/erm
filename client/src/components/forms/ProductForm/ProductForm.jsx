@@ -5331,6 +5331,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     try {
       const body = await productsApi.pushCard(currentProduct.id, marketplace, productPatch);
       const payload = body?.data ?? body;
+      const results = Array.isArray(payload?.results) ? payload.results : [];
       let updated = payload?.product ?? body?.product;
       if (!updated?.id) {
         try {
@@ -5346,17 +5347,33 @@ export const ProductForm = React.forwardRef(function ProductForm({
           Array.isArray(updated.images) && updated.images.length > 0
             ? updated
             : { ...updated, images: productImages };
+        const wbRes = results.find((r) => r?.marketplace === 'wb' && r?.ok);
+        const nmFromPush = wbRes?.nmId ?? wbRes?.sku_wb ?? withImages.sku_wb;
+        if (nmFromPush != null && String(nmFromPush).trim() !== '') {
+          withImages.sku_wb = String(nmFromPush).trim();
+        }
         setCurrentProduct(withImages);
         if (Array.isArray(withImages.images)) {
           setProductImages(normalizeProductImagesOrder(withImages.images));
         }
-        if (Array.isArray(withImages.barcodes)) {
-          setFormData((prev) => ({ ...prev, barcodes: barcodesForForm(withImages.barcodes) }));
-        }
+        setFormData((prev) => {
+          const next = { ...prev };
+          if (Array.isArray(withImages.barcodes)) {
+            next.barcodes = barcodesForForm(withImages.barcodes);
+          }
+          next.sku_wb = mergeMpField(prev, withImages, 'sku_wb');
+          next.mp_wb_vendor_code = mergeMpField(prev, withImages, 'mp_wb_vendor_code');
+          next.sku_ozon = mergeMpField(prev, withImages, 'sku_ozon');
+          next.ozon_product_id =
+            withImages.ozon_product_id != null && withImages.ozon_product_id !== ''
+              ? String(withImages.ozon_product_id)
+              : mergeMpField(prev, withImages, 'ozon_product_id');
+          next.sku_ym = mergeMpField(prev, withImages, 'sku_ym');
+          return next;
+        });
         onProductUpdate?.(withImages);
       }
       const text = formatPushCardResults(payload);
-      const results = Array.isArray(payload?.results) ? payload.results : [];
       const anyFailed = results.some((r) => !r.ok) || payload?.ok === false;
       const hasWarnings = results.some(
         (r) =>

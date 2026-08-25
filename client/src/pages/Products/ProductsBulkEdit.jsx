@@ -6536,6 +6536,29 @@ export function ProductsBulkEdit() {
           .filter(Boolean)
       );
       unmarkChangedForPush(productIds.filter((id) => !failedIdSet.has(id)));
+      const nmById = new Map();
+      for (const it of Array.isArray(data?.items) ? data.items : []) {
+        const wb = (it?.results || []).find((r) => r?.marketplace === 'wb' && r?.ok);
+        const nm = wb?.nmId ?? wb?.sku_wb;
+        if (it?.productId != null && nm != null && String(nm).trim() !== '') {
+          nmById.set(str(it.productId), String(nm).trim());
+        }
+      }
+      if (nmById.size > 0) {
+        setRows((prev) =>
+          prev.map((r) => {
+            const nm = nmById.get(str(r.id));
+            return nm ? { ...r, sku_wb: nm } : r;
+          })
+        );
+        setOriginals((prev) => {
+          const next = { ...prev };
+          for (const [id, nm] of nmById) {
+            if (next[id]) next[id] = { ...next[id], sku_wb: nm };
+          }
+          return next;
+        });
+      }
     } catch (e) {
       setPushMpMessage(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейсы');
     } finally {

@@ -1431,19 +1431,25 @@ function wbCardNmId(card) {
 }
 
 async function persistWbNmId(product, nmId, vendorCode, ctx) {
-  if (!product?.id || !nmId) return;
+  if (!product?.id || !nmId) return null;
   const updates = { sku_wb: String(nmId) };
   if (vendorCode) updates.mp_wb_vendor_code = vendorCode;
   try {
     await productsService.update(product.id, updates, { profileId: ctx.profileId ?? null });
     product.sku_wb = String(nmId);
     if (vendorCode) product.mp_wb_vendor_code = vendorCode;
+    logger.info('[MP Card Push] сохранён nmId WB в карточку ERP', {
+      productId: product.id,
+      nmId: String(nmId),
+    });
+    return String(nmId);
   } catch (e) {
     logger.warn('[MP Card Push] не удалось сохранить nmId WB в ERP', {
       productId: product.id,
       nmId,
       error: e?.message || String(e),
     });
+    return null;
   }
 }
 
@@ -1607,9 +1613,37 @@ function barcodeForMarketplacePush(product, mp) {
   return tagged || rows[0].barcode;
 }
 
-async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500, afterMs = 0, sentBrand = null } = {}) {
+async function lookupWbNmIdByVendorCode(vendor, ctx) {
+  const scope = {
+    profileId: ctx.profileId,
+    organizationId: ctx.organizationId,
+  };
+  try {
+    const recent = await integrationsService.findRecentWildberriesNmIdByVendorCode(vendor, {
+      ...scope,
+      pages: 1,
+      limit: 100,
+    });
+    if (recent) return recent;
+  } catch (e) {
+    logger.warn('[MP Card Push] WB recent cards nmId:', e?.message || e);
+  }
+  try {
+    const byVc = await integrationsService.getWildberriesProductByVendorCode(vendor, {
+      ...scope,
+      skipCatalogScan: true,
+    });
+    const nm = byVc?.nmId != null ? Number(byVc.nmId) : NaN;
+    if (Number.isFinite(nm) && nm >= 1) return nm;
+  } catch (e) {
+    logger.warn('[MP Card Push] WB wait nmId:', e?.message || e);
+  }
+  return null;
+}
+
+async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 12, delayMs = 2500, afterMs = 0, sentBrand = null } = {}) {
   for (let i = 0; i < attempts; i += 1) {
-    await sleep(delayMs);
+    if (i > 0) await sleep(delayMs);
     try {
       const hit = await readWbErrorListHit(vendor, ctx, { afterMs });
       if (hit && !wbErrorIsStaleBrandCasing(hit, vendor, sentBrand)) {
@@ -1621,17 +1655,8 @@ async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 
       if (e?.wbRejected) throw e;
       logger.warn('[MP Card Push] WB error/list after create:', e?.message || e);
     }
-    try {
-      const byVc = await integrationsService.getWildberriesProductByVendorCode(vendor, {
-        profileId: ctx.profileId,
-        organizationId: ctx.organizationId,
-        skipCatalogScan: true,
-      });
-      const nm = byVc?.nmId != null ? Number(byVc.nmId) : NaN;
-      if (Number.isFinite(nm) && nm >= 1) return nm;
-    } catch (e) {
-      logger.warn('[MP Card Push] WB wait nmId:', e?.message || e);
-    }
+    const nm = await lookupWbNmIdByVendorCode(vendor, ctx);
+    if (nm) return nm;
   }
   return null;
 }
@@ -1920,10 +1945,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       } catch (e) {
         return { marketplace: 'wb', ok: false, error: e?.message || String(e) };
       }
-      if (nmId) {
-        await persistWbNmId(product, nmId, card.vendorCode, ctx);
-      }
-    } else if (nmId && !resolveWbNmId(product)) {
+    }
+    if (nmId) {
       await persistWbNmId(product, nmId, card.vendorCode, ctx);
     }
 
@@ -1956,6 +1979,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         marketplace: 'wb',
         ok: true,
         created: true,
+        nmId: nmId || undefined,
+        sku_wb: nmId ? String(nmId) : undefined,
         barcodeSent: wbBarcodeSent || undefined,
         message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}${priceNote}${brandNote}`,
         imagesPushed,
@@ -1966,6 +1991,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       marketplace: 'wb',
       ok: true,
       created: false,
+      nmId: nmId || undefined,
+      sku_wb: nmId ? String(nmId) : undefined,
       message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}${priceNote}${brandNote}`,
       imagesPushed,
       subjectIdUnchanged:
@@ -2336,7 +2363,13 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
     }
   }
   const ok = results.every((r) => r.ok);
-  return { productId: product.id, ok, results };
+  let productFresh = product;
+  try {
+    productFresh = (await productsService.getById(product.id)) || product;
+  } catch {
+    productFresh = product;
+  }
+  return { productId: product.id, ok, results, product: productFresh };
 }
 
 /**
