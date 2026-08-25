@@ -8,7 +8,8 @@
  * по локальному времени профиля (profiles.timezone), диспетчер PROFILE_NIGHTLY_DISPATCH_CRON.
  * После справочников — полный прогон мин. цен (MIN_PRICES_NIGHTLY_CRON, по умолчанию МСК),
  * затем пуш цен на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED; только org с auto_push_marketplace_prices).
- * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): WB батчем + Ozon/YM для затронутых.
+ * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): пуш ERP-цен на МП,
+ * если цена/пол отличаются (стратегия / selling / мин.; org с auto_push).
  * В течение дня при изменении карточки (себестоимость, габариты, категория и т.д.) достаточно
  * точечного пересчёта — POST .../recalculate-one (по умолчанию live API для затронутого товара)
  * с отложенным пушем мин. цены на МП.
@@ -310,6 +311,7 @@ function getMinPricesNightlyCron() {
 /**
  * Дневная сверка цен с МП (батч WB + точечный Ozon/YM для затронутых).
  * По умолчанию каждые 2 часа в :20 МСК. MARKETPLACE_MIN_PRICE_RECONCILE_CRON.
+ * Пуш при любом расхождении с целевой ERP-ценой (не только «ниже пола»).
  */
 function getMinPriceReconcileCron() {
   const c = process.env.MARKETPLACE_MIN_PRICE_RECONCILE_CRON;
@@ -783,7 +785,7 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Дневная сверка мин. цен с МП (лёгкий батч WB, только ниже пола).
+      // Дневная сверка: если цена на МП ≠ ERP (стратегия/selling/мин.) — пушим.
       let minPriceReconcileJob = null;
       const minPriceReconcileCron = getMinPriceReconcileCron();
       if (isMinPriceReconcileEnabled()) {
@@ -801,7 +803,7 @@ class SchedulerService {
             return;
           }
           // Без runSchedulerDbJob: иначе каждые 2 ч блокируется автозакупка заказов.
-          logger.info('[Scheduler] Min price reconcile (below floor)...');
+          logger.info('[Scheduler] Min price reconcile (mismatch sync)...');
           try {
             const res = await reconcileMinPricesBelowFloor();
             logger.info('[Scheduler] Min price reconcile done', res);
@@ -811,7 +813,7 @@ class SchedulerService {
               type: 'job_failed',
               severity: 'error',
               source: 'scheduler',
-              title: 'Сбой сверки мин. цен с МП',
+              title: 'Сбой сверки цен с МП',
               message: `reconcileBelowFloor failed: ${error?.message || String(error)}`,
             });
           }
@@ -1177,7 +1179,7 @@ class SchedulerService {
           job: minPriceReconcileJob,
           schedule: minPriceReconcileCron,
           description:
-            'Сверка цен с МП каждые 2 ч (WB батчем). MARKETPLACE_MIN_PRICE_RECONCILE_CRON; sync-to-min по умолчанию',
+            'Сверка цен с МП каждые 2 ч: пуш при расхождении с ERP (стратегия/selling/мин.). MARKETPLACE_MIN_PRICE_RECONCILE_CRON',
         });
       }
 
