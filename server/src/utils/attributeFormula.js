@@ -1,6 +1,6 @@
 /**
  * Безопасный разбор математических формул атрибутов.
- * Подстановки: {cost}, {себестоимость}, {additional_expenses}, {attr:12}, {Имя атрибута}.
+ * Подстановки: {cost}, cost, (cost)*4, {себестоимость}, {additional_expenses}, {attr:12}, {Имя атрибута}.
  * Функции: round, min, max, abs, ceil, floor.
  */
 
@@ -326,7 +326,7 @@ function evalMath(expr) {
 
 function substituteRefs(formula, ctx) {
   const missing = [];
-  const replaced = String(formula || '').replace(/\{([^{}]+)\}/g, (_, inner) => {
+  let replaced = String(formula || '').replace(/\{([^{}]+)\}/g, (_, inner) => {
     const ref = parseFormulaRefs(`{${inner}}`)[0];
     if (!ref) {
       missing.push(inner);
@@ -335,6 +335,18 @@ function substituteRefs(formula, ctx) {
     const value = resolveRefValue(ref, ctx);
     if (value == null) {
       missing.push(inner.trim());
+      return '0';
+    }
+    return String(value);
+  });
+  replaced = replaced.replace(/[\p{L}_][\p{L}0-9_]*/gu, (id) => {
+    const lower = id.toLowerCase();
+    if (FUNC_NAMES.has(lower)) return id;
+    const fieldKey = FIELD_ALIAS_TO_KEY[normalizeToken(id)];
+    if (!fieldKey) return id;
+    const value = readProductField(ctx.product, fieldKey);
+    if (value == null) {
+      missing.push(id);
       return '0';
     }
     return String(value);

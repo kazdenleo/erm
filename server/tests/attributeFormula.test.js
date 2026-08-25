@@ -54,6 +54,20 @@ describe('attributeFormula', () => {
     expect(r.missing).toContain('cost');
   });
 
+  test('accepts bare cost identifier and parentheses', () => {
+    const ctx = { product: { cost: 515 }, attributes: [], values: {} };
+    const a = evaluateFormula('(cost)*4', ctx);
+    const b = evaluateFormula('cost * 4', ctx);
+    const c = evaluateFormula('round(cost * 2, 0)', ctx);
+    expect(a.ok).toBe(true);
+    expect(a.value).toBe(2060);
+    expect(b.ok).toBe(true);
+    expect(b.value).toBe(2060);
+    expect(c.ok).toBe(true);
+    expect(c.value).toBe(1030);
+    expect(validateFormula('(cost)*4')).toBeNull();
+  });
+
   test('rejects unknown identifiers after substitution', () => {
     expect(validateFormula('{cost} * foo')).toBeTruthy();
   });

@@ -24,6 +24,7 @@ import {
 } from '../../utils/productImage.js';
 import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 import {
+  applyComputedAttributeValues,
   isComputedAttrType,
   isSystemPriceAttr,
 } from '../../utils/attributeFormula.js';
@@ -3385,6 +3386,95 @@ function bulkSessionMpFieldLinks(erpAttrColDefs = []) {
   return emptyBulkMpFieldLinks(erpAttrColDefs);
 }
 
+function rowToFormulaProduct(row) {
+  return {
+    cost: row?.cost,
+    additional_expenses: row?.additionalExpenses,
+    additionalExpenses: row?.additionalExpenses,
+    min_price: row?.minPrice,
+    minPrice: row?.minPrice,
+    weight: row?.weight,
+    length: row?.length,
+    width: row?.width,
+    height: row?.height,
+    volume: row?.volume,
+  };
+}
+
+function isBulkComputedLocked(row, attrId) {
+  const aid = String(attrId);
+  return (
+    row?._erpAttrManualSession?.[aid] === true ||
+    row?._erpAttrManualBaseline?.[aid] === true ||
+    row?._erpAttrToolBaseline?.[aid] === true
+  );
+}
+
+function applyBulkRowComputed(row, erpAttrColDefs = []) {
+  const attrs = (erpAttrColDefs || []).map((c) => c.erpAttr).filter(Boolean);
+  if (!attrs.some((a) => isComputedAttrType(a.type) && String(a.formula || '').trim())) {
+    return row;
+  }
+  const values = {};
+  const manual = {};
+  for (const c of erpAttrColDefs || []) {
+    if (!c?.erpAttr) continue;
+    const aid = String(c.erpAttr.id);
+    values[aid] = row[c.key] ?? '';
+    if (isBulkComputedLocked(row, aid)) manual[aid] = true;
+  }
+  const { values: nextVals } = applyComputedAttributeValues({
+    product: rowToFormulaProduct(row),
+    attributes: attrs,
+    values,
+    manual,
+  });
+  let changed = false;
+  const patched = { ...row };
+  for (const c of erpAttrColDefs || []) {
+    if (!isComputedAttrType(c?.erpAttr?.type)) continue;
+    const aid = String(c.erpAttr.id);
+    if (isBulkComputedLocked(row, aid)) continue;
+    const nv = nextVals[aid] == null ? '' : String(nextVals[aid]);
+    if (str(patched[c.key]) !== nv) {
+      patched[c.key] = nv;
+      changed = true;
+    }
+  }
+  return changed ? patched : row;
+}
+
+function copyComputedErpToLinkedMp(row, erpAttrColDefs = [], mpAttrColDefs = []) {
+  let next = row;
+  for (const erpCol of erpAttrColDefs || []) {
+    if (!isComputedAttrType(erpCol?.erpAttr?.type)) continue;
+    if (!str(next[erpCol.key]).trim()) continue;
+    for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
+      try {
+        next = copyErpAttrToLinkedMp(next, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs);
+      } catch {
+        /* ignore bad mapping for one cell */
+      }
+    }
+  }
+  return syncOfferFieldColsOnRow(next, mpAttrColDefs);
+}
+
+function markBulkComputedSessionManual(row, key, erpAttrColDefs = []) {
+  const col = (erpAttrColDefs || []).find((c) => c.key === key && c.erpAttr);
+  if (!col || !isComputedAttrType(col.erpAttr?.type)) return row;
+  const aid = String(col.erpAttr.id);
+  return {
+    ...row,
+    _erpAttrManualSession: { ...(row._erpAttrManualSession || {}), [aid]: true },
+  };
+}
+
+function finalizeBulkRowAfterCellChange(row, key, erpAttrColDefs = [], mpAttrColDefs = []) {
+  const next = applyBulkRowComputed(markBulkComputedSessionManual(row, key, erpAttrColDefs), erpAttrColDefs);
+  return copyComputedErpToLinkedMp(next, erpAttrColDefs, mpAttrColDefs);
+}
+
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -3397,7 +3487,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   const ymPack = readYmPackDimsFromProduct(p, lengthUnit, weightUnit);
   const productDims = readProductDimsFromProduct(p, lengthUnit, weightUnit);
   const mpCountries = readMpCountriesFromProduct(p);
-  const row = {
+  let row = {
     id: str(p.id),
     name: str(p.name),
     sku: str(p.sku),
@@ -3469,6 +3559,15 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   for (const c of erpAttrColDefs) {
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
+  }
+  row = applyBulkRowComputed(row, erpAttrColDefs);
+  for (const c of erpAttrColDefs) {
+    if (!isComputedAttrType(c?.erpAttr?.type)) continue;
+    const aid = String(c.erpAttr.id);
+    if (isBulkComputedLocked(row, aid)) continue;
+    const v = str(row[c.key]).trim();
+    if (v) row._erpAttrBaseline[aid] = v;
+    else delete row._erpAttrBaseline[aid];
   }
   for (const erpCol of erpAttrColDefs) {
     const erpVal = str(row[erpCol.key]).trim();
@@ -3914,7 +4013,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         if (nextVal === '') {
           delete manualAfter[aid];
           delete toolAfter[aid];
-        } else {
+        } else if (current._erpAttrManualSession?.[aid] === true) {
           manualAfter[aid] = true;
           delete toolAfter[aid];
         }
@@ -4103,6 +4202,9 @@ function cloneRow(r) {
         }
       : { ozon: {}, wb: {}, ym: {} },
     _erpAttrBaseline: { ...(_erpAttrBaseline || {}) },
+    _erpAttrManualBaseline: { ...(r._erpAttrManualBaseline || {}) },
+    _erpAttrToolBaseline: { ...(r._erpAttrToolBaseline || {}) },
+    _erpAttrManualSession: { ...(r._erpAttrManualSession || {}) },
     _ozonDraftBaseline: _ozonDraftBaseline ? { ..._ozonDraftBaseline } : {},
     _wbDraftBaseline: _wbDraftBaseline ? { ..._wbDraftBaseline } : {},
     _ymDraftBaseline: _ymDraftBaseline ? { ..._ymDraftBaseline } : {},
@@ -5959,7 +6061,7 @@ export function ProductsBulkEdit() {
           next = syncOzonCardTextFromAttrColumn(next, bulkCol, bulkDraft);
           next = unlinkProductDimsIfMpDimAttrEdited(next, bulkCol);
         }
-        return next;
+        return finalizeBulkRowAfterCellChange(next, key, erpAttrColumnDefs, mpAttrColumnDefs);
       })
     );
     setBulkModal({ open: false, column: null });
@@ -6000,7 +6102,7 @@ export function ProductsBulkEdit() {
           next = syncOzonCardTextFromAttrColumn(next, attrCol, value);
           next = unlinkProductDimsIfMpDimAttrEdited(next, attrCol);
         }
-        return next;
+        return finalizeBulkRowAfterCellChange(next, key, erpAttrColumnDefs, mpAttrColumnDefs);
       })
     );
   }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);

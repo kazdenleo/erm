@@ -383,8 +383,8 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
             placeholder="{cost} * 1.5 + {additional_expenses}"
           />
           <p className="form-hint">
-            Математика: + − * / и скобки. Поля карточки и другие атрибуты — в фигурных скобках.
-            Пример: <code>{'{cost} * 1.4'}</code>, <code>{'{себестоимость} + {additional_expenses}'}</code>, <code>{'round({cost} * 1.2, 2)'}</code>.
+            Математика: + − * / и скобки. Поля можно писать как <code>{'{cost}'}</code> или просто <code>cost</code>.
+            Пример: <code>{'{cost} * 1.4'}</code>, <code>{'(cost)*4'}</code>, <code>{'{себестоимость} + {additional_expenses}'}</code>.
             Если формула пустая, значение можно просто ввести в карточке товара.
           </p>
           <div className="formula-chips">
