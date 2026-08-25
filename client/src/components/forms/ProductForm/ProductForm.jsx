@@ -44,6 +44,7 @@ import {
   applyCertAutofillToAttributes,
   certSourceHasAnyDocument,
   filterBrandCertsForCategory,
+  formatWbCertDate,
 } from '../../../utils/productCertAttributeAutofill.js';
 import {
   applyTnVedAutofillToAttributes,
@@ -3080,6 +3081,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       applyCertAutofillToAttributes(wbCategoryAttributes, certSource, prev, {
         getAttrKey: wbAttrKey,
         getAttrName: wbAttrName,
+        formatDate: (d) => formatWbCertDate(d) || String(d ?? '').trim(),
       })
     );
   }, [wbCategoryAttributes, certSource, wbAttrKey, wbAttrName]);

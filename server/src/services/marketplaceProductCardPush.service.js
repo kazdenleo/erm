@@ -28,6 +28,7 @@ import {
   getProductImageUrlsForMarketplacePush,
 } from './marketplaceProductImages.service.js';
 import { WB_ITEM_DIM_CHARC, WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import { formatWbCertDate } from '../utils/wbCertDate.js';
 import {
   detectOzonDimensionsLockedFromInfo,
   errorIndicatesOzonVwcLock,
@@ -925,6 +926,8 @@ function looksLikeWbStringNotNumber(s) {
  */
 function coerceWbCharcValue(raw, existingValue, charcType) {
   if (raw == null) return null;
+  const asDate = formatWbCertDate(raw);
+  if (asDate) return asWbStringCharc(asDate);
   const type = Number(charcType);
   if (type === WB_CHARC_TYPE_NUMBER) return asWbNumberCharc(raw);
   if (type === WB_CHARC_TYPE_STRINGS || type === 0) return asWbStringCharc(raw);
