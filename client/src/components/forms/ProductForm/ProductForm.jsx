@@ -1046,6 +1046,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     kit_components: [],
   attributeValues: {},
   attributeValuesManual: {},
+  attributeValuesTool: {},
   mp_wb_vendor_code: '',
   mp_wb_name: '',
   mp_wb_description: '',
@@ -2111,6 +2112,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             )
           : {},
         attributeValuesManual: parseAttributeManualMap(currentProduct.attribute_values_manual),
+        attributeValuesTool: parseAttributeManualMap(currentProduct.attribute_values_tool),
         mp_wb_vendor_code: currentProduct.mp_wb_vendor_code || '',
         mp_wb_name: currentProduct.mp_wb_name || '',
         mp_wb_description: currentProduct.mp_wb_description || '',
@@ -2301,15 +2303,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }));
   }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
 
-  const priceFieldsLocked = currentProduct?.hasPricingStrategy === true;
-  const priceFieldsLockReason = priceFieldsLocked
-    ? `Недоступно: включена стратегия${
-        currentProduct?.effectivePricingStrategyName
-          ? ` «${currentProduct.effectivePricingStrategyName}»`
-          : ' ценообразования'
-      }`
-    : '';
-
   useEffect(() => {
     const attrs = allAttributes || [];
     if (!attrs.some((a) => isComputedAttrType(a.type) && String(a.formula || '').trim())) return undefined;
@@ -2318,7 +2311,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
         product: productFormulaContext(prev),
         attributes: attrs,
         values: prev.attributeValues,
-        manual: prev.attributeValuesManual,
+        manual: {
+          ...(prev.attributeValuesManual || {}),
+          ...parseAttributeManualMap(prev.attributeValuesTool),
+        },
       });
       const keys = attrs.filter((a) => isComputedAttrType(a.type)).map((a) => String(a.id));
       let changed = false;
@@ -5881,6 +5877,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         allAttributes.find((a) => String(a.id) === key);
       if (manual && attr && isComputedAttrType(attr.type)) {
         next.attributeValuesManual = { ...(prev.attributeValuesManual || {}), [key]: true };
+        next.attributeValuesTool = { ...(prev.attributeValuesTool || {}), [key]: false };
       }
       return next;
     });
@@ -5896,6 +5893,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setFormData((prev) => ({
       ...prev,
       attributeValuesManual: { ...(prev.attributeValuesManual || {}), [key]: false },
+      attributeValuesTool: { ...(prev.attributeValuesTool || {}), [key]: false },
     }));
   };
 
@@ -6240,6 +6238,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
+    const attributeValuesToolPayload = (() => {
+      const src = formData.attributeValuesTool || {};
+      const out = {};
+      for (const [k, v] of Object.entries(src)) {
+        if (v !== true && v !== 'true' && v !== 1 && v !== '1') continue;
+        const key = String(k).trim();
+        if (!key || !/^\d+$/.test(key)) continue;
+        out[key] = true;
+      }
+      return Object.keys(out).length > 0 ? out : {};
+    })();
     const ozonAttributesPayload = (() => {
       const out = {};
       for (const [k, v] of Object.entries(ozonAttributeValues)) {
@@ -6456,6 +6465,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : [],
       attribute_values: attributeValuesPayload,
       attribute_values_manual: attributeValuesManualPayload,
+      attribute_values_tool: attributeValuesToolPayload,
       ozon_attributes: ozonAttributesPayload,
       wb_attributes: wbAttributesPayload,
       ym_attributes: (() => {
@@ -7752,7 +7762,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         htmlFor={`attr-${attr.id}`}
                         heading={<ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />}
                         isManual={formData.attributeValuesManual?.[key] === true}
-                        formulaError={formData.attributeValuesManual?.[key] || formulaResult.ok ? '' : formulaResult.error}
+                        changedByTool={formData.attributeValuesTool?.[key] === true}
+                        formulaError={
+                          formData.attributeValuesManual?.[key] ||
+                          formData.attributeValuesTool?.[key] ||
+                          formulaResult.ok
+                            ? ''
+                            : formulaResult.error
+                        }
                         onChange={(v) => handleAttributeChange(attr.id, v)}
                         onResetToFormula={() => handleComputedResetToFormula(attr.id)}
                       />
@@ -8085,10 +8102,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     onToggle={handleMpFieldLinkToggle}
                   />
                 )}
-                disabled={priceFieldsLocked}
-                lockedReason={priceFieldsLockReason}
                 isManual={formData.attributeValuesManual?.[key] === true}
-                formulaError={formData.attributeValuesManual?.[key] || formulaResult.ok ? '' : formulaResult.error}
+                changedByTool={formData.attributeValuesTool?.[key] === true}
+                formulaError={
+                  formData.attributeValuesManual?.[key] ||
+                  formData.attributeValuesTool?.[key] ||
+                  formulaResult.ok
+                    ? ''
+                    : formulaResult.error
+                }
                 onChange={(v) => handleAttributeChange(attr.id, v)}
                 onResetToFormula={() => handleComputedResetToFormula(attr.id)}
               />

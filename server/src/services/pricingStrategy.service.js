@@ -15,6 +15,7 @@ import {
   formatPriceChangeReason,
   logMarketplacePriceChange,
 } from './marketplacePriceChanges.service.js';
+import { applyToolPriceAttributeValues } from './computedAttributes.service.js';
 
 export const PRICING_STRATEGY_MODES = ['floor', 'target_margin', 'competitor', 'sales', 'hybrid'];
 
@@ -458,7 +459,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   let floorsRes;
   try {
     floorsRes = await query(
-      `SELECT marketplace, min_price, selling_price, max_price
+      `SELECT marketplace, min_price, selling_price, max_price, price_before_discount
        FROM product_marketplace_prices
        WHERE product_id = $1
          AND min_price IS NOT NULL AND min_price > 0
@@ -466,7 +467,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       marketplace ? [pid, String(marketplace).toLowerCase()] : [pid]
     );
   } catch (colErr) {
-    if (!String(colErr.message || '').includes('max_price')) throw colErr;
+    if (!String(colErr.message || '').includes('max_price') && !String(colErr.message || '').includes('price_before_discount')) throw colErr;
     floorsRes = await query(
       `SELECT marketplace, min_price, selling_price
        FROM product_marketplace_prices
@@ -482,6 +483,10 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     const mp = String(row.marketplace).toLowerCase();
     const floor = Number(row.min_price);
     const previousSelling = row.selling_price != null ? Number(row.selling_price) : null;
+    const previousBefore =
+      row.price_before_discount != null && Number.isFinite(Number(row.price_before_discount))
+        ? Number(row.price_before_discount)
+        : null;
     const floorRounded = floorRub(floor);
 
     if (!strategy) {
@@ -556,6 +561,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
         marketplace: mp,
         sellingPrice: finalSelling,
         sellingPriceBefore: previousSelling,
+        priceBeforeDiscount: previousBefore,
         floor: floorRounded,
         mode: cur?.is_manual === true ? 'manual' : 'floor',
         reason,
@@ -634,6 +640,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       marketplace: mp,
       sellingPrice: computed.sellingPrice,
       sellingPriceBefore: previousSelling,
+      priceBeforeDiscount: previousBefore,
       floor: computed.floor,
       ceiling: computed.ceiling,
       mode,
@@ -646,6 +653,15 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     });
   }
 
+  try {
+    const sync = pickToolSyncPrices(results);
+    if (sync) {
+      await applyToolPriceAttributeValues(query, pid, sync);
+    }
+  } catch (err) {
+    console.warn('[pricingStrategy] sync system price attributes:', err?.message || err);
+  }
+
   return { ok: true, productId: pid, strategyId: strategy ? Number(strategy.id) : null, results };
 }
 
@@ -653,6 +669,16 @@ function sameMoneyLocal(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   return Math.abs(Number(a) - Number(b)) < 0.005;
+}
+
+function pickToolSyncPrices(results) {
+  const eligible = (results || []).filter((r) => r.changed && r.mode !== 'manual');
+  if (!eligible.length) return null;
+  const order = ['ozon', 'wb', 'ym'];
+  const pick = order.map((mp) => eligible.find((r) => r.marketplace === mp)).find(Boolean) || eligible[0];
+  return {
+    sellingPrice: pick.sellingPrice,
+  };
 }
 
 export async function listStrategies({ profileId = null } = {}) {

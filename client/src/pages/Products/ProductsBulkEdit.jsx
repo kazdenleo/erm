@@ -3451,6 +3451,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     _mpAttrBaseline: { ozon: { ...oz }, wb: { ...wb }, ym: { ...ym } },
     _erpAttrBaseline: parseErpAttributeValues(p),
     _erpAttrManualBaseline: parseAttributeManualMap(p.attribute_values_manual),
+    _erpAttrToolBaseline: parseAttributeManualMap(p.attribute_values_tool),
     hasPricingStrategy: p.hasPricingStrategy === true,
     effectivePricingStrategyName: p.effectivePricingStrategyName || '',
     _ozonDraftBaseline: parseDraftBaseline(p.ozon_draft),
@@ -3903,16 +3904,23 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     if (changed || stableAttrJson(before) !== stableAttrJson(after)) {
       touch('attribute_values', after);
       const manualAfter = { ...(original._erpAttrManualBaseline || {}) };
+      const toolAfter = { ...(original._erpAttrToolBaseline || {}) };
       for (const c of erpAttrColDefs) {
         if (!isComputedAttrType(c?.erpAttr?.type)) continue;
         const aid = String(c.erpAttr.id);
         const nextVal = str(current[c.key]).trim();
         const prevVal = str(original[c.key]).trim();
         if (prevVal === nextVal) continue;
-        if (nextVal === '') delete manualAfter[aid];
-        else manualAfter[aid] = true;
+        if (nextVal === '') {
+          delete manualAfter[aid];
+          delete toolAfter[aid];
+        } else {
+          manualAfter[aid] = true;
+          delete toolAfter[aid];
+        }
       }
       touch('attribute_values_manual', manualAfter);
+      touch('attribute_values_tool', toolAfter);
     }
   }
 
@@ -6528,17 +6536,24 @@ export function ProductsBulkEdit() {
     const limitInfo = isPopupTextColumn(col)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
       : null;
+    const erpAid = col.erpAttr?.id != null ? String(col.erpAttr.id) : '';
+    const toolChanged = !!(
+      erpAid &&
+      row._erpAttrToolBaseline?.[erpAid] &&
+      str(v).trim() === str(row._erpAttrBaseline?.[erpAid] ?? '').trim()
+    );
     const common = {
       className: `products-bulk-cell-input${
         dimDirty ? ' products-bulk-dim-dirty' : ''
-      }${linked ? ' products-bulk-cell-linked' : ''}${overLimit ? ' products-bulk-cell-over-limit' : ''}`,
+      }${linked ? ' products-bulk-cell-linked' : ''}${overLimit ? ' products-bulk-cell-over-limit' : ''}${
+        toolChanged ? ' products-bulk-cell-tool' : ''
+      }`,
       value: v ?? '',
       onChange: (e) => updateCell(row.id, col.key, e.target.value),
-      disabled: !!(isSystemPriceAttr(col.erpAttr) && row.hasPricingStrategy),
       title: dimLocked
         ? OZON_DIMS_LOCK_TITLE
-        : isSystemPriceAttr(col.erpAttr) && row.hasPricingStrategy
-          ? `Недоступно: включена стратегия${row.effectivePricingStrategyName ? ` «${row.effectivePricingStrategyName}»` : ' ценообразования'}`
+        : toolChanged
+          ? 'Изменено другим инструментом (стратегия или обновление мин. цен)'
         : overLimit
           ? `${overLimit.mpLabel}: ${overLimit.length} из ${overLimit.maxLength} символов`
         : linked

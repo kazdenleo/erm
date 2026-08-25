@@ -669,6 +669,10 @@ body.products-bulk-col-resizing * {
   box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.18);
 }
 
+.products-bulk-cell-input.products-bulk-cell-tool {
+  box-shadow: inset 3px 0 0 #d97706;
+}
+
 .products-bulk-text-popup-btn {
   display: flex;
   flex-direction: row;

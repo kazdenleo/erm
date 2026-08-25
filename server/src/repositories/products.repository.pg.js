@@ -47,6 +47,7 @@ function parseAttributeManualMap(raw) {
 function applyAttributePack(product, pack) {
   product.attribute_values = pack?.byId || {};
   product.attribute_values_manual = pack?.manual || {};
+  product.attribute_values_tool = pack?.tool || {};
 }
 
 async function attachPricingStrategyFlags(products) {
@@ -171,8 +172,21 @@ async function attachPricingStrategyFlags(products) {
   }
 }
 
-async function insertAttributeValueRow(client, productId, attrId, value, isManual) {
+async function insertAttributeValueRow(client, productId, attrId, value, isManual, changedByTool = false) {
   const valStr = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
+  try {
+    await client.query(
+      `INSERT INTO product_attribute_values (product_id, attribute_id, value, is_manual, changed_by_tool)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (product_id, attribute_id)
+       DO UPDATE SET value = EXCLUDED.value, is_manual = EXCLUDED.is_manual, changed_by_tool = EXCLUDED.changed_by_tool`,
+      [productId, attrId, valStr, isManual === true, changedByTool === true]
+    );
+    return;
+  } catch (err) {
+    const msg = String(err?.message || '');
+    if (!msg.includes('changed_by_tool') && !msg.includes('is_manual')) throw err;
+  }
   try {
     await client.query(
       `INSERT INTO product_attribute_values (product_id, attribute_id, value, is_manual)
@@ -193,28 +207,48 @@ async function insertAttributeValueRow(client, productId, attrId, value, isManua
   }
 }
 
-async function replaceProductAttributeValues(client, productId, valuesMap, manualMap) {
+async function replaceProductAttributeValues(client, productId, valuesMap, manualMap, toolMap) {
   let prevManual = {};
+  let prevTool = {};
   try {
     const prev = await client.query(
-      'SELECT attribute_id, is_manual FROM product_attribute_values WHERE product_id = $1',
+      'SELECT attribute_id, is_manual, changed_by_tool FROM product_attribute_values WHERE product_id = $1',
       [productId]
     );
     for (const row of prev.rows || []) {
       if (row.is_manual === true) prevManual[String(row.attribute_id)] = true;
+      if (row.changed_by_tool === true) prevTool[String(row.attribute_id)] = true;
     }
   } catch (err) {
-    if (!String(err?.message || '').includes('is_manual')) throw err;
+    const msg = String(err?.message || '');
+    if (msg.includes('changed_by_tool')) {
+      try {
+        const prev = await client.query(
+          'SELECT attribute_id, is_manual FROM product_attribute_values WHERE product_id = $1',
+          [productId]
+        );
+        for (const row of prev.rows || []) {
+          if (row.is_manual === true) prevManual[String(row.attribute_id)] = true;
+        }
+      } catch (inner) {
+        if (!String(inner?.message || '').includes('is_manual')) throw inner;
+      }
+    } else if (!msg.includes('is_manual')) {
+      throw err;
+    }
   }
   await client.query('DELETE FROM product_attribute_values WHERE product_id = $1', [productId]);
   const manual = parseAttributeManualMap(manualMap);
+  const tool = parseAttributeManualMap(toolMap);
   const hasManualPayload = manualMap != null && typeof manualMap === 'object';
+  const hasToolPayload = toolMap != null && typeof toolMap === 'object';
   for (const [attrId, value] of Object.entries(valuesMap || {})) {
     const aid = parseInt(attrId, 10);
     if (!aid || value === undefined || value === null || value === '') continue;
     const key = String(aid);
     const isManual = hasManualPayload ? manual[key] === true : !!prevManual[key];
-    await insertAttributeValueRow(client, productId, aid, value, isManual);
+    const isTool = hasToolPayload ? tool[key] === true : !!prevTool[key];
+    await insertAttributeValueRow(client, productId, aid, value, isManual, isTool);
   }
 }
 
@@ -1748,30 +1782,43 @@ class ProductsRepositoryPG {
           let attrRes;
           try {
             attrRes = await query(
-              `SELECT pav.product_id, pav.attribute_id, pav.value, pav.is_manual, pa.name as attr_name
+              `SELECT pav.product_id, pav.attribute_id, pav.value, pav.is_manual, pav.changed_by_tool, pa.name as attr_name
                FROM product_attribute_values pav
                LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
                WHERE pav.product_id = ANY($1)`,
               [productIds]
             );
           } catch (colErr) {
-            if (!String(colErr?.message || '').includes('is_manual')) throw colErr;
-            attrRes = await query(
-              `SELECT pav.product_id, pav.attribute_id, pav.value, pa.name as attr_name
-               FROM product_attribute_values pav
-               LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
-               WHERE pav.product_id = ANY($1)`,
-              [productIds]
-            );
+            const msg = String(colErr?.message || '');
+            if (!msg.includes('is_manual') && !msg.includes('changed_by_tool')) throw colErr;
+            try {
+              attrRes = await query(
+                `SELECT pav.product_id, pav.attribute_id, pav.value, pav.is_manual, pa.name as attr_name
+                 FROM product_attribute_values pav
+                 LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
+                 WHERE pav.product_id = ANY($1)`,
+                [productIds]
+              );
+            } catch (inner) {
+              if (!String(inner?.message || '').includes('is_manual')) throw inner;
+              attrRes = await query(
+                `SELECT pav.product_id, pav.attribute_id, pav.value, pa.name as attr_name
+                 FROM product_attribute_values pav
+                 LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
+                 WHERE pav.product_id = ANY($1)`,
+                [productIds]
+              );
+            }
           }
           const byPid = {};
           const globalIdToName = {};
           for (const row of attrRes.rows) {
             if (row.attr_name) globalIdToName[String(row.attribute_id)] = row.attr_name;
             const pid = String(row.product_id);
-            if (!byPid[pid]) byPid[pid] = { byId: {}, byName: {}, manual: {} };
+            if (!byPid[pid]) byPid[pid] = { byId: {}, byName: {}, manual: {}, tool: {} };
             byPid[pid].byId[String(row.attribute_id)] = row.value;
             if (row.is_manual === true) byPid[pid].manual[String(row.attribute_id)] = true;
+            if (row.changed_by_tool === true) byPid[pid].tool[String(row.attribute_id)] = true;
             if (row.attr_name) byPid[pid].byName[row.attr_name] = row.value;
           }
           for (const p of products) {
@@ -1787,6 +1834,7 @@ class ProductsRepositoryPG {
           for (const p of products) {
             p.attribute_values = {};
             p.attribute_values_manual = {};
+            p.attribute_values_tool = {};
           }
         }
       }
@@ -2701,23 +2749,34 @@ class ProductsRepositoryPG {
       let attrValResult;
       try {
         attrValResult = await query(
-          'SELECT attribute_id, value, is_manual FROM product_attribute_values WHERE product_id = $1',
+          'SELECT attribute_id, value, is_manual, changed_by_tool FROM product_attribute_values WHERE product_id = $1',
           [numId]
         );
       } catch (colErr) {
-        if (!String(colErr?.message || '').includes('is_manual')) throw colErr;
-        attrValResult = await query(
-          'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
-          [numId]
-        );
+        const msg = String(colErr?.message || '');
+        if (!msg.includes('is_manual') && !msg.includes('changed_by_tool')) throw colErr;
+        try {
+          attrValResult = await query(
+            'SELECT attribute_id, value, is_manual FROM product_attribute_values WHERE product_id = $1',
+            [numId]
+          );
+        } catch (inner) {
+          if (!String(inner?.message || '').includes('is_manual')) throw inner;
+          attrValResult = await query(
+            'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
+            [numId]
+          );
+        }
       }
       product.attribute_values = {};
       product.attribute_values_manual = {};
+      product.attribute_values_tool = {};
       attrValResult.rows.forEach((row) => {
         const aid = row.attribute_id != null ? String(row.attribute_id) : null;
         if (!aid) return;
         product.attribute_values[aid] = row.value;
         if (row.is_manual === true) product.attribute_values_manual[aid] = true;
+        if (row.changed_by_tool === true) product.attribute_values_tool[aid] = true;
       });
     } catch (err) {
       if (!err.message || !err.message.includes('product_attribute_values')) {
@@ -2725,6 +2784,7 @@ class ProductsRepositoryPG {
       }
       product.attribute_values = {};
       product.attribute_values_manual = {};
+      product.attribute_values_tool = {};
     }
 
     await attachPricingStrategyFlags([product]);
@@ -2958,7 +3018,8 @@ class ProductsRepositoryPG {
           const aid = parseInt(attrId, 10);
           if (aid && (value !== undefined && value !== null && value !== '')) {
             const isManual = parseAttributeManualMap(manualMap)[String(aid)] === true;
-            await insertAttributeValueRow(client, product.id, aid, value, isManual);
+            const isTool = parseAttributeManualMap(productData.attribute_values_tool)[String(aid)] === true;
+            await insertAttributeValueRow(client, product.id, aid, value, isManual, isTool);
           }
         }
       }
@@ -3197,7 +3258,8 @@ class ProductsRepositoryPG {
           client,
           numId,
           updates.attribute_values,
-          updates.attribute_values_manual
+          updates.attribute_values_manual,
+          updates.attribute_values_tool
         );
       }
 
