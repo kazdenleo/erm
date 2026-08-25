@@ -4,12 +4,16 @@
   align-items: center;
   justify-content: center;
   background: var(--primary-50);
+  padding: 1.5rem;
+  box-sizing: border-box;
 }
 
-.login-card {
+/* Специфичнее глобального .card { max-width: 100% }, иначе карточка растягивается на весь экран */
+.login-page .login-card.card {
   width: 100%;
   max-width: 400px;
   padding: 2rem;
+  box-sizing: border-box;
 }
 
 .login-title {
@@ -41,6 +45,8 @@
 }
 
 .login-input {
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -63,6 +69,7 @@
 
 .login-submit {
   margin-top: 0.5rem;
+  width: 100%;
 }
 
 .login-footer-text {
