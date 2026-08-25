@@ -841,50 +841,92 @@ function mergeWbItemProductDimsIntoAttrs(wbAttrs, product) {
   return next;
 }
 
-/**
- * Привести значение из ERP (обычно строка в wb_attributes) к типу, который ждёт Content API.
- * Числовые характеристики нельзя слать строкой — WB отвечает 200, но карточку отклоняет
- * («Числовое значение характеристики … не должно быть строкой»).
- */
-function coerceWbCharcValue(raw, existingValue) {
+/** WB charcType: 1 — массив строк, 4 — число. */
+const WB_CHARC_TYPE_STRINGS = 1;
+const WB_CHARC_TYPE_NUMBER = 4;
+const WB_NUMERIC_CHARC_MAX = 9999999.99;
+
+function wbSchemaCharcId(meta) {
+  const id = Number(meta?.charcID ?? meta?.charcId ?? meta?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function buildWbCharcTypeMap(schemaList) {
+  const map = new Map();
+  for (const c of Array.isArray(schemaList) ? schemaList : []) {
+    const id = wbSchemaCharcId(c);
+    if (id == null) continue;
+    const t = Number(c.charcType ?? c.charc_type);
+    if (Number.isFinite(t)) map.set(id, t);
+  }
+  return map;
+}
+
+function asWbStringCharc(raw) {
   if (raw == null) return null;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (typeof raw === 'boolean') return raw;
   if (Array.isArray(raw)) {
-    return raw
-      .map((x) => (x == null ? '' : String(x).trim()))
-      .filter((s) => s !== '');
+    const list = raw.map((x) => String(x ?? '').trim()).filter(Boolean);
+    return list.length ? list : null;
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (s.includes(';')) {
+    const list = s.split(';').map((x) => x.trim()).filter(Boolean);
+    return list.length ? list : null;
+  }
+  return [s];
+}
+
+function asWbNumberCharc(raw) {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(',', '.').replace(/\s/g, ''));
+  if (!Number.isFinite(n)) return null;
+  if (Math.abs(n) > WB_NUMERIC_CHARC_MAX) return null;
+  return n;
+}
+
+function looksLikeWbStringNotNumber(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  if (/[./-]/.test(t) && /\d/.test(t)) return true;
+  if (/^\d{8,}$/.test(t)) return true;
+  const n = Number(t.replace(',', '.'));
+  return Number.isFinite(n) && Math.abs(n) > WB_NUMERIC_CHARC_MAX;
+}
+
+/**
+ * Привести значение из ERP к типу Content API.
+ * charcType из схемы предмета: 1 = строки, 4 = число.
+ * Без схемы не превращаем длинные коды/даты в number (ТН ВЭД, даты сертификата).
+ */
+function coerceWbCharcValue(raw, existingValue, charcType) {
+  if (raw == null) return null;
+  const type = Number(charcType);
+  if (type === WB_CHARC_TYPE_NUMBER) return asWbNumberCharc(raw);
+  if (type === WB_CHARC_TYPE_STRINGS || type === 0) return asWbStringCharc(raw);
+
+  if (typeof raw === 'boolean') return raw;
+  if (Array.isArray(raw)) return asWbStringCharc(raw);
+
+  if (typeof existingValue === 'number') return asWbNumberCharc(raw);
+  if (Array.isArray(existingValue) || typeof existingValue === 'string') return asWbStringCharc(raw);
+  if (typeof existingValue === 'boolean') {
+    const s = String(raw).trim().toLowerCase();
+    return s === '1' || s === 'true';
+  }
+
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (Math.abs(raw) > WB_NUMERIC_CHARC_MAX || (Number.isInteger(raw) && String(Math.trunc(raw)).length >= 8)) {
+      return asWbStringCharc(raw);
+    }
+    return raw;
   }
 
   const s = String(raw).trim();
-  if (s === '') return null;
-
-  if (typeof existingValue === 'number') {
-    const n = Number(s.replace(',', '.'));
-    return Number.isFinite(n) ? n : null;
-  }
-  if (Array.isArray(existingValue)) {
-    if (s.includes(';')) {
-      return s.split(';').map((x) => x.trim()).filter(Boolean);
-    }
-    return [s];
-  }
-  if (typeof existingValue === 'boolean') {
-    return s === '1' || s.toLowerCase() === 'true';
-  }
-  if (typeof existingValue === 'string') {
-    return s;
-  }
-
-  // Нет образца с карточки: число → number, иначе массив строк (как в примерах WB).
-  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) {
-    const n = Number(s.replace(',', '.'));
-    if (Number.isFinite(n)) return n;
-  }
-  if (s.includes(';')) {
-    return s.split(';').map((x) => x.trim()).filter(Boolean);
-  }
-  return [s];
+  if (!s) return null;
+  if (looksLikeWbStringNotNumber(s)) return asWbStringCharc(s);
+  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) return asWbNumberCharc(s) ?? asWbStringCharc(s);
+  return asWbStringCharc(s);
 }
 
 /**
@@ -892,7 +934,7 @@ function coerceWbCharcValue(raw, existingValue) {
  * Полная перезапись карточки: берём текущие с WB (сохраняя типы value), поверх — ERP wb_attributes.
  * Габариты упаковки (pack dim charcs) не передаём — только объект dimensions.
  */
-function buildWbCharacteristics(wbAttrs, existingChars = null) {
+function buildWbCharacteristics(wbAttrs, existingChars = null, charcTypeById = null) {
   const obj = parseJsonObject(wbAttrs);
   const existingList = Array.isArray(existingChars) ? existingChars : [];
   const existingById = new Map();
@@ -900,6 +942,7 @@ function buildWbCharacteristics(wbAttrs, existingChars = null) {
     const id = Number(c?.id ?? c?.charcID ?? c?.charcId);
     if (Number.isFinite(id) && id > 0) existingById.set(id, c?.value);
   }
+  const typeOf = (id) => (charcTypeById instanceof Map ? charcTypeById.get(id) : undefined);
 
   const result = [];
   const seen = new Set();
@@ -910,7 +953,7 @@ function buildWbCharacteristics(wbAttrs, existingChars = null) {
     seen.add(id);
     const erpRaw = obj[String(id)];
     if (erpRaw != null && String(erpRaw).trim() !== '') {
-      const value = coerceWbCharcValue(erpRaw, c?.value);
+      const value = coerceWbCharcValue(erpRaw, c?.value, typeOf(id));
       if (value != null && !(Array.isArray(value) && value.length === 0)) {
         result.push({ id, value });
         continue;
@@ -925,7 +968,7 @@ function buildWbCharacteristics(wbAttrs, existingChars = null) {
     const id = Number(idStr);
     if (!Number.isFinite(id) || id <= 0 || seen.has(id) || WB_PACK_DIM_IDS.has(id)) continue;
     if (raw == null || String(raw).trim() === '') continue;
-    const value = coerceWbCharcValue(raw, existingById.get(id));
+    const value = coerceWbCharcValue(raw, existingById.get(id), typeOf(id));
     if (value == null || (Array.isArray(value) && value.length === 0)) continue;
     result.push({ id, value });
     seen.add(id);
@@ -1511,7 +1554,7 @@ async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 
   return null;
 }
 
-function buildWbCardPayload(product, existing, { nmId, vendorCode, title, description, brand }) {
+function buildWbCardPayload(product, existing, { nmId, vendorCode, title, description, brand, charcTypeById }) {
   const card = {
     ...(nmId ? { nmID: nmId } : {}),
     vendorCode: vendorCode || (nmId ? String(nmId) : ''),
@@ -1521,7 +1564,7 @@ function buildWbCardPayload(product, existing, { nmId, vendorCode, title, descri
   };
 
   const wbAttrsForChars = mergeWbItemProductDimsIntoAttrs(product.wb_attributes, product);
-  const chars = buildWbCharacteristics(wbAttrsForChars, existing?.characteristics);
+  const chars = buildWbCharacteristics(wbAttrsForChars, existing?.characteristics, charcTypeById);
   if (chars.length > 0) card.characteristics = chars;
 
   if (existing?.sizes && Array.isArray(existing.sizes) && existing.sizes.length > 0) {
@@ -1587,6 +1630,48 @@ async function pushWbImages(nmId, product, ctx) {
   }
 }
 
+function pickWbDirectoryBrandName(list, wanted) {
+  const q = String(wanted || '').trim().toLowerCase();
+  if (!q || !Array.isArray(list) || !list.length) return null;
+  const names = list
+    .map((b) => String(b?.name ?? b?.brand ?? b ?? '').trim())
+    .filter(Boolean);
+  const exact = names.find((n) => n.toLowerCase() === q);
+  if (exact) return exact;
+  const starts = names.find((n) => n.toLowerCase().startsWith(q) || q.startsWith(n.toLowerCase()));
+  return starts || null;
+}
+
+async function resolveWbDirectoryBrand(brand, _subjectId, ctx) {
+  const wanted = trimOrNull(brand);
+  if (!wanted) return { brand: null, unmatched: false };
+  const q = encodeURIComponent(wanted);
+  const paths = [`/content/v2/directory/brands?pattern=${q}`, `/content/v2/directory/brands?name=${q}`];
+  let sawList = false;
+  for (const path of paths) {
+    try {
+      const data = await integrationsService._wbContentApiGet(path, {
+        profileId: ctx.profileId,
+        organizationId: ctx.organizationId,
+      });
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data?.brands)
+            ? data.brands
+            : [];
+      if (Array.isArray(list)) sawList = true;
+      const hit = pickWbDirectoryBrandName(list, wanted);
+      if (hit) return { brand: hit, unmatched: false };
+    } catch (e) {
+      logger.warn('[MP Card Push] WB brands directory:', e?.message || e);
+    }
+  }
+  if (!sawList) return { brand: wanted, unmatched: false };
+  return { brand: wanted, unmatched: true };
+}
+
 async function pushWildberriesCard(product, categoryMm, ctx) {
   const subjectId = Number(categoryMm?.wb ?? categoryMm?.wb_subject_id ?? 0);
   const hasSubjectMapping = Number.isFinite(subjectId) && subjectId >= 1;
@@ -1631,6 +1716,29 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     resolveCardTextForPush(product, 'wb', 'brand') ||
     trimOrNull(existing?.brand);
 
+  let charcTypeById = new Map();
+  if (hasSubjectMapping) {
+    try {
+      const schema = await integrationsService.getWildberriesCategoryAttributes(subjectId, {
+        profileId: ctx.profileId ?? null,
+        organizationId: ctx.organizationId ?? null,
+      });
+      charcTypeById = buildWbCharcTypeMap(schema);
+    } catch (e) {
+      logger.warn('[MP Card Push] WB charcs schema:', e?.message || e);
+    }
+  }
+
+  let brandForCard = brand;
+  let brandNote = '';
+  if (brandForCard) {
+    const resolved = await resolveWbDirectoryBrand(brandForCard, subjectId, ctx);
+    if (resolved.brand) brandForCard = resolved.brand;
+    if (resolved.unmatched) {
+      brandNote = ` Бренд «${brand}» не найден в справочнике WB — отправлен как есть.`;
+    }
+  }
+
   if (creating && !title) {
     return {
       marketplace: 'wb',
@@ -1644,7 +1752,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     vendorCode: vendorCode || trimOrNull(existing?.vendorCode) || (existingNm ? String(existingNm) : ''),
     title,
     description,
-    brand,
+    brand: brandForCard,
+    charcTypeById,
   });
 
   if (creating) {
@@ -1749,7 +1858,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         marketplace: 'wb',
         ok: true,
         created: true,
-        message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}${priceNote}`,
+        message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}${priceNote}${brandNote}`,
         imagesPushed,
       };
     }
@@ -1758,7 +1867,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       marketplace: 'wb',
       ok: true,
       created: false,
-      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}${priceNote}`,
+      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}${priceNote}${brandNote}`,
       imagesPushed,
       subjectIdUnchanged:
         hasSubjectMapping &&
