@@ -27,6 +27,10 @@ import {
 import { resolveMoskvorechieV1Credentials } from './supplierOrderAdapters/moskvorechie.v1.js';
 import { MOSKVORECHIE_API_BASE } from './supplierOrderAdapters/shared.js';
 import fetch from 'node-fetch';
+import {
+  normalizeDirectoryBrandEntries as normalizeWbBrandEntries,
+  rankDirectoryBrands as rankWbBrands,
+} from '../utils/marketplaceBrandDirectory.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -42,52 +46,6 @@ function normalizeIntegrationOfferBarcodes(raw) {
     out.push(s);
   }
   return out;
-}
-
-function normalizeWbBrandEntries(data) {
-  const list = Array.isArray(data)
-    ? data
-    : Array.isArray(data?.data)
-      ? data.data
-      : Array.isArray(data?.brands)
-        ? data.brands
-        : Array.isArray(data?.result)
-          ? data.result
-          : [];
-  const out = [];
-  const seen = new Set();
-  for (const b of list) {
-    const name = String(b?.name ?? b?.brand ?? (typeof b === 'string' ? b : '')).trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const id = b?.id ?? b?.brandId ?? b?.brand_id ?? null;
-    out.push({
-      name,
-      id: id != null && String(id).trim() !== '' ? String(id) : null,
-    });
-  }
-  return out;
-}
-
-function rankWbBrands(list, q) {
-  const nq = String(q || '').trim().toLowerCase();
-  const src = Array.isArray(list) ? list : [];
-  if (!nq) return src.slice(0, 50);
-  const scored = [];
-  for (const b of src) {
-    const ln = String(b?.name || '').toLowerCase();
-    if (!ln) continue;
-    let score = 0;
-    if (ln === nq) score = 3;
-    else if (ln.startsWith(nq)) score = 2;
-    else if (ln.includes(nq)) score = 1;
-    else continue;
-    scored.push({ ...b, score });
-  }
-  scored.sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name), 'ru'));
-  return scored.map(({ score, ...rest }) => rest).slice(0, 50);
 }
 
 class IntegrationsService {
@@ -2146,10 +2104,10 @@ class IntegrationsService {
   }
 
   /**
-   * Справочник брендов WB: поиск без учёта регистра (Miles → MILES).
+   * Живой поиск в API справочника WB (без локального кэша).
    * @returns {Promise<Array<{ name: string, id: string|null }>>}
    */
-  async getWildberriesBrands(opts = {}) {
+  async fetchWildberriesBrandsFromApi(opts = {}) {
     const q = String(opts.q ?? opts.pattern ?? opts.name ?? '').trim();
     const subjectId = Number(opts.subjectId ?? opts.subject_id ?? 0) || 0;
     const merged = [];
@@ -2171,7 +2129,9 @@ class IntegrationsService {
           logger.debug('[WB brands] directory search failed', { param, err: e?.message });
         }
       }
-      pushAll(await this._findErpWbBrandAliases(q));
+      if (opts.skipErpAliases !== true) {
+        pushAll(await this._findErpWbBrandAliases(q));
+      }
     }
 
     if (subjectId > 0 && merged.length < 3) {
@@ -2185,6 +2145,14 @@ class IntegrationsService {
     }
 
     return rankWbBrands(normalizeWbBrandEntries(merged), q);
+  }
+
+  /**
+   * Справочник брендов WB: локальная копия + живой API (Miles → MILES).
+   */
+  async getWildberriesBrands(opts = {}) {
+    const { searchMarketplaceBrands } = await import('./marketplaceBrandDirectory.service.js');
+    return searchMarketplaceBrands({ marketplace: 'wb', ...opts });
   }
 
   _normalizeWbListCard(card, nmIdFallback = null) {
@@ -3598,7 +3566,7 @@ class IntegrationsService {
    * Поиск справочных значений характеристики Ozon по value.
    * POST /v1/description-category/attribute/values/search
    */
-  async searchOzonAttributeValues(attribute_id, description_category_id, type_id, value) {
+  async searchOzonAttributeValues(attribute_id, description_category_id, type_id, value, options = {}) {
     const descId = Number(description_category_id) || 0;
     const typeIdNum = Number(type_id) || 0;
     if (descId <= 0 || typeIdNum <= 0) {
@@ -3611,7 +3579,10 @@ class IntegrationsService {
       type_id: typeIdNum,
       value: String(value || '').trim() || ''
     };
-    const data = await this._ozonApiPost('/v1/description-category/attribute/values/search', body);
+    const data = await this._ozonApiPost('/v1/description-category/attribute/values/search', body, {
+      profileId: options.profileId ?? options.profile_id ?? null,
+      organizationId: options.organizationId ?? options.organization_id ?? null,
+    });
     const list = data.result ?? data ?? [];
     return Array.isArray(list) ? list : [];
   }

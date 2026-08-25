@@ -4204,12 +4204,22 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const next = { ...prev };
       const oz = byMp.ozon;
       const wb = byMp.wb;
+      const ym = byMp.ym;
       // Не перезаписываем связанные поля — они зеркалят «Основное»
       if (oz?.mp_brand_name && !isMpFieldLinked(prev.mp_field_links, 'brand', 'ozon')) {
         next.mp_ozon_brand = String(oz.mp_brand_name);
       }
       if (wb?.mp_brand_name && !isMpFieldLinked(prev.mp_field_links, 'brand', 'wb')) {
         next.mp_wb_brand = String(wb.mp_brand_name);
+      }
+      if (ym?.mp_brand_name && !isMpFieldLinked(prev.mp_field_links, 'brand', 'ym')) {
+        const prevDraft =
+          next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+            ? next.ym_draft
+            : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+              ? prev.ym_draft
+              : {};
+        next.ym_draft = { ...prevDraft, vendor: String(ym.mp_brand_name) };
       }
       if (manufacturerCountry && !String(prev.country_of_origin || '').trim()) {
         next.country_of_origin = String(manufacturerCountry);

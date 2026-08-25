@@ -32,6 +32,11 @@ router.post('/marketplaces/yandex/categories/update', wrapAsync(integrationsCont
 // Балансы на счетах МП (дашборд)
 router.get('/marketplaces/account-balances', wrapAsync(integrationsController.getMarketplaceAccountBalances));
 
+// Справочники брендов МП (до /marketplaces/:type)
+router.get('/marketplaces/brands', wrapAsync(integrationsController.getMarketplaceBrands));
+router.get('/marketplaces/ozon/brands', wrapAsync(integrationsController.getMarketplaceBrands));
+router.get('/marketplaces/yandex/brands', wrapAsync(integrationsController.getMarketplaceBrands));
+
 // Проверка токенов маркетплейсов + уведомления
 router.get('/marketplaces/:type/token-status', wrapAsync(integrationsController.getMarketplaceTokenStatus));
 router.get('/notifications', wrapAsync(integrationsController.getNotifications));

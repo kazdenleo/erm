@@ -62,7 +62,7 @@ export function Brands() {
   return (
     <div className="card">
       <h1 className="title">🏷️ Бренды</h1>
-      <p className="subtitle">Создание и управление брендами товаров</p>
+      <p className="subtitle">Сопоставление с брендами Ozon, Wildberries и Яндекс.Маркета</p>
 
       <div className="brands-list" style={{marginTop: '16px'}}>
         {brands.length === 0 ? (

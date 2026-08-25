@@ -199,11 +199,13 @@ export const integrationsApi = {
   },
 
   /**
-   * Справочник брендов WB (Miles → MILES).
-   * @param {{ q?: string, subjectId?: number|string, organizationId?: number|string }} params
+   * Справочник брендов МП (WB / Ozon / YM).
+   * @param {{ marketplace?: string, q?: string, subjectId?: number|string, organizationId?: number|string }} params
    */
-  getWildberriesBrands: async (params = {}) => {
+  getMarketplaceBrands: async (params = {}) => {
     const q = new URLSearchParams();
+    const mp = String(params.marketplace ?? params.mp ?? 'wb').trim().toLowerCase();
+    q.set('marketplace', mp);
     if (params.q != null && String(params.q).trim() !== '') q.set('q', String(params.q).trim());
     if (params.subjectId != null && String(params.subjectId).trim() !== '') {
       q.set('subjectId', String(params.subjectId).trim());
@@ -211,9 +213,17 @@ export const integrationsApi = {
     if (params.organizationId != null && String(params.organizationId).trim() !== '') {
       q.set('organizationId', String(params.organizationId).trim());
     }
-    const response = await api.get(`/integrations/marketplaces/wildberries/brands?${q.toString()}`);
+    const response = await api.get(`/integrations/marketplaces/brands?${q.toString()}`);
     const list = response.data?.data ?? response.data;
     return Array.isArray(list) ? list : [];
+  },
+
+  /**
+   * Справочник брендов WB (Miles → MILES).
+   * @param {{ q?: string, subjectId?: number|string, organizationId?: number|string }} params
+   */
+  getWildberriesBrands: async (params = {}) => {
+    return integrationsApi.getMarketplaceBrands({ ...params, marketplace: 'wb' });
   },
 
   /**

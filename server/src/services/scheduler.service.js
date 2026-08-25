@@ -686,6 +686,32 @@ class SchedulerService {
         timezone: 'Europe/Moscow',
       });
 
+      // Справочники брендов МП — после категорий, до пересчёта цен
+      const mpBrandDirectoryJob = cron.schedule('0 3 * * *', async () => {
+        await runSchedulerDbJob('mp-brand-directory', async () => {
+          logger.info('[Scheduler] Starting marketplace brand directories refresh...');
+          try {
+            const { refreshMarketplaceBrandDirectories } = await import(
+              './marketplaceBrandDirectory.service.js'
+            );
+            const result = await refreshMarketplaceBrandDirectories();
+            logger.info('[Scheduler] Marketplace brand directories refresh completed', result);
+          } catch (error) {
+            logger.error('[Scheduler] Marketplace brand directories refresh failed:', error);
+            await addRuntimeNotification({
+              type: 'job_failed',
+              severity: 'error',
+              source: 'scheduler',
+              title: 'Сбой ночного обновления справочников брендов МП',
+              message: `MP brand directory refresh failed: ${error?.message || String(error)}`,
+            });
+          }
+        });
+      }, {
+        scheduled: false,
+        timezone: 'Europe/Moscow',
+      });
+
       // Один раз в сутки после свежих комиссий: кэш калькулятора из MP API → массовый пересчёт из БД.
       // Днём — только recalculate-one / смена данных по товару (live для этого SKU).
       const minPricesNightlyCron = getMinPricesNightlyCron();
@@ -1165,6 +1191,13 @@ class SchedulerService {
       });
 
       this.jobs.push({
+        name: 'mp-brand-directory',
+        job: mpBrandDirectoryJob,
+        schedule: '0 3 * * *',
+        description: 'Справочники брендов WB/Ozon/YM каждый день в 3:00 МСК'
+      });
+
+      this.jobs.push({
         name: 'min-prices-recalculate',
         job: minPricesRecalcJob,
         schedule: minPricesNightlyCron,
@@ -1416,6 +1449,7 @@ class SchedulerService {
       ozonActionsJob.start();
       ozonCategoriesJob.start();
       ymCategoriesJob.start();
+      mpBrandDirectoryJob.start();
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
       if (questionsSyncJob) {
@@ -1628,6 +1662,17 @@ class SchedulerService {
             }
           }).catch((error) => logger.error('[Scheduler] MP category commissions refresh failed:', error));
         }, 105 * 60 * 1000);
+
+        setTimeout(() => {
+          void runSchedulerDbJob('mp-brand-directory', async () => {
+            logger.info('[Scheduler] Starting marketplace brand directories refresh...');
+            const { refreshMarketplaceBrandDirectories } = await import(
+              './marketplaceBrandDirectory.service.js'
+            );
+            const result = await refreshMarketplaceBrandDirectories();
+            logger.info('[Scheduler] Marketplace brand directories refresh completed', result);
+          }).catch((error) => logger.error('[Scheduler] Marketplace brand directories refresh failed:', error));
+        }, 120 * 60 * 1000);
 
         setTimeout(() => {
           void runSchedulerDbJob('min-prices-nightly', async () => {

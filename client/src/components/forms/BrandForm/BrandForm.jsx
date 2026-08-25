@@ -10,7 +10,7 @@ import { Modal } from '../../common/Modal/Modal';
 import { certificatesApi } from '../../../services/certificates.api';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { brandsApi } from '../../../services/brands.api';
-import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
+import { MpBrandSuggest } from '../../common/MpBrandSuggest/MpBrandSuggest.jsx';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
 
 const MP_MARKETPLACES = [
@@ -488,8 +488,8 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
           </div>
         </div>
         <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
-          Названия бренда на МП подставляются в карточку товара при выборе бренда в ERP.
-          Для Wildberries укажите имя из справочника WB (регистр важен: MILES, не Miles).
+          Сопоставление подставляется в карточку товара при выборе бренда в ERP.
+          Для WB и Ozon выбирайте имя из справочника МП (регистр важен). Справочники обновляются каждую ночь.
         </div>
         {!brand?.id && (
           <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
@@ -502,21 +502,25 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               <div style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '10px' }}>
                 <div style={{ fontWeight: 600, fontSize: '12px', marginBottom: '8px' }}>{label}</div>
                 <label className="form-label" style={{ fontSize: '11px' }}>Название на МП</label>
-                {key === 'wb' ? (
-                  <WbBrandSuggest
-                    className="form-control form-control-sm"
-                    value={mpMappings[key]?.mp_brand_name || ''}
-                    onChange={(next) => handleMpMappingChange(key, 'mp_brand_name', next)}
-                    placeholder="Словарь WB, например MILES"
-                  />
-                ) : (
-                  <input
-                    className="form-control form-control-sm"
-                    value={mpMappings[key]?.mp_brand_name || ''}
-                    onChange={(e) => handleMpMappingChange(key, 'mp_brand_name', e.target.value)}
-                    placeholder="Как в кабинете МП"
-                  />
-                )}
+                <MpBrandSuggest
+                  marketplace={key}
+                  className="form-control form-control-sm"
+                  value={mpMappings[key]?.mp_brand_name || ''}
+                  onChange={(next) => handleMpMappingChange(key, 'mp_brand_name', next)}
+                  onSelect={(opt) => {
+                    if (!opt?.name) return;
+                    setMpMappings((prev) => ({
+                      ...prev,
+                      [key]: {
+                        ...prev[key],
+                        mp_brand_name: opt.name,
+                        mp_brand_id: opt.id != null && String(opt.id).trim() !== ''
+                          ? String(opt.id)
+                          : prev[key]?.mp_brand_id || '',
+                      },
+                    }));
+                  }}
+                />
                 {key === 'ozon' && (
                   <>
                     <label className="form-label" style={{ fontSize: '11px', marginTop: '8px' }}>ID в справочнике Ozon</label>
@@ -542,7 +546,9 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
                         >
                           {c.name}
                           {c.count ? ` (${c.count})` : ''}
-                          {c.source === 'ozon_api' ? ' · Ozon' : ''}
+                          {c.source === 'ozon_api' || c.source === 'ozon_directory' ? ' · Ozon' : ''}
+                          {c.source === 'wb_directory' ? ' · WB' : ''}
+                          {c.source === 'ym_directory' ? ' · YM' : ''}
                         </button>
                       ))}
                     </div>

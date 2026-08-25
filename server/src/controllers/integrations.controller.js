@@ -23,6 +23,36 @@ function integrationScopeFromQuery(req) {
   };
 }
 
+async function handleGetMarketplaceBrands(req, res) {
+  const path = String(req.path || req.originalUrl || '').toLowerCase();
+  let marketplace = String(req.query.marketplace ?? req.query.mp ?? req.params.marketplace ?? '').trim();
+  if (!marketplace) {
+    if (path.includes('/ozon/')) marketplace = 'ozon';
+    else if (path.includes('/yandex/')) marketplace = 'ym';
+    else marketplace = 'wb';
+  }
+  const q = String(req.query.q ?? req.query.pattern ?? req.query.name ?? '').trim();
+  const subjectId = req.query.subjectId ?? req.query.subject_id ?? null;
+  const organizationId =
+    req.query.organizationId ??
+    req.query.organization_id ??
+    req.get('x-organization-id') ??
+    req.get('X-Organization-Id') ??
+    null;
+  const tid = tenantListProfileId(req);
+  const { searchMarketplaceBrands } = await import('../services/marketplaceBrandDirectory.service.js');
+  const brands = await searchMarketplaceBrands({
+    marketplace,
+    q,
+    subjectId,
+    organizationId,
+    profileId: tid === TENANT_LIST_EMPTY ? null : tid,
+    description_category_id: req.query.description_category_id ?? req.query.descriptionCategoryId,
+    type_id: req.query.type_id ?? req.query.typeId,
+  });
+  return res.status(200).json({ ok: true, data: Array.isArray(brands) ? brands : [] });
+}
+
 class IntegrationsController {
   /**
    * GET /api/integrations/marketplaces/:type
@@ -758,27 +788,30 @@ class IntegrationsController {
   }
 
   /**
+   * GET /api/integrations/marketplaces/brands?marketplace=wb|ozon|ym&q=
    * GET /api/integrations/marketplaces/wildberries/brands?q=&subjectId=
-   * Справочник брендов WB (поиск без учёта регистра).
+   * Справочник брендов МП (локальная копия + живой поиск).
+   */
+  async getMarketplaceBrands(req, res, next) {
+    try {
+      return await handleGetMarketplaceBrands(req, res);
+    } catch (error) {
+      logger.error('[Integrations Controller] Error getting marketplace brands:', error);
+      return res.status(400).json({
+        ok: false,
+        error: error.message || 'Не удалось загрузить справочник брендов',
+        data: [],
+      });
+    }
+  }
+
+  /**
+   * GET /api/integrations/marketplaces/wildberries/brands?q=&subjectId=
    */
   async getWildberriesBrands(req, res, next) {
     try {
-      const q = String(req.query.q ?? req.query.pattern ?? req.query.name ?? '').trim();
-      const subjectId = req.query.subjectId ?? req.query.subject_id ?? null;
-      const organizationId =
-        req.query.organizationId ??
-        req.query.organization_id ??
-        req.get('x-organization-id') ??
-        req.get('X-Organization-Id') ??
-        null;
-      const tid = tenantListProfileId(req);
-      const brands = await integrationsService.getWildberriesBrands({
-        q,
-        subjectId,
-        organizationId,
-        profileId: tid === TENANT_LIST_EMPTY ? null : tid,
-      });
-      return res.status(200).json({ ok: true, data: Array.isArray(brands) ? brands : [] });
+      req.query = { ...req.query, marketplace: 'wb' };
+      return await handleGetMarketplaceBrands(req, res);
     } catch (error) {
       logger.error('[Integrations Controller] Error getting WB brands:', error);
       return res.status(400).json({

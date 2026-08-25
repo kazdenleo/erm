@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
+import { searchMarketplaceBrands } from './marketplaceBrandDirectory.service.js';
 
 const MP_KEYS = ['ozon', 'wb', 'ym'];
 
@@ -74,15 +75,17 @@ export async function collectMpBrandCandidatesFromProducts(brandId, profileId) {
     `SELECT
        NULLIF(TRIM(p.mp_ozon_brand), '') AS ozon_name,
        NULLIF(TRIM(p.mp_wb_brand), '') AS wb_name,
+       NULLIF(TRIM(p.ym_draft->>'vendor'), '') AS ym_name,
        COUNT(*)::int AS cnt
      FROM products p
      WHERE p.brand_id = $1${profileSql}
-     GROUP BY 1, 2`,
+     GROUP BY 1, 2, 3`,
     params
   );
 
   const ozonMap = new Map();
   const wbMap = new Map();
+  const ymMap = new Map();
   for (const row of r.rows || []) {
     if (row.ozon_name) {
       const k = row.ozon_name;
@@ -91,6 +94,10 @@ export async function collectMpBrandCandidatesFromProducts(brandId, profileId) {
     if (row.wb_name) {
       const k = row.wb_name;
       wbMap.set(k, (wbMap.get(k) || 0) + Number(row.cnt) || 0);
+    }
+    if (row.ym_name) {
+      const k = row.ym_name;
+      ymMap.set(k, (ymMap.get(k) || 0) + Number(row.cnt) || 0);
     }
   }
 
@@ -102,7 +109,7 @@ export async function collectMpBrandCandidatesFromProducts(brandId, profileId) {
   return {
     ozon: toList(ozonMap),
     wb: toList(wbMap),
-    ym: [],
+    ym: toList(ymMap),
   };
 }
 
@@ -153,7 +160,9 @@ export async function suggestOzonBrandMapping(brand, profileId) {
   const pair = await resolveOzonCategoryPairForBrand(brand.id, profileId);
   if (pair) {
     try {
-      const found = await integrationsService.searchOzonAttributeValues(85, pair.descId, pair.typeId, name);
+      const found = await integrationsService.searchOzonAttributeValues(85, pair.descId, pair.typeId, name, {
+        profileId,
+      });
       for (const item of found || []) {
         const mpName = String(item.value ?? item.name ?? '').trim();
         const mpId = item.id != null ? String(item.id) : item.dictionary_value_id != null ? String(item.dictionary_value_id) : null;
@@ -186,29 +195,53 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
 
   const fromProducts = await collectMpBrandCandidatesFromProducts(brandId, profileId);
   const ozonSuggest = await suggestOzonBrandMapping(brand, profileId);
-  let wbFromDir = [];
-  try {
-    wbFromDir = await integrationsService.getWildberriesBrands({
-      q: brand.name,
-      profileId,
-    });
-  } catch {
-    wbFromDir = [];
-  }
-  const wbCandidates = [
-    ...wbFromDir.map((b) => ({
-      name: b.name,
-      mp_brand_id: b.id,
-      count: 0,
-      source: 'wb_directory',
-    })),
-    ...(fromProducts.wb || []),
-  ];
+
+  const dirSearch = async (marketplace) => {
+    try {
+      const list = await searchMarketplaceBrands({
+        marketplace,
+        q: brand.name,
+        profileId,
+      });
+      return (list || []).map((b) => ({
+        name: b.name,
+        mp_brand_id: b.id,
+        count: 0,
+        source: `${marketplace}_directory`,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const [wbFromDir, ozonFromDir, ymFromDir] = await Promise.all([
+    dirSearch('wb'),
+    dirSearch('ozon'),
+    dirSearch('ym'),
+  ]);
+
+  const mergeByName = (...lists) => {
+    const out = [];
+    const seen = new Set();
+    for (const list of lists) {
+      for (const item of list || []) {
+        const key = String(item?.name || '').trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(item);
+      }
+    }
+    return out;
+  };
+
+  const ozonCandidates = mergeByName(ozonFromDir, ozonSuggest.candidates);
+  const wbCandidates = mergeByName(wbFromDir, fromProducts.wb);
+  const ymCandidates = mergeByName(ymFromDir, fromProducts.ym);
 
   const suggestions = {
-    ozon: ozonSuggest.candidates,
+    ozon: ozonCandidates,
     wb: wbCandidates,
-    ym: fromProducts.ym,
+    ym: ymCandidates,
     ozon_category_pair: ozonSuggest.pair,
   };
 
@@ -225,8 +258,9 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
     if (row) applied.push({ marketplace, ...row });
   };
 
-  await upsert('ozon', ozonSuggest.candidates[0]);
+  await upsert('ozon', ozonCandidates[0]);
   await upsert('wb', wbCandidates[0]);
+  await upsert('ym', ymCandidates[0]);
 
   return { suggestions, applied };
 }

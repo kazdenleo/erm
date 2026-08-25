@@ -41,7 +41,8 @@ import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { refreshComputedAttributeValues } from './computedAttributes.service.js';
-import repositoryFactory from '../config/repository-factory.js';
+import { resolveMappedBrand, searchMarketplaceBrands } from './marketplaceBrandDirectory.service.js';
+import { pickDirectoryBrandName } from '../utils/marketplaceBrandDirectory.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -197,6 +198,24 @@ function buildOzonAttributesArray(ozonAttrs) {
     out.push({ complex_id: 0, id, values });
   }
   return out;
+}
+
+async function applyMappedOzonBrand(item, product) {
+  const mapped = await resolveMappedBrand(product, 'ozon');
+  if (!mapped?.id && !mapped?.name) return;
+  const values =
+    mapped.id && /^\d+$/.test(String(mapped.id))
+      ? [{ dictionary_value_id: Number(mapped.id) }]
+      : mapped.name
+        ? [{ value: mapped.name }]
+        : null;
+  if (!values) return;
+  const attrs = Array.isArray(item.attributes) ? [...item.attributes] : [];
+  const idx = attrs.findIndex((a) => Number(a.id) === 85);
+  const next = { complex_id: 0, id: 85, values };
+  if (idx >= 0) attrs[idx] = next;
+  else attrs.push(next);
+  item.attributes = attrs;
 }
 
 function sleep(ms) {
@@ -1008,6 +1027,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
     type_id: typeId,
     attributes: buildOzonAttributesArray(product.ozon_attributes)
   };
+  await applyMappedOzonBrand(item, product);
   if (description) item.description = description;
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
   if (pid != null && Number.isFinite(Number(pid))) {
@@ -1631,47 +1651,23 @@ async function pushWbImages(nmId, product, ctx) {
   }
 }
 
-function pickWbDirectoryBrandName(list, wanted) {
-  const q = String(wanted || '').trim().toLowerCase();
-  if (!q || !Array.isArray(list) || !list.length) return null;
-  const names = list
-    .map((b) => String(b?.name ?? b?.brand ?? b ?? '').trim())
-    .filter(Boolean);
-  const exact = names.find((n) => n.toLowerCase() === q);
-  if (exact) return exact;
-  const starts = names.find((n) => n.toLowerCase().startsWith(q) || q.startsWith(n.toLowerCase()));
-  return starts || null;
-}
-
-async function resolveWbMappedBrandName(product) {
-  const brandId = Number(product?.brand_id ?? product?.brandId);
-  if (!Number.isFinite(brandId) || brandId < 1) return null;
-  try {
-    const repo = repositoryFactory.getBrandsRepository();
-    const mappings = repo?.findMarketplaceMappings ? await repo.findMarketplaceMappings(brandId) : [];
-    const wb = (mappings || []).find((m) => String(m.marketplace || '').toLowerCase() === 'wb');
-    return trimOrNull(wb?.mp_brand_name ?? wb?.mpBrandName);
-  } catch (e) {
-    logger.warn('[MP Card Push] WB brand mapping:', e?.message || e);
-    return null;
-  }
-}
-
 async function resolveWbDirectoryBrand(brand, subjectId, ctx, product) {
   const wanted = trimOrNull(brand);
-  const mapped = await resolveWbMappedBrandName(product);
-  if (mapped && (!wanted || mapped.toLowerCase() === wanted.toLowerCase())) {
-    return { brand: mapped, unmatched: false };
+  const mapped = await resolveMappedBrand(product, 'wb');
+  const mappedName = trimOrNull(mapped?.name);
+  if (mappedName && (!wanted || mappedName.toLowerCase() === wanted.toLowerCase())) {
+    return { brand: mappedName, unmatched: false };
   }
   if (!wanted) return { brand: null, unmatched: false };
   try {
-    const list = await integrationsService.getWildberriesBrands({
+    const list = await searchMarketplaceBrands({
+      marketplace: 'wb',
       q: wanted,
       subjectId: Number.isFinite(Number(subjectId)) && Number(subjectId) >= 1 ? subjectId : undefined,
       profileId: ctx.profileId ?? null,
       organizationId: ctx.organizationId ?? null,
     });
-    const hit = pickWbDirectoryBrandName(list, wanted);
+    const hit = pickDirectoryBrandName(list, wanted);
     if (hit) return { brand: hit, unmatched: false };
     if (Array.isArray(list) && list.length > 0) return { brand: wanted, unmatched: true };
   } catch (e) {
@@ -1938,7 +1934,13 @@ async function pushYandexCard(product, categoryMm, ctx) {
   })();
   const ymVendorCode = trimOrNull(ymDraft.vendorCode);
   if (ymVendorCode) offer.vendorCode = ymVendorCode;
-  const vendor = resolveCardTextForPush(product, 'ym', 'brand');
+  const wantedVendor = resolveCardTextForPush(product, 'ym', 'brand');
+  const mappedYm = await resolveMappedBrand(product, 'ym');
+  const mappedYmName = trimOrNull(mappedYm?.name);
+  const vendor =
+    mappedYmName && (!wantedVendor || mappedYmName.toLowerCase() === wantedVendor.toLowerCase())
+      ? mappedYmName
+      : wantedVendor;
   if (vendor) offer.vendor = vendor;
   const barcodeCodes = (() => {
     const out = [];

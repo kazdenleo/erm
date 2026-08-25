@@ -5,12 +5,10 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
-import brandsService, {
+import {
   attachBrandDetails,
   syncBrandMappingsFromCatalog,
   normalizeMappingsPayload,
-  suggestOzonBrandMapping,
-  collectMpBrandCandidatesFromProducts,
   scheduleOzonMinPriceRecalcForBrand,
   promoSettingsChanged,
 } from '../services/brands.service.js';
@@ -158,17 +156,11 @@ export const brandsController = {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const { id } = req.params;
-      const brand = await assertBrandAccess(id, tid);
-      const fromProducts = await collectMpBrandCandidatesFromProducts(id, tid);
-      const ozon = await suggestOzonBrandMapping(brand, tid);
+      await assertBrandAccess(id, tid);
+      const result = await syncBrandMappingsFromCatalog(id, tid, { apply: false });
       res.json({
         ok: true,
-        data: {
-          ozon: ozon.candidates,
-          wb: fromProducts.wb,
-          ym: fromProducts.ym,
-          ozon_category_pair: ozon.pair,
-        },
+        data: result.suggestions,
       });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
