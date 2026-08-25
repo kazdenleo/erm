@@ -491,6 +491,7 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
   if (n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin') return true;
   if (n === 'изготовитель' || n === 'производитель' || n === 'manufacturer') return true;
+  if (n.includes('артикул производител') || n === 'vendorcode' || n === 'vendor code') return true;
   if (isYmProductWeightOnlyParam(n)) return true;
   return false;
 }
@@ -930,6 +931,8 @@ export function isWbCountryCharcName(name) {
 export function isWbCharcDuplicatingDedicatedField(name) {
   const n = normalizeWbCharcName(name);
   if (!n) return false;
+  if (n === 'oem' || n === 'оем' || n.startsWith('oem ') || n.startsWith('оем ')) return false;
+  if (n.includes('oem-номер') || n.includes('oem номер')) return false;
   if (n === 'название' || n === 'наименование' || n === 'name' || n === 'title') return true;
   if (/^название(\s+товар(а)?)?$/.test(n)) return true;
   if (/^наименование(\s+товар(а)?)?$/.test(n)) return true;

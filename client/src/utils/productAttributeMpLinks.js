@@ -181,16 +181,52 @@ function mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps = {}) {
 
 /** Связь через category.mp_field_links (поля Main: артикул, бренд и т.д.). */
 export function isMpTargetLinkedInDedicatedCharcLinks(dedicatedLinks, mp, target, labelMaps = {}) {
+  return Boolean(dedicatedMainFieldForMpTarget(dedicatedLinks, mp, target, labelMaps));
+}
+
+/**
+ * Какое поле вкладки «Основное» сопоставлено с этой характеристикой/полем МП.
+ * Если сопоставлено и артикул, и другое поле — возвращаем sku.
+ */
+export function dedicatedMainFieldForMpTarget(dedicatedLinks, mp, target, labelMaps = {}) {
   const code = String(mp || '').toLowerCase();
-  if (!ATTR_MP_CODES.includes(code) || !target || typeof target !== 'object') return false;
+  if (!ATTR_MP_CODES.includes(code) || !target || typeof target !== 'object') return '';
   const links = normalizeCategoryDedicatedCharcLinks(dedicatedLinks);
+  const matches = [];
   for (const [key, slot] of Object.entries(links)) {
     if (key === DEDICATED_ADDED_KEYS_FIELD) continue;
     for (const entry of normalizeAttrMpLinkList(slot?.[code])) {
-      if (mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps)) return true;
+      if (mpDedicatedLinkEntryMatchesTarget(entry, mp, target, labelMaps)) {
+        matches.push(key);
+        break;
+      }
     }
   }
-  return false;
+  if (!matches.length) return '';
+  if (matches.includes('sku')) return 'sku';
+  return matches[0];
+}
+
+export function dedicatedMainFieldForMpTargetInCategories(
+  categories,
+  categoryIds,
+  mp,
+  target,
+  labelMaps = {}
+) {
+  const ids =
+    categoryIds instanceof Set
+      ? categoryIds
+      : new Set((Array.isArray(categoryIds) ? categoryIds : []).map((id) => String(id)));
+  let found = '';
+  for (const cat of categories || []) {
+    const cid = String(cat?.id ?? '');
+    if (ids.size && !ids.has(cid)) continue;
+    const field = dedicatedMainFieldForMpTarget(cat?.mp_field_links, mp, target, labelMaps);
+    if (field === 'sku') return 'sku';
+    if (field && !found) found = field;
+  }
+  return found;
 }
 
 /** Есть ли в attribute_mp_links категорий сопоставление с полем/характеристикой МП. */

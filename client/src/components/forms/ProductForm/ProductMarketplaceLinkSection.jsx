@@ -6,7 +6,7 @@ import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
 import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
-import { MP_CATEGORY_LINK_ICON_TITLE, resolveLinkedErpAttrMirror } from '../../../utils/productAttributeMpLinks.js';
+import { MP_CATEGORY_LINK_ICON_TITLE, dedicatedMainFieldForMpTarget, resolveLinkedErpAttrMirror } from '../../../utils/productAttributeMpLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 import { MpFromMainLinkIcon } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
@@ -56,7 +56,17 @@ function sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps
   return '';
 }
 
-function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps) {
+function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks) {
+  const dedicatedSku =
+    dedicatedMainFieldForMpTarget(
+      dedicatedLinks,
+      'ozon',
+      { kind: 'offer', offerId: '__ozon_vendor_code__' },
+      attrLabelMaps
+    ) === 'sku';
+  if (dedicatedSku && isMpFieldLinked(formData?.mp_field_links, 'sku', 'ozon')) {
+    return String(formData?.sku || '');
+  }
   const mirror = categoryAttributes?.length
     ? resolveLinkedErpAttrMirror(
         formData,
@@ -66,7 +76,7 @@ function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps) {
         attrLabelMaps
       )
     : null;
-  if (mirror != null) return mirror;
+  if (mirror != null && !dedicatedSku) return mirror;
   return String(getMpDraft(formData, 'ozon').vendorCode || '');
 }
 
@@ -87,6 +97,7 @@ export function ProductMarketplaceLinkSection({
   manufacturerArticleCategoryLinked = false,
   categoryAttributes = [],
   attrLabelMaps = {},
+  dedicatedLinks = null,
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -304,7 +315,7 @@ export function ProductMarketplaceLinkSection({
               className="form-control form-control-sm"
               autoComplete="off"
               placeholder="Партномер / OEM"
-              value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps)}
+              value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks)}
               onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
             />
             <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35, color: 'var(--muted)' }}>

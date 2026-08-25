@@ -6,6 +6,7 @@
 import { overlayCategoryDedicatedMpLinks } from '../utils/productMpFieldLinks.js';
 import { query, transaction } from '../config/database.js';
 import { profileIdFromDb } from '../utils/profileId.js';
+import { refreshComputedAttributeValues } from '../services/computedAttributes.service.js';
 import {
   coerceBarcodeString,
   normalizeBarcodeRows,
@@ -30,6 +31,199 @@ function applyCategoryDedicatedMpLinks(product) {
   );
   delete product.category_mp_field_links;
   return product;
+}
+
+function parseAttributeManualMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === true || value === 'true' || value === 1 || value === '1') {
+      out[String(key)] = true;
+    }
+  }
+  return out;
+}
+
+function applyAttributePack(product, pack) {
+  product.attribute_values = pack?.byId || {};
+  product.attribute_values_manual = pack?.manual || {};
+}
+
+async function attachPricingStrategyFlags(products) {
+  const list = Array.isArray(products) ? products.filter(Boolean) : [];
+  if (!list.length) return;
+  const productIds = list
+    .map((p) => {
+      const n = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })
+    .filter((n) => n != null);
+  if (!productIds.length) {
+    for (const product of list) {
+      product.hasPricingStrategy = false;
+      product.effectivePricingStrategyId = null;
+      product.effectivePricingStrategyName = null;
+      product.effectivePricingStrategySource = null;
+    }
+    return;
+  }
+  try {
+    const strategyFlags = await query(
+      `SELECT p.id,
+              CASE
+                WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                ELSE COALESCE(
+                  (
+                    SELECT ps.id FROM pricing_strategies ps
+                    WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                    LIMIT 1
+                  ),
+                  (
+                    SELECT ps.id FROM pricing_strategies ps
+                    WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
+                    LIMIT 1
+                  ),
+                  (
+                    SELECT ps.id FROM pricing_strategies ps
+                    WHERE ps.profile_id = p.profile_id
+                      AND ps.is_default = true
+                      AND ps.is_active = true
+                    LIMIT 1
+                  )
+                )
+              END AS effective_strategy_id,
+              CASE
+                WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                WHEN EXISTS (
+                  SELECT 1 FROM pricing_strategies ps
+                  WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                ) THEN 'product'
+                WHEN EXISTS (
+                  SELECT 1 FROM pricing_strategies ps
+                  WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
+                ) THEN 'organization'
+                WHEN EXISTS (
+                  SELECT 1 FROM pricing_strategies ps
+                  WHERE ps.profile_id = p.profile_id
+                    AND ps.is_default = true
+                    AND ps.is_active = true
+                ) THEN 'default'
+                ELSE NULL
+              END AS effective_strategy_source,
+              (
+                SELECT ps.name FROM pricing_strategies ps
+                WHERE ps.id = CASE
+                  WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                  ELSE COALESCE(
+                    (
+                      SELECT x.id FROM pricing_strategies x
+                      WHERE x.id = p.pricing_strategy_id AND x.is_active = true LIMIT 1
+                    ),
+                    (
+                      SELECT x.id FROM pricing_strategies x
+                      WHERE x.id = o.pricing_strategy_id AND x.is_active = true LIMIT 1
+                    ),
+                    (
+                      SELECT x.id FROM pricing_strategies x
+                      WHERE x.profile_id = p.profile_id
+                        AND x.is_default = true AND x.is_active = true LIMIT 1
+                    )
+                  )
+                END
+              ) AS effective_strategy_name
+       FROM products p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       LEFT JOIN profiles pr ON pr.id = p.profile_id
+       WHERE p.id = ANY($1::bigint[])`,
+      [productIds]
+    );
+    const byId = new Map(
+      (strategyFlags.rows || []).map((r) => [
+        String(r.id),
+        {
+          has: r.effective_strategy_id != null,
+          id: r.effective_strategy_id != null ? Number(r.effective_strategy_id) : null,
+          name: r.effective_strategy_name || null,
+          source: r.effective_strategy_source || null,
+        },
+      ])
+    );
+    for (const product of list) {
+      const info = byId.get(String(product.id)) || {
+        has: false,
+        id: null,
+        name: null,
+        source: null,
+      };
+      product.hasPricingStrategy = info.has;
+      product.effectivePricingStrategyId = info.id;
+      product.effectivePricingStrategyName = info.name;
+      product.effectivePricingStrategySource = info.source;
+    }
+  } catch (e) {
+    console.warn('[Products Repository] pricing strategy flags:', e.message);
+    for (const product of list) {
+      product.hasPricingStrategy = false;
+      product.effectivePricingStrategyId = null;
+      product.effectivePricingStrategyName = null;
+      product.effectivePricingStrategySource = null;
+    }
+  }
+}
+
+async function insertAttributeValueRow(client, productId, attrId, value, isManual) {
+  const valStr = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
+  try {
+    await client.query(
+      `INSERT INTO product_attribute_values (product_id, attribute_id, value, is_manual)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (product_id, attribute_id)
+       DO UPDATE SET value = EXCLUDED.value, is_manual = EXCLUDED.is_manual`,
+      [productId, attrId, valStr, isManual === true]
+    );
+  } catch (err) {
+    if (!String(err?.message || '').includes('is_manual')) throw err;
+    await client.query(
+      `INSERT INTO product_attribute_values (product_id, attribute_id, value)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (product_id, attribute_id)
+       DO UPDATE SET value = EXCLUDED.value`,
+      [productId, attrId, valStr]
+    );
+  }
+}
+
+async function replaceProductAttributeValues(client, productId, valuesMap, manualMap) {
+  let prevManual = {};
+  try {
+    const prev = await client.query(
+      'SELECT attribute_id, is_manual FROM product_attribute_values WHERE product_id = $1',
+      [productId]
+    );
+    for (const row of prev.rows || []) {
+      if (row.is_manual === true) prevManual[String(row.attribute_id)] = true;
+    }
+  } catch (err) {
+    if (!String(err?.message || '').includes('is_manual')) throw err;
+  }
+  await client.query('DELETE FROM product_attribute_values WHERE product_id = $1', [productId]);
+  const manual = parseAttributeManualMap(manualMap);
+  const hasManualPayload = manualMap != null && typeof manualMap === 'object';
+  for (const [attrId, value] of Object.entries(valuesMap || {})) {
+    const aid = parseInt(attrId, 10);
+    if (!aid || value === undefined || value === null || value === '') continue;
+    const key = String(aid);
+    const isManual = hasManualPayload ? manual[key] === true : !!prevManual[key];
+    await insertAttributeValueRow(client, productId, aid, value, isManual);
+  }
+}
+
+async function refreshComputedForProduct(client, productId) {
+  try {
+    await refreshComputedAttributeValues((sql, params) => client.query(sql, params), productId);
+  } catch (err) {
+    console.warn('[Products Repository] computed attributes:', err?.message || err);
+  }
 }
 
 async function insertProductBarcodes(client, productId, barcodes) {
@@ -1547,131 +1741,42 @@ class ProductsRepositoryPG {
             : null;
       });
 
-      // Эффективная стратегия (товар → организация → default), с учётом выключателя профиля
-      try {
-        const strategyFlags = await query(
-          `SELECT p.id,
-                  CASE
-                    WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                    ELSE COALESCE(
-                      (
-                        SELECT ps.id FROM pricing_strategies ps
-                        WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                        LIMIT 1
-                      ),
-                      (
-                        SELECT ps.id FROM pricing_strategies ps
-                        WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
-                        LIMIT 1
-                      ),
-                      (
-                        SELECT ps.id FROM pricing_strategies ps
-                        WHERE ps.profile_id = p.profile_id
-                          AND ps.is_default = true
-                          AND ps.is_active = true
-                        LIMIT 1
-                      )
-                    )
-                  END AS effective_strategy_id,
-                  CASE
-                    WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                    WHEN EXISTS (
-                      SELECT 1 FROM pricing_strategies ps
-                      WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                    ) THEN 'product'
-                    WHEN EXISTS (
-                      SELECT 1 FROM pricing_strategies ps
-                      WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
-                    ) THEN 'organization'
-                    WHEN EXISTS (
-                      SELECT 1 FROM pricing_strategies ps
-                      WHERE ps.profile_id = p.profile_id
-                        AND ps.is_default = true
-                        AND ps.is_active = true
-                    ) THEN 'default'
-                    ELSE NULL
-                  END AS effective_strategy_source,
-                  (
-                    SELECT ps.name FROM pricing_strategies ps
-                    WHERE ps.id = CASE
-                      WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                      ELSE COALESCE(
-                        (
-                          SELECT x.id FROM pricing_strategies x
-                          WHERE x.id = p.pricing_strategy_id AND x.is_active = true LIMIT 1
-                        ),
-                        (
-                          SELECT x.id FROM pricing_strategies x
-                          WHERE x.id = o.pricing_strategy_id AND x.is_active = true LIMIT 1
-                        ),
-                        (
-                          SELECT x.id FROM pricing_strategies x
-                          WHERE x.profile_id = p.profile_id
-                            AND x.is_default = true AND x.is_active = true LIMIT 1
-                        )
-                      )
-                    END
-                  ) AS effective_strategy_name
-           FROM products p
-           LEFT JOIN organizations o ON o.id = p.organization_id
-           LEFT JOIN profiles pr ON pr.id = p.profile_id
-           WHERE p.id = ANY($1::bigint[])`,
-          [productIds]
-        );
-        const byId = new Map(
-          (strategyFlags.rows || []).map((r) => [
-            String(r.id),
-            {
-              has: r.effective_strategy_id != null,
-              id: r.effective_strategy_id != null ? Number(r.effective_strategy_id) : null,
-              name: r.effective_strategy_name || null,
-              source: r.effective_strategy_source || null,
-            },
-          ])
-        );
-        for (const product of products) {
-          const info = byId.get(String(product.id)) || {
-            has: false,
-            id: null,
-            name: null,
-            source: null,
-          };
-          product.hasPricingStrategy = info.has;
-          product.effectivePricingStrategyId = info.id;
-          product.effectivePricingStrategyName = info.name;
-          product.effectivePricingStrategySource = info.source;
-        }
-      } catch (e) {
-        console.warn('[Products Repository] pricing strategy flags:', e.message);
-        for (const product of products) {
-          product.hasPricingStrategy = false;
-          product.effectivePricingStrategyId = null;
-          product.effectivePricingStrategyName = null;
-          product.effectivePricingStrategySource = null;
-        }
-      }
+      await attachPricingStrategyFlags(products);
 
       if (products.length > 0) {
         try {
-          const attrRes = await query(
-            `SELECT pav.product_id, pav.attribute_id, pav.value, pa.name as attr_name
-             FROM product_attribute_values pav
-             LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
-             WHERE pav.product_id = ANY($1)`,
-            [productIds]
-          );
+          let attrRes;
+          try {
+            attrRes = await query(
+              `SELECT pav.product_id, pav.attribute_id, pav.value, pav.is_manual, pa.name as attr_name
+               FROM product_attribute_values pav
+               LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
+               WHERE pav.product_id = ANY($1)`,
+              [productIds]
+            );
+          } catch (colErr) {
+            if (!String(colErr?.message || '').includes('is_manual')) throw colErr;
+            attrRes = await query(
+              `SELECT pav.product_id, pav.attribute_id, pav.value, pa.name as attr_name
+               FROM product_attribute_values pav
+               LEFT JOIN product_attributes pa ON pa.id = pav.attribute_id
+               WHERE pav.product_id = ANY($1)`,
+              [productIds]
+            );
+          }
           const byPid = {};
           const globalIdToName = {};
           for (const row of attrRes.rows) {
             if (row.attr_name) globalIdToName[String(row.attribute_id)] = row.attr_name;
             const pid = String(row.product_id);
-            if (!byPid[pid]) byPid[pid] = { byId: {}, byName: {} };
+            if (!byPid[pid]) byPid[pid] = { byId: {}, byName: {}, manual: {} };
             byPid[pid].byId[String(row.attribute_id)] = row.value;
+            if (row.is_manual === true) byPid[pid].manual[String(row.attribute_id)] = true;
             if (row.attr_name) byPid[pid].byName[row.attr_name] = row.value;
           }
           for (const p of products) {
             const pack = byPid[String(p.id)];
-            p.attribute_values = pack ? pack.byId : {};
+            applyAttributePack(p, pack);
             if (forExport) {
               p._erp_attr_id_to_name = globalIdToName;
               if (pack) p.erp_attributes_by_name = pack.byName;
@@ -1681,6 +1786,7 @@ class ProductsRepositoryPG {
           console.warn('[Products Repository] product_attribute_values:', e.message);
           for (const p of products) {
             p.attribute_values = {};
+            p.attribute_values_manual = {};
           }
         }
       }
@@ -2592,21 +2698,36 @@ class ProductsRepositoryPG {
     
     // Значения атрибутов товара
     try {
-      const attrValResult = await query(
-        'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
-        [numId]
-      );
+      let attrValResult;
+      try {
+        attrValResult = await query(
+          'SELECT attribute_id, value, is_manual FROM product_attribute_values WHERE product_id = $1',
+          [numId]
+        );
+      } catch (colErr) {
+        if (!String(colErr?.message || '').includes('is_manual')) throw colErr;
+        attrValResult = await query(
+          'SELECT attribute_id, value FROM product_attribute_values WHERE product_id = $1',
+          [numId]
+        );
+      }
       product.attribute_values = {};
-      attrValResult.rows.forEach(row => {
+      product.attribute_values_manual = {};
+      attrValResult.rows.forEach((row) => {
         const aid = row.attribute_id != null ? String(row.attribute_id) : null;
-        if (aid) product.attribute_values[aid] = row.value;
+        if (!aid) return;
+        product.attribute_values[aid] = row.value;
+        if (row.is_manual === true) product.attribute_values_manual[aid] = true;
       });
     } catch (err) {
       if (!err.message || !err.message.includes('product_attribute_values')) {
         throw err;
       }
       product.attribute_values = {};
+      product.attribute_values_manual = {};
     }
+
+    await attachPricingStrategyFlags([product]);
     
     return product;
   }
@@ -2832,18 +2953,16 @@ class ProductsRepositoryPG {
       
       // Значения атрибутов товара
       if (productData.attribute_values && typeof productData.attribute_values === 'object') {
+        const manualMap = productData.attribute_values_manual;
         for (const [attrId, value] of Object.entries(productData.attribute_values)) {
           const aid = parseInt(attrId, 10);
           if (aid && (value !== undefined && value !== null && value !== '')) {
-            const valStr = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
-            await client.query(
-              `INSERT INTO product_attribute_values (product_id, attribute_id, value) VALUES ($1, $2, $3)
-               ON CONFLICT (product_id, attribute_id) DO UPDATE SET value = EXCLUDED.value`,
-              [product.id, aid, valStr]
-            );
+            const isManual = parseAttributeManualMap(manualMap)[String(aid)] === true;
+            await insertAttributeValueRow(client, product.id, aid, value, isManual);
           }
         }
       }
+      await refreshComputedForProduct(client, product.id);
       
       // Не вызываем findByIdWithDetails здесь: он использует другое соединение и не видит незакоммиченную строку.
       // Сервис после коммита вызовет findById(product.id) и получит полные данные.
@@ -3074,17 +3193,12 @@ class ProductsRepositoryPG {
       
       // Значения атрибутов товара
       if (updates.hasOwnProperty('attribute_values') && typeof updates.attribute_values === 'object') {
-        await client.query('DELETE FROM product_attribute_values WHERE product_id = $1', [numId]);
-        for (const [attrId, value] of Object.entries(updates.attribute_values)) {
-          const aid = parseInt(attrId, 10);
-          if (aid && (value !== undefined && value !== null && value !== '')) {
-            const valStr = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
-            await client.query(
-              'INSERT INTO product_attribute_values (product_id, attribute_id, value) VALUES ($1, $2, $3)',
-              [numId, aid, valStr]
-            );
-          }
-        }
+        await replaceProductAttributeValues(
+          client,
+          numId,
+          updates.attribute_values,
+          updates.attribute_values_manual
+        );
       }
 
       // Для комплектов всегда пересчитываем себестоимость по комплектующим
@@ -3112,8 +3226,10 @@ class ProductsRepositoryPG {
             'UPDATE products SET cost = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
             [kitCost != null ? kitCost : null, kitId]
           );
+          await refreshComputedForProduct(client, kitId);
         }
       }
+      await refreshComputedForProduct(client, numId);
     });
     return await this.findByIdWithDetails(id);
   }

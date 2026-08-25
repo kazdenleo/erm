@@ -220,8 +220,8 @@ function mergeOzonAttrsFromCard(attrs, prev = {}) {
 /** Значение атрибута Ozon для хранения: текст; для словаря — «Текст->id» (как в импорте). */
 function ozonAttrValueToStored(a) {
   if (!a || typeof a !== 'object') return '';
-  if (Array.isArray(a.values) && a.values[0] != null) {
-    const v = a.values[0];
+    if (Array.isArray(a.values) && a.values[0] != null) {
+      const v = a.values[0];
     const textRaw =
       v.value != null && String(v.value).trim() !== ''
         ? String(v.value).trim()
@@ -959,7 +959,7 @@ async function pullOneMarketplace(product, mp, opts = {}) {
   const changedLabels = describeCardFieldChanges(product, updates);
   const fields = updates && Object.keys(updates).length > 0 ? Object.keys(updates) : [];
   if (fields.length > 0) {
-    await productsService.update(product.id, updates, { profileId: opts.profileId ?? null });
+  await productsService.update(product.id, updates, { profileId: opts.profileId ?? null });
   }
 
   let imagesSync = null;
@@ -1174,13 +1174,13 @@ export async function pullProductCardsBulk(payload, opts = {}) {
       const productId = ids[i];
       try {
         items[i] = await pullProductCard(productId, uniqueMps, pullOpts);
-      } catch (e) {
+    } catch (e) {
         items[i] = {
-          productId,
+        productId,
+        ok: false,
+        results: uniqueMps.map((mp) => ({
+          marketplace: mp,
           ok: false,
-          results: uniqueMps.map((mp) => ({
-            marketplace: mp,
-            ok: false,
             error: e?.message || String(e),
           })),
         };

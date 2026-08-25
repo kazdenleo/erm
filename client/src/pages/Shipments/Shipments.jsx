@@ -169,7 +169,7 @@ export function Shipments() {
       const hasCancelled = (preview?.cancelled?.length ?? 0) > 0;
       if (hasNotAssembled || hasCancelled) {
         setCloseNotAssembledAction(hasNotAssembled ? '' : 'remove');
-        setCloseCancelledAction(hasCancelled ? '' : 'keep');
+        setCloseCancelledAction(hasCancelled ? 'remove' : 'keep');
         setOpenDetailError(null);
         setCloseConfirm({ shipment, preview });
         return;
@@ -454,7 +454,9 @@ export function Shipments() {
             {(closeConfirm.preview?.cancelled?.length ?? 0) > 0 && (
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Отменённые заказы</h3>
-                <p className="shipments-close-hint">В отгрузке есть отменённые заказы:</p>
+                <p className="shipments-close-hint">
+                  В отгрузке есть отменённые заказы. Выберите действие:
+                </p>
                 <ul className="shipments-close-order-list">
                   {closeConfirm.preview.cancelled.map((o) => (
                     <li key={o.orderId}>
@@ -472,7 +474,7 @@ export function Shipments() {
                       checked={closeCancelledAction === 'remove'}
                       onChange={() => setCloseCancelledAction('remove')}
                     />
-                    Убрать из отгрузки
+                    Удалить из поставки
                   </label>
                   <label>
                     <input
@@ -482,7 +484,7 @@ export function Shipments() {
                       checked={closeCancelledAction === 'keep'}
                       onChange={() => setCloseCancelledAction('keep')}
                     />
-                    Оставить в отгрузке (без списания со склада)
+                    Оставить
                   </label>
                 </div>
               </section>

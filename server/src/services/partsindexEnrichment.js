@@ -43,6 +43,66 @@ function parseNumberLoose(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Ключ дедупа картинок PartsIndex:
+ * - полный URL
+ * - basename файла (один и тот же кадр на img / img-wm)
+ */
+function partsIndexImageDedupeKey(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    const base = (u.pathname.split('/').filter(Boolean).pop() || '')
+      .replace(/\.(jpe?g|png|webp|gif|bmp)$/i, '')
+      .toLowerCase();
+    return base || raw.toLowerCase();
+  } catch {
+    const base = (raw.split(/[?#]/)[0].split('/').filter(Boolean).pop() || '')
+      .replace(/\.(jpe?g|png|webp|gif|bmp)$/i, '')
+      .toLowerCase();
+    return base || raw.toLowerCase();
+  }
+}
+
+function partsIndexImageScore(url) {
+  const s = String(url || '').toLowerCase();
+  // Предпочитаем оригинал без водяного знака, если пришли оба варианта.
+  if (s.includes('img-wm.')) return 0;
+  if (s.includes('/original')) return 2;
+  return 1;
+}
+
+/**
+ * Убрать точные и «почти те же» дубли картинок из ответа PartsIndex.
+ * @param {unknown} rawImages
+ * @returns {{ url: string, source: string }[]}
+ */
+export function dedupePartsIndexImages(rawImages) {
+  const list = Array.isArray(rawImages) ? rawImages : [];
+  /** @type {Map<string, { url: string, source: string }>} */
+  const byKey = new Map();
+  const seenExact = new Set();
+
+  for (const img of list) {
+    const url = String(typeof img === 'string' ? img : img?.url || img?.src || '').trim();
+    if (!url) continue;
+    const exact = url.toLowerCase();
+    if (seenExact.has(exact)) continue;
+    seenExact.add(exact);
+
+    const key = partsIndexImageDedupeKey(url);
+    if (!key) continue;
+    const next = { url, source: 'partsindex' };
+    const prev = byKey.get(key);
+    if (!prev || partsIndexImageScore(url) > partsIndexImageScore(prev.url)) {
+      byKey.set(key, next);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
 /** Вес → граммы */
 function weightToGrams(value, unitHint = '') {
   const n = parseNumberLoose(value);
@@ -118,10 +178,7 @@ export function mapPartsIndexEntityToContent(entity) {
     groups: entity.groups ?? null,
   };
 
-  for (const img of Array.isArray(entity.images) ? entity.images : []) {
-    const url = typeof img === 'string' ? img : img?.url || img?.src || '';
-    if (url) content.images.push({ url, source: 'partsindex' });
-  }
+  content.images = dedupePartsIndexImages(entity.images);
 
   for (const link of Array.isArray(entity.links) ? entity.links : []) {
     if (!link) continue;
@@ -378,4 +435,5 @@ export async function collectPartsIndexContent(brand, sku, profileKeys) {
 export default {
   collectPartsIndexContent,
   mapPartsIndexEntityToContent,
+  dedupePartsIndexImages,
 };

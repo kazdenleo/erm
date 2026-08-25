@@ -3290,14 +3290,26 @@ class OrdersService {
     if (!Number.isFinite(oid) || oid < 1) {
       return { releasedProductLines: 0, affected: [] };
     }
-    if (!(await this._hasDbReserveForOrder(oid))) {
-      return { releasedProductLines: 0, affected: [] };
-    }
 
     const order =
       orderRow && orderRowDbId(orderRow) === oid
         ? orderRow
         : await this.repository.findById(oid);
+
+    const clearStaleSnapshot = async () => {
+      // Журнал уже 0, а UI-снимок (reserved_qty) мог остаться — обнуляем для терминальных статусов.
+      const st = order?.status ?? order?.Status;
+      const snapQty = Number(order?.reserved_qty ?? order?.reservedQty) || 0;
+      if (snapQty > 0 && isOrderTerminalNoReserve(st)) {
+        await this.refreshOrderReserveSnapshot(oid).catch(() => {});
+      }
+    };
+
+    if (!(await this._hasDbReserveForOrder(oid))) {
+      await clearStaleSnapshot();
+      return { releasedProductLines: 0, affected: [] };
+    }
+
     if (!order) {
       return this.releaseReserveForOrderDbIdFromJournal(oid, {
         reasonSuffix: reasonSuffix || 'заказ отсутствует в базе',
@@ -3332,6 +3344,9 @@ class OrdersService {
     if (!kitId) kitId = await this.resolveProductIdForAssemblyLine(order);
     if (kitId) productIds.add(Number(kitId));
 
+    // Список заказов читает reserved_qty со снимка — всегда синхронизируем после unreserve.
+    await this.refreshOrderReserveSnapshot(oid).catch(() => {});
+
     if (reallocate && productIds.size > 0) {
       for (const pid of productIds) {
         await this.ensureReservesForProductIfSupplyAvailable(pid, {
@@ -3344,16 +3359,18 @@ class OrdersService {
   }
 
   /**
-   * Снять резерв по всем заказам в терминальных статусах (отменён / отгружен / …), где в журнале ещё есть нетто-резерв.
+   * Снять резерв по заказам в терминальных статусах (отменён / отгружен / …),
+   * где ещё есть нетто-резерв в журнале или зависший UI-снимок reserved_qty.
    */
   async releaseReservesForTerminalStatusOrders({ profileId = null } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return { released: 0 };
     const statuses = [...ORDER_TERMINAL_NO_RESERVE_STATUSES];
     const params = [statuses];
     let sql = `
-      SELECT o.id, o.marketplace, o.order_id, o.status
+      SELECT o.id, o.marketplace, o.order_id, o.status, o.reserved_qty
       FROM orders o
-      WHERE LOWER(TRIM(COALESCE(o.status, ''))) = ANY($1::text[])`;
+      WHERE LOWER(TRIM(COALESCE(o.status, ''))) = ANY($1::text[])
+        AND COALESCE(o.reserved_qty, 0) > 0`;
     if (profileId != null && profileId !== '') {
       const pid = typeof profileId === 'string' ? parseInt(profileId, 10) : Number(profileId);
       if (Number.isFinite(pid) && pid > 0) {
@@ -3361,6 +3378,7 @@ class OrdersService {
         params.push(pid);
       }
     }
+    sql += ` ORDER BY o.updated_at DESC LIMIT 500`;
     const r = await query(sql, params);
     let released = 0;
     for (const row of r.rows || []) {
@@ -3370,7 +3388,8 @@ class OrdersService {
         reasonSuffix: 'терминальный статус заказа',
         orderRow: row
       });
-      if (releasedProductLines > 0) released += 1;
+      // Даже если журнал уже 0 — refresh внутри releaseReserveForOrderDbId обнулит снимок.
+      if (releasedProductLines > 0 || (Number(row.reserved_qty) || 0) > 0) released += 1;
     }
     return { released };
   }
@@ -5893,7 +5912,56 @@ class OrdersService {
       touched.add(Number(productId));
     }
 
+    // UI читает reserved_qty со снимка — обнуляем после отмены, даже если журнал уже был пуст.
+    await this.refreshOrderReserveSnapshot(orderDbId).catch(() => {});
+
     return [...touched];
+  }
+
+  /**
+   * Снять резерв у отменённых заказов, убранных из поставки (закрытие / ручное удаление).
+   */
+  async releaseReservesForCancelledOrdersRemovedFromShipment(
+    marketplace,
+    orderIds,
+    { profileId = null } = {}
+  ) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
+      return { released: 0 };
+    }
+    const mpForRepo = this._marketplaceToOrdersDb(marketplace);
+    let released = 0;
+    const seen = new Set();
+    for (const rawOid of orderIds) {
+      const oid = String(rawOid ?? '').trim();
+      if (!oid || seen.has(oid)) continue;
+      seen.add(oid);
+      try {
+        const order = await this._findOrderByMarketplaceAndOrderId(mpForRepo, oid, profileId);
+        if (!order) continue;
+        const st = String(order.status ?? '').trim().toLowerCase();
+        if (st !== 'cancelled' && st !== 'canceled') continue;
+        const rows = order.orderGroupId
+          ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+          : [order];
+        for (const row of rows || []) {
+          const dbId = orderRowDbId(row);
+          if (!dbId) continue;
+          await this.releaseReserveForOrderDbId(dbId, {
+            reasonSuffix: 'отменённый заказ удалён из поставки',
+            orderRow: row,
+            reallocate: true
+          });
+          released += 1;
+        }
+      } catch (e) {
+        logger.warn('[Orders] release after remove from shipment failed', {
+          orderId: oid,
+          message: e?.message || String(e)
+        });
+      }
+    }
+    return { released };
   }
 
   async _removeCancelledOrdersFromOpenShipments(mpForRepo, orderRows, options = {}) {

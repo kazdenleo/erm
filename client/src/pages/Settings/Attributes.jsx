@@ -17,6 +17,12 @@ import {
 } from '../../utils/productAttributeMpLinks.js';
 import { withMpOfferFieldAttrs } from '../../utils/productMpFieldLinks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import {
+  isComputedAttrType,
+  isSystemPriceAttr,
+  PRODUCT_FORMULA_FIELDS,
+  validateFormula,
+} from '../../utils/attributeFormula.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -24,7 +30,8 @@ const TYPE_LABELS = {
   checkbox: 'Флажок',
   number: 'Число',
   date: 'Дата',
-  dictionary: 'Словарь'
+  dictionary: 'Словарь',
+  computed: 'Вычисляемое поле',
 };
 
 function mpAttrsFromResponse(res) {
@@ -284,9 +291,11 @@ function CategoryMpLinksPanel({ attributeId }) {
   );
 }
 
-function AttributeForm({ attribute, onSubmit, onCancel }) {
+function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
+  const [formula, setFormula] = useState(attribute?.formula || '');
+  const systemLocked = isSystemPriceAttr(attribute);
   const sortDict = (arr) => [...arr].sort((a, b) => String(a).localeCompare(String(b), 'ru'));
   const [dictionaryValues, setDictionaryValues] = useState(
     attribute?.dictionary_values && Array.isArray(attribute.dictionary_values)
@@ -310,17 +319,29 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
     setDictionaryValues((prev) => prev.filter((x) => x !== v));
   };
 
+  const insertFormulaToken = (token) => {
+    setFormula((prev) => `${prev || ''}${token}`);
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!name.trim()) {
       setError('Введите название атрибута');
       return;
     }
+    if (isComputedAttrType(type) && String(formula || '').trim()) {
+      const formulaError = validateFormula(formula);
+      if (formulaError) {
+        setError(formulaError);
+        return;
+      }
+    }
     setError('');
     onSubmit({
       name: name.trim(),
       type,
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
+      formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
     });
   };
 
@@ -338,12 +359,62 @@ function AttributeForm({ attribute, onSubmit, onCancel }) {
       </div>
       <div className="form-group">
         <label>Тип</label>
-        <select value={type} onChange={(e) => setType(e.target.value)}>
+        <select
+          value={type}
+          onChange={(e) => setType(e.target.value)}
+          disabled={systemLocked}
+        >
           {Object.entries(TYPE_LABELS).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
+        {systemLocked ? (
+          <p className="form-hint">Системное поле карточки: тип менять нельзя, формулу и ручной ввод — можно.</p>
+        ) : null}
       </div>
+      {isComputedAttrType(type) && (
+        <div className="form-group">
+          <label>Формула</label>
+          <textarea
+            className="formula-input"
+            rows={3}
+            value={formula}
+            onChange={(e) => setFormula(e.target.value)}
+            placeholder="{cost} * 1.5 + {additional_expenses}"
+          />
+          <p className="form-hint">
+            Математика: + − * / и скобки. Поля карточки и другие атрибуты — в фигурных скобках.
+            Пример: <code>{'{cost} * 1.4'}</code>, <code>{'{себестоимость} + {additional_expenses}'}</code>, <code>{'round({cost} * 1.2, 2)'}</code>.
+            Если формула пустая, значение можно просто ввести в карточке товара.
+          </p>
+          <div className="formula-chips">
+            {PRODUCT_FORMULA_FIELDS.map((field) => (
+              <button
+                key={field.key}
+                type="button"
+                className="formula-chip"
+                onClick={() => insertFormulaToken(`{${field.key}}`)}
+              >
+                {field.label}
+              </button>
+            ))}
+            {(attributes || [])
+              .filter((a) => String(a.id) !== String(attribute?.id || ''))
+              .slice()
+              .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+              .map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="formula-chip"
+                  onClick={() => insertFormulaToken(`{${a.name}}`)}
+                >
+                  {a.name}
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
       {type === 'dictionary' && (
         <div className="form-group">
           <label>Значения словаря</label>
@@ -454,7 +525,9 @@ export function Attributes() {
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
       <p className="subtitle">
-        Откройте атрибут кнопкой «Изменить»: название и тип — общие. Сопоставление с характеристиками Ozon / WB / Яндекс.Маркета задаётся только в категории.
+        Откройте атрибут кнопкой «Изменить»: название и тип — общие. Тип «Вычисляемое поле» считает значение по формуле
+        (себестоимость и другие атрибуты карточки). «Цена до скидки» и «Цена после скидки» всегда есть в карточке товара.
+        Сопоставление с характеристиками Ozon / WB / Яндекс.Маркета задаётся только в категории.
       </p>
 
       <div className="attributes-toolbar">
@@ -473,17 +546,26 @@ export function Attributes() {
               <tr>
                 <th>Название</th>
                 <th>Тип</th>
+                <th>Формула</th>
                 <th style={{ width: 100 }}></th>
               </tr>
             </thead>
             <tbody>
               {list.map((attr) => (
                 <tr key={attr.id}>
-                  <td>{attr.name}</td>
+                  <td>
+                    {attr.name}
+                    {isSystemPriceAttr(attr) ? (
+                      <span className="attr-system-badge">карточка</span>
+                    ) : null}
+                  </td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
+                  <td className="formula-cell">{isComputedAttrType(attr.type) ? (attr.formula || '—') : '—'}</td>
                   <td>
                     <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>Изменить</Button>
-                    <Button variant="secondary" size="small" onClick={() => handleDelete(attr.id)} className="btn-delete">Удалить</Button>
+                    {!isSystemPriceAttr(attr) ? (
+                      <Button variant="secondary" size="small" onClick={() => handleDelete(attr.id)} className="btn-delete">Удалить</Button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -502,6 +584,7 @@ export function Attributes() {
         <AttributeForm
           key={editing?.id || 'new'}
           attribute={editing}
+          attributes={list}
           onSubmit={handleSubmit}
           onCancel={() => { setModalOpen(false); setEditing(null); }}
         />

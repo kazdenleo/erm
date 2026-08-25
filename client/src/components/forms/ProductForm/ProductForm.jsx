@@ -18,6 +18,14 @@ import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPriceHistoryTab } from './ProductPriceHistoryTab.jsx';
+import { ComputedAttributeField } from './ComputedAttributeField.jsx';
+import {
+  applyComputedAttributeValues,
+  evaluateFormula,
+  isComputedAttrType,
+  isSystemPriceAttr,
+  SYSTEM_ATTR_KEYS,
+} from '../../../utils/attributeFormula.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import {
@@ -76,6 +84,7 @@ import {
   isMpSchemaAttrLinkedInCategory,
   isMpOfferFieldLinkedInCategory,
   isMpTargetLinkedInDedicatedCharcLinks,
+  dedicatedMainFieldForMpTarget,
   MP_CATEGORY_LINK_ICON_TITLE,
   normalizeAttrMpLinks,
   resolveLinkedErpAttrMirror,
@@ -191,7 +200,38 @@ import {
 } from '../../../utils/marketplaceDimensions.js';
 import './ProductForm.css';
 
-const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
+const TYPE_LABELS = {
+  text: 'Текст',
+  checkbox: 'Флажок',
+  number: 'Число',
+  date: 'Дата',
+  dictionary: 'Словарь',
+  computed: 'Вычисляемое',
+};
+
+function productFormulaContext(formData) {
+  return {
+    cost: formData?.cost,
+    additional_expenses: formData?.additionalExpenses,
+    additionalExpenses: formData?.additionalExpenses,
+    min_price: formData?.minPrice,
+    minPrice: formData?.minPrice,
+    weight: formData?.weight,
+    length: formData?.length,
+    width: formData?.width,
+    height: formData?.height,
+    volume: formData?.volume,
+  };
+}
+
+function parseAttributeManualMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === true || value === 'true' || value === 1 || value === '1') out[String(key)] = true;
+  }
+  return out;
+}
 
 function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, onToggle }) {
   const typeLabel = TYPE_LABELS[attr.type];
@@ -350,6 +390,27 @@ function ymAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedica
   return false;
 }
 
+function ozonManufacturerArticleDedicatedMainField(attr, dedicatedLinks, labelMaps) {
+  const key = String(attr?.id ?? '');
+  const isOffer = isMpOfferFieldAttrId(key);
+  const target = isOffer
+    ? { kind: 'offer', offerId: key }
+    : { kind: 'attr', attrId: key, attrName: attr?.name };
+  const fromAttr = dedicatedMainFieldForMpTarget(dedicatedLinks, 'ozon', target, labelMaps);
+  if (fromAttr === 'sku') return 'sku';
+  if (isOzonManufacturerArticleAttr(attr) || key === '__ozon_vendor_code__') {
+    const fromVendor = dedicatedMainFieldForMpTarget(
+      dedicatedLinks,
+      'ozon',
+      { kind: 'offer', offerId: '__ozon_vendor_code__' },
+      labelMaps
+    );
+    if (fromVendor === 'sku') return 'sku';
+    return fromAttr || fromVendor || '';
+  }
+  return fromAttr || '';
+}
+
 function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, dedicatedLinks) {
   if (!ozonAttrShowsCategoryLinkIcon(attr, categoryAttributes, labelMaps, dedicatedLinks)) return false;
   const key = String(attr?.id ?? '');
@@ -357,6 +418,10 @@ function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, d
   const target = isOffer
     ? { kind: 'offer', offerId: key }
     : { kind: 'attr', attrId: key, attrName: attr?.name };
+  const dedicatedMfr = ozonManufacturerArticleDedicatedMainField(attr, dedicatedLinks, labelMaps);
+  if (dedicatedMfr === 'sku') {
+    return isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon');
+  }
   const erpLinked = findErpAttrLinkedToMpTarget(categoryAttributes, 'ozon', target, labelMaps);
   if (erpLinked) {
     return isMpFieldLinked(formData.mp_field_links, erpAttrLinkFieldKey(erpLinked.id), 'ozon');
@@ -980,6 +1045,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     volume: '',
     kit_components: [],
   attributeValues: {},
+  attributeValuesManual: {},
   mp_wb_vendor_code: '',
   mp_wb_name: '',
   mp_wb_description: '',
@@ -2044,6 +2110,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               ])
             )
           : {},
+        attributeValuesManual: parseAttributeManualMap(currentProduct.attribute_values_manual),
         mp_wb_vendor_code: currentProduct.mp_wb_vendor_code || '',
         mp_wb_name: currentProduct.mp_wb_name || '',
         mp_wb_description: currentProduct.mp_wb_description || '',
@@ -2209,6 +2276,78 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_links: normalizeAttrMpLinks(linksMap[String(a.id)] ?? linksMap[a.id]),
       }));
   }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
+
+  const visibleCategoryAttributes = useMemo(
+    () => categoryAttributes.filter((a) => !isSystemPriceAttr(a)),
+    [categoryAttributes]
+  );
+
+  const systemPriceAttributes = useMemo(() => {
+    const cid = formData.categoryId ? String(formData.categoryId) : '';
+    const category = cid ? categories.find((c) => String(c.id) === cid) : null;
+    const linksMap = {
+      ...(category?.attribute_mp_links && typeof category.attribute_mp_links === 'object'
+        ? category.attribute_mp_links
+        : {}),
+      ...(cid ? categoryMpLinksOverlay[cid] || {} : {}),
+    };
+    const wanted = [SYSTEM_ATTR_KEYS.PRICE_BEFORE_DISCOUNT, SYSTEM_ATTR_KEYS.PRICE_AFTER_DISCOUNT];
+    return wanted
+      .map((key) => allAttributes.find((a) => String(a.system_key || '') === key))
+      .filter(Boolean)
+      .map((a) => ({
+        ...a,
+        mp_links: normalizeAttrMpLinks(linksMap[String(a.id)] ?? linksMap[a.id] ?? a.mp_links),
+      }));
+  }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
+
+  const priceFieldsLocked = currentProduct?.hasPricingStrategy === true;
+  const priceFieldsLockReason = priceFieldsLocked
+    ? `Недоступно: включена стратегия${
+        currentProduct?.effectivePricingStrategyName
+          ? ` «${currentProduct.effectivePricingStrategyName}»`
+          : ' ценообразования'
+      }`
+    : '';
+
+  useEffect(() => {
+    const attrs = allAttributes || [];
+    if (!attrs.some((a) => isComputedAttrType(a.type) && String(a.formula || '').trim())) return undefined;
+    setFormData((prev) => {
+      const { values: next } = applyComputedAttributeValues({
+        product: productFormulaContext(prev),
+        attributes: attrs,
+        values: prev.attributeValues,
+        manual: prev.attributeValuesManual,
+      });
+      const keys = attrs.filter((a) => isComputedAttrType(a.type)).map((a) => String(a.id));
+      let changed = false;
+      const merged = { ...(prev.attributeValues || {}) };
+      for (const k of keys) {
+        const cur = next[k] == null ? '' : String(next[k]);
+        const old = merged[k] == null ? '' : String(merged[k]);
+        if (cur !== old) {
+          merged[k] = next[k];
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, attributeValues: merged };
+    });
+    return undefined;
+  }, [
+    allAttributes,
+    formData.cost,
+    formData.additionalExpenses,
+    formData.minPrice,
+    formData.weight,
+    formData.length,
+    formData.width,
+    formData.height,
+    formData.volume,
+    formData.attributeValues,
+    formData.attributeValuesManual,
+  ]);
 
   const categoryDedicatedCharcLinks = useMemo(() => {
     const cid = formData.categoryId ? String(formData.categoryId) : '';
@@ -4903,7 +5042,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const links = toggleMpFieldLink(prev.mp_field_links, fieldKey, mp, attrSupported);
       let next = { ...prev, mp_field_links: links };
       if (isMpFieldLinked(links, fieldKey, mp) && fieldKey !== 'rich_content' && !isAttrMpFieldLinkKey(fieldKey)) {
-        return applyLinkedMpFieldsFromMain(next, links, [fieldKey]);
+        next = applyLinkedMpFieldsFromMain(next, links, [fieldKey]);
+        if (fieldKey === 'sku' && mp === 'ozon') {
+          const skuLinkedToMfr = [ { id: '__ozon_vendor_code__', name: 'Артикул производителя' }, ...(ozonAttributes || []) ].some(
+            (attr) =>
+              ozonManufacturerArticleDedicatedMainField(
+                attr,
+                categoryDedicatedCharcLinks,
+                mpAttrLabelMaps
+              ) === 'sku'
+          );
+          if (skuLinkedToMfr) {
+            next = applyMpOfferFieldToForm(next, '__ozon_vendor_code__', String(next.sku || ''));
+          }
+        }
+        return next;
       }
       // Выключили связь с «Основным»: зафиксировать текущее значение в своём хранилище МП
       if (fieldKey === 'dimensions' && mp === 'ym') {
@@ -5056,7 +5209,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         queueMicrotask(() => generateRichContentRef.current?.(mp, nextLinks));
       }
     }
-  }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.length, formData.width, formData.height, formData.weight, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, ymCategoryAttributes, categoryAttributes]);
+  }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.length, formData.width, formData.height, formData.weight, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, ymCategoryAttributes, categoryAttributes, categoryDedicatedCharcLinks, mpAttrLabelMaps]);
 
   const mainFieldMpLabelProps = useCallback(
     (fieldKey) => {
@@ -5715,16 +5868,35 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }, 220);
   };
 
-  const handleAttributeChange = (attributeId, value) => {
+  const handleAttributeChange = (attributeId, value, { manual = true } = {}) => {
     const key = String(attributeId);
-    setFormData(prev => ({
-      ...prev,
-      attributeValues: { ...prev.attributeValues, [key]: value }
-    }));
+    setFormData((prev) => {
+      const next = {
+        ...prev,
+        attributeValues: { ...prev.attributeValues, [key]: value },
+      };
+      const attr =
+        categoryAttributes.find((a) => String(a.id) === key) ||
+        systemPriceAttributes.find((a) => String(a.id) === key) ||
+        allAttributes.find((a) => String(a.id) === key);
+      if (manual && attr && isComputedAttrType(attr.type)) {
+        next.attributeValuesManual = { ...(prev.attributeValuesManual || {}), [key]: true };
+      }
+      return next;
+    });
     const attr =
       categoryAttributes.find((a) => String(a.id) === key) ||
+      systemPriceAttributes.find((a) => String(a.id) === key) ||
       allAttributes.find((a) => String(a.id) === key);
     if (attr) applyErpAttrValueToLinkedMp(attr, value);
+  };
+
+  const handleComputedResetToFormula = (attributeId) => {
+    const key = String(attributeId);
+    setFormData((prev) => ({
+      ...prev,
+      attributeValuesManual: { ...(prev.attributeValuesManual || {}), [key]: false },
+    }));
   };
 
   const applyErpAttrValueToLinkedMp = useCallback((attrLike, value, { onlyIfEmpty = false, onlyMp = null } = {}) => {
@@ -6057,6 +6229,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
+    const attributeValuesManualPayload = (() => {
+      const src = formData.attributeValuesManual || {};
+      const out = {};
+      for (const [k, v] of Object.entries(src)) {
+        if (v !== true && v !== 'true' && v !== 1 && v !== '1') continue;
+        const key = String(k).trim();
+        if (!key || !/^\d+$/.test(key)) continue;
+        out[key] = true;
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    })();
     const ozonAttributesPayload = (() => {
       const out = {};
       for (const [k, v] of Object.entries(ozonAttributeValues)) {
@@ -6272,6 +6455,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         ? formData.kit_components.filter(c => c.productId).map(c => ({ productId: Number(c.productId), quantity: Math.max(1, parseInt(c.quantity, 10) || 1) }))
         : [],
       attribute_values: attributeValuesPayload,
+      attribute_values_manual: attributeValuesManualPayload,
       ozon_attributes: ozonAttributesPayload,
       wb_attributes: wbAttributesPayload,
       ym_attributes: (() => {
@@ -7506,7 +7690,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      {categoryAttributes.length > 0 && (
+      {visibleCategoryAttributes.length > 0 && (
         <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
           <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
             Атрибуты категории
@@ -7515,7 +7699,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в категории. Значки OZ / WB / ЯМ включают подстановку значения с «Основного» на маркетплейс.
           </p>
           <div className="row g-3">
-            {categoryAttributes.map((attr) => {
+            {visibleCategoryAttributes.map((attr) => {
               const key = String(attr.id);
               const value = formData.attributeValues[key];
               const rawValue = value !== undefined && value !== null ? value : '';
@@ -7551,7 +7735,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   </div>
                 );
               }
-              if (attr.type === 'number') {
+              if (attr.type === 'number' || isComputedAttrType(attr.type)) {
+                if (isComputedAttrType(attr.type)) {
+                  const formulaResult = String(attr.formula || '').trim()
+                    ? evaluateFormula(attr.formula, {
+                        product: productFormulaContext(formData),
+                        attributes: allAttributes,
+                        values: formData.attributeValues,
+                      })
+                    : { ok: true };
+                  return (
+                    <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
+                      <ComputedAttributeField
+                        attr={attr}
+                        value={rawValue}
+                        htmlFor={`attr-${attr.id}`}
+                        heading={<ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />}
+                        isManual={formData.attributeValuesManual?.[key] === true}
+                        formulaError={formData.attributeValuesManual?.[key] || formulaResult.ok ? '' : formulaResult.error}
+                        onChange={(v) => handleAttributeChange(attr.id, v)}
+                        onResetToFormula={() => handleComputedResetToFormula(attr.id)}
+                      />
+                    </div>
+                  );
+                }
                 return (
                   <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />
@@ -7840,6 +8047,55 @@ export const ProductForm = React.forwardRef(function ProductForm({
           {errors.additionalExpenses && <div className="error">{errors.additionalExpenses}</div>}
         </div>
 
+        {systemPriceAttributes.map((attr) => {
+          const key = String(attr.id);
+          const rawValue = formData.attributeValues[key] !== undefined && formData.attributeValues[key] !== null
+            ? formData.attributeValues[key]
+            : '';
+          const formulaResult = String(attr.formula || '').trim()
+            ? evaluateFormula(attr.formula, {
+                product: productFormulaContext(formData),
+                attributes: allAttributes,
+                values: formData.attributeValues,
+              })
+            : { ok: true };
+          const attrDiffs = getLinkedAttrMpDiffs(attr, rawValue, {
+            formData,
+            ozonAttributes,
+            ozonAttributeValues,
+            wbAttributes: wbCategoryAttributes,
+            wbAttributeValues,
+            wbAttrKey,
+            wbAttrName,
+            ymAttributes: ymFormAttributes,
+            ymAttributeValues,
+          });
+          return (
+            <div key={attr.id} className="col-md-3">
+              <ComputedAttributeField
+                attr={attr}
+                value={rawValue}
+                htmlFor={`attr-${attr.id}`}
+                heading={(
+                  <ErpAttrFieldHeading
+                    attr={attr}
+                    htmlFor={`attr-${attr.id}`}
+                    diffs={attrDiffs}
+                    links={formData.mp_field_links}
+                    onToggle={handleMpFieldLinkToggle}
+                  />
+                )}
+                disabled={priceFieldsLocked}
+                lockedReason={priceFieldsLockReason}
+                isManual={formData.attributeValuesManual?.[key] === true}
+                formulaError={formData.attributeValuesManual?.[key] || formulaResult.ok ? '' : formulaResult.error}
+                onChange={(v) => handleAttributeChange(attr.id, v)}
+                onResetToFormula={() => handleComputedResetToFormula(attr.id)}
+              />
+            </div>
+          );
+        })}
+
         <div className="col-md-3">
           <label className="form-label" htmlFor="minPrice">Мин. наценка (частные), ₽</label>
         <input
@@ -8098,6 +8354,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             )}
             categoryAttributes={categoryAttributes}
             attrLabelMaps={mpAttrLabelMaps}
+            dedicatedLinks={categoryDedicatedCharcLinks}
           />
           <div className="card mt-3 border-secondary">
             <div className="card-header">Габариты упаковки (Ozon)</div>
@@ -8314,6 +8571,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     const key = String(attr.id);
                     const isOfferField = isMpOfferFieldAttrId(key);
                     const linkedMirror = (() => {
+                      const dedicatedMfr = ozonManufacturerArticleDedicatedMainField(
+                        attr,
+                        categoryDedicatedCharcLinks,
+                        mpAttrLabelMaps
+                      );
+                      if (dedicatedMfr === 'sku') {
+                        return isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon')
+                          ? String(formData.sku ?? '')
+                          : null;
+                      }
                       const erpMirror = resolveLinkedErpAttrMirror(
                         formData,
                         categoryAttributes,
@@ -8598,13 +8865,22 @@ export const ProductForm = React.forwardRef(function ProductForm({
               disabled={
                 !!pushCardLoading ||
                 !currentProduct?.id ||
-                !(formData.sku_wb?.trim() || formData.mp_wb_vendor_code?.trim())
+                !(
+                  formData.sku_wb?.trim() ||
+                  formData.mp_wb_vendor_code?.trim() ||
+                  formData.sku?.trim()
+                )
+              }
+              title={
+                !currentProduct?.id
+                  ? 'Сначала сохраните товар'
+                  : 'Создаст карточку на WB, если её ещё нет (по vendorCode), иначе обновит'
               }
             >
               {pushCardLoading === 'wb' ? 'Отправка…' : 'Сохранить и отправить на WB'}
             </Button>
             <span className="text-muted small">
-              «Обновить с WB» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
+              «Обновить с WB» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — создать карточку, если её нет, или обновить существующую.
             </span>
           </div>
           <MarketplaceRichContentPanel

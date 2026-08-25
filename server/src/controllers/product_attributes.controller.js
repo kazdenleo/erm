@@ -6,8 +6,15 @@
 import { query } from '../config/database.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { normalizeMpLinks } from '../utils/attributeMpLinks.js';
+import { COMPUTED_ATTR_TYPE, isSystemPriceAttrKey, validateFormula } from '../utils/attributeFormula.js';
 
-const VALID_TYPES = ['text', 'checkbox', 'number', 'date', 'dictionary'];
+const VALID_TYPES = ['text', 'checkbox', 'number', 'date', 'dictionary', COMPUTED_ATTR_TYPE];
+
+function normalizeFormula(type, formula) {
+  if (type !== COMPUTED_ATTR_TYPE) return null;
+  const src = formula == null ? '' : String(formula).trim();
+  return src;
+}
 
 class ProductAttributesController {
   async getAll(req, res, next) {
@@ -44,23 +51,36 @@ class ProductAttributesController {
 
   async create(req, res, next) {
     try {
-      const { name, type, dictionary_values, mp_links } = req.body;
+      const { name, type, dictionary_values, mp_links, formula } = req.body;
       if (!name || !type) {
         return res.status(400).json({ ok: false, message: 'Название и тип атрибута обязательны' });
       }
       if (!VALID_TYPES.includes(type)) {
         return res.status(400).json({ ok: false, message: `Тип должен быть один из: ${VALID_TYPES.join(', ')}` });
       }
+      const formulaVal = normalizeFormula(type, formula);
+      if (type === COMPUTED_ATTR_TYPE && formulaVal) {
+        const formulaError = validateFormula(formulaVal);
+        if (formulaError) {
+          return res.status(400).json({ ok: false, message: formulaError });
+        }
+      }
       const dictVal = type === 'dictionary' ? (Array.isArray(dictionary_values) ? dictionary_values : []) : [];
       const links = normalizeMpLinks(mp_links);
       const result = await query(
-        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links)
-         VALUES ($1, $2, $3::jsonb, $4::jsonb)
+        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links, formula)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
          RETURNING *`,
-        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links)]
+        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links), formulaVal]
       );
       return res.status(201).json({ ok: true, data: result.rows[0] });
     } catch (error) {
+      if (String(error?.message || '').includes('formula') || String(error?.message || '').includes('product_attributes_type_check')) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Нужна миграция вычисляемых атрибутов (183_computed_product_attributes).',
+        });
+      }
       next(error);
     }
   }
@@ -68,10 +88,19 @@ class ProductAttributesController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const { name, type, dictionary_values, mp_links } = req.body;
-      const check = await query('SELECT id FROM product_attributes WHERE id = $1', [id]);
+      const { name, type, dictionary_values, mp_links, formula } = req.body;
+      const check = await query('SELECT id, system_key, type FROM product_attributes WHERE id = $1', [id]);
       if (check.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
+      }
+      const existing = check.rows[0];
+      const systemKey = existing.system_key || null;
+      const nextType = type !== undefined ? type : existing.type;
+      if (type !== undefined && isSystemPriceAttrKey(systemKey) && type !== COMPUTED_ATTR_TYPE) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Системные поля цены должны оставаться вычисляемыми. Можно задать формулу или вводить значение в карточке.',
+        });
       }
       const updates = [];
       const params = [];
@@ -96,6 +125,17 @@ class ProductAttributesController {
         updates.push(`mp_links = $${idx++}::jsonb`);
         params.push(JSON.stringify(normalizeMpLinks(mp_links)));
       }
+      if (formula !== undefined || type !== undefined) {
+        const formulaVal = normalizeFormula(nextType, formula !== undefined ? formula : '');
+        if (nextType === COMPUTED_ATTR_TYPE && formulaVal) {
+          const formulaError = validateFormula(formulaVal);
+          if (formulaError) {
+            return res.status(400).json({ ok: false, message: formulaError });
+          }
+        }
+        updates.push(`formula = $${idx++}`);
+        params.push(formulaVal);
+      }
       if (updates.length > 0) {
         updates.push(`updated_at = CURRENT_TIMESTAMP`);
         params.push(id);
@@ -114,6 +154,16 @@ class ProductAttributesController {
   async delete(req, res, next) {
     try {
       const { id } = req.params;
+      const check = await query('SELECT id, system_key FROM product_attributes WHERE id = $1', [id]);
+      if (check.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
+      }
+      if (isSystemPriceAttrKey(check.rows[0].system_key)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Системный атрибут карточки нельзя удалить',
+        });
+      }
       const result = await query(
         'DELETE FROM product_attributes WHERE id = $1 RETURNING id',
         [id]

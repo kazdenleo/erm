@@ -34,6 +34,21 @@ const organizationsRepo = () => repositoryFactory.getOrganizationsRepository();
 
 const MP_LABELS = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
 
+/** Уникальные http(s) URL картинок (порядок сохраняем). */
+function uniqImageUrls(rawList) {
+  const out = [];
+  const seen = new Set();
+  for (const x of Array.isArray(rawList) ? rawList : []) {
+    const url = String(typeof x === 'string' ? x : x?.url || '').trim();
+    if (!url) continue;
+    const key = url.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(url);
+  }
+  return out;
+}
+
 /** Имена ERP-атрибутов, куда пишем данные PartsIndex при обогащении. */
 const ENRICHMENT_ATTR_ALIASES = {
   analogs: ['аналоги', 'analogs', 'analogues'],
@@ -1131,27 +1146,33 @@ export async function enrichProductById(productId, opts = {}) {
 
   let imagesAdded = 0;
   let nextImages = null;
-  const imageUrls = (content.images || [])
-    .map((x) => (typeof x === 'string' ? x : x?.url))
-    .filter(Boolean);
+  const imageUrls = uniqImageUrls(content.images || []);
   const existingImages = Array.isArray(product.images) ? product.images : [];
   if (imageUrls.length) {
     if (existingImages.length > 0) {
       skipped.push('images');
     } else if (apply) {
       const downloaded = [];
+      const seenHashes = new Set();
       for (let i = 0; i < Math.min(imageUrls.length, 8); i++) {
         try {
           const rec = await downloadImageToProductFolder(product.id, imageUrls[i], {
-            primary: i === 0,
+            primary: downloaded.length === 0,
             marketplaces: { ozon: true, wb: true, ym: true },
           });
-          if (rec) downloaded.push(rec);
+          if (!rec) continue;
+          const hash = String(rec.content_hash || rec.contentHash || '').toLowerCase();
+          if (hash && seenHashes.has(hash)) continue;
+          if (hash) seenHashes.add(hash);
+          downloaded.push(rec);
         } catch (imgErr) {
           warnings.push(`image ${i + 1}: ${imgErr?.message || imgErr}`);
         }
       }
       if (downloaded.length) {
+        downloaded.forEach((d, i) => {
+          d.primary = i === 0;
+        });
         nextImages = downloaded;
         imagesAdded = downloaded.length;
         filled.push('images');
@@ -1480,20 +1501,22 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
       const product = await productsService.create(payload);
       const productId = product?.id;
       let imagesAdded = 0;
-      const imageUrls = (raw.imageUrls || raw.images || [])
-        .map((x) => (typeof x === 'string' ? x : x?.url))
-        .filter(Boolean)
-        .slice(0, 8);
+      const imageUrls = uniqImageUrls(raw.imageUrls || raw.images || []).slice(0, 8);
 
       if (productId != null && imageUrls.length) {
         const downloaded = [];
+        const seenHashes = new Set();
         for (let imgIdx = 0; imgIdx < imageUrls.length; imgIdx++) {
           try {
             const rec = await downloadImageToProductFolder(productId, imageUrls[imgIdx], {
-              primary: imgIdx === 0,
+              primary: downloaded.length === 0,
               marketplaces: { ozon: true, wb: true, ym: true },
             });
-            if (rec) downloaded.push(rec);
+            if (!rec) continue;
+            const hash = String(rec.content_hash || rec.contentHash || '').toLowerCase();
+            if (hash && seenHashes.has(hash)) continue;
+            if (hash) seenHashes.add(hash);
+            downloaded.push(rec);
           } catch (imgErr) {
             row.imageWarning = row.imageWarning
               ? `${row.imageWarning}; ${imgErr?.message || imgErr}`
@@ -1501,6 +1524,9 @@ export async function createProductsFromEnrichmentItems(items, opts = {}) {
           }
         }
         if (downloaded.length) {
+          downloaded.forEach((d, i) => {
+            d.primary = i === 0;
+          });
           await productsRepo().update(productId, { images: downloaded });
           imagesAdded = downloaded.length;
         }

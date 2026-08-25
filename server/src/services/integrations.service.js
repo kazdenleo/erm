@@ -2441,6 +2441,7 @@ class IntegrationsService {
       }
     }
 
+    if (opts.skipCatalogScan) return null;
     return scanAllCards(2000);
   }
 

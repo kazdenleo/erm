@@ -1012,7 +1012,12 @@ async function closeShipment(
 
   const orderIdsForWb = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
   const stockOrderIds = initialOrderIds.filter((id) => !manuallyRemovedOrderIds.has(id));
-  shipToClose.closedOrderIds = [...stockOrderIds];
+  // Отменённые никогда не списываем со склада при закрытии — даже если оставили в списке поставки.
+  const cancelledOrderIds = new Set(
+    (preview.cancelled || []).map((i) => String(i.orderId ?? '').trim()).filter(Boolean)
+  );
+  const stockOrderIdsNoCancelled = stockOrderIds.filter((id) => !cancelledOrderIds.has(id));
+  shipToClose.closedOrderIds = [...stockOrderIdsNoCancelled];
 
   await saveLocalShipments(shipmentsToSave);
 
@@ -1031,17 +1036,17 @@ async function closeShipment(
   }
 
   // Остатки — по всем заказам, что были в поставке (в т.ч. убранным как «в пути»/«отгружен»),
-  // кроме явно снятых при закрытии; затем → внутренний «Отгружен».
+  // кроме явно снятых при закрытии и отменённых; затем → внутренний «Отгружен».
   let stockClose = null;
   const effectiveProfileId = shipToClose.profileId ?? profileId ?? null;
-  if (stockOrderIds.length > 0 && shipToClose.marketplace) {
+  if (stockOrderIdsNoCancelled.length > 0 && shipToClose.marketplace) {
     stockClose = await finalizeShipmentCloseStock({
       shipmentId,
       marketplace: shipToClose.marketplace,
-      orderIds: [...stockOrderIds],
+      orderIds: [...stockOrderIdsNoCancelled],
       profileId: effectiveProfileId
     });
-  } else if (stockOrderIds.length === 0) {
+  } else if (stockOrderIdsNoCancelled.length === 0) {
     logger.warn(`[Shipments] Закрытие ${shipmentId}: нет заказов для списания остатков`);
   }
 
@@ -1808,6 +1813,20 @@ async function removeOrdersFromShipment(
   const had = ship.orderIds || [];
   ship.orderIds = had.filter(id => !toRemove.has(String(id)));
   await saveLocalShipments(shipments);
+
+  // Отменённые заказы, убранные из поставки, не должны держать резерв / зелёную плашку.
+  try {
+    const { default: ordersService } = await import('./orders.service.js');
+    await ordersService.releaseReservesForCancelledOrdersRemovedFromShipment(
+      ship.marketplace,
+      [...toRemove],
+      { profileId: ship.profileId ?? profileId ?? null }
+    );
+  } catch (e) {
+    logger.warn(
+      `[Shipments] release reserves after remove from ${shipmentId}: ${e?.message || e}`
+    );
+  }
 
   let relocatedShipment = null;
   if (isWb && relocateWbToNewSupply) {

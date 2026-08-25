@@ -37,6 +37,7 @@ import {
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
 import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
+import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -97,8 +98,15 @@ function assertLinked(product, mp) {
     }
   }
   if (mp === 'wb') {
-    if (!trimOrNull(product.sku_wb)) {
-      const err = new Error('Товар не связан с Wildberries: укажите nmId.');
+    const nm = trimOrNull(product.sku_wb);
+    const vendor =
+      sanitizeWbVendorCode(product.mp_wb_vendor_code) ||
+      sanitizeWbVendorCode(product.sku) ||
+      sanitizeWbVendorCode(product.sku_ozon);
+    if (!nm && !vendor) {
+      const err = new Error(
+        'Для Wildberries укажите nmId существующей карточки или артикул продавца (vendorCode) для создания.'
+      );
       err.statusCode = 400;
       throw err;
     }
@@ -780,8 +788,10 @@ async function pushOzonCard(product, categoryMm, ctx) {
   // Цена обязательна в /v3/product/import: без неё кабинет часто пишет
   // «Цена не может быть отрицательной» / проблемы с min_price, а import/info — skipped.
   let ozonInfoBefore = null;
+  let ozonExisted = false;
   try {
     ozonInfoBefore = await fetchOzonProductInfoItem(offerId, item.product_id ?? null, apiOpts);
+    ozonExisted = !!(ozonInfoBefore && (ozonInfoBefore.id || ozonInfoBefore.offer_id));
     const priceFields = extractOzonPriceFields(ozonInfoBefore);
     Object.assign(item, priceFields);
     if (ozonInfoBefore?.id != null && item.product_id == null) {
@@ -995,9 +1005,10 @@ async function pushOzonCard(product, categoryMm, ctx) {
     }
 
     // Ошибки карточки — ПОСЛЕ отправки фото (иначе висим на старом error_card_with_deleted_photos)
+    let ozonInfoAfter = null;
     try {
       await sleep(imagesPushed > 0 ? 3500 : 1500);
-      const ozonInfoAfter = await fetchOzonProductInfoItem(
+      ozonInfoAfter = await fetchOzonProductInfoItem(
         offerId,
         item.product_id ?? ozonInfoBefore?.id ?? null,
         apiOpts
@@ -1043,6 +1054,24 @@ async function pushOzonCard(product, categoryMm, ctx) {
       });
     }
 
+    if (result.ok) {
+      const ozonPid = Number(ozonInfoAfter?.id ?? item.product_id ?? ozonInfoBefore?.id ?? 0);
+      if (!ozonExisted && ozonPid > 0) {
+        await persistOzonProductId(product, ozonPid, offerId, ctx);
+      }
+      if (result.message && /карточка обновлена/i.test(String(result.message))) {
+        result = {
+          ...result,
+          created: !ozonExisted,
+          message: ozonExisted
+            ? result.message
+            : String(result.message).replace(/карточка обновлена/i, 'карточка создана'),
+        };
+      } else {
+        result = { ...result, created: !ozonExisted };
+      }
+    }
+
     if (!result.ok) {
       logger.warn('[CardPush] Ozon import finished with errors', {
         taskId,
@@ -1057,65 +1086,194 @@ async function pushOzonCard(product, categoryMm, ctx) {
   }
 }
 
-async function pushWildberriesCard(product, categoryMm, ctx) {
-  const nmId = Number(product.sku_wb);
-  if (!Number.isFinite(nmId) || nmId < 1) {
-    return { marketplace: 'wb', ok: false, error: 'Некорректный nmId WB' };
-  }
-  // subjectId нужен для создания карточки; /cards/update категорию не меняет (ограничение WB API).
-  const subjectId = Number(categoryMm?.wb ?? categoryMm?.wb_subject_id ?? 0);
-  const hasSubjectMapping = Number.isFinite(subjectId) && subjectId >= 1;
+function resolveWbNmId(product) {
+  const n = Number(product?.sku_wb);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
 
-  let existing = null;
+function resolveWbVendorCodeForPush(product) {
+  return (
+    sanitizeWbVendorCode(product?.mp_wb_vendor_code) ||
+    sanitizeWbVendorCode(product?.sku) ||
+    sanitizeWbVendorCode(product?.sku_ozon) ||
+    ''
+  );
+}
+
+function wbCardNmId(card) {
+  const n = Number(card?.nmId ?? card?.nmID ?? card?.nm_id);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+async function persistWbNmId(product, nmId, vendorCode, ctx) {
+  if (!product?.id || !nmId) return;
+  const updates = { sku_wb: String(nmId) };
+  if (vendorCode) updates.mp_wb_vendor_code = vendorCode;
   try {
-    existing = await integrationsService.getWildberriesProductInfo({
-      nm_id: nmId,
-      profileId: ctx.profileId,
-      organizationId: ctx.organizationId
-    });
+    await productsService.update(product.id, updates, { profileId: ctx.profileId ?? null });
+    product.sku_wb = String(nmId);
+    if (vendorCode) product.mp_wb_vendor_code = vendorCode;
   } catch (e) {
-    logger.warn('[MP Card Push] WB fetch card before update:', e?.message);
+    logger.warn('[MP Card Push] не удалось сохранить nmId WB в ERP', {
+      productId: product.id,
+      nmId,
+      error: e?.message || String(e),
+    });
+  }
+}
+
+async function persistOzonProductId(product, ozonProductId, offerId, ctx) {
+  const pid = Number(ozonProductId);
+  if (!product?.id || !Number.isFinite(pid) || pid < 1) return;
+  try {
+    await productsService.update(
+      product.id,
+      {
+        marketplace_ozon_product_id: pid,
+        ...(offerId ? { sku_ozon: String(offerId) } : {}),
+      },
+      { profileId: ctx.profileId ?? null }
+    );
+    product.marketplace_ozon_product_id = pid;
+    product.ozon_product_id = pid;
+  } catch (e) {
+    logger.warn('[MP Card Push] не удалось сохранить product_id Ozon в ERP', {
+      productId: product.id,
+      ozonProductId: pid,
+      error: e?.message || String(e),
+    });
+  }
+}
+
+async function findExistingWbCard(product, ctx) {
+  const nmId = resolveWbNmId(product);
+  const vendor = resolveWbVendorCodeForPush(product);
+  const scope = {
+    profileId: ctx.profileId,
+    organizationId: ctx.organizationId,
+    skipCatalogScan: true,
+  };
+
+  if (nmId) {
+    try {
+      const existing = await integrationsService.getWildberriesProductInfo({
+        nm_id: nmId,
+        vendor_code: vendor || undefined,
+        profileId: ctx.profileId,
+        organizationId: ctx.organizationId,
+      });
+      if (existing && wbCardNmId(existing)) return existing;
+    } catch (e) {
+      logger.warn('[MP Card Push] WB fetch by nmId:', e?.message || e);
+    }
   }
 
-  if (!existing && !hasSubjectMapping) {
-    return {
-      marketplace: 'wb',
-      ok: false,
-      error: 'В ERP-категории не задано сопоставление WB (subjectId), карточка на WB не найдена'
-    };
+  if (vendor) {
+    try {
+      const byVc = await integrationsService.getWildberriesProductByVendorCode(vendor, scope);
+      const foundNm = byVc?.nmId != null ? Number(byVc.nmId) : NaN;
+      if (Number.isFinite(foundNm) && foundNm >= 1) {
+        try {
+          const full = await integrationsService.getWildberriesProductInfo({
+            nm_id: foundNm,
+            vendor_code: vendor,
+            profileId: ctx.profileId,
+            organizationId: ctx.organizationId,
+          });
+          if (full && wbCardNmId(full)) return full;
+        } catch {
+          /* list card достаточно, чтобы не создавать дубль */
+        }
+        return { nmId: foundNm, vendorCode: byVc.vendorCode || vendor };
+      }
+    } catch (e) {
+      logger.warn('[MP Card Push] WB fetch by vendorCode:', e?.message || e);
+    }
   }
+  return null;
+}
 
-  const title =
-    resolveCardTextForPush(product, 'wb', 'name') ||
-    (existing?.title ? String(existing.title) : null);
-  const description =
-    resolveCardTextForPush(product, 'wb', 'description') ||
-    (existing?.description != null ? String(existing.description) : '');
-  const brand =
-    resolveCardTextForPush(product, 'wb', 'brand') ||
-    trimOrNull(existing?.brand);
-  const vendorCode =
-    resolveCardTextForPush(product, 'wb', 'sku') ||
-    trimOrNull(existing?.vendorCode) ||
-    trimOrNull(product.sku);
+async function readWbErrorListHit(vendor, ctx) {
+  const errList = await integrationsService._wbContentApiPost(
+    '/content/v2/cards/error/list',
+    { cursor: { updatedAt: null, nmID: 0, limit: 50 }, order: { ascending: false } },
+    { profileId: ctx.profileId, organizationId: ctx.organizationId }
+  );
+  const items = Array.isArray(errList?.data?.items) ? errList.data.items : [];
+  const code = String(vendor || '').trim();
+  const nowMs = Date.now();
+  return items.find((it) => {
+    const updatedMs = it?.updatedAt ? Date.parse(it.updatedAt) : NaN;
+    if (!Number.isFinite(updatedMs) || nowMs - updatedMs > 5 * 60 * 1000) return false;
+    const codes = Array.isArray(it?.vendorCodes) ? it.vendorCodes : [];
+    if (code && codes.some((c) => String(c) === code)) return true;
+    const errMap = it?.errors && typeof it.errors === 'object' ? it.errors : {};
+    return code && Object.prototype.hasOwnProperty.call(errMap, code);
+  });
+}
 
-  // update полностью перезаписывает карточку — сохраняем поля с МП, если в ERP пусто
+function formatWbErrorListHit(hit, vendor) {
+  const msgs = hit?.errors?.[vendor];
+  return Array.isArray(msgs) ? msgs.join('; ') : String(msgs || 'ошибка обработки карточки');
+}
+
+async function generateWbSizeBarcode(ctx) {
+  const data = await integrationsService._wbContentApiPost(
+    '/content/v2/barcodes',
+    { count: 1 },
+    { profileId: ctx.profileId, organizationId: ctx.organizationId }
+  );
+  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  const code = list.map((x) => String(x || '').trim()).find(Boolean);
+  if (!code) {
+    throw new Error('Wildberries не вернул штрихкод для размера карточки');
+  }
+  return code;
+}
+
+async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500 } = {}) {
+  for (let i = 0; i < attempts; i += 1) {
+    await sleep(delayMs);
+    try {
+      const hit = await readWbErrorListHit(vendor, ctx);
+      if (hit) {
+        const err = new Error(`WB отклонил карточку: ${formatWbErrorListHit(hit, vendor)}`);
+        err.wbRejected = true;
+        throw err;
+      }
+    } catch (e) {
+      if (e?.wbRejected) throw e;
+      logger.warn('[MP Card Push] WB error/list after create:', e?.message || e);
+    }
+    try {
+      const byVc = await integrationsService.getWildberriesProductByVendorCode(vendor, {
+        profileId: ctx.profileId,
+        organizationId: ctx.organizationId,
+        skipCatalogScan: true,
+      });
+      const nm = byVc?.nmId != null ? Number(byVc.nmId) : NaN;
+      if (Number.isFinite(nm) && nm >= 1) return nm;
+    } catch (e) {
+      logger.warn('[MP Card Push] WB wait nmId:', e?.message || e);
+    }
+  }
+  return null;
+}
+
+function buildWbCardPayload(product, existing, { nmId, vendorCode, title, description, brand }) {
   const card = {
-    nmID: nmId,
-    vendorCode: vendorCode || String(nmId),
+    ...(nmId ? { nmID: nmId } : {}),
+    vendorCode: vendorCode || (nmId ? String(nmId) : ''),
     ...(title ? { title } : {}),
     ...(description ? { description } : {}),
-    ...(brand ? { brand } : {})
+    ...(brand ? { brand } : {}),
   };
 
   const wbAttrsForChars = mergeWbItemProductDimsIntoAttrs(product.wb_attributes, product);
   const chars = buildWbCharacteristics(wbAttrsForChars, existing?.characteristics);
-  if (chars.length > 0) {
-    card.characteristics = chars;
-  }
+  if (chars.length > 0) card.characteristics = chars;
 
   if (existing?.sizes && Array.isArray(existing.sizes) && existing.sizes.length > 0) {
-    // Не трогаем barcodes/цены размеров — только сохраняем структуру для полной перезаписи.
     card.sizes = existing.sizes.map((s) => ({
       ...(s?.chrtID != null ? { chrtID: s.chrtID } : {}),
       techSize: s?.techSize ?? s?.tech_size ?? '0',
@@ -1124,9 +1282,6 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     }));
   }
 
-  // ERP: мм / г; WB Content API: габариты упаковки только в dimensions (см + weightBrutto кг).
-  // Pack-charcs 90849/90745/90846 больше не шлём: кабинет читает dimensions, а строковые
-  // числовые характеристики ломают весь /cards/update (200 + ошибка в error/list).
   if (shouldPushDimensions(product, 'wb')) {
     const dims = resolveDimensionsMmForPush(product, 'wb') || {};
     const L = Number(dims.length);
@@ -1145,7 +1300,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
           ? { weightBrutto: weightKg }
           : existing?.dimensions?.weightBrutto != null
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
-            : {})
+            : {}),
       };
     } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
       card.dimensions = existing.dimensions;
@@ -1154,74 +1309,199 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     card.dimensions = existing.dimensions;
   }
 
-  try {
-    await integrationsService._wbContentApiPost('/content/v2/cards/update', [card], {
-      profileId: ctx.profileId,
-      organizationId: ctx.organizationId
-    });
+  return card;
+}
 
-    // Тихие отказы WB: HTTP 200, но карточка в error/list
-    try {
-      const errList = await integrationsService._wbContentApiPost(
-        '/content/v2/cards/error/list',
-        { cursor: { updatedAt: null, nmID: 0, limit: 50 }, order: { ascending: false } },
+async function pushWbImages(nmId, product, ctx) {
+  const picUrls = getProductImageUrlsForMarketplace(product, 'wb');
+  if (!nmId || picUrls.length === 0) {
+    return { imagesNote: '', imagesPushed: 0 };
+  }
+  try {
+    await integrationsService._wbContentApiPost(
+      '/content/v3/media/save',
+      { nmId, data: picUrls },
+      { profileId: ctx.profileId, organizationId: ctx.organizationId }
+    );
+    return { imagesNote: `; изображения: ${picUrls.length} шт.`, imagesPushed: picUrls.length };
+  } catch (imgErr) {
+    logger.warn('[CardPush] WB media/save failed', {
+      nmId,
+      error: imgErr?.message || String(imgErr),
+    });
+    return {
+      imagesNote: `; изображения: ошибка (${imgErr?.message || String(imgErr)})`,
+      imagesPushed: 0,
+    };
+  }
+}
+
+async function pushWildberriesCard(product, categoryMm, ctx) {
+  const subjectId = Number(categoryMm?.wb ?? categoryMm?.wb_subject_id ?? 0);
+  const hasSubjectMapping = Number.isFinite(subjectId) && subjectId >= 1;
+  const vendorCode =
+    sanitizeWbVendorCode(resolveCardTextForPush(product, 'wb', 'sku')) ||
+    resolveWbVendorCodeForPush(product);
+
+  let existing = null;
+  try {
+    existing = await findExistingWbCard(product, ctx);
+  } catch (e) {
+    logger.warn('[MP Card Push] WB lookup before push:', e?.message);
+  }
+
+  const existingNm = wbCardNmId(existing);
+  const creating = !existingNm;
+
+  if (creating) {
+    if (!vendorCode) {
+      return {
+        marketplace: 'wb',
+        ok: false,
+        error: 'Для создания карточки WB укажите артикул продавца (vendorCode) или артикул ERP',
+      };
+    }
+    if (!hasSubjectMapping) {
+      return {
+        marketplace: 'wb',
+        ok: false,
+        error: 'В ERP-категории не задано сопоставление WB (subjectId) — без него нельзя создать карточку',
+      };
+    }
+  }
+
+  const title =
+    resolveCardTextForPush(product, 'wb', 'name') ||
+    (existing?.title ? String(existing.title) : null);
+  const description =
+    resolveCardTextForPush(product, 'wb', 'description') ||
+    (existing?.description != null ? String(existing.description) : '');
+  const brand =
+    resolveCardTextForPush(product, 'wb', 'brand') ||
+    trimOrNull(existing?.brand);
+
+  if (creating && !title) {
+    return {
+      marketplace: 'wb',
+      ok: false,
+      error: 'Для создания карточки WB нужно название товара',
+    };
+  }
+
+  const card = buildWbCardPayload(product, existing, {
+    nmId: existingNm,
+    vendorCode: vendorCode || trimOrNull(existing?.vendorCode) || (existingNm ? String(existingNm) : ''),
+    title,
+    description,
+    brand,
+  });
+
+  if (creating) {
+    if (!card.dimensions) {
+      return {
+        marketplace: 'wb',
+        ok: false,
+        error: 'Для создания карточки WB укажите габариты упаковки (длина, ширина, высота)',
+      };
+    }
+    let sizeSkus = [];
+    for (const row of normalizeBarcodeRows(product.barcodes)) {
+      if (row.barcode) sizeSkus.push(row.barcode);
+    }
+    if (sizeSkus.length === 0) {
+      try {
+        sizeSkus = [await generateWbSizeBarcode(ctx)];
+      } catch (e) {
+        return {
+          marketplace: 'wb',
+          ok: false,
+          error: e?.message || 'Не удалось получить штрихкод WB для новой карточки',
+        };
+      }
+    }
+    card.sizes = [
+      {
+        techSize: '0',
+        wbSize: '',
+        skus: sizeSkus.slice(0, 1),
+      },
+    ];
+  }
+
+  try {
+    if (creating) {
+      await integrationsService._wbContentApiPost(
+        '/content/v2/cards/upload',
+        [{ subjectID: subjectId, variants: [card] }],
         { profileId: ctx.profileId, organizationId: ctx.organizationId }
       );
-      const items = Array.isArray(errList?.data?.items) ? errList.data.items : [];
-      const vendor = String(card.vendorCode || '').trim();
-      const nowMs = Date.now();
-      const hit = items.find((it) => {
-        const updatedMs = it?.updatedAt ? Date.parse(it.updatedAt) : NaN;
-        // Только свежие отказы (иначе цепляем старые строки из прошлых выгрузок).
-        if (!Number.isFinite(updatedMs) || nowMs - updatedMs > 5 * 60 * 1000) return false;
-        const codes = Array.isArray(it?.vendorCodes) ? it.vendorCodes : [];
-        if (vendor && codes.some((c) => String(c) === vendor)) return true;
-        const errMap = it?.errors && typeof it.errors === 'object' ? it.errors : {};
-        return vendor && Object.prototype.hasOwnProperty.call(errMap, vendor);
+    } else {
+      await integrationsService._wbContentApiPost('/content/v2/cards/update', [card], {
+        profileId: ctx.profileId,
+        organizationId: ctx.organizationId,
       });
+    }
+
+    try {
+      const hit = await readWbErrorListHit(card.vendorCode, ctx);
       if (hit) {
-        const msgs = hit.errors?.[vendor];
-        const text = Array.isArray(msgs) ? msgs.join('; ') : String(msgs || 'ошибка обновления карточки');
-        return { marketplace: 'wb', ok: false, error: `WB отклонил карточку: ${text}` };
+        return {
+          marketplace: 'wb',
+          ok: false,
+          error: `WB отклонил карточку: ${formatWbErrorListHit(hit, card.vendorCode)}`,
+        };
       }
     } catch (e) {
       logger.warn('[MP Card Push] WB error/list check failed:', e?.message || e);
     }
 
-    let imagesNote = '';
-    const picUrls = getProductImageUrlsForMarketplace(product, 'wb');
-    if (picUrls.length > 0) {
+    let nmId = existingNm;
+    if (creating) {
       try {
-        await integrationsService._wbContentApiPost(
-          '/content/v3/media/save',
-          { nmId, data: picUrls },
-          { profileId: ctx.profileId, organizationId: ctx.organizationId }
-        );
-        imagesNote = `; изображения: ${picUrls.length} шт.`;
-      } catch (imgErr) {
-        logger.warn('[CardPush] WB media/save failed', {
-          nmId,
-          error: imgErr?.message || String(imgErr),
-        });
-        imagesNote = `; изображения: ошибка (${imgErr?.message || String(imgErr)})`;
+        nmId = await waitForWbCardByVendorCode(card.vendorCode, ctx);
+      } catch (e) {
+        return { marketplace: 'wb', ok: false, error: e?.message || String(e) };
       }
+      if (nmId) {
+        await persistWbNmId(product, nmId, card.vendorCode, ctx);
+      }
+    } else if (nmId && !resolveWbNmId(product)) {
+      await persistWbNmId(product, nmId, card.vendorCode, ctx);
     }
 
+    const { imagesNote, imagesPushed } = await pushWbImages(nmId, product, ctx);
+
     const subjectNote =
+      !creating &&
       hasSubjectMapping &&
       existing?.subjectID != null &&
       Number(existing.subjectID) !== subjectId
         ? ` (категория WB subjectId ${existing.subjectID} → ${subjectId} через API не меняется — только контент)`
         : '';
+
+    if (creating) {
+      const nmNote = nmId
+        ? `nmId ${nmId}`
+        : 'nmId появится в кабинете в течение нескольких минут — обновите карточку с WB';
+      return {
+        marketplace: 'wb',
+        ok: true,
+        created: true,
+        message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}`,
+        imagesPushed,
+      };
+    }
+
     return {
       marketplace: 'wb',
       ok: true,
+      created: false,
       message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}`,
-      imagesPushed: picUrls.length,
+      imagesPushed,
       subjectIdUnchanged:
         hasSubjectMapping &&
         existing?.subjectID != null &&
-        Number(existing.subjectID) !== subjectId
+        Number(existing.subjectID) !== subjectId,
     };
   } catch (e) {
     return { marketplace: 'wb', ok: false, error: e?.message || String(e) };
@@ -1392,9 +1672,42 @@ async function pushYandexCard(product, categoryMm, ctx) {
     }
   }
 
-  const picUrls = getProductImageUrlsForMarketplace(product, 'ym');
+  let picUrls = getProductImageUrlsForMarketplace(product, 'ym');
+  try {
+    const pushUrls = await getProductImageUrlsForMarketplacePush(product, 'ym');
+    if (Array.isArray(pushUrls) && pushUrls.length > 0) picUrls = pushUrls;
+  } catch (e) {
+    logger.warn('[YM push] image URL resolve failed', { offerId, err: e?.message });
+  }
   if (picUrls.length > 0) {
     offer.pictures = picUrls;
+  }
+
+  let existingYm = null;
+  try {
+    existingYm = await integrationsService.getYandexOfferByOfferId(offerId, {
+      profileId: ctx.profileId ?? null,
+      organizationId: ctx.organizationId ?? null,
+    });
+  } catch (e) {
+    logger.warn('[YM push] lookup before update:', e?.message || e);
+  }
+  const creating = !existingYm;
+
+  if (creating) {
+    const missing = [];
+    if (!name) missing.push('название');
+    if (!offer.marketCategoryId) missing.push('категория Яндекс.Маркета (сопоставление ERP-категории)');
+    if (!vendor) missing.push('бренд');
+    if (!description) missing.push('описание');
+    if (!picUrls.length) missing.push('изображения');
+    if (missing.length) {
+      return {
+        marketplace: 'ym',
+        ok: false,
+        error: `Нельзя создать карточку на Яндекс.Маркете — не хватает: ${missing.join(', ')}.`,
+      };
+    }
   }
 
   const fetch = (await import('node-fetch')).default;
@@ -1413,21 +1726,46 @@ async function pushYandexCard(product, categoryMm, ctx) {
       ...(agent ? { agent } : {})
     });
     const text = await response.text().catch(() => '');
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = {};
+    }
     if (!response.ok) {
       let msg = `Яндекс.Маркет API ${response.status}`;
-      try {
-        const j = JSON.parse(text);
-        if (j?.errors?.[0]?.message) msg += `: ${j.errors[0].message}`;
-        else if (j?.message) msg += `: ${j.message}`;
-      } catch (_) {
-        if (text) msg += `: ${text.substring(0, 200)}`;
-      }
+      if (payload?.errors?.[0]?.message) msg += `: ${payload.errors[0].message}`;
+      else if (payload?.message) msg += `: ${payload.message}`;
+      else if (text) msg += `: ${text.substring(0, 200)}`;
       return { marketplace: 'ym', ok: false, error: msg };
+    }
+    const ymErrors = payload?.errors || payload?.result?.errors;
+    if (Array.isArray(ymErrors) && ymErrors.length > 0) {
+      const textErr = ymErrors
+        .map((e) => e?.message || e?.error || String(e))
+        .filter(Boolean)
+        .join('; ');
+      return {
+        marketplace: 'ym',
+        ok: false,
+        error: `Яндекс.Маркет отклонил карточку: ${textErr || 'ошибка в ответе API'}`,
+      };
+    }
+    const ymStatus = payload?.status || payload?.result?.status;
+    if (ymStatus && !/^ok$/i.test(String(ymStatus))) {
+      return {
+        marketplace: 'ym',
+        ok: false,
+        error: `Яндекс.Маркет вернул статус «${ymStatus}»`,
+      };
     }
     return {
       marketplace: 'ym',
       ok: true,
-      message: `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет`
+      created: creating,
+      message: creating
+        ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)`
+        : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет`,
     };
   } catch (e) {
     return { marketplace: 'ym', ok: false, error: e?.message || String(e) };

@@ -136,9 +136,19 @@ function buildDraftRows(reportResults, brands, defaultOrganizationId = '') {
         attributes: Array.isArray(c.attributes) ? c.attributes : [],
         analogs: Array.isArray(c.analogs) ? c.analogs : [],
         applicability: Array.isArray(c.applicability) ? c.applicability : [],
-        imageUrls: (c.images || [])
-          .map((x) => (typeof x === 'string' ? x : x?.url))
-          .filter(Boolean),
+        imageUrls: (() => {
+          const seen = new Set();
+          const out = [];
+          for (const x of c.images || []) {
+            const url = String(typeof x === 'string' ? x : x?.url || '').trim();
+            if (!url) continue;
+            const key = url.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(url);
+          }
+          return out;
+        })(),
         brandId: findBrandIdByName(brands, brandName),
         categoryId: '',
         organizationId: orgId,

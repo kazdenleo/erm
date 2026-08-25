@@ -314,22 +314,28 @@ export async function markPurchaseSupplierSubmitted(
 ) {
   const pid = Number(purchaseId);
   if (!Number.isFinite(pid) || pid < 1) return;
-  const ref =
-    supplierOrderRef != null && String(supplierOrderRef).trim() !== ''
-      ? String(supplierOrderRef).trim()
-      : null;
+  // purchases.supplier_order_ref = varchar(255): длинный список basket id ломал UPDATE
+  // и из-за этого не ставился supplierSubmittedAt в source_orders → дубли в корзине.
+  const REF_MAX = 255;
+  const clipRef = (value) => {
+    if (value == null) return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    return s.length > REF_MAX ? s.slice(0, REF_MAX) : s;
+  };
+  const ref = clipRef(supplierOrderRef);
   if (append && ref) {
     await query(
       `UPDATE purchases SET
          supplier_submitted_at = CURRENT_TIMESTAMP,
          supplier_order_ref = CASE
            WHEN supplier_order_ref IS NULL OR TRIM(supplier_order_ref) = '' THEN $2
-           WHEN supplier_order_ref LIKE '%' || $2 || '%' THEN supplier_order_ref
-           ELSE supplier_order_ref || ',' || $2
+           WHEN supplier_order_ref LIKE '%' || $2 || '%' THEN left(supplier_order_ref, $3)
+           ELSE left(supplier_order_ref || ',' || $2, $3)
          END,
          updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
-      [pid, ref]
+      [pid, ref, REF_MAX]
     );
     return;
   }
@@ -337,20 +343,20 @@ export async function markPurchaseSupplierSubmitted(
     await query(
       `UPDATE purchases SET
          supplier_submitted_at = CURRENT_TIMESTAMP,
-         supplier_order_ref = COALESCE($2, supplier_order_ref),
+         supplier_order_ref = left(COALESCE($2, supplier_order_ref), $3),
          updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
-      [pid, ref]
+      [pid, ref, REF_MAX]
     );
     return;
   }
   await query(
     `UPDATE purchases SET
        supplier_submitted_at = COALESCE(supplier_submitted_at, CURRENT_TIMESTAMP),
-       supplier_order_ref = COALESCE(supplier_order_ref, $2),
+       supplier_order_ref = left(COALESCE(supplier_order_ref, $2), $3),
        updated_at = CURRENT_TIMESTAMP
      WHERE id = $1`,
-    [pid, ref]
+    [pid, ref, REF_MAX]
   );
 }
 
@@ -881,21 +887,31 @@ export async function trySubmitPurchaseToSupplier({
         adapterResult.lines
       );
       try {
+        // Сначала source_orders (антидубль), потом ref закупки — иначе overflow varchar(255)
+        // на supplier_order_ref блокирует отметку и корзина дублируется каждые N минут.
         if (orderScoped) {
           await markOrderSourceOrdersSubmitted(pid, orderScope, adapterResult.lines);
         } else {
+          await markPurchaseLinesSourceOrdersSubmitted(pid, linesToSubmit, adapterResult.lines);
           const orderRef =
             adapterResult.supplierOrderId ??
             adapterResult.supplierOrderIds?.[0] ??
             (Array.isArray(adapterResult.supplierOrderIds) && adapterResult.supplierOrderIds.length
               ? adapterResult.supplierOrderIds.join(',')
               : null);
-          await markPurchaseSupplierSubmitted(pid, {
-            supplierOrderRef: orderRef,
-            force: Boolean(force),
-            append: appendOnly,
-          });
-          await markPurchaseLinesSourceOrdersSubmitted(pid, linesToSubmit, adapterResult.lines);
+          try {
+            await markPurchaseSupplierSubmitted(pid, {
+              supplierOrderRef: orderRef,
+              force: Boolean(force),
+              append: appendOnly,
+            });
+          } catch (refErr) {
+            logger.warn('[SupplierOrderPlacement] purchase ref mark failed (source_orders already marked)', {
+              purchaseId: pid,
+              supplierCode: apiCode,
+              message: refErr?.message || String(refErr),
+            });
+          }
         }
       } catch (markErr) {
         // Позиции уже у поставщика — нельзя вернуть submitted:false (иначе откат → дубли в корзине).

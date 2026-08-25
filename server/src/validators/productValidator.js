@@ -128,6 +128,10 @@ export const createProductSchema = z.object({
     z.string(),
     z.union([z.string(), z.number(), z.boolean()])
   ).optional().default({}),
+  attribute_values_manual: z.record(
+    z.string(),
+    z.union([z.boolean(), z.string(), z.number()])
+  ).optional(),
   // Карточка шлёт словарь Ozon как { dictionary_value_id } / { value }, bulk/Excel — скаляры
   ozon_attributes: z
     .record(
