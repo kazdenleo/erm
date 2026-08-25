@@ -1609,7 +1609,7 @@ const COLUMNS = [
   /* ——— основная карточка (ERP) ——— */
   /* артикулы / идентификаторы */
   { key: 'sku', label: 'Артикул', input: 'text', minW: 120, linkFieldKey: 'sku', showLinkToggles: true },
-  { key: 'barcodes', label: 'ШК', title: 'Штрихкоды', input: 'textarea', minW: 120, hint: 'Через запятую или с новой строки' },
+  { key: 'barcodes', label: 'ШК', title: 'Штрихкоды. Пустое поле — «Сгенерировать»', input: 'textarea', minW: 148, hint: 'Через запятую или с новой строки. Пустое поле: нажмите «Сгенерировать»' },
   { key: 'id', label: 'ID', readonly: true, noBulk: true, width: 56, minW: 56 },
   {
     key: '_photo',
@@ -4443,6 +4443,7 @@ export function ProductsBulkEdit() {
   const [saveMessage, setSaveMessage] = useState(null);
   const [pushMpLoading, setPushMpLoading] = useState(null);
   const [pushMpMessage, setPushMpMessage] = useState(null);
+  const [barcodeGeneratingId, setBarcodeGeneratingId] = useState(null);
   const [pullMpLoading, setPullMpLoading] = useState(null);
   const [pullMpMessage, setPullMpMessage] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -6108,6 +6109,29 @@ export function ProductsBulkEdit() {
     );
   }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
 
+  const handleGenerateBarcode = useCallback(
+    async (row) => {
+      const id = row?.id;
+      if (id == null) return;
+      setBarcodeGeneratingId(id);
+      try {
+        const savedId = isNewBulkRowId(id) ? undefined : id;
+        const body = await productsApi.generateBarcode({
+          productId: savedId,
+          organizationId: row.organizationId || undefined,
+        });
+        const code = String(body?.data?.barcode ?? body?.barcode ?? '').trim();
+        if (!code) throw new Error('Не удалось сгенерировать штрихкод');
+        updateCell(id, 'barcodes', code);
+      } catch (e) {
+        window.alert(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод');
+      } finally {
+        setBarcodeGeneratingId(null);
+      }
+    },
+    [updateCell]
+  );
+
   /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
   const applyBulkLinkToRow = useCallback(
     (r, fieldKey, mp, enable, supported) => {
@@ -6783,6 +6807,31 @@ export function ProductsBulkEdit() {
           <option value="true">Да</option>
           <option value="false">Нет</option>
         </select>
+      );
+    }
+    if (col.key === 'barcodes') {
+      const empty = !String(v ?? '').trim();
+      const generating = barcodeGeneratingId === row.id;
+      return (
+        <span className="products-bulk-barcode-cell">
+          <input {...common} type="text" autoComplete="off" placeholder="" />
+          {empty ? (
+            <button
+              type="button"
+              className="products-bulk-barcode-generate"
+              disabled={generating}
+              title="Сгенерировать штрихкод"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleGenerateBarcode(row);
+              }}
+            >
+              {generating ? 'Генерация…' : 'Сгенерировать'}
+            </button>
+          ) : null}
+        </span>
       );
     }
     if (col.input === 'textarea') {

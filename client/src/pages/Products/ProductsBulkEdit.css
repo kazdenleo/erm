@@ -655,6 +655,38 @@ body.products-bulk-col-resizing * {
   white-space: nowrap;
 }
 
+.products-bulk-barcode-cell {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.products-bulk-barcode-generate {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.products-bulk-barcode-generate:disabled {
+  color: #6b7280;
+  cursor: wait;
+  text-decoration: none;
+}
+
 .products-bulk-table select.products-bulk-cell-input {
   white-space: nowrap;
 }
