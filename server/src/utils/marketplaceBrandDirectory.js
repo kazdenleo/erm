@@ -72,7 +72,14 @@ export function pickDirectoryBrandName(list, wanted) {
   const q = brandNameNorm(wanted);
   if (!q || !Array.isArray(list) || !list.length) return null;
   const names = list.map((b) => normalizeBrandName(b?.name ?? b?.brand ?? b)).filter(Boolean);
-  const exact = names.find((n) => n.toLowerCase() === q);
-  if (exact) return exact;
+  const exact = names.filter((n) => n.toLowerCase() === q);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) {
+    const wantedName = normalizeBrandName(wanted);
+    const withId = list.find((b) => brandNameNorm(b?.name) === q && b?.id);
+    if (withId?.name) return normalizeBrandName(withId.name);
+    const canonical = exact.find((n) => n !== wantedName);
+    return canonical || exact[0];
+  }
   return names.find((n) => n.toLowerCase().startsWith(q) || q.startsWith(n.toLowerCase())) || null;
 }

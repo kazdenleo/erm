@@ -1655,8 +1655,9 @@ async function resolveWbDirectoryBrand(brand, subjectId, ctx, product) {
   const wanted = trimOrNull(brand);
   const mapped = await resolveMappedBrand(product, 'wb');
   const mappedName = trimOrNull(mapped?.name);
-  if (mappedName && (!wanted || mappedName.toLowerCase() === wanted.toLowerCase())) {
-    return { brand: mappedName, unmatched: false };
+  // Сопоставление в настройках бренда — источник истины, даже если в карточке «Miles».
+  if (mappedName) {
+    return { brand: mappedName, unmatched: false, fromMapping: true };
   }
   if (!wanted) return { brand: null, unmatched: false };
   try {
@@ -1735,12 +1736,12 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
 
   let brandForCard = brand;
   let brandNote = '';
-  if (brandForCard) {
-    const resolved = await resolveWbDirectoryBrand(brandForCard, subjectId, ctx, product);
-    if (resolved.brand) brandForCard = resolved.brand;
-    if (resolved.unmatched) {
-      brandNote = ` Бренд «${brand}» не найден в справочнике WB — отправлен как есть.`;
-    }
+  const resolved = await resolveWbDirectoryBrand(brandForCard, subjectId, ctx, product);
+  if (resolved.brand) brandForCard = resolved.brand;
+  if (resolved.fromMapping && brand && resolved.brand !== brand) {
+    brandNote = ` Бренд WB из сопоставления: «${resolved.brand}».`;
+  } else if (resolved.unmatched) {
+    brandNote = ` Бренд «${brand}» не найден в справочнике WB — отправлен как есть.`;
   }
 
   if (creating && !title) {
@@ -1937,10 +1938,7 @@ async function pushYandexCard(product, categoryMm, ctx) {
   const wantedVendor = resolveCardTextForPush(product, 'ym', 'brand');
   const mappedYm = await resolveMappedBrand(product, 'ym');
   const mappedYmName = trimOrNull(mappedYm?.name);
-  const vendor =
-    mappedYmName && (!wantedVendor || mappedYmName.toLowerCase() === wantedVendor.toLowerCase())
-      ? mappedYmName
-      : wantedVendor;
+  const vendor = mappedYmName || wantedVendor;
   if (vendor) offer.vendor = vendor;
   const barcodeCodes = (() => {
     const out = [];

@@ -368,22 +368,66 @@ export async function refreshMarketplaceBrandDirectories({ profileId = null } = 
   return summary;
 }
 
-export async function resolveMappedBrand(product, marketplace) {
+async function findBrandIdForProduct(product) {
   const brandId = Number(product?.brand_id ?? product?.brandId);
+  if (Number.isFinite(brandId) && brandId > 0) return brandId;
+  const name = normalizeBrandName(product?.brand ?? product?.brand_name);
+  if (!name) return null;
+  const pid = Number(product?.profile_id ?? product?.profileId);
+  const params = [name];
+  let sql = `SELECT id FROM brands WHERE LOWER(TRIM(name)) = LOWER($1)`;
+  if (Number.isFinite(pid) && pid > 0) {
+    sql += ' AND profile_id = $2';
+    params.push(pid);
+  }
+  sql += ' ORDER BY id LIMIT 1';
+  const r = await query(sql, params);
+  const id = Number(r.rows?.[0]?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function mappingFromRow(row) {
+  if (!row) return null;
+  const name = normalizeBrandName(row.mp_brand_name ?? row.mpBrandName);
+  const id = row.mp_brand_id ?? row.mpBrandId ?? null;
+  if (!name && (id == null || String(id).trim() === '')) return null;
+  return {
+    name: name || null,
+    id: id != null && String(id).trim() !== '' ? String(id).trim() : null,
+  };
+}
+
+export async function resolveMappedBrand(product, marketplace) {
   const mp = normalizeMpBrandMarketplace(marketplace);
-  if (!Number.isFinite(brandId) || brandId < 1 || !mp) return null;
+  if (!mp || !MP_BRAND_MARKETPLACES.includes(mp)) return null;
   try {
     const repo = repositoryFactory.getBrandsRepository();
-    const mappings = repo?.findMarketplaceMappings ? await repo.findMarketplaceMappings(brandId) : [];
-    const row = (mappings || []).find((m) => normalizeMpBrandMarketplace(m.marketplace) === mp);
-    if (!row) return null;
-    const name = normalizeBrandName(row.mp_brand_name ?? row.mpBrandName);
-    const id = row.mp_brand_id ?? row.mpBrandId ?? null;
-    if (!name && (id == null || String(id).trim() === '')) return null;
-    return {
-      name: name || null,
-      id: id != null && String(id).trim() !== '' ? String(id).trim() : null,
-    };
+    const brandId = await findBrandIdForProduct(product);
+    if (Number.isFinite(brandId) && brandId > 0 && repo?.findMarketplaceMappings) {
+      const mappings = await repo.findMarketplaceMappings(brandId);
+      const hit = mappingFromRow(
+        (mappings || []).find((m) => normalizeMpBrandMarketplace(m.marketplace) === mp)
+      );
+      if (hit) return hit;
+    }
+
+    const name = normalizeBrandName(product?.brand ?? product?.brand_name);
+    const pid = Number(product?.profile_id ?? product?.profileId);
+    if (!name) return null;
+    const params = [mp, name];
+    let sql = `SELECT bmm.mp_brand_name, bmm.mp_brand_id
+       FROM brand_marketplace_mappings bmm
+       JOIN brands b ON b.id = bmm.brand_id
+       WHERE bmm.marketplace = $1
+         AND LOWER(TRIM(b.name)) = LOWER($2)
+         AND TRIM(COALESCE(bmm.mp_brand_name, '')) <> ''`;
+    if (Number.isFinite(pid) && pid > 0) {
+      sql += ' AND b.profile_id = $3';
+      params.push(pid);
+    }
+    sql += ' ORDER BY bmm.updated_at DESC NULLS LAST LIMIT 1';
+    const r = await query(sql, params);
+    return mappingFromRow(r.rows?.[0]);
   } catch (e) {
     logger.warn('[MP brand dir] mapping lookup:', e?.message || e);
     return null;

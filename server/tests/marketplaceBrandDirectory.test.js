@@ -26,6 +26,14 @@ describe('marketplaceBrandDirectory', () => {
     expect(pickDirectoryBrandName(list, 'miles')).toBe('MILES');
   });
 
+  test('picks canonical WB casing over harvested Miles', () => {
+    const list = [
+      { name: 'Miles', id: null },
+      { name: 'MILES', id: 'wb-1' },
+    ];
+    expect(pickDirectoryBrandName(list, 'Miles')).toBe('MILES');
+  });
+
   test('normalizes Ozon dictionary values', () => {
     const list = normalizeDirectoryBrandEntries({
       result: [{ id: 123, value: 'Miles' }, { id: 123, value: 'Miles' }],
