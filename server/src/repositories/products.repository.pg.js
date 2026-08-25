@@ -2236,6 +2236,16 @@ class ProductsRepositoryPG {
         product.kit_components = product.kit_components || [];
       }
     }
+    try {
+      const barcodesResult = await query(
+        'SELECT barcode, marketplaces FROM barcodes WHERE product_id = $1 ORDER BY id',
+        [numericId]
+      );
+      product.barcodes = barcodesResult.rows.map(mapBarcodeDbRow).filter((r) => r.barcode);
+    } catch (bcErr) {
+      console.warn('[Products Repository] findById barcodes:', bcErr?.message || bcErr);
+      product.barcodes = Array.isArray(product.barcodes) ? product.barcodes : [];
+    }
     return product;
   }
   

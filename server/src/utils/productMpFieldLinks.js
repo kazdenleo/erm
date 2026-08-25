@@ -349,11 +349,16 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
   if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
   if (n === 'бренд' || n === 'brand' || n === 'торговая марка') return true;
-  if (n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin') return true;
+  if (isYmBarcodeParamName(n)) return true;
   if (n === 'изготовитель' || n === 'производитель' || n === 'manufacturer') return true;
   if (n.includes('артикул производител') || n === 'vendorcode' || n === 'vendor code') return true;
   if (isYmProductWeightOnlyParam(n)) return true;
   return false;
+}
+
+function isYmBarcodeParamName(name) {
+  const compact = ymParamNameKey(name).replace(/[-\s]/g, '');
+  return compact === 'штрихкод' || compact === 'barcode' || compact === 'ean' || compact === 'gtin';
 }
 
 export function ymParamMatchesOfferField(name, field) {
@@ -363,7 +368,7 @@ export function ymParamMatchesOfferField(name, field) {
     return n === 'изготовитель' || n === 'производитель' || n === 'manufacturer';
   }
   if (field === 'barcode') {
-    return n === 'штрихкод' || n === 'штрих код' || n === 'barcode' || n === 'ean' || n === 'gtin';
+    return isYmBarcodeParamName(n);
   }
   if (field === 'country') {
     return (

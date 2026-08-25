@@ -2750,6 +2750,59 @@ class IntegrationsService {
   }
 
   /**
+   * Сгенерировать штрихкоды Маркета для офферов без GTIN.
+   * POST /v1/businesses/{businessId}/offer-mappings/barcodes/generate
+   */
+  async generateYandexOfferBarcodes(offerIds, opts = {}) {
+    const ids = (Array.isArray(offerIds) ? offerIds : [offerIds])
+      .map((x) => String(x || '').trim())
+      .filter(Boolean);
+    if (!ids.length) {
+      const err = new Error('Укажите offerId для генерации штрихкодов Яндекс.Маркета.');
+      err.statusCode = 400;
+      throw err;
+    }
+    const ctx = await this._resolveYandexBusinessApiContext(opts);
+    const fetch = (await import('node-fetch')).default;
+    const agent = getYandexHttpsAgent();
+    const url = `https://api.partner.market.yandex.ru/v1/businesses/${encodeURIComponent(String(ctx.businessId))}/offer-mappings/barcodes/generate`;
+    const skipIfExists = opts.skipIfExists !== false;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Api-Key': ctx.apiKey,
+        },
+        body: JSON.stringify({ offerIds: ids, skipIfExists }),
+        ...(agent ? { agent } : {}),
+      });
+    } catch (e) {
+      throw new Error(`Яндекс.Маркет: не удалось сгенерировать штрихкоды. ${formatYandexNetworkError(e)}`);
+    }
+    const text = await response.text().catch(() => '');
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = {};
+    }
+    if (!response.ok) {
+      const msg =
+        payload?.errors?.[0]?.message ||
+        payload?.message ||
+        (text ? text.substring(0, 200) : '') ||
+        `HTTP ${response.status}`;
+      const err = new Error(`Яндекс.Маркет: генерация штрихкодов — ${msg}`);
+      err.statusCode = response.status >= 400 && response.status < 500 ? response.status : 502;
+      throw err;
+    }
+    return payload;
+  }
+
+  /**
    * Данные карточки товара Яндекс.Маркета по offerId (артикул продавца).
    * Основные поля — из offer-mappings; категорийные характеристики — из offer-cards.
    * @param {{ offer_id?: string, profileId?: number|string|null, organizationId?: number|string|null }} params

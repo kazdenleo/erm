@@ -36,7 +36,7 @@ import {
   withOzonDraftDimensionsLock,
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
-import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace } from '../utils/productBarcodes.js';
+import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace, coerceBarcodeString } from '../utils/productBarcodes.js';
 import {
   allocateProductBarcode,
   generateWbBarcodeFromApi,
@@ -1602,6 +1602,29 @@ async function persistBarcodeSentToMp(product, code, mp, ctx) {
   }
 }
 
+function isYmInternalBarcode(code) {
+  const d = String(code || '').replace(/\D/g, '');
+  return d.startsWith('2') || d.startsWith('02');
+}
+
+function collectYmOfferBarcodes(product, ymDraft) {
+  const raw = [];
+  const draftBc = trimOrNull(ymDraft?.barcode);
+  if (draftBc) raw.push(draftBc);
+  for (const row of normalizeBarcodeRows(product?.barcodes)) {
+    if (row.barcode) raw.push(row.barcode);
+  }
+  const all = [];
+  const offer = [];
+  for (const item of raw) {
+    const s = coerceBarcodeString(item).replace(/\s+/g, '');
+    if (!s || all.includes(s)) continue;
+    all.push(s);
+    if (!isYmInternalBarcode(s)) offer.push(s);
+  }
+  return { all, offer };
+}
+
 function barcodeForMarketplacePush(product, mp) {
   const rows = normalizeBarcodeRows(product?.barcodes);
   if (!rows.length) return null;
@@ -2061,16 +2084,14 @@ async function pushYandexCard(product, categoryMm, ctx) {
   const mappedYmName = trimOrNull(mappedYm?.name);
   const vendor = mappedYmName || wantedVendor;
   if (vendor) offer.vendor = vendor;
-  const barcodeCodes = (() => {
-    const out = [];
-    const draftBc = trimOrNull(ymDraft.barcode);
-    if (draftBc) out.push(draftBc);
-    for (const row of normalizeBarcodeRows(product.barcodes)) {
-      if (row.barcode && !out.includes(row.barcode)) out.push(row.barcode);
-    }
-    return out;
-  })();
+  const { all: barcodeCodesAll, offer: barcodeCodes } = collectYmOfferBarcodes(product, ymDraft);
   if (barcodeCodes.length) offer.barcodes = barcodeCodes;
+  logger.info('[YM push] barcodes', {
+    offerId,
+    productId: product?.id,
+    inCard: barcodeCodesAll,
+    sent: barcodeCodes,
+  });
 
   const ymCategoryId = trimOrNull(categoryMm?.ym ?? categoryMm?.yandex);
   if (ymCategoryId && /^\d+$/.test(ymCategoryId)) {
@@ -2283,14 +2304,49 @@ async function pushYandexCard(product, categoryMm, ctx) {
     } catch (e) {
       priceNote += ` Цены (витрина): ${e?.message || String(e)}`;
     }
+
+    let barcodeSent = barcodeCodes[0] || undefined;
+    let barcodeNote = '';
+    if (!barcodeCodes.length) {
+      if (barcodeCodesAll.length) {
+        barcodeNote =
+          ' Штрихкод карточки начинается на 2… — Маркет не принимает внутренние коды; запрошена генерация ШК Маркета.';
+      }
+      try {
+        await integrationsService.generateYandexOfferBarcodes([offerId], {
+          profileId: ctx.profileId ?? null,
+          organizationId: ctx.organizationId ?? null,
+          skipIfExists: true,
+        });
+        await sleep(1000);
+        const info = await integrationsService.getYandexProductInfo({
+          offer_id: offerId,
+          profileId: ctx.profileId ?? null,
+          organizationId: ctx.organizationId ?? null,
+        });
+        const generated = Array.isArray(info?.barcodes)
+          ? info.barcodes.map((b) => coerceBarcodeString(b)).filter(Boolean)
+          : [];
+        if (generated.length) {
+          barcodeSent = generated[0];
+          barcodeNote = ` Штрихкод Маркета: ${barcodeSent}.`;
+        } else if (!barcodeNote) {
+          barcodeNote =
+            ' Штрихкод на Маркете не появился — укажите GTIN производителя или сгенерируйте ШК в кабинете.';
+        }
+      } catch (e) {
+        barcodeNote += ` ${e?.message || String(e)}`;
+      }
+    }
+
     return {
       marketplace: 'ym',
       ok: true,
       created: creating,
-      barcodeSent: barcodeCodes[0] || undefined,
+      barcodeSent: barcodeSent || undefined,
       message: creating
-        ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)${priceNote}`
-        : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет${priceNote}`,
+        ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)${priceNote}${barcodeNote}`
+        : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет${priceNote}${barcodeNote}`,
     };
   } catch (e) {
     return { marketplace: 'ym', ok: false, error: e?.message || String(e) };
@@ -2327,7 +2383,7 @@ async function pushProductToMp(product, mp, opts) {
  * @param {{ profileId?: number|string|null }} [opts]
  */
 export async function pushProductCard(productId, marketplace, opts = {}) {
-  const product = await productsService.getById(productId);
+  const product = await productsService.getByIdWithDetails(productId);
   if (!product) {
     const err = new Error('Товар не найден');
     err.statusCode = 404;
@@ -2390,7 +2446,7 @@ export async function pushProductCardsBulk(payload, opts = {}) {
   const items = [];
   for (const productId of ids) {
     try {
-      const product = await productsService.getById(productId);
+      const product = await productsService.getByIdWithDetails(productId);
       if (!product) {
         items.push({
           productId,
