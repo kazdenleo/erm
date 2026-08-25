@@ -58,8 +58,18 @@ class MarketplaceBrandDirectoryRepositoryPG {
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
          ON CONFLICT (profile_id, marketplace, name_norm) DO UPDATE SET
            mp_brand_id = COALESCE(EXCLUDED.mp_brand_id, marketplace_brand_directory.mp_brand_id),
-           name = EXCLUDED.name,
-           source = EXCLUDED.source,
+           name = CASE
+             WHEN marketplace_brand_directory.source = 'api'
+                  AND EXCLUDED.source IS DISTINCT FROM 'api'
+             THEN marketplace_brand_directory.name
+             ELSE EXCLUDED.name
+           END,
+           source = CASE
+             WHEN marketplace_brand_directory.source = 'api'
+                  AND EXCLUDED.source IS DISTINCT FROM 'api'
+             THEN marketplace_brand_directory.source
+             ELSE EXCLUDED.source
+           END,
            meta = COALESCE(EXCLUDED.meta, marketplace_brand_directory.meta),
            synced_at = CURRENT_TIMESTAMP`,
         [pid, mp, mpId, name, nameNorm, source || 'api', meta]

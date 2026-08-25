@@ -5,7 +5,7 @@
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
-import { searchMarketplaceBrands } from './marketplaceBrandDirectory.service.js';
+import { searchMarketplaceBrands, canonicalizeWbBrandName } from './marketplaceBrandDirectory.service.js';
 
 const MP_KEYS = ['ozon', 'wb', 'ym'];
 
@@ -221,17 +221,29 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
   ]);
 
   const mergeByName = (...lists) => {
-    const out = [];
-    const seen = new Set();
+    const byKey = new Map();
     for (const list of lists) {
       for (const item of list || []) {
-        const key = String(item?.name || '').trim().toLowerCase();
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(item);
+        const name = String(item?.name || '').trim();
+        const key = name.toLowerCase();
+        if (!key) continue;
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, item);
+          continue;
+        }
+        const prevId = prev.mp_brand_id ?? prev.id;
+        const nextId = item.mp_brand_id ?? item.id;
+        const prevHasId = prevId != null && String(prevId).trim() !== '';
+        const nextHasId = nextId != null && String(nextId).trim() !== '';
+        if (nextHasId && !prevHasId) byKey.set(key, item);
+        else if (!prevHasId && !nextHasId) {
+          const upper = (s) => String(s || '').replace(/[^A-ZА-ЯЁ]/g, '').length;
+          if (upper(name) > upper(prev.name)) byKey.set(key, item);
+        }
       }
     }
-    return out;
+    return [...byKey.values()];
   };
 
   const ozonCandidates = mergeByName(ozonFromDir, ozonSuggest.candidates);
@@ -250,9 +262,15 @@ export async function syncBrandMappingsFromCatalog(brandId, profileId, { apply =
   const applied = [];
   const upsert = async (marketplace, top) => {
     if (!top?.name) return;
+    let name = top.name;
+    let mpId = top.mp_brand_id ?? null;
+    if (marketplace === 'wb') {
+      const canon = await canonicalizeWbBrandName(name, { profileId });
+      if (canon) name = canon;
+    }
     const row = await repo.upsertMarketplaceMapping(brandId, marketplace, {
-      mp_brand_name: top.name,
-      mp_brand_id: top.mp_brand_id ?? null,
+      mp_brand_name: name,
+      mp_brand_id: mpId,
       mp_meta: { source: top.source || 'sync' },
     });
     if (row) applied.push({ marketplace, ...row });
@@ -277,6 +295,18 @@ export function normalizeMappingsPayload(items) {
       mp_brand_id: raw.mp_brand_id ?? raw.mpBrandId ?? null,
       mp_meta: raw.mp_meta ?? raw.mpMeta ?? null,
     });
+  }
+  return out;
+}
+
+export async function canonicalizeMappingsPayload(items, profileId) {
+  const out = normalizeMappingsPayload(items);
+  for (const row of out) {
+    if (row.marketplace !== 'wb') continue;
+    const name = String(row.mp_brand_name || '').trim();
+    if (!name) continue;
+    const canon = await canonicalizeWbBrandName(name, { profileId });
+    if (canon) row.mp_brand_name = canon;
   }
   return out;
 }
@@ -335,6 +365,7 @@ export default {
   suggestOzonBrandMapping,
   syncBrandMappingsFromCatalog,
   normalizeMappingsPayload,
+  canonicalizeMappingsPayload,
   scheduleOzonMinPriceRecalcForBrand,
   promoSettingsChanged,
 };

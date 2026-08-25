@@ -76,9 +76,16 @@ export function MpBrandSuggest({
     const cur = String(valueRef.current || '').trim();
     if (!cur) return;
     const lower = cur.toLowerCase();
-    const hit = (optionsRef.current || []).find(
+    const matches = (optionsRef.current || []).filter(
       (o) => String(o?.name || '').trim().toLowerCase() === lower
     );
+    const hit =
+      matches.find((o) => o?.id != null && String(o.id).trim() !== '') ||
+      matches.slice().sort(
+        (a, b) =>
+          String(b?.name || '').replace(/[^A-ZА-ЯЁ]/g, '').length -
+          String(a?.name || '').replace(/[^A-ZА-ЯЁ]/g, '').length
+      )[0];
     const exactName = hit?.name || names.find((n) => n.toLowerCase() === lower);
     if (exactName && exactName !== cur && typeof onChange === 'function') onChange(exactName);
     if (hit && typeof onSelect === 'function') onSelect(hit);

@@ -2117,11 +2117,17 @@ class IntegrationsService {
       }
     };
 
-    if (q.length >= 1) {
+    const queries = [];
+    if (q.length >= 1) queries.push(q);
+    if (opts.tryCaseVariants && q.length >= 1 && q.toUpperCase() !== q) {
+      queries.push(q.toUpperCase());
+    }
+
+    for (const queryText of queries) {
       for (const param of ['pattern', 'name']) {
         try {
           const data = await this._wbContentApiGet(
-            `/content/v2/directory/brands?${param}=${encodeURIComponent(q)}`,
+            `/content/v2/directory/brands?${param}=${encodeURIComponent(queryText)}`,
             opts
           );
           pushAll(normalizeWbBrandEntries(data));
@@ -2129,9 +2135,9 @@ class IntegrationsService {
           logger.debug('[WB brands] directory search failed', { param, err: e?.message });
         }
       }
-      if (opts.skipErpAliases !== true) {
-        pushAll(await this._findErpWbBrandAliases(q));
-      }
+    }
+    if (q.length >= 1 && opts.skipErpAliases !== true) {
+      pushAll(await this._findErpWbBrandAliases(q));
     }
 
     if (subjectId > 0 && merged.length < 3) {

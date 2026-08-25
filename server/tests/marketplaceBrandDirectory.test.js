@@ -34,6 +34,15 @@ describe('marketplaceBrandDirectory', () => {
     expect(pickDirectoryBrandName(list, 'Miles')).toBe('MILES');
   });
 
+  test('dedupes directory entries toward canonical casing', () => {
+    const list = normalizeDirectoryBrandEntries([
+      { name: 'Miles', id: null },
+      { name: 'MILES', id: 'wb-1' },
+    ]);
+    expect(list).toEqual([{ name: 'MILES', id: 'wb-1' }]);
+    expect(pickDirectoryBrandName(list, 'miles')).toBe('MILES');
+  });
+
   test('normalizes Ozon dictionary values', () => {
     const list = normalizeDirectoryBrandEntries({
       result: [{ id: 123, value: 'Miles' }, { id: 123, value: 'Miles' }],

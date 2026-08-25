@@ -13,6 +13,7 @@ import {
   normalizeBrandName,
   normalizeDirectoryBrandEntries,
   normalizeMpBrandMarketplace,
+  pickDirectoryBrandName,
   rankDirectoryBrands,
 } from '../utils/marketplaceBrandDirectory.js';
 
@@ -166,6 +167,8 @@ export async function searchMarketplaceBrands(opts = {}) {
           subjectId: opts.subjectId ?? opts.subject_id,
           profileId: profileId || null,
           organizationId: opts.organizationId ?? opts.organization_id ?? null,
+          skipErpAliases: true,
+          tryCaseVariants: true,
         });
       } else if (marketplace === 'ozon' && profileId > 0) {
         live = await searchOzonBrandsLive(q, profileId, opts);
@@ -207,7 +210,11 @@ async function refreshWbForProfile(profileId, seeds) {
   }
   const queries = [];
   for (const seed of seeds) {
-    if (seed) queries.push(seed);
+    if (!seed) continue;
+    queries.push(seed);
+    if (/[a-z]/.test(seed) && seed.toUpperCase() !== seed) {
+      queries.push(seed.toUpperCase());
+    }
   }
   for (const prefix of WB_PREFIXES) queries.push(prefix);
 
@@ -331,9 +338,6 @@ export async function refreshMarketplaceBrandDirectories({ profileId = null } = 
     let seeds = [];
     try {
       seeds = await collectSearchSeeds(pid);
-      const mappingRows = seeds.map((name) => ({ name, id: null }));
-      await upsertAndCount(pid, 'wb', mappingRows, 'harvest');
-      await upsertAndCount(pid, 'ozon', mappingRows, 'harvest');
     } catch (e) {
       logger.warn('[MP brand dir] seeds failed', { profileId: pid, err: e?.message });
     }
@@ -434,8 +438,29 @@ export async function resolveMappedBrand(product, marketplace) {
   }
 }
 
+/** Живой справочник WB: Miles → MILES. При сбое API возвращает исходное имя. */
+export async function canonicalizeWbBrandName(name, opts = {}) {
+  const seed = normalizeBrandName(name);
+  if (!seed) return null;
+  try {
+    const live = await integrationsService.fetchWildberriesBrandsFromApi({
+      q: seed,
+      profileId: opts.profileId ?? null,
+      organizationId: opts.organizationId ?? null,
+      subjectId: opts.subjectId,
+      skipErpAliases: true,
+      tryCaseVariants: true,
+    });
+    return pickDirectoryBrandName(live, seed) || seed;
+  } catch (e) {
+    logger.debug('[MP brand dir] WB canonicalize failed', e?.message);
+    return seed;
+  }
+}
+
 export default {
   searchMarketplaceBrands,
   refreshMarketplaceBrandDirectories,
   resolveMappedBrand,
+  canonicalizeWbBrandName,
 };

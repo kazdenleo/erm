@@ -1508,7 +1508,7 @@ async function findExistingWbCard(product, ctx) {
   return null;
 }
 
-async function readWbErrorListHit(vendor, ctx) {
+async function readWbErrorListHit(vendor, ctx, { afterMs = 0 } = {}) {
   const errList = await integrationsService._wbContentApiPost(
     '/content/v2/cards/error/list',
     { cursor: { updatedAt: null, nmID: 0, limit: 50 }, order: { ascending: false } },
@@ -1517,14 +1517,26 @@ async function readWbErrorListHit(vendor, ctx) {
   const items = Array.isArray(errList?.data?.items) ? errList.data.items : [];
   const code = String(vendor || '').trim();
   const nowMs = Date.now();
+  const minUpdated = Number(afterMs) > 0 ? Number(afterMs) - 2000 : nowMs - 5 * 60 * 1000;
   return items.find((it) => {
     const updatedMs = it?.updatedAt ? Date.parse(it.updatedAt) : NaN;
-    if (!Number.isFinite(updatedMs) || nowMs - updatedMs > 5 * 60 * 1000) return false;
+    if (!Number.isFinite(updatedMs) || updatedMs < minUpdated) return false;
     const codes = Array.isArray(it?.vendorCodes) ? it.vendorCodes : [];
     if (code && codes.some((c) => String(c) === code)) return true;
     const errMap = it?.errors && typeof it.errors === 'object' ? it.errors : {};
     return code && Object.prototype.hasOwnProperty.call(errMap, code);
   });
+}
+
+function wbErrorIsStaleBrandCasing(hit, vendor, sentBrand) {
+  const sent = trimOrNull(sentBrand);
+  if (!sent) return false;
+  const msg = formatWbErrorListHit(hit, vendor);
+  const m = /Бренд «([^»]+)» не найден/i.exec(String(msg || ''));
+  if (!m) return false;
+  const rejected = String(m[1] || '').trim();
+  if (!rejected) return false;
+  return rejected !== sent && rejected.toLowerCase() === sent.toLowerCase();
 }
 
 function formatWbErrorListHit(hit, vendor) {
@@ -1546,12 +1558,12 @@ async function generateWbSizeBarcode(ctx) {
   return code;
 }
 
-async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500 } = {}) {
+async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500, afterMs = 0, sentBrand = null } = {}) {
   for (let i = 0; i < attempts; i += 1) {
     await sleep(delayMs);
     try {
-      const hit = await readWbErrorListHit(vendor, ctx);
-      if (hit) {
+      const hit = await readWbErrorListHit(vendor, ctx, { afterMs });
+      if (hit && !wbErrorIsStaleBrandCasing(hit, vendor, sentBrand)) {
         const err = new Error(`WB отклонил карточку: ${formatWbErrorListHit(hit, vendor)}`);
         err.wbRejected = true;
         throw err;
@@ -1655,26 +1667,45 @@ async function resolveWbDirectoryBrand(brand, subjectId, ctx, product) {
   const wanted = trimOrNull(brand);
   const mapped = await resolveMappedBrand(product, 'wb');
   const mappedName = trimOrNull(mapped?.name);
-  // Сопоставление в настройках бренда — источник истины, даже если в карточке «Miles».
-  if (mappedName) {
-    return { brand: mappedName, unmatched: false, fromMapping: true };
+  const seed = mappedName || wanted;
+  if (!seed) return { brand: null, unmatched: false };
+
+  const tryPick = (list) => pickDirectoryBrandName(list, seed);
+
+  try {
+    const live = await integrationsService.fetchWildberriesBrandsFromApi({
+      q: seed,
+      subjectId: Number.isFinite(Number(subjectId)) && Number(subjectId) >= 1 ? subjectId : undefined,
+      profileId: ctx.profileId ?? null,
+      organizationId: ctx.organizationId ?? null,
+      skipErpAliases: true,
+      tryCaseVariants: true,
+    });
+    const hit = tryPick(live);
+    if (hit) {
+      return { brand: hit, unmatched: false, fromMapping: Boolean(mappedName) };
+    }
+  } catch (e) {
+    logger.warn('[MP Card Push] WB live brands:', e?.message || e);
   }
-  if (!wanted) return { brand: null, unmatched: false };
+
   try {
     const list = await searchMarketplaceBrands({
       marketplace: 'wb',
-      q: wanted,
+      q: seed,
       subjectId: Number.isFinite(Number(subjectId)) && Number(subjectId) >= 1 ? subjectId : undefined,
       profileId: ctx.profileId ?? null,
       organizationId: ctx.organizationId ?? null,
     });
-    const hit = pickDirectoryBrandName(list, wanted);
-    if (hit) return { brand: hit, unmatched: false };
-    if (Array.isArray(list) && list.length > 0) return { brand: wanted, unmatched: true };
+    const hit = tryPick(list);
+    if (hit) return { brand: hit, unmatched: false, fromMapping: Boolean(mappedName) };
+    if (Array.isArray(list) && list.length > 0) {
+      return { brand: seed, unmatched: true, fromMapping: Boolean(mappedName) };
+    }
   } catch (e) {
     logger.warn('[MP Card Push] WB brands directory:', e?.message || e);
   }
-  return { brand: wanted, unmatched: false };
+  return { brand: seed, unmatched: false, fromMapping: Boolean(mappedName) };
 }
 
 async function pushWildberriesCard(product, categoryMm, ctx) {
@@ -1743,6 +1774,12 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   } else if (resolved.unmatched) {
     brandNote = ` Бренд «${brand}» не найден в справочнике WB — отправлен как есть.`;
   }
+  logger.info('[MP Card Push] WB brand', {
+    productId: product?.id,
+    vendor: vendorCode,
+    seed: brand,
+    sent: brandForCard,
+  });
 
   if (creating && !title) {
     return {
@@ -1794,6 +1831,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   }
 
   try {
+    const uploadedAt = Date.now();
     if (creating) {
       await integrationsService._wbContentApiPost(
         '/content/v2/cards/upload',
@@ -1808,8 +1846,9 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     }
 
     try {
-      const hit = await readWbErrorListHit(card.vendorCode, ctx);
-      if (hit) {
+      await sleep(1500);
+      const hit = await readWbErrorListHit(card.vendorCode, ctx, { afterMs: uploadedAt });
+      if (hit && !wbErrorIsStaleBrandCasing(hit, card.vendorCode, brandForCard)) {
         return {
           marketplace: 'wb',
           ok: false,
@@ -1823,7 +1862,10 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     let nmId = existingNm;
     if (creating) {
       try {
-        nmId = await waitForWbCardByVendorCode(card.vendorCode, ctx);
+        nmId = await waitForWbCardByVendorCode(card.vendorCode, ctx, {
+          afterMs: uploadedAt,
+          sentBrand: brandForCard,
+        });
       } catch (e) {
         return { marketplace: 'wb', ok: false, error: e?.message || String(e) };
       }

@@ -8,7 +8,7 @@ import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfi
 import {
   attachBrandDetails,
   syncBrandMappingsFromCatalog,
-  normalizeMappingsPayload,
+  canonicalizeMappingsPayload,
   scheduleOzonMinPriceRecalcForBrand,
   promoSettingsChanged,
 } from '../services/brands.service.js';
@@ -66,7 +66,10 @@ export const brandsController = {
       }
       const brandData = req.body;
       const brand = await brandsRepository.create(brandData, { profileId: tid });
-      const mappings = normalizeMappingsPayload(brandData.marketplace_mappings ?? brandData.marketplaceMappings);
+      const mappings = await canonicalizeMappingsPayload(
+        brandData.marketplace_mappings ?? brandData.marketplaceMappings,
+        tid
+      );
       if (mappings.length > 0 && brand?.id) {
         await brandsRepository.replaceMarketplaceMappings(brand.id, mappings);
       }
@@ -90,8 +93,9 @@ export const brandsController = {
         return res.status(404).json({ ok: false, message: 'Бренд не найден' });
       }
       if (updates.marketplace_mappings != null || updates.marketplaceMappings != null) {
-        const mappings = normalizeMappingsPayload(
-          updates.marketplace_mappings ?? updates.marketplaceMappings
+        const mappings = await canonicalizeMappingsPayload(
+          updates.marketplace_mappings ?? updates.marketplaceMappings,
+          tid
         );
         await brandsRepository.replaceMarketplaceMappings(id, mappings);
       }
