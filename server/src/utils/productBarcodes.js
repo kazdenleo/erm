@@ -337,6 +337,27 @@ export function needsGeneratedBarcodeForPush(barcodes) {
 }
 
 /**
+ * ШК для выгрузки на МП. В массовой таблице бейджей нет: если у МП ещё нет
+ * своего кода (нет бейджа), берём существующий ШК карточки.
+ * Приоритет: уже с бейджем этого МП → без бейджей → первый в списке.
+ * @param {unknown} barcodes
+ * @param {unknown} marketplace
+ * @returns {string|null}
+ */
+export function barcodeToSendToMarketplace(barcodes, marketplace) {
+  const rows = normalizeBarcodeRows(barcodes);
+  if (!rows.length) return null;
+  const mp = normalizeBarcodeMarketplace(marketplace);
+  if (mp) {
+    const tagged = rows.filter((r) => r.marketplaces.includes(mp));
+    if (tagged.length) return tagged[tagged.length - 1].barcode;
+  }
+  const untagged = rows.filter((r) => !r.marketplaces.length);
+  if (untagged.length) return untagged[untagged.length - 1].barcode;
+  return rows[0].barcode;
+}
+
+/**
  * Контрольная цифра EAN-13 по первым 12 цифрам.
  * @param {string} digits12
  * @returns {string|null}

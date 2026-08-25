@@ -37,7 +37,12 @@ import {
   withOzonDraftDimensionsLock,
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
-import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace, coerceBarcodeString } from '../utils/productBarcodes.js';
+import {
+  normalizeBarcodeRows,
+  mergeBarcodesFromMarketplace,
+  barcodeToSendToMarketplace,
+  coerceBarcodeString,
+} from '../utils/productBarcodes.js';
 import {
   allocateProductBarcode,
   generateWbBarcodeFromApi,
@@ -1162,7 +1167,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
     item.images = picUrls;
     item.primary_image = picUrls[0];
   }
-  const ozonBarcode = barcodeForMarketplacePush(product, 'ozon');
+  const ozonBarcode = barcodeToSendToMarketplace(product.barcodes, 'ozon');
   if (ozonBarcode) {
     item.barcode = ozonBarcode;
     item.barcodes = [ozonBarcode];
@@ -1186,6 +1191,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
       old_price: item.old_price ?? null,
       min_price: item.min_price ?? null,
       images: picUrls.length,
+      barcode: ozonBarcode || null,
       nameLen: String(item.name || '').length,
     });
 
@@ -1220,6 +1226,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
           `Задача Ozon создана (task_id: ${taskId}), но не удалось получить статус: ${
             pollErr?.message || String(pollErr)
           }. Проверьте ошибки в кабинете продавца.`,
+        barcodeSent: ozonBarcode || undefined,
       };
     }
 
@@ -1435,7 +1442,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
         errorPreview: String(result.error || '').slice(0, 500),
       });
     }
-    if (result.ok && ozonBarcode) result = { ...result, barcodeSent: ozonBarcode };
+    if (ozonBarcode) result = { ...result, barcodeSent: ozonBarcode };
     return result;
   } catch (e) {
     return { marketplace: 'ozon', ok: false, error: e?.message || String(e) };
@@ -1600,7 +1607,7 @@ async function persistProductBarcodes(product, rows, ctx) {
   product.barcodes = rows;
 }
 
-/** Нет ШК — выделяем код. Если ШК есть без иконок МП, отправим его и проставим иконки после успеха. */
+/** Нет ШК — выделяем код. Есть ШК без бейджа этого МП — отправим его и проставим бейдж. */
 async function ensureProductBarcodeForPush(product, ctx) {
   const existing = normalizeBarcodeRows(product.barcodes);
   if (existing.length) return existing;
@@ -1656,15 +1663,27 @@ function collectYmOfferBarcodes(product, ymDraft) {
   return { all, offer };
 }
 
-function barcodeForMarketplacePush(product, mp) {
-  const rows = normalizeBarcodeRows(product?.barcodes);
-  if (!rows.length) return null;
-  const tagged = pickBarcodeForMarketplace(rows, mp);
-  const hasIcon = rows.some((r) => Array.isArray(r.marketplaces) && r.marketplaces.includes(mp));
-  if (hasIcon) return tagged;
-  const untagged = rows.filter((r) => !r.marketplaces?.length);
-  if (untagged.length) return untagged[untagged.length - 1].barcode;
-  return tagged || rows[0].barcode;
+function wbSizesHaveSku(sizes) {
+  if (!Array.isArray(sizes)) return false;
+  return sizes.some((s) =>
+    (Array.isArray(s?.skus) ? s.skus : []).some((x) => coerceBarcodeString(x))
+  );
+}
+
+function applyErpBarcodeToWbSizes(card, code) {
+  if (!code || !card) return false;
+  if (Array.isArray(card.sizes) && card.sizes.length > 0) {
+    let filled = false;
+    card.sizes = card.sizes.map((s) => {
+      const skus = (Array.isArray(s?.skus) ? s.skus : []).map((x) => coerceBarcodeString(x)).filter(Boolean);
+      if (skus.length) return { ...s, skus };
+      filled = true;
+      return { ...s, skus: [code] };
+    });
+    return filled;
+  }
+  card.sizes = [{ techSize: '0', wbSize: '', skus: [code] }];
+  return true;
 }
 
 async function lookupWbNmIdByVendorCode(vendor, ctx) {
@@ -1927,6 +1946,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   });
 
   let wbBarcodeSent = null;
+  const erpWbBarcode = barcodeToSendToMarketplace(product.barcodes, 'wb');
   if (creating) {
     if (!card.dimensions) {
       return {
@@ -1935,10 +1955,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         error: 'Для создания карточки WB укажите габариты упаковки (длина, ширина, высота)',
       };
     }
-    let sizeSkus = [];
-    for (const row of normalizeBarcodeRows(product.barcodes)) {
-      if (row.barcode) sizeSkus.push(row.barcode);
-    }
+    let sizeSkus = erpWbBarcode ? [erpWbBarcode] : [];
     if (sizeSkus.length === 0) {
       try {
         sizeSkus = [await generateWbSizeBarcode(ctx)];
@@ -1958,6 +1975,8 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       },
     ];
     wbBarcodeSent = sizeSkus[0] || null;
+  } else if (erpWbBarcode && !wbSizesHaveSku(card.sizes) && !wbSizesHaveSku(existing?.sizes)) {
+    if (applyErpBarcodeToWbSizes(card, erpWbBarcode)) wbBarcodeSent = erpWbBarcode;
   }
 
   try {
@@ -2049,6 +2068,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       sku_wb: nmId ? String(nmId) : undefined,
       message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}${imagesNote}${priceNote}${brandNote}`,
       imagesPushed,
+      barcodeSent: wbBarcodeSent || undefined,
       subjectIdUnchanged:
         hasSubjectMapping &&
         existing?.subjectID != null &&
@@ -2437,7 +2457,7 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
   for (const mp of mps) {
     try {
       const res = await pushProductToMp(product, mp, opts);
-      if (res?.ok && res.barcodeSent) {
+      if (res?.barcodeSent) {
         await persistBarcodeSentToMp(product, res.barcodeSent, mp, ctx);
       }
       results.push(res);
@@ -2506,7 +2526,7 @@ export async function pushProductCardsBulk(payload, opts = {}) {
       for (const mp of uniqueMps) {
         try {
           const res = await pushProductToMp(product, mp, opts);
-          if (res?.ok && res.barcodeSent) {
+          if (res?.barcodeSent) {
             await persistBarcodeSentToMp(product, res.barcodeSent, mp, ctx);
           }
           results.push(res);

@@ -4,6 +4,7 @@ import {
   mergeBarcodesFromMarketplace,
   needsGeneratedBarcodeForPush,
   pickBarcodeForMarketplace,
+  barcodeToSendToMarketplace,
   coerceBarcodeString,
   isCorruptBarcodeString,
   barcodesFromWbGeneratePayload,
@@ -30,6 +31,29 @@ describe('productBarcodes EAN and MP tags', () => {
     const afterWb = mergeBarcodesFromMarketplace(afterOzon, ['2000001230008'], 'wb');
     expect(afterWb[0].marketplaces).toEqual(['ozon', 'wb']);
     expect(pickBarcodeForMarketplace(afterWb, 'wb')).toBe('2000001230008');
+  });
+
+  test('sends existing barcode to MP that has no badge yet', () => {
+    const rows = [{ barcode: '2055267952997', marketplaces: ['ym'] }];
+    expect(barcodeToSendToMarketplace(rows, 'ozon')).toBe('2055267952997');
+    expect(barcodeToSendToMarketplace(rows, 'wb')).toBe('2055267952997');
+    expect(barcodeToSendToMarketplace(rows, 'ym')).toBe('2055267952997');
+  });
+
+  test('prefers barcode already tagged for the target MP', () => {
+    const rows = [
+      { barcode: '111', marketplaces: ['ym'] },
+      { barcode: '222', marketplaces: ['ozon'] },
+    ];
+    expect(barcodeToSendToMarketplace(rows, 'ozon')).toBe('222');
+  });
+
+  test('prefers untagged barcode over other-MP tags', () => {
+    const rows = [
+      { barcode: '111', marketplaces: ['ym'] },
+      { barcode: '222', marketplaces: [] },
+    ];
+    expect(barcodeToSendToMarketplace(rows, 'ozon')).toBe('222');
   });
 });
 
