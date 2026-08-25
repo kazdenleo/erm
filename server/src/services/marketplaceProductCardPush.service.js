@@ -436,6 +436,24 @@ function collectOzonProductInfoErrors(infoItem) {
   return raw;
 }
 
+/** Кабинет ещё не видит цену: /v3/product/import её не записывает, нужен import/prices. */
+function isStaleOzonCabinetPriceError(err) {
+  const s = [
+    err?.code,
+    err?.message,
+    err?.description,
+    formatOzonImportErrorLine(err),
+  ]
+    .map((x) => String(x || '').toLowerCase())
+    .join(' ');
+  return (
+    s.includes('price_is_negative') ||
+    s.includes('has_price=false') ||
+    s.includes('цена не может быть отрицательной') ||
+    s.includes('не задана цена')
+  );
+}
+
 async function fetchOzonProductInfoItem(offerId, productId, apiOpts) {
   const body =
     productId != null && Number.isFinite(Number(productId)) && Number(productId) > 0
@@ -496,14 +514,18 @@ async function loadErpCardPrices(productId, marketplace) {
   if (marketplace) {
     try {
       const r = await query(
-        `SELECT min_price FROM product_marketplace_prices
+        `SELECT min_price, selling_price, price_before_discount
+         FROM product_marketplace_prices
          WHERE product_id = $1 AND marketplace = $2`,
         [productId, marketplace]
       );
-      out.min = toPosPrice(r.rows?.[0]?.min_price);
+      const row = r.rows?.[0];
+      out.min = toPosPrice(row?.min_price);
+      if (out.after == null) out.after = toPosPrice(row?.selling_price);
+      if (out.before == null) out.before = toPosPrice(row?.price_before_discount);
     } catch (e) {
-      if (!String(e?.message || '').includes('min_price')) {
-        logger.warn('[CardPush] load stored min price failed', e?.message || e);
+      if (!String(e?.message || '').includes('min_price') && !String(e?.message || '').includes('selling_price')) {
+        logger.warn('[CardPush] load stored marketplace prices failed', e?.message || e);
       }
     }
   }
@@ -1312,10 +1334,18 @@ async function pushOzonCard(product, categoryMm, ctx) {
       };
     }
 
+    // Цены: /v3/product/import их не применяет. Шлём import/prices ДО сбора ошибок кабинета,
+    // иначе has_price=false / price_is_negative помечают пуш как fail и цены так и не уходят.
+    const ozonPidForPrice = Number(item.product_id ?? ozonInfoBefore?.id ?? 0);
+    let priceRes = { skipped: true, reason: 'no_attr_price' };
+    if (sellingFromErpPrices(erpPrices) != null) {
+      priceRes = await pushOzonPricesFromErp(offerId, ozonPidForPrice, erpPrices, apiOpts);
+    }
+
     // Ошибки карточки — ПОСЛЕ отправки фото (иначе висим на старом error_card_with_deleted_photos)
     let ozonInfoAfter = null;
     try {
-      await sleep(imagesPushed > 0 ? 3500 : 1500);
+      await sleep(imagesPushed > 0 || priceRes?.ok ? 3500 : 1500);
       ozonInfoAfter = await fetchOzonProductInfoItem(
         offerId,
         item.product_id ?? ozonInfoBefore?.id ?? null,
@@ -1328,6 +1358,9 @@ async function pushOzonCard(product, categoryMm, ctx) {
           const code = String(e?.code || e?.message || e?.description || '').toLowerCase();
           return !code.includes('error_card_with_deleted_photos') && !/удалили все фото/i.test(code);
         });
+      }
+      if (priceRes?.ok) {
+        cardErrors = cardErrors.filter((e) => !isStaleOzonCabinetPriceError(e));
       }
       result = mergeOzonCardErrorsIntoResult(result, cardErrors, { taskId: result.taskId || taskId });
       if (cardErrors.length) {
@@ -1362,40 +1395,35 @@ async function pushOzonCard(product, categoryMm, ctx) {
       });
     }
 
-    if (result.ok) {
-      const ozonPid = Number(ozonInfoAfter?.id ?? item.product_id ?? ozonInfoBefore?.id ?? 0);
-      if (!ozonExisted && ozonPid > 0) {
+    const ozonPid = Number(ozonInfoAfter?.id ?? item.product_id ?? ozonInfoBefore?.id ?? 0);
+    if (!ozonExisted && ozonPid > 0) {
+      try {
         await persistOzonProductId(product, ozonPid, offerId, ctx);
+      } catch (e) {
+        logger.warn('[CardPush] persist Ozon product_id failed', e?.message || e);
       }
-      if (result.message && /карточка обновлена/i.test(String(result.message))) {
-        result = {
-          ...result,
-          created: !ozonExisted,
-          message: ozonExisted
-            ? result.message
-            : String(result.message).replace(/карточка обновлена/i, 'карточка создана'),
-        };
-      } else {
-        result = { ...result, created: !ozonExisted };
-      }
-      const ozonPidForPrice = Number(ozonInfoAfter?.id ?? item.product_id ?? ozonInfoBefore?.id ?? 0);
-      const priceRes = await pushOzonPricesFromErp(
-        offerId,
-        ozonPidForPrice,
-        erpPrices,
-        apiOpts
-      );
-      const note = pricePushNote(priceRes);
-      if (note) {
-        result = {
-          ...result,
-          message: `${result.message || ''}${note}`.trim(),
-        };
-        if (priceRes.ok === false && priceRes.error) {
-          result.warnings = result.warnings
-            ? `${result.warnings}\n${priceRes.error}`
-            : priceRes.error;
-        }
+    }
+    if (result.message && /карточка обновлена/i.test(String(result.message))) {
+      result = {
+        ...result,
+        created: !ozonExisted,
+        message: ozonExisted
+          ? result.message
+          : String(result.message).replace(/карточка обновлена/i, 'карточка создана'),
+      };
+    } else {
+      result = { ...result, created: !ozonExisted };
+    }
+    const note = pricePushNote(priceRes);
+    if (note) {
+      result = {
+        ...result,
+        message: `${result.message || ''}${note}`.trim(),
+      };
+      if (priceRes.ok === false && priceRes.error) {
+        result.warnings = result.warnings
+          ? `${result.warnings}\n${priceRes.error}`
+          : priceRes.error;
       }
     }
 
