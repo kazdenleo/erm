@@ -5,7 +5,12 @@
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import integrationsService from './integrations.service.js';
-import { buildEan13 } from '../utils/productBarcodes.js';
+import {
+  buildEan13,
+  barcodesFromWbGeneratePayload,
+  coerceBarcodeString,
+  isCorruptBarcodeString,
+} from '../utils/productBarcodes.js';
 
 export async function generateWbBarcodeFromApi(ctx = {}) {
   const data = await integrationsService._wbContentApiPost(
@@ -13,8 +18,7 @@ export async function generateWbBarcodeFromApi(ctx = {}) {
     { count: 1 },
     { profileId: ctx.profileId, organizationId: ctx.organizationId }
   );
-  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-  const code = list.map((x) => String(x || '').trim()).find(Boolean);
+  const code = barcodesFromWbGeneratePayload(data)[0] || '';
   if (!code) {
     throw new Error('Wildberries не вернул штрихкод');
   }
@@ -22,8 +26,8 @@ export async function generateWbBarcodeFromApi(ctx = {}) {
 }
 
 export async function barcodeTaken(code) {
-  const s = String(code || '').trim();
-  if (!s) return true;
+  const s = coerceBarcodeString(code);
+  if (!s || isCorruptBarcodeString(s)) return true;
   const r = await query('SELECT 1 FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1', [s]);
   return (r.rowCount || 0) > 0;
 }
@@ -48,7 +52,9 @@ export async function allocateProductBarcode({ productId, profileId, organizatio
         profileId: profileId ?? null,
         organizationId: orgId,
       });
-      if (generated && !(await barcodeTaken(generated))) code = generated;
+      if (generated && !isCorruptBarcodeString(generated) && !(await barcodeTaken(generated))) {
+        code = generated;
+      }
     } catch (e) {
       logger.info('[Barcode] WB API unavailable, using internal EAN-13', e?.message || e);
     }

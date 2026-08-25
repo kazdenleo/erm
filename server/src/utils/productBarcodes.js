@@ -68,6 +68,7 @@ export function coerceBarcodeString(raw) {
       'GTIN',
       'value',
       'code',
+      'skus',
       'id',
       'nmId',
       'nmID',
@@ -255,6 +256,29 @@ export function barcodesFromOzonCard(data) {
 export function barcodesFromYmCard(data) {
   if (!data || typeof data !== 'object') return [];
   return collectBarcodeStrings(data.barcodes);
+}
+
+/**
+ * ШК из ответа WB POST /content/v2/barcodes (строки или объекты).
+ * @param {unknown} payload
+ * @returns {string[]}
+ */
+export function barcodesFromWbGeneratePayload(payload) {
+  if (payload == null) return [];
+  const nested =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload.data ?? payload.barcodes ?? payload.skus ?? payload
+      : payload;
+  const items = Array.isArray(nested)
+    ? nested
+    : nested && typeof nested === 'object'
+      ? Array.isArray(nested.barcodes)
+        ? nested.barcodes
+        : Array.isArray(nested.skus)
+          ? nested.skus
+          : [nested]
+      : [nested];
+  return collectBarcodeStrings(items);
 }
 
 /**

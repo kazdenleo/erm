@@ -22,7 +22,11 @@ import {
   resolveProductImageUrl,
   canRestoreImageAspect3x4,
 } from '../../utils/productImage.js';
-import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
+import {
+  barcodeStringsFromProduct,
+  coerceBarcodeString,
+  isCorruptBarcodeString,
+} from '../../utils/productBarcodes.js';
 import {
   applyComputedAttributeValues,
   isComputedAttrType,
@@ -3514,7 +3518,10 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
       p.buyout_rate != null && p.buyout_rate !== '' ? str(p.buyout_rate) : '95',
     description: str(p.description),
     country_of_origin: str(p.country_of_origin),
-    barcodes: barcodes.map((b) => str(b).trim()).filter(Boolean).join(', '),
+    barcodes: barcodes
+      .map((b) => coerceBarcodeString(b))
+      .filter((b) => b && !isCorruptBarcodeString(b))
+      .join(', '),
     sku_ozon: str(p.sku_ozon ?? p.marketplace_skus?.ozon ?? ''),
     ozon_product_id: str(p.ozon_product_id ?? p.marketplace_ozon_product_id ?? ''),
     sku_wb: str(p.sku_wb ?? p.marketplace_skus?.wb ?? ''),
@@ -3589,8 +3596,8 @@ function parseBarcodesCell(text) {
   if (!raw.trim()) return [];
   return raw
     .split(/[\n,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+    .map((s) => coerceBarcodeString(s))
+    .filter((s) => s && !isCorruptBarcodeString(s));
 }
 
 function normTextOrNull(s) {
@@ -6120,8 +6127,8 @@ export function ProductsBulkEdit() {
           productId: savedId,
           organizationId: row.organizationId || undefined,
         });
-        const code = String(body?.data?.barcode ?? body?.barcode ?? '').trim();
-        if (!code) throw new Error('Не удалось сгенерировать штрихкод');
+        const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode ?? body?.data);
+        if (!code || isCorruptBarcodeString(code)) throw new Error('Не удалось сгенерировать штрихкод');
         updateCell(id, 'barcodes', code);
       } catch (e) {
         window.alert(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод');
@@ -6833,7 +6840,7 @@ export function ProductsBulkEdit() {
       );
     }
     if (col.key === 'barcodes') {
-      const empty = !String(v ?? '').trim();
+      const empty = parseBarcodesCell(v).length === 0;
       const generating = barcodeGeneratingId === row.id;
       return (
         <span className="products-bulk-barcode-cell">

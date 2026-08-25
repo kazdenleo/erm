@@ -5532,7 +5532,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         productId: currentProduct?.id,
         organizationId: formData.organizationId || currentProduct?.organization_id || undefined,
       });
-      const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode);
+      const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode ?? body?.data);
       if (!code) throw new Error('Не удалось сгенерировать штрихкод');
       handleBarcodeChange(index, code);
     } catch (e) {

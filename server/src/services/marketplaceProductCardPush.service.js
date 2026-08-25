@@ -1586,7 +1586,7 @@ async function ensureProductBarcodeForPush(product, ctx) {
 }
 
 async function persistBarcodeSentToMp(product, code, mp, ctx) {
-  const s = String(code || '').trim();
+  const s = coerceBarcodeString(code);
   if (!product?.id || !s) return;
   const merged = mergeBarcodesFromMarketplace(product.barcodes || [], [s], mp);
   if (!merged) return;

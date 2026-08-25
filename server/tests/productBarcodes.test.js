@@ -4,6 +4,9 @@ import {
   mergeBarcodesFromMarketplace,
   needsGeneratedBarcodeForPush,
   pickBarcodeForMarketplace,
+  coerceBarcodeString,
+  isCorruptBarcodeString,
+  barcodesFromWbGeneratePayload,
 } from '../src/utils/productBarcodes.js';
 
 describe('productBarcodes EAN and MP tags', () => {
@@ -27,5 +30,26 @@ describe('productBarcodes EAN and MP tags', () => {
     const afterWb = mergeBarcodesFromMarketplace(afterOzon, ['2000001230008'], 'wb');
     expect(afterWb[0].marketplaces).toEqual(['ozon', 'wb']);
     expect(pickBarcodeForMarketplace(afterWb, 'wb')).toBe('2000001230008');
+  });
+});
+
+describe('WB generate payload and corrupt barcodes', () => {
+  test('extracts barcode from WB object instead of String(object)', () => {
+    expect(coerceBarcodeString({ barcode: '2037000000001' })).toBe('2037000000001');
+    expect(coerceBarcodeString({ skus: ['2037000000002'] })).toBe('2037000000002');
+    expect(String({ barcode: '2037000000001' })).toBe('[object Object]');
+    expect(coerceBarcodeString('[object Object]')).toBe('');
+    expect(isCorruptBarcodeString('[object Object]')).toBe(true);
+  });
+
+  test('parses WB /content/v2/barcodes shapes', () => {
+    expect(barcodesFromWbGeneratePayload({ data: ['2037000000003'] })).toEqual(['2037000000003']);
+    expect(barcodesFromWbGeneratePayload({ data: [{ barcode: '2037000000004' }] })).toEqual([
+      '2037000000004',
+    ]);
+    expect(barcodesFromWbGeneratePayload({ data: [{ foo: 1 }] })).toEqual([]);
+    expect(barcodesFromWbGeneratePayload({ data: { barcodes: ['2037000000005'] } })).toEqual([
+      '2037000000005',
+    ]);
   });
 });

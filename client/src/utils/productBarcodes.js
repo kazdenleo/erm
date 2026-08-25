@@ -70,6 +70,7 @@ export function coerceBarcodeString(raw) {
       'GTIN',
       'value',
       'code',
+      'skus',
       'id',
       'nmId',
       'nmID',

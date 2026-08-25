@@ -42,7 +42,12 @@ import {
   getProductParticipationBatch,
   buildProductDeleteBlockedMessage,
 } from './productParticipation.service.js';
-import { barcodeStringsFromProduct, normalizeBarcodeRows } from '../utils/productBarcodes.js';
+import {
+  barcodeStringsFromProduct,
+  coerceBarcodeString,
+  isCorruptBarcodeString,
+  normalizeBarcodeRows,
+} from '../utils/productBarcodes.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
@@ -2085,12 +2090,14 @@ class ProductsService {
    */
   async generateBarcode({ productId, profileId, organizationId } = {}) {
     const { allocateProductBarcode } = await import('./productBarcodeAllocate.service.js');
-    const barcode = await allocateProductBarcode({
-      productId: productId ?? 0,
-      profileId: profileId ?? null,
-      organizationId: organizationId ?? null,
-    });
-    if (!barcode) {
+    const barcode = coerceBarcodeString(
+      await allocateProductBarcode({
+        productId: productId ?? 0,
+        profileId: profileId ?? null,
+        organizationId: organizationId ?? null,
+      })
+    );
+    if (!barcode || isCorruptBarcodeString(barcode)) {
       const err = new Error('Не удалось сгенерировать штрихкод');
       err.statusCode = 502;
       throw err;
