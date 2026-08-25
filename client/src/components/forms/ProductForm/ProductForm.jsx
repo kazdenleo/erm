@@ -5281,6 +5281,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [pushCardMessage, setPushCardMessage] = useState('');
   const [pushCardError, setPushCardError] = useState('');
   const [pushCardIsWarning, setPushCardIsWarning] = useState(false);
+  const [barcodeGeneratingIndex, setBarcodeGeneratingIndex] = useState(null);
+  const [barcodeGenerateError, setBarcodeGenerateError] = useState('');
   const [richContentLoading, setRichContentLoading] = useState(null);
   const [richContentError, setRichContentError] = useState('');
   const [richContentResult, setRichContentResult] = useState(null);
@@ -5503,6 +5505,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
       );
       return { ...prev, barcodes: newBarcodes };
     });
+  };
+
+  const handleGenerateBarcode = async (index) => {
+    setBarcodeGenerateError('');
+    setBarcodeGeneratingIndex(index);
+    try {
+      const body = await productsApi.generateBarcode({
+        productId: currentProduct?.id,
+        organizationId: formData.organizationId || currentProduct?.organization_id || undefined,
+      });
+      const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode);
+      if (!code) throw new Error('Не удалось сгенерировать штрихкод');
+      handleBarcodeChange(index, code);
+    } catch (e) {
+      setBarcodeGenerateError(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод');
+    } finally {
+      setBarcodeGeneratingIndex(null);
+    }
   };
 
   const toggleBarcodeMarketplace = (index, mp) => {
@@ -7967,35 +7987,67 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </Button>
         </h4>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Для нового товара без ШК код генерируется при первой отправке на маркетплейс.
-          Иконки OZ / WB / ЯМ отмечают площадки, на которые этот штрихкод отправлен (и какой ШК печатать в FBO).
-          Без отметки — внутренний штрихкод.
+          Если штрихкод не указан, нажмите «Сгенерировать» в поле — или он создастся сам при отправке новой карточки на маркетплейс, а также если у существующих ШК нет иконок OZ / WB / ЯМ.
+          Иконки отмечают площадки, на которые этот код отправлен (и какой ШК печатать в FBO).
           {Array.isArray(currentProduct?.barcodes) &&
           currentProduct.barcodes.some((b) => isCorruptBarcodeString(b?.barcode ?? b)) ? (
             <span style={{ display: 'block', marginTop: 6, color: '#f59e0b' }}>
               В базе есть битая запись штрихкода (object). Введите правильный код и сохраните карточку — битая строка будет удалена.
             </span>
           ) : null}
+          {barcodeGenerateError ? (
+            <span style={{ display: 'block', marginTop: 6, color: '#fca5a5' }}>{barcodeGenerateError}</span>
+          ) : null}
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
-          {formData.barcodes.map((row, index) => (
+          {formData.barcodes.map((row, index) => {
+            const code = coerceBarcodeString(row.barcode);
+            const generating = barcodeGeneratingIndex === index;
+            return (
             <div key={index} style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
-              <input
-                type="text"
-                className="form-control form-control-sm"
-                placeholder="Введите баркод (EAN, UPC и т.д.)"
-                value={coerceBarcodeString(row.barcode)}
-                onChange={(e) => handleBarcodeChange(index, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }
-                }}
-                autoComplete="off"
-                spellCheck={false}
-                style={{flex: 1}}
-              />
+              <div style={{ flex: 1, position: 'relative' }}>
+                <input
+                  type="text"
+                  className="form-control form-control-sm"
+                  placeholder=""
+                  value={code}
+                  onChange={(e) => handleBarcodeChange(index, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={{ width: '100%' }}
+                />
+                {!code ? (
+                  <button
+                    type="button"
+                    disabled={generating}
+                    onClick={() => handleGenerateBarcode(index)}
+                    title="Сгенерировать штрихкод"
+                    style={{
+                      position: 'absolute',
+                      left: 10,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      border: 0,
+                      background: 'transparent',
+                      padding: 0,
+                      color: generating ? 'var(--muted)' : '#2563eb',
+                      cursor: generating ? 'wait' : 'pointer',
+                      fontSize: '13px',
+                      lineHeight: 1,
+                      textDecoration: generating ? 'none' : 'underline',
+                      textUnderlineOffset: '2px',
+                    }}
+                  >
+                    {generating ? 'Генерация…' : 'Сгенерировать'}
+                  </button>
+                ) : null}
+              </div>
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                 {BARCODE_MP_TOGGLES.map((mp) => {
                   const active = (row.marketplaces || []).includes(mp.code);
@@ -8023,7 +8075,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </Button>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

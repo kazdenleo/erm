@@ -204,6 +204,11 @@ router.post(
 // Массовая отправка карточек на маркетплейсы (до /:id)
 router.post('/push-card', wrapAsync(productsController.pushCardBulk.bind(productsController)));
 
+router.post(
+  '/generate-barcode',
+  wrapAsync(productsController.generateBarcode.bind(productsController))
+);
+
 // Массовое обновление карточек ERP данными с маркетплейсов (до /:id)
 router.post('/pull-card', wrapAsync(productsController.pullCardBulk.bind(productsController)));
 
@@ -224,6 +229,12 @@ router.post(
   '/:id/generate-rich-content/:marketplace',
   validateProductId,
   wrapAsync(productsController.generateRichContent.bind(productsController))
+);
+
+router.post(
+  '/:id/generate-barcode',
+  validateProductId,
+  wrapAsync(productsController.generateBarcode.bind(productsController))
 );
 
 // Отправить данные карточки на маркетплейс (до PUT /:id)

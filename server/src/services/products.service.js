@@ -2081,6 +2081,24 @@ class ProductsService {
   }
 
   /**
+   * Сгенерировать уникальный штрихкод (WB API или внутренний EAN-13).
+   */
+  async generateBarcode({ productId, profileId, organizationId } = {}) {
+    const { allocateProductBarcode } = await import('./productBarcodeAllocate.service.js');
+    const barcode = await allocateProductBarcode({
+      productId: productId ?? 0,
+      profileId: profileId ?? null,
+      organizationId: organizationId ?? null,
+    });
+    if (!barcode) {
+      const err = new Error('Не удалось сгенерировать штрихкод');
+      err.statusCode = 502;
+      throw err;
+    }
+    return { barcode };
+  }
+
+  /**
    * Обновить карточку в ERP данными с маркетплейса.
    * @param {number|string} productId
    * @param {'ozon'|'wb'|'ym'|'all'|string} marketplace

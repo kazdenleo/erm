@@ -704,6 +704,29 @@ class ProductsController {
     }
   }
 
+  async generateBarcode(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const id = req.params?.id != null && req.params.id !== '' ? Number(req.params.id) : 0;
+      const organizationId =
+        req.body?.organizationId ?? req.body?.organization_id ?? req.query?.organizationId ?? null;
+      if (id > 0) {
+        const product = await productsService.getById(id);
+        if (!product) {
+          return res.status(404).json({ ok: false, message: 'Товар не найден' });
+        }
+      }
+      const data = await productsService.generateBarcode({
+        productId: Number.isFinite(id) && id > 0 ? id : 0,
+        profileId,
+        organizationId: organizationId ?? null,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async pullCard(req, res, next) {
     try {
       const { id, marketplace } = req.params;

@@ -299,6 +299,19 @@ export function mergeBarcodesFromMarketplace(existing, incomingCodes, marketplac
   return changed ? rows : null;
 }
 
+export function hasMarketplaceBarcodeIcons(barcodes) {
+  return normalizeBarcodeRows(barcodes).some(
+    (r) => Array.isArray(r.marketplaces) && r.marketplaces.length > 0
+  );
+}
+
+/** Нет ШК или ни один ШК не связан с маркетплейсом (нет иконок OZ/WB/ЯМ). */
+export function needsGeneratedBarcodeForPush(barcodes) {
+  const rows = normalizeBarcodeRows(barcodes);
+  if (!rows.length) return true;
+  return !hasMarketplaceBarcodeIcons(rows);
+}
+
 /**
  * Контрольная цифра EAN-13 по первым 12 цифрам.
  * @param {string} digits12

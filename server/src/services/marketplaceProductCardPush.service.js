@@ -36,7 +36,11 @@ import {
   withOzonDraftDimensionsLock,
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
-import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace, buildEan13 } from '../utils/productBarcodes.js';
+import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace } from '../utils/productBarcodes.js';
+import {
+  allocateProductBarcode,
+  generateWbBarcodeFromApi,
+} from './productBarcodeAllocate.service.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
@@ -1551,35 +1555,7 @@ function formatWbErrorListHit(hit, vendor) {
 }
 
 async function generateWbSizeBarcode(ctx) {
-  const data = await integrationsService._wbContentApiPost(
-    '/content/v2/barcodes',
-    { count: 1 },
-    { profileId: ctx.profileId, organizationId: ctx.organizationId }
-  );
-  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-  const code = list.map((x) => String(x || '').trim()).find(Boolean);
-  if (!code) {
-    throw new Error('Wildberries не вернул штрихкод для размера карточки');
-  }
-  return code;
-}
-
-async function barcodeTaken(code) {
-  const s = String(code || '').trim();
-  if (!s) return true;
-  const r = await query('SELECT 1 FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1', [s]);
-  return (r.rowCount || 0) > 0;
-}
-
-async function allocateUniqueInternalEan13(productId) {
-  const idNum = Number(productId) || 0;
-  for (let i = 0; i < 40; i += 1) {
-    const idPart = String(idNum % 100000).padStart(5, '0');
-    const rand = String((Math.floor(Math.random() * 10000) + i) % 10000).padStart(4, '0');
-    const code = buildEan13(`200${idPart}${rand}`);
-    if (code && !(await barcodeTaken(code))) return code;
-  }
-  throw new Error('Не удалось сгенерировать уникальный штрихкод товара');
+  return generateWbBarcodeFromApi(ctx);
 }
 
 async function persistProductBarcodes(product, rows, ctx) {
@@ -1587,19 +1563,16 @@ async function persistProductBarcodes(product, rows, ctx) {
   product.barcodes = rows;
 }
 
-/** Для новой карточки без ШК — выделяем код (WB API или внутренний EAN-13) и сохраняем в ERP. */
+/** Нет ШК — выделяем код. Если ШК есть без иконок МП, отправим его и проставим иконки после успеха. */
 async function ensureProductBarcodeForPush(product, ctx) {
   const existing = normalizeBarcodeRows(product.barcodes);
   if (existing.length) return existing;
   if (!product?.id) return existing;
-  let code = null;
-  try {
-    const generated = await generateWbSizeBarcode(ctx);
-    if (generated && !(await barcodeTaken(generated))) code = generated;
-  } catch (e) {
-    logger.info('[MP Card Push] WB barcode API unavailable, using internal EAN-13', e?.message || e);
-  }
-  if (!code) code = await allocateUniqueInternalEan13(product.id);
+  const code = await allocateProductBarcode({
+    productId: product.id,
+    profileId: ctx?.profileId ?? null,
+    organizationId: ctx?.organizationId ?? product.organization_id ?? product.organizationId ?? null,
+  });
   const next = [{ barcode: code, marketplaces: [] }];
   await persistProductBarcodes(product, next, ctx);
   logger.info('[MP Card Push] generated product barcode', { productId: product.id, barcode: code });
@@ -1624,7 +1597,14 @@ async function persistBarcodeSentToMp(product, code, mp, ctx) {
 }
 
 function barcodeForMarketplacePush(product, mp) {
-  return pickBarcodeForMarketplace(product?.barcodes, mp);
+  const rows = normalizeBarcodeRows(product?.barcodes);
+  if (!rows.length) return null;
+  const tagged = pickBarcodeForMarketplace(rows, mp);
+  const hasIcon = rows.some((r) => Array.isArray(r.marketplaces) && r.marketplaces.includes(mp));
+  if (hasIcon) return tagged;
+  const untagged = rows.filter((r) => !r.marketplaces?.length);
+  if (untagged.length) return untagged[untagged.length - 1].barcode;
+  return tagged || rows[0].barcode;
 }
 
 async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500, afterMs = 0, sentBrand = null } = {}) {

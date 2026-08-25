@@ -460,6 +460,19 @@ export const productsApi = {
   pushCardBulk: async (payload, opts) => postMarketplaceCardBulk('/products/push-card', payload, opts),
 
   /**
+   * Сгенерировать уникальный штрихкод. productId необязателен (новая карточка).
+   */
+  generateBarcode: async ({ productId, organizationId } = {}) => {
+    const body = organizationId != null && organizationId !== '' ? { organizationId } : {};
+    const id = Number(productId);
+    const response =
+      Number.isFinite(id) && id >= 1
+        ? await api.post(`/products/${encodeURIComponent(String(id))}/generate-barcode`, body)
+        : await api.post('/products/generate-barcode', body);
+    return response.data;
+  },
+
+  /**
    * Обновить карточку ERP данными с маркетплейса (ozon | wb | ym | all).
    */
   pullCard: async (productId, marketplace) => {
