@@ -5348,6 +5348,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (Array.isArray(withImages.images)) {
           setProductImages(normalizeProductImagesOrder(withImages.images));
         }
+        if (Array.isArray(withImages.barcodes)) {
+          setFormData((prev) => ({ ...prev, barcodes: barcodesForForm(withImages.barcodes) }));
+        }
         onProductUpdate?.(withImages);
       }
       const text = formatPushCardResults(payload);
@@ -7964,7 +7967,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </Button>
         </h4>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Отметьте маркетплейс на ШК — он будет использоваться при печати этикеток в поставках FBO.
+          Для нового товара без ШК код генерируется при первой отправке на маркетплейс.
+          Иконки OZ / WB / ЯМ отмечают площадки, на которые этот штрихкод отправлен (и какой ШК печатать в FBO).
           Без отметки — внутренний штрихкод.
           {Array.isArray(currentProduct?.barcodes) &&
           currentProduct.barcodes.some((b) => isCorruptBarcodeString(b?.barcode ?? b)) ? (

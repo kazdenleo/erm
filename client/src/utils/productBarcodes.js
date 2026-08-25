@@ -8,9 +8,9 @@ export function shouldUseBarcodeDigitFallback(code) {
 }
 
 export const BARCODE_MP_TOGGLES = [
-  { code: 'ozon', label: 'OZ', title: 'Ozon — этикетки FBO', color: '#005bff' },
-  { code: 'wb', label: 'WB', title: 'Wildberries — этикетки FBO', color: '#cb11ab' },
-  { code: 'ym', label: 'ЯМ', title: 'Яндекс.Маркет — этикетки FBO', color: '#fc3f1d' },
+  { code: 'ozon', label: 'OZ', title: 'Ozon — штрихкод отправлен на Ozon / этикетки FBO', color: '#005bff' },
+  { code: 'wb', label: 'WB', title: 'Wildberries — штрихкод отправлен на WB / этикетки FBO', color: '#cb11ab' },
+  { code: 'ym', label: 'ЯМ', title: 'Яндекс.Маркет — штрихкод отправлен на Маркет / этикетки FBO', color: '#fc3f1d' },
 ];
 
 export const EMPTY_BARCODE_ROW = { barcode: '', marketplaces: [] };

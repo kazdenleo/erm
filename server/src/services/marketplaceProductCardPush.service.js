@@ -36,7 +36,7 @@ import {
   withOzonDraftDimensionsLock,
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
-import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
+import { normalizeBarcodeRows, mergeBarcodesFromMarketplace, pickBarcodeForMarketplace, buildEan13 } from '../utils/productBarcodes.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
@@ -1133,6 +1133,11 @@ async function pushOzonCard(product, categoryMm, ctx) {
     item.images = picUrls;
     item.primary_image = picUrls[0];
   }
+  const ozonBarcode = barcodeForMarketplacePush(product, 'ozon');
+  if (ozonBarcode) {
+    item.barcode = ozonBarcode;
+    item.barcodes = [ozonBarcode];
+  }
   logger.warn('[CardPush] Ozon pictures prepared', {
     offerId,
     product_id: item.product_id ?? null,
@@ -1395,6 +1400,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
         errorPreview: String(result.error || '').slice(0, 500),
       });
     }
+    if (result.ok && ozonBarcode) result = { ...result, barcodeSent: ozonBarcode };
     return result;
   } catch (e) {
     return { marketplace: 'ozon', ok: false, error: e?.message || String(e) };
@@ -1556,6 +1562,69 @@ async function generateWbSizeBarcode(ctx) {
     throw new Error('Wildberries не вернул штрихкод для размера карточки');
   }
   return code;
+}
+
+async function barcodeTaken(code) {
+  const s = String(code || '').trim();
+  if (!s) return true;
+  const r = await query('SELECT 1 FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1', [s]);
+  return (r.rowCount || 0) > 0;
+}
+
+async function allocateUniqueInternalEan13(productId) {
+  const idNum = Number(productId) || 0;
+  for (let i = 0; i < 40; i += 1) {
+    const idPart = String(idNum % 100000).padStart(5, '0');
+    const rand = String((Math.floor(Math.random() * 10000) + i) % 10000).padStart(4, '0');
+    const code = buildEan13(`200${idPart}${rand}`);
+    if (code && !(await barcodeTaken(code))) return code;
+  }
+  throw new Error('Не удалось сгенерировать уникальный штрихкод товара');
+}
+
+async function persistProductBarcodes(product, rows, ctx) {
+  await productsService.update(product.id, { barcodes: rows }, { profileId: ctx?.profileId ?? null });
+  product.barcodes = rows;
+}
+
+/** Для новой карточки без ШК — выделяем код (WB API или внутренний EAN-13) и сохраняем в ERP. */
+async function ensureProductBarcodeForPush(product, ctx) {
+  const existing = normalizeBarcodeRows(product.barcodes);
+  if (existing.length) return existing;
+  if (!product?.id) return existing;
+  let code = null;
+  try {
+    const generated = await generateWbSizeBarcode(ctx);
+    if (generated && !(await barcodeTaken(generated))) code = generated;
+  } catch (e) {
+    logger.info('[MP Card Push] WB barcode API unavailable, using internal EAN-13', e?.message || e);
+  }
+  if (!code) code = await allocateUniqueInternalEan13(product.id);
+  const next = [{ barcode: code, marketplaces: [] }];
+  await persistProductBarcodes(product, next, ctx);
+  logger.info('[MP Card Push] generated product barcode', { productId: product.id, barcode: code });
+  return next;
+}
+
+async function persistBarcodeSentToMp(product, code, mp, ctx) {
+  const s = String(code || '').trim();
+  if (!product?.id || !s) return;
+  const merged = mergeBarcodesFromMarketplace(product.barcodes || [], [s], mp);
+  if (!merged) return;
+  try {
+    await persistProductBarcodes(product, merged, ctx);
+  } catch (e) {
+    logger.warn('[MP Card Push] не удалось отметить ШК маркетплейсом', {
+      productId: product.id,
+      marketplace: mp,
+      barcode: s,
+      error: e?.message || String(e),
+    });
+  }
+}
+
+function barcodeForMarketplacePush(product, mp) {
+  return pickBarcodeForMarketplace(product?.barcodes, mp);
 }
 
 async function waitForWbCardByVendorCode(vendor, ctx, { attempts = 8, delayMs = 2500, afterMs = 0, sentBrand = null } = {}) {
@@ -1798,6 +1867,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     charcTypeById,
   });
 
+  let wbBarcodeSent = null;
   if (creating) {
     if (!card.dimensions) {
       return {
@@ -1828,6 +1898,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         skus: sizeSkus.slice(0, 1),
       },
     ];
+    wbBarcodeSent = sizeSkus[0] || null;
   }
 
   try {
@@ -1905,6 +1976,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
         marketplace: 'wb',
         ok: true,
         created: true,
+        barcodeSent: wbBarcodeSent || undefined,
         message: `Карточка WB создана (${nmNote}, vendorCode «${card.vendorCode}»)${imagesNote}${priceNote}${brandNote}`,
         imagesPushed,
       };
@@ -2208,6 +2280,7 @@ async function pushYandexCard(product, categoryMm, ctx) {
       marketplace: 'ym',
       ok: true,
       created: creating,
+      barcodeSent: barcodeCodes[0] || undefined,
       message: creating
         ? `Предложение «${offerId}» создано в каталоге Яндекс.Маркета (карточка на витрине появится после обработки кабинетом)${priceNote}`
         : `Предложение «${offerId}» отправлено на обновление в Яндекс.Маркет${priceNote}`,
@@ -2254,10 +2327,26 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
     throw err;
   }
   const mps = normalizeMp(marketplace);
+  const ctx = {
+    profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
+    organizationId: product.organization_id ?? product.organizationId ?? opts.organizationId ?? null,
+  };
+  try {
+    await ensureProductBarcodeForPush(product, ctx);
+  } catch (e) {
+    logger.warn('[MP Card Push] barcode generate failed', {
+      productId: product.id,
+      error: e?.message || String(e),
+    });
+  }
   const results = [];
   for (const mp of mps) {
     try {
-      results.push(await pushProductToMp(product, mp, opts));
+      const res = await pushProductToMp(product, mp, opts);
+      if (res?.ok && res.barcodeSent) {
+        await persistBarcodeSentToMp(product, res.barcodeSent, mp, ctx);
+      }
+      results.push(res);
     } catch (e) {
       results.push({
         marketplace: mp,
@@ -2302,9 +2391,25 @@ export async function pushProductCardsBulk(payload, opts = {}) {
         continue;
       }
       const results = [];
+      const ctx = {
+        profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
+        organizationId: product.organization_id ?? product.organizationId ?? opts.organizationId ?? null,
+      };
+      try {
+        await ensureProductBarcodeForPush(product, ctx);
+      } catch (e) {
+        logger.warn('[MP Card Push] barcode generate failed', {
+          productId: product.id,
+          error: e?.message || String(e),
+        });
+      }
       for (const mp of uniqueMps) {
         try {
-          results.push(await pushProductToMp(product, mp, opts));
+          const res = await pushProductToMp(product, mp, opts);
+          if (res?.ok && res.barcodeSent) {
+            await persistBarcodeSentToMp(product, res.barcodeSent, mp, ctx);
+          }
+          results.push(res);
         } catch (e) {
           results.push({ marketplace: mp, ok: false, error: e?.message || String(e) });
         }

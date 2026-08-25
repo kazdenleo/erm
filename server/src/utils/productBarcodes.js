@@ -298,3 +298,29 @@ export function mergeBarcodesFromMarketplace(existing, incomingCodes, marketplac
   }
   return changed ? rows : null;
 }
+
+/**
+ * Контрольная цифра EAN-13 по первым 12 цифрам.
+ * @param {string} digits12
+ * @returns {string|null}
+ */
+export function ean13CheckDigit(digits12) {
+  const s = String(digits12 || '').replace(/\D/g, '');
+  if (s.length !== 12) return null;
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) {
+    sum += Number(s[i]) * (i % 2 === 0 ? 1 : 3);
+  }
+  return String((10 - (sum % 10)) % 10);
+}
+
+/**
+ * Собрать EAN-13 (префикс 200 — внутренний оборот).
+ * @param {string} digits12
+ * @returns {string|null}
+ */
+export function buildEan13(digits12) {
+  const s = String(digits12 || '').replace(/\D/g, '');
+  const check = ean13CheckDigit(s);
+  return check == null ? null : `${s}${check}`;
+}
