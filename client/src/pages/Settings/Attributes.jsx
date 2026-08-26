@@ -673,11 +673,6 @@ export function Attributes() {
                 <tr key={attr.id}>
                   <td>
                     {attr.name}
-                    {isSystemCardAttr(attr) ? (
-                      <span className="attr-system-badge">
-                        {isSystemPriceAttr(attr) ? 'цена' : 'карточка'}
-                      </span>
-                    ) : null}
                   </td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
                   <td className="formula-cell">
