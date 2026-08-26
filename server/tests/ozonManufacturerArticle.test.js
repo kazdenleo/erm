@@ -75,9 +75,27 @@ describe('ozon OEM / part number push', () => {
     const values = ozonAttrValuesForApi(
       111,
       '8K0129620; 4G0129620',
-      { id: 111, name: 'ОЕМ-номер', type: 'String', dictionary_id: 0 }
+      { id: 111, name: 'ОЕМ-номер', type: 'String', dictionary_id: 0, is_collection: true }
     );
     expect(values).toEqual([{ value: '8K0129620' }, { value: '4G0129620' }]);
+  });
+
+  test('non-collection OEM keeps semicolon in one value', () => {
+    const values = ozonAttrValuesForApi(
+      7324,
+      '8K0129620; 4G0129620',
+      { id: 7324, name: 'OEM-номер', type: 'String', dictionary_id: 0, is_collection: false }
+    );
+    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
+  });
+
+  test('annotation with newlines stays a single value', () => {
+    const values = ozonAttrValuesForApi(
+      4191,
+      'Фильтр AFAC049\n70 мм\nAudi A3',
+      { id: 4191, name: 'Аннотация', type: 'String', dictionary_id: 0 }
+    );
+    expect(values).toEqual([{ value: 'Фильтр AFAC049\n70 мм\nAudi A3' }]);
   });
 
   test('ozonCardAttrToFormText joins OEM collection', () => {

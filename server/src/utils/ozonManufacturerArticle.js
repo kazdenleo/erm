@@ -137,6 +137,8 @@ export function parseOzonStoredAttr(raw) {
   return { text: s, dictId: null };
 }
 
+const OZON_ANNOTATION_ATTR_ID = 4191;
+
 function splitOzonPlainAttrParts(text) {
   const s = String(text || '').trim();
   if (!s) return [];
@@ -144,6 +146,18 @@ function splitOzonPlainAttrParts(text) {
     return s.split(/[;\n]+/).map((x) => x.trim()).filter(Boolean);
   }
   return [s];
+}
+
+function schemaIsCollection(attr) {
+  if (!attr || typeof attr !== 'object') return false;
+  const v = attr.is_collection ?? attr.isCollection ?? attr.collection;
+  return v === true || v === 1 || String(v).toLowerCase() === 'true';
+}
+
+function schemaIsSingleTextBlock(id, attr) {
+  if (Number(id) === OZON_ANNOTATION_ATTR_ID) return true;
+  const t = String(attr?.type ?? attr?.attribute_type ?? '').toLowerCase();
+  return t === 'multiline' || t === 'text';
 }
 
 function schemaDictionaryId(attr) {
@@ -183,7 +197,9 @@ export function ozonAttrValuesForApi(id, raw, attrMeta) {
     (looksLikeOzonPartNumber(text) && !schemaHasOzonDictionary(meta));
   if (forcePlain) {
     const v = text || (dictId != null ? String(dictId) : '');
-    const parts = splitOzonPlainAttrParts(v);
+    if (!v) return null;
+    const allowSplit = schemaIsCollection(meta) && !schemaIsSingleTextBlock(id, meta);
+    const parts = allowSplit ? splitOzonPlainAttrParts(v) : [v];
     if (!parts.length) return null;
     return parts.map((p) => ({ value: p }));
   }

@@ -82,9 +82,7 @@ export function applyOzonDescriptionHtml(item, description) {
     const sameId = Number(a.id) === OZON_ANNOTATION_ATTR_ID;
     const sameText = cur && marketplaceHtmlToPlainText(cur) === sourcePlain;
     if (!sameId && !sameText) return a;
-    const values = Array.isArray(a.values) ? [...a.values] : [];
-    values[0] = { ...(values[0] || {}), value: html };
-    return { ...a, complex_id: a.complex_id ?? 0, values };
+    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: html }] };
   });
   if (!nextAttrs.some((a) => Number(a.id) === OZON_ANNOTATION_ATTR_ID)) {
     nextAttrs.push({ complex_id: 0, id: OZON_ANNOTATION_ATTR_ID, values: [{ value: html }] });

@@ -29,4 +29,19 @@ describe('marketplaceDescriptionHtml', () => {
     expect(ann.values[0].value).toBe('строка 1<br>строка 2');
     expect(item.attributes.some((a) => Number(a.id) === 85)).toBe(true);
   });
+
+  test('applyOzonDescriptionHtml collapses split annotation values into one', () => {
+    const item = {
+      attributes: [
+        {
+          complex_id: 0,
+          id: 4191,
+          values: [{ value: 'строка 1' }, { value: 'строка 2' }],
+        },
+      ],
+    };
+    applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
+    const ann = item.attributes.find((a) => Number(a.id) === 4191);
+    expect(ann.values).toEqual([{ value: 'строка 1<br>строка 2' }]);
+  });
 });
