@@ -18,6 +18,7 @@ import {
   isWarehouseAllowed,
 } from '../utils/userAccessScope.js';
 import { attachImageSizeToRecord } from '../services/productImageAspect.service.js';
+import { omitEmptyBarcodesFromProductPatch } from '../utils/productBarcodes.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 /** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
@@ -681,8 +682,9 @@ class ProductsController {
           : Object.keys(body).length > 0
             ? body
             : null;
-      if (patch && Object.keys(patch).length > 0) {
-        await productsService.update(id, patch, { profileId });
+      const pushPatch = omitEmptyBarcodesFromProductPatch(patch);
+      if (pushPatch && Object.keys(pushPatch).length > 0) {
+        await productsService.update(id, pushPatch, { profileId });
       }
       const result = await productsService.pushProductCardToMarketplace(id, marketplace, { profileId });
       return res.status(200).json({ ok: true, data: result });

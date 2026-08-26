@@ -9,6 +9,7 @@ import {
   coerceBarcodeString,
   isCorruptBarcodeString,
   barcodesFromWbGeneratePayload,
+  omitEmptyBarcodesFromProductPatch,
 } from '../src/utils/productBarcodes.js';
 
 describe('productBarcodes EAN and MP tags', () => {
@@ -55,6 +56,14 @@ describe('productBarcodes EAN and MP tags', () => {
       { barcode: '222', marketplaces: [] },
     ];
     expect(barcodeToSendToMarketplace(rows, 'ozon')).toBe('222');
+  });
+
+  test('omits empty barcodes from push patch so save-and-send does not wipe ШК', () => {
+    expect(omitEmptyBarcodesFromProductPatch({ name: 'A', barcodes: [] })).toEqual({ name: 'A' });
+    expect(omitEmptyBarcodesFromProductPatch({ barcodes: [{ barcode: '', marketplaces: [] }] })).toEqual({});
+    expect(
+      omitEmptyBarcodesFromProductPatch({ barcodes: [{ barcode: '4601234567890', marketplaces: [] }] })
+    ).toEqual({ barcodes: [{ barcode: '4601234567890', marketplaces: [] }] });
   });
 
   test('sends remaining ERP barcodes for a marketplace, not extras already deleted', () => {

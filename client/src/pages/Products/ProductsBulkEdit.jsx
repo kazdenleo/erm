@@ -1659,7 +1659,7 @@ const COLUMNS = [
   /* ——— основная карточка (ERP) ——— */
   /* артикулы / идентификаторы */
   { key: 'sku', label: 'Артикул', input: 'text', minW: 120, linkFieldKey: 'sku', showLinkToggles: true },
-  { key: 'barcodes', label: 'ШК', title: 'Штрихкоды. Пустое поле — «Сгенерировать»', input: 'textarea', minW: 148, hint: 'Через запятую или с новой строки. Пустое поле: нажмите «Сгенерировать»' },
+  { key: 'barcodes', label: 'ШК', title: 'Штрихкоды. Можно вставить свой или сгенерировать иконкой справа. Если пусто — перед отправкой на МП код создастся сам', input: 'textarea', minW: 148, hint: 'Через запятую или с новой строки. Свой ШК — в ячейку, новый — иконка справа' },
   { key: 'id', label: 'ID', readonly: true, noBulk: true, width: 56, minW: 56 },
   {
     key: '_photo',
@@ -3713,6 +3713,19 @@ function parseBarcodesCell(text) {
     .split(/[\n,;]+/)
     .map((s) => coerceBarcodeString(s))
     .filter((s) => s && !isCorruptBarcodeString(s));
+}
+
+function BulkBarcodeGenerateIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+      <rect x="1" y="2.5" width="1.4" height="11" rx="0.4" fill="currentColor" />
+      <rect x="3.6" y="2.5" width="1" height="11" rx="0.4" fill="currentColor" />
+      <rect x="5.8" y="2.5" width="2" height="11" rx="0.4" fill="currentColor" />
+      <rect x="8.9" y="2.5" width="1" height="11" rx="0.4" fill="currentColor" />
+      <rect x="11" y="2.5" width="1.6" height="11" rx="0.4" fill="currentColor" />
+      <rect x="13.7" y="2.5" width="1.2" height="11" rx="0.4" fill="currentColor" />
+    </svg>
+  );
 }
 
 function normTextOrNull(s) {
@@ -6968,6 +6981,31 @@ export function ProductsBulkEdit() {
           return next;
         });
       }
+      const barcodeById = new Map();
+      for (const it of Array.isArray(data?.items) ? data.items : []) {
+        const code = (it?.results || [])
+          .map((r) => coerceBarcodeString(r?.barcodeSent))
+          .find((s) => s && !isCorruptBarcodeString(s));
+        if (it?.productId != null && code) barcodeById.set(str(it.productId), code);
+      }
+      if (barcodeById.size > 0) {
+        setRows((prev) =>
+          prev.map((r) => {
+            const code = barcodeById.get(str(r.id));
+            if (!code || parseBarcodesCell(r.barcodes).length) return r;
+            return { ...r, barcodes: code };
+          })
+        );
+        setOriginals((prev) => {
+          const next = { ...prev };
+          for (const [id, code] of barcodeById) {
+            if (next[id] && !parseBarcodesCell(next[id].barcodes).length) {
+              next[id] = { ...next[id], barcodes: code };
+            }
+          }
+          return next;
+        });
+      }
     } catch (e) {
       setPushMpMessage(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейсы');
     } finally {
@@ -7269,27 +7307,31 @@ export function ProductsBulkEdit() {
       );
     }
     if (col.key === 'barcodes') {
-      const empty = parseBarcodesCell(v).length === 0;
       const generating = barcodeGeneratingId === row.id;
       return (
         <span className="products-bulk-barcode-cell">
-          <input {...common} type="text" autoComplete="off" placeholder="" />
-          {empty ? (
-            <button
-              type="button"
-              className="products-bulk-barcode-generate"
-              disabled={generating}
-              title="Сгенерировать штрихкод"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void handleGenerateBarcode(row);
-              }}
-            >
-              {generating ? 'Генерация…' : 'Сгенерировать'}
-            </button>
-          ) : null}
+          <input
+            {...common}
+            className={`${common.className} products-bulk-barcode-input`}
+            type="text"
+            autoComplete="off"
+            placeholder=""
+          />
+          <button
+            type="button"
+            className={`products-bulk-barcode-generate${generating ? ' is-busy' : ''}`}
+            disabled={generating}
+            title="Сгенерировать штрихкод"
+            aria-label="Сгенерировать штрихкод"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleGenerateBarcode(row);
+            }}
+          >
+            <BulkBarcodeGenerateIcon />
+          </button>
         </span>
       );
     }

@@ -1034,6 +1034,13 @@ async function pushOzonCard(product, categoryMm, ctx) {
   }
   const ozonCodes = barcodesToSendToMarketplace(product.barcodes, 'ozon');
   const ozonBarcode = barcodeToSendToMarketplace(product.barcodes, 'ozon') || ozonCodes[0] || null;
+  if (!ozonExisted && !ozonBarcode) {
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      error: 'Нет штрихкода для новой карточки Ozon — не удалось получить ШК перед отправкой',
+    };
+  }
   if (ozonCodes.length) {
     item.barcode = ozonBarcode;
     item.barcodes = ozonCodes;
@@ -1473,19 +1480,29 @@ async function persistProductBarcodes(product, rows, ctx) {
   product.barcodes = rows;
 }
 
-/** Нет ШК — выделяем код. Есть ШК без бейджа этого МП — отправим его и проставим бейдж. */
+/** Нет ШК — выделяем код до отправки на МП. Есть ШК — его и отправим, бейдж проставим после пуша. */
 async function ensureProductBarcodeForPush(product, ctx) {
   const existing = normalizeBarcodeRows(product.barcodes);
   if (existing.length) return existing;
-  if (!product?.id) return existing;
+  if (!product?.id) {
+    const err = new Error('Сначала сохраните товар в ERP, затем отправьте на маркетплейс — без ШК карточку не создаём');
+    err.statusCode = 400;
+    throw err;
+  }
   const code = await allocateProductBarcode({
     productId: product.id,
     profileId: ctx?.profileId ?? null,
     organizationId: ctx?.organizationId ?? product.organization_id ?? product.organizationId ?? null,
   });
-  const next = [{ barcode: code, marketplaces: [] }];
+  const normalized = coerceBarcodeString(code);
+  if (!normalized) {
+    const err = new Error('Не удалось сгенерировать штрихкод перед отправкой на маркетплейс');
+    err.statusCode = 502;
+    throw err;
+  }
+  const next = [{ barcode: normalized, marketplaces: [] }];
   await persistProductBarcodes(product, next, ctx);
-  logger.info('[MP Card Push] generated product barcode', { productId: product.id, barcode: code });
+  logger.info('[MP Card Push] generated product barcode', { productId: product.id, barcode: normalized });
   return next;
 }
 
@@ -1828,7 +1845,13 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     let sizeSkus = erpWbBarcode ? [erpWbBarcode] : [];
     if (sizeSkus.length === 0) {
       try {
-        sizeSkus = [await generateWbSizeBarcode(ctx)];
+        const generated = await generateWbSizeBarcode(ctx);
+        sizeSkus = [generated];
+        const rows = normalizeBarcodeRows([
+          ...normalizeBarcodeRows(product.barcodes),
+          { barcode: generated, marketplaces: [] },
+        ]);
+        await persistProductBarcodes(product, rows, ctx);
       } catch (e) {
         return {
           marketplace: 'wb',
@@ -2318,10 +2341,17 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
   try {
     await ensureProductBarcodeForPush(product, ctx);
   } catch (e) {
+    const error = `Не удалось сгенерировать штрихкод перед отправкой: ${e?.message || String(e)}`;
     logger.warn('[MP Card Push] barcode generate failed', {
       productId: product.id,
-      error: e?.message || String(e),
+      error,
     });
+    return {
+      productId: product.id,
+      ok: false,
+      results: mps.map((mp) => ({ marketplace: mp, ok: false, error })),
+      product,
+    };
   }
   const results = [];
   for (const mp of mps) {
@@ -2388,10 +2418,17 @@ export async function pushProductCardsBulk(payload, opts = {}) {
       try {
         await ensureProductBarcodeForPush(product, ctx);
       } catch (e) {
+        const error = `Не удалось сгенерировать штрихкод перед отправкой: ${e?.message || String(e)}`;
         logger.warn('[MP Card Push] barcode generate failed', {
           productId: product.id,
-          error: e?.message || String(e),
+          error,
         });
+        items.push({
+          productId: product.id,
+          ok: false,
+          results: uniqueMps.map((mp) => ({ marketplace: mp, ok: false, error })),
+        });
+        continue;
       }
       for (const mp of uniqueMps) {
         try {

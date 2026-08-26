@@ -337,6 +337,21 @@ export function needsGeneratedBarcodeForPush(barcodes) {
 }
 
 /**
+ * Пустой ШК в патче при «сохранить и отправить» не должен затирать коды в БД
+ * до генерации перед пушем.
+ * @param {object|null} patch
+ * @returns {object|null}
+ */
+export function omitEmptyBarcodesFromProductPatch(patch) {
+  if (!patch || typeof patch !== 'object') return patch;
+  if (!Object.prototype.hasOwnProperty.call(patch, 'barcodes')) return patch;
+  if (normalizeBarcodeRows(patch.barcodes).length) return patch;
+  const next = { ...patch };
+  delete next.barcodes;
+  return next;
+}
+
+/**
  * ШК для выгрузки на МП. В массовой таблице бейджей нет: если у МП ещё нет
  * своего кода (нет бейджа), берём существующий ШК карточки.
  * Приоритет: уже с бейджем этого МП → без бейджей → первый в списке.

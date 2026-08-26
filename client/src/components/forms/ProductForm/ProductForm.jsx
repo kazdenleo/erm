@@ -5327,6 +5327,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
     setPushCardMessage('');
     setPushCardIsWarning(false);
     try {
+      if (!normalizeBarcodeRows(productPatch.barcodes).length) {
+        const gen = await productsApi.generateBarcode({
+          productId: currentProduct.id,
+          organizationId: formData.organizationId || currentProduct?.organization_id || undefined,
+        });
+        const code = coerceBarcodeString(gen?.data?.barcode ?? gen?.barcode ?? gen?.data);
+        if (!code) throw new Error('Не удалось сгенерировать штрихкод перед отправкой');
+        productPatch.barcodes = [{ barcode: code, marketplaces: [] }];
+        setFormData((prev) => ({
+          ...prev,
+          barcodes: barcodesForForm([{ barcode: code, marketplaces: [] }]),
+        }));
+      }
       const body = await productsApi.pushCard(currentProduct.id, marketplace, productPatch);
       const payload = body?.data ?? body;
       const results = Array.isArray(payload?.results) ? payload.results : [];
@@ -5359,14 +5372,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
           if (Array.isArray(withImages.barcodes)) {
             const fromServer = barcodesForForm(withImages.barcodes);
             const prevRows = normalizeBarcodeRows(prev.barcodes);
+            const serverRows = normalizeBarcodeRows(withImages.barcodes);
             if (!prevRows.length) {
               next.barcodes = fromServer;
-            } else {
-              const badges = new Map(fromServer.map((r) => [r.barcode, r.marketplaces || []]));
-              next.barcodes = prevRows.map((r) => ({
+            } else if (serverRows.length) {
+              const badges = new Map(serverRows.map((r) => [r.barcode, r.marketplaces || []]));
+              const merged = prevRows.map((r) => ({
                 ...r,
                 marketplaces: badges.get(r.barcode) || r.marketplaces || [],
               }));
+              for (const row of serverRows) {
+                if (!prevRows.some((r) => r.barcode === row.barcode)) merged.push(row);
+              }
+              next.barcodes = merged;
             }
           }
           next.sku_wb = mergeMpField(prev, withImages, 'sku_wb');
@@ -6697,6 +6715,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
         const body = await productsApi.pushCard(id, mp, null);
         const payload = body?.data ?? body;
         results.push({ marketplace: mp, ok: payload?.ok !== false, payload });
+        const updated = payload?.product;
+        if (updated?.id && Array.isArray(updated.barcodes) && updated.barcodes.length) {
+          setCurrentProduct((prev) => (prev ? { ...prev, barcodes: updated.barcodes } : prev));
+          setFormData((prev) => {
+            const prevRows = normalizeBarcodeRows(prev.barcodes);
+            const serverRows = normalizeBarcodeRows(updated.barcodes);
+            if (!prevRows.length && serverRows.length) {
+              return { ...prev, barcodes: barcodesForForm(updated.barcodes) };
+            }
+            return prev;
+          });
+        }
       } catch (e) {
         results.push({
           marketplace: mp,
@@ -8034,8 +8064,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </Button>
         </h4>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Если штрихкод не указан, нажмите «Сгенерировать» в поле — или он создастся сам при отправке новой карточки на маркетплейс, а также если у существующих ШК нет иконок OZ / WB / ЯМ.
-          Иконки отмечают площадки, на которые этот код отправлен (и какой ШК печатать в FBO).
+          Если штрихкод не указан, он создастся сам перед отправкой карточки на маркетплейс. Кнопка «Сгенерировать» нужна, только если хотите увидеть код заранее.
+          Иконки отмечают площадки, на которые этот код уже отправлен (и какой ШК печатать в FBO).
           {Array.isArray(currentProduct?.barcodes) &&
           currentProduct.barcodes.some((b) => isCorruptBarcodeString(b?.barcode ?? b)) ? (
             <span style={{ display: 'block', marginTop: 6, color: '#f59e0b' }}>

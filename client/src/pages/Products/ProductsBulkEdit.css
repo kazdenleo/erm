@@ -676,31 +676,73 @@ body.products-bulk-col-resizing * {
   display: block;
   width: 100%;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.products-bulk-barcode-cell .products-bulk-barcode-input {
+  padding-right: 22px;
 }
 
 .products-bulk-barcode-generate {
   position: absolute;
-  left: 6px;
+  right: 5px;
   top: 50%;
   transform: translateY(-50%);
   z-index: 1;
-  border: 0;
-  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   padding: 0;
-  color: #2563eb;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #9ca3af;
   cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  white-space: nowrap;
+  line-height: 0;
   user-select: none;
 }
 
-.products-bulk-barcode-generate:disabled {
+.products-bulk-barcode-generate:hover:not(:disabled) {
   color: #6b7280;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.products-bulk-barcode-generate:disabled,
+.products-bulk-barcode-generate.is-busy {
   cursor: wait;
-  text-decoration: none;
+  opacity: 0.6;
+}
+
+.products-bulk-barcode-generate svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.products-bulk-barcode-generate.is-busy svg {
+  visibility: hidden;
+}
+
+.products-bulk-barcode-generate.is-busy::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: products-bulk-barcode-spin 0.6s linear infinite;
+}
+
+@keyframes products-bulk-barcode-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .products-bulk-table select.products-bulk-cell-input {
