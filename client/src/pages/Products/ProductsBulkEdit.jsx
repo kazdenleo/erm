@@ -103,7 +103,7 @@ import {
   resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
-import { isOzonFreeTextMpAttr, isOzonManufacturerArticleAttr, isStandaloneOemAttrName, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
+import { isOzonManufacturerArticleAttr, isStandaloneOemAttrName, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import {
   isOzonAnnotationAttr,
@@ -1991,7 +1991,7 @@ function unwrapMpAttrList(res) {
 }
 
 function ozonSchemaKind(a) {
-  if (isOzonFreeTextMpAttr(a) || isStandaloneOemAttrName(a?.name)) return 'text';
+  if (isOzonManufacturerArticleAttr(a) || isStandaloneOemAttrName(a?.name)) return 'text';
   const dictionaryIdRaw = a?.dictionary_id ?? a?.dictionaryId;
   const dictionaryId =
     dictionaryIdRaw != null && Number(dictionaryIdRaw) !== 0 ? Number(dictionaryIdRaw) : 0;
