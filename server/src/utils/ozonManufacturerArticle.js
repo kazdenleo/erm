@@ -171,12 +171,12 @@ function schemaIsPlainStringAttr(attr) {
  * Значения атрибута для /v3/product/import.
  * OEM и партномер всегда уходят как { value }, иначе Ozon пишет «словарное значение» и поле пустое.
  */
-function firstOzonListToken(text) {
+function joinOzonOemList(text) {
   const parts = String(text || '')
     .split(/[;,\n]+/)
     .map((x) => x.trim())
     .filter(Boolean);
-  return parts[0] || '';
+  return parts.join('; ');
 }
 
 function joinOzonListAsSentence(text) {
@@ -188,15 +188,16 @@ function joinOzonListAsSentence(text) {
 }
 
 /**
- * Ozon режет одиночный String по `;` и `,` и считает это коллекцией.
- * OEM — только первый номер. Остальной текст — одно предложение без списков.
+ * Ozon: OEM — все номера в одной строке через «; » (как в подсказке кабинета).
+ * Несколько {value} в массиве дают ERROR_ATTRIBUTE_IS_NOT_COLLECTION.
+ * Аннотацию и прочий текст не режем на коллекцию.
  */
 function sanitizeOzonSingletonText(id, text, attrMeta) {
   let s = String(text || '').trim();
   if (!s) return s;
   const attrId = Number(id);
   if (schemaIsCollection(attrMeta) && attrId !== OZON_ANNOTATION_ATTR_ID) {
-    return s;
+    return joinOzonOemList(s) || s;
   }
   if (attrId === OZON_ANNOTATION_ATTR_ID) {
     return s
@@ -210,7 +211,7 @@ function sanitizeOzonSingletonText(id, text, attrMeta) {
     attrId === OZON_OEM_ATTR_ID ||
     attrId === OZON_PARTNUMBER_ATTR_ID ||
     isOzonFreeTextMpAttr(attrMeta || { id: attrId, name: '' });
-  if (oem) return firstOzonListToken(s);
+  if (oem) return joinOzonOemList(s);
   return joinOzonListAsSentence(s);
 }
 
@@ -282,7 +283,7 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
       return {
         ...a,
         complex_id: a.complex_id ?? 0,
-        values: [{ value: sanitizeOzonSingletonText(id, texts[0]) }],
+        values: [{ value: sanitizeOzonSingletonText(id, texts.join('; ')) }],
       };
     }
     const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : '. ');

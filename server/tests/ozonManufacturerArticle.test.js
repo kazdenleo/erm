@@ -88,27 +88,27 @@ describe('ozon OEM / part number push', () => {
       { id: 85, values: [{ dictionary_value_id: 1 }, { dictionary_value_id: 2 }] },
     ]);
     expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1 строка 2' }]);
-    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A' }]);
+    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A; B' }]);
     expect(collapsed.find((a) => a.id === 85).values).toEqual([
       { dictionary_value_id: 1 },
       { dictionary_value_id: 2 },
     ]);
   });
 
-  test('collapse keeps only the first OEM when the string has separators', () => {
+  test('OEM list stays one value with semicolon and space', () => {
     const collapsed = collapseOzonNonCollectionAttrValues([
       { id: 7324, values: [{ value: '2740940004; A2740940004' }] },
     ]);
-    expect(collapsed[0].values).toEqual([{ value: '2740940004' }]);
+    expect(collapsed[0].values).toEqual([{ value: '2740940004; A2740940004' }]);
   });
 
-  test('non-collection OEM sends only the first number', () => {
+  test('non-collection OEM sends all numbers in one string', () => {
     const values = ozonAttrValuesForApi(
       7324,
       '8K0129620; 4G0129620',
       { id: 7324, name: 'OEM-номер', type: 'String', dictionary_id: 0, is_collection: false }
     );
-    expect(values).toEqual([{ value: '8K0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
   });
 
   test('комплектация joins list parts without comma or semicolon', () => {
