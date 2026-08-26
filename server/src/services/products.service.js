@@ -47,6 +47,7 @@ import {
   coerceBarcodeString,
   isCorruptBarcodeString,
   normalizeBarcodeRows,
+  omitEmptyBarcodesFromProductPatch,
 } from '../utils/productBarcodes.js';
 import tnVedProductApplyService from './tnVedProductApply.service.js';
 
@@ -1385,6 +1386,8 @@ class ProductsService {
   }
 
   async update(id, updates, opts = {}) {
+    // Пустой ШК в патче не должен удалять коды в БД (форма / массовое сохранение).
+    updates = omitEmptyBarcodesFromProductPatch(updates) || updates;
     normalizeMarketplaceCardTextFields(updates);
     const existingForKits = await this.repository.findById(id);
     await assertKitsFeatureAllowed(updates, null, { existingProduct: existingForKits });
@@ -1514,9 +1517,10 @@ class ProductsService {
         wb: vendor,
       };
     }
-    // Баркоды: явно пробрасываем массив в репозиторий (нормализуем для надёжности)
+    // Пустой ШК в патче не должен удалять коды в БД (массовое сохранение / форма с пустой строкой).
     if (Object.prototype.hasOwnProperty.call(updates, 'barcodes')) {
       updates.barcodes = normalizeBarcodeRows(updates.barcodes);
+      if (!updates.barcodes.length) delete updates.barcodes;
     }
 
     // Подписи словаря Ozon из Excel/таблицы → id значения (как при импорте), иначе в JSON остаётся текст и селект в UI «пустой»

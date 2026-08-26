@@ -6534,7 +6534,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           ? formData.ym_draft
           : {},
       buyout_rate: formData.buyout_rate ? parseFloat(formData.buyout_rate) : 95,
-      barcodes: filteredBarcodes,
+      // На обновлении пустой ШК не отправляем — иначе сервер раньше затирал коды в БД.
+      ...(filteredBarcodes.length || !currentProduct?.id ? { barcodes: filteredBarcodes } : {}),
       weight: formData.weight ? parseFloat(formData.weight) : null,
       length: formData.length ? parseFloat(formData.length) : null,
       width: formData.width ? parseFloat(formData.width) : null,

@@ -3797,7 +3797,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
 
   const ob = parseBarcodesCell(original.barcodes).join('\u0001');
   const cb = parseBarcodesCell(current.barcodes).join('\u0001');
-  if (ob !== cb) touch('barcodes', parseBarcodesCell(current.barcodes));
+  if (ob !== cb) {
+    const nextBc = parseBarcodesCell(current.barcodes);
+    if (nextBc.length) touch('barcodes', nextBc);
+  }
 
   if (!eq(original.sku_ozon, current.sku_ozon)) touch('sku_ozon', normTextOrNull(current.sku_ozon));
   if (!eq(original.sku_wb, current.sku_wb)) touch('sku_wb', normTextOrNull(current.sku_wb));

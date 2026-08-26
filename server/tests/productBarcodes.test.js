@@ -61,6 +61,8 @@ describe('productBarcodes EAN and MP tags', () => {
   test('omits empty barcodes from push patch so save-and-send does not wipe ШК', () => {
     expect(omitEmptyBarcodesFromProductPatch({ name: 'A', barcodes: [] })).toEqual({ name: 'A' });
     expect(omitEmptyBarcodesFromProductPatch({ barcodes: [{ barcode: '', marketplaces: [] }] })).toEqual({});
+    expect(omitEmptyBarcodesFromProductPatch({ barcodes: null })).toEqual({});
+    expect(omitEmptyBarcodesFromProductPatch({ barcodes: '' })).toEqual({});
     expect(
       omitEmptyBarcodesFromProductPatch({ barcodes: [{ barcode: '4601234567890', marketplaces: [] }] })
     ).toEqual({ barcodes: [{ barcode: '4601234567890', marketplaces: [] }] });
