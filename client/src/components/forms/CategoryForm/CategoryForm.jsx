@@ -34,6 +34,7 @@ import {
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
 import { TnVedCodePicker } from '../../common/TnVedCodePicker/TnVedCodePicker.jsx';
+import { isSystemCardAttr } from '../../../utils/systemMainFieldAttributes.js';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
 function normalizeOzonPathForMatch(s) {
@@ -1177,10 +1178,14 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
                   ))}
               </optgroup>
             ) : null}
-            {allAttributes.filter((attr) => !attributeIds.includes(String(attr.id))).length > 0 ? (
+            {allAttributes.filter(
+              (attr) => !isSystemCardAttr(attr) && !attributeIds.includes(String(attr.id))
+            ).length > 0 ? (
               <optgroup label="Свои атрибуты">
                 {allAttributes
-                  .filter((attr) => !attributeIds.includes(String(attr.id)))
+                  .filter(
+                    (attr) => !isSystemCardAttr(attr) && !attributeIds.includes(String(attr.id))
+                  )
                   .slice()
                   .sort((a, b) =>
                     String(a.name || '').localeCompare(String(b.name || ''), 'ru', { sensitivity: 'base' })

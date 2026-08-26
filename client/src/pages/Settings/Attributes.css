@@ -7,8 +7,63 @@
   margin-bottom: 16px;
 }
 
+.attributes-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.attributes-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attributes-tab:hover {
+  color: var(--text, #111827);
+}
+
+.attributes-tab.is-active {
+  color: var(--text, #111827);
+  border-bottom-color: #2563eb;
+}
+
+.attributes-tab-count {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.attributes-tab.is-active .attributes-tab-count {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .attributes-toolbar {
   margin-bottom: 16px;
+}
+
+.attributes-toolbar-hint {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 13px;
 }
 
 .attributes-table-wrap {

@@ -11,6 +11,10 @@ import {
   EDITABLE_ATTR_TYPE,
   normalizeShowRelatedFields,
 } from '../utils/editableAttribute.js';
+import {
+  isSystemCardAttrKey,
+  isSystemMainFieldAttrKey,
+} from '../utils/systemMainFieldAttributes.js';
 
 const VALID_TYPES = [
   'text',
@@ -38,7 +42,12 @@ class ProductAttributesController {
       // Таблица product_attributes — общий справочник (без profile_id). Разделение по аккаунтам — в
       // product_attribute_values через products.profile_id. Старый фильтр «только уже используемые у
       // этого профиля» скрывал только что созданные атрибуты до привязки к категории/товару.
-      const result = await query('SELECT * FROM product_attributes ORDER BY name');
+      const result = await query(
+        `SELECT * FROM product_attributes
+         ORDER BY
+           CASE WHEN system_key IS NULL OR btrim(system_key) = '' THEN 1 ELSE 0 END,
+           name`
+      );
       return res.status(200).json({ ok: true, data: result.rows || [] });
     } catch (error) {
       next(error);
@@ -123,6 +132,12 @@ class ProductAttributesController {
           message: 'Системные поля цены должны оставаться вычисляемыми. Можно задать формулу или вводить значение в карточке.',
         });
       }
+      if (name !== undefined && isSystemCardAttrKey(systemKey)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Название системного поля карточки менять нельзя',
+        });
+      }
       const updates = [];
       const params = [];
       let idx = 1;
@@ -133,6 +148,12 @@ class ProductAttributesController {
       if (type !== undefined) {
         if (!VALID_TYPES.includes(type)) {
           return res.status(400).json({ ok: false, message: `Тип должен быть один из: ${VALID_TYPES.join(', ')}` });
+        }
+        if (isSystemMainFieldAttrKey(systemKey) && type === 'dictionary') {
+          return res.status(400).json({
+            ok: false,
+            message: 'Для системных полей карточки тип «Словарь» не используется',
+          });
         }
         updates.push(`type = $${idx++}`);
         params.push(type);
@@ -187,7 +208,7 @@ class ProductAttributesController {
       if (check.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
       }
-      if (isSystemPriceAttrKey(check.rows[0].system_key)) {
+      if (isSystemCardAttrKey(check.rows[0].system_key)) {
         return res.status(400).json({
           ok: false,
           message: 'Системный атрибут карточки нельзя удалить',

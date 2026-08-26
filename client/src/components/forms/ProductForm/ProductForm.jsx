@@ -28,6 +28,7 @@ import {
   SYSTEM_ATTR_KEYS,
 } from '../../../utils/attributeFormula.js';
 import { isEditableAttrType } from '../../../utils/editableAttribute.js';
+import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
@@ -2281,7 +2282,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
 
   const visibleCategoryAttributes = useMemo(
-    () => categoryAttributes.filter((a) => !isSystemPriceAttr(a)),
+    () =>
+      categoryAttributes.filter(
+        (a) => !isSystemPriceAttr(a) && !isSystemMainFieldAttr(a)
+      ),
     [categoryAttributes]
   );
 

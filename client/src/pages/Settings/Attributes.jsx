@@ -3,7 +3,7 @@
  * Справочник атрибутов. Связь с характеристиками МП задаётся по каждой категории.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { Button } from '../../components/common/Button/Button';
@@ -24,6 +24,11 @@ import {
   validateFormula,
 } from '../../utils/attributeFormula.js';
 import { isEditableAttrType } from '../../utils/editableAttribute.js';
+import {
+  isSystemCardAttr,
+  isSystemMainFieldAttr,
+  SYSTEM_MAIN_FIELD_KEYS,
+} from '../../utils/systemMainFieldAttributes.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -35,6 +40,11 @@ const TYPE_LABELS = {
   computed: 'Вычисляемое поле',
   editable: 'Редактируемое поле',
 };
+
+const TYPE_OPTIONS_CUSTOM = Object.entries(TYPE_LABELS);
+const TYPE_OPTIONS_MAIN = Object.entries(TYPE_LABELS).filter(
+  ([value]) => value !== 'dictionary' && value !== 'checkbox' && value !== 'date'
+);
 
 function mpAttrsFromResponse(res) {
   const raw = res?.data ?? res;
@@ -300,7 +310,12 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const [showRelatedFields, setShowRelatedFields] = useState(
     !!(attribute?.show_related_fields ?? attribute?.showRelatedFields)
   );
-  const systemLocked = isSystemPriceAttr(attribute);
+  const isSystem = isSystemCardAttr(attribute);
+  const isMainField = isSystemMainFieldAttr(attribute);
+  const priceLocked = isSystemPriceAttr(attribute);
+  const typeLocked = priceLocked;
+  const nameLocked = isSystem;
+  const typeOptions = isMainField || priceLocked ? TYPE_OPTIONS_MAIN : TYPE_OPTIONS_CUSTOM;
   const sortDict = (arr) => [...arr].sort((a, b) => String(a).localeCompare(String(b), 'ru'));
   const [dictionaryValues, setDictionaryValues] = useState(
     attribute?.dictionary_values && Array.isArray(attribute.dictionary_values)
@@ -342,13 +357,14 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       }
     }
     setError('');
-    onSubmit({
-      name: name.trim(),
+    const payload = {
       type,
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
       formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
       show_related_fields: isEditableAttrType(type) ? !!showRelatedFields : false,
-    });
+    };
+    if (!nameLocked) payload.name = name.trim();
+    onSubmit(payload);
   };
 
   return (
@@ -361,22 +377,29 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Например: Цвет, Размер"
+          disabled={nameLocked}
         />
+        {isMainField ? (
+          <p className="form-hint">
+            Поле вкладки «Основное» карточки товара (ключ: <code>{attribute.system_key}</code>).
+            Значение хранится в карточке, здесь настраивается только тип отображения.
+          </p>
+        ) : null}
+        {priceLocked ? (
+          <p className="form-hint">Системное поле цены карточки: тип менять нельзя, формулу и ручной ввод — можно.</p>
+        ) : null}
       </div>
       <div className="form-group">
         <label>Тип</label>
         <select
           value={type}
           onChange={(e) => setType(e.target.value)}
-          disabled={systemLocked}
+          disabled={typeLocked}
         >
-          {Object.entries(TYPE_LABELS).map(([value, label]) => (
+          {typeOptions.map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
-        {systemLocked ? (
-          <p className="form-hint">Системное поле карточки: тип менять нельзя, формулу и ручной ввод — можно.</p>
-        ) : null}
       </div>
       {isComputedAttrType(type) && (
         <div className="form-group">
@@ -405,7 +428,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
               </button>
             ))}
             {(attributes || [])
-              .filter((a) => String(a.id) !== String(attribute?.id || ''))
+              .filter((a) => String(a.id) !== String(attribute?.id || '') && !isSystemMainFieldAttr(a))
               .slice()
               .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
               .map((a) => (
@@ -433,12 +456,12 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
             Показывать связанные поля
           </label>
           <p className="form-hint">
-            Как у «Название» и «Описание» в массовом редактировании: при правке открывается окно
-            с основным значением и связанными полями маркетплейсов (по связям категории).
+            В массовом редактировании при правке открывается окно с основным значением и связанными полями
+            маркетплейсов (как у «Название» и «Описание»).
           </p>
         </div>
       )}
-      {type === 'dictionary' && (
+      {type === 'dictionary' && !isMainField && (
         <div className="form-group">
           <label>Значения словаря</label>
           <div className="dictionary-editor">
@@ -465,7 +488,12 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       )}
       <div className="form-group">
         <label>Сопоставления по категориям</label>
-        {attribute?.id ? (
+        {isMainField ? (
+          <p className="muted" style={{ margin: 0 }}>
+            Для полей «Основное» сопоставление с характеристиками МП задаётся в{' '}
+            <strong>Категории → Атрибуты</strong> (блок полей карточки: Название, Артикул и т.д.).
+          </p>
+        ) : attribute?.id ? (
           <CategoryMpLinksPanel attributeId={attribute.id} />
         ) : (
           <p className="muted" style={{ margin: 0 }}>
@@ -487,6 +515,7 @@ export function Attributes() {
   const [error, setError] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [tab, setTab] = useState('default');
 
   const load = async () => {
     setLoading(true);
@@ -505,8 +534,37 @@ export function Attributes() {
     load();
   }, []);
 
+  const defaultList = useMemo(() => {
+    const system = (list || []).filter((a) => isSystemCardAttr(a));
+    const order = new Map([
+      ...SYSTEM_MAIN_FIELD_KEYS.map((k, i) => [k, i]),
+      ['price_before_discount', 100],
+      ['price_after_discount', 101],
+    ]);
+    return system.slice().sort((a, b) => {
+      const ka = String(a.system_key || '');
+      const kb = String(b.system_key || '');
+      const oa = order.has(ka) ? order.get(ka) : 50;
+      const ob = order.has(kb) ? order.get(kb) : 50;
+      if (oa !== ob) return oa - ob;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+    });
+  }, [list]);
+
+  const customList = useMemo(
+    () =>
+      (list || [])
+        .filter((a) => !isSystemCardAttr(a))
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru')),
+    [list]
+  );
+
+  const visibleList = tab === 'default' ? defaultList : customList;
+
   const handleCreate = () => {
     setEditing(null);
+    setTab('custom');
     setModalOpen(true);
   };
 
@@ -548,22 +606,57 @@ export function Attributes() {
     <div className="attributes-page card">
       <h1 className="title">Атрибуты</h1>
       <p className="subtitle">
-        Откройте атрибут кнопкой «Изменить» или создайте новый: название и тип — общие.
-        Тип «Редактируемое поле» — длинный текст; при включённой опции «Показывать связанные поля»
-        в массовом редактировании открывается окно с полями МП (как у «Название» и «Описание»).
-        «Вычисляемое поле» считает значение по формуле. «Цена до скидки» и «Цена после скидки» всегда есть в карточке.
-        Сопоставление с характеристиками Ozon / WB / Яндекс.Маркета задаётся только в категории.
+        «По умолчанию» — поля карточки (Название, Описание, цены и т.д.): можно сменить тип и «Показывать связанные поля».
+        «Свои» — атрибуты, которые вы создаёте и привязываете к категориям.
       </p>
 
+      <div className="attributes-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'default'}
+          className={`attributes-tab${tab === 'default' ? ' is-active' : ''}`}
+          onClick={() => setTab('default')}
+        >
+          По умолчанию
+          <span className="attributes-tab-count">{defaultList.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'custom'}
+          className={`attributes-tab${tab === 'custom' ? ' is-active' : ''}`}
+          onClick={() => setTab('custom')}
+        >
+          Свои
+          <span className="attributes-tab-count">{customList.length}</span>
+        </button>
+      </div>
+
       <div className="attributes-toolbar">
-        <Button variant="primary" onClick={handleCreate}>➕ Добавить атрибут</Button>
+        {tab === 'custom' ? (
+          <Button variant="primary" onClick={handleCreate}>➕ Добавить атрибут</Button>
+        ) : (
+          <p className="attributes-toolbar-hint">
+            Системные поля нельзя удалить. Откройте «Изменить», чтобы сменить тип.
+          </p>
+        )}
       </div>
 
       <div className="attributes-table-wrap">
-        {list.length === 0 ? (
+        {visibleList.length === 0 ? (
           <div className="empty-state">
-            <p>Атрибутов пока нет</p>
-            <Button onClick={handleCreate}>Создать первый атрибут</Button>
+            {tab === 'custom' ? (
+              <>
+                <p>Своих атрибутов пока нет</p>
+                <Button onClick={handleCreate}>Создать первый атрибут</Button>
+              </>
+            ) : (
+              <p>
+                Системные поля ещё не загружены. Обновите страницу после миграции{' '}
+                <code>188_system_main_field_attributes</code>.
+              </p>
+            )}
           </div>
         ) : (
           <table className="attributes-table">
@@ -572,16 +665,18 @@ export function Attributes() {
                 <th>Название</th>
                 <th>Тип</th>
                 <th>Настройки</th>
-                <th style={{ width: 100 }}></th>
+                <th style={{ width: 140 }}></th>
               </tr>
             </thead>
             <tbody>
-              {list.map((attr) => (
+              {visibleList.map((attr) => (
                 <tr key={attr.id}>
                   <td>
                     {attr.name}
-                    {isSystemPriceAttr(attr) ? (
-                      <span className="attr-system-badge">карточка</span>
+                    {isSystemCardAttr(attr) ? (
+                      <span className="attr-system-badge">
+                        {isSystemPriceAttr(attr) ? 'цена' : 'карточка'}
+                      </span>
                     ) : null}
                   </td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
@@ -593,9 +688,18 @@ export function Attributes() {
                         : '—'}
                   </td>
                   <td>
-                    <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>Изменить</Button>
-                    {!isSystemPriceAttr(attr) ? (
-                      <Button variant="secondary" size="small" onClick={() => handleDelete(attr.id)} className="btn-delete">Удалить</Button>
+                    <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>
+                      Изменить
+                    </Button>
+                    {!isSystemCardAttr(attr) ? (
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={() => handleDelete(attr.id)}
+                        className="btn-delete"
+                      >
+                        Удалить
+                      </Button>
                     ) : null}
                   </td>
                 </tr>
@@ -607,8 +711,17 @@ export function Attributes() {
 
       <Modal
         isOpen={modalOpen}
-        onClose={() => { setModalOpen(false); setEditing(null); }}
-        title={editing ? 'Редактировать атрибут' : 'Добавить атрибут'}
+        onClose={() => {
+          setModalOpen(false);
+          setEditing(null);
+        }}
+        title={
+          editing
+            ? isSystemCardAttr(editing)
+              ? `Поле карточки: ${editing.name}`
+              : 'Редактировать атрибут'
+            : 'Добавить атрибут'
+        }
         size="large"
         scrollable
       >
@@ -617,7 +730,10 @@ export function Attributes() {
           attribute={editing}
           attributes={list}
           onSubmit={handleSubmit}
-          onCancel={() => { setModalOpen(false); setEditing(null); }}
+          onCancel={() => {
+            setModalOpen(false);
+            setEditing(null);
+          }}
         />
       </Modal>
     </div>

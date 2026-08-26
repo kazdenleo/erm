@@ -38,6 +38,10 @@ import {
 } from '../../utils/attributeFormula.js';
 import { attrShowsRelatedFields, isEditableAttrType } from '../../utils/editableAttribute.js';
 import {
+  isSystemMainFieldAttr,
+  mainFieldShowsRelatedFields,
+} from '../../utils/systemMainFieldAttributes.js';
+import {
   getMpDraftDimensionsMm,
   getYmDraftWeightDimensions,
   ymWeightDimensionsToErp,
@@ -134,6 +138,11 @@ import {
   formatLimitHitTitle,
 } from '../../utils/marketplaceFieldLimits.js';
 import { MarketplaceFieldLimitHint } from '../../components/common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
+import {
+  applyTnVedAutofillToAttributes,
+  categoryTnVedDigits,
+  isTnVedAttributeName,
+} from '../../utils/productTnVedAttributeAutofill.js';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -3023,6 +3032,8 @@ function buildErpAttrColumnDefs(
   for (const id of ids) {
     const attr = attrById.get(id);
     if (!attr) continue;
+    // Системные поля «Основное» — колонки products.*, не attr_*
+    if (isSystemMainFieldAttr(attr)) continue;
     const type = attr.type || 'text';
     const dict = Array.isArray(attr.dictionary_values) ? attr.dictionary_values : [];
     const mpLinks = erpAttrMpLinksForId(
@@ -4441,9 +4452,14 @@ function findErpColByLinkFieldKey(erpAttrCols, linkKey) {
 function isPopupTextColumn(col, erpAttrCols = []) {
   if (!col) return false;
   const k = String(col.key || '');
+  const relatedFlag = (fieldKey) => {
+    if (col.showRelatedFields != null) return !!col.showRelatedFields;
+    // До миграции / без метаданных — как раньше: name/description с попапом
+    if (fieldKey === 'name' || fieldKey === 'description') return true;
+    return false;
+  };
+  if (k === 'name' || k === 'description') return relatedFlag(k);
   if (
-    k === 'name' ||
-    k === 'description' ||
     k === 'mp_wb_name' ||
     k === 'mp_wb_description' ||
     k === 'mp_ym_name' ||
@@ -4451,12 +4467,21 @@ function isPopupTextColumn(col, erpAttrCols = []) {
     k === 'mp_ozon_name' ||
     k === 'mp_ozon_description'
   ) {
-    return true;
+    const lk =
+      col.linkFieldKey === 'name' || col.linkFieldKey === 'description'
+        ? col.linkFieldKey
+        : k.includes('description')
+          ? 'description'
+          : 'name';
+    return relatedFlag(lk);
   }
-  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return true;
+  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') {
+    return relatedFlag(col.linkFieldKey);
+  }
   if (col.mpAttr?.bucket === 'ozon') {
     const attr = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-    if (isOzonNameAttr(attr) || isOzonAnnotationAttr(attr)) return true;
+    if (isOzonNameAttr(attr)) return relatedFlag('name');
+    if (isOzonAnnotationAttr(attr)) return relatedFlag('description');
   }
   if (erpColShowsRelatedFields(col)) return true;
   const lk = col.linkFieldKey;
@@ -4939,6 +4964,7 @@ export function ProductsBulkEdit() {
 
   const [mpAttrColumnDefsState, setMpAttrColumnDefs] = useState([]);
   const [erpAttrColumnDefs, setErpAttrColumnDefs] = useState([]);
+  const [allProductAttributes, setAllProductAttributes] = useState([]);
   const [mpLabelMaps, setMpLabelMaps] = useState({ ozon: {}, wb: {}, ym: {} });
   const mpAttrColumnDefs = useMemo(() => {
     const catId = String(filterCategoryId || '').trim();
@@ -5125,6 +5151,23 @@ export function ProductsBulkEdit() {
           }
         }
       }
+      let relatedKey =
+        next.key === 'name' || next.key === 'description'
+          ? next.key
+          : next.linkFieldKey === 'name' || next.linkFieldKey === 'description'
+            ? next.linkFieldKey
+            : '';
+      if (!relatedKey && next.mpAttr?.bucket === 'ozon') {
+        const fake = { id: next.mpAttr.attrId, name: next._humanName || next.label };
+        if (isOzonNameAttr(fake)) relatedKey = 'name';
+        else if (isOzonAnnotationAttr(fake)) relatedKey = 'description';
+      }
+      if (relatedKey) {
+        next = {
+          ...next,
+          showRelatedFields: mainFieldShowsRelatedFields(allProductAttributes, relatedKey),
+        };
+      }
       return attachBulkCategoryLinkIndicators(
         next,
         erpAttrColumnDefs,
@@ -5150,6 +5193,7 @@ export function ProductsBulkEdit() {
     filterCategoryId,
     filterScopeCategoryIds,
     rows,
+    allProductAttributes,
   ]);
 
   /** Сдвиг закреплённого / незакреплённого столбца перетаскиванием заголовка */
@@ -5492,6 +5536,7 @@ export function ProductsBulkEdit() {
         productAttributesApi.getAll().catch(() => ({ data: [] })),
       ]);
       const erpAttrs = Array.isArray(attrRes?.data) ? attrRes.data : [];
+      setAllProductAttributes(erpAttrs);
 
       const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
       const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
@@ -5780,6 +5825,7 @@ export function ProductsBulkEdit() {
       ]);
       if (gen !== loadGenRef.current) return;
       const erpAttrs = Array.isArray(attrRes?.data) ? attrRes.data : [];
+      setAllProductAttributes(erpAttrs);
       const cat = filterCategoryId;
       const scopeCategoryIds = await fetchBulkEditScopeCategoryIds(
         {
