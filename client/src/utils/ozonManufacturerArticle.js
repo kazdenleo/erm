@@ -165,6 +165,15 @@ function schemaIsPlainStringAttr(attr) {
  * Значения атрибута для /v3/product/import.
  * OEM и партномер всегда уходят как { value }, иначе Ozon пишет «словарное значение» и поле пустое.
  */
+function sanitizeOzonSingletonText(id, text) {
+  let s = String(text || '').trim();
+  if (!s) return s;
+  if (Number(id) === OZON_ANNOTATION_ATTR_ID) {
+    return s.replace(/<br\s*\/?>/gi, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return s.replace(/\s*;\s*/g, ', ');
+}
+
 export function ozonAttrValuesForApi(id, raw, attrMeta) {
   const { text, dictId } = parseOzonStoredAttr(raw);
   const meta = attrMeta && typeof attrMeta === 'object' ? { ...attrMeta, id: attrMeta.id ?? id } : { id };
@@ -175,12 +184,12 @@ export function ozonAttrValuesForApi(id, raw, attrMeta) {
     schemaIsPlainStringAttr(meta) ||
     (looksLikeOzonPartNumber(text) && !schemaHasOzonDictionary(meta));
   if (forcePlain) {
-    const v = text || (dictId != null ? String(dictId) : '');
+    const v = sanitizeOzonSingletonText(id, text || (dictId != null ? String(dictId) : ''));
     if (!v) return null;
     return [{ value: v }];
   }
   if (dictId != null) return [{ dictionary_value_id: dictId }];
-  if (text) return [{ value: text }];
+  if (text) return [{ value: sanitizeOzonSingletonText(id, text) }];
   return null;
 }
 
@@ -200,14 +209,20 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
   return [...byId.values()].map((a) => {
     const id = Number(a.id);
     const vals = Array.isArray(a.values) ? a.values.filter((v) => v != null) : [];
-    if (vals.length <= 1) return a;
+    if (vals.length <= 1) {
+      const v = vals[0];
+      if (!v || v.dictionary_value_id != null) return a;
+      const next = sanitizeOzonSingletonText(id, v.value ?? '');
+      if (!next || next === String(v.value ?? '').trim()) return a;
+      return { ...a, values: [{ value: next }] };
+    }
     const allDict = vals.every(
       (v) => v.dictionary_value_id != null && Number(v.dictionary_value_id) > 0
     );
     if (allDict) return a;
     const texts = vals.map((v) => String(v.value ?? '').trim()).filter(Boolean);
     if (!texts.length) return { ...a, values: [vals[0]] };
-    const joined = id === OZON_ANNOTATION_ATTR_ID ? texts.join('<br>') : texts.join('; ');
-    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: joined }] };
+    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : ', ');
+    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined) }] };
   });
 }

@@ -21,12 +21,12 @@ describe('marketplaceDescriptionHtml', () => {
     expect(marketplaceHtmlToPlainText(html)).toBe('Фильтр AFAC049\n70 мм\n\nAudi A3');
   });
 
-  test('applyOzonDescriptionHtml writes 4191 and top-level description', () => {
+  test('applyOzonDescriptionHtml writes 4191 as one paragraph without br', () => {
     const item = { attributes: [{ complex_id: 0, id: 85, values: [{ value: 'Miles' }] }] };
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
-    expect(item.description).toBe('строка 1<br>строка 2');
+    expect(item.description).toBeUndefined();
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values[0].value).toBe('строка 1<br>строка 2');
+    expect(ann.values).toEqual([{ value: '<p>строка 1 строка 2</p>' }]);
     expect(item.attributes.some((a) => Number(a.id) === 85)).toBe(true);
   });
 
@@ -42,6 +42,6 @@ describe('marketplaceDescriptionHtml', () => {
     };
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'строка 1<br>строка 2' }]);
+    expect(ann.values).toEqual([{ value: '<p>строка 1 строка 2</p>' }]);
   });
 });

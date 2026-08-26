@@ -78,7 +78,7 @@ describe('ozon OEM / part number push', () => {
       '8K0129620; 4G0129620',
       { id: 111, name: 'ОЕМ-номер', type: 'String', dictionary_id: 0, is_collection: true }
     );
-    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620, 4G0129620' }]);
   });
 
   test('collapse joins extra text values for annotation and OEM', () => {
@@ -87,12 +87,19 @@ describe('ozon OEM / part number push', () => {
       { id: 7324, values: [{ value: 'A' }, { value: 'B' }] },
       { id: 85, values: [{ dictionary_value_id: 1 }, { dictionary_value_id: 2 }] },
     ]);
-    expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1<br>строка 2' }]);
-    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A; B' }]);
+    expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1 строка 2' }]);
+    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A, B' }]);
     expect(collapsed.find((a) => a.id === 85).values).toEqual([
       { dictionary_value_id: 1 },
       { dictionary_value_id: 2 },
     ]);
+  });
+
+  test('collapse sanitizes semicolon in a single OEM value', () => {
+    const collapsed = collapseOzonNonCollectionAttrValues([
+      { id: 7324, values: [{ value: '2740940004; A2740940004' }] },
+    ]);
+    expect(collapsed[0].values).toEqual([{ value: '2740940004, A2740940004' }]);
   });
 
   test('non-collection OEM keeps semicolon in one value', () => {
@@ -101,16 +108,16 @@ describe('ozon OEM / part number push', () => {
       '8K0129620; 4G0129620',
       { id: 7324, name: 'OEM-номер', type: 'String', dictionary_id: 0, is_collection: false }
     );
-    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620, 4G0129620' }]);
   });
 
-  test('annotation with newlines stays a single value', () => {
+  test('annotation with newlines stays a single flattened value', () => {
     const values = ozonAttrValuesForApi(
       4191,
       'Фильтр AFAC049\n70 мм\nAudi A3',
       { id: 4191, name: 'Аннотация', type: 'String', dictionary_id: 0 }
     );
-    expect(values).toEqual([{ value: 'Фильтр AFAC049\n70 мм\nAudi A3' }]);
+    expect(values).toEqual([{ value: 'Фильтр AFAC049 70 мм Audi A3' }]);
   });
 
   test('ozonCardAttrToFormText joins OEM collection', () => {

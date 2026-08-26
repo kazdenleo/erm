@@ -62,7 +62,19 @@ export function marketplaceHtmlToPlainText(html) {
 const OZON_ANNOTATION_ATTR_ID = 4191;
 
 /**
- * Пишет HTML-описание в item.description и атрибут «Аннотация» (4191).
+ * Аннотация Ozon — одно значение. <br> и переносы Ozon воспринимает как коллекцию.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function ozonAnnotationSingleHtml(text) {
+  const plain = marketplaceHtmlToPlainText(text).replace(/\s+/g, ' ').trim();
+  if (!plain) return '';
+  return `<p>${escapeHtmlText(plain)}</p>`;
+}
+
+/**
+ * Пишет HTML-описание в атрибут «Аннотация» (4191) одним значением.
+ * item.description не дублируем — Ozon склеивает его с 4191 и ругается на коллекцию.
  * @param {object} item
  * @param {unknown} description
  */
@@ -72,15 +84,14 @@ export function applyOzonDescriptionHtml(item, description) {
   const idx = attrs.findIndex((a) => Number(a.id) === OZON_ANNOTATION_ATTR_ID);
   const attrPlain = idx >= 0 ? String(attrs[idx]?.values?.[0]?.value ?? '') : '';
   const source = String(description || '').trim() || attrPlain;
-  const html = plainTextToMarketplaceHtml(source);
+  const html = ozonAnnotationSingleHtml(source);
   if (!html) return item;
 
-  item.description = html;
-  const sourcePlain = marketplaceHtmlToPlainText(source);
+  const sourcePlain = marketplaceHtmlToPlainText(source).replace(/\s+/g, ' ').trim();
   const nextAttrs = attrs.map((a) => {
-    const cur = String(a?.values?.[0]?.value ?? '');
+    const cur = marketplaceHtmlToPlainText(a?.values?.[0]?.value ?? '').replace(/\s+/g, ' ').trim();
     const sameId = Number(a.id) === OZON_ANNOTATION_ATTR_ID;
-    const sameText = cur && marketplaceHtmlToPlainText(cur) === sourcePlain;
+    const sameText = cur && cur === sourcePlain;
     if (!sameId && !sameText) return a;
     return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: html }] };
   });
@@ -95,5 +106,6 @@ export default {
   escapeHtmlText,
   plainTextToMarketplaceHtml,
   marketplaceHtmlToPlainText,
+  ozonAnnotationSingleHtml,
   applyOzonDescriptionHtml,
 };
