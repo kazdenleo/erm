@@ -138,6 +138,12 @@ export function parseOzonStoredAttr(raw) {
 }
 
 const OZON_ANNOTATION_ATTR_ID = 4191;
+const OZON_OEM_ATTR_ID = 7324;
+
+function schemaIsCollection(attr) {
+  if (!attr || typeof attr !== 'object') return false;
+  return attr.is_collection === true || attr.isCollection === true;
+}
 
 function schemaDictionaryId(attr) {
   if (!attr || typeof attr !== 'object') return 0;
@@ -165,13 +171,43 @@ function schemaIsPlainStringAttr(attr) {
  * Значения атрибута для /v3/product/import.
  * OEM и партномер всегда уходят как { value }, иначе Ozon пишет «словарное значение» и поле пустое.
  */
-function sanitizeOzonSingletonText(id, text) {
+function firstOzonListToken(text) {
+  const parts = String(text || '')
+    .split(/[;,\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return parts[0] || '';
+}
+
+function joinOzonListAsSentence(text) {
+  return String(text || '')
+    .split(/[;,\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .join('. ');
+}
+
+function sanitizeOzonSingletonText(id, text, attrMeta) {
   let s = String(text || '').trim();
   if (!s) return s;
-  if (Number(id) === OZON_ANNOTATION_ATTR_ID) {
-    return s.replace(/<br\s*\/?>/gi, ' ').replace(/\s+/g, ' ').trim();
+  const attrId = Number(id);
+  if (schemaIsCollection(attrMeta) && attrId !== OZON_ANNOTATION_ATTR_ID) {
+    return s;
   }
-  return s.replace(/\s*;\s*/g, ', ');
+  if (attrId === OZON_ANNOTATION_ATTR_ID) {
+    return s
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/\s*;\s*/g, '. ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  const oem =
+    attrId === OZON_OEM_ATTR_ID ||
+    attrId === OZON_PARTNUMBER_ATTR_ID ||
+    isOzonFreeTextMpAttr(attrMeta || { id: attrId, name: '' });
+  if (oem) return firstOzonListToken(s);
+  return joinOzonListAsSentence(s);
 }
 
 export function ozonAttrValuesForApi(id, raw, attrMeta) {
@@ -184,12 +220,12 @@ export function ozonAttrValuesForApi(id, raw, attrMeta) {
     schemaIsPlainStringAttr(meta) ||
     (looksLikeOzonPartNumber(text) && !schemaHasOzonDictionary(meta));
   if (forcePlain) {
-    const v = sanitizeOzonSingletonText(id, text || (dictId != null ? String(dictId) : ''));
+    const v = sanitizeOzonSingletonText(id, text || (dictId != null ? String(dictId) : ''), meta);
     if (!v) return null;
     return [{ value: v }];
   }
   if (dictId != null) return [{ dictionary_value_id: dictId }];
-  if (text) return [{ value: sanitizeOzonSingletonText(id, text) }];
+  if (text) return [{ value: sanitizeOzonSingletonText(id, text, meta) }];
   return null;
 }
 
@@ -222,7 +258,14 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
     if (allDict) return a;
     const texts = vals.map((v) => String(v.value ?? '').trim()).filter(Boolean);
     if (!texts.length) return { ...a, values: [vals[0]] };
-    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : ', ');
+    if (id === OZON_OEM_ATTR_ID || id === OZON_PARTNUMBER_ATTR_ID) {
+      return {
+        ...a,
+        complex_id: a.complex_id ?? 0,
+        values: [{ value: sanitizeOzonSingletonText(id, texts[0]) }],
+      };
+    }
+    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : '. ');
     return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined) }] };
   });
 }

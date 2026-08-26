@@ -67,9 +67,10 @@ const OZON_ANNOTATION_ATTR_ID = 4191;
  * @returns {string}
  */
 export function ozonAnnotationSingleHtml(text) {
-  const plain = marketplaceHtmlToPlainText(text).replace(/\s+/g, ' ').trim();
-  if (!plain) return '';
-  return `<p>${escapeHtmlText(plain)}</p>`;
+  return marketplaceHtmlToPlainText(text)
+    .replace(/\s*;\s*/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -84,19 +85,15 @@ export function applyOzonDescriptionHtml(item, description) {
   const idx = attrs.findIndex((a) => Number(a.id) === OZON_ANNOTATION_ATTR_ID);
   const attrPlain = idx >= 0 ? String(attrs[idx]?.values?.[0]?.value ?? '') : '';
   const source = String(description || '').trim() || attrPlain;
-  const html = ozonAnnotationSingleHtml(source);
-  if (!html) return item;
+  const plain = ozonAnnotationSingleHtml(source);
+  if (!plain) return item;
 
-  const sourcePlain = marketplaceHtmlToPlainText(source).replace(/\s+/g, ' ').trim();
   const nextAttrs = attrs.map((a) => {
-    const cur = marketplaceHtmlToPlainText(a?.values?.[0]?.value ?? '').replace(/\s+/g, ' ').trim();
-    const sameId = Number(a.id) === OZON_ANNOTATION_ATTR_ID;
-    const sameText = cur && cur === sourcePlain;
-    if (!sameId && !sameText) return a;
-    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: html }] };
+    if (Number(a.id) !== OZON_ANNOTATION_ATTR_ID) return a;
+    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: plain }] };
   });
   if (!nextAttrs.some((a) => Number(a.id) === OZON_ANNOTATION_ATTR_ID)) {
-    nextAttrs.push({ complex_id: 0, id: OZON_ANNOTATION_ATTR_ID, values: [{ value: html }] });
+    nextAttrs.push({ complex_id: 0, id: OZON_ANNOTATION_ATTR_ID, values: [{ value: plain }] });
   }
   item.attributes = nextAttrs;
   return item;

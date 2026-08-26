@@ -212,6 +212,64 @@ async function applyMappedOzonBrand(item, product) {
   item.attributes = attrs;
 }
 
+function isOzonNeedsMarkingCodeAttr(attr) {
+  const n = String(attr?.name || attr?.attribute_name || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return n.includes('нужен код маркировки');
+}
+
+function ozonAttrHasPushedValue(a) {
+  const vals = Array.isArray(a?.values) ? a.values : [];
+  return vals.some((v) => {
+    if (!v) return false;
+    if (v.dictionary_value_id != null && Number(v.dictionary_value_id) > 0) return true;
+    return String(v.value || '').trim() !== '';
+  });
+}
+
+/** Обязательное «Нужен код маркировки»: для фильтров обычно «Нет». */
+async function ensureOzonNeedsMarkingAttribute(item, schemaList, descId, typeId, ctx) {
+  const schema = (Array.isArray(schemaList) ? schemaList : []).filter(isOzonNeedsMarkingCodeAttr);
+  if (!schema.length) return;
+  const attrs = Array.isArray(item.attributes) ? [...item.attributes] : [];
+  for (const a of schema) {
+    const id = Number(a.id ?? a.attribute_id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const idx = attrs.findIndex((x) => Number(x.id) === id);
+    if (idx >= 0 && ozonAttrHasPushedValue(attrs[idx])) continue;
+    let values = [{ value: 'Нет' }];
+    try {
+      const dict = await integrationsService.getOzonAttributeValues(id, descId, typeId, {
+        profileId: ctx.profileId ?? null,
+        organizationId: ctx.organizationId ?? null,
+        limit: 100,
+      });
+      const list = Array.isArray(dict?.result) ? dict.result : [];
+      const picked =
+        list.find((v) => /^(нет|no)$/i.test(String(v.value || v.name || '').trim())) ||
+        list.find((v) => /нет/i.test(String(v.value || v.name || '')));
+      const did = Number(picked?.id);
+      if (picked && Number.isFinite(did) && did > 0) {
+        values = [{ dictionary_value_id: did, value: String(picked.value || 'Нет') }];
+      } else if (picked?.value) {
+        values = [{ value: String(picked.value) }];
+      }
+    } catch (e) {
+      logger.warn('[CardPush] Ozon marking dictionary failed', {
+        id,
+        error: e?.message || String(e),
+      });
+    }
+    const next = { complex_id: 0, id, values };
+    if (idx >= 0) attrs[idx] = next;
+    else attrs.push(next);
+  }
+  item.attributes = attrs;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -929,6 +987,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);
   item.attributes = collapseOzonNonCollectionAttrValues(item.attributes);
+  await ensureOzonNeedsMarkingAttribute(item, ozonSchema, descId, typeId, ctx);
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);

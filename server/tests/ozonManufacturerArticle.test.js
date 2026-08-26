@@ -78,7 +78,7 @@ describe('ozon OEM / part number push', () => {
       '8K0129620; 4G0129620',
       { id: 111, name: 'ОЕМ-номер', type: 'String', dictionary_id: 0, is_collection: true }
     );
-    expect(values).toEqual([{ value: '8K0129620, 4G0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
   });
 
   test('collapse joins extra text values for annotation and OEM', () => {
@@ -88,27 +88,36 @@ describe('ozon OEM / part number push', () => {
       { id: 85, values: [{ dictionary_value_id: 1 }, { dictionary_value_id: 2 }] },
     ]);
     expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1 строка 2' }]);
-    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A, B' }]);
+    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A' }]);
     expect(collapsed.find((a) => a.id === 85).values).toEqual([
       { dictionary_value_id: 1 },
       { dictionary_value_id: 2 },
     ]);
   });
 
-  test('collapse sanitizes semicolon in a single OEM value', () => {
+  test('collapse keeps only the first OEM when the string has separators', () => {
     const collapsed = collapseOzonNonCollectionAttrValues([
       { id: 7324, values: [{ value: '2740940004; A2740940004' }] },
     ]);
-    expect(collapsed[0].values).toEqual([{ value: '2740940004, A2740940004' }]);
+    expect(collapsed[0].values).toEqual([{ value: '2740940004' }]);
   });
 
-  test('non-collection OEM keeps semicolon in one value', () => {
+  test('non-collection OEM sends only the first number', () => {
     const values = ozonAttrValuesForApi(
       7324,
       '8K0129620; 4G0129620',
       { id: 7324, name: 'OEM-номер', type: 'String', dictionary_id: 0, is_collection: false }
     );
-    expect(values).toEqual([{ value: '8K0129620, 4G0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620' }]);
+  });
+
+  test('комплектация joins list parts without comma or semicolon', () => {
+    const values = ozonAttrValuesForApi(
+      4384,
+      'Фильтр воздушный 1шт; Упаковачная коробка 1 шт',
+      { id: 4384, name: 'Комплектация', type: 'String', dictionary_id: 0, is_collection: false }
+    );
+    expect(values).toEqual([{ value: 'Фильтр воздушный 1шт. Упаковачная коробка 1 шт' }]);
   });
 
   test('annotation with newlines stays a single flattened value', () => {
