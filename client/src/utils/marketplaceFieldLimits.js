@@ -409,7 +409,9 @@ export function bulkCellLimitInfo(row, col, limitsByMp, displayedValue) {
     const found = findFieldLimit(limitsByMp, mp, field);
     if (found) rule = { mp, field, maxLength: found.max_length, mpLabel: MP_FIELD_LIMIT_MP_LABELS[mp] };
   } else if (k === 'name' || k === 'description') {
-    rule = strictestLinkedMainLimit(limitsByMp, k, links) || strictestFieldLimit(limitsByMp, k);
+    // Только связанные МП: если WB отвязали и укоротили своё название, основное больше
+    // не подсвечивается лимитом WB.
+    rule = strictestLinkedMainLimit(limitsByMp, k, links);
   } else if (k === 'brand') {
     rule = strictestLinkedMainLimit(limitsByMp, k, links);
   } else if (k === 'sku') {

@@ -4348,6 +4348,123 @@ function isPopupTextColumn(col) {
   return false;
 }
 
+function popupLinkFieldKey(col) {
+  if (!col) return null;
+  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return col.linkFieldKey;
+  const k = String(col.key || '');
+  if (k === 'name' || k === 'description') return k;
+  return null;
+}
+
+function popupFieldTitle(col) {
+  if (!col) return 'Текст';
+  if (col.key === 'name') return 'Основное · Название';
+  if (col.key === 'description') return 'Основное · Описание';
+  const raw = String(col.title || col._humanName || col.label || col.key);
+  return raw.split('\n')[0].trim();
+}
+
+function collectPopupRelatedColumns(col, mpAttrCols = []) {
+  const linkKey = popupLinkFieldKey(col);
+  if (!linkKey) return col ? [col] : [];
+  const out = [];
+  const seen = new Set();
+  const add = (c) => {
+    if (!c?.key || seen.has(c.key)) return;
+    seen.add(c.key);
+    out.push(c);
+  };
+  add(COLUMNS.find((c) => c.key === linkKey));
+  const dedicated =
+    linkKey === 'name' ? ['mp_wb_name', 'mp_ym_name'] : ['mp_wb_description', 'mp_ym_description'];
+  for (const k of dedicated) add(COLUMNS.find((c) => c.key === k));
+  for (const c of mpAttrCols || []) {
+    if (c?.linkFieldKey === linkKey) add(c);
+  }
+  add(col);
+  const rank = (c) => {
+    if (c.key === linkKey) return 0;
+    if (c.mpAttr?.bucket === 'ozon' || c.mpBucket === 'ozon' || String(c.key).startsWith('mp_ozon_')) return 1;
+    if (c.mpBucket === 'wb' || String(c.key).startsWith('mp_wb_')) return 2;
+    if (c.mpBucket === 'ym' || String(c.key).startsWith('mp_ym_')) return 3;
+    return 4;
+  };
+  return out.sort((a, b) => rank(a) - rank(b));
+}
+
+function popupDisplayedDraft(popupCol, textPopup, row, erpAttrCols, mpAttrCols) {
+  const key = popupCol?.key;
+  if (!key) return '';
+  const linkKey = popupLinkFieldKey(popupCol);
+  const independent = !!(textPopup?.independent && textPopup.independent[key]);
+  const stillLinked =
+    linkKey &&
+    key !== linkKey &&
+    !independent &&
+    isBulkLinkedMpReadonly(row, key, erpAttrCols, mpAttrCols);
+  if (stillLinked) return String(textPopup?.drafts?.[linkKey] ?? '');
+  if (textPopup?.drafts && Object.prototype.hasOwnProperty.call(textPopup.drafts, key)) {
+    return String(textPopup.drafts[key] ?? '');
+  }
+  return String(row?.[key] ?? '');
+}
+
+function rowWithPopupDraftLinks(row, textPopup, group) {
+  if (!row) return row;
+  const linkKey = popupLinkFieldKey(textPopup?.col);
+  let next = { ...row, ...(textPopup?.drafts || {}) };
+  if (!linkKey) return next;
+  for (const c of group || []) {
+    if (!c?.key || c.key === linkKey) continue;
+    if (!textPopup?.independent?.[c.key]) continue;
+    const mp = bulkMpCodeForColumn(c.key) || c.mpAttr?.bucket || c.mpBucket;
+    if (!mp) continue;
+    next = {
+      ...next,
+      mp_field_links: setMpFieldLink(next.mp_field_links, linkKey, mp, false),
+    };
+  }
+  return next;
+}
+
+const EMPTY_TEXT_POPUP = { open: false, rowId: null, col: null, drafts: {}, independent: {} };
+
+function applyOneBulkCellChange(
+  row,
+  key,
+  value,
+  {
+    erpAttrColumnDefs = [],
+    mpAttrColumnDefs = [],
+    lengthUnit = 'mm',
+    weightUnit = 'g',
+    ozonDictOptions = {},
+  } = {}
+) {
+  let next = withSyncedLinkedFields(row, key, value, erpAttrColumnDefs, mpAttrColumnDefs);
+  const fieldKey = bulkLinkFieldForColumn(key);
+  if (fieldKey === 'country') {
+    next = applyLinkedCountryToDictAttrColumns(
+      next,
+      next.country_of_origin,
+      mpAttrColumnDefs,
+      ozonDictOptions
+    );
+  }
+  if (fieldKey === 'brand') {
+    next = applyLinkedBrandToOzonAttrColumns(next, next.brand, mpAttrColumnDefs, ozonDictOptions);
+  }
+  if (fieldKey === 'name' || fieldKey === 'description' || fieldKey === 'product_dimensions') {
+    next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
+  }
+  const attrCol = (mpAttrColumnDefs || []).find((c) => c.key === key);
+  if (attrCol) {
+    next = syncOzonCardTextFromAttrColumn(next, attrCol, value);
+    next = unlinkProductDimsIfMpDimAttrEdited(next, attrCol);
+  }
+  return finalizeBulkRowAfterCellChange(next, key, erpAttrColumnDefs, mpAttrColumnDefs);
+}
+
 function PinIcon() {
   return (
     <svg
@@ -4562,7 +4679,7 @@ export function ProductsBulkEdit() {
 
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
-  const [textPopup, setTextPopup] = useState({ open: false, rowId: null, col: null, draft: '' });
+  const [textPopup, setTextPopup] = useState(EMPTY_TEXT_POPUP);
   const [imagesModal, setImagesModal] = useState({
     open: false,
     productId: null,
@@ -6039,40 +6156,14 @@ export function ProductsBulkEdit() {
     const key = col.key;
     markChangedForPush(rows.map((r) => r.id));
     markDirty();
-    setRows((prev) =>
-      prev.map((r) => {
-        let next = withSyncedLinkedFields(r, key, bulkDraft, erpAttrColumnDefs, mpAttrColumnDefs);
-        if (bulkLinkFieldForColumn(key) === 'country') {
-          next = applyLinkedCountryToDictAttrColumns(
-            next,
-            next.country_of_origin,
-            mpAttrColumnDefs,
-            ozonBulkDictOptionsRef.current
-          );
-        }
-        if (bulkLinkFieldForColumn(key) === 'brand') {
-          next = applyLinkedBrandToOzonAttrColumns(
-            next,
-            next.brand,
-            mpAttrColumnDefs,
-            ozonBulkDictOptionsRef.current
-          );
-        }
-        if (
-          bulkLinkFieldForColumn(key) === 'name' ||
-          bulkLinkFieldForColumn(key) === 'description' ||
-          bulkLinkFieldForColumn(key) === 'product_dimensions'
-        ) {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
-        }
-        const bulkCol = mpAttrColumnDefs.find((c) => c.key === key);
-        if (bulkCol) {
-          next = syncOzonCardTextFromAttrColumn(next, bulkCol, bulkDraft);
-          next = unlinkProductDimsIfMpDimAttrEdited(next, bulkCol);
-        }
-        return finalizeBulkRowAfterCellChange(next, key, erpAttrColumnDefs, mpAttrColumnDefs);
-      })
-    );
+    const ctx = {
+      erpAttrColumnDefs,
+      mpAttrColumnDefs,
+      lengthUnit,
+      weightUnit,
+      ozonDictOptions: ozonBulkDictOptionsRef.current,
+    };
+    setRows((prev) => prev.map((r) => applyOneBulkCellChange(r, key, bulkDraft, ctx)));
     setBulkModal({ open: false, column: null });
   };
 
@@ -6082,36 +6173,35 @@ export function ProductsBulkEdit() {
     setRows((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
-        let next = withSyncedLinkedFields(r, key, value, erpAttrColumnDefs, mpAttrColumnDefs);
-        if (bulkLinkFieldForColumn(key) === 'country') {
-          next = applyLinkedCountryToDictAttrColumns(
-            next,
-            next.country_of_origin,
+        return applyOneBulkCellChange(r, key, value, {
+          erpAttrColumnDefs,
+          mpAttrColumnDefs,
+          lengthUnit,
+          weightUnit,
+          ozonDictOptions: ozonBulkDictOptionsRef.current,
+        });
+      })
+    );
+  }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
+
+  const updateCells = useCallback((id, pairs) => {
+    if (!id || !Array.isArray(pairs) || pairs.length === 0) return;
+    markChangedForPush(id);
+    markDirty();
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        let next = r;
+        for (const [key, value] of pairs) {
+          next = applyOneBulkCellChange(next, key, value, {
+            erpAttrColumnDefs,
             mpAttrColumnDefs,
-            ozonBulkDictOptionsRef.current
-          );
+            lengthUnit,
+            weightUnit,
+            ozonDictOptions: ozonBulkDictOptionsRef.current,
+          });
         }
-        if (bulkLinkFieldForColumn(key) === 'brand') {
-          next = applyLinkedBrandToOzonAttrColumns(
-            next,
-            next.brand,
-            mpAttrColumnDefs,
-            ozonBulkDictOptionsRef.current
-          );
-        }
-        if (
-          bulkLinkFieldForColumn(key) === 'name' ||
-          bulkLinkFieldForColumn(key) === 'description' ||
-          bulkLinkFieldForColumn(key) === 'product_dimensions'
-        ) {
-          next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
-        }
-        const attrCol = mpAttrColumnDefs.find((c) => c.key === key);
-        if (attrCol) {
-          next = syncOzonCardTextFromAttrColumn(next, attrCol, value);
-          next = unlinkProductDimsIfMpDimAttrEdited(next, attrCol);
-        }
-        return finalizeBulkRowAfterCellChange(next, key, erpAttrColumnDefs, mpAttrColumnDefs);
+        return next;
       })
     );
   }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
@@ -6753,11 +6843,34 @@ export function ProductsBulkEdit() {
             linked ? ' is-linked' : ''
           }`}
           onClick={() => {
+            const group = collectPopupRelatedColumns(col, mpAttrColumnDefs);
+            const drafts = {};
+            for (const c of group) {
+              const cellLinked = isBulkLinkedMpReadonly(
+                row,
+                c.key,
+                erpAttrColumnDefs,
+                mpAttrColumnDefs
+              );
+              drafts[c.key] = String(
+                cellLinked
+                  ? bulkLinkedMirrorValue(
+                      row,
+                      c.key,
+                      erpAttrColumnDefs,
+                      mpAttrColumnDefs,
+                      lengthUnit,
+                      weightUnit
+                    )
+                  : row[c.key] ?? ''
+              );
+            }
             setTextPopup({
               open: true,
               rowId: row.id,
               col,
-              draft: String(v ?? ''),
+              drafts,
+              independent: {},
             });
           }}
           title={
@@ -6945,14 +7058,24 @@ export function ProductsBulkEdit() {
   const textPopupRow = textPopup.open
     ? rows.find((r) => str(r.id) === str(textPopup.rowId))
     : null;
-  const textPopupLimit =
+  const textPopupGroup =
+    textPopup.col && textPopupRow
+      ? collectPopupRelatedColumns(textPopup.col, mpAttrColumnDefs)
+      : [];
+  const textPopupLinkKey = popupLinkFieldKey(textPopup.col);
+  const textPopupSyntheticRow =
     textPopupRow && textPopup.col
-      ? bulkCellLimitInfo(textPopupRow, textPopup.col, limitsForRow(textPopupRow), textPopup.draft)
+      ? rowWithPopupDraftLinks(textPopupRow, textPopup, textPopupGroup)
       : null;
-  const textPopupIsDesc =
-    textPopup.col &&
-    (textPopup.col.linkFieldKey === 'description' ||
-      String(textPopup.col.key || '').includes('description'));
+  const textPopupModalTitle = textPopup.col
+    ? `${
+        textPopupLinkKey === 'name'
+          ? 'Название'
+          : textPopupLinkKey === 'description'
+            ? 'Описание'
+            : popupFieldTitle(textPopup.col)
+      }${textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''}`
+    : '';
 
   return (
     <div key={location.key} className="products-bulk-page">
@@ -8117,42 +8240,90 @@ export function ProductsBulkEdit() {
 
       <Modal
         isOpen={!!(textPopup.open && textPopup.col && textPopupRow)}
-        onClose={() => setTextPopup({ open: false, rowId: null, col: null, draft: '' })}
-        title={
-          textPopup.col
-            ? `${String(textPopup.col.title || textPopup.col.label || 'Текст').split('\n')[0].trim()}${
-                textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''
-              }`
-            : ''
-        }
+        onClose={() => setTextPopup(EMPTY_TEXT_POPUP)}
+        title={textPopupModalTitle}
         size="large"
       >
         {textPopup.col && textPopupRow ? (
           <div>
-            <textarea
-              className={`form-control products-bulk-text-editor${
-                textPopupLimit?.over ? ' is-over-limit' : ''
-              }`}
-              value={textPopup.draft}
-              onChange={(e) => setTextPopup((prev) => ({ ...prev, draft: e.target.value }))}
-              rows={textPopupIsDesc ? 14 : 6}
-              autoFocus
-            />
-            {textPopupLimit?.maxLength ? (
-              <MarketplaceFieldLimitHint
-                value={textPopup.draft}
-                maxLength={textPopupLimit.maxLength}
-                mpLabel={textPopupLimit.mpLabel}
-              />
-            ) : (
-              <div className="mp-field-limit-hint">{String(textPopup.draft || '').length}</div>
-            )}
+            <div className="products-bulk-text-popup-group">
+              {textPopupGroup.map((c) => {
+                const linkKey = popupLinkFieldKey(c);
+                const stillLinked =
+                  linkKey &&
+                  c.key !== linkKey &&
+                  !textPopup.independent?.[c.key] &&
+                  isBulkLinkedMpReadonly(
+                    textPopupSyntheticRow || textPopupRow,
+                    c.key,
+                    erpAttrColumnDefs,
+                    mpAttrColumnDefs
+                  );
+                const val = popupDisplayedDraft(
+                  c,
+                  textPopup,
+                  textPopupRow,
+                  erpAttrColumnDefs,
+                  mpAttrColumnDefs
+                );
+                const limitInfo = bulkCellLimitInfo(
+                  textPopupSyntheticRow || textPopupRow,
+                  c,
+                  limitsForRow(textPopupSyntheticRow || textPopupRow),
+                  val
+                );
+                const isDesc =
+                  linkKey === 'description' || String(c.key || '').includes('description');
+                return (
+                  <div key={c.key} className="products-bulk-text-popup-field">
+                    <div className="products-bulk-text-popup-field-head">
+                      <label htmlFor={`bulk-text-popup-${c.key}`}>{popupFieldTitle(c)}</label>
+                      {stillLinked ? (
+                        <span className="products-bulk-text-popup-field-linked">
+                          связано с основным
+                        </span>
+                      ) : null}
+                    </div>
+                    <textarea
+                      id={`bulk-text-popup-${c.key}`}
+                      className={`form-control products-bulk-text-editor${
+                        limitInfo?.over ? ' is-over-limit' : ''
+                      }`}
+                      value={val}
+                      onChange={(e) => {
+                        const nextVal = e.target.value;
+                        setTextPopup((prev) => {
+                          const nextIndependent = { ...(prev.independent || {}) };
+                          if (linkKey && c.key !== linkKey) nextIndependent[c.key] = true;
+                          return {
+                            ...prev,
+                            drafts: { ...(prev.drafts || {}), [c.key]: nextVal },
+                            independent: nextIndependent,
+                          };
+                        });
+                      }}
+                      rows={isDesc ? 8 : 4}
+                      autoFocus={c.key === textPopup.col.key}
+                    />
+                    {limitInfo?.maxLength ? (
+                      <MarketplaceFieldLimitHint
+                        value={val}
+                        maxLength={limitInfo.maxLength}
+                        mpLabel={limitInfo.mpLabel}
+                      />
+                    ) : (
+                      <div className="mp-field-limit-hint">{String(val || '').length}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             <div className="d-flex justify-content-end gap-2 mt-3">
               <Button
                 type="button"
                 variant="secondary"
                 size="small"
-                onClick={() => setTextPopup({ open: false, rowId: null, col: null, draft: '' })}
+                onClick={() => setTextPopup(EMPTY_TEXT_POPUP)}
               >
                 Отмена
               </Button>
@@ -8161,8 +8332,30 @@ export function ProductsBulkEdit() {
                 variant="primary"
                 size="small"
                 onClick={() => {
-                  updateCell(textPopup.rowId, textPopup.col.key, textPopup.draft);
-                  setTextPopup({ open: false, rowId: null, col: null, draft: '' });
+                  const linkKey = textPopupLinkKey;
+                  const drafts = textPopup.drafts || {};
+                  const independent = textPopup.independent || {};
+                  const pairs = [];
+                  if (
+                    linkKey &&
+                    Object.prototype.hasOwnProperty.call(drafts, linkKey) &&
+                    String(drafts[linkKey] ?? '') !== String(textPopupRow[linkKey] ?? '')
+                  ) {
+                    pairs.push([linkKey, drafts[linkKey]]);
+                  }
+                  for (const c of textPopupGroup) {
+                    if (linkKey && c.key === linkKey) continue;
+                    if (independent[c.key]) pairs.push([c.key, drafts[c.key] ?? '']);
+                  }
+                  if (!pairs.length) {
+                    const key = textPopup.col.key;
+                    const nextVal = drafts[key] ?? '';
+                    if (String(nextVal) !== String(textPopupRow[key] ?? '')) {
+                      pairs.push([key, nextVal]);
+                    }
+                  }
+                  if (pairs.length) updateCells(textPopup.rowId, pairs);
+                  setTextPopup(EMPTY_TEXT_POPUP);
                 }}
               >
                 Готово

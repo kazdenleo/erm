@@ -708,6 +708,7 @@ body.products-bulk-col-resizing * {
 .products-bulk-text-popup-btn {
   display: flex;
   flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   width: 100%;
@@ -725,6 +726,7 @@ body.products-bulk-col-resizing * {
   line-height: 1.2;
   box-sizing: border-box;
   overflow: hidden;
+  white-space: nowrap;
 }
 
 .products-bulk-text-popup-btn:hover {
@@ -755,8 +757,10 @@ body.products-bulk-col-resizing * {
 
 .products-bulk-text-popup-count {
   flex: 0 0 auto;
+  flex-shrink: 0;
   font-size: 10px;
   color: #6c757d;
+  white-space: nowrap;
 }
 
 .products-bulk-text-popup-count.is-over {
@@ -767,6 +771,35 @@ body.products-bulk-col-resizing * {
 .products-bulk-text-editor {
   min-height: 140px;
   resize: vertical;
+}
+
+.products-bulk-text-popup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.products-bulk-text-popup-field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.products-bulk-text-popup-field-head label {
+  margin: 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.products-bulk-text-popup-field-linked {
+  font-size: 12px;
+  color: #6c757d;
+}
+
+.products-bulk-text-popup-group .products-bulk-text-editor {
+  min-height: 88px;
 }
 
 .mp-field-limit-hint {
