@@ -27,8 +27,9 @@ import {
   useProductHasNon3x4Image,
 } from '../../hooks/useProductImageAspect3x4.js';
 import {
-  barcodeStringsFromProduct,
   coerceBarcodeString,
+  collectBarcodeStrings,
+  formatBarcodesCell,
   isCorruptBarcodeString,
 } from '../../utils/productBarcodes.js';
 import {
@@ -429,7 +430,6 @@ function rowAsOfferFieldForm(row) {
     ym_draft: row.ym_draft || row._ymDraftBaseline,
     ozon_draft: row.ozon_draft || row._ozonDraftBaseline,
     wb_draft: row.wb_draft || row._wbDraftBaseline,
-    barcodes: parseBarcodesCell(row.barcodes).map((b) => ({ barcode: b })),
   };
 }
 
@@ -3601,7 +3601,6 @@ function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrCo
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
-  const barcodes = barcodeStringsFromProduct(p.barcodes);
   const oz = normalizeJsonAttrs(p.ozon_attributes);
   const wb = normalizeJsonAttrs(p.wb_attributes);
   const ym = normalizeJsonAttrs(p.ym_attributes);
@@ -3636,10 +3635,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
       p.buyout_rate != null && p.buyout_rate !== '' ? str(p.buyout_rate) : '95',
     description: str(p.description),
     country_of_origin: str(p.country_of_origin),
-    barcodes: barcodes
-      .map((b) => coerceBarcodeString(b))
-      .filter((b) => b && !isCorruptBarcodeString(b))
-      .join(', '),
+    barcodes: formatBarcodesCell(p.barcodes),
     sku_ozon: str(p.sku_ozon ?? p.marketplace_skus?.ozon ?? ''),
     ozon_product_id: str(p.ozon_product_id ?? p.marketplace_ozon_product_id ?? ''),
     sku_wb: str(p.sku_wb ?? p.marketplace_skus?.wb ?? ''),
@@ -3711,12 +3707,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
 }
 
 function parseBarcodesCell(text) {
-  const raw = str(text);
-  if (!raw.trim()) return [];
-  return raw
-    .split(/[\n,;]+/)
-    .map((s) => coerceBarcodeString(s))
-    .filter((s) => s && !isCorruptBarcodeString(s));
+  return collectBarcodeStrings(text).filter((s) => s && !isCorruptBarcodeString(s));
 }
 
 function BulkBarcodeGenerateIcon() {
@@ -7150,9 +7141,15 @@ export function ProductsBulkEdit() {
       );
     }
     const linked = isBulkLinkedMpReadonly(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs);
-    const v = linked
+    const vRaw = linked
       ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit)
       : row[col.key];
+    const v =
+      col.key === 'barcodes'
+        ? formatBarcodesCell(vRaw)
+        : col.mpAttr || col.input === 'select_dict' || col.input === 'select_erp_dict'
+          ? stringifyMpAttrValue(vRaw)
+          : vRaw;
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
     const limitInfo = isPopupTextColumn(col, erpAttrColumnDefs)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)

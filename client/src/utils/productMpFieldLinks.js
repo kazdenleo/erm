@@ -606,10 +606,17 @@ export function readMpOfferFieldValue(formData, id) {
   if (target.kind === 'ym_barcodes') {
     const draft = String(getMpDraft(formData, 'ym').barcode ?? '').trim();
     if (draft) return draft;
-    const rows = Array.isArray(formData?.barcodes) ? formData.barcodes : [];
+    const raw = formData?.barcodes;
+    if (typeof raw === 'string' && raw.trim()) {
+      const first = raw.split(/[\n,;]+/).map((s) => s.trim()).find(Boolean);
+      if (first && !/\[object/i.test(first)) return first;
+    }
+    const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
     for (const row of rows) {
       const code = typeof row === 'string' ? row : row?.barcode;
-      if (code != null && String(code).trim()) return String(code).trim();
+      if (code != null && String(code).trim() && !/\[object/i.test(String(code))) {
+        return String(code).trim();
+      }
     }
     return '';
   }

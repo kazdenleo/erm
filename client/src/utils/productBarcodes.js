@@ -247,6 +247,11 @@ export function barcodesFromYmCard(data) {
   return collectBarcodeStrings(data.barcodes);
 }
 
+/** Ячейка ШК в таблице: всегда строка, не `[object Object]`. */
+export function formatBarcodesCell(raw) {
+  return collectBarcodeStrings(raw).join(', ');
+}
+
 /**
  * Слить ШК с МП: существующие (включая внутренние без иконок) не удаляются,
  * дубликаты не создаются — только добавляется иконка МП или новая строка.

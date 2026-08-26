@@ -7,6 +7,7 @@ import {
   barcodeToSendToMarketplace,
   barcodesToSendToMarketplace,
   coerceBarcodeString,
+  collectBarcodeStrings,
   isCorruptBarcodeString,
   barcodesFromWbGeneratePayload,
   omitEmptyBarcodesFromProductPatch,
@@ -85,6 +86,13 @@ describe('WB generate payload and corrupt barcodes', () => {
     expect(String({ barcode: '2037000000001' })).toBe('[object Object]');
     expect(coerceBarcodeString('[object Object]')).toBe('');
     expect(isCorruptBarcodeString('[object Object]')).toBe(true);
+  });
+
+  test('extracts barcode from object rows instead of String(object)', () => {
+    expect(collectBarcodeStrings([{ barcode: '2055326831072', marketplaces: ['ozon'] }])).toEqual([
+      '2055326831072',
+    ]);
+    expect(collectBarcodeStrings('[object Object]')).toEqual([]);
   });
 
   test('parses WB /content/v2/barcodes shapes', () => {
