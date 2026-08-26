@@ -27,6 +27,7 @@ import {
   isSystemPriceAttr,
   SYSTEM_ATTR_KEYS,
 } from '../../../utils/attributeFormula.js';
+import { isEditableAttrType } from '../../../utils/editableAttribute.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
@@ -207,6 +208,7 @@ const TYPE_LABELS = {
   date: 'Дата',
   dictionary: 'Словарь',
   computed: 'Вычисляемое',
+  editable: 'Редактируемое поле',
 };
 
 function productFormulaContext(formData) {
@@ -7902,6 +7904,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <div
                   key={attr.id}
                   className={
+                    isEditableAttrType(attr.type) ||
                     /аналог|применимост/i.test(String(attr.name || '')) ||
                     String(rawValue).includes('\n')
                       ? 'col-12 field'
@@ -7909,12 +7912,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   }
                 >
                   <ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />
-                  {/аналог|применимост/i.test(String(attr.name || '')) ||
+                  {isEditableAttrType(attr.type) ||
+                  /аналог|применимост/i.test(String(attr.name || '')) ||
                   String(rawValue).includes('\n') ? (
                     <textarea
                       id={`attr-${attr.id}`}
                       className={erpInputClass('form-control form-control-sm')}
-                      rows={/применимост/i.test(String(attr.name || '')) ? 6 : 3}
+                      rows={
+                        isEditableAttrType(attr.type) || /применимост/i.test(String(attr.name || ''))
+                          ? 6
+                          : 3
+                      }
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />

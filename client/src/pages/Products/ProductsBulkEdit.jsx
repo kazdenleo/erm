@@ -103,7 +103,7 @@ import {
   resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
-import { isOzonManufacturerArticleAttr, isStandaloneOemAttrName, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
+import { isOzonFreeTextMpAttr, isOzonManufacturerArticleAttr, isStandaloneOemAttrName, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import {
   isOzonAnnotationAttr,
@@ -698,6 +698,10 @@ function mpColOwnedBySku(col) {
 }
 
 function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps, mpAttrColDefs = []) {
+  const fieldKey = erpCol?.linkFieldKey;
+  if (!fieldKey || !isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp)) {
+    return row;
+  }
   const entries = normalizeAttrMpLinkList(erpCol?.erpAttr?.mpLinks?.[mp]);
   if (!entries.length) return row;
   const src = String(row[erpCol.key] ?? '');
@@ -896,7 +900,7 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
       return bulkMirrorFromLinkKey(row, linkKey, colKey, erpAttrCols, lengthUnit, weightUnit);
     }
     const erpCol = findErpAttrColForMpOfferField(erpAttrCols, mpOffer.offerId);
-    if (erpCol) return row[erpCol.key] ?? '';
+    if (erpCol && isMpFieldLinked(links, erpCol.linkFieldKey, mp)) return row[erpCol.key] ?? '';
   }
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
@@ -923,7 +927,9 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
     }
     if (col?.dedicatedMainFieldKey !== 'sku' && col?.linkFieldKey !== 'sku') {
       const erpCol = findErpColForMpAttrMirror(erpAttrCols, mpAttr, col);
-      if (erpCol) return row[erpCol.key] ?? '';
+      if (erpCol && isMpFieldLinked(links, erpCol.linkFieldKey, mpAttr.mp)) {
+        return row[erpCol.key] ?? '';
+      }
     }
   }
   const dedicatedOfferId = BULK_DEDICATED_OFFER_FIELD_BY_COL[colKey];
@@ -1738,6 +1744,17 @@ function stringifyMpAttrValue(v) {
   if (v == null) return '';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => {
+        if (x && typeof x === 'object') {
+          return stringifyMpAttrValue(x);
+        }
+        return String(x ?? '').trim();
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
   if (typeof v === 'object') {
     if (v.dictionary_value_id != null || v.value != null) {
       const text =
@@ -1974,6 +1991,7 @@ function unwrapMpAttrList(res) {
 }
 
 function ozonSchemaKind(a) {
+  if (isOzonFreeTextMpAttr(a) || isStandaloneOemAttrName(a?.name)) return 'text';
   const dictionaryIdRaw = a?.dictionary_id ?? a?.dictionaryId;
   const dictionaryId =
     dictionaryIdRaw != null && Number(dictionaryIdRaw) !== 0 ? Number(dictionaryIdRaw) : 0;
@@ -2845,6 +2863,7 @@ function inputForErpAttrType(type) {
   if (type === 'number' || isComputedAttrType(type)) return 'number';
   if (type === 'date') return 'date';
   if (type === 'dictionary') return 'select_erp_dict';
+  if (isEditableAttrType(type)) return 'textarea';
   return 'text';
 }
 
@@ -3003,13 +3022,16 @@ function buildErpAttrColumnDefs(
         isComputedAttrType(type) && String(attr.formula || '').trim()
           ? `Формула: ${attr.formula}`
           : null,
+        attrShowsRelatedFields(attr)
+          ? `Основное · ${attr.name || id}. Редактируемое поле: попап со связанными МП`
+          : null,
         mapped.length
           ? `Основное · ${attr.name || id}. Значки включают подстановку значения на сопоставленный МП`
           : `Основное · ${attr.name || id}`,
       ].filter(Boolean).join('. '),
       headerClass: 'erp-attr-head',
       input: inputForErpAttrType(type),
-      minW: type === 'checkbox' ? 72 : 120,
+      minW: type === 'checkbox' ? 72 : isEditableAttrType(type) ? 160 : 120,
       erpAttr: {
         id,
         type,
@@ -3017,7 +3039,9 @@ function buildErpAttrColumnDefs(
         mpLinks,
         formula: attr.formula || '',
         system_key: attr.system_key || '',
+        show_related_fields: !!attr.show_related_fields,
       },
+      showRelatedFields: attrShowsRelatedFields(attr),
       dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
       mappedMps: mapped,
       linkFieldKey: erpAttrLinkFieldKey(id),
@@ -4380,7 +4404,19 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
   );
 }
 
-function isPopupTextColumn(col) {
+function isPopupMainColumn(col, linkKey) {
+  if (!col?.key || !linkKey) return false;
+  if (col.key === linkKey) return true;
+  if (col.erpAttr && col.linkFieldKey === linkKey) return true;
+  return false;
+}
+
+function findErpColByLinkFieldKey(erpAttrCols, linkKey) {
+  if (!linkKey) return null;
+  return (erpAttrCols || []).find((c) => c.linkFieldKey === linkKey) || null;
+}
+
+function isPopupTextColumn(col, erpAttrCols = []) {
   if (!col) return false;
   const k = String(col.key || '');
   if (
@@ -4398,16 +4434,26 @@ function isPopupTextColumn(col) {
   if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return true;
   if (col.mpAttr?.bucket === 'ozon') {
     const attr = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-    return isOzonNameAttr(attr) || isOzonAnnotationAttr(attr);
+    if (isOzonNameAttr(attr) || isOzonAnnotationAttr(attr)) return true;
+  }
+  if (erpColShowsRelatedFields(col)) return true;
+  const lk = col.linkFieldKey;
+  if (lk && isAttrMpFieldLinkKey(lk) && (col.mpAttr || col.mpOfferField || col.mpBucket)) {
+    return erpColShowsRelatedFields(findErpColByLinkFieldKey(erpAttrCols, lk));
   }
   return false;
 }
 
-function popupLinkFieldKey(col) {
+function popupLinkFieldKey(col, erpAttrCols = []) {
   if (!col) return null;
   if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return col.linkFieldKey;
   const k = String(col.key || '');
   if (k === 'name' || k === 'description') return k;
+  if (erpColShowsRelatedFields(col) && col.linkFieldKey) return col.linkFieldKey;
+  const lk = col.linkFieldKey;
+  if (lk && isAttrMpFieldLinkKey(lk) && (col.mpAttr || col.mpOfferField || col.mpBucket)) {
+    if (erpColShowsRelatedFields(findErpColByLinkFieldKey(erpAttrCols, lk))) return lk;
+  }
   return null;
 }
 
@@ -4415,12 +4461,13 @@ function popupFieldTitle(col) {
   if (!col) return 'Текст';
   if (col.key === 'name') return 'Основное · Название';
   if (col.key === 'description') return 'Основное · Описание';
+  if (col.erpAttr) return `Основное · ${col.label || col.erpAttr.id}`;
   const raw = String(col.title || col._humanName || col.label || col.key);
   return raw.split('\n')[0].trim();
 }
 
-function collectPopupRelatedColumns(col, mpAttrCols = []) {
-  const linkKey = popupLinkFieldKey(col);
+function collectPopupRelatedColumns(col, mpAttrCols = [], erpAttrCols = [], allColumns = []) {
+  const linkKey = popupLinkFieldKey(col, erpAttrCols);
   if (!linkKey) return col ? [col] : [];
   const out = [];
   const seen = new Set();
@@ -4429,16 +4476,24 @@ function collectPopupRelatedColumns(col, mpAttrCols = []) {
     seen.add(c.key);
     out.push(c);
   };
-  add(COLUMNS.find((c) => c.key === linkKey));
-  const dedicated =
-    linkKey === 'name' ? ['mp_wb_name', 'mp_ym_name'] : ['mp_wb_description', 'mp_ym_description'];
-  for (const k of dedicated) add(COLUMNS.find((c) => c.key === k));
+  if (linkKey === 'name' || linkKey === 'description') {
+    add(COLUMNS.find((c) => c.key === linkKey));
+    const dedicated =
+      linkKey === 'name' ? ['mp_wb_name', 'mp_ym_name'] : ['mp_wb_description', 'mp_ym_description'];
+    for (const k of dedicated) add(COLUMNS.find((c) => c.key === k));
+  } else if (isAttrMpFieldLinkKey(linkKey)) {
+    add(findErpColByLinkFieldKey(erpAttrCols, linkKey));
+  }
   for (const c of mpAttrCols || []) {
     if (c?.linkFieldKey === linkKey) add(c);
   }
+  for (const c of allColumns || []) {
+    if (!c || c.erpAttr) continue;
+    if (c.linkFieldKey === linkKey && (c.mpBucket || c.mpAttr || c.mpOfferField)) add(c);
+  }
   add(col);
   const rank = (c) => {
-    if (c.key === linkKey) return 0;
+    if (isPopupMainColumn(c, linkKey)) return 0;
     if (c.mpAttr?.bucket === 'ozon' || c.mpBucket === 'ozon' || String(c.key).startsWith('mp_ozon_')) return 1;
     if (c.mpBucket === 'wb' || String(c.key).startsWith('mp_wb_')) return 2;
     if (c.mpBucket === 'ym' || String(c.key).startsWith('mp_ym_')) return 3;
@@ -4450,27 +4505,34 @@ function collectPopupRelatedColumns(col, mpAttrCols = []) {
 function popupDisplayedDraft(popupCol, textPopup, row, erpAttrCols, mpAttrCols) {
   const key = popupCol?.key;
   if (!key) return '';
-  const linkKey = popupLinkFieldKey(popupCol);
+  const linkKey = popupLinkFieldKey(popupCol, erpAttrCols);
   const independent = !!(textPopup?.independent && textPopup.independent[key]);
   const stillLinked =
     linkKey &&
-    key !== linkKey &&
+    !isPopupMainColumn(popupCol, linkKey) &&
     !independent &&
     isBulkLinkedMpReadonly(row, key, erpAttrCols, mpAttrCols);
-  if (stillLinked) return String(textPopup?.drafts?.[linkKey] ?? '');
+  if (stillLinked) {
+    const mainCol = findErpColByLinkFieldKey(erpAttrCols, linkKey);
+    const mainKey =
+      linkKey === 'name' || linkKey === 'description'
+        ? linkKey
+        : mainCol?.key || linkKey;
+    return String(textPopup?.drafts?.[mainKey] ?? textPopup?.drafts?.[linkKey] ?? '');
+  }
   if (textPopup?.drafts && Object.prototype.hasOwnProperty.call(textPopup.drafts, key)) {
     return String(textPopup.drafts[key] ?? '');
   }
   return String(row?.[key] ?? '');
 }
 
-function rowWithPopupDraftLinks(row, textPopup, group) {
+function rowWithPopupDraftLinks(row, textPopup, group, erpAttrCols = []) {
   if (!row) return row;
-  const linkKey = popupLinkFieldKey(textPopup?.col);
+  const linkKey = popupLinkFieldKey(textPopup?.col, erpAttrCols);
   let next = { ...row, ...(textPopup?.drafts || {}) };
   if (!linkKey) return next;
   for (const c of group || []) {
-    if (!c?.key || c.key === linkKey) continue;
+    if (!c?.key || isPopupMainColumn(c, linkKey)) continue;
     if (!textPopup?.independent?.[c.key]) continue;
     const mp = bulkMpCodeForColumn(c.key) || c.mpAttr?.bucket || c.mpBucket;
     if (!mp) continue;
@@ -6835,7 +6897,7 @@ export function ProductsBulkEdit() {
       ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit)
       : row[col.key];
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
-    const limitInfo = isPopupTextColumn(col)
+    const limitInfo = isPopupTextColumn(col, erpAttrColumnDefs)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
       : null;
     const erpAid = col.erpAttr?.id != null ? String(col.erpAttr.id) : '';
@@ -6888,7 +6950,7 @@ export function ProductsBulkEdit() {
         />
       );
     }
-    if (isPopupTextColumn(col)) {
+    if (isPopupTextColumn(col, erpAttrColumnDefs)) {
       const preview = String(v ?? '').trim();
       const countOver = !!limitInfo?.over;
       const countLabel = formatLimitCountLabel(limitInfo, v);
@@ -6899,7 +6961,12 @@ export function ProductsBulkEdit() {
             linked ? ' is-linked' : ''
           }`}
           onClick={() => {
-            const group = collectPopupRelatedColumns(col, mpAttrColumnDefs);
+            const group = collectPopupRelatedColumns(
+              col,
+              mpAttrColumnDefs,
+              erpAttrColumnDefs,
+              displayColumns
+            );
             const drafts = {};
             for (const c of group) {
               const cellLinked = isBulkLinkedMpReadonly(
@@ -7114,12 +7181,17 @@ export function ProductsBulkEdit() {
     : null;
   const textPopupGroup =
     textPopup.col && textPopupRow
-      ? collectPopupRelatedColumns(textPopup.col, mpAttrColumnDefs)
+      ? collectPopupRelatedColumns(
+          textPopup.col,
+          mpAttrColumnDefs,
+          erpAttrColumnDefs,
+          displayColumns
+        )
       : [];
-  const textPopupLinkKey = popupLinkFieldKey(textPopup.col);
+  const textPopupLinkKey = popupLinkFieldKey(textPopup.col, erpAttrColumnDefs);
   const textPopupSyntheticRow =
     textPopupRow && textPopup.col
-      ? rowWithPopupDraftLinks(textPopupRow, textPopup, textPopupGroup)
+      ? rowWithPopupDraftLinks(textPopupRow, textPopup, textPopupGroup, erpAttrColumnDefs)
       : null;
   const textPopupModalTitle = textPopup.col
     ? `${
@@ -7127,7 +7199,9 @@ export function ProductsBulkEdit() {
           ? 'Название'
           : textPopupLinkKey === 'description'
             ? 'Описание'
-            : popupFieldTitle(textPopup.col)
+            : textPopup.col.erpAttr
+              ? textPopup.col.label || 'Редактируемое поле'
+              : popupFieldTitle(textPopup.col)
       }${textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''}`
     : '';
 
@@ -8266,10 +8340,11 @@ export function ProductsBulkEdit() {
           <div>
             <div className="products-bulk-text-popup-group">
               {textPopupGroup.map((c) => {
-                const linkKey = popupLinkFieldKey(c);
+                const linkKey = popupLinkFieldKey(c, erpAttrColumnDefs);
+                const isMain = isPopupMainColumn(c, linkKey);
                 const stillLinked =
                   linkKey &&
-                  c.key !== linkKey &&
+                  !isMain &&
                   !textPopup.independent?.[c.key] &&
                   isBulkLinkedMpReadonly(
                     textPopupSyntheticRow || textPopupRow,
@@ -8312,15 +8387,16 @@ export function ProductsBulkEdit() {
                         const nextVal = e.target.value;
                         setTextPopup((prev) => {
                           const nextIndependent = { ...(prev.independent || {}) };
-                          if (linkKey && c.key !== linkKey) nextIndependent[c.key] = true;
+                          if (linkKey && !isMain) nextIndependent[c.key] = true;
+                          const nextDrafts = { ...(prev.drafts || {}), [c.key]: nextVal };
                           return {
                             ...prev,
-                            drafts: { ...(prev.drafts || {}), [c.key]: nextVal },
+                            drafts: nextDrafts,
                             independent: nextIndependent,
                           };
                         });
                       }}
-                      rows={isDesc ? 8 : 4}
+                      rows={isDesc || isEditableAttrType(c.erpAttr?.type) ? 8 : 4}
                       autoFocus={c.key === textPopup.col.key}
                     />
                     {limitInfo?.items?.length ? (
@@ -8350,15 +8426,18 @@ export function ProductsBulkEdit() {
                   const drafts = textPopup.drafts || {};
                   const independent = textPopup.independent || {};
                   const pairs = [];
+                  const mainCol =
+                    textPopupGroup.find((c) => isPopupMainColumn(c, linkKey)) || textPopup.col;
+                  const mainKey = mainCol?.key;
                   if (
-                    linkKey &&
-                    Object.prototype.hasOwnProperty.call(drafts, linkKey) &&
-                    String(drafts[linkKey] ?? '') !== String(textPopupRow[linkKey] ?? '')
+                    mainKey &&
+                    Object.prototype.hasOwnProperty.call(drafts, mainKey) &&
+                    String(drafts[mainKey] ?? '') !== String(textPopupRow[mainKey] ?? '')
                   ) {
-                    pairs.push([linkKey, drafts[linkKey]]);
+                    pairs.push([mainKey, drafts[mainKey]]);
                   }
                   for (const c of textPopupGroup) {
-                    if (linkKey && c.key === linkKey) continue;
+                    if (isPopupMainColumn(c, linkKey)) continue;
                     if (independent[c.key]) pairs.push([c.key, drafts[c.key] ?? '']);
                   }
                   if (!pairs.length) {
@@ -8462,17 +8541,17 @@ export function ProductsBulkEdit() {
               <>
               <textarea
                 className={`form-control products-bulk-modal-field${
-                  isPopupTextColumn(bulkModalCol) &&
+                  isPopupTextColumn(bulkModalCol, erpAttrColumnDefs) &&
                   bulkCellLimitInfo(rows[0], bulkModalCol, limitsForRow(rows[0] || {}), bulkDraft)?.over
                     ? ' is-over-limit'
                     : ''
                 }`}
                 value={bulkDraft}
                 onChange={(e) => setBulkDraft(e.target.value)}
-                rows={isPopupTextColumn(bulkModalCol) ? 10 : 6}
+                rows={isPopupTextColumn(bulkModalCol, erpAttrColumnDefs) ? 10 : 6}
                 autoFocus
               />
-              {isPopupTextColumn(bulkModalCol) ? (
+              {isPopupTextColumn(bulkModalCol, erpAttrColumnDefs) ? (
                 (() => {
                   const info = rows[0]
                     ? bulkCellLimitInfo(rows[0], bulkModalCol, limitsForRow(rows[0]), bulkDraft)

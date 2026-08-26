@@ -23,6 +23,7 @@ import {
   PRODUCT_FORMULA_FIELDS,
   validateFormula,
 } from '../../utils/attributeFormula.js';
+import { isEditableAttrType } from '../../utils/editableAttribute.js';
 import './Attributes.css';
 
 const TYPE_LABELS = {
@@ -32,6 +33,7 @@ const TYPE_LABELS = {
   date: 'Дата',
   dictionary: 'Словарь',
   computed: 'Вычисляемое поле',
+  editable: 'Редактируемое поле',
 };
 
 function mpAttrsFromResponse(res) {
@@ -295,6 +297,9 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
   const [formula, setFormula] = useState(attribute?.formula || '');
+  const [showRelatedFields, setShowRelatedFields] = useState(
+    !!(attribute?.show_related_fields ?? attribute?.showRelatedFields)
+  );
   const systemLocked = isSystemPriceAttr(attribute);
   const sortDict = (arr) => [...arr].sort((a, b) => String(a).localeCompare(String(b), 'ru'));
   const [dictionaryValues, setDictionaryValues] = useState(
@@ -342,6 +347,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       type,
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
       formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
+      show_related_fields: isEditableAttrType(type) ? !!showRelatedFields : false,
     });
   };
 
@@ -413,6 +419,23 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
                 </button>
               ))}
           </div>
+        </div>
+      )}
+      {isEditableAttrType(type) && (
+        <div className="form-group">
+          <label className="form-check-label d-flex align-items-center gap-2">
+            <input
+              type="checkbox"
+              className="form-check-input m-0"
+              checked={showRelatedFields}
+              onChange={(e) => setShowRelatedFields(e.target.checked)}
+            />
+            Показывать связанные поля
+          </label>
+          <p className="form-hint">
+            Как у «Название» и «Описание» в массовом редактировании: при правке открывается окно
+            с основным значением и связанными полями маркетплейсов (по связям категории).
+          </p>
         </div>
       )}
       {type === 'dictionary' && (
@@ -560,7 +583,13 @@ export function Attributes() {
                     ) : null}
                   </td>
                   <td>{TYPE_LABELS[attr.type] || attr.type}</td>
-                  <td className="formula-cell">{isComputedAttrType(attr.type) ? (attr.formula || '—') : '—'}</td>
+                  <td className="formula-cell">
+                    {isComputedAttrType(attr.type)
+                      ? attr.formula || '—'
+                      : isEditableAttrType(attr.type) && attr.show_related_fields
+                        ? 'связанные поля'
+                        : '—'}
+                  </td>
                   <td>
                     <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>Изменить</Button>
                     {!isSystemPriceAttr(attr) ? (
