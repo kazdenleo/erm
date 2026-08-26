@@ -99,6 +99,22 @@
 .products-bulk-page > .app-page-title {
   padding: 6px 12px;
   margin-bottom: 8px;
+  overflow: visible;
+}
+
+.products-bulk-page .page-title-actions {
+  overflow: visible;
+}
+
+.products-bulk-add-rows {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.products-bulk-empty {
+  padding: 16px 12px;
 }
 
 .products-bulk-page .page-title-icon {

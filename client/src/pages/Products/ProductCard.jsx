@@ -60,11 +60,15 @@ export function ProductCard() {
   }, [leaveCard]);
 
   useEffect(() => {
+    void loadCategories({ silent: categories.length > 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- один раз при открытии карточки
+  }, [isNew, productId]);
+
+  useEffect(() => {
     if (isNew) {
       setProduct(null);
       setError(null);
       setLoading(false);
-      void loadCategories({ silent: categories.length > 0 });
       return undefined;
     }
     const id = Number(productId);
@@ -75,11 +79,10 @@ export function ProductCard() {
       return undefined;
     }
     let cancelled = false;
-    setLoading(true);
     setError(null);
+    setLoading(true);
     (async () => {
       try {
-        await loadCategories({ silent: categories.length > 0 });
         const response = await productsApi.getById(id);
         const full = response?.data ?? response;
         if (cancelled) return;
@@ -100,8 +103,7 @@ export function ProductCard() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadCategories нестабилен по ссылке
-  }, [isNew, productId, categories.length]);
+  }, [isNew, productId]);
 
   const handleSubmit = async (productData) => {
     try {

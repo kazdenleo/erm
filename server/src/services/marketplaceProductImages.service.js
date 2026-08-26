@@ -579,6 +579,12 @@ export async function mergeMarketplaceImagesIntoProduct(productId, marketplace, 
         perceptualHash,
       });
       if (rec) {
+        try {
+          const { attachImageSizeToRecord } = await import('./productImageAspect.service.js');
+          await attachImageSizeToRecord(rec, buf);
+        } catch {
+          /* ignore */
+        }
         existing.push(rec);
         rememberSourceUrl(rec, url, bySource);
         if (contentHash) byHash.set(String(contentHash).toLowerCase(), rec);

@@ -5,6 +5,7 @@ import {
   needsGeneratedBarcodeForPush,
   pickBarcodeForMarketplace,
   barcodeToSendToMarketplace,
+  barcodesToSendToMarketplace,
   coerceBarcodeString,
   isCorruptBarcodeString,
   barcodesFromWbGeneratePayload,
@@ -54,6 +55,15 @@ describe('productBarcodes EAN and MP tags', () => {
       { barcode: '222', marketplaces: [] },
     ];
     expect(barcodeToSendToMarketplace(rows, 'ozon')).toBe('222');
+  });
+
+  test('sends remaining ERP barcodes for a marketplace, not extras already deleted', () => {
+    const rows = [
+      { barcode: 'AAA', marketplaces: ['ozon'] },
+      { barcode: 'BBB', marketplaces: ['wb'] },
+    ];
+    expect(barcodesToSendToMarketplace(rows, 'ozon')).toEqual(['AAA']);
+    expect(barcodesToSendToMarketplace(rows, 'wb')).toEqual(['BBB']);
   });
 });
 

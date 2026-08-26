@@ -116,6 +116,10 @@ import {
   isOzonPlainDescriptionAttr,
   OZON_ANNOTATION_ATTR_ID,
 } from '../../utils/ozonCardTextAttrs.js';
+import {
+  applyTnVedAutofillToAttributes,
+  categoryTnVedDigits,
+} from '../../utils/productTnVedAttributeAutofill.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { integrationsApi } from '../../services/integrations.api.js';
 import { WbBrandSuggest } from '../../components/common/WbBrandSuggest/WbBrandSuggest.jsx';
@@ -138,11 +142,6 @@ import {
   formatLimitHitTitle,
 } from '../../utils/marketplaceFieldLimits.js';
 import { MarketplaceFieldLimitHint } from '../../components/common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
-import {
-  applyTnVedAutofillToAttributes,
-  categoryTnVedDigits,
-  isTnVedAttributeName,
-} from '../../utils/productTnVedAttributeAutofill.js';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -1271,6 +1270,14 @@ function categoryIdFromScopePick(pick) {
   const v = String(pick || '').trim();
   if (!v || v === CATEGORY_SCOPE_UNSET || v === CATEGORY_SCOPE_ALL) return '';
   return v;
+}
+
+function productMatchesBulkCategory(product, categoryId) {
+  const want = String(categoryId || '').trim();
+  if (!want) return true;
+  const cid = String(product?.user_category_id ?? product?.categoryId ?? '').trim();
+  if (want === FILTER_CATEGORY_NONE) return !cid;
+  return cid === want;
 }
 
 function readBulkPageSize() {
@@ -3063,6 +3070,7 @@ function buildErpAttrColumnDefs(
       minW: type === 'checkbox' ? 72 : isEditableAttrType(type) ? 160 : 120,
       erpAttr: {
         id,
+        name: attr.name || '',
         type,
         dictionary_values: dict,
         mpLinks,
@@ -3539,6 +3547,53 @@ function finalizeBulkRowAfterCellChange(row, key, erpAttrColDefs = [], mpAttrCol
   return copyComputedErpToLinkedMp(next, erpAttrColDefs, mpAttrColDefs);
 }
 
+function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrColDefs = [], categories = []) {
+  const code = categoryTnVedDigits(product, categories);
+  if (!code) return row;
+
+  const erpAttrs = (erpAttrColDefs || [])
+    .filter((c) => c?.erpAttr)
+    .map((c) => ({
+      id: String(c.erpAttr.id),
+      name: c.erpAttr.name || c.label || '',
+      key: c.key,
+    }));
+  const erpPrev = {};
+  for (const a of erpAttrs) erpPrev[a.id] = row[a.key] ?? '';
+  const erpNext = applyTnVedAutofillToAttributes(erpAttrs, code, erpPrev, {
+    getAttrKey: (a) => a.id,
+    getAttrName: (a) => a.name,
+  });
+
+  const mpAttrs = (mpAttrColDefs || [])
+    .filter((c) => c?.mpAttr)
+    .map((c) => ({
+      id: c.key,
+      name: c._humanName || c.label || '',
+    }));
+  const mpPrev = {};
+  for (const a of mpAttrs) mpPrev[a.id] = row[a.key] ?? '';
+  const mpNext = applyTnVedAutofillToAttributes(mpAttrs, code, mpPrev, {
+    getAttrKey: (a) => a.id,
+    getAttrName: (a) => a.name,
+  });
+
+  let next = row;
+  let changed = false;
+  const take = (key, value, erpId) => {
+    if (str(next[key]) === str(value ?? '')) return;
+    if (!changed) next = { ...next };
+    changed = true;
+    next[key] = value ?? '';
+    if (erpId && value) {
+      next._erpAttrBaseline = { ...(next._erpAttrBaseline || {}), [erpId]: String(value) };
+    }
+  };
+  for (const a of erpAttrs) take(a.key, erpNext[a.id], a.id);
+  for (const a of mpAttrs) take(a.id, mpNext[a.id], null);
+  return next;
+}
+
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -3627,6 +3682,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
   }
+  row = applyCategoryTnVedToBulkRow(row, p, erpAttrColDefs, mpAttrColDefs, categories);
   row = applyBulkRowComputed(row, erpAttrColDefs);
   for (const c of erpAttrColDefs) {
     if (!isComputedAttrType(c?.erpAttr?.type)) continue;
@@ -4803,7 +4859,7 @@ export function ProductsBulkEdit() {
     writeBulkEditFiltersStorage({
       organizationId: filterOrganizationId || '',
       brandId: filterBrandId || '',
-      categoryId: filterCategoryId || '',
+      categoryId: categoryIdFromScopePick(categoryPickDraft),
       categoryPickDraft: categoryPickDraft || CATEGORY_SCOPE_UNSET,
       productType: filterProductType || '',
       search: listSearch || '',
@@ -5579,12 +5635,11 @@ export function ProductsBulkEdit() {
       let list = [];
       let total = 0;
       if (selectedIds.length > 0) {
-        total = selectedIds.length;
-        const pageIds = selectedIds.slice(offset, offset + limit);
+        const all = [];
         const CONC = 8;
-        for (let i = 0; i < pageIds.length; i += CONC) {
+        for (let i = 0; i < selectedIds.length; i += CONC) {
           if (gen !== loadGenRef.current) return;
-          const chunk = pageIds.slice(i, i + CONC);
+          const chunk = selectedIds.slice(i, i + CONC);
           const parts = await Promise.all(
             chunk.map(async (id) => {
               try {
@@ -5596,9 +5651,12 @@ export function ProductsBulkEdit() {
             })
           );
           for (const p of parts) {
-            if (p?.id != null) list.push(p);
+            if (p?.id != null) all.push(p);
           }
         }
+        const filtered = all.filter((p) => productMatchesBulkCategory(p, cat));
+        total = filtered.length;
+        list = filtered.slice(offset, offset + limit);
       } else {
         const res = await productsApi.getAll({
           ...baseParams,
@@ -5788,6 +5846,7 @@ export function ProductsBulkEdit() {
     filterOrganizationId,
     filterBrandId,
     filterCategoryId,
+    categoryPickDraft,
     filterProductType,
     filterUnlinkedMp,
     filterLinkedMp,
@@ -5908,24 +5967,36 @@ export function ProductsBulkEdit() {
     clearChangedForPush,
   ]);
 
-  const addCreateRow = useCallback(() => {
+  const addCreateRows = useCallback((count = 1) => {
+    const n = Math.max(1, Math.min(50, Number(count) || 1));
     const defaults = buildCreateRowDefaults();
-    const id = allocNewBulkRowId();
-    const stub = emptyProductStubForBulkRow(id, defaults);
-    const row = productToRow(
-      stub,
-      mpAttrColumnDefs,
-      lengthUnit,
-      weightUnit,
-      erpAttrColumnDefs,
-      categories || []
-    );
-    setOriginals((o) => ({ ...o, [id]: cloneRow(row) }));
+    const added = [];
+    const origPatch = {};
+    for (let i = 0; i < n; i += 1) {
+      const id = allocNewBulkRowId();
+      const stub = emptyProductStubForBulkRow(id, defaults);
+      const row = productToRow(
+        stub,
+        mpAttrColumnDefs,
+        lengthUnit,
+        weightUnit,
+        erpAttrColumnDefs,
+        categories || []
+      );
+      added.push(row);
+      origPatch[id] = cloneRow(row);
+    }
+    setOriginals((o) => ({ ...o, ...origPatch }));
     setRows((list) => {
-      setTotalProducts(list.length + 1);
-      return [...list, row];
+      const nextLen = list.length + added.length;
+      setTotalProducts((t) => (createMode ? nextLen : Math.max(0, Number(t) || 0) + added.length));
+      return [...list, ...added];
     });
     markDirty();
+    queueMicrotask(() => {
+      const el = bulkScrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   }, [
     buildCreateRowDefaults,
     allocNewBulkRowId,
@@ -5935,7 +6006,14 @@ export function ProductsBulkEdit() {
     lengthUnit,
     weightUnit,
     markDirty,
+    createMode,
   ]);
+
+  useEffect(() => {
+    const fromPick = categoryIdFromScopePick(categoryPickDraft);
+    if (fromPick === String(filterCategoryId || '')) return;
+    setFilterCategoryId(fromPick);
+  }, [categoryPickDraft, filterCategoryId]);
 
   useEffect(() => {
     if (!categoryScopeReady) return;
@@ -5991,6 +6069,7 @@ export function ProductsBulkEdit() {
     requestLeaveGuard(() => {
       setFilterBrandId(v);
       setCurrentPage(1);
+      currentPageRef.current = 1;
       if (createMode) return;
       void loadProducts({ brandId: v, page: 1 });
     });
@@ -6093,6 +6172,47 @@ export function ProductsBulkEdit() {
       setCurrentPage(1);
       void loadProducts({ page: 1, limit: next });
     });
+  };
+
+  const renderAddRowsButtons = () => {
+    const disabled = saving || loading;
+    return (
+      <div className="products-bulk-add-rows">
+        <Button
+          className="btn-shadow"
+          variant="secondary"
+          size="small"
+          type="button"
+          onClick={() => addCreateRows(1)}
+          disabled={disabled}
+          title="Добавить одну пустую строку"
+        >
+          + Добавить строку
+        </Button>
+        <Button
+          className="btn-shadow"
+          variant="secondary"
+          size="small"
+          type="button"
+          onClick={() => addCreateRows(5)}
+          disabled={disabled}
+          title="Добавить 5 пустых строк"
+        >
+          + 5 строк
+        </Button>
+        <Button
+          className="btn-shadow"
+          variant="secondary"
+          size="small"
+          type="button"
+          onClick={() => addCreateRows(10)}
+          disabled={disabled}
+          title="Добавить 10 пустых строк"
+        >
+          + 10 строк
+        </Button>
+      </div>
+    );
   };
 
   const renderBulkListPager = (placement) => {
@@ -7289,23 +7409,13 @@ export function ProductsBulkEdit() {
         subtitle={subtitle}
         actions={(
           <div className="d-flex flex-wrap align-items-center gap-2">
-            {categoryScopeReady && !loading && rows.length > 0 ? (
+            {categoryScopeReady && !loading ? (
               <>
                 {hasUnsavedChanges ? (
                   <span className="text-warning small d-none d-md-inline">Есть изменения</span>
                 ) : null}
-                {createMode ? (
-                  <Button
-                    className="btn-shadow"
-                    variant="secondary"
-                    size="small"
-                    type="button"
-                    onClick={addCreateRow}
-                    disabled={saving}
-                  >
-                    + Добавить строку
-                  </Button>
-                ) : null}
+                {renderAddRowsButtons()}
+                {rows.length > 0 ? (
                 <Button
                   className="btn-shadow"
                   variant="primary"
@@ -7314,11 +7424,12 @@ export function ProductsBulkEdit() {
                   onClick={handleSaveClick}
                   disabled={
                     saving ||
-                    (!hasUnsavedChanges && !(createMode && rows.some((r) => isNewBulkRowId(r.id))))
+                    (!hasUnsavedChanges && !rows.some((r) => isNewBulkRowId(r.id)))
                   }
                 >
                   {saving ? 'Сохранение…' : createMode ? 'Создать товары' : 'Сохранить'}
                 </Button>
+                ) : null}
               </>
             ) : null}
             <button
@@ -7413,18 +7524,15 @@ export function ProductsBulkEdit() {
                         className="form-select form-select-sm products-bulk-category-scope-select"
                         value={categoryScopeReady ? categoryPickDraft : CATEGORY_SCOPE_UNSET}
                         onChange={handleCategoryScopeChange}
-                        disabled={appliedSelectedIds.length > 0}
                         aria-label={
                           createMode
                             ? 'Категория для новых товаров'
                             : 'Категория для массового редактирования'
                         }
                         title={
-                          appliedSelectedIds.length > 0
-                            ? 'Категория зафиксирована выбранными товарами'
-                            : createMode
-                              ? 'Категория определяет столбцы атрибутов для новых товаров'
-                              : 'Категория для редактирования'
+                          createMode
+                            ? 'Категория определяет столбцы атрибутов для новых товаров'
+                            : 'Категория для редактирования'
                         }
                       >
                         {!categoryScopeReady ? (
@@ -7857,21 +7965,13 @@ export function ProductsBulkEdit() {
           {loading ? (
             <p className="text-muted mb-0">{createMode ? 'Подготовка таблицы…' : 'Загрузка товаров…'}</p>
           ) : rows.length === 0 ? (
-            <p className="text-muted mb-0">
-              {createMode ? (
-                <>
-                  Нет строк для добавления.{' '}
-                  <button
-                    type="button"
-                    className="btn btn-link btn-sm p-0 align-baseline"
-                    onClick={addCreateRow}
-                  >
-                    Добавить строку
-                  </button>
-                </>
-              ) : (
-                <>
-                  Нет товаров для отображения.{' '}
+            <div className="products-bulk-empty">
+              <p className="text-muted mb-2">
+                {createMode ? 'Нет строк для добавления.' : 'Нет товаров для отображения.'}
+              </p>
+              {renderAddRowsButtons()}
+              {!createMode ? (
+                <p className="text-muted small mb-0 mt-2">
                   <button
                     type="button"
                     className="btn btn-link btn-sm p-0 align-baseline"
@@ -7880,9 +7980,9 @@ export function ProductsBulkEdit() {
                     Перейти в «Товары»
                   </button>
                   {', при необходимости выберите строки или задайте фильтры.'}
-                </>
-              )}
-            </p>
+                </p>
+              ) : null}
+            </div>
           ) : (
             <div className="products-bulk-table-xclip">
             <div className="products-bulk-table-wrap">

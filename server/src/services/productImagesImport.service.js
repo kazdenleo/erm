@@ -151,11 +151,18 @@ export async function downloadImageToProductFolder(productId, url, opts = {}) {
   const trimmed = String(url || '').trim();
   if (!isHttpUrl(trimmed)) return null;
   const { buf, ext, contentHash, perceptualHash } = await fetchAndNormalizeImageBuffer(trimmed);
-  return saveNormalizedImageToProductFolder(productId, trimmed, buf, ext, {
+  const rec = saveNormalizedImageToProductFolder(productId, trimmed, buf, ext, {
     ...opts,
     contentHash,
     perceptualHash,
   });
+  try {
+    const { attachImageSizeToRecord } = await import('./productImageAspect.service.js');
+    await attachImageSizeToRecord(rec, buf);
+  } catch {
+    /* ignore */
+  }
+  return rec;
 }
 
 /**

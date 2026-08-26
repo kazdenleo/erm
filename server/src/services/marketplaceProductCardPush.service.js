@@ -27,8 +27,7 @@ import {
   getProductImageUrlsForMarketplace,
   getProductImageUrlsForMarketplacePush,
 } from './marketplaceProductImages.service.js';
-import { WB_ITEM_DIM_CHARC, WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
-import { formatWbCertDate } from '../utils/wbCertDate.js';
+import { WB_ITEM_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 import {
   detectOzonDimensionsLockedFromInfo,
   errorIndicatesOzonVwcLock,
@@ -38,9 +37,19 @@ import {
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
 import {
+  applyOzonDescriptionHtml,
+  plainTextToMarketplaceHtml,
+} from '../utils/marketplaceDescriptionHtml.js';
+import { ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
+import {
+  applyErpBarcodesToWbCardSizes,
+  buildWbCharacteristics,
+} from '../utils/wbPushCharacteristics.js';
+import {
   normalizeBarcodeRows,
   mergeBarcodesFromMarketplace,
   barcodeToSendToMarketplace,
+  barcodesToSendToMarketplace,
   coerceBarcodeString,
 } from '../utils/productBarcodes.js';
 import {
@@ -157,8 +166,13 @@ function ozonRichContentValue(raw) {
   return '';
 }
 
-function buildOzonAttributesArray(ozonAttrs) {
+function buildOzonAttributesArray(ozonAttrs, schemaList) {
   const obj = parseJsonObject(ozonAttrs);
+  const schemaById = new Map();
+  for (const a of Array.isArray(schemaList) ? schemaList : []) {
+    const id = Number(a?.id ?? a?.attribute_id);
+    if (Number.isFinite(id) && id > 0) schemaById.set(id, a);
+  }
   const out = [];
   for (const [key, raw] of Object.entries(obj)) {
     const id = Number(key);
@@ -172,45 +186,15 @@ function buildOzonAttributesArray(ozonAttrs) {
       continue;
     }
 
-    let values = null;
-    if (typeof raw === 'object' && !Array.isArray(raw)) {
-      // Явный формат: { dictionary_value_id } | { value }
-      if (raw.dictionary_value_id != null && String(raw.dictionary_value_id).trim() !== '') {
-        const did = Number(raw.dictionary_value_id);
-        if (!Number.isFinite(did) || did <= 0) continue;
-        values = [{ dictionary_value_id: did }];
-      } else {
-        const s = String(raw.value ?? raw.id ?? '').trim();
-        if (!s) continue;
-        values = [{ value: s }];
-      }
-    } else {
-      const s = String(raw).trim();
-      if (!s) continue;
-      // «Текст->dictionary_value_id» (импорт / pull) → словарь Ozon
-      const arrow = s.indexOf('->');
-      if (arrow > 0) {
-        const idPart = s.slice(arrow + 2).trim();
-        const did = Number(idPart);
-        if (Number.isFinite(did) && did > 0 && /^\d+$/.test(idPart)) {
-          values = [{ dictionary_value_id: did }];
-        } else {
-          const textPart = s.slice(0, arrow).trim();
-          if (!textPart) continue;
-          values = [{ value: textPart }];
-        }
-      } else {
-        // Legacy-строка: всегда value. Раньше цифры (вес 250) уходили как dictionary_value_id →
-        // Ozon отклонял атрибут, а импорт отвечал skipped.
-        values = [{ value: s }];
-      }
-    }
+    const values = ozonAttrValuesForApi(id, raw, schemaById.get(id) || { id });
+    if (!values) continue;
     out.push({ complex_id: 0, id, values });
   }
   return out;
 }
 
 async function applyMappedOzonBrand(item, product) {
+  if (!isMpFieldLinked(product?.mp_field_links, 'brand', 'ozon')) return;
   const mapped = await resolveMappedBrand(product, 'ozon');
   if (!mapped?.id && !mapped?.name) return;
   const values =
@@ -240,10 +224,10 @@ const OZON_ERROR_CODE_RU = {
     'Значение характеристики вне допустимого диапазона. Исправьте число на вкладке Ozon в пределах, которые задаёт категория.',
   ATTR_VALUE_OUT_OF_RANGE:
     'Значение характеристики вне допустимого диапазона.',
-  warning_attribute_values_not_from_dictionary:
-    'Значение характеристики не из списка Ozon. Выберите вариант из выпадающего списка атрибута, а не вводите вручную.',
+    warning_attribute_values_not_from_dictionary:
+    'Значение характеристики не из списка Ozon. Если это OEM / артикул производителя — введите номер текстом, не как значение справочника.',
   attribute_values_not_from_dictionary:
-    'Значение характеристики не из списка Ozon. Выберите значение из справочника.',
+    'Значение характеристики не из списка Ozon. Если это OEM / артикул производителя — введите номер текстом, не как значение справочника.',
   required_attribute_missing:
     'Не заполнен обязательный атрибут. Заполните его на вкладке Ozon.',
   ATTRIBUTE_IS_REQUIRED:
@@ -871,13 +855,6 @@ function buildOzonImportResult({ offerId, taskId, item }) {
   };
 }
 
-/** Charc id габаритов упаковки — в кабинете WB берутся из `dimensions`, не из characteristics. */
-const WB_PACK_DIM_IDS = new Set([
-  Number(WB_PACK_DIM_CHARC.length),
-  Number(WB_PACK_DIM_CHARC.width),
-  Number(WB_PACK_DIM_CHARC.height),
-].filter((n) => Number.isFinite(n) && n > 0));
-
 /** Габариты товара (предмет) в characteristics: связь → ERP product_*; иначе draft.productDimensions. */
 function mergeWbItemProductDimsIntoAttrs(wbAttrs, product) {
   const dims = resolveProductDimensionsMmForPush(product, 'wb');
@@ -893,11 +870,6 @@ function mergeWbItemProductDimsIntoAttrs(wbAttrs, product) {
   return next;
 }
 
-/** WB charcType: 1 — массив строк, 4 — число. */
-const WB_CHARC_TYPE_STRINGS = 1;
-const WB_CHARC_TYPE_NUMBER = 4;
-const WB_NUMERIC_CHARC_MAX = 9999999.99;
-
 function wbSchemaCharcId(meta) {
   const id = Number(meta?.charcID ?? meta?.charcId ?? meta?.id);
   return Number.isFinite(id) && id > 0 ? id : null;
@@ -912,123 +884,6 @@ function buildWbCharcTypeMap(schemaList) {
     if (Number.isFinite(t)) map.set(id, t);
   }
   return map;
-}
-
-function asWbStringCharc(raw) {
-  if (raw == null) return null;
-  if (Array.isArray(raw)) {
-    const list = raw.map((x) => String(x ?? '').trim()).filter(Boolean);
-    return list.length ? list : null;
-  }
-  const s = String(raw).trim();
-  if (!s) return null;
-  if (s.includes(';')) {
-    const list = s.split(';').map((x) => x.trim()).filter(Boolean);
-    return list.length ? list : null;
-  }
-  return [s];
-}
-
-function asWbNumberCharc(raw) {
-  if (raw == null || raw === '') return null;
-  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(',', '.').replace(/\s/g, ''));
-  if (!Number.isFinite(n)) return null;
-  if (Math.abs(n) > WB_NUMERIC_CHARC_MAX) return null;
-  return n;
-}
-
-function looksLikeWbStringNotNumber(s) {
-  const t = String(s || '').trim();
-  if (!t) return false;
-  if (/[./-]/.test(t) && /\d/.test(t)) return true;
-  if (/^\d{8,}$/.test(t)) return true;
-  const n = Number(t.replace(',', '.'));
-  return Number.isFinite(n) && Math.abs(n) > WB_NUMERIC_CHARC_MAX;
-}
-
-/**
- * Привести значение из ERP к типу Content API.
- * charcType из схемы предмета: 1 = строки, 4 = число.
- * Без схемы не превращаем длинные коды/даты в number (ТН ВЭД, даты сертификата).
- */
-function coerceWbCharcValue(raw, existingValue, charcType) {
-  if (raw == null) return null;
-  const asDate = formatWbCertDate(raw);
-  if (asDate) return asWbStringCharc(asDate);
-  const type = Number(charcType);
-  if (type === WB_CHARC_TYPE_NUMBER) return asWbNumberCharc(raw);
-  if (type === WB_CHARC_TYPE_STRINGS || type === 0) return asWbStringCharc(raw);
-
-  if (typeof raw === 'boolean') return raw;
-  if (Array.isArray(raw)) return asWbStringCharc(raw);
-
-  if (typeof existingValue === 'number') return asWbNumberCharc(raw);
-  if (Array.isArray(existingValue) || typeof existingValue === 'string') return asWbStringCharc(raw);
-  if (typeof existingValue === 'boolean') {
-    const s = String(raw).trim().toLowerCase();
-    return s === '1' || s === 'true';
-  }
-
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    if (Math.abs(raw) > WB_NUMERIC_CHARC_MAX || (Number.isInteger(raw) && String(Math.trunc(raw)).length >= 8)) {
-      return asWbStringCharc(raw);
-    }
-    return raw;
-  }
-
-  const s = String(raw).trim();
-  if (!s) return null;
-  if (looksLikeWbStringNotNumber(s)) return asWbStringCharc(s);
-  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) return asWbNumberCharc(s) ?? asWbStringCharc(s);
-  return asWbStringCharc(s);
-}
-
-/**
- * Собрать characteristics для /cards/update.
- * Полная перезапись карточки: берём текущие с WB (сохраняя типы value), поверх — ERP wb_attributes.
- * Габариты упаковки (pack dim charcs) не передаём — только объект dimensions.
- */
-function buildWbCharacteristics(wbAttrs, existingChars = null, charcTypeById = null) {
-  const obj = parseJsonObject(wbAttrs);
-  const existingList = Array.isArray(existingChars) ? existingChars : [];
-  const existingById = new Map();
-  for (const c of existingList) {
-    const id = Number(c?.id ?? c?.charcID ?? c?.charcId);
-    if (Number.isFinite(id) && id > 0) existingById.set(id, c?.value);
-  }
-  const typeOf = (id) => (charcTypeById instanceof Map ? charcTypeById.get(id) : undefined);
-
-  const result = [];
-  const seen = new Set();
-
-  for (const c of existingList) {
-    const id = Number(c?.id ?? c?.charcID ?? c?.charcId);
-    if (!Number.isFinite(id) || id <= 0 || WB_PACK_DIM_IDS.has(id)) continue;
-    seen.add(id);
-    const erpRaw = obj[String(id)];
-    if (erpRaw != null && String(erpRaw).trim() !== '') {
-      const value = coerceWbCharcValue(erpRaw, c?.value, typeOf(id));
-      if (value != null && !(Array.isArray(value) && value.length === 0)) {
-        result.push({ id, value });
-        continue;
-      }
-    }
-    if (c?.value != null && c.value !== '' && !(Array.isArray(c.value) && c.value.length === 0)) {
-      result.push({ id, value: c.value });
-    }
-  }
-
-  for (const [idStr, raw] of Object.entries(obj)) {
-    const id = Number(idStr);
-    if (!Number.isFinite(id) || id <= 0 || seen.has(id) || WB_PACK_DIM_IDS.has(id)) continue;
-    if (raw == null || String(raw).trim() === '') continue;
-    const value = coerceWbCharcValue(raw, existingById.get(id), typeOf(id));
-    if (value == null || (Array.isArray(value) && value.length === 0)) continue;
-    result.push({ id, value });
-    seen.add(id);
-  }
-
-  return result;
 }
 
 /**
@@ -1054,15 +909,25 @@ async function pushOzonCard(product, categoryMm, ctx) {
     resolveCardTextForPush(product, 'ozon', 'name') || offerId;
   const description = resolveCardTextForPush(product, 'ozon', 'description') || '';
 
+  let ozonSchema = [];
+  try {
+    ozonSchema = await integrationsService.getOzonCategoryAttributes(descId, typeId, {
+      profileId: ctx.profileId ?? null,
+      organizationId: ctx.organizationId ?? null,
+    });
+  } catch (e) {
+    logger.warn('[CardPush] Ozon category attributes (schema) failed', e?.message || e);
+  }
+
   const item = {
     offer_id: offerId,
     name,
     description_category_id: descId,
     type_id: typeId,
-    attributes: buildOzonAttributesArray(product.ozon_attributes)
+    attributes: buildOzonAttributesArray(product.ozon_attributes, ozonSchema)
   };
   await applyMappedOzonBrand(item, product);
-  if (description) item.description = description;
+  applyOzonDescriptionHtml(item, description);
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);
@@ -1167,10 +1032,11 @@ async function pushOzonCard(product, categoryMm, ctx) {
     item.images = picUrls;
     item.primary_image = picUrls[0];
   }
-  const ozonBarcode = barcodeToSendToMarketplace(product.barcodes, 'ozon');
-  if (ozonBarcode) {
+  const ozonCodes = barcodesToSendToMarketplace(product.barcodes, 'ozon');
+  const ozonBarcode = barcodeToSendToMarketplace(product.barcodes, 'ozon') || ozonCodes[0] || null;
+  if (ozonCodes.length) {
     item.barcode = ozonBarcode;
-    item.barcodes = [ozonBarcode];
+    item.barcodes = ozonCodes;
   }
   logger.warn('[CardPush] Ozon pictures prepared', {
     offerId,
@@ -1647,10 +1513,14 @@ function isYmInternalBarcode(code) {
 
 function collectYmOfferBarcodes(product, ymDraft) {
   const raw = [];
-  const draftBc = trimOrNull(ymDraft?.barcode);
-  if (draftBc) raw.push(draftBc);
-  for (const row of normalizeBarcodeRows(product?.barcodes)) {
-    if (row.barcode) raw.push(row.barcode);
+  const fromProduct = normalizeBarcodeRows(product?.barcodes)
+    .map((row) => row.barcode)
+    .filter(Boolean);
+  if (fromProduct.length) {
+    raw.push(...fromProduct);
+  } else {
+    const draftBc = trimOrNull(ymDraft?.barcode);
+    if (draftBc) raw.push(draftBc);
   }
   const all = [];
   const offer = [];
@@ -1748,7 +1618,7 @@ function buildWbCardPayload(product, existing, { nmId, vendorCode, title, descri
   if (chars.length > 0) card.characteristics = chars;
 
   if (existing?.sizes && Array.isArray(existing.sizes) && existing.sizes.length > 0) {
-    card.sizes = existing.sizes.map((s) => ({
+    card.sizes = applyErpBarcodesToWbCardSizes(existing.sizes, product) || existing.sizes.map((s) => ({
       ...(s?.chrtID != null ? { chrtID: s.chrtID } : {}),
       techSize: s?.techSize ?? s?.tech_size ?? '0',
       wbSize: s?.wbSize ?? s?.wb_size ?? '',
@@ -2114,7 +1984,7 @@ async function pushYandexCard(product, categoryMm, ctx) {
 
   const offer = { offerId };
   if (name) offer.name = name;
-  if (description) offer.description = description;
+  if (description) offer.description = plainTextToMarketplaceHtml(description);
   const ymDraft = (() => {
     const raw = product.ym_draft;
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;

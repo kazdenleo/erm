@@ -1,5 +1,6 @@
 import {
   collectTnVedMpKeys,
+  fillEmptyErpTnVedAttributeValues,
   fillEmptyTnVedKeys,
   isEmptyMpStoredValue,
   isTnVedAttributeName,
@@ -13,6 +14,8 @@ describe('tnVedAttribute', () => {
     expect(isTnVedAttributeName('Код ТН ВЭД')).toBe(true);
     expect(isTnVedAttributeName('HS Code')).toBe(true);
     expect(isTnVedAttributeName('TNVED')).toBe(true);
+    expect(isTnVedAttributeName('ТНВЭД')).toBe(true);
+    expect(isTnVedAttributeName('ТН ВЭД коды ЕАЭС')).toBe(true);
     expect(isTnVedAttributeName('Бренд')).toBe(false);
     expect(isTnVedAttributeName('')).toBe(false);
   });
@@ -64,5 +67,20 @@ describe('normalizeCategoryTnVedCode', () => {
 
   test('rejects unknown codes', () => {
     expect(() => normalizeCategoryTnVedCode('0000000001')).toThrow(/справочника/);
+  });
+});
+
+describe('fillEmptyErpTnVedAttributeValues', () => {
+  test('fills only empty ERP attribute ids', () => {
+    const next = fillEmptyErpTnVedAttributeValues({ 10: 'already' }, [10, 22, '33'], '8421310000');
+    expect(next[10]).toBe('already');
+    expect(next[22]).toBe('8421310000');
+    expect(next[33]).toBe('8421310000');
+  });
+
+  test('returns same object when nothing to fill', () => {
+    const prev = { 22: '8421310000' };
+    expect(fillEmptyErpTnVedAttributeValues(prev, [22], '8421310000')).toBe(prev);
+    expect(fillEmptyErpTnVedAttributeValues(prev, [], '8421310000')).toBe(prev);
   });
 });

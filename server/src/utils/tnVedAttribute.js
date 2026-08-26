@@ -28,15 +28,42 @@ export function isTnVedAttributeName(name) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!n) return false;
+  const compact = n.replace(/\s+/g, '');
   return (
     /тн\s*вэд/.test(n) ||
+    compact.includes('тнвэд') ||
     /tn\s*ved/.test(n) ||
-    /tnved/.test(n) ||
+    compact.includes('tnved') ||
     /код\s*тн/.test(n) ||
     /commodity\s*code/.test(n) ||
     /feacn/.test(n) ||
     /hs\s*code/.test(n)
   );
+}
+
+/**
+ * Подставляет код ТН ВЭД в пустые ERP-значения атрибутов.
+ * @param {object|null|undefined} attributeValues
+ * @param {Array<string|number>} attrIds
+ * @param {string} code
+ */
+export function fillEmptyErpTnVedAttributeValues(attributeValues, attrIds, code) {
+  const digits = normalizeTnVedDigits(code);
+  if (!digits || !Array.isArray(attrIds) || attrIds.length === 0) return attributeValues;
+  const values =
+    attributeValues && typeof attributeValues === 'object' && !Array.isArray(attributeValues)
+      ? { ...attributeValues }
+      : {};
+  let changed = false;
+  for (const attrId of attrIds) {
+    const key = String(attrId);
+    if (!key || key === 'undefined' || key === 'null') continue;
+    const cur = values[key] ?? values[attrId];
+    if (cur != null && String(cur).trim() !== '') continue;
+    values[key] = digits;
+    changed = true;
+  }
+  return changed ? values : attributeValues;
 }
 
 export function isEmptyMpStoredValue(v) {

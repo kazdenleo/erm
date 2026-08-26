@@ -1262,6 +1262,7 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
+        uc.tn_ved_code as category_tn_ved_code,
         uc.mp_field_links as category_mp_field_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
@@ -2055,6 +2056,7 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
+        uc.tn_ved_code as category_tn_ved_code,
         uc.mp_field_links as category_mp_field_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
@@ -2267,6 +2269,7 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
+        uc.tn_ved_code as category_tn_ved_code,
         uc.mp_field_links as category_mp_field_links
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id

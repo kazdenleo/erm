@@ -15,6 +15,45 @@ const __dirname = path.dirname(__filename);
 const TARGET_RATIO = 3 / 4;
 const UPLOADS_PRODUCTS_ROOT = path.resolve(__dirname, '../../uploads/products');
 
+function normalizeImageSize(w, h) {
+  const width = Number(w);
+  const height = Number(h);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+export async function readImageSizeFromPath(absPath) {
+  if (!absPath) return null;
+  try {
+    const meta = await sharp(absPath).metadata();
+    return normalizeImageSize(meta.width, meta.height);
+  } catch {
+    return null;
+  }
+}
+
+export async function readImageSizeFromBuffer(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return null;
+  try {
+    const meta = await sharp(buf).metadata();
+    return normalizeImageSize(meta.width, meta.height);
+  } catch {
+    return null;
+  }
+}
+
+export async function attachImageSizeToRecord(rec, source) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const size = Buffer.isBuffer(source)
+    ? await readImageSizeFromBuffer(source)
+    : await readImageSizeFromPath(source);
+  if (size) {
+    rec.width = size.width;
+    rec.height = size.height;
+  }
+  return rec;
+}
+
 /**
  * @param {Buffer} inputBuf
  * @param {{ outLongSide?: number|null }} [opts]
@@ -165,6 +204,7 @@ export async function fitProductImageTo3x4(productId, imageId, images, opts = {}
   }
 
   const rel = `/uploads/products/${String(productId)}/${newName}`;
+  const outSize = normalizeImageSize(meta?.out?.w, meta?.out?.h);
   list[idx] = {
     ...list[idx],
     id: newName,
@@ -173,6 +213,7 @@ export async function fitProductImageTo3x4(productId, imageId, images, opts = {}
     updated_at: new Date().toISOString(),
     aspect_3x4: true,
     aspect_3x4_from: originalName,
+    ...(outSize || {}),
   };
 
   return { images: list, meta, image: list[idx] };
@@ -209,12 +250,16 @@ export async function restoreProductImageFrom3x4(productId, imageId, images) {
   const next = { ...list[idx] };
   delete next.aspect_3x4;
   delete next.aspect_3x4_from;
+  delete next.width;
+  delete next.height;
+  const originalSize = await readImageSizeFromPath(original.abs);
   list[idx] = {
     ...next,
     id: original.filename,
     filename: original.filename,
     url: rel,
     updated_at: new Date().toISOString(),
+    ...(originalSize || {}),
   };
   try {
     if (current && current.abs !== original.abs && fs.existsSync(current.abs)) {
@@ -230,4 +275,7 @@ export default {
   fitImageBufferTo3x4,
   fitProductImageTo3x4,
   restoreProductImageFrom3x4,
+  readImageSizeFromPath,
+  readImageSizeFromBuffer,
+  attachImageSizeToRecord,
 };

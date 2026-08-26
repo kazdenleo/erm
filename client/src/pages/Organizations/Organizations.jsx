@@ -111,6 +111,11 @@ export function Organizations() {
                         Импорт карточек МП раз в сутки: <strong>вкл.</strong>
                       </div>
                     )}
+                    {org.nightly_import_marketplace_data === true && (
+                      <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                        Ночной импорт данных МП: <strong>вкл.</strong>
+                      </div>
+                    )}
                     {org.address && <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>{org.address}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: '8px' }}>

@@ -9,6 +9,7 @@ import integrationsService from './integrations.service.js';
 import { resolveOzonDescTypePair } from './productsExport.service.js';
 import {
   collectTnVedMpKeys,
+  fillEmptyErpTnVedAttributeValues,
   fillEmptyTnVedKeys,
   isTnVedAttributeName,
   mpLinkIds,
@@ -292,28 +293,7 @@ class TnVedProductApplyService {
     const targets = await this._resolveTargets(id, opts);
     if (!targets) return { ok: false };
 
-    let erpUpdated = 0;
-    for (const attrId of targets.erpIds) {
-      const r = await query(
-        `INSERT INTO product_attribute_values (product_id, attribute_id, value, is_manual)
-         SELECT p.id, $2, $3, false
-         FROM products p
-         WHERE p.user_category_id = $1
-           AND NOT EXISTS (
-             SELECT 1 FROM product_attribute_values pav
-             WHERE pav.product_id = p.id
-               AND pav.attribute_id = $2
-               AND pav.value IS NOT NULL
-               AND TRIM(pav.value) <> ''
-           )
-         ON CONFLICT (product_id, attribute_id)
-         DO UPDATE SET value = EXCLUDED.value
-         WHERE product_attribute_values.value IS NULL
-            OR TRIM(product_attribute_values.value) = ''`,
-        [id, Number(attrId), normalized]
-      );
-      erpUpdated += r.rowCount || 0;
-    }
+    const erpUpdated = await this._insertEmptyErpTnVedValues(id, targets.erpIds, normalized);
 
     const ozonUpdated = await this._applyMpKeys(
       id,
@@ -343,6 +323,93 @@ class TnVedProductApplyService {
       ymUpdated,
     });
     return { ok: true, erpUpdated, ozonUpdated, wbUpdated, ymUpdated };
+  }
+
+  async _insertEmptyErpTnVedValues(categoryId, attrIds, code) {
+    const normalized = normalizeTnVedDigits(code);
+    const id = Number(categoryId);
+    if (!normalized || !Number.isFinite(id) || id <= 0) return 0;
+    let erpUpdated = 0;
+    for (const attrId of attrIds || []) {
+      const numericAttrId = Number(attrId);
+      if (!Number.isFinite(numericAttrId) || numericAttrId <= 0) continue;
+      const r = await query(
+        `INSERT INTO product_attribute_values (product_id, attribute_id, value, is_manual)
+         SELECT p.id, $2, $3, false
+         FROM products p
+         WHERE p.user_category_id = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM product_attribute_values pav
+             WHERE pav.product_id = p.id
+               AND pav.attribute_id = $2
+               AND pav.value IS NOT NULL
+               AND TRIM(pav.value) <> ''
+           )
+         ON CONFLICT (product_id, attribute_id)
+         DO UPDATE SET value = EXCLUDED.value
+         WHERE product_attribute_values.value IS NULL
+            OR TRIM(product_attribute_values.value) = ''`,
+        [id, numericAttrId, normalized]
+      );
+      erpUpdated += r.rowCount || 0;
+    }
+    return erpUpdated;
+  }
+
+  /**
+   * Быстрое заполнение пустых ERP-атрибутов ТН ВЭД без запросов схемы МП.
+   */
+  async applyErpTnVedToCategoryProducts(categoryId) {
+    const id = Number(categoryId);
+    if (!Number.isFinite(id) || id <= 0) return { ok: false };
+    const code = await this.resolveCategoryCode(id);
+    if (!code) return { ok: true, skipped: true };
+    const erp = await this._loadErpTnVedTargets(id);
+    const erpUpdated = await this._insertEmptyErpTnVedValues(id, erp.erpIds, code);
+    if (erpUpdated > 0) {
+      logger.info('[TN VED apply] ERP attributes filled', { categoryId: id, code, erpUpdated });
+    }
+    return { ok: true, erpUpdated };
+  }
+
+  /**
+   * В ответе API подставляет код ТН ВЭД категории в пустые ERP-атрибуты.
+   */
+  async fillEmptyErpAttributesOnProducts(products) {
+    const list = Array.isArray(products) ? products.filter(Boolean) : [];
+    if (!list.length) return list;
+    const catIds = uniqueStrings(
+      list.map((p) => p.user_category_id ?? p.categoryId)
+    )
+      .map((id) => Number(id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!catIds.length) return list;
+
+    const r = await query(
+      `SELECT uc.id AS category_id, uc.tn_ved_code, pa.id AS attribute_id, pa.name
+       FROM user_categories uc
+       JOIN category_attributes ca ON ca.user_category_id = uc.id
+       JOIN product_attributes pa ON pa.id = ca.attribute_id
+       WHERE uc.id = ANY($1::bigint[])`,
+      [catIds]
+    );
+    const byCat = new Map();
+    for (const row of r.rows || []) {
+      const code = normalizeTnVedDigits(row.tn_ved_code);
+      if (!code || !isTnVedAttributeName(row.name) || row.attribute_id == null) continue;
+      const cid = String(row.category_id);
+      if (!byCat.has(cid)) byCat.set(cid, { code, attrIds: [] });
+      byCat.get(cid).attrIds.push(String(row.attribute_id));
+    }
+
+    for (const p of list) {
+      const cid = String(p.user_category_id ?? p.categoryId ?? '').trim();
+      const spec = byCat.get(cid);
+      if (!spec) continue;
+      const next = fillEmptyErpTnVedAttributeValues(p.attribute_values, spec.attrIds, spec.code);
+      if (next !== p.attribute_values) p.attribute_values = next;
+    }
+    return list;
   }
 }
 

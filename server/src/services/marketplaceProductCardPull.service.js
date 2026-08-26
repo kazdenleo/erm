@@ -7,7 +7,7 @@ import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
 import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
-import { isOzonManufacturerArticleAttr } from '../utils/ozonManufacturerArticle.js';
+import { isOzonFreeTextMpAttr, isOzonManufacturerArticleAttr } from '../utils/ozonManufacturerArticle.js';
 import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
 import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
 import {
@@ -18,6 +18,7 @@ import {
 } from '../utils/productBarcodes.js';
 import { importImagesFromMarketplaceCard } from './marketplaceProductImages.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
+import { marketplaceHtmlToPlainText } from '../utils/marketplaceDescriptionHtml.js';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { createDimensionsCheckTaskIfNeeded } from './employeeTasks.service.js';
@@ -198,10 +199,7 @@ function productOrgId(product) {
 }
 
 function stripHtml(s) {
-  return String(s || '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return marketplaceHtmlToPlainText(s);
 }
 
 function mergeOzonAttrsFromCard(attrs, prev = {}) {
@@ -212,7 +210,8 @@ function mergeOzonAttrsFromCard(attrs, prev = {}) {
     if (id == null) continue;
     const normalized = ozonAttrValueToStored(a);
     if (normalized === '') continue;
-    next[String(id)] = normalized;
+    next[String(id)] =
+      Number(id) === 4191 ? marketplaceHtmlToPlainText(normalized) : normalized;
   }
   return next;
 }
@@ -220,27 +219,35 @@ function mergeOzonAttrsFromCard(attrs, prev = {}) {
 /** Значение атрибута Ozon для хранения: текст; для словаря — «Текст->id» (как в импорте). */
 function ozonAttrValueToStored(a) {
   if (!a || typeof a !== 'object') return '';
-    if (Array.isArray(a.values) && a.values[0] != null) {
-      const v = a.values[0];
-    const textRaw =
-      v.value != null && String(v.value).trim() !== ''
-        ? String(v.value).trim()
-        : '';
-    const dictId =
-      v.dictionary_value_id != null && String(v.dictionary_value_id).trim() !== ''
-        ? String(v.dictionary_value_id).trim()
-        : v.id != null && String(v.id).trim() !== ''
-          ? String(v.id).trim()
-          : '';
-    // Иногда API кладёт в value тот же id — это не человекочитаемый текст
-    const text = textRaw && !(dictId && textRaw === dictId && /^\d+$/.test(textRaw)) ? textRaw : '';
-    if (text && dictId && dictId !== text && !text.includes('->')) {
-      return `${text}->${dictId}`;
+    if (Array.isArray(a.values) && a.values.length > 0) {
+      const parts = [];
+      for (const v of a.values) {
+        if (v == null) continue;
+        const textRaw =
+          v.value != null && String(v.value).trim() !== ''
+            ? String(v.value).trim()
+            : '';
+        const dictId =
+          v.dictionary_value_id != null && String(v.dictionary_value_id).trim() !== ''
+            ? String(v.dictionary_value_id).trim()
+            : v.id != null && String(v.id).trim() !== ''
+              ? String(v.id).trim()
+              : '';
+        const text = textRaw && !(dictId && textRaw === dictId && /^\d+$/.test(textRaw)) ? textRaw : '';
+        if (isOzonFreeTextMpAttr(a) || a.values.length > 1) {
+          if (text) parts.push(text);
+          else if (dictId) parts.push(String(dictId));
+          continue;
+        }
+        if (text && dictId && dictId !== text && !text.includes('->')) {
+          return `${text}->${dictId}`;
+        }
+        if (text) return text;
+        if (dictId) return dictId;
+        return v != null ? String(v) : '';
+      }
+      if (parts.length) return parts.join('; ');
     }
-    if (text) return text;
-    if (dictId) return dictId;
-    return v != null ? String(v) : '';
-  }
   if (a.value != null && typeof a.value === 'object') {
     return String(a.value.value ?? a.value.text ?? a.value.id ?? '').trim();
   }
@@ -624,7 +631,7 @@ function mapYmCardToUpdates(product, data) {
   const updates = {};
   const resolvedOfferId = trimStr(data.offerId);
   const name = trimStr(data.name);
-  const description = trimStr(data.description);
+  const description = marketplaceHtmlToPlainText(data.description);
   if (resolvedOfferId) updates.sku_ym = resolvedOfferId;
   if (data.marketSku != null && String(data.marketSku).trim() !== '') {
     updates.ym_market_sku = String(data.marketSku).trim();

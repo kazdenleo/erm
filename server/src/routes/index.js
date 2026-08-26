@@ -324,7 +324,7 @@ router.use('/product-attributes', productAttributesRoutes);
 // Сертификаты (настройки → сертификаты)
 router.use('/certificates', certificatesRoutes);
 
-// ТН ВЭД (настройки → сертификаты → ТН ВЭД)
+// ТН ВЭД (справочник кодов для настроек категории)
 router.use('/tn-ved', tnVedRoutes);
 
 // Приёмки на склад

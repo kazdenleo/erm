@@ -67,11 +67,33 @@ class OrganizationsRepositoryPG {
         data.dailyPullMarketplaceCards === 'true' ||
         data.dailyPullMarketplaceCards === 1 ||
         data.dailyPullMarketplaceCards === '1');
+    const nightlyImportData =
+      typeof data === 'object' &&
+      (data.nightly_import_marketplace_data === true ||
+        data.nightly_import_marketplace_data === 'true' ||
+        data.nightly_import_marketplace_data === 1 ||
+        data.nightly_import_marketplace_data === '1' ||
+        data.nightlyImportMarketplaceData === true ||
+        data.nightlyImportMarketplaceData === 'true' ||
+        data.nightlyImportMarketplaceData === 1 ||
+        data.nightlyImportMarketplaceData === '1');
     const result = await query(
-      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id, skip_marketplace_stock_sync, auto_push_marketplace_prices, daily_pull_marketplace_cards)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id, skip_marketplace_stock_sync, auto_push_marketplace_prices, daily_pull_marketplace_cards, nightly_import_marketplace_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [name, inn, address, taxSystem, vat, articlePrefix, profileId, skipMpStock, autoPushPrices, dailyPullCards]
+      [
+        name,
+        inn,
+        address,
+        taxSystem,
+        vat,
+        articlePrefix,
+        profileId,
+        skipMpStock,
+        autoPushPrices,
+        dailyPullCards,
+        nightlyImportData
+      ]
     );
     return result.rows[0];
   }
@@ -132,6 +154,14 @@ class OrganizationsRepositoryPG {
     ) {
       const v = updates.daily_pull_marketplace_cards ?? updates.dailyPullMarketplaceCards;
       fields.push(`daily_pull_marketplace_cards = $${i++}`);
+      params.push(v === true || v === 'true' || v === 1 || v === '1');
+    }
+    if (
+      updates.nightly_import_marketplace_data !== undefined ||
+      updates.nightlyImportMarketplaceData !== undefined
+    ) {
+      const v = updates.nightly_import_marketplace_data ?? updates.nightlyImportMarketplaceData;
+      fields.push(`nightly_import_marketplace_data = $${i++}`);
       params.push(v === true || v === 'true' || v === 1 || v === '1');
     }
     if (fields.length === 0) return await this.findById(id);

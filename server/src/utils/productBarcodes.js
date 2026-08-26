@@ -358,6 +358,27 @@ export function barcodeToSendToMarketplace(barcodes, marketplace) {
 }
 
 /**
+ * Все ШК, которые должны уйти на МП при обновлении карточки (полная замена списка).
+ * Приоритет: с бейджем этого МП → без бейджей → все оставшиеся в ERP.
+ * @param {unknown} barcodes
+ * @param {unknown} marketplace
+ * @returns {string[]}
+ */
+export function barcodesToSendToMarketplace(barcodes, marketplace) {
+  const rows = normalizeBarcodeRows(barcodes);
+  if (!rows.length) return [];
+  const mp = normalizeBarcodeMarketplace(marketplace);
+  const pick = (list) => list.map((r) => r.barcode).filter(Boolean);
+  if (mp) {
+    const tagged = rows.filter((r) => r.marketplaces.includes(mp));
+    if (tagged.length) return pick(tagged);
+  }
+  const untagged = rows.filter((r) => !r.marketplaces.length);
+  if (untagged.length) return pick(untagged);
+  return pick(rows);
+}
+
+/**
  * Контрольная цифра EAN-13 по первым 12 цифрам.
  * @param {string} digits12
  * @returns {string|null}

@@ -36,6 +36,14 @@ function normalizeOrganizationBody(body) {
     out.daily_pull_marketplace_cards = v === true || v === 'true' || v === 1 || v === '1';
     delete out.dailyPullMarketplaceCards;
   }
+  if (
+    out.nightly_import_marketplace_data !== undefined ||
+    out.nightlyImportMarketplaceData !== undefined
+  ) {
+    const v = out.nightly_import_marketplace_data ?? out.nightlyImportMarketplaceData;
+    out.nightly_import_marketplace_data = v === true || v === 'true' || v === 1 || v === '1';
+    delete out.nightlyImportMarketplaceData;
+  }
   return out;
 }
 

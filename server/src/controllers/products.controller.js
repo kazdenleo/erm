@@ -17,6 +17,7 @@ import {
   isOrganizationAllowed,
   isWarehouseAllowed,
 } from '../utils/userAccessScope.js';
+import { attachImageSizeToRecord } from '../services/productImageAspect.service.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 /** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
@@ -912,19 +913,23 @@ class ProductsController {
       const current = Array.isArray(product?.images) ? [...product.images] : [];
       const files = Array.isArray(req.files) ? req.files : [];
       const hadAny = current.length > 0;
-      const added = files.map((f, i) => {
+      const added = [];
+      for (let i = 0; i < files.length; i += 1) {
+        const f = files[i];
         const filename = f?.filename || path.basename(f?.path || '');
         const rel = `/uploads/products/${String(id)}/${filename}`;
-        return {
+        const rec = {
           id: filename,
           url: rel,
           filename,
           originalname: f?.originalname || '',
           primary: !hadAny && i === 0,
           marketplaces: { ozon: true, wb: true, ym: true },
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         };
-      });
+        await attachImageSizeToRecord(rec, f?.path);
+        added.push(rec);
+      }
       const nextImages = [...current, ...added];
       const updated = await productsService.update(id, { images: nextImages });
       return res.status(200).json({ ok: true, data: updated?.images ?? nextImages });

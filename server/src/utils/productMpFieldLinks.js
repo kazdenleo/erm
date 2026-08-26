@@ -450,8 +450,9 @@ export function isWbCountryCharcName(name) {
 export function isWbCharcDuplicatingDedicatedField(name) {
   const n = normalizeWbCharcName(name);
   if (!n) return false;
-  if (n === 'oem' || n === 'оем' || n.startsWith('oem ') || n.startsWith('оем ')) return false;
-  if (n.includes('oem-номер') || n.includes('oem номер')) return false;
+  if (/[oо][eе][mм]/i.test(n) && !n.includes('артикул производител') && !n.includes('партномер')) {
+    return false;
+  }
   if (n === 'название' || n === 'наименование' || n === 'name' || n === 'title') return true;
   if (/^название(\s+товар(а)?)?$/.test(n)) return true;
   if (/^наименование(\s+товар(а)?)?$/.test(n)) return true;

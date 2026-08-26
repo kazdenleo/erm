@@ -17,7 +17,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
     article_prefix: '',
     profile_id: '',
     auto_push_marketplace_prices: false,
-    daily_pull_marketplace_cards: false
+    daily_pull_marketplace_cards: false,
+    nightly_import_marketplace_data: false
   });
   const [errors, setErrors] = useState({});
 
@@ -44,7 +45,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
         article_prefix: organization.article_prefix || '',
         profile_id: organization.profile_id != null ? String(organization.profile_id) : '',
         auto_push_marketplace_prices: organization.auto_push_marketplace_prices === true,
-        daily_pull_marketplace_cards: organization.daily_pull_marketplace_cards === true
+        daily_pull_marketplace_cards: organization.daily_pull_marketplace_cards === true,
+        nightly_import_marketplace_data: organization.nightly_import_marketplace_data === true
       }));
     }
   }, [organization]);
@@ -80,7 +82,8 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
       vat: formData.vat && formData.vat.trim() !== '' ? formData.vat : null,
       article_prefix: formData.article_prefix.trim() || null,
       auto_push_marketplace_prices: formData.auto_push_marketplace_prices === true,
-      daily_pull_marketplace_cards: formData.daily_pull_marketplace_cards === true
+      daily_pull_marketplace_cards: formData.daily_pull_marketplace_cards === true,
+      nightly_import_marketplace_data: formData.nightly_import_marketplace_data === true
     };
     if (isAdmin && profiles.length > 0) {
       payload.profile_id = formData.profile_id ? Number(formData.profile_id) : null;
@@ -221,6 +224,25 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
           <p className="text-muted small mt-1 mb-0">
             Раз в сутки подтягиваем название, описание, бренд, артикул, габариты и атрибуты с Ozon, Wildberries и Яндекс.Маркет.
             Если данные изменились — появится уведомление по товару; расхождения с «Основным» показываются в карточке.
+          </p>
+        </div>
+        <div className="col-12">
+          <div className="form-check form-switch mb-0">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              id="orgNightlyImportMpData"
+              checked={formData.nightly_import_marketplace_data === true}
+              onChange={(e) => handleChange('nightly_import_marketplace_data', e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="orgNightlyImportMpData">
+              Импортировать данные с маркетплейсов ночью автоматически
+            </label>
+          </div>
+          <p className="text-muted small mt-1 mb-0">
+            Ночью подтягиваем финансовые отчёты FBO/FBS, снимки остатков на складах МП и пересчитываем выкуп
+            по профилю этой организации. Заказы и отзывы синхронизируются отдельно по общему расписанию.
           </p>
         </div>
       </div>

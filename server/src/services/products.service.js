@@ -255,8 +255,29 @@ class ProductsService {
     this.brandsRepository = repositoryFactory.getBrandsRepository();
   }
 
+  async _healCategoryTnVedErpAttributes(options = {}) {
+    const raw = options.categoryId ?? options.user_category_id;
+    const s = raw != null ? String(raw).trim() : '';
+    if (!/^\d+$/.test(s)) return;
+    try {
+      await tnVedProductApplyService.applyErpTnVedToCategoryProducts(s);
+    } catch (e) {
+      console.warn('[Products Service] TN VED ERP apply:', e?.message || e);
+    }
+  }
+
+  async _fillTnVedErpAttributes(products) {
+    try {
+      await tnVedProductApplyService.fillEmptyErpAttributesOnProducts(products);
+    } catch (e) {
+      console.warn('[Products Service] TN VED ERP fill:', e?.message || e);
+    }
+  }
+
   async getAll(options = {}) {
+    await this._healCategoryTnVedErpAttributes(options);
     const items = await this.repository.findAll(options);
+    await this._fillTnVedErpAttributes(items);
     return this._attachParticipationFlags(items);
   }
 
@@ -357,8 +378,10 @@ class ProductsService {
       await this._syncStockListReservedColumn(withFlags, options);
       return { items: withFlags, total };
     }
+    await this._healCategoryTnVedErpAttributes(options);
     const items = await this.repository.findAll(options);
     const total = await this.repository.countAll(options);
+    await this._fillTnVedErpAttributes(items);
     const withFlags = await this._attachParticipationFlags(items);
     return { items: withFlags, total };
   }
@@ -569,6 +592,7 @@ class ProductsService {
       limit: MAX_EXPORT_PRODUCTS + 1,
       forExport: true
     });
+    await this._fillTnVedErpAttributes(products);
     if (!Array.isArray(products)) {
       const err = new Error('Не удалось получить список товаров');
       err.statusCode = 500;
@@ -1043,6 +1067,7 @@ class ProductsService {
       error.statusCode = 404;
       throw error;
     }
+    await this._fillTnVedErpAttributes([product]);
     return product;
   }
 
@@ -1054,6 +1079,7 @@ class ProductsService {
       product = await this.getById(id);
     }
     if (!product) return null;
+    await this._fillTnVedErpAttributes([product]);
     const [withFlags] = await this._attachParticipationFlags([product]);
     return withFlags;
   }

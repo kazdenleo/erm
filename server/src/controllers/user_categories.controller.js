@@ -12,7 +12,7 @@ import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfi
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
 import { normalizeCategoryDedicatedCharcLinks, serializeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
-import { normalizeCategoryTnVedCode } from '../utils/tnVedAttribute.js';
+import { normalizeCategoryTnVedCode, normalizeTnVedDigits } from '../utils/tnVedAttribute.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -553,8 +553,10 @@ class UserCategoriesController {
       category.attribute_mp_links = attrMeta.map;
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
 
-      if (tnVedCode) {
-        await applyTnVedToCategoryProductsSafe(id, tnVedCode, tid);
+      const codeToApply =
+        tnVedCode !== undefined ? tnVedCode : normalizeTnVedDigits(category.tn_ved_code);
+      if (codeToApply) {
+        await applyTnVedToCategoryProductsSafe(id, codeToApply, tid);
       }
       
       return res.status(200).json({ ok: true, data: category });

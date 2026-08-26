@@ -34,6 +34,67 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './Products.css';
 
+function AddProductHoverMenu({ onOne, onMany, className = '', label = '+ Добавить товар' }) {
+  const rootRef = useRef(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (!rootRef.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDoc);
+    return () => document.removeEventListener('pointerdown', onDoc);
+  }, [open]);
+
+  return (
+    <div
+      ref={rootRef}
+      className={`products-add-hover me-2 ${open ? 'is-open' : ''} ${className}`.trim()}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <Button
+        className="btn-shadow"
+        variant="primary"
+        size="small"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+      </Button>
+      <div className="products-add-hover__menu" role="menu">
+        <div className="products-add-hover__panel">
+        <button
+          type="button"
+          role="menuitem"
+          className="products-add-hover__item"
+          onClick={() => {
+            setOpen(false);
+            onOne();
+          }}
+        >
+          Один товар
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="products-add-hover__item"
+          onClick={() => {
+            setOpen(false);
+            onMany();
+          }}
+        >
+          Несколько товаров
+        </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Текст подсказки со составом комплекта (title / native tooltip) */
 function buildKitCompositionTitle(components) {
   if (!Array.isArray(components) || components.length === 0) {
@@ -1052,18 +1113,7 @@ export function Products() {
         )}
         actions={(
           <>
-            <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
-              + Добавить
-            </Button>
-            <Button
-              className="btn-shadow me-2"
-              variant="secondary"
-              size="small"
-              onClick={handleCreateMany}
-              title="Создать несколько товаров в таблице массового редактирования"
-            >
-              + Добавить несколько
-            </Button>
+            <AddProductHoverMenu onOne={handleCreate} onMany={handleCreateMany} />
             {enrichmentEnabled ? (
               <Button
                 className="btn-shadow me-2"
@@ -1433,7 +1483,11 @@ export function Products() {
             {!loading && visibleProducts.length === 0 ? (
               <div className="empty-state">
                 <p>Товары не найдены</p>
-                <Button onClick={handleCreate}>Добавить первый товар</Button>
+                <AddProductHoverMenu
+                  label="Добавить первый товар"
+                  onOne={handleCreate}
+                  onMany={handleCreateMany}
+                />
               </div>
             ) : (
               <div className="products-table-container">
