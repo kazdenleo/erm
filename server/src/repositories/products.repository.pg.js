@@ -15,6 +15,11 @@ import {
   isCorruptBarcodeString,
   shouldUseBarcodeDigitFallback,
 } from '../utils/productBarcodes.js';
+import {
+  isEmptyAttrPatch,
+  mergeJsonAttrPatch,
+  mergeJsonObjectPatch,
+} from '../utils/productAttrPatch.js';
 
 function mapBarcodeDbRow(row) {
   return {
@@ -207,7 +212,12 @@ async function insertAttributeValueRow(client, productId, attrId, value, isManua
   }
 }
 
-async function replaceProductAttributeValues(client, productId, valuesMap, manualMap, toolMap) {
+async function patchProductAttributeValues(client, productId, valuesMap, manualMap, toolMap) {
+  if (valuesMap == null || typeof valuesMap !== 'object' || Array.isArray(valuesMap)) return;
+  const entries = Object.entries(valuesMap);
+  // Пустой объект — не удалять все атрибуты (частичный PUT / форма без загруженных значений).
+  if (!entries.length) return;
+
   let prevManual = {};
   let prevTool = {};
   try {
@@ -237,14 +247,20 @@ async function replaceProductAttributeValues(client, productId, valuesMap, manua
       throw err;
     }
   }
-  await client.query('DELETE FROM product_attribute_values WHERE product_id = $1', [productId]);
   const manual = parseAttributeManualMap(manualMap);
   const tool = parseAttributeManualMap(toolMap);
   const hasManualPayload = manualMap != null && typeof manualMap === 'object';
   const hasToolPayload = toolMap != null && typeof toolMap === 'object';
-  for (const [attrId, value] of Object.entries(valuesMap || {})) {
+  for (const [attrId, value] of entries) {
     const aid = parseInt(attrId, 10);
-    if (!aid || value === undefined || value === null || value === '') continue;
+    if (!aid) continue;
+    if (value === undefined || value === null || value === '') {
+      await client.query(
+        'DELETE FROM product_attribute_values WHERE product_id = $1 AND attribute_id = $2',
+        [productId, aid]
+      );
+      continue;
+    }
     const key = String(aid);
     const isManual = hasManualPayload ? manual[key] === true : !!prevManual[key];
     const isTool = hasToolPayload ? tool[key] === true : !!prevTool[key];
@@ -3116,8 +3132,29 @@ class ProductsRepositoryPG {
     const numId = typeof id === 'string' ? parseInt(id, 10) : id;
     await transaction(async (client) => {
       // Для комплектов cost не берём из запроса — он считается по комплектующим ниже
-      const typeCheck = await client.query('SELECT product_type FROM products WHERE id = $1', [numId]);
-      const isKit = typeCheck.rows.length > 0 && String(typeCheck.rows[0].product_type || '').trim().toLowerCase() === 'kit';
+      const typeCheck = await client.query(
+        `SELECT product_type, ozon_attributes, wb_attributes, ym_attributes, ozon_draft, wb_draft, ym_draft
+         FROM products WHERE id = $1`,
+        [numId]
+      );
+      const existingRow = typeCheck.rows[0] || {};
+      const isKit = String(existingRow.product_type || '').trim().toLowerCase() === 'kit';
+      for (const field of ['ozon_attributes', 'wb_attributes', 'ym_attributes']) {
+        if (!Object.prototype.hasOwnProperty.call(updates, field)) continue;
+        if (isEmptyAttrPatch(updates[field])) {
+          delete updates[field];
+          continue;
+        }
+        updates[field] = mergeJsonAttrPatch(existingRow[field], updates[field]);
+      }
+      for (const field of ['ozon_draft', 'wb_draft', 'ym_draft']) {
+        if (!Object.prototype.hasOwnProperty.call(updates, field)) continue;
+        if (isEmptyAttrPatch(updates[field])) {
+          delete updates[field];
+          continue;
+        }
+        updates[field] = mergeJsonObjectPatch(existingRow[field], updates[field]);
+      }
       const allowedFields = [
         'sku', 'name', 'brand_id', 'price', ...(isKit ? [] : ['cost']), 'buyout_rate', 
         'buyout_rate_ozon', 'buyout_rate_wb', 'buyout_rate_ym',
@@ -3267,7 +3304,7 @@ class ProductsRepositoryPG {
       
       // Значения атрибутов товара
       if (updates.hasOwnProperty('attribute_values') && typeof updates.attribute_values === 'object') {
-        await replaceProductAttributeValues(
+        await patchProductAttributeValues(
           client,
           numId,
           updates.attribute_values,

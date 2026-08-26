@@ -6550,7 +6550,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : [],
       attribute_values: attributeValuesPayload,
       attribute_values_manual: attributeValuesManualPayload,
-      attribute_values_tool: attributeValuesToolPayload,
+      attribute_values_tool: Object.keys(attributeValuesToolPayload).length
+        ? attributeValuesToolPayload
+        : undefined,
       ozon_attributes: ozonAttributesPayload,
       wb_attributes: wbAttributesPayload,
       ym_attributes: (() => {

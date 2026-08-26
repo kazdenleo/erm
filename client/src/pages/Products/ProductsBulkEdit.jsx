@@ -1851,6 +1851,10 @@ function parseMpAttrCellValue(text, bucket, baselineRaw) {
     const n = Number(t);
     if (Number.isFinite(n)) return n;
   }
+  if (baselineRaw && typeof baselineRaw === 'object' && !Array.isArray(baselineRaw)) {
+    const shown = stringifyMpAttrValue(baselineRaw);
+    if (shown && (shown === t || formatOzonAttrDisplayValue(shown) === t)) return baselineRaw;
+  }
   if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
     try {
       return JSON.parse(t);
@@ -4093,7 +4097,12 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         weightUnit
       );
       if (stableAttrJson(before) !== stableAttrJson(after)) {
-        touch(map[bucket], after);
+        const patch = {};
+        for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (stableAttrJson({ v: before[k] }) === stableAttrJson({ v: after[k] })) continue;
+          patch[k] = Object.prototype.hasOwnProperty.call(after, k) ? after[k] : null;
+        }
+        if (Object.keys(patch).length) touch(map[bucket], patch);
       }
     }
   }
@@ -4136,8 +4145,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       const nextVal = str(current[c.key]).trim();
       const prevVal = str(original[c.key]).trim();
       if (prevVal !== nextVal) changed = true;
-      if (nextVal === '') delete after[aid];
-      else after[aid] = nextVal;
+      if (nextVal === '') {
+        // Пустая ячейка без изменения не должна выкидывать значение из baseline.
+        if (prevVal !== '') after[aid] = '';
+      } else after[aid] = nextVal;
     }
     if (changed || stableAttrJson(before) !== stableAttrJson(after)) {
       touch('attribute_values', after);
@@ -4255,13 +4266,23 @@ function sanitizeMpAttrsForApi(obj) {
   const out = {};
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
   for (const [k, v] of Object.entries(obj)) {
-    if (v == null) continue;
     if (String(k).startsWith('__')) continue;
+    if (v == null) {
+      out[k] = null;
+      continue;
+    }
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       out[k] = v;
       continue;
     }
     if (typeof v === 'object') {
+      if (
+        !Array.isArray(v) &&
+        (v.dictionary_value_id != null || v.value != null || v.id != null)
+      ) {
+        out[k] = v;
+        continue;
+      }
       const text = stringifyMpAttrValue(v);
       if (text !== '') out[k] = text;
     }
