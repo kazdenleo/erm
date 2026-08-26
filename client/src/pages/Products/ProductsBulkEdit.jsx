@@ -23,6 +23,10 @@ import {
   canRestoreImageAspect3x4,
 } from '../../utils/productImage.js';
 import {
+  ProductImageAspectFrame,
+  useProductHasNon3x4Image,
+} from '../../hooks/useProductImageAspect3x4.js';
+import {
   barcodeStringsFromProduct,
   coerceBarcodeString,
   isCorruptBarcodeString,
@@ -125,6 +129,8 @@ import {
   confirmFieldLimitViolations,
   emptyFieldLimitsByMp,
   expandPushMarketplaces,
+  formatLimitCountLabel,
+  formatLimitHitTitle,
 } from '../../utils/marketplaceFieldLimits.js';
 import { MarketplaceFieldLimitHint } from '../../components/common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
 import './ProductsBulkEdit.css';
@@ -4276,6 +4282,55 @@ function buildCreatePayload(original, current, mpAttrColDefs, lengthUnit, weight
 const BULK_ROW_ESTIMATE_PX = 60;
 const BULK_ROW_OVERSCAN = 12;
 
+function BulkPhotoCell({ product, sku, rowId, stickyClass, stickyStyle, onOpen }) {
+  const url = getPrimaryProductImageUrl(product);
+  const images = product?.images;
+  const count = parseProductImages(images).length;
+  const hasBad = useProductHasNon3x4Image(images);
+  const openTitle = hasBad
+    ? 'Есть изображение не 3:4'
+    : url
+      ? 'Управление изображениями'
+      : 'Добавить изображения';
+  return (
+    <td className={stickyClass || undefined} style={stickyStyle}>
+      <div className="products-bulk-thumb-wrap">
+        <button
+          type="button"
+          className={`products-bulk-thumb products-bulk-thumb--btn${hasBad ? ' is-bad-aspect' : ''}`}
+          onClick={() => onOpen()}
+          title={openTitle}
+          aria-label={
+            url
+              ? `Управление изображениями товара ${sku || rowId}`
+              : `Добавить изображения для ${sku || rowId}`
+          }
+        >
+          {url ? <img src={url} alt="" loading="lazy" /> : <span className="products-bulk-thumb-empty">+</span>}
+        </button>
+        {count > 0 ? (
+          <button
+            type="button"
+            className="products-bulk-thumb-count"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+            title={
+              count > 1
+                ? `Фото (${count}) — загрузить или удалить; OZ/WB/ЯМ — куда выгружать`
+                : 'Управление изображениями'
+            }
+            aria-label={`Управление изображениями товара ${sku || rowId}`}
+          >
+            {count}
+          </button>
+        ) : null}
+      </div>
+    </td>
+  );
+}
+
 /**
  * Справочник Ozon/WB/YM: полный список option монтируем только в фокусе.
  * Иначе 100 строк × десятки dict-колонок × сотни значений вешают вкладку.
@@ -6802,7 +6857,7 @@ export function ProductsBulkEdit() {
         : toolChanged
           ? 'Изменено другим инструментом (стратегия или обновление мин. цен)'
         : overLimit
-          ? `${overLimit.mpLabel}: ${overLimit.length} из ${overLimit.maxLength} символов`
+          ? formatLimitHitTitle(overLimit)
         : linked
           ? 'Связано с «Основным». Правка отвяжет это поле у строки'
           : col.title || undefined,
@@ -6835,7 +6890,8 @@ export function ProductsBulkEdit() {
     }
     if (isPopupTextColumn(col)) {
       const preview = String(v ?? '').trim();
-      const countOver = !!(limitInfo?.maxLength && limitInfo.over);
+      const countOver = !!limitInfo?.over;
+      const countLabel = formatLimitCountLabel(limitInfo, v);
       return (
         <button
           type="button"
@@ -6875,7 +6931,7 @@ export function ProductsBulkEdit() {
           }}
           title={
             countOver
-              ? `${limitInfo.mpLabel}: ${limitInfo.length} / ${limitInfo.maxLength}`
+              ? formatLimitHitTitle(limitInfo)
               : linked
                 ? 'Связано с «Основным». Нажмите, чтобы править (правка отвяжет поле)'
                 : 'Открыть редактирование'
@@ -6883,9 +6939,7 @@ export function ProductsBulkEdit() {
         >
           <span className="products-bulk-text-popup-preview">{preview || '—'}</span>
           <span className={`products-bulk-text-popup-count${countOver ? ' is-over' : ''}`}>
-            {limitInfo?.maxLength
-              ? `${limitInfo.length} / ${limitInfo.maxLength}`
-              : `${String(v ?? '').length}`}
+            {countLabel}
           </span>
         </button>
       );
@@ -6897,10 +6951,10 @@ export function ProductsBulkEdit() {
       const options = Array.isArray(col.dictOptions) ? col.dictOptions : [];
       return (
         <select
-          className="products-bulk-cell-input"
+          className={`products-bulk-cell-input${overLimit ? ' products-bulk-cell-over-limit' : ''}`}
           value={v ?? ''}
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
-          title={col.title || col.label}
+          title={overLimit ? formatLimitHitTitle(overLimit) : col.title || col.label}
         >
           <option value="">—</option>
           {options.map((opt) => (
@@ -7992,52 +8046,16 @@ export function ProductsBulkEdit() {
                       );
                     }
                     if (col.key === '_photo') {
-                      const url = getPrimaryProductImageUrl(row._productRef);
-                      const count = parseProductImages(row._productRef?.images).length;
                       return (
-                        <td
+                        <BulkPhotoCell
                           key={col.key}
-                          className={colStickyClass(col) || undefined}
-                          style={colStickyStyle(col)}
-                        >
-                          <div className="products-bulk-thumb-wrap">
-                            <button
-                              type="button"
-                              className="products-bulk-thumb products-bulk-thumb--btn"
-                              onClick={() => openImagesModal(row)}
-                              title={
-                                url
-                                  ? 'Управление изображениями'
-                                  : 'Добавить изображения'
-                              }
-                              aria-label={
-                                url
-                                  ? `Управление изображениями товара ${row.sku || row.id}`
-                                  : `Добавить изображения для ${row.sku || row.id}`
-                              }
-                            >
-                              {url ? <img src={url} alt="" loading="lazy" /> : <span className="products-bulk-thumb-empty">+</span>}
-                            </button>
-                            {count > 0 ? (
-                              <button
-                                type="button"
-                                className="products-bulk-thumb-count"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openImagesModal(row);
-                                }}
-                                title={
-                                  count > 1
-                                    ? `Фото (${count}) — загрузить или удалить; OZ/WB/ЯМ — куда выгружать`
-                                    : 'Управление изображениями'
-                                }
-                                aria-label={`Управление изображениями товара ${row.sku || row.id}`}
-                              >
-                                {count}
-                              </button>
-                            ) : null}
-                          </div>
-                        </td>
+                          product={row._productRef}
+                          sku={row.sku}
+                          rowId={row.id}
+                          stickyClass={colStickyClass(col)}
+                          stickyStyle={colStickyStyle(col)}
+                          onOpen={() => openImagesModal(row)}
+                        />
                       );
                     }
                     return (
@@ -8149,7 +8167,7 @@ export function ProductsBulkEdit() {
                 const canRestore = canRestoreImageAspect3x4(img);
                 return (
                   <div key={id || `img-${index}`} className="products-bulk-images-card">
-                    <div className="products-bulk-images-card-media">
+                    <ProductImageAspectFrame img={img} className="products-bulk-images-card-media">
                       {url ? (
                         <button
                           type="button"
@@ -8215,7 +8233,7 @@ export function ProductsBulkEdit() {
                           </MarketplaceToggle>
                         </span>
                       </div>
-                    </div>
+                    </ProductImageAspectFrame>
                     <button
                       type="button"
                       className={`products-bulk-images-aspect-btn${canRestore ? ' is-restore' : ''}`}
@@ -8305,12 +8323,8 @@ export function ProductsBulkEdit() {
                       rows={isDesc ? 8 : 4}
                       autoFocus={c.key === textPopup.col.key}
                     />
-                    {limitInfo?.maxLength ? (
-                      <MarketplaceFieldLimitHint
-                        value={val}
-                        maxLength={limitInfo.maxLength}
-                        mpLabel={limitInfo.mpLabel}
-                      />
+                    {limitInfo?.items?.length ? (
+                      <MarketplaceFieldLimitHint items={limitInfo.items} />
                     ) : (
                       <div className="mp-field-limit-hint">{String(val || '').length}</div>
                     )}
@@ -8462,13 +8476,9 @@ export function ProductsBulkEdit() {
                 (() => {
                   const info = rows[0]
                     ? bulkCellLimitInfo(rows[0], bulkModalCol, limitsForRow(rows[0]), bulkDraft)
-                    : { length: String(bulkDraft || '').length, maxLength: null };
-                  return info.maxLength ? (
-                    <MarketplaceFieldLimitHint
-                      value={bulkDraft}
-                      maxLength={info.maxLength}
-                      mpLabel={info.mpLabel}
-                    />
+                    : { length: String(bulkDraft || '').length, items: [] };
+                  return info.items?.length ? (
+                    <MarketplaceFieldLimitHint items={info.items} />
                   ) : (
                     <div className="mp-field-limit-hint">{String(bulkDraft || '').length}</div>
                   );

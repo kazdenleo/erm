@@ -82,3 +82,51 @@ export function canRestoreImageAspect3x4(img) {
   if (img.aspect_3x4 !== true) return false;
   return String(img.aspect_3x4_from || '').trim().length > 0;
 }
+
+/** Целевое соотношение сторон карточки маркетплейса (ширина / высота). */
+export const PRODUCT_IMAGE_ASPECT_3X4 = 3 / 4;
+/** Допуск на округление пикселей (~2% от 0.75). */
+export const PRODUCT_IMAGE_ASPECT_3X4_TOLERANCE = 0.02;
+
+export function productImageDisplayUrl(img) {
+  if (!img || typeof img !== 'object') return '';
+  const raw = img.url ?? img.src ?? img.link ?? '';
+  return resolveProductImageUrl(typeof raw === 'string' ? raw.trim() : '');
+}
+
+/**
+ * @param {unknown} width
+ * @param {unknown} height
+ * @returns {boolean|null} true = 3:4, false = другое, null = неизвестно
+ */
+export function isSizeRatio3x4(width, height) {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return Math.abs(w / h - PRODUCT_IMAGE_ASPECT_3X4) <= PRODUCT_IMAGE_ASPECT_3X4_TOLERANCE;
+}
+
+/**
+ * По метаданным записи изображения (без загрузки файла).
+ * @returns {boolean|null}
+ */
+export function imageMetaIs3x4(img) {
+  if (!img || typeof img !== 'object') return null;
+  if (img.aspect_3x4 === true) return true;
+  return isSizeRatio3x4(img.width, img.height);
+}
+
+export function imagesAspectFingerprint(images) {
+  return parseProductImages(images)
+    .map((img) =>
+      [
+        img?.id ?? '',
+        img?.filename ?? '',
+        img?.url ?? img?.src ?? img?.link ?? '',
+        img?.width ?? '',
+        img?.height ?? '',
+        img?.aspect_3x4 === true ? '1' : '0',
+      ].join(':')
+    )
+    .join('|');
+}

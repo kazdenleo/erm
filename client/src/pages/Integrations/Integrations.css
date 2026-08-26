@@ -194,16 +194,18 @@
 
 .marketplace-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 400px);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 460px);
   gap: 24px;
   align-items: start;
 }
 
 .marketplace-field-limits {
+  position: relative;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card, #fff);
+  overflow: visible;
 }
 
 .marketplace-field-limits__title {
@@ -213,9 +215,16 @@
 }
 
 .marketplace-field-limits__hint {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
   font-size: 12px;
   line-height: 1.45;
+  color: var(--muted);
+}
+
+.marketplace-field-limits__meta {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--muted);
 }
 
@@ -232,9 +241,15 @@
   margin-bottom: 12px;
 }
 
+.marketplace-field-limits__search {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 .marketplace-field-limits__row {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) 88px auto 28px;
+  grid-template-columns: minmax(0, 1.5fr) 108px 72px 28px;
   gap: 8px;
   align-items: center;
 }
@@ -242,6 +257,64 @@
 .marketplace-field-limits__row .input {
   padding: 8px 10px;
   font-size: 13px;
+}
+
+.marketplace-field-limits__picker {
+  position: relative;
+  min-width: 0;
+}
+
+.marketplace-field-limits__picker-btn {
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.marketplace-field-limits__picker-menu {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 280px;
+  overflow: auto;
+  background: var(--card, #fff);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.marketplace-field-limits__picker-search {
+  margin: 8px;
+  width: calc(100% - 16px);
+  box-sizing: border-box;
+}
+
+.marketplace-field-limits__picker-group {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 10px 2px;
+  font-weight: 600;
+}
+
+.marketplace-field-limits__picker-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.marketplace-field-limits__picker-item:hover,
+.marketplace-field-limits__picker-item.is-active {
+  background: rgba(59, 130, 246, 0.1);
 }
 
 .marketplace-field-limits__suffix {

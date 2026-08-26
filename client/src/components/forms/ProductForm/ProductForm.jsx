@@ -11,6 +11,7 @@ import { productAttributesApi } from '../../../services/productAttributes.api';
 import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
 import { canRestoreImageAspect3x4 } from '../../../utils/productImage.js';
+import { ProductImageAspectFrame } from '../../../hooks/useProductImageAspect3x4.js';
 import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
@@ -63,15 +64,14 @@ import {
   normalizeBarcodeRows,
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
-import { MarketplaceFieldLimitHint } from '../../common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
+import { MarketplaceFieldLimitHint, ControlFieldLimitHint } from '../../common/MarketplaceFieldLimitHint/MarketplaceFieldLimitHint.jsx';
 import {
   collectProductFormLimitViolations,
   confirmFieldLimitViolations,
   expandPushMarketplaces,
-  findFieldLimit,
   formControlLimitHit,
   limitClassName,
-  strictestLinkedMainLimit,
+  limitItemsForControl,
 } from '../../../utils/marketplaceFieldLimits.js';
 import { useMarketplaceFieldLimits } from '../../../hooks/useMarketplaceFieldLimits.js';
 import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
@@ -2402,11 +2402,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [selectedBrandForCert?.id, formData.categoryId]);
 
   const tnVedCode = useMemo(() => {
+    const cat = selectedCategoryForCert || {};
+    const fromCat = cat.tn_ved_code || cat.tnVedCode || '';
+    if (fromCat) return String(fromCat).replace(/\D/g, '');
     const fromBinding = brandCategoryTnVed?.[0]?.tn_ved_code;
     if (fromBinding) return String(fromBinding).replace(/\D/g, '');
-    const cat = selectedCategoryForCert || {};
     const br = selectedBrandForCert || {};
-    const fallback = cat.tn_ved_code || cat.tnVedCode || br.tn_ved_code || br.tnVedCode || '';
+    const fallback = br.tn_ved_code || br.tnVedCode || '';
     return String(fallback).replace(/\D/g, '');
   }, [brandCategoryTnVed, selectedCategoryForCert, selectedBrandForCert]);
 
@@ -2652,17 +2654,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
     [formData.organizationId, productsListOrganizationId, currentProduct?.organization_id, currentProduct?.organizationId]
   );
   const { limitsByMp } = useMarketplaceFieldLimits(wbAttributesOrganizationId);
-  const confirmProductFieldLimits = (actionLabel, marketplaces) =>
-    confirmFieldLimitViolations(
-      collectProductFormLimitViolations({
-        formData,
-        ozonAttributes,
-        ozonAttributeValues,
-        limitsByMp,
-        marketplaces,
-      }),
-      actionLabel
-    );
 
   // Яндекс.Маркет: id листовой категории (строка цифр — без потери точности для длинных id)
   const ymMarketCategoryId = useMemo(() => {
@@ -3220,6 +3211,37 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
     return { ozon, wb, ym };
   }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes]);
+
+  const fieldLimitExtras = useMemo(
+    () => ({
+      ozonAttributes,
+      ozonAttributeValues,
+      wbAttributes: wbCategoryAttributes,
+      wbAttributeValues,
+      ymAttributes: ymFormAttributes,
+      ymAttributeValues,
+      erpAttributes: allAttributes,
+    }),
+    [
+      ozonAttributes,
+      ozonAttributeValues,
+      wbCategoryAttributes,
+      wbAttributeValues,
+      ymFormAttributes,
+      ymAttributeValues,
+      allAttributes,
+    ]
+  );
+  const confirmProductFieldLimits = (actionLabel, marketplaces) =>
+    confirmFieldLimitViolations(
+      collectProductFormLimitViolations({
+        formData,
+        ...fieldLimitExtras,
+        limitsByMp,
+        marketplaces,
+      }),
+      actionLabel
+    );
 
   useEffect(() => {
     if (!ymCategoryAttributes?.length) return;
@@ -6666,18 +6688,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const mpFieldClass = (base, fieldKey) =>
     limitClassName(
       `${base}${isMpFieldDirty(mpBaselineRef.current, fieldKey, formData[fieldKey]) ? ' mp-field-dirty' : ''}`,
-      formControlLimitHit(limitsByMp, formData, fieldKey, { ozonAttributes, ozonAttributeValues })
+      formControlLimitHit(limitsByMp, formData, fieldKey, fieldLimitExtras)
     );
 
   const mpAttrClass = (base, marketplace, attrId, value) =>
     limitClassName(
       `${base}${isMpAttrDirty(mpBaselineRef.current, marketplace, attrId, value) ? ' mp-field-dirty' : ''}`,
-      marketplace === 'ozon'
-        ? formControlLimitHit(limitsByMp, formData, `ozon-attr:${attrId}`, {
-            ozonAttributes,
-            ozonAttributeValues,
-          })
-        : null
+      formControlLimitHit(limitsByMp, formData, `${marketplace}-attr:${attrId}`, fieldLimitExtras)
     );
 
   const pushDirtyMarketplaces = async (productId, mps) => {
@@ -6834,7 +6851,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           type="text"
             className={limitClassName(
               'form-control form-control-sm',
-              formControlLimitHit(limitsByMp, formData, 'name', { ozonAttributes, ozonAttributeValues })
+              formControlLimitHit(limitsByMp, formData, 'name', fieldLimitExtras)
             )}
           placeholder="Напр. Ручка гелевая"
           value={formData.name}
@@ -6842,13 +6859,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
           required
         />
         {(() => {
-          const linked = strictestLinkedMainLimit(limitsByMp, 'name', formData.mp_field_links);
-          return linked ? (
-            <MarketplaceFieldLimitHint
-              value={formData.name}
-              maxLength={linked.maxLength}
-              mpLabel={linked.mpLabel}
-            />
+          const items = limitItemsForControl(limitsByMp, formData, 'name', fieldLimitExtras);
+          return items.length ? (
+            <MarketplaceFieldLimitHint items={items} />
           ) : null;
         })()}
         {errors.name && <div className="error">{errors.name}</div>}
@@ -6874,7 +6887,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   type="text"
                   className={limitClassName(
                     'form-control form-control-sm',
-                    formControlLimitHit(limitsByMp, formData, 'sku')
+                    formControlLimitHit(limitsByMp, formData, 'sku', fieldLimitExtras)
                   )}
                   placeholder={skuPrefix ? `${skuPrefix}001` : 'SKU-001'}
                   value={formData.sku}
@@ -6906,7 +6919,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           id="description"
           className={limitClassName(
             'form-control form-control-sm',
-            formControlLimitHit(limitsByMp, formData, 'description', { ozonAttributes, ozonAttributeValues })
+            formControlLimitHit(limitsByMp, formData, 'description', fieldLimitExtras)
           )}
           rows="6"
           placeholder="Краткое описание"
@@ -6914,13 +6927,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
           onChange={(e) => handleChange('description', e.target.value)}
         />
         {(() => {
-          const linked = strictestLinkedMainLimit(limitsByMp, 'description', formData.mp_field_links);
-          return linked ? (
-            <MarketplaceFieldLimitHint
-              value={formData.description}
-              maxLength={linked.maxLength}
-              mpLabel={linked.mpLabel}
-            />
+          const items = limitItemsForControl(limitsByMp, formData, 'description', fieldLimitExtras);
+          return items.length ? (
+            <MarketplaceFieldLimitHint items={items} />
           ) : (
             <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
               Символов: {String(formData.description || '').length}
@@ -7035,7 +7044,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         cursor: 'grab',
                       }}
                     >
-                      <div
+                      <ProductImageAspectFrame
+                        img={img}
+                        className="product-form-image-preview"
                         style={{
                           position: 'relative',
                           borderRadius: '8px',
@@ -7197,7 +7208,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             </ProductImageMpToggle>
                           </div>
                         </div>
-                      </div>
+                      </ProductImageAspectFrame>
                       <button
                         type="button"
                         disabled={aspectBusy || imageUploadLoading}
@@ -7463,7 +7474,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               id="brand"
             className={limitClassName(
               'form-select form-select-sm',
-              formControlLimitHit(limitsByMp, formData, 'brand', { ozonAttributes, ozonAttributeValues })
+              formControlLimitHit(limitsByMp, formData, 'brand', fieldLimitExtras)
             )}
               value={formData.brand}
               onChange={(e) => handleBrandSelect(e.target.value)}
@@ -7475,6 +7486,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </option>
               ))}
             </select>
+            <ControlFieldLimitHint
+              limitsByMp={limitsByMp}
+              formData={formData}
+              controlKey="brand"
+              extras={fieldLimitExtras}
+            />
           </div>
         <div className="col-md-6">
           <MpFieldLabel
@@ -7766,6 +7783,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
               const key = String(attr.id);
               const value = formData.attributeValues[key];
               const rawValue = value !== undefined && value !== null ? value : '';
+              const erpControlKey = `erp-attr:${attr.id}`;
+              const erpHit = formControlLimitHit(limitsByMp, formData, erpControlKey, fieldLimitExtras);
+              const erpInputClass = (base) => limitClassName(base, erpHit);
+              const erpHint = (
+                <ControlFieldLimitHint
+                  limitsByMp={limitsByMp}
+                  formData={formData}
+                  controlKey={erpControlKey}
+                  extras={fieldLimitExtras}
+                />
+              );
               const attrDiffs = getLinkedAttrMpDiffs(attr, rawValue, {
                 formData,
                 ozonAttributes,
@@ -7835,10 +7863,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     <input
                       id={`attr-${attr.id}`}
                       type="number"
-                      className="form-control form-control-sm"
+                      className={erpInputClass('form-control form-control-sm')}
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
+                    {erpHint}
                   </div>
                 );
               }
@@ -7871,7 +7900,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     <ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />
                     <select
                       id={`attr-${attr.id}`}
-                      className="form-select form-select-sm"
+                      className={erpInputClass('form-select form-select-sm')}
                       value={storedStr}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     >
@@ -7885,6 +7914,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         Значение задано вручную (нет в словаре); при сохранении оно запишется как есть.
                       </div>
                     )}
+                    {erpHint}
                   </div>
                 );
               }
@@ -7903,7 +7933,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   String(rawValue).includes('\n') ? (
                     <textarea
                       id={`attr-${attr.id}`}
-                      className="form-control form-control-sm"
+                      className={erpInputClass('form-control form-control-sm')}
                       rows={/применимост/i.test(String(attr.name || '')) ? 6 : 3}
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
@@ -7912,11 +7942,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     <input
                       id={`attr-${attr.id}`}
                       type="text"
-                      className="form-control form-control-sm"
+                      className={erpInputClass('form-control form-control-sm')}
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
                   )}
+                  {erpHint}
                 </div>
               );
             })}
@@ -8779,6 +8810,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               <option value="" disabled>Загрузка...</option>
                             )}
                           </select>
+                          <ControlFieldLimitHint
+                            limitsByMp={limitsByMp}
+                            formData={formData}
+                            controlKey={`ozon-attr:${attr.id}`}
+                            extras={fieldLimitExtras}
+                          />
                         </div>
                       );
                     }
@@ -8846,10 +8883,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         </label>
                         {(() => {
                           const isAnnotation = isOzonAnnotationAttr(attr);
-                          const isName = isOzonNameAttr(attr);
-                          const isBrand = isOzonBrandAttr(attr);
-                          const limitField = isName ? 'name' : isAnnotation ? 'description' : isBrand ? 'brand' : null;
-                          const limitMax = limitField ? findFieldLimit(limitsByMp, 'ozon', limitField)?.max_length : null;
+                          const items = limitItemsForControl(
+                            limitsByMp,
+                            formData,
+                            `ozon-attr:${attr.id}`,
+                            fieldLimitExtras
+                          );
                           if (!isAnnotation) {
                             return (
                               <>
@@ -8860,12 +8899,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 value={rawValue}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />
-                                {limitMax ? (
-                                  <MarketplaceFieldLimitHint
-                                    value={rawValue}
-                                    maxLength={limitMax}
-                                    mpLabel="Ozon"
-                                  />
+                                {items.length ? (
+                                  <MarketplaceFieldLimitHint items={items} />
                                 ) : null}
                               </>
                             );
@@ -8880,12 +8915,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 value={textValue}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />
-                              {limitMax ? (
-                                <MarketplaceFieldLimitHint
-                                  value={textValue}
-                                  maxLength={limitMax}
-                                  mpLabel="Ozon"
-                                />
+                              {items.length ? (
+                                <MarketplaceFieldLimitHint items={items} />
                               ) : (
                               <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
                                 Символов: {textValue.length}
@@ -9083,9 +9114,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     }
                   />
                   <MarketplaceFieldLimitHint
-                    value={formData.mp_wb_name}
-                    maxLength={findFieldLimit(limitsByMp, 'wb', 'name')?.max_length}
-                    mpLabel="WB"
+                    items={limitItemsForControl(limitsByMp, formData, 'mp_wb_name', fieldLimitExtras)}
                   />
                 </div>
                 <div className="col-md-6">
@@ -9107,9 +9136,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     placeholder="Словарь WB, например MILES"
                   />
                   <MarketplaceFieldLimitHint
-                    value={formData.mp_wb_brand}
-                    maxLength={findFieldLimit(limitsByMp, 'wb', 'brand')?.max_length}
-                    mpLabel="WB"
+                    items={limitItemsForControl(limitsByMp, formData, 'mp_wb_brand', fieldLimitExtras)}
                   />
                 </div>
                 <div className="col-12">
@@ -9136,9 +9163,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     placeholder="Описание для Wildberries"
                   />
                   <MarketplaceFieldLimitHint
-                    value={formData.mp_wb_description}
-                    maxLength={findFieldLimit(limitsByMp, 'wb', 'description')?.max_length}
-                    mpLabel="WB"
+                    items={limitItemsForControl(limitsByMp, formData, 'mp_wb_description', fieldLimitExtras)}
                   />
                 </div>
               </div>
@@ -9262,6 +9287,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, a)}
                               />
                             )}
+                            <ControlFieldLimitHint
+                              limitsByMp={limitsByMp}
+                              formData={formData}
+                              controlKey={`wb-attr:${key}`}
+                              extras={fieldLimitExtras}
+                            />
                           </div>
                         );
                       })}
@@ -9304,6 +9335,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               className={mpAttrClass('form-control form-control-sm', 'wb', key, display)}
                               value={display}
                               onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, c)}
+                            />
+                            <ControlFieldLimitHint
+                              limitsByMp={limitsByMp}
+                              formData={formData}
+                              controlKey={`wb-attr:${key}`}
+                              extras={fieldLimitExtras}
                             />
                           </div>
                         );
@@ -9604,9 +9641,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     }
                   />
                   <MarketplaceFieldLimitHint
-                    value={formData.mp_ym_name}
-                    maxLength={findFieldLimit(limitsByMp, 'ym', 'name')?.max_length}
-                    mpLabel="Яндекс"
+                    items={limitItemsForControl(limitsByMp, formData, 'mp_ym_name', fieldLimitExtras)}
                   />
                 </div>
                 <div className="col-12">
@@ -9632,17 +9667,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     }
                     placeholder="Описание для Яндекс.Маркета"
                   />
-                  {findFieldLimit(limitsByMp, 'ym', 'description') ? (
-                    <MarketplaceFieldLimitHint
-                      value={formData.mp_ym_description}
-                      maxLength={findFieldLimit(limitsByMp, 'ym', 'description')?.max_length}
-                      mpLabel="Яндекс"
-                    />
+                  {(() => {
+                    const items = limitItemsForControl(
+                      limitsByMp,
+                      formData,
+                      'mp_ym_description',
+                      fieldLimitExtras
+                    );
+                    return items.length ? (
+                    <MarketplaceFieldLimitHint items={items} />
                   ) : (
                     <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
                       Символов: {String(formData.mp_ym_description || '').length}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
                 <div className="col-12 col-md-6">
                   <label className="form-label" htmlFor="ym-tab-vendor">
@@ -9897,6 +9936,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             ))}
                           </select>
                           {a.description ? <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>{a.description}</div> : null}
+                          <ControlFieldLimitHint
+                            limitsByMp={limitsByMp}
+                            formData={formData}
+                            controlKey={`ym-attr:${key}`}
+                            extras={fieldLimitExtras}
+                          />
                         </div>
                       );
                     }
@@ -9946,6 +9991,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             onChange={(e) => setVal(e.target.value)}
                             step="any"
                           />
+                          <ControlFieldLimitHint
+                            limitsByMp={limitsByMp}
+                            formData={formData}
+                            controlKey={`ym-attr:${key}`}
+                            extras={fieldLimitExtras}
+                          />
                         </div>
                       );
                     }
@@ -9967,6 +10018,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           onChange={(e) => setVal(e.target.value)}
                         />
                         {a.description ? <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>{a.description}</div> : null}
+                        <ControlFieldLimitHint
+                          limitsByMp={limitsByMp}
+                          formData={formData}
+                          controlKey={`ym-attr:${key}`}
+                          extras={fieldLimitExtras}
+                        />
                       </div>
                     );
                   })}
