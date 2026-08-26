@@ -218,7 +218,9 @@ function isOzonNeedsMarkingCodeAttr(attr) {
     .replace(/ё/g, 'е')
     .replace(/\s+/g, ' ')
     .trim();
-  return n.includes('нужен код маркировки');
+  if (n.includes('нужен код маркировки')) return true;
+  const type = String(attr?.type || attr?.attribute_type || '').toLowerCase();
+  return type === 'boolean' && n.includes('маркировк');
 }
 
 function ozonAttrHasPushedValue(a) {
@@ -230,7 +232,7 @@ function ozonAttrHasPushedValue(a) {
   });
 }
 
-/** Обязательное «Нужен код маркировки»: для фильтров обычно «Нет». */
+/** Обязательное «Нужен код маркировки»: Boolean без справочника — true/false. */
 async function ensureOzonNeedsMarkingAttribute(item, schemaList, descId, typeId, ctx) {
   const schema = (Array.isArray(schemaList) ? schemaList : []).filter(isOzonNeedsMarkingCodeAttr);
   if (!schema.length) return;
@@ -240,28 +242,31 @@ async function ensureOzonNeedsMarkingAttribute(item, schemaList, descId, typeId,
     if (!Number.isFinite(id) || id <= 0) continue;
     const idx = attrs.findIndex((x) => Number(x.id) === id);
     if (idx >= 0 && ozonAttrHasPushedValue(attrs[idx])) continue;
-    let values = [{ value: 'Нет' }];
-    try {
-      const dict = await integrationsService.getOzonAttributeValues(id, descId, typeId, {
-        profileId: ctx.profileId ?? null,
-        organizationId: ctx.organizationId ?? null,
-        limit: 100,
-      });
-      const list = Array.isArray(dict?.result) ? dict.result : [];
-      const picked =
-        list.find((v) => /^(нет|no)$/i.test(String(v.value || v.name || '').trim())) ||
-        list.find((v) => /нет/i.test(String(v.value || v.name || '')));
-      const did = Number(picked?.id);
-      if (picked && Number.isFinite(did) && did > 0) {
-        values = [{ dictionary_value_id: did, value: String(picked.value || 'Нет') }];
-      } else if (picked?.value) {
-        values = [{ value: String(picked.value) }];
+    const type = String(a.type || a.attribute_type || '').toLowerCase();
+    let values = [{ value: type === 'boolean' ? 'false' : 'Нет' }];
+    if (type !== 'boolean') {
+      try {
+        const dict = await integrationsService.getOzonAttributeValues(id, descId, typeId, {
+          profileId: ctx.profileId ?? null,
+          organizationId: ctx.organizationId ?? null,
+          limit: 100,
+        });
+        const list = Array.isArray(dict?.result) ? dict.result : [];
+        const picked =
+          list.find((v) => /^(нет|no)$/i.test(String(v.value || v.name || '').trim())) ||
+          list.find((v) => /нет/i.test(String(v.value || v.name || '')));
+        const did = Number(picked?.id);
+        if (picked && Number.isFinite(did) && did > 0) {
+          values = [{ dictionary_value_id: did, value: String(picked.value || 'Нет') }];
+        } else if (picked?.value) {
+          values = [{ value: String(picked.value) }];
+        }
+      } catch (e) {
+        logger.warn('[CardPush] Ozon marking dictionary failed', {
+          id,
+          error: e?.message || String(e),
+        });
       }
-    } catch (e) {
-      logger.warn('[CardPush] Ozon marking dictionary failed', {
-        id,
-        error: e?.message || String(e),
-      });
     }
     const next = { complex_id: 0, id, values };
     if (idx >= 0) attrs[idx] = next;
@@ -1165,16 +1170,18 @@ async function pushOzonCard(product, categoryMm, ctx) {
 
     let result = buildOzonImportResult({ offerId, taskId, item: itemResult });
 
-    // skipped + есть атрибуты: добиваем через /v1/product/attributes/update
+    // Карточка в статусе «не создан» import часто не перезаписывает атрибуты.
+    // attributes/update нужен не только при skipped — иначе старые коллекции (br/; ) остаются.
     const status = String(itemResult?.status || result.status || '').toLowerCase();
-    const pid = item.product_id;
-    if (
-      status === 'skipped' &&
-      pid != null &&
-      Array.isArray(item.attributes) &&
-      item.attributes.length > 0
-    ) {
+    const pid = item.product_id ?? ozonInfoBefore?.id;
+    if (pid != null && Number(pid) > 0 && Array.isArray(item.attributes) && item.attributes.length > 0) {
       try {
+        logger.info('[CardPush] Ozon attributes/update', {
+          offerId,
+          product_id: Number(pid),
+          importStatus: status,
+          attrIds: item.attributes.map((a) => a.id),
+        });
         const upd = await integrationsService._ozonApiPost(
           '/v1/product/attributes/update',
           {

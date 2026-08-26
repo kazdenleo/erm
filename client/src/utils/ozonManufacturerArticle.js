@@ -210,9 +210,23 @@ function sanitizeOzonSingletonText(id, text, attrMeta) {
   return joinOzonListAsSentence(s);
 }
 
+export function ozonBooleanAttrValue(raw) {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+  if (!s) return 'false';
+  if (/^(1|true|да|yes)$/.test(s)) return 'true';
+  return 'false';
+}
+
 export function ozonAttrValuesForApi(id, raw, attrMeta) {
   const { text, dictId } = parseOzonStoredAttr(raw);
   const meta = attrMeta && typeof attrMeta === 'object' ? { ...attrMeta, id: attrMeta.id ?? id } : { id };
+  const type = String(meta.type ?? meta.attribute_type ?? '').toLowerCase();
+  if (type === 'boolean') {
+    return [{ value: ozonBooleanAttrValue(text || (dictId != null ? String(dictId) : '')) }];
+  }
   const isFreeText =
     Number(id) === OZON_PARTNUMBER_ATTR_ID || isOzonFreeTextMpAttr(meta);
   const forcePlain =
@@ -247,7 +261,8 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
     const vals = Array.isArray(a.values) ? a.values.filter((v) => v != null) : [];
     if (vals.length <= 1) {
       const v = vals[0];
-      if (!v || v.dictionary_value_id != null) return a;
+      const did = v != null ? Number(v.dictionary_value_id) : 0;
+      if (!v || (Number.isFinite(did) && did > 0)) return a;
       const next = sanitizeOzonSingletonText(id, v.value ?? '');
       if (!next || next === String(v.value ?? '').trim()) return a;
       return { ...a, values: [{ value: next }] };

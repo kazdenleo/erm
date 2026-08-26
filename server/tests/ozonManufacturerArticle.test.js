@@ -120,6 +120,15 @@ describe('ozon OEM / part number push', () => {
     expect(values).toEqual([{ value: 'Фильтр воздушный 1шт. Упаковачная коробка 1 шт' }]);
   });
 
+  test('boolean marking attr is sent as true/false', () => {
+    const no = ozonAttrValuesForApi(23536, '', { id: 23536, name: 'Нужен код маркировки', type: 'Boolean' });
+    expect(no).toEqual([{ value: 'false' }]);
+    const yes = ozonAttrValuesForApi(23536, 'Да', { id: 23536, name: 'Нужен код маркировки', type: 'Boolean' });
+    expect(yes).toEqual([{ value: 'true' }]);
+    const nyet = ozonAttrValuesForApi(23536, 'Нет', { id: 23536, type: 'Boolean' });
+    expect(nyet).toEqual([{ value: 'false' }]);
+  });
+
   test('annotation with newlines stays a single flattened value', () => {
     const values = ozonAttrValuesForApi(
       4191,
