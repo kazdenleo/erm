@@ -36,6 +36,7 @@ import {
   isComputedAttrType,
   isSystemPriceAttr,
 } from '../../utils/attributeFormula.js';
+import { attrShowsRelatedFields, isEditableAttrType } from '../../utils/editableAttribute.js';
 import {
   getMpDraftDimensionsMm,
   getYmDraftWeightDimensions,
@@ -1256,6 +1257,13 @@ const SESSION_SHOW_MP_ATTRS_LEGACY = 'productsBulkShowMpAttrs';
 const CATEGORY_SCOPE_UNSET = '__unset__';
 const CATEGORY_SCOPE_ALL = '__all__';
 
+/** categoryId для API из значения селекта категории. */
+function categoryIdFromScopePick(pick) {
+  const v = String(pick || '').trim();
+  if (!v || v === CATEGORY_SCOPE_UNSET || v === CATEGORY_SCOPE_ALL) return '';
+  return v;
+}
+
 function readBulkPageSize() {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BULK_PAGE_SIZE_LS) : null;
@@ -1335,7 +1343,12 @@ function mergeBulkEditFilters(stored, navFilters) {
   const out = { ...base };
   if (nav.organizationId != null) out.organizationId = String(nav.organizationId);
   if (nav.brandId != null) out.brandId = String(nav.brandId);
-  if (nav.categoryId != null) out.categoryId = String(nav.categoryId);
+  if (nav.categoryId != null) {
+    const cat = String(nav.categoryId);
+    out.categoryId = cat;
+    // Пустая категория со страницы «Товары» не должна оставлять старый pick в селекте.
+    out.categoryPickDraft = cat.trim() === '' ? CATEGORY_SCOPE_ALL : cat;
+  }
   if (nav.productType != null) out.productType = String(nav.productType).trim();
   if (nav.search != null) out.search = String(nav.search);
   if (nav.unlinkedMp != null) out.unlinkedMp = nav.unlinkedMp;
@@ -1388,6 +1401,11 @@ function resolveInitialCategoryPickDraft(locationState, filters) {
   const cat = filters?.categoryId;
   if (cat != null && String(cat).trim() !== '') return String(cat);
   return CATEGORY_SCOPE_UNSET;
+}
+
+/** Список грузим по тому же id, что показан в селекте. */
+function resolveInitialFilterCategoryId(locationState, filters) {
+  return categoryIdFromScopePick(resolveInitialCategoryPickDraft(locationState, filters));
 }
 
 function readMpBucketVisibility() {
@@ -4411,6 +4429,10 @@ function isPopupMainColumn(col, linkKey) {
   return false;
 }
 
+function erpColShowsRelatedFields(erpCol) {
+  return !!(erpCol?.showRelatedFields || attrShowsRelatedFields(erpCol?.erpAttr));
+}
+
 function findErpColByLinkFieldKey(erpAttrCols, linkKey) {
   if (!linkKey) return null;
   return (erpAttrCols || []).find((c) => c.linkFieldKey === linkKey) || null;
@@ -4716,10 +4738,9 @@ export function ProductsBulkEdit() {
     const v = initialBulkFilters?.brandId;
     return v != null && v !== '' ? String(v) : '';
   });
-  const [filterCategoryId, setFilterCategoryId] = useState(() => {
-    const v = initialBulkFilters?.categoryId;
-    return v != null && v !== '' ? String(v) : '';
-  });
+  const [filterCategoryId, setFilterCategoryId] = useState(() =>
+    resolveInitialFilterCategoryId(location.state, initialBulkFilters)
+  );
   const [filterProductType, setFilterProductType] = useState(() => {
     const v = initialBulkFilters?.productType;
     return v != null && String(v).trim() !== '' ? String(v).trim() : '';
@@ -5349,6 +5370,7 @@ export function ProductsBulkEdit() {
     setCategoryPickDraft(v === CATEGORY_SCOPE_ALL ? CATEGORY_SCOPE_ALL : v);
     setFilterCategoryId(cat);
     setCurrentPage(1);
+    currentPageRef.current = 1;
     setCategoryScopeReady(true);
     setLoadError(null);
     setSaveMessage(null);
@@ -5473,7 +5495,14 @@ export function ProductsBulkEdit() {
 
       const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
       const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
-      const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
+      const cat =
+        partial.categoryId !== undefined
+          ? categoryIdFromScopePick(
+              partial.categoryId === '' || partial.categoryId === CATEGORY_SCOPE_ALL
+                ? CATEGORY_SCOPE_ALL
+                : partial.categoryId
+            )
+          : categoryIdFromScopePick(categoryPickDraft);
       const pt = partial.productType !== undefined ? partial.productType : filterProductType;
       const unlinked =
         partial.unlinkedMp !== undefined ? partial.unlinkedMp : filterUnlinkedMp;
