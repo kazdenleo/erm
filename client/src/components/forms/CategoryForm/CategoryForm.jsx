@@ -33,6 +33,7 @@ import {
   withMpOfferFieldAttrs,
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
+import { TnVedCodePicker } from '../../common/TnVedCodePicker/TnVedCodePicker.jsx';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
 function normalizeOzonPathForMatch(s) {
@@ -227,6 +228,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
     description: '',
     parentId: '',
     skip_marketplace_stock_sync: false,
+    tn_ved_code: '',
     wbCategoryId: '',
     ozonCategoryId: '',
     ymCategoryId: ''
@@ -237,6 +239,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const [addedDedicatedKeys, setAddedDedicatedKeys] = useState([]);
   const [pickerValue, setPickerValue] = useState('');
   const [expandedMapKeys, setExpandedMapKeys] = useState({});
+  const [settingsTab, setSettingsTab] = useState('main');
   const [ozonMpAttrs, setOzonMpAttrs] = useState(() => withMpOfferFieldAttrs('ozon', []));
   const [wbMpAttrs, setWbMpAttrs] = useState(() => withMpOfferFieldAttrs('wb', []));
   const [ymMpAttrs, setYmMpAttrs] = useState(() => withMpOfferFieldAttrs('ym', []));
@@ -807,7 +810,8 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         name: category.name || '',
         description: category.description || '',
         parentId: category.parent_id || category.parentId || '',
-        skip_marketplace_stock_sync: category.skip_marketplace_stock_sync === true
+        skip_marketplace_stock_sync: category.skip_marketplace_stock_sync === true,
+        tn_ved_code: category.tn_ved_code || category.tnVedCode || '',
         // Не сбрасываем wbCategoryId, ozonCategoryId, ymCategoryId здесь,
         // они устанавливаются в loadExistingMappings после загрузки категорий
       }));
@@ -821,12 +825,14 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setAddedDedicatedKeys(listAddedDedicatedMainKeys(category.mp_field_links));
       setPickerValue('');
       setExpandedMapKeys({});
+      setSettingsTab('main');
     } else {
       setFormData({
         name: '',
         description: '',
         parentId: '',
         skip_marketplace_stock_sync: false,
+        tn_ved_code: '',
         wbCategoryId: '',
         ozonCategoryId: '',
         ymCategoryId: ''
@@ -837,6 +843,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setAddedDedicatedKeys([]);
       setPickerValue('');
       setExpandedMapKeys({});
+      setSettingsTab('main');
       setOzonSelectedCategory(null);
       setOzonSearchQuery('');
       setWbSelectedCategory(null);
@@ -968,6 +975,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       attribute_mp_links: attributeMpLinks,
       mp_field_links: serializeCategoryDedicatedCharcLinks(dedicatedMpLinks, addedDedicatedKeys),
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
+      tn_ved_code: formData.tn_ved_code || null,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
         ozon: ozonCategoryId || null,
@@ -1043,6 +1051,32 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   return (
     <>
     <form className="category-form" onSubmit={handleSubmit}>
+      <ul className="nav nav-tabs mb-3">
+        <li className="nav-item" role="presentation">
+          <button
+            type="button"
+            className={`nav-link${settingsTab === 'main' ? ' active' : ''}`}
+            onClick={() => setSettingsTab('main')}
+          >
+            Основное
+          </button>
+        </li>
+        <li className="nav-item" role="presentation">
+          <button
+            type="button"
+            className={`nav-link${settingsTab === 'attributes' ? ' active' : ''}`}
+            onClick={() => setSettingsTab('attributes')}
+          >
+            Атрибуты
+            {addedDedicatedKeys.length + attributeIds.length > 0
+              ? ` (${addedDedicatedKeys.length + attributeIds.length})`
+              : ''}
+          </button>
+        </li>
+      </ul>
+
+      {settingsTab === 'main' ? (
+      <>
       <div className="field">
         <label className="label" htmlFor="categoryName">
           Название категории <span style={{color: '#ef4444'}}>*</span>
@@ -1081,6 +1115,15 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       </div>
 
       <div className="field">
+        <TnVedCodePicker
+          id="categoryTnVedCode"
+          value={formData.tn_ved_code || ''}
+          onChange={(code) => handleChange('tn_ved_code', code)}
+          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено."
+        />
+      </div>
+
+      <div className="field">
         <label className="label" htmlFor="categoryParent">Родительская категория</label>
         <select
           id="categoryParent"
@@ -1098,12 +1141,13 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
             ))}
         </select>
       </div>
-
-      <div className="field" style={{ marginTop: '16px' }}>
-        <label className="label">Атрибуты на вкладке «Основное»</label>
+      </>
+      ) : (
+      <div className="field">
+        <label className="label">Поля и атрибуты карточки</label>
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
           Добавьте нужное поле или атрибут, затем прикрепите к нему характеристики Ozon / WB / Яндекс.Маркета.
-          К одному полю можно привязать несколько характеристик одного маркетплейса. Списки характеристик появятся после сопоставления категорий ниже.
+          К одному полю можно привязать несколько характеристик одного маркетплейса. Списки характеристик появятся после сопоставления категорий на вкладке «Основное».
         </p>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
           <select
@@ -1219,7 +1263,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         ) : null}
         {!formData.ozonCategoryId && !formData.wbCategoryId && !formData.ymCategoryId && (
           <p style={{ fontSize: '12px', color: '#b45309', marginBottom: '8px' }}>
-            Списки характеристик появятся после сопоставления с маркетплейсами ниже. Можно вписать название вручную.
+            Списки характеристик появятся после сопоставления с маркетплейсами на вкладке «Основное». Можно вписать название вручную.
           </p>
         )}
         {addedDedicatedKeys.length === 0 && attributeIds.length === 0 ? (
@@ -1308,7 +1352,10 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           </div>
         )}
       </div>
+      )}
 
+      {settingsTab === 'main' ? (
+      <>
       <div className="field" style={{ marginTop: '16px' }}>
         <label className="label">Rich-контент</label>
         {category?.id ? (
@@ -1727,6 +1774,8 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         </div>
         )}
       </div>
+      </>
+      ) : null}
 
       {Object.keys(errors).length > 0 && (
         <div className="error" style={{marginTop: '12px'}}>

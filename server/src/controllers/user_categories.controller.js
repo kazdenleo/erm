@@ -11,6 +11,8 @@ import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
 import { normalizeCategoryDedicatedCharcLinks, serializeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
+import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
+import { normalizeCategoryTnVedCode } from '../utils/tnVedAttribute.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -34,6 +36,24 @@ function normalizeSkipMarketplaceStockSync(body) {
   }
   const v = body.skip_marketplace_stock_sync ?? body.skipMarketplaceStockSync;
   return v === true || v === 'true' || v === 1 || v === '1';
+}
+
+function readTnVedCodeFromBody(body) {
+  if (!body || typeof body !== 'object') return undefined;
+  if (body.tn_ved_code === undefined && body.tnVedCode === undefined) return undefined;
+  return normalizeCategoryTnVedCode(body.tn_ved_code ?? body.tnVedCode);
+}
+
+async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId) {
+  if (!code) return;
+  try {
+    await tnVedProductApplyService.applyToCategoryProducts(categoryId, code, { profileId });
+  } catch (e) {
+    logger.warn('[User Categories] TN VED apply to products failed', {
+      categoryId,
+      err: e?.message,
+    });
+  }
 }
 
 function parseJsonObject(raw) {
@@ -344,6 +364,7 @@ class UserCategoriesController {
     try {
       const { name, description, parent_id, attribute_ids, attribute_mp_links, mp_field_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
+      const tnVedCode = readTnVedCodeFromBody(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
@@ -354,8 +375,8 @@ class UserCategoriesController {
       }
       
       const result = await query(
-        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links, tn_ved_code)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
          RETURNING *`,
         [
           tid,
@@ -367,6 +388,7 @@ class UserCategoriesController {
           certificate_valid_to || null,
           skipMpStock === true,
           JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)),
+          tnVedCode || null,
         ]
       );
       
@@ -384,6 +406,8 @@ class UserCategoriesController {
       category.attribute_ids = savedIds;
       category.attribute_mp_links = incomingLinks;
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
+
+      await applyTnVedToCategoryProductsSafe(category.id, tnVedCode, tid);
       
       return res.status(201).json({ ok: true, data: category });
     } catch (error) {
@@ -396,6 +420,7 @@ class UserCategoriesController {
       const { id } = req.params;
       const { name, description, parent_id, marketplace_mappings, attribute_ids, attribute_mp_links, mp_field_links, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
       const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
+      const tnVedCode = readTnVedCodeFromBody(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
@@ -466,6 +491,11 @@ class UserCategoriesController {
         updateFields.push(`mp_field_links = $${paramIndex++}::jsonb`);
         params.push(JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)));
       }
+
+      if (tnVedCode !== undefined) {
+        updateFields.push(`tn_ved_code = $${paramIndex++}`);
+        params.push(tnVedCode);
+      }
       
       if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined && mp_field_links === undefined) {
         return res.status(400).json({ ok: false, message: 'Нет полей для обновления' });
@@ -522,6 +552,10 @@ class UserCategoriesController {
       category.attribute_ids = attrMeta.ids;
       category.attribute_mp_links = attrMeta.map;
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
+
+      if (tnVedCode) {
+        await applyTnVedToCategoryProductsSafe(id, tnVedCode, tid);
+      }
       
       return res.status(200).json({ ok: true, data: category });
     } catch (error) {

@@ -39,7 +39,6 @@ import { resolveApiBaseUrl } from '../../../services/api.js';
 import { createAsyncQueue } from '../../../utils/asyncQueue.js';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
 import { certificatesApi } from '../../../services/certificates.api.js';
-import { tnVedApi } from '../../../services/tnVed.api.js';
 import { brandsApi } from '../../../services/brands.api.js';
 import {
   applyCertAutofillToAttributes,
@@ -49,7 +48,6 @@ import {
 } from '../../../utils/productCertAttributeAutofill.js';
 import {
   applyTnVedAutofillToAttributes,
-  filterTnVedBindingsForCategory,
 } from '../../../utils/productTnVedAttributeAutofill.js';
 import {
   BARCODE_MP_TOGGLES,
@@ -1824,7 +1822,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [imageDropActive, setImageDropActive] = useState(false);
   const imageFileInputRef = useRef(null);
   const [brandCategoryCerts, setBrandCategoryCerts] = useState([]);
-  const [brandCategoryTnVed, setBrandCategoryTnVed] = useState([]);
   /** Для каких товаров уже подставили вес/габариты из карточки */
   const ozonFilledFromProductIdRef = useRef(null);
   /** ID товара, для которого уже синхронизировали атрибуты из ozonFetchedProduct в форму */
@@ -2372,7 +2369,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const catId = String(formData.categoryId || '').trim();
     if (!br?.id || !catId) {
       setBrandCategoryCerts([]);
-      setBrandCategoryTnVed([]);
       return;
     }
     let cancelled = false;
@@ -2386,31 +2382,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       .catch(() => {
         if (!cancelled) setBrandCategoryCerts([]);
       });
-    tnVedApi
-      .getBindings({ brandId: br.id })
-      .then((res) => {
-        if (cancelled) return;
-        const all = Array.isArray(res?.data) ? res.data : [];
-        setBrandCategoryTnVed(filterTnVedBindingsForCategory(all, catId));
-      })
-      .catch(() => {
-        if (!cancelled) setBrandCategoryTnVed([]);
-      });
     return () => {
       cancelled = true;
     };
   }, [selectedBrandForCert?.id, formData.categoryId]);
-
-  const tnVedCode = useMemo(() => {
-    const cat = selectedCategoryForCert || {};
-    const fromCat = cat.tn_ved_code || cat.tnVedCode || '';
-    if (fromCat) return String(fromCat).replace(/\D/g, '');
-    const fromBinding = brandCategoryTnVed?.[0]?.tn_ved_code;
-    if (fromBinding) return String(fromBinding).replace(/\D/g, '');
-    const br = selectedBrandForCert || {};
-    const fallback = br.tn_ved_code || br.tnVedCode || '';
-    return String(fallback).replace(/\D/g, '');
-  }, [brandCategoryTnVed, selectedCategoryForCert, selectedBrandForCert]);
 
   const mpMappingByMarketplace = useMemo(() => {
     const br = selectedBrandForCert;
@@ -2556,6 +2531,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
     if (categoryDetails && String(categoryDetails.id) === cid) return categoryDetails;
     return categories.find((c) => String(c.id) === cid) ?? null;
   }, [formData.categoryId, categoryDetails, categories]);
+
+  const tnVedCode = useMemo(() => {
+    const cat = categoryResolvedForMappings || {};
+    return String(cat.tn_ved_code || cat.tnVedCode || '').replace(/\D/g, '');
+  }, [categoryResolvedForMappings]);
 
   // Ozon: категория и тип (из подгруженной категории или из списка: ozon_description_category_id/ozon_type_id либо composite "descId_typeId" в ozon)
   const { ozonCategoryId, ozonTypeId } = useMemo(() => {

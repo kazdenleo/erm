@@ -48,6 +48,7 @@ import {
   isCorruptBarcodeString,
   normalizeBarcodeRows,
 } from '../utils/productBarcodes.js';
+import tnVedProductApplyService from './tnVedProductApply.service.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
@@ -1240,6 +1241,12 @@ class ProductsService {
     // Складской остаток не задаётся из карточки или импорта — только через приёмки, списания, инвентаризации и т.д.
     delete productData.quantity;
 
+    try {
+      await tnVedProductApplyService.enrichProductPayload(productData);
+    } catch (e) {
+      console.warn('[Products Service] TN VED enrich on create:', e?.message || e);
+    }
+
     const createdProduct = await this.repository.create(productData);
     if (!createdProduct || createdProduct.id == null) {
       const error = new Error('Не удалось создать товар');
@@ -1509,6 +1516,15 @@ class ProductsService {
       } catch (e) {
         console.warn('[Products Service] resolveOzonAttributesDictionaryLabels on update:', e?.message || e);
       }
+    }
+
+    try {
+      await tnVedProductApplyService.enrichProductPayload(updates, {
+        onlyPresentMaps: true,
+        categoryId: updates.categoryId ?? updates.user_category_id ?? existingForKits?.user_category_id,
+      });
+    } catch (e) {
+      console.warn('[Products Service] TN VED enrich on update:', e?.message || e);
     }
 
     const updated = await this.repository.update(id, updates);

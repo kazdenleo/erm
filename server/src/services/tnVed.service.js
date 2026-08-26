@@ -146,15 +146,7 @@ class TnVedService {
           [code, binding.brand_id]
         );
       }
-      const categoryIds = Array.isArray(binding.user_category_ids)
-        ? binding.user_category_ids
-        : [];
-      for (const cid of categoryIds) {
-        await query(
-          `UPDATE user_categories SET tn_ved_code = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-          [code, cid]
-        );
-      }
+      // Код категории задаётся в настройках категории и не перезаписывается привязками бренд+категория.
     } catch (_) {
       // не ломаем основной поток
     }

@@ -140,8 +140,12 @@
   font-weight: 600;
 }
 
-.category-form-mp-row .category-mp-commissions {
-  margin-top: 6px;
+.category-form .nav-tabs {
+  border-bottom-color: var(--border, #e5e7eb);
+}
+
+.category-form .nav-link {
+  cursor: pointer;
 }
 
 .category-mp-commissions-note {

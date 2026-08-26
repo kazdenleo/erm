@@ -9,7 +9,6 @@ import { useBrands } from '../../hooks/useBrands';
 import { useUserCategories } from '../../hooks/useUserCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
-import { CertificatesTnVedSection } from './CertificatesTnVedSection';
 import './Certificates.css';
 
 const DOC_TYPE_LABELS = {
@@ -213,7 +212,6 @@ function CertificateForm({
 export function Certificates() {
   const { brands, loading: brandsLoading } = useBrands();
   const { categories, loading: categoriesLoading } = useUserCategories();
-  const [activeTab, setActiveTab] = useState('documents');
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -355,10 +353,10 @@ export function Certificates() {
 
   const pageLoading = loading || brandsLoading || categoriesLoading;
 
-  if (pageLoading && list.length === 0 && activeTab === 'documents') {
+  if (pageLoading && list.length === 0) {
     return <div className="certificates-page card"><p className="loading">Загрузка...</p></div>;
   }
-  if (error && list.length === 0 && activeTab === 'documents') {
+  if (error && list.length === 0) {
     return <div className="certificates-page card"><p className="error">Ошибка: {error}</p></div>;
   }
 
@@ -366,35 +364,10 @@ export function Certificates() {
     <div className="certificates-page card">
       <h1 className="title">Сертификаты</h1>
       <p className="subtitle">
-        Документы соответствия и коды ТН ВЭД с привязкой бренд + категория.
+        Документы соответствия с привязкой бренд + категория.
         В товары с этой парой подставятся данные и уйдут на маркетплейсы вместе с характеристиками.
       </p>
 
-      <div className="certificates-tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          className={`certificates-tab${activeTab === 'documents' ? ' is-active' : ''}`}
-          aria-selected={activeTab === 'documents'}
-          onClick={() => setActiveTab('documents')}
-        >
-          Документы
-        </button>
-        <button
-          type="button"
-          role="tab"
-          className={`certificates-tab${activeTab === 'tnved' ? ' is-active' : ''}`}
-          aria-selected={activeTab === 'tnved'}
-          onClick={() => setActiveTab('tnved')}
-        >
-          ТН ВЭД
-        </button>
-      </div>
-
-      {activeTab === 'tnved' ? (
-        <CertificatesTnVedSection brands={brands} categories={categories} />
-      ) : (
-        <>
       <div className="certificates-toolbar">
         <div className="filters">
           <select
@@ -524,8 +497,6 @@ export function Certificates() {
           saving={saving}
         />
       </Modal>
-        </>
-      )}
     </div>
   );
 }
