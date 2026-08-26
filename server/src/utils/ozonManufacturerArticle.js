@@ -139,27 +139,6 @@ export function parseOzonStoredAttr(raw) {
 
 const OZON_ANNOTATION_ATTR_ID = 4191;
 
-function splitOzonPlainAttrParts(text) {
-  const s = String(text || '').trim();
-  if (!s) return [];
-  if (/[;\n]/.test(s)) {
-    return s.split(/[;\n]+/).map((x) => x.trim()).filter(Boolean);
-  }
-  return [s];
-}
-
-function schemaIsCollection(attr) {
-  if (!attr || typeof attr !== 'object') return false;
-  const v = attr.is_collection ?? attr.isCollection ?? attr.collection;
-  return v === true || v === 1 || String(v).toLowerCase() === 'true';
-}
-
-function schemaIsSingleTextBlock(id, attr) {
-  if (Number(id) === OZON_ANNOTATION_ATTR_ID) return true;
-  const t = String(attr?.type ?? attr?.attribute_type ?? '').toLowerCase();
-  return t === 'multiline' || t === 'text';
-}
-
 function schemaDictionaryId(attr) {
   if (!attr || typeof attr !== 'object') return 0;
   for (const k of ['dictionary_id', 'attribute_dictionary_id', 'dictionaryId', 'dictionaryID']) {
@@ -198,12 +177,38 @@ export function ozonAttrValuesForApi(id, raw, attrMeta) {
   if (forcePlain) {
     const v = text || (dictId != null ? String(dictId) : '');
     if (!v) return null;
-    const allowSplit = schemaIsCollection(meta) && !schemaIsSingleTextBlock(id, meta);
-    const parts = allowSplit ? splitOzonPlainAttrParts(v) : [v];
-    if (!parts.length) return null;
-    return parts.map((p) => ({ value: p }));
+    return [{ value: v }];
   }
   if (dictId != null) return [{ dictionary_value_id: dictId }];
   if (text) return [{ value: text }];
   return null;
+}
+
+/**
+ * Ozon: String/аннотация/OEM часто не коллекция. Несколько {value} → одно значение.
+ * Словарные коллекции (несколько dictionary_value_id) не трогаем.
+ * @param {Array<{ id?: number, values?: object[] }>} attrs
+ * @returns {typeof attrs}
+ */
+export function collapseOzonNonCollectionAttrValues(attrs) {
+  const list = Array.isArray(attrs) ? attrs : [];
+  const byId = new Map();
+  for (const a of list) {
+    const id = Number(a?.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    byId.set(id, a);
+  }
+  return [...byId.values()].map((a) => {
+    const id = Number(a.id);
+    const vals = Array.isArray(a.values) ? a.values.filter((v) => v != null) : [];
+    if (vals.length <= 1) return a;
+    const allDict = vals.every(
+      (v) => v.dictionary_value_id != null && Number(v.dictionary_value_id) > 0
+    );
+    if (allDict) return a;
+    const texts = vals.map((v) => String(v.value ?? '').trim()).filter(Boolean);
+    if (!texts.length) return { ...a, values: [vals[0]] };
+    const joined = id === OZON_ANNOTATION_ATTR_ID ? texts.join('<br>') : texts.join('; ');
+    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: joined }] };
+  });
 }

@@ -5,6 +5,7 @@ import {
   isOzonFreeTextMpAttr,
   isStandaloneOemAttrName,
   parseOzonStoredAttr,
+  collapseOzonNonCollectionAttrValues,
 } from '../src/utils/ozonManufacturerArticle.js';
 
 describe('ozon OEM / part number push', () => {
@@ -71,13 +72,27 @@ describe('ozon OEM / part number push', () => {
     expect(isStandaloneOemAttrName('Партномер (артикул производителя)')).toBe(false);
   });
 
-  test('collection OEM splits on semicolon into several values', () => {
+  test('collection OEM stays one string even if schema says is_collection', () => {
     const values = ozonAttrValuesForApi(
       111,
       '8K0129620; 4G0129620',
       { id: 111, name: 'ОЕМ-номер', type: 'String', dictionary_id: 0, is_collection: true }
     );
-    expect(values).toEqual([{ value: '8K0129620' }, { value: '4G0129620' }]);
+    expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
+  });
+
+  test('collapse joins extra text values for annotation and OEM', () => {
+    const collapsed = collapseOzonNonCollectionAttrValues([
+      { id: 4191, values: [{ value: 'строка 1' }, { value: 'строка 2' }] },
+      { id: 7324, values: [{ value: 'A' }, { value: 'B' }] },
+      { id: 85, values: [{ dictionary_value_id: 1 }, { dictionary_value_id: 2 }] },
+    ]);
+    expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1<br>строка 2' }]);
+    expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A; B' }]);
+    expect(collapsed.find((a) => a.id === 85).values).toEqual([
+      { dictionary_value_id: 1 },
+      { dictionary_value_id: 2 },
+    ]);
   });
 
   test('non-collection OEM keeps semicolon in one value', () => {

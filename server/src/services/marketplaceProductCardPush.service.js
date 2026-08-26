@@ -40,7 +40,7 @@ import {
   applyOzonDescriptionHtml,
   plainTextToMarketplaceHtml,
 } from '../utils/marketplaceDescriptionHtml.js';
-import { ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
+import { collapseOzonNonCollectionAttrValues, ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
 import {
   applyErpBarcodesToWbCardSizes,
   buildWbCharacteristics,
@@ -190,7 +190,7 @@ function buildOzonAttributesArray(ozonAttrs, schemaList) {
     if (!values) continue;
     out.push({ complex_id: 0, id, values });
   }
-  return out;
+  return collapseOzonNonCollectionAttrValues(out);
 }
 
 async function applyMappedOzonBrand(item, product) {
@@ -928,6 +928,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
   };
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);
+  item.attributes = collapseOzonNonCollectionAttrValues(item.attributes);
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);
