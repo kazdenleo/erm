@@ -148,7 +148,9 @@ import {
   mmToCm,
   normalizeCategoryDedicatedCharcLinks,
   normalizeMpFieldLinks,
-  ozonAttrsForProductForm,
+  mergeOzonFormAttributes,
+  ozonTypePairFromFetchedProduct,
+  unionOzonAttrSchemas,
   readMpOfferFieldValue,
   readMpSellerSku,
   setMpFieldLink,
@@ -190,6 +192,7 @@ import {
   isOzonAnnotationAttr,
   isOzonNameAttr,
   isOzonPlainDescriptionAttr,
+  ozonAnnotationToFormText,
   ozonAttrPlainText,
   ozonStoredAttrToFormValue,
   pickOzonCardText,
@@ -1767,6 +1770,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ozonAttributesError, setOzonAttributesError] = useState('');
   /** Пара desc/type после ответа GET marketplace-attributes (бэкенд разрешает один id по дереву Ozon) */
   const [ozonResolvedPair, setOzonResolvedPair] = useState({ descId: null, typeId: 0 });
+  /** Схема и пара типа с живой карточки Ozon (может отличаться от сопоставления ERP) */
+  const [ozonLiveTypeAttributes, setOzonLiveTypeAttributes] = useState([]);
+  const [ozonLivePair, setOzonLivePair] = useState({ descId: null, typeId: 0 });
+  const [ozonLiveFetchedAttributes, setOzonLiveFetchedAttributes] = useState([]);
+  const [ozonLiveSchemaLoading, setOzonLiveSchemaLoading] = useState(false);
   const [activeTab, setActiveTab] = useState(() => {
     const t = String(initialTab || 'main').trim();
     return ['main', 'ozon', 'wb', 'ym', 'competitors'].includes(t) ? t : 'main';
@@ -1868,6 +1876,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setOzonFetchedProduct(null);
       setOzonShowAllFields(false);
       setOzonResolvedPair({ descId: null, typeId: 0 });
+      setOzonLiveTypeAttributes([]);
+      setOzonLivePair({ descId: null, typeId: 0 });
+      setOzonLiveFetchedAttributes([]);
+      setOzonLiveSchemaLoading(false);
       setWbFetchedProduct(null);
       setWbShowAllFields(false);
       setWbAttributeValues({});
@@ -1888,6 +1900,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setYmAttributeValues({});
       setOzonFetchedProduct(null);
       setOzonShowAllFields(false);
+      setOzonLiveTypeAttributes([]);
+      setOzonLivePair({ descId: null, typeId: 0 });
+      setOzonLiveFetchedAttributes([]);
+      setOzonLiveSchemaLoading(false);
       setWbFetchedProduct(null);
       setWbShowAllFields(false);
       setProductImages([]);
@@ -2129,7 +2145,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_ym_name: currentProduct.mp_ym_name || '',
         mp_ym_description: currentProduct.mp_ym_description || '',
         mp_ozon_name: currentProduct.mp_ozon_name || '',
-        mp_ozon_description: currentProduct.mp_ozon_description || '',
+        mp_ozon_description: ozonAnnotationToFormText(currentProduct.mp_ozon_description || ''),
         mp_ozon_brand: currentProduct.mp_ozon_brand || '',
         mp_field_links: normalizeMpFieldLinks(currentProduct.mp_field_links),
         block_stock_ozon: currentProduct.block_stock_ozon === true,
@@ -2153,11 +2169,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
         ? Object.fromEntries(
             Object.entries(currentProduct.ozon_attributes).map(([k, v]) => {
               if (v === undefined || v === null) return [String(k), ''];
+              let stored;
               if (Array.isArray(v) || (v && typeof v === 'object')) {
-                return [String(k), ozonStoredAttrToFormValue(v)];
+                stored = ozonStoredAttrToFormValue(v);
+              } else {
+                const s = String(v).trim();
+                stored = s === '[object Object]' ? '' : s;
               }
-              const s = String(v).trim();
-              return [String(k), s === '[object Object]' ? '' : s];
+              if (String(k) === String(OZON_ANNOTATION_ATTR_ID) || isOzonAnnotationAttr({ id: k })) {
+                stored = ozonAnnotationToFormText(stored);
+              }
+              return [String(k), stored];
             })
           )
         : {};
@@ -2216,7 +2238,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           mp_ym_name: currentProduct.mp_ym_name || '',
           mp_ym_description: currentProduct.mp_ym_description || '',
           mp_ozon_name: currentProduct.mp_ozon_name || '',
-          mp_ozon_description: currentProduct.mp_ozon_description || '',
+          mp_ozon_description: ozonAnnotationToFormText(currentProduct.mp_ozon_description || ''),
           mp_ozon_brand: currentProduct.mp_ozon_brand || '',
         },
         ozonAttrs,
@@ -2607,16 +2629,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [formData.categoryId, categoryResolvedForMappings]);
 
   const ozonDescIdForApi = useMemo(() => {
+    if (ozonLivePair.descId != null && String(ozonLivePair.descId).trim() !== '') {
+      return String(ozonLivePair.descId).trim();
+    }
     if (ozonResolvedPair.descId != null && String(ozonResolvedPair.descId).trim() !== '') {
       return String(ozonResolvedPair.descId).trim();
     }
     return ozonCategoryId != null ? String(ozonCategoryId) : '';
-  }, [ozonResolvedPair.descId, ozonCategoryId]);
+  }, [ozonLivePair.descId, ozonResolvedPair.descId, ozonCategoryId]);
 
   const ozonTypeIdForApi = useMemo(() => {
+    if (ozonLivePair.typeId > 0) return ozonLivePair.typeId;
     if (ozonResolvedPair.typeId > 0) return ozonResolvedPair.typeId;
     return ozonTypeId > 0 ? ozonTypeId : 0;
-  }, [ozonResolvedPair.typeId, ozonTypeId]);
+  }, [ozonLivePair.typeId, ozonResolvedPair.typeId, ozonTypeId]);
+
+  const ozonLiveTypeMismatch = useMemo(() => {
+    if (!(ozonLivePair.typeId > 0 && ozonLivePair.descId)) return false;
+    if (!(ozonResolvedPair.typeId > 0 && ozonResolvedPair.descId)) return false;
+    return (
+      String(ozonLivePair.descId) !== String(ozonResolvedPair.descId) ||
+      Number(ozonLivePair.typeId) !== Number(ozonResolvedPair.typeId)
+    );
+  }, [ozonLivePair.descId, ozonLivePair.typeId, ozonResolvedPair.descId, ozonResolvedPair.typeId]);
 
   // WB: subjectId категории из marketplace_mappings (для подгрузки характеристик категории)
   const wbSubjectId = useMemo(() => {
@@ -2707,6 +2742,131 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return () => { cancelled = true; };
   }, [activeTab, formData.categoryId, hasOzonMarketplaceMapping, categoryAttributes.length]);
 
+  // Схема реального типа с карточки Ozon (пустые «Форма», «Диаметр, мм» и т.п. не приходят в v4 attributes).
+  useEffect(() => {
+    const product = ozonFetchedProduct;
+    if (!product) return undefined;
+    const attrs = product.attributes ?? product.attribute_values;
+    setOzonLiveFetchedAttributes(Array.isArray(attrs) ? attrs : []);
+    const pair = ozonTypePairFromFetchedProduct(product);
+    if (!pair) return undefined;
+    setOzonLivePair({ descId: String(pair.descId), typeId: pair.typeId });
+    let cancelled = false;
+    setOzonLiveSchemaLoading(true);
+    integrationsApi
+      .getOzonCategoryAttributes(pair.descId, pair.typeId)
+      .then((list) => {
+        if (!cancelled) setOzonLiveTypeAttributes(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn('[ProductForm] Ozon live type attributes load failed:', err);
+          setOzonLiveTypeAttributes([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setOzonLiveSchemaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ozonFetchedProduct]);
+
+  // Без «Обновить данные с Ozon» всё равно подтянуть тип карточки, чтобы показать пустые характеристики.
+  useEffect(() => {
+    if (activeTab !== 'ozon') return undefined;
+    if (ozonFetchedProduct) return undefined;
+    const organizationId = resolveKitPickerOrganizationId(
+      formData.organizationId,
+      productsListOrganizationId,
+      currentProduct?.organization_id ?? currentProduct?.organizationId
+    );
+    const productIdRaw =
+      String(formData.ozon_product_id || '').trim() ||
+      (currentProduct?.ozon_product_id != null ? String(currentProduct.ozon_product_id) : '');
+    const productId = productIdRaw ? Number(productIdRaw.replace(/\D/g, '')) : null;
+    const offerId = [
+      formData.sku_ozon,
+      currentProduct?.sku_ozon,
+      formData.sku,
+    ]
+      .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
+      .find(Boolean);
+    if (!organizationId || (!(productId > 0) && !offerId)) return undefined;
+    let cancelled = false;
+    setOzonLiveSchemaLoading(true);
+    const apiBase = { organizationId };
+    (async () => {
+      let data = null;
+      try {
+        if (productId > 0) {
+          data = await integrationsApi.getOzonProductInfo({ ...apiBase, product_id: productId });
+        }
+      } catch (_) {
+        /* пробуем offer_id */
+      }
+      if (!data && offerId) {
+        try {
+          data = await integrationsApi.getOzonProductInfo({ ...apiBase, offer_id: offerId });
+        } catch (err) {
+          if (!cancelled) {
+            console.warn('[ProductForm] Ozon live type probe failed:', err);
+          }
+        }
+      }
+      if (cancelled || !data) {
+        if (!cancelled) setOzonLiveSchemaLoading(false);
+        return;
+      }
+      const attrs = data.attributes ?? data.attribute_values;
+      if (!cancelled) setOzonLiveFetchedAttributes(Array.isArray(attrs) ? attrs : []);
+      const pair = ozonTypePairFromFetchedProduct(data);
+      if (!pair) {
+        if (!cancelled) setOzonLiveSchemaLoading(false);
+        return;
+      }
+      if (!cancelled) setOzonLivePair({ descId: String(pair.descId), typeId: pair.typeId });
+      try {
+        const list = await integrationsApi.getOzonCategoryAttributes(pair.descId, pair.typeId);
+        if (!cancelled) setOzonLiveTypeAttributes(Array.isArray(list) ? list : []);
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('[ProductForm] Ozon live type attributes load failed:', err);
+          setOzonLiveTypeAttributes([]);
+        }
+      } finally {
+        if (!cancelled) setOzonLiveSchemaLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    ozonFetchedProduct,
+    formData.organizationId,
+    formData.ozon_product_id,
+    formData.sku_ozon,
+    formData.sku,
+    productsListOrganizationId,
+    currentProduct?.id,
+    currentProduct?.ozon_product_id,
+    currentProduct?.sku_ozon,
+    currentProduct?.organization_id,
+    currentProduct?.organizationId,
+  ]);
+
+  useEffect(() => {
+    if (!(ozonLivePair.typeId > 0 && ozonLivePair.descId)) return;
+    const same =
+      String(ozonResolvedPair.descId || '') === String(ozonLivePair.descId) &&
+      Number(ozonResolvedPair.typeId) === Number(ozonLivePair.typeId);
+    if (same) return;
+    setOzonDictValues({});
+    ozonDictInflightRef.current.clear();
+    ozonDictPromisesRef.current.clear();
+  }, [ozonLivePair.descId, ozonLivePair.typeId, ozonResolvedPair.descId, ozonResolvedPair.typeId]);
+
   // Если габариты упаковки раньше скрывались, в JSON их может не быть — подставить из draft / Основного.
   useEffect(() => {
     if (!ozonAttributes?.length) return;
@@ -2787,9 +2947,31 @@ export const ProductForm = React.forwardRef(function ProductForm({
     });
   }, [ozonAttributes, orgVatText]);
 
+  const ozonSchemaAttributes = useMemo(
+    () => unionOzonAttrSchemas(ozonAttributes, ozonLiveTypeAttributes),
+    [ozonAttributes, ozonLiveTypeAttributes]
+  );
+
   const ozonFormAttributes = useMemo(
-    () => ozonAttrsForProductForm(ozonAttributes),
-    [ozonAttributes]
+    () =>
+      mergeOzonFormAttributes(ozonSchemaAttributes, {
+        storedValues: ozonAttributeValues,
+        fetchedAttributes:
+          ozonFetchedProduct?.attributes ??
+          ozonFetchedProduct?.attribute_values ??
+          ozonLiveFetchedAttributes,
+      }),
+    [ozonSchemaAttributes, ozonAttributeValues, ozonFetchedProduct, ozonLiveFetchedAttributes]
+  );
+
+  const visibleOzonFormAttrs = useMemo(
+    () =>
+      ozonFormAttributes.filter((attr) => {
+        if (isOzonRichContentAttrId(attr?.id)) return false;
+        if (isOzonPlainDescriptionAttr(attr)) return false;
+        return true;
+      }),
+    [ozonFormAttributes]
   );
 
   const syncOzonManufacturerArticleAttrs = useCallback((value) => {
@@ -2861,7 +3043,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setOzonAttributeValues((prev) => ({ ...prev, [id]: value }));
       return;
     }
-    const attr = ozonAttributes.find((a) => String(a.id) === String(attrId));
+    const attr = ozonFormAttributes.find((a) => String(a.id) === String(attrId));
     if (attr && isMpFieldLinked(formData.mp_field_links, 'country', 'ozon') && isOzonManufacturerCountryAttr(attr)) {
       setFormData((prev) => ({
         ...prev,
@@ -2944,7 +3126,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     for (const erp of categoryAttributes) {
       const linkKey = erpAttrLinkFieldKey(erp.id);
       if (!isMpFieldLinked(formData.mp_field_links, linkKey, 'ozon')) continue;
-      const hits = findLinkedMpAttributes(normalizeAttrMpLinks(erp.mp_links).ozon, ozonAttributes).filter(
+      const hits = findLinkedMpAttributes(normalizeAttrMpLinks(erp.mp_links).ozon, ozonFormAttributes).filter(
         (h) => h?.id != null && !isMpOfferFieldAttrId(h.id)
       );
       if (hits.some((h) => String(h.id) === ozKey)) {
@@ -2956,7 +3138,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
     }
     setOzonAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
-  }, [ozonAttributes, formData.mp_field_links, syncOzonManufacturerArticleAttrs, categoryAttributes]);
+  }, [ozonFormAttributes, formData.mp_field_links, syncOzonManufacturerArticleAttrs, categoryAttributes]);
 
   const loadOzonDictValues = useCallback((attrId) => {
     if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return Promise.resolve([]);
@@ -2993,8 +3175,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   useEffect(() => {
     if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
-    if (!Array.isArray(ozonAttributes) || ozonAttributes.length === 0) return;
-    ozonAttributes.forEach((attr) => {
+    if (!Array.isArray(ozonFormAttributes) || ozonFormAttributes.length === 0) return;
+    ozonFormAttributes.forEach((attr) => {
       if (!ozonAttrHasDictionary(attr)) return;
       const raw = ozonAttributeValues[String(attr.id)];
       if (raw == null || String(raw).trim() === '') return;
@@ -3002,7 +3184,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       loadOzonDictValues(attr.id);
     });
   }, [
-    ozonAttributes,
+    ozonFormAttributes,
     ozonAttributeValues,
     ozonDescIdForApi,
     ozonTypeIdForApi,
@@ -3191,7 +3373,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   const mpAttrLabelMaps = useMemo(() => {
     const ozon = {};
-    for (const a of ozonAttributes || []) {
+    for (const a of ozonFormAttributes || []) {
       if (a?.id != null) ozon[String(a.id)] = a;
     }
     const wb = {};
@@ -3204,11 +3386,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (a?.id != null) ym[String(a.id)] = a;
     }
     return { ozon, wb, ym };
-  }, [ozonAttributes, wbCategoryAttributes, ymFormAttributes]);
+  }, [ozonFormAttributes, wbCategoryAttributes, ymFormAttributes]);
 
   const fieldLimitExtras = useMemo(
     () => ({
-      ozonAttributes,
+      ozonAttributes: ozonFormAttributes,
       ozonAttributeValues,
       wbAttributes: wbCategoryAttributes,
       wbAttributeValues,
@@ -3217,7 +3399,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       erpAttributes: allAttributes,
     }),
     [
-      ozonAttributes,
+      ozonFormAttributes,
       ozonAttributeValues,
       wbCategoryAttributes,
       wbAttributeValues,
@@ -6364,7 +6546,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (!key || isMpOfferFieldAttrId(key)) continue;
         const plain = ozonAttrPlainText(v);
         if (!plain) continue;
-        const attr = ozonAttributes.find((a) => String(a.id) === key);
+        const attr = ozonFormAttributes.find((a) => String(a.id) === key);
         if (isOzonFreeTextMpAttr(attr || { id: key })) {
           const arrow = plain.indexOf('->');
           const text = arrow > 0 ? plain.slice(0, arrow).trim() : plain;
@@ -6395,26 +6577,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : '';
       const nameText =
         nameFromMain ||
-        pickOzonCardText(ozonAttributeValues, findOzonNameAttrs(ozonAttributes)) ||
+        pickOzonCardText(ozonAttributeValues, findOzonNameAttrs(ozonFormAttributes)) ||
         String(formData.mp_ozon_name || '').trim();
-      for (const attr of findOzonNameAttrs(ozonAttributes)) {
+      for (const attr of findOzonNameAttrs(ozonFormAttributes)) {
         const key = String(attr.id);
         if (nameText && !ozonAttrPlainText(out[key])) out[key] = { value: nameText };
       }
-      const annAttr = findOzonAnnotationAttrs(ozonAttributes)[0];
+      const annAttr = findOzonAnnotationAttrs(ozonFormAttributes)[0];
       const annKey = annAttr ? String(annAttr.id) : String(OZON_ANNOTATION_ATTR_ID);
       const descFromMain = isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')
         ? String(formData.description || '').trim()
         : '';
       const annText =
         descFromMain ||
-        pickOzonCardText(ozonAttributeValues, findOzonAnnotationAttrs(ozonAttributes), [
+        pickOzonCardText(ozonAttributeValues, findOzonAnnotationAttrs(ozonFormAttributes), [
           OZON_ANNOTATION_ATTR_ID,
         ]) ||
         ozonAttrPlainText(out[annKey]?.value) ||
         String(formData.mp_ozon_description || '').trim();
       if (annText && !ozonAttrPlainText(out[annKey])) out[annKey] = { value: annText };
-      for (const attr of findOzonPlainDescriptionAttrs(ozonAttributes)) {
+      for (const attr of findOzonPlainDescriptionAttrs(ozonFormAttributes)) {
         const key = String(attr.id);
         if (annText) out[key] = { value: annText };
         else delete out[key];
@@ -6425,7 +6607,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           width: formData.product_width,
           height: formData.product_height,
         };
-        for (const attr of ozonAttributes || []) {
+        for (const attr of ozonFormAttributes || []) {
           const axis = ozonProductDimAxis(attr);
           if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
           const mm = mmOf[axis];
@@ -6440,7 +6622,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           height: formData.height,
           weight: formData.weight,
         };
-        for (const attr of ozonAttributes || []) {
+        for (const attr of ozonFormAttributes || []) {
           const axis = ozonPackDimAxis(attr);
           if (!axis) continue;
           const mm = mmOf[axis];
@@ -6452,7 +6634,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       const vendorCode = String(getMpDraft(formData, 'ozon').vendorCode || '').trim();
       if (vendorCode && isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon')) {
-        for (const attr of findOzonManufacturerArticleAttrs(ozonAttributes)) {
+        for (const attr of findOzonManufacturerArticleAttrs(ozonFormAttributes)) {
           const key = String(attr.id);
           if (!/^\d+$/.test(key)) continue;
           out[key] = { value: vendorCode };
@@ -6465,7 +6647,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (!text) continue;
         const hits = findLinkedMpAttributes(
           normalizeAttrMpLinks(erp.mp_links).ozon,
-          ozonAttributes,
+          ozonFormAttributes,
           undefined,
           undefined,
           { labelMaps: mpAttrLabelMaps, mp: 'ozon' }
@@ -8799,30 +8981,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
               </p>
               {categoryDetailsLoading ? (
                 <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка данных категории…</p>
-              ) : !hasOzonMarketplaceMapping ? (
-                <div className="alert alert-warning py-2 mb-0" style={{ fontSize: '12px' }}>
-                  Для выбранной категории не задано сопоставление Ozon. Заполните в <strong>Категории → редактировать категорию → Ozon</strong> (обновить список и выбрать категорию и тип товара).
-                </div>
-              ) : ozonAttributesLoading ? (
-                <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка характеристик...</p>
-              ) : ozonAttributesError ? (
-                <div className="alert alert-danger py-2 mb-0" style={{ fontSize: '12px' }}>
-                  {ozonAttributesError}
-                </div>
-              ) : ozonFormAttributes.filter((attr) => {
-                  if (isOzonRichContentAttrId(attr?.id)) return false;
-                  if (isOzonPlainDescriptionAttr(attr)) return false;
-                  return true;
-                }).length === 0 ? (
-                <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов для этой категории Ozon (или сопоставление не заполнено).</p>
               ) : (
+                <>
+                  {!hasOzonMarketplaceMapping && (
+                    <div className="alert alert-warning py-2 mb-2" style={{ fontSize: '12px' }}>
+                      Для выбранной категории не задано сопоставление Ozon. Заполните в <strong>Категории → редактировать категорию → Ozon</strong> (обновить список и выбрать категорию и тип товара).
+                    </div>
+                  )}
+                  {ozonLiveTypeMismatch && (
+                    <div className="alert alert-info py-2 mb-2" style={{ fontSize: '12px' }}>
+                      Тип товара на карточке Ozon отличается от сопоставления категории ERP — показаны характеристики с Ozon (включая пустые поля вроде формы и диаметра).
+                    </div>
+                  )}
+                  {ozonAttributesError && visibleOzonFormAttrs.length === 0 ? (
+                    <div className="alert alert-danger py-2 mb-0" style={{ fontSize: '12px' }}>
+                      {ozonAttributesError}
+                    </div>
+                  ) : (ozonAttributesLoading || ozonLiveSchemaLoading) && visibleOzonFormAttrs.length === 0 ? (
+                    <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка характеристик...</p>
+                  ) : visibleOzonFormAttrs.length === 0 ? (
+                    <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов для этой категории Ozon (или сопоставление не заполнено).</p>
+                  ) : (
                 <div className="row g-3">
-                  {ozonFormAttributes
-                    .filter((attr) => {
-                      if (isOzonRichContentAttrId(attr?.id)) return false;
-                      if (isOzonPlainDescriptionAttr(attr)) return false;
-                      return true;
-                    })
+                  {visibleOzonFormAttrs
                     .map((attr) => {
                     const key = String(attr.id);
                     const isOfferField = isMpOfferFieldAttrId(key);
@@ -9021,7 +9202,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               </>
                             );
                           }
-                          const textValue = rawValue != null ? String(rawValue) : '';
+                          const textValue = ozonAnnotationToFormText(rawValue);
                           return (
                             <>
                               <textarea
@@ -9045,6 +9226,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     );
                   })}
                 </div>
+              )}
+                </>
               )}
             </div>
           )}

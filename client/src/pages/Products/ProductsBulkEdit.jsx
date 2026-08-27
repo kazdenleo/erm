@@ -70,6 +70,7 @@ import {
   readMpOfferFieldValue,
   MP_OFFER_FIELD_ATTRS,
   isYmOfferFieldParamName,
+  ozonTypePairFromFetchedProduct,
 } from '../../utils/productMpFieldLinks.js';
 import {
   isOzonPackagingDimensionsLocked,
@@ -120,6 +121,7 @@ import {
   OZON_PARTNUMBER_ATTR_ID,
 } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
+import { isOzonRichContentAttrId } from '../../constants/marketplaceRichContent.js';
 import {
   isOzonAnnotationAttr,
   isOzonNameAttr,
@@ -2471,7 +2473,81 @@ async function fetchMpAttributeLabelMaps(
       else mergeYmAttrSchema(body, maps.ym);
     });
   }
+  await enrichOzonMapsFromLiveCards(products, maps, fallbackOrg);
   return maps;
+}
+
+/** Если тип на карточке Ozon не совпадает с сопоставлением ERP — добрать схему (пустые Форма/Диаметр и т.п.). */
+async function enrichOzonMapsFromLiveCards(products, maps, fallbackOrganizationId) {
+  const samples = [];
+  const seenOrgOffer = new Set();
+  for (const p of products || []) {
+    const org = String(p.organizationId ?? p.organization_id ?? fallbackOrganizationId ?? '').trim();
+    const productIdRaw = p.ozon_product_id != null && String(p.ozon_product_id).trim() !== ''
+      ? String(p.ozon_product_id).replace(/\D/g, '')
+      : '';
+    const productId = productIdRaw ? Number(productIdRaw) : 0;
+    const offerId = String(p.sku_ozon || p.sku || '').trim();
+    if (!org || (!(productId > 0) && !offerId)) continue;
+    const key = `${org}:${productId > 0 ? productId : offerId}`;
+    if (seenOrgOffer.has(key)) continue;
+    seenOrgOffer.add(key);
+    samples.push({ org, productId: productId > 0 ? productId : null, offerId: offerId || null });
+    if (samples.length >= 3) break;
+  }
+  for (const sample of samples) {
+    let data = null;
+    try {
+      if (sample.productId) {
+        data = await integrationsApi.getOzonProductInfo({
+          organizationId: sample.org,
+          product_id: sample.productId,
+        });
+      }
+    } catch (_) {
+      /* offer_id */
+    }
+    if (!data && sample.offerId) {
+      try {
+        data = await integrationsApi.getOzonProductInfo({
+          organizationId: sample.org,
+          offer_id: sample.offerId,
+        });
+      } catch (_) {
+        continue;
+      }
+    }
+    if (!data) continue;
+    const attrs = data.attributes ?? data.attribute_values;
+    if (Array.isArray(attrs)) {
+      for (const a of attrs) {
+        const id = a?.id != null ? String(a.id) : a?.attribute_id != null ? String(a.attribute_id) : '';
+        if (!id) continue;
+        const name = String(a?.name || a?.attribute_name || '').trim();
+        if (!name) continue;
+        const prev = maps.ozon[id];
+        if (!prev) maps.ozon[id] = { name, dictionaryId: 0, kind: 'text' };
+        else if (!prev.name) prev.name = name;
+      }
+    }
+    const pair = ozonTypePairFromFetchedProduct(data);
+    if (!pair) continue;
+    const already = (maps.ozonPairs || []).some(
+      (p) => Number(p.descId) === pair.descId && Number(p.typeId) === pair.typeId
+    );
+    if (already) continue;
+    try {
+      const list = await integrationsApi.getOzonCategoryAttributes(pair.descId, pair.typeId);
+      mergeOzonAttrSchema(
+        Array.isArray(list) ? list : [],
+        maps.ozon,
+        { description_category_id: pair.descId, type_id: pair.typeId },
+        maps.ozonPairs
+      );
+    } catch (_) {
+      /* схема типа недоступна — оставляем ERP-маппинг */
+    }
+  }
 }
 
 function ozonDictOptionLabel(opt) {
@@ -2948,6 +3024,7 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   const cols = [];
   for (const id of sortAttrIdsWithLabels(oz, ozM)) {
     if (isMpOfferFieldAttrId(id) || OZON_PACK_DIM_ATTR_IDS.has(String(id))) continue;
+    if (isOzonRichContentAttrId(id)) continue;
     const meta = ozM[id] || ozM[String(id)];
     const human = schemaAttrName(meta) || knownMpAttrLabel('ozon', id);
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
@@ -3298,6 +3375,7 @@ function buildErpAttrColumnDefs(
 function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
   const id = String(attrId);
   if (!id.trim() || isMpOfferFieldAttrId(id)) return null;
+  if (mp === 'ozon' && isOzonRichContentAttrId(id)) return null;
   if (mp === 'ozon' && OZON_PACK_DIM_ATTR_IDS.has(id)) return null;
   if (mp === 'wb' && WB_PACK_DIM_ATTR_IDS.has(id)) return null;
   const maps = labelMaps?.[mp] || {};

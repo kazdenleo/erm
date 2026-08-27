@@ -2,9 +2,8 @@
  * Описание карточки: WB принимает обычные переносы строк.
  * Яндекс.Маркет на витрине показывает HTML.
  * Аннотация Ozon (4191) — одно текстовое значение.
- * Сырые \\n Ozon схлопывает в сплошной текст (без пробелов), <br> и «;»
- * режет как коллекцию (ERROR_ATTRIBUTE_IS_NOT_COLLECTION).
- * На витрину уходит одна строка с разделителем « · ».
+ * Сырые \\n API Ozon выкидывает (склейка AFAC167Вес), <br> режет как коллекцию.
+ * Перенос в кабинете: U+2028 (LINE SEPARATOR), его API не схлопывает.
  */
 
 const ALREADY_HTML_RE = /<\s*\/?\s*(br|p|b|i|strong|em|ul|ol|li|div|span)(?:\s|\/|>)/i;
@@ -64,7 +63,21 @@ export function marketplaceHtmlToPlainText(html) {
 
 const OZON_ANNOTATION_ATTR_ID = 4191;
 
-const OZON_ANNOTATION_LINE_SEP = ' · ';
+/** LINE SEPARATOR: в textarea Ozon это новая строка; обычный \\n API выкидывает. */
+const OZON_ANNOTATION_LINE_SEP = '\u2028';
+
+/**
+ * Текст аннотации для полей ERP: LS и прежний разделитель « · » → обычные переносы.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function ozonAnnotationToErpText(text) {
+  return marketplaceHtmlToPlainText(text)
+    .replace(/\u2028|\u2029/g, '\n')
+    .replace(/\s*·\s*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 /**
  * Ozon склеивает «цифра/строчная + Заглавная» без пробела, если выкинул \\n.
@@ -78,12 +91,12 @@ function unstickOzonAnnotationTokens(text) {
 
 /**
  * Аннотация Ozon: одно { value }, без <br> и без сырых \\n.
- * Переносы из ERP превращаем в « · », чтобы кабинет и витрина не склеивали слова.
+ * Переносы из ERP — U+2028, чтобы кабинет показывал абзацы, а не сплошной текст.
  * @param {unknown} text
  * @returns {string}
  */
 export function formatOzonAnnotationForPush(text) {
-  const joined = marketplaceHtmlToPlainText(text)
+  const joined = ozonAnnotationToErpText(text)
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .split('\n')
@@ -91,7 +104,7 @@ export function formatOzonAnnotationForPush(text) {
     .filter(Boolean)
     .join(OZON_ANNOTATION_LINE_SEP);
   return unstickOzonAnnotationTokens(joined)
-    .replace(/(?:\s*·\s*)+/g, OZON_ANNOTATION_LINE_SEP)
+    .replace(/(?:\s*\u2028\s*)+/g, OZON_ANNOTATION_LINE_SEP)
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
@@ -132,6 +145,7 @@ export default {
   plainTextToMarketplaceHtml,
   marketplaceHtmlToPlainText,
   formatOzonAnnotationForPush,
+  ozonAnnotationToErpText,
   ozonAnnotationSingleHtml,
   applyOzonDescriptionHtml,
 };

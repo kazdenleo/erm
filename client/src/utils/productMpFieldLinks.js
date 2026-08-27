@@ -5,6 +5,8 @@
  */
 
 import { classifyMarketplaceDimAttrName, ozonPackDimAxis } from './marketplaceDimensions.js';
+import { isOzonPlainDescriptionAttr } from './ozonCardTextAttrs.js';
+import { isOzonRichContentAttrId } from '../constants/marketplaceRichContent.js';
 
 export const MP_FIELD_LINK_KEYS = [
   'name',
@@ -880,6 +882,15 @@ export function dedupeYmCategoryParamsByName(mp, attrs) {
 
 const OZON_SKU_OFFER_FIELD_IDS = ['__ozon_offer_id__', '__ozon_vendor_code__'];
 
+function isOzonProductSizeMmAttr(attr) {
+  const n = String(attr?.name || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /^(длина|ширина|высота)(?:\s*[,:(–-]\s*|\s+)(?:мм|mm)\)?$/.test(n);
+}
+
 /** Характеристики Ozon для карточки товара: артикулы продавца/производителя сверху; упаковка — отдельный блок. */
 export function ozonAttrsForProductForm(attrs) {
   const list = withMpOfferFieldAttrs('ozon', Array.isArray(attrs) ? attrs : []).filter(
@@ -891,7 +902,112 @@ export function ozonAttrsForProductForm(attrs) {
     if (hit) pinned.push(hit);
   }
   const rest = list.filter((a) => !OZON_SKU_OFFER_FIELD_IDS.includes(String(a?.id)));
-  return [...pinned, ...rest];
+  const sizeMm = [];
+  const other = [];
+  for (const a of rest) {
+    if (isOzonProductSizeMmAttr(a)) sizeMm.push(a);
+    else other.push(a);
+  }
+  const axisOrder = { длина: 0, ширина: 1, высота: 2 };
+  sizeMm.sort((a, b) => {
+    const na = String(a?.name || '').toLowerCase();
+    const nb = String(b?.name || '').toLowerCase();
+    const ka = Object.keys(axisOrder).find((k) => na.startsWith(k));
+    const kb = Object.keys(axisOrder).find((k) => nb.startsWith(k));
+    return (axisOrder[ka] ?? 9) - (axisOrder[kb] ?? 9);
+  });
+  return [...pinned, ...sizeMm, ...other];
+}
+
+function skipOzonFormAttr(id, name) {
+  if (isOzonRichContentAttrId(id)) return true;
+  if (isOzonPlainDescriptionAttr({ id, name })) return true;
+  if (ozonPackDimAxis({ id, name })) return true;
+  if (classifyMarketplaceDimAttrName(name) === 'pack') return true;
+  return false;
+}
+
+function ozonAttrId(attr) {
+  const id = attr?.id ?? attr?.attribute_id;
+  return id != null && String(id).trim() !== '' ? String(id).trim() : '';
+}
+
+/** Слить две схемы Ozon по id (имена/справочники с живой карточки не затираем пустым). */
+export function unionOzonAttrSchemas(base, extra) {
+  const byId = new Map();
+  for (const a of Array.isArray(base) ? base : []) {
+    const id = ozonAttrId(a);
+    if (id) byId.set(id, a);
+  }
+  for (const a of Array.isArray(extra) ? extra : []) {
+    const id = ozonAttrId(a);
+    if (!id || skipOzonFormAttr(id, a?.name)) continue;
+    const prev = byId.get(id);
+    if (!prev) {
+      byId.set(id, { ...a, id: a.id ?? a.attribute_id ?? id });
+      continue;
+    }
+    byId.set(id, {
+      ...prev,
+      ...a,
+      id: prev.id ?? a.id ?? id,
+      name: prev.name || a.name,
+      dictionary_id: Number(prev.dictionary_id || prev.dictionaryId) || Number(a.dictionary_id || a.dictionaryId) || 0,
+    });
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Схема категории + характеристики с карточки Ozon / из сохранённого JSON,
+ * чтобы поля вроде «Форма», «Диаметр, мм» не пропадали, если их нет в кэше схемы ERP.
+ */
+export function mergeOzonFormAttributes(schemaAttrs, { storedValues, fetchedAttributes } = {}) {
+  const base = ozonAttrsForProductForm(schemaAttrs);
+  const byId = new Map(base.map((a) => [String(a.id), a]));
+
+  const upsert = (attr) => {
+    const id = ozonAttrId(attr);
+    if (!id) return;
+    const name = String(attr?.name || attr?.attribute_name || '').trim();
+    if (skipOzonFormAttr(id, name)) return;
+    const prev = byId.get(id);
+    if (prev) {
+      if (name && !String(prev.name || '').trim()) {
+        byId.set(id, { ...prev, name });
+      }
+      return;
+    }
+    byId.set(id, {
+      id,
+      name: name || `Характеристика ${id}`,
+      type: attr.type || attr.attribute_type || 'String',
+      dictionary_id: attr.dictionary_id ?? attr.dictionaryId ?? 0,
+      is_required: !!(attr.is_required ?? attr.isRequired),
+      is_collection: !!(attr.is_collection ?? attr.isCollection),
+      _orphan: true,
+    });
+  };
+
+  for (const a of Array.isArray(fetchedAttributes) ? fetchedAttributes : []) upsert(a);
+  if (storedValues && typeof storedValues === 'object') {
+    for (const [id, raw] of Object.entries(storedValues)) {
+      if (raw == null || raw === '') continue;
+      if (byId.has(String(id))) continue;
+      upsert({ id, name: '' });
+    }
+  }
+  return [...byId.values()];
+}
+
+export function ozonTypePairFromFetchedProduct(product) {
+  if (!product || typeof product !== 'object') return null;
+  const descId = Number(
+    product.description_category_id ?? product.descriptionCategoryId ?? 0
+  );
+  const typeId = Number(product.type_id ?? product.typeId ?? 0);
+  if (!(descId > 0 && typeId > 0)) return null;
+  return { descId, typeId };
 }
 
 /** Артикул продавца на вкладке МП с учётом связи с «Основным». */

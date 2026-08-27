@@ -87,7 +87,7 @@ describe('ozon OEM / part number push', () => {
       { id: 7324, values: [{ value: 'A' }, { value: 'B' }] },
       { id: 85, values: [{ dictionary_value_id: 1 }, { dictionary_value_id: 2 }] },
     ]);
-    expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1 · строка 2' }]);
+    expect(collapsed.find((a) => a.id === 4191).values).toEqual([{ value: 'строка 1\u2028строка 2' }]);
     expect(collapsed.find((a) => a.id === 7324).values).toEqual([{ value: 'A; B' }]);
     expect(collapsed.find((a) => a.id === 85).values).toEqual([
       { dictionary_value_id: 1 },
@@ -147,18 +147,18 @@ describe('ozon OEM / part number push', () => {
     expect(nyet).toEqual([{ value: 'false' }]);
   });
 
-  test('annotation with newlines becomes a single value with a visible separator', () => {
+  test('annotation with newlines becomes a single value with line separators', () => {
     const values = ozonAttrValuesForApi(
       4191,
       'Фильтр AFAC049\n70 мм\nAudi A3',
       { id: 4191, name: 'Аннотация', type: 'String', dictionary_id: 0 }
     );
-    expect(values).toEqual([{ value: 'Фильтр AFAC049 · 70 мм · Audi A3' }]);
+    expect(values).toEqual([{ value: 'Фильтр AFAC049\u202870 мм\u2028Audi A3' }]);
   });
 
-  test('annotation html br becomes a separator, not extra collection values', () => {
+  test('annotation html br becomes a line separator, not extra collection values', () => {
     const values = ozonAttrValuesForApi(4191, 'Фильтр<br>Audi A3', { id: 4191, name: 'Аннотация' });
-    expect(values).toEqual([{ value: 'Фильтр · Audi A3' }]);
+    expect(values).toEqual([{ value: 'Фильтр\u2028Audi A3' }]);
     expect(values).toHaveLength(1);
   });
 

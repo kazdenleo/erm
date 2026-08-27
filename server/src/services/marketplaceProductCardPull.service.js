@@ -18,7 +18,7 @@ import {
 } from '../utils/productBarcodes.js';
 import { importImagesFromMarketplaceCard } from './marketplaceProductImages.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
-import { marketplaceHtmlToPlainText } from '../utils/marketplaceDescriptionHtml.js';
+import { marketplaceHtmlToPlainText, ozonAnnotationToErpText } from '../utils/marketplaceDescriptionHtml.js';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { createDimensionsCheckTaskIfNeeded } from './employeeTasks.service.js';
@@ -211,7 +211,7 @@ function mergeOzonAttrsFromCard(attrs, prev = {}) {
     const normalized = ozonAttrValueToStored(a);
     if (normalized === '') continue;
     next[String(id)] =
-      Number(id) === 4191 ? marketplaceHtmlToPlainText(normalized) : normalized;
+      Number(id) === 4191 ? ozonAnnotationToErpText(normalized) : normalized;
   }
   return next;
 }
@@ -294,7 +294,7 @@ function enrichOzonUpdatesFromAttributes(updates, product, attrs) {
       findOzonAttr(list, (x) => Number(x.attribute_id ?? x.id) === 4191) ||
       findOzonAttr(list, (x) => /аннотация|описание\s+товар/i.test(String(x.name ?? '')));
     const t = a ? ozonAttrDisplayText(a) : ozonAttrDisplayText(mergedAttrs['4191']);
-    if (t) updates.mp_ozon_description = stripHtml(t);
+    if (t) updates.mp_ozon_description = ozonAnnotationToErpText(t);
   }
 
   if (!trimStr(updates.mp_ozon_name)) {
