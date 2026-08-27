@@ -120,7 +120,9 @@ import {
   isOzonAnnotationAttr,
   isOzonNameAttr,
   isOzonPlainDescriptionAttr,
+  ozonAttrPlainText,
   OZON_ANNOTATION_ATTR_ID,
+  OZON_NAME_ATTR_ID,
 } from '../../utils/ozonCardTextAttrs.js';
 import {
   applyTnVedAutofillToAttributes,
@@ -1009,16 +1011,28 @@ function copyMainSkuToMp(row, mp, erpAttrCols = [], mpAttrColDefs = []) {
   return next;
 }
 
-function copyMainNameToMp(row, mp) {
+function copyMainNameToMp(row, mp, mpAttrColDefs = []) {
   const col = BULK_NAME_COLS[mp];
-  if (!col) return row;
-  return { ...row, [col]: row.name ?? '' };
+  let next = col ? { ...row, [col]: row.name ?? '' } : row;
+  if (mp === 'ozon') {
+    next = applyLinkedOzonTextAttrColumns(next, next.name, 'name', isOzonNameAttr, mpAttrColDefs);
+  }
+  return next;
 }
 
-function copyMainDescToMp(row, mp) {
+function copyMainDescToMp(row, mp, mpAttrColDefs = []) {
   const col = BULK_DESC_COLS[mp];
-  if (!col) return row;
-  return { ...row, [col]: row.description ?? '' };
+  let next = col ? { ...row, [col]: row.description ?? '' } : row;
+  if (mp === 'ozon') {
+    next = applyLinkedOzonTextAttrColumns(
+      next,
+      next.description,
+      'description',
+      isOzonAnnotationAttr,
+      mpAttrColDefs
+    );
+  }
+  return next;
 }
 
 function copyMainBrandToMp(row, mp) {
@@ -1055,8 +1069,8 @@ function copyMainProductDimsToMp(row, mp) {
 
 function copyMainFieldToMp(row, fieldKey, mp, erpAttrCols = [], mpAttrColDefs = []) {
   if (fieldKey === 'sku') return copyMainSkuToMp(row, mp, erpAttrCols, mpAttrColDefs);
-  if (fieldKey === 'name') return copyMainNameToMp(row, mp);
-  if (fieldKey === 'description') return copyMainDescToMp(row, mp);
+  if (fieldKey === 'name') return copyMainNameToMp(row, mp, mpAttrColDefs);
+  if (fieldKey === 'description') return copyMainDescToMp(row, mp, mpAttrColDefs);
   if (fieldKey === 'brand') return copyMainBrandToMp(row, mp);
   if (fieldKey === 'country') return copyMainCountryToMp(row, mp);
   if (fieldKey === 'dimensions') return copyMainDimsToMp(row, mp);
@@ -2543,23 +2557,54 @@ function applyLinkedBrandToOzonAttrColumns(row, brandText, mpAttrCols, ozonDictB
   return next;
 }
 
+function resolveBulkOzonCardTextCell(row, col, raw) {
+  const cur = raw != null ? raw : row?.[col?.key];
+  if (str(cur).trim()) return cur;
+  if (isOzonCardTextColumn(col, 'name')) return str(row.name);
+  if (isOzonCardTextColumn(col, 'description')) return str(row.description);
+  return cur ?? '';
+}
+
+function ozonCardTextLinkActive(row, fieldKey) {
+  if (isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, 'ozon')) return true;
+  return isMpFieldLinked(normalizeMpFieldLinks(row?._productRef?.mp_field_links), fieldKey, 'ozon');
+}
+
+function isOzonCardTextColumn(col, kind) {
+  if (col?.mpAttr?.bucket !== 'ozon') return false;
+  const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+  if (kind === 'name') {
+    return (
+      isOzonNameAttr(meta) ||
+      col.linkFieldKey === 'name' ||
+      String(col.mpAttr.attrId) === String(OZON_NAME_ATTR_ID)
+    );
+  }
+  return (
+    isOzonAnnotationAttr(meta) ||
+    col.linkFieldKey === 'description' ||
+    String(col.mpAttr.attrId) === String(OZON_ANNOTATION_ATTR_ID)
+  );
+}
+
 function applyLinkedOzonTextAttrColumns(row, text, fieldKey, matchAttr, mpAttrCols) {
-  const links = normalizeMpFieldLinks(row?.mp_field_links);
-  if (!isMpFieldLinked(links, fieldKey, 'ozon')) return row;
+  if (!ozonCardTextLinkActive(row, fieldKey)) return row;
   if (!Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
   const value = String(text ?? '');
   let next = row;
   let changed = false;
   for (const col of mpAttrCols) {
     if (col?.mpAttr?.bucket !== 'ozon') continue;
-    if (
-      !matchAttr({
-        id: col.mpAttr.attrId,
-        name: col._humanName || col.label,
-      })
-    ) {
-      continue;
-    }
+    const meta = {
+      id: col.mpAttr.attrId,
+      name: col._humanName || col.label,
+    };
+    const mapped =
+      (typeof matchAttr === 'function' && matchAttr(meta)) ||
+      col.linkFieldKey === fieldKey ||
+      (fieldKey === 'name' && String(col.mpAttr.attrId) === String(OZON_NAME_ATTR_ID)) ||
+      (fieldKey === 'description' && String(col.mpAttr.attrId) === String(OZON_ANNOTATION_ATTR_ID));
+    if (!mapped) continue;
     if (str(next[col.key]) === str(value)) continue;
     if (!String(value).trim() && str(next[col.key]).trim()) continue;
     if (!changed) {
@@ -3241,6 +3286,7 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
   for (const known of [
     { mp: 'ozon', id: String(OZON_BRAND_ATTR_ID), name: 'Бренд' },
     { mp: 'ozon', id: String(OZON_MANUFACTURER_COUNTRY_ATTR_ID), name: 'Страна-изготовитель' },
+    { mp: 'ozon', id: String(OZON_NAME_ATTR_ID), name: 'Название' },
     { mp: 'ozon', id: String(OZON_ANNOTATION_ATTR_ID), name: 'Аннотация' },
   ]) {
     const k = `${known.mp}:${known.id}`;
@@ -3629,26 +3675,34 @@ function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrCo
 
 function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
   const links = normalizeMpFieldLinks(p?.mp_field_links);
+  const nameText = str(p?.name || p?.mp_ozon_name).trim();
+  const descText = str(p?.description || p?.mp_ozon_description).trim();
   let next = row;
-  const fill = (fieldKey, mainVal, mpKey, matchAttr) => {
-    if (!isMpFieldLinked(links, fieldKey, 'ozon')) return;
-    const text = str(mainVal).trim();
+  const fill = (fieldKey, text, mpKey, matchAttr) => {
     if (!text) return;
-    if (!str(next[mpKey]).trim()) {
+    const linked = isMpFieldLinked(links, fieldKey, 'ozon');
+    if (mpKey && !str(next[mpKey]).trim() && (linked || mpKey === 'mp_ozon_name' || mpKey === 'mp_ozon_description')) {
       if (next === row) next = { ...next };
       next[mpKey] = text;
     }
+    if (!linked) return;
     for (const c of mpAttrColDefs || []) {
       if (c?.mpAttr?.bucket !== 'ozon') continue;
-      if (!matchAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })) continue;
+      const meta = { id: c.mpAttr.attrId, name: c._humanName || c.label };
+      const mapped =
+        matchAttr(meta) ||
+        c.linkFieldKey === fieldKey ||
+        (fieldKey === 'name' && String(c.mpAttr.attrId) === String(OZON_NAME_ATTR_ID)) ||
+        (fieldKey === 'description' && String(c.mpAttr.attrId) === String(OZON_ANNOTATION_ATTR_ID));
+      if (!mapped) continue;
       if (str(next[c.key]).trim()) continue;
       if (next === row) next = { ...next };
       next[c.key] = text;
     }
   };
-  fill('name', p?.name, 'mp_ozon_name', isOzonNameAttr);
-  fill('description', p?.description, 'mp_ozon_description', isOzonAnnotationAttr);
-  fill('sku', p?.sku, 'sku_ozon', (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
+  fill('name', nameText, 'mp_ozon_name', isOzonNameAttr);
+  fill('description', descText, 'mp_ozon_description', isOzonAnnotationAttr);
+  fill('sku', str(p?.sku).trim(), 'sku_ozon', (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
   return next;
 }
 
@@ -3751,7 +3805,9 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (!c.mpAttr) continue;
     const { bucket, attrId } = c.mpAttr;
     const src = bucket === 'ozon' ? oz : bucket === 'wb' ? wb : ym;
-    row[c.key] = stringifyMpAttrValue(src[attrId] ?? src[String(attrId)]);
+    const raw = src[attrId] ?? src[String(attrId)];
+    row[c.key] =
+      bucket === 'ozon' ? ozonAttrPlainText(raw) || stringifyMpAttrValue(raw) : stringifyMpAttrValue(raw);
     if (!String(row[c.key] || '').trim() && bucket === 'ozon') {
       const meta = { id: attrId, name: c._humanName || c.label };
       if (isOzonNameAttr(meta)) row[c.key] = str(p.mp_ozon_name);
@@ -3788,6 +3844,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
       }
     }
   }
+  row = applyLinkedOzonNameAndAnnotationColumns(row, mpAttrColDefs, lengthUnit, weightUnit);
   return syncOfferFieldColsOnRow(row, mpAttrColDefs);
 }
 
@@ -7337,12 +7394,13 @@ export function ProductsBulkEdit() {
     const vRaw = linked
       ? bulkLinkedMirrorValue(row, col.key, erpAttrColumnDefs, mpAttrColumnDefs, lengthUnit, weightUnit)
       : row[col.key];
-    const v =
+    let v =
       col.key === 'barcodes'
         ? formatBarcodesCell(vRaw)
         : col.mpAttr || col.input === 'select_dict' || col.input === 'select_erp_dict'
           ? stringifyMpAttrValue(vRaw)
           : vRaw;
+    v = resolveBulkOzonCardTextCell(row, col, v);
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
     const limitInfo = isPopupTextColumn(col, erpAttrColumnDefs)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
@@ -7423,16 +7481,20 @@ export function ProductsBulkEdit() {
                 mpAttrColumnDefs
               );
               drafts[c.key] = String(
-                cellLinked
-                  ? bulkLinkedMirrorValue(
-                      row,
-                      c.key,
-                      erpAttrColumnDefs,
-                      mpAttrColumnDefs,
-                      lengthUnit,
-                      weightUnit
-                    )
-                  : row[c.key] ?? ''
+                resolveBulkOzonCardTextCell(
+                  row,
+                  c,
+                  cellLinked
+                    ? bulkLinkedMirrorValue(
+                        row,
+                        c.key,
+                        erpAttrColumnDefs,
+                        mpAttrColumnDefs,
+                        lengthUnit,
+                        weightUnit
+                      )
+                    : row[c.key]
+                )
               );
             }
             setTextPopup({
