@@ -21,16 +21,16 @@ describe('marketplaceDescriptionHtml', () => {
     expect(marketplaceHtmlToPlainText(html)).toBe('Фильтр AFAC049\n70 мм\n\nAudi A3');
   });
 
-  test('applyOzonDescriptionHtml writes 4191 as plain text without html', () => {
+  test('applyOzonDescriptionHtml writes 4191 as one value with newlines', () => {
     const item = { attributes: [{ complex_id: 0, id: 85, values: [{ value: 'Miles' }] }] };
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
     expect(item.description).toBeUndefined();
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'строка 1 строка 2' }]);
+    expect(ann.values).toEqual([{ value: 'строка 1\nстрока 2' }]);
     expect(item.attributes.some((a) => Number(a.id) === 85)).toBe(true);
   });
 
-  test('applyOzonDescriptionHtml collapses split annotation values into one', () => {
+  test('applyOzonDescriptionHtml collapses split annotation values into one with newlines', () => {
     const item = {
       attributes: [
         {
@@ -42,6 +42,13 @@ describe('marketplaceDescriptionHtml', () => {
     };
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'строка 1 строка 2' }]);
+    expect(ann.values).toEqual([{ value: 'строка 1\nстрока 2' }]);
+  });
+
+  test('annotation html br becomes a newline inside a single value', () => {
+    const item = { attributes: [] };
+    applyOzonDescriptionHtml(item, 'Фильтр<br>70 мм');
+    const ann = item.attributes.find((a) => Number(a.id) === 4191);
+    expect(ann.values).toEqual([{ value: 'Фильтр\n70 мм' }]);
   });
 });

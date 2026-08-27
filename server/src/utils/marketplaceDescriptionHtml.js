@@ -1,7 +1,7 @@
 /**
- * Описание карточки: WB принимает обычные переносы строк,
- * Ozon (аннотация 4191) и Яндекс.Маркет на витрине показывают HTML
- * и схлопывают «сырые» \n в сплошной текст.
+ * Описание карточки: WB принимает обычные переносы строк.
+ * Яндекс.Маркет на витрине показывает HTML.
+ * Аннотация Ozon (4191) — одно текстовое значение: переносы как \\n, без HTML.
  */
 
 const ALREADY_HTML_RE = /<\s*\/?\s*(br|p|b|i|strong|em|ul|ol|li|div|span)(?:\s|\/|>)/i;
@@ -62,19 +62,29 @@ export function marketplaceHtmlToPlainText(html) {
 const OZON_ANNOTATION_ATTR_ID = 4191;
 
 /**
- * Аннотация Ozon — одно значение. <br> и переносы Ozon воспринимает как коллекцию.
+ * Аннотация Ozon: одно { value }, переносы строк сохраняем.
+ * HTML &lt;br&gt; / несколько values раньше давали ERROR_ATTRIBUTE_IS_NOT_COLLECTION.
  * @param {unknown} text
  * @returns {string}
  */
-export function ozonAnnotationSingleHtml(text) {
+export function formatOzonAnnotationForPush(text) {
   return marketplaceHtmlToPlainText(text)
-    .replace(/\s*;\s*/g, '. ')
-    .replace(/\s+/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
+/** @deprecated имя историческое: HTML в 4191 не отправляем, только текст с \\n. */
+export function ozonAnnotationSingleHtml(text) {
+  return formatOzonAnnotationForPush(text);
+}
+
 /**
- * Пишет HTML-описание в атрибут «Аннотация» (4191) одним значением.
+ * Пишет описание в атрибут «Аннотация» (4191) одним значением с переносами строк.
  * item.description не дублируем — Ozon склеивает его с 4191 и ругается на коллекцию.
  * @param {object} item
  * @param {unknown} description
@@ -103,6 +113,7 @@ export default {
   escapeHtmlText,
   plainTextToMarketplaceHtml,
   marketplaceHtmlToPlainText,
+  formatOzonAnnotationForPush,
   ozonAnnotationSingleHtml,
   applyOzonDescriptionHtml,
 };

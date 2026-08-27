@@ -228,11 +228,17 @@ function sanitizeOzonSingletonText(id, text, attrMeta) {
     return joinOzonOemList(s) || s;
   }
   if (attrId === OZON_ANNOTATION_ATTR_ID) {
-    return s
+    return String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+      .replace(/<\s*\/\s*p\s*>/gi, '\n')
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/gi, ' ')
-      .replace(/\s*;\s*/g, '. ')
-      .replace(/\s+/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
   const articleList = isOzonArticleListAttr(attrMeta || { id: attrId, name: '' });
@@ -321,7 +327,7 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
         values: [{ value: sanitizeOzonSingletonText(id, texts.join('; '), a) }],
       };
     }
-    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : '. ');
+    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? '\n' : '. ');
     return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined, a) }] };
   });
 }

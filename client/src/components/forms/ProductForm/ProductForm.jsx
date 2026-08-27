@@ -3367,14 +3367,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const ozonAttrText = (a) => ozonCardAttrToFormText(a, { preferText: true });
     const findAttr = (pred) => (Array.isArray(attrs) ? attrs.find(pred) : null);
     let description = String(data.description ?? data.description_html ?? '')
+      .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+      .replace(/<\s*\/\s*p\s*>/gi, '\n')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
     if (!description) {
       const a4191 =
         findAttr((a) => Number(a.attribute_id ?? a.id) === 4191) ||
         findAttr((a) => /аннотация|описание\s+товар/i.test(String(a.name ?? '')));
-      description = ozonAttrText(a4191).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      description = ozonAttrText(a4191)
+        .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+        .replace(/<\s*\/\s*p\s*>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
     }
     let brand = String(data.brand ?? '').trim();
     if (!brand || /^\d+$/.test(brand)) {
@@ -9017,7 +9027,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               <textarea
                                 id={`ozon-attr-${attr.id}`}
                                 className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, textValue)}
-                                rows="5"
+                                rows="10"
                                 value={textValue}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />

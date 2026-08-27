@@ -1,5 +1,7 @@
 /** Ozon: артикул производителя (партномер), не offer_id продавца и не отдельное поле OEM. */
 
+import { formatOzonAnnotationForPush } from './marketplaceDescriptionHtml.js';
+
 export const OZON_PARTNUMBER_ATTR_ID = 7236;
 
 function normalizeOzonAttrName(s) {
@@ -219,12 +221,7 @@ function sanitizeOzonSingletonText(id, text, attrMeta) {
     return joinOzonOemList(s) || s;
   }
   if (attrId === OZON_ANNOTATION_ATTR_ID) {
-    return s
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/\s*;\s*/g, '. ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return formatOzonAnnotationForPush(s);
   }
   const articleList = isOzonArticleListAttr(attrMeta || { id: attrId, name: '' });
   const oem =
@@ -313,7 +310,7 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
         values: [{ value: sanitizeOzonSingletonText(id, texts.join('; '), a) }],
       };
     }
-    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : '. ');
+    const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? '\n' : '. ');
     return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined, a) }] };
   });
 }
