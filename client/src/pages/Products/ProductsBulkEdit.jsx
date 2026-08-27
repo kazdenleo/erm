@@ -4981,13 +4981,10 @@ function findErpColByLinkFieldKey(erpAttrCols, linkKey) {
 function isPopupTextColumn(col, erpAttrCols = []) {
   if (!col) return false;
   const k = String(col.key || '');
-  const relatedFlag = (fieldKey) => {
-    if (col.showRelatedFields != null) return !!col.showRelatedFields;
-    // До миграции / без метаданных — как раньше: name/description с попапом
-    if (fieldKey === 'name' || fieldKey === 'description') return true;
-    return false;
-  };
-  if (k === 'name' || k === 'description') return relatedFlag(k);
+  if (k === 'barcodes') return false;
+  // Название / описание / аннотация — всегда попап с textarea, даже если
+  // «Показывать связанные поля» выключено: иначе колонка становится однострочной ячейкой.
+  if (k === 'name' || k === 'description') return true;
   if (
     k === 'mp_wb_name' ||
     k === 'mp_wb_description' ||
@@ -4996,26 +4993,19 @@ function isPopupTextColumn(col, erpAttrCols = []) {
     k === 'mp_ozon_name' ||
     k === 'mp_ozon_description'
   ) {
-    const lk =
-      col.linkFieldKey === 'name' || col.linkFieldKey === 'description'
-        ? col.linkFieldKey
-        : k.includes('description')
-          ? 'description'
-          : 'name';
-    return relatedFlag(lk);
+    return true;
   }
-  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') {
-    return relatedFlag(col.linkFieldKey);
-  }
+  if (col.linkFieldKey === 'name' || col.linkFieldKey === 'description') return true;
   if (col.mpAttr?.bucket === 'ozon') {
     const attr = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-    if (isOzonNameAttr(attr)) return relatedFlag('name');
-    if (isOzonAnnotationAttr(attr)) return relatedFlag('description');
+    if (isOzonNameAttr(attr) || isOzonAnnotationAttr(attr)) return true;
   }
+  if (isEditableAttrType(col.erpAttr?.type) || col.showRelatedFields) return true;
   if (erpColShowsRelatedFields(col)) return true;
   const lk = col.linkFieldKey;
   if (lk && isAttrMpFieldLinkKey(lk) && (col.mpAttr || col.mpOfferField || col.mpBucket)) {
-    return erpColShowsRelatedFields(findErpColByLinkFieldKey(erpAttrCols, lk));
+    const erp = findErpColByLinkFieldKey(erpAttrCols, lk);
+    return erpColShowsRelatedFields(erp) || isEditableAttrType(erp?.erpAttr?.type);
   }
   return false;
 }
