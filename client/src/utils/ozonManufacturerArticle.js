@@ -57,6 +57,31 @@ export function isOzonFreeTextMpAttr(attr) {
   return isStandaloneOemAttrName(attr.name ?? attr.attribute_name);
 }
 
+/** Списки артикулов (аналоги / OEM / альтернативные) — в Ozon через «; ». */
+export function isOzonArticleListAttr(attr) {
+  if (!attr) return false;
+  if (isOzonFreeTextMpAttr(attr)) return true;
+  const n = normalizeOzonAttrName(attr.name ?? attr.attribute_name ?? attr.label);
+  if (!n) return false;
+  if (n.includes('альтернативн') && n.includes('артикул')) return true;
+  if (/(^|\s)аналог/.test(n) && !n.includes('применимост')) return true;
+  return false;
+}
+
+export function isErpAnalogLikeAttrName(name) {
+  const n = normalizeOzonAttrName(name);
+  if (!n) return false;
+  return /аналог/.test(n) && !n.includes('применимост');
+}
+
+export function formatOzonArticleListText(text) {
+  const parts = String(text || '')
+    .split(/[;,\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return parts.join('; ');
+}
+
 function ozonCardValuePart(v) {
   if (v == null) return '';
   const textRaw =
@@ -181,11 +206,7 @@ function schemaIsPlainStringAttr(attr) {
  * OEM и партномер всегда уходят как { value }, иначе Ozon пишет «словарное значение» и поле пустое.
  */
 function joinOzonOemList(text) {
-  const parts = String(text || '')
-    .split(/[;,\n]+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-  return parts.join('; ');
+  return formatOzonArticleListText(text);
 }
 
 function joinOzonListAsSentence(text) {

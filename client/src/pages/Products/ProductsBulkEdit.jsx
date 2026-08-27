@@ -110,6 +110,9 @@ import {
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
 import {
+  formatOzonArticleListText,
+  isErpAnalogLikeAttrName,
+  isOzonArticleListAttr,
   isOzonManufacturerArticleAttr,
   isOzonSellerCodeAttr,
   isStandaloneOemAttrName,
@@ -768,7 +771,16 @@ function copyErpAttrToLinkedMp(
     const destCol = (mpAttrColDefs || []).find((c) => c.key === destKey);
     if (destCol && mpColOwnedBySku(destCol)) continue;
     if (onlyIfEmpty && str(next[destKey]).trim()) continue;
-    next = { ...next, [destKey]: src };
+    const destMeta = {
+      id: target.attrId,
+      name: destCol?._humanName || destCol?.label || entry.name,
+    };
+    const writeVal =
+      mp === 'ozon' &&
+      (isOzonArticleListAttr(destMeta) || isErpAnalogLikeAttrName(erpCol?.erpAttr?.name || erpCol?.label))
+        ? formatOzonArticleListText(src)
+        : src;
+    next = { ...next, [destKey]: writeVal };
     if (mp === 'ozon' && isOzonManufacturerArticleAttr({ id: target.attrId, name: entry.name })) {
       syncedOzonMfr = true;
     }
@@ -1842,6 +1854,21 @@ function stringifyMpAttrValue(v) {
     return JSON.stringify(v);
   }
   return formatOzonAttrDisplayValue(String(v));
+}
+
+function formatBulkArticleListCell(col, text) {
+  const raw = str(text);
+  if (!raw.trim()) return raw;
+  if (col?.erpAttr && isErpAnalogLikeAttrName(col.erpAttr.name || col.label)) {
+    return formatOzonArticleListText(raw);
+  }
+  if (
+    col?.mpAttr?.bucket === 'ozon' &&
+    isOzonArticleListAttr({ id: col.mpAttr.attrId, name: col._humanName || col.label })
+  ) {
+    return formatOzonArticleListText(raw);
+  }
+  return raw;
 }
 
 /** Для ячеек Ozon: «Китай->90296» → «Китай»; голый id оставляем. */
@@ -3847,6 +3874,10 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     const raw = src[attrId] ?? src[String(attrId)];
     row[c.key] =
       bucket === 'ozon' ? ozonAttrPlainText(raw) || stringifyMpAttrValue(raw) : stringifyMpAttrValue(raw);
+    if (bucket === 'ozon') {
+      const listMeta = { id: attrId, name: c._humanName || c.label };
+      if (isOzonArticleListAttr(listMeta)) row[c.key] = formatOzonArticleListText(row[c.key]);
+    }
     if (isBlankBulkAttrText(row[c.key]) && bucket === 'ozon') {
       const meta = { id: attrId, name: c._humanName || c.label };
       if (isOzonNameAttr(meta) || String(attrId) === String(OZON_NAME_ATTR_ID)) {
@@ -3861,6 +3892,9 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   for (const c of erpAttrColDefs) {
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
+    if (isErpAnalogLikeAttrName(c.erpAttr.name || c.label)) {
+      row[c.key] = formatOzonArticleListText(row[c.key]);
+    }
   }
   row = seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs);
   row = applyCategoryTnVedToBulkRow(row, p, erpAttrColDefs, mpAttrColDefs, categories);
@@ -7445,6 +7479,7 @@ export function ProductsBulkEdit() {
           ? stringifyMpAttrValue(vRaw)
           : vRaw;
     v = resolveBulkOzonCardTextCell(row, col, v);
+    v = formatBulkArticleListCell(col, v);
     const overLimit = bulkCellLimitHit(row, col, limitsForRow(row), v);
     const limitInfo = isPopupTextColumn(col, erpAttrColumnDefs)
       ? bulkCellLimitInfo(row, col, limitsForRow(row), v)
@@ -7524,20 +7559,23 @@ export function ProductsBulkEdit() {
                 erpAttrColumnDefs,
                 mpAttrColumnDefs
               );
-              drafts[c.key] = String(
-                resolveBulkOzonCardTextCell(
-                  row,
-                  c,
-                  cellLinked
-                    ? bulkLinkedMirrorValue(
-                        row,
-                        c.key,
-                        erpAttrColumnDefs,
-                        mpAttrColumnDefs,
-                        lengthUnit,
-                        weightUnit
-                      )
-                    : row[c.key]
+              drafts[c.key] = formatBulkArticleListCell(
+                c,
+                String(
+                  resolveBulkOzonCardTextCell(
+                    row,
+                    c,
+                    cellLinked
+                      ? bulkLinkedMirrorValue(
+                          row,
+                          c.key,
+                          erpAttrColumnDefs,
+                          mpAttrColumnDefs,
+                          lengthUnit,
+                          weightUnit
+                        )
+                      : row[c.key]
+                  )
                 )
               );
             }

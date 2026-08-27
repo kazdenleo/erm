@@ -176,6 +176,9 @@ import {
 } from '../../../utils/ozonBrandAttr.js';
 import {
   findOzonManufacturerArticleAttrs,
+  formatOzonArticleListText,
+  isErpAnalogLikeAttrName,
+  isOzonArticleListAttr,
   isOzonFreeTextMpAttr,
   isOzonManufacturerArticleAttr,
   ozonCardAttrToFormText,
@@ -6462,7 +6465,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
         for (const hit of hits) {
           const key = String(hit.id);
           if (ozonAttrPlainText(out[key])) continue;
-          out[key] = { value: text };
+          const write =
+            isOzonArticleListAttr(hit) || isErpAnalogLikeAttrName(erp.name)
+              ? formatOzonArticleListText(text)
+              : text;
+          out[key] = { value: write };
         }
       }
       return Object.keys(out).length > 0 ? out : undefined;

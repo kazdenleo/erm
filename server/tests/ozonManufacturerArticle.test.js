@@ -111,6 +111,15 @@ describe('ozon OEM / part number push', () => {
     expect(values).toEqual([{ value: '8K0129620; 4G0129620' }]);
   });
 
+  test('альтернативные артикулы keep semicolon list on push', () => {
+    const values = ozonAttrValuesForApi(
+      11031,
+      'LF0253, AG 816; AMD.AVFA446',
+      { id: 11031, name: 'Альтернативные артикулы товара', type: 'String', is_collection: true }
+    );
+    expect(values).toEqual([{ value: 'LF0253; AG 816; AMD.AVFA446' }]);
+  });
+
   test('комплектация joins list parts without comma or semicolon', () => {
     const values = ozonAttrValuesForApi(
       4384,

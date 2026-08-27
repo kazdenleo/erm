@@ -66,7 +66,7 @@ function formatAnalogsAttrValue(analogs) {
   const codes = (Array.isArray(analogs) ? analogs : [])
     .map((a) => String(a?.code || a?.sku || a || '').trim())
     .filter(Boolean);
-  return [...new Set(codes)].join(', ');
+  return [...new Set(codes)].join('; ');
 }
 
 function formatApplicabilityLine(a) {

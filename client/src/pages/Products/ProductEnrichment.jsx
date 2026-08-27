@@ -51,12 +51,12 @@ function formatWeightCell(g, weightUnit) {
   return weightGToDisplay(g, weightUnit) || '—';
 }
 
-/** Только артикулы аналогов через запятую. */
+/** Только артикулы аналогов через «; ». */
 function formatAnalogsCodes(analogs) {
   const codes = (analogs || [])
     .map((a) => String(a?.code || '').trim())
     .filter(Boolean);
-  return [...new Set(codes)].join(', ');
+  return [...new Set(codes)].join('; ');
 }
 
 /**
