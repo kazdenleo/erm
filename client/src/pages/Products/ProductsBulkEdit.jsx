@@ -5032,9 +5032,36 @@ function popupFieldTitle(col) {
   return raw.split('\n')[0].trim();
 }
 
+function popupShowsRelatedFields(col, erpAttrCols = [], allColumns = []) {
+  if (!col) return false;
+  if (col.showRelatedFields || erpColShowsRelatedFields(col)) return true;
+  const linkKey =
+    col.linkFieldKey === 'name' || col.linkFieldKey === 'description'
+      ? col.linkFieldKey
+      : col.key === 'name' || col.key === 'description'
+        ? col.key
+        : col.linkFieldKey || '';
+  if (!linkKey) return false;
+  for (const c of allColumns || []) {
+    if (!c) continue;
+    if (
+      (c.showRelatedFields || erpColShowsRelatedFields(c)) &&
+      (c.key === linkKey || c.linkFieldKey === linkKey) &&
+      !c.mpBucket &&
+      !c.mpAttr &&
+      !c.mpOfferField
+    ) {
+      return true;
+    }
+  }
+  return erpColShowsRelatedFields(findErpColByLinkFieldKey(erpAttrCols, linkKey));
+}
+
 function collectPopupRelatedColumns(col, mpAttrCols = [], erpAttrCols = [], allColumns = []) {
   const linkKey = popupLinkFieldKey(col, erpAttrCols);
-  if (!linkKey) return col ? [col] : [];
+  if (!linkKey || !popupShowsRelatedFields(col, erpAttrCols, allColumns)) {
+    return col ? [col] : [];
+  }
   const out = [];
   const seen = new Set();
   const add = (c) => {
@@ -7888,6 +7915,74 @@ export function ProductsBulkEdit() {
     return <input {...common} type="text" autoComplete="off" />;
   };
 
+  const togglePopupRowFieldLink = useCallback(
+    (fieldKey, mp) => {
+      const rowId = textPopup.rowId;
+      const col = textPopup.col;
+      if (rowId == null || !col || !fieldKey || !mp) return;
+      const row = rows.find((r) => str(r.id) === str(rowId));
+      if (!row) return;
+      const group = collectPopupRelatedColumns(
+        col,
+        mpAttrColumnDefs,
+        erpAttrColumnDefs,
+        displayColumns
+      );
+      const synthetic = rowWithPopupDraftLinks(row, textPopup, group, erpAttrColumnDefs);
+      const enable = !isMpFieldLinked(normalizeMpFieldLinks(synthetic?.mp_field_links), fieldKey, mp);
+      const def = bulkLinkableFieldDefs.find((d) => d.fieldKey === fieldKey);
+      const supported =
+        fieldKey === 'product_dimensions' || fieldKey === 'dimensions'
+          ? undefined
+          : def?.supported;
+      const mainCol = group.find((c) => isPopupMainColumn(c, fieldKey));
+      const mainKey =
+        mainCol?.key || (fieldKey === 'name' || fieldKey === 'description' ? fieldKey : null);
+      markChangedForPush([rowId]);
+      markDirty();
+      setRows((prev) =>
+        prev.map((r) =>
+          str(r.id) === str(rowId) ? applyBulkLinkToRow(r, fieldKey, mp, enable, supported) : r
+        )
+      );
+      setTextPopup((prev) => {
+        const nextIndependent = { ...(prev.independent || {}) };
+        const nextDrafts = { ...(prev.drafts || {}) };
+        const mainVal = String(
+          (mainKey && Object.prototype.hasOwnProperty.call(nextDrafts, mainKey)
+            ? nextDrafts[mainKey]
+            : row[mainKey]) ?? ''
+        );
+        for (const c of group) {
+          if (!c?.key || isPopupMainColumn(c, fieldKey)) continue;
+          const code = bulkMpCodeForColumn(c.key) || c.mpAttr?.bucket || c.mpBucket;
+          if (code !== mp) continue;
+          if (enable) {
+            delete nextIndependent[c.key];
+            nextDrafts[c.key] = mainVal;
+          } else {
+            nextIndependent[c.key] = true;
+            if (!Object.prototype.hasOwnProperty.call(nextDrafts, c.key)) {
+              nextDrafts[c.key] = mainVal;
+            }
+          }
+        }
+        return { ...prev, independent: nextIndependent, drafts: nextDrafts };
+      });
+    },
+    [
+      textPopup,
+      rows,
+      mpAttrColumnDefs,
+      erpAttrColumnDefs,
+      displayColumns,
+      bulkLinkableFieldDefs,
+      applyBulkLinkToRow,
+      markChangedForPush,
+      markDirty,
+    ]
+  );
+
   const bulkModalCol = bulkModal.column;
   const textPopupRow = textPopup.open
     ? rows.find((r) => str(r.id) === str(textPopup.rowId))
@@ -7902,6 +7997,23 @@ export function ProductsBulkEdit() {
         )
       : [];
   const textPopupLinkKey = popupLinkFieldKey(textPopup.col, erpAttrColumnDefs);
+  const textPopupMainCol =
+    textPopupGroup.find((c) => isPopupMainColumn(c, textPopupLinkKey)) || textPopup.col;
+  const textPopupLinkSupportedMps =
+    textPopupMainCol?.linkSupportedMps ||
+    textPopupMainCol?.mappedMps ||
+    displayColumns.find((c) => c.showLinkToggles && c.linkFieldKey === textPopupLinkKey)
+      ?.linkSupportedMps ||
+    displayColumns.find((c) => c.showLinkToggles && c.linkFieldKey === textPopupLinkKey)?.mappedMps;
+  const textPopupShowLinkToggles = !!(
+    textPopupLinkKey &&
+    textPopupGroup.length > 1 &&
+    (textPopupMainCol?.showLinkToggles ||
+      (Array.isArray(textPopupLinkSupportedMps) && textPopupLinkSupportedMps.length > 0) ||
+      textPopupLinkKey === 'name' ||
+      textPopupLinkKey === 'description' ||
+      isAttrMpFieldLinkKey(textPopupLinkKey))
+  );
   const textPopupSyntheticRow =
     textPopupRow && textPopup.col
       ? rowWithPopupDraftLinks(textPopupRow, textPopup, textPopupGroup, erpAttrColumnDefs)
@@ -9062,6 +9174,20 @@ export function ProductsBulkEdit() {
                   linkKey === 'description' || String(c.key || '').includes('description');
                 return (
                   <div key={c.key} className="products-bulk-text-popup-field">
+                    {isMain && textPopupShowLinkToggles ? (
+                      <div className="products-bulk-text-popup-field-links">
+                        <MpFieldLinkToggles
+                          fieldKey={textPopupLinkKey}
+                          links={normalizeMpFieldLinks(
+                            textPopupSyntheticRow?.mp_field_links || textPopupRow?.mp_field_links
+                          )}
+                          onToggle={togglePopupRowFieldLink}
+                          supportedMps={textPopupLinkSupportedMps}
+                          size={18}
+                          style={{ marginLeft: 0 }}
+                        />
+                      </div>
+                    ) : null}
                     <div className="products-bulk-text-popup-field-head">
                       <label htmlFor={`bulk-text-popup-${c.key}`}>{popupFieldTitle(c)}</label>
                       {stillLinked ? (

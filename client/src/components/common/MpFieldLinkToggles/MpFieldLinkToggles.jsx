@@ -12,7 +12,7 @@ import {
 /**
  * Значки OZ/WB/ЯМ рядом с подписью поля: включённый = поле связано с МП.
  */
-export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22, supportedMps }) {
+export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22, supportedMps, style }) {
   const supported = supportedMpsForFieldKey(fieldKey, supportedMps);
   const baseTitle = isAttrMpFieldLinkKey(fieldKey)
     ? 'Связать с основным атрибутом (не с другими МП)'
@@ -21,7 +21,14 @@ export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22, suppo
   return (
     <span
       className="mp-field-link-toggles"
-      style={{ display: 'inline-flex', gap: 4, alignItems: 'center', marginLeft: 8, verticalAlign: 'middle' }}
+      style={{
+        display: 'inline-flex',
+        gap: 4,
+        alignItems: 'center',
+        marginLeft: 8,
+        verticalAlign: 'middle',
+        ...style,
+      }}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();

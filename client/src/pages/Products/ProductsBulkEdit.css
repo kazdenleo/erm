@@ -837,6 +837,16 @@ body.products-bulk-col-resizing * {
   gap: 16px;
 }
 
+.products-bulk-text-popup-field-links {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.products-bulk-text-popup-field-links .mp-field-link-toggles {
+  margin-left: 0 !important;
+}
+
 .products-bulk-text-popup-field-head {
   display: flex;
   flex-wrap: wrap;
