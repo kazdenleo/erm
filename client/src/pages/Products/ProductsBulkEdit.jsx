@@ -57,6 +57,7 @@ import {
   isAttrMpFieldLinkKey,
   isDedicatedMpFieldLinkKey,
   isWbCharcDuplicatingDedicatedField,
+  isWbCountryCharcName,
   isYmParamDuplicatingDedicatedField,
   normalizeCategoryDedicatedCharcLinks,
   DEDICATED_ADDED_KEYS_FIELD,
@@ -1885,6 +1886,37 @@ function formatOzonAttrDisplayValue(raw) {
   return t;
 }
 
+/** Ячейка показывает то же, что уже лежит в JSON-атрибуте — не подменять объект словарём на голый текст. */
+function cellMatchesAttrBaseline(text, baselineRaw) {
+  const t = String(text ?? '').trim();
+  if (!t || baselineRaw == null || baselineRaw === '') return false;
+  const shown = String(stringifyMpAttrValue(baselineRaw) || ozonAttrPlainText(baselineRaw) || '').trim();
+  if (shown && (t === shown || formatOzonAttrDisplayValue(t) === formatOzonAttrDisplayValue(shown))) {
+    return true;
+  }
+  if (typeof baselineRaw === 'object') {
+    if (Array.isArray(baselineRaw)) {
+      return baselineRaw.some((item) => cellMatchesAttrBaseline(t, item));
+    }
+    if (Array.isArray(baselineRaw.values) && baselineRaw.values.length) {
+      return cellMatchesAttrBaseline(t, baselineRaw.values);
+    }
+    const did = String(baselineRaw.dictionary_value_id ?? (baselineRaw.value == null ? baselineRaw.id : '') ?? '').trim();
+    const val = String(baselineRaw.value ?? '').trim();
+    if (did && (t === did || t.endsWith(`->${did}`))) return true;
+    if (val && (t === val || t.startsWith(`${val}->`))) return true;
+    return false;
+  }
+  const base = String(baselineRaw).trim();
+  const arrow = base.indexOf('->');
+  if (arrow > 0) {
+    const baseLabel = base.slice(0, arrow).trim();
+    const baseId = base.slice(arrow + 2).trim();
+    if (baseLabel && baseId && (t === baseLabel || t === base || t === baseId)) return true;
+  }
+  return t === base;
+}
+
 /**
  * Разбор значения ячейки атрибута МП.
  * Ozon — только string | number; WB/ЯМ — ещё boolean.
@@ -1893,6 +1925,7 @@ function formatOzonAttrDisplayValue(raw) {
 function parseMpAttrCellValue(text, bucket, baselineRaw) {
   const t = String(text ?? '').trim();
   if (t === '') return undefined;
+  if (cellMatchesAttrBaseline(t, baselineRaw)) return baselineRaw;
   const lower = t.toLowerCase();
   if (bucket !== 'ozon' && (lower === 'true' || lower === 'false')) {
     return lower === 'true';
@@ -1943,12 +1976,19 @@ function attrsFromRow(row, mpAttrColDefs, bucket, originalRow = null) {
     if (c.mpAttr?.bucket !== bucket) continue;
     const { attrId } = c.mpAttr;
     const cell = row[c.key];
+    // Непересобранные ячейки не трогаем: иначе «Китай» вместо {dictionary_value_id}
+    // или пустой select справочника вычищает чужие атрибуты при любом Save.
+    if (originalRow && str(cell) === str(originalRow[c.key])) continue;
     const parsed = parseMpAttrCellValue(cell, bucket, base[attrId]);
     if (parsed === undefined) {
-      // Пустая ячейка не выкидывает baseline, если пользователь её не очищал
-      // (колонка могла появиться позже и не гидратироваться).
       const origCell = originalRow ? String(originalRow[c.key] ?? '').trim() : '';
-      if (originalRow && origCell) delete base[attrId];
+      const hadBaseline = stringifyMpAttrValue(base[attrId]) || ozonAttrPlainText(base[attrId]);
+      // Пустая ячейка удаляет атрибут только если пользователь явно очистил
+      // уже показанное значение. Негидратированная колонка и сброс <select>
+      // не должны затирать JSON Ozon/WB/YM.
+      if (originalRow && origCell && !isBlankBulkAttrText(origCell) && hadBaseline) {
+        delete base[attrId];
+      }
       continue;
     }
     base[attrId] = parsed;
@@ -2502,42 +2542,58 @@ function encodeDictFromPlainText(text, options, bucket) {
 }
 
 function isCountryLikeAttrName(humanName) {
-  return /(страна|country|производств)/i.test(String(humanName || ''));
+  const n = String(humanName || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!n) return false;
+  if (n === 'страна' || n === 'country' || n === 'страна-изготовитель' || n === 'страна изготовитель') {
+    return true;
+  }
+  if (/^страна[-\s]изготовител/.test(n)) return true;
+  return /страна\s+(производства|изготовления|происхождения|производителя|изготовителя)/.test(n);
+}
+
+function isMpCountryAttrCol(col) {
+  if (!col?.mpAttr) return false;
+  const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+  const mp = col.mpAttr.bucket;
+  if (mp === 'ozon') return isOzonManufacturerCountryAttr(meta);
+  if (mp === 'wb') return isWbCountryCharcName(meta.name) || isCountryLikeAttrName(meta.name);
+  return isCountryLikeAttrName(meta.name);
+}
+
+/** Связь Main↔МП: тумблер сессии или сохранённые связи карточки. */
+function bulkRowMpFieldLinked(row, fieldKey, mp, linksSource) {
+  if (isMpFieldLinked(normalizeMpFieldLinks(linksSource ?? row?.mp_field_links), fieldKey, mp)) {
+    return true;
+  }
+  return isMpFieldLinked(normalizeMpFieldLinks(row?._productRef?.mp_field_links), fieldKey, mp);
 }
 
 /**
  * Связь country → колонки JSON-атрибутов «Страна…» (справочник):
  * подставляем текст и, если есть options, резолвим в id.
  */
-function applyLinkedCountryToDictAttrColumns(row, countryText, mpAttrCols, ozonDictByAttr = {}) {
-  const links = normalizeMpFieldLinks(row?.mp_field_links);
+function applyLinkedCountryToDictAttrColumns(row, countryText, mpAttrCols, ozonDictByAttr = {}, options = {}) {
   const text = String(countryText ?? '').trim();
   if (!text || !Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
+  const onlyIfEmpty = options.onlyIfEmpty === true;
   let next = row;
   let changed = false;
   for (const col of mpAttrCols) {
-    if (!col?.mpAttr) continue;
-    if (col?.mpAttr?.bucket === 'ozon') {
-      if (
-        !isOzonManufacturerCountryAttr({
-          id: col.mpAttr.attrId,
-          name: col._humanName || col.label,
-        })
-      ) {
-        continue;
-      }
-    } else if (!isCountryLikeAttrName(col._humanName || col.label)) {
-      continue;
-    }
+    if (!isMpCountryAttrCol(col)) continue;
     const mp = col.mpAttr.bucket;
-    if (!isMpFieldLinked(links, 'country', mp)) continue;
+    if (!bulkRowMpFieldLinked(next, 'country', mp, options.linksSource)) continue;
+    if (onlyIfEmpty && !isBlankBulkAttrText(next[col.key])) continue;
     const attrId = String(col.mpAttr.attrId);
-    const options =
+    const dictOptions =
       (Array.isArray(col.dictOptions) && col.dictOptions.length ? col.dictOptions : null) ||
       (mp === 'ozon' ? ozonDictByAttr[attrId] || ozonDictByAttr[Number(attrId)] : null) ||
       [];
-    const encoded = encodeDictFromPlainText(text, options, mp);
-    if (str(next[col.key]) === str(encoded)) continue;
+    const encoded = encodeDictFromPlainText(text, dictOptions, mp);
+    if (!encoded || str(next[col.key]) === str(encoded)) continue;
     if (!changed) {
       next = { ...next };
       changed = true;
@@ -2547,11 +2603,11 @@ function applyLinkedCountryToDictAttrColumns(row, countryText, mpAttrCols, ozonD
   return next;
 }
 
-function applyLinkedBrandToOzonAttrColumns(row, brandText, mpAttrCols, ozonDictByAttr = {}) {
-  const links = normalizeMpFieldLinks(row?.mp_field_links);
+function applyLinkedBrandToOzonAttrColumns(row, brandText, mpAttrCols, ozonDictByAttr = {}, options = {}) {
   const text = String(brandText ?? '').trim();
   if (!text || !Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
-  if (!isMpFieldLinked(links, 'brand', 'ozon')) return row;
+  if (!bulkRowMpFieldLinked(row, 'brand', 'ozon', options.linksSource)) return row;
+  const onlyIfEmpty = options.onlyIfEmpty === true;
   let next = row;
   let changed = false;
   for (const col of mpAttrCols) {
@@ -2564,14 +2620,15 @@ function applyLinkedBrandToOzonAttrColumns(row, brandText, mpAttrCols, ozonDictB
     ) {
       continue;
     }
+    if (onlyIfEmpty && !isBlankBulkAttrText(next[col.key])) continue;
     const attrId = String(col.mpAttr.attrId);
-    const options =
+    const dictOptions =
       (Array.isArray(col.dictOptions) && col.dictOptions.length ? col.dictOptions : null) ||
       ozonDictByAttr[attrId] ||
       ozonDictByAttr[Number(attrId)] ||
       [];
-    const encoded = encodeDictFromPlainText(text, options, 'ozon');
-    if (str(next[col.key]) === str(encoded)) continue;
+    const encoded = encodeDictFromPlainText(text, dictOptions, 'ozon');
+    if (!encoded || str(next[col.key]) === str(encoded)) continue;
     if (!changed) {
       next = { ...next };
       changed = true;
@@ -2599,8 +2656,7 @@ function resolveBulkOzonCardTextCell(row, col, raw) {
 }
 
 function ozonCardTextLinkActive(row, fieldKey) {
-  if (isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, 'ozon')) return true;
-  return isMpFieldLinked(normalizeMpFieldLinks(row?._productRef?.mp_field_links), fieldKey, 'ozon');
+  return bulkRowMpFieldLinked(row, fieldKey, 'ozon');
 }
 
 function isOzonCardTextColumn(col, kind) {
@@ -2896,7 +2952,12 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
     const human = schemaAttrName(meta) || knownMpAttrLabel('ozon', id);
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
     const dictionaryId = Number(meta?.dictionaryId) || 0;
-    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary';
+    const isKnownDict =
+      String(id) === String(OZON_MANUFACTURER_COUNTRY_ATTR_ID) ||
+      String(id) === String(OZON_BRAND_ATTR_ID) ||
+      isOzonManufacturerCountryAttr({ id, name: human }) ||
+      isOzonBrandAttr({ id, name: human });
+    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary' || isKnownDict;
     const kind = isDict ? 'dictionary' : meta?.kind || 'text';
     const input = mpAttrInputFromKind('ozon', kind);
     cols.push({
@@ -3245,7 +3306,12 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
   if (isDuplicateMpCardJsonAttr(mp, human)) return null;
   if (mp === 'ozon') {
     const dictionaryId = Number(meta?.dictionaryId) || 0;
-    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary';
+    const isKnownDict =
+      String(id) === String(OZON_MANUFACTURER_COUNTRY_ATTR_ID) ||
+      String(id) === String(OZON_BRAND_ATTR_ID) ||
+      isOzonManufacturerCountryAttr({ id, name: human }) ||
+      isOzonBrandAttr({ id, name: human });
+    const isDict = dictionaryId > 0 || meta?.kind === 'dictionary' || isKnownDict;
     const kind = isDict ? 'dictionary' : meta?.kind || 'text';
     return {
       key: mpAttrColKey('ozon', id),
@@ -3769,12 +3835,27 @@ function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
   fill('name', nameText, 'mp_ozon_name', isOzonNameAttr);
   fill('description', descText, 'mp_ozon_description', isOzonAnnotationAttr);
   fill('sku', str(p?.sku).trim(), 'sku_ozon', (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
-  return fillEmptyOzonNameAndAnnotationCells(next, mpAttrColDefs, nameText, descText);
+  fill('country', str(p?.country_of_origin).trim(), 'ozon_country', isOzonManufacturerCountryAttr);
+  fill('brand', str(p?.brand || p?.brand_name).trim(), 'mp_ozon_brand', isOzonBrandAttr);
+  next = fillEmptyOzonNameAndAnnotationCells(next, mpAttrColDefs, nameText, descText);
+  return next;
 }
 
 /** Пустые ячейки МП заполняем из сохранённых связей карточки (не из сессии тумблеров). */
 function seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs) {
   let next = seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs);
+  next = hydrateMpAttrCellsFromBaseline(next, mpAttrColDefs);
+  next = applyLinkedCountryToDictAttrColumns(
+    next,
+    next.country_of_origin,
+    mpAttrColDefs,
+    {},
+    { linksSource: p?.mp_field_links, onlyIfEmpty: true }
+  );
+  next = applyLinkedBrandToOzonAttrColumns(next, next.brand, mpAttrColDefs, {}, {
+    linksSource: p?.mp_field_links,
+    onlyIfEmpty: true,
+  });
   const savedLinks = p?.mp_field_links;
   for (const erpCol of erpAttrColDefs || []) {
     const erpVal = str(next[erpCol.key]).trim();
@@ -3884,8 +3965,18 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
         row[c.key] = str(p.mp_ozon_name || p.name);
       } else if (isOzonAnnotationAttr(meta) || String(attrId) === String(OZON_ANNOTATION_ATTR_ID)) {
         row[c.key] = str(p.mp_ozon_description || p.description);
-      } else if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) {
+      } else       if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) {
         row[c.key] = str(p.sku);
+      } else if (
+        (isOzonManufacturerCountryAttr(meta) || String(attrId) === String(OZON_MANUFACTURER_COUNTRY_ATTR_ID)) &&
+        isMpFieldLinked(normalizeMpFieldLinks(p.mp_field_links), 'country', 'ozon')
+      ) {
+        row[c.key] = str(p.country_of_origin);
+      } else if (
+        (isOzonBrandAttr(meta) || String(attrId) === String(OZON_BRAND_ATTR_ID)) &&
+        isMpFieldLinked(normalizeMpFieldLinks(p.mp_field_links), 'brand', 'ozon')
+      ) {
+        row[c.key] = str(p.brand ?? p.brand_name ?? '');
       }
     }
   }
@@ -3923,6 +4014,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
   }
   row = applyLinkedOzonNameAndAnnotationColumns(row, mpAttrColDefs, lengthUnit, weightUnit);
   row = fillEmptyOzonNameAndAnnotationCells(row, mpAttrColDefs, row.name, row.description);
+  row = hydrateMpAttrCellsFromBaseline(row, mpAttrColDefs);
   return syncOfferFieldColsOnRow(row, mpAttrColDefs);
 }
 
@@ -4318,7 +4410,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     for (const bucket of ['ozon', 'wb', 'ym']) {
       const defs = mpAttrColDefs.filter((c) => c.mpAttr?.bucket === bucket);
       if (defs.length === 0) continue;
-      const before = attrsFromRow(original, mpAttrColDefs, bucket);
+      const before = { ...(original._mpAttrBaseline?.[bucket] || {}) };
       let after = attrsFromRow(current, mpAttrColDefs, bucket, original);
       after = mergeLinkedProductDimIntoMpAttrs(
         after,
@@ -4352,6 +4444,8 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
           current.sku,
           (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)
         );
+        fillLinked('country', current.country_of_origin, isOzonManufacturerCountryAttr);
+        fillLinked('brand', current.brand, isOzonBrandAttr);
         for (const erpCol of erpAttrColDefs || []) {
           if (!ozonLinked(erpCol.linkFieldKey)) continue;
           const text = str(current[erpCol.key]).trim();
@@ -4367,6 +4461,22 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
             const id = String(target.attrId);
             if (stringifyMpAttrValue(after[id])) continue;
             after = { ...after, [id]: text };
+          }
+        }
+      } else if (bucket === 'wb' || bucket === 'ym') {
+        const links = normalizeMpFieldLinks(current.mp_field_links);
+        const savedLinks = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+        const mpLinked = (fieldKey) =>
+          isMpFieldLinked(links, fieldKey, bucket) || isMpFieldLinked(savedLinks, fieldKey, bucket);
+        if (mpLinked('country')) {
+          const text = str(current.country_of_origin).trim();
+          if (text) {
+            for (const c of defs) {
+              if (!isMpCountryAttrCol(c)) continue;
+              const id = c.mpAttr.attrId;
+              if (stringifyMpAttrValue(after[id])) continue;
+              after = { ...after, [id]: text };
+            }
           }
         }
       }
@@ -4403,6 +4513,8 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
           current.sku,
           (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)
         );
+        persistIfMissing('country', current.country_of_origin, isOzonManufacturerCountryAttr);
+        persistIfMissing('brand', current.brand, isOzonBrandAttr);
         for (const erpCol of erpAttrColDefs || []) {
           if (!ozonLinked(erpCol.linkFieldKey)) continue;
           const text = str(current[erpCol.key]).trim();
@@ -4807,6 +4919,7 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
   const selectValue = resolveDictSelectValue(raw, list);
   const needsFallback = raw.trim() !== '' && selectValue === '';
   const visible = expanded ? list : list.filter((o) => String(o.id) === String(selectValue));
+  const MORE_HINT = '__bulk_dict_more__';
 
   return (
     <select
@@ -4816,7 +4929,11 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
       onFocus={() => setExpanded(true)}
       onChange={(e) => {
         const picked = e.target.value;
+        if (picked === MORE_HINT) return;
         if (!picked) {
+          // Браузер сбрасывает select на первую option value="", если значение
+          // пропало из списка (справочник ещё грузится). Это не очистка пользователем.
+          if (!expanded && (selectValue || needsFallback)) return;
           onCommit('');
           return;
         }
@@ -4832,12 +4949,12 @@ function BulkDictSelect({ cellRaw, options, bucket, title, dictionaryId, onCommi
       ))}
       {needsFallback ? <option value={raw}>{formatOzonAttrDisplayValue(raw)}</option> : null}
       {!expanded && list.length > visible.length ? (
-        <option value="" disabled>
+        <option value={MORE_HINT} disabled>
           {list.length} значений — откройте список
         </option>
       ) : null}
       {bucket === 'ozon' && list.length === 0 && Number(dictionaryId) > 0 ? (
-        <option value="" disabled>
+        <option value={MORE_HINT} disabled>
           Загрузка справочника…
         </option>
       ) : null}
@@ -6113,7 +6230,12 @@ export function ProductsBulkEdit() {
           const ozonDictAttrIds = [
             ...new Set(
               mpCols
-                .filter((c) => c.mpAttr?.bucket === 'ozon' && Number(c.dictionaryId) > 0)
+                .filter((c) => {
+                  if (c.mpAttr?.bucket !== 'ozon') return false;
+                  if (Number(c.dictionaryId) > 0) return true;
+                  const meta = { id: c.mpAttr.attrId, name: c._humanName || c.label };
+                  return isOzonManufacturerCountryAttr(meta) || isOzonBrandAttr(meta);
+                })
                 .map((c) => String(c.mpAttr.attrId))
             ),
           ];
@@ -6165,16 +6287,17 @@ export function ProductsBulkEdit() {
           // После загрузки справочников — дописать связанные страну/бренд в dict-колонки Ozon
           setRows((prev) =>
             prev.map((r) => {
-              const links = normalizeMpFieldLinks(r.mp_field_links);
-              let next = r;
-              if (['ozon', 'wb', 'ym'].some((mp) => isMpFieldLinked(links, 'country', mp))) {
-                const countryText = str(r.country_of_origin).trim();
-                if (countryText) {
-                  next = applyLinkedCountryToDictAttrColumns(next, countryText, mpCols, dictOut);
-                }
+              let next = hydrateMpAttrCellsFromBaseline(r, mpCols);
+              const countryText = str(next.country_of_origin).trim();
+              if (countryText) {
+                next = applyLinkedCountryToDictAttrColumns(next, countryText, mpCols, dictOut, {
+                  onlyIfEmpty: true,
+                });
               }
-              if (isMpFieldLinked(links, 'brand', 'ozon') && str(r.brand).trim()) {
-                next = applyLinkedBrandToOzonAttrColumns(next, r.brand, mpCols, dictOut);
+              if (str(next.brand).trim()) {
+                next = applyLinkedBrandToOzonAttrColumns(next, next.brand, mpCols, dictOut, {
+                  onlyIfEmpty: true,
+                });
               }
               next = applyLinkedOzonNameAndAnnotationColumns(next, mpCols, lengthUnit);
               return next;
@@ -7607,10 +7730,12 @@ export function ProductsBulkEdit() {
     }
     if (col.input === 'select_erp_dict') {
       const options = Array.isArray(col.dictOptions) ? col.dictOptions : [];
+      const erpSelectValue = str(v);
+      const erpValueInList = options.some((opt) => String(opt.id) === erpSelectValue);
       return (
         <select
           className={`products-bulk-cell-input${overLimit ? ' products-bulk-cell-over-limit' : ''}`}
-          value={v ?? ''}
+          value={erpSelectValue}
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
           title={overLimit ? formatLimitHitTitle(overLimit) : col.title || col.label}
         >
@@ -7620,6 +7745,9 @@ export function ProductsBulkEdit() {
               {opt.label || opt.id}
             </option>
           ))}
+          {erpSelectValue && !erpValueInList ? (
+            <option value={erpSelectValue}>{erpSelectValue}</option>
+          ) : null}
         </select>
       );
     }

@@ -4311,7 +4311,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
       for (const attr of targets) {
         const key = String(attr.id);
         if (!country) {
-          resolved[key] = '';
           continue;
         }
         let value = country;
@@ -4378,7 +4377,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
       for (const attr of targets) {
         const key = String(attr.id);
         if (!brandName) {
-          resolved[key] = '';
           continue;
         }
         let value = brandName;
