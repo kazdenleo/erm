@@ -3,6 +3,7 @@ import {
   isWbPackDimCharcId,
   ozonPackDimAxis,
   ozonProductDimAxis,
+  isOzonCategoryProductSizeAttr,
   productDimAttrStoredFromMm,
   resolveMarketplaceDimensionsMm,
   resolveMarketplaceVolumeLiters,
@@ -257,6 +258,9 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
     expect(ozonPackDimAxis({ id: '6605', name: 'Ширина упаковки' })).toBe('width');
     expect(ozonPackDimAxis({ name: 'Вес в упаковке' })).toBe('weight');
     expect(ozonPackDimAxis({ name: 'Длина товара с упаковкой' })).toBe('length');
+    expect(isOzonCategoryProductSizeAttr({ id: 9802, name: 'Длина, мм' })).toBe(true);
+    expect(isOzonCategoryProductSizeAttr({ id: 6605, name: 'Ширина, мм' })).toBe(true);
+    expect(isOzonCategoryProductSizeAttr({ id: 4497, name: 'Вес с упаковкой, г' })).toBe(false);
   });
 
   test('WB item charc ids are product axes; pack ids are not', () => {

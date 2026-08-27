@@ -209,6 +209,12 @@ export function ozonProductDimAxis(attrOrName) {
   return null;
 }
 
+export function isOzonCategoryProductSizeAttr(attrOrName) {
+  const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
+  const axis = ozonProductDimAxis(name);
+  return axis === 'length' || axis === 'width' || axis === 'height';
+}
+
 export const OZON_PACK_DIM_ATTR_IDS = {
   length: ['9802'],
   width: ['6605', '9799'],

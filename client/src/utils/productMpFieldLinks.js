@@ -4,7 +4,7 @@
  * Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
-import { classifyMarketplaceDimAttrName, ozonPackDimAxis } from './marketplaceDimensions.js';
+import { classifyMarketplaceDimAttrName, ozonPackDimAxis, isOzonCategoryProductSizeAttr } from './marketplaceDimensions.js';
 import { isOzonPlainDescriptionAttr } from './ozonCardTextAttrs.js';
 import { isOzonRichContentAttrId } from '../constants/marketplaceRichContent.js';
 
@@ -805,8 +805,12 @@ export function withMpOfferFieldAttrs(mp, attrs) {
     );
   }
   if (code === 'ozon') {
-    // Упаковка на Ozon — поля карточки, не характеристики категории («товар с упаковкой» нет).
-    list = list.filter((a) => classifyMarketplaceDimAttrName(a?.name) !== 'pack' && !ozonPackDimAxis(a));
+    list = list.filter((a) => {
+      if (isOzonCategoryProductSizeAttr(a)) return true;
+      if (classifyMarketplaceDimAttrName(a?.name) === 'pack') return false;
+      if (ozonPackDimAxis(a)) return false;
+      return true;
+    });
   }
   const ids = new Set(list.map((a) => String(a?.id ?? '').trim().toLowerCase()).filter(Boolean));
   const names = new Set(
@@ -922,6 +926,7 @@ export function ozonAttrsForProductForm(attrs) {
 function skipOzonFormAttr(id, name) {
   if (isOzonRichContentAttrId(id)) return true;
   if (isOzonPlainDescriptionAttr({ id, name })) return true;
+  if (isOzonCategoryProductSizeAttr({ id, name })) return false;
   if (ozonPackDimAxis({ id, name })) return true;
   if (classifyMarketplaceDimAttrName(name) === 'pack') return true;
   return false;

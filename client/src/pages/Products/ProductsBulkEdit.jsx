@@ -94,6 +94,7 @@ import {
   WB_ITEM_DIM_CHARC,
   WB_PACK_DIM_CHARC,
   classifyMarketplaceDimAttrName,
+  isOzonCategoryProductSizeAttr,
   ozonProductDimAxis,
   productDimAttrStoredFromMm,
   wbProductDimAxis,
@@ -3023,10 +3024,11 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   const ymM = labelMaps?.ym || {};
   const cols = [];
   for (const id of sortAttrIdsWithLabels(oz, ozM)) {
-    if (isMpOfferFieldAttrId(id) || OZON_PACK_DIM_ATTR_IDS.has(String(id))) continue;
+    if (isMpOfferFieldAttrId(id)) continue;
     if (isOzonRichContentAttrId(id)) continue;
     const meta = ozM[id] || ozM[String(id)];
     const human = schemaAttrName(meta) || knownMpAttrLabel('ozon', id);
+    if (OZON_PACK_DIM_ATTR_IDS.has(String(id)) && !isOzonCategoryProductSizeAttr(human)) continue;
     if (isDuplicateMpCardJsonAttr('ozon', human)) continue;
     const dictionaryId = Number(meta?.dictionaryId) || 0;
     const isKnownDict =
@@ -3376,11 +3378,11 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
   const id = String(attrId);
   if (!id.trim() || isMpOfferFieldAttrId(id)) return null;
   if (mp === 'ozon' && isOzonRichContentAttrId(id)) return null;
-  if (mp === 'ozon' && OZON_PACK_DIM_ATTR_IDS.has(id)) return null;
   if (mp === 'wb' && WB_PACK_DIM_ATTR_IDS.has(id)) return null;
   const maps = labelMaps?.[mp] || {};
   const meta = maps[id] || maps[attrId];
   const human = schemaAttrName(meta) || (humanName && String(humanName).trim()) || '';
+  if (mp === 'ozon' && OZON_PACK_DIM_ATTR_IDS.has(id) && !isOzonCategoryProductSizeAttr(human)) return null;
   if (isDuplicateMpCardJsonAttr(mp, human)) return null;
   if (mp === 'ozon') {
     const dictionaryId = Number(meta?.dictionaryId) || 0;

@@ -211,6 +211,16 @@ export function ozonProductDimAxis(attrOrName) {
   return null;
 }
 
+/**
+ * «Длина, мм» / «Ширина, мм» / «Высота, мм» в схеме категории Ozon.
+ * Те же id (9802/6605/6606) мы считаем упаковкой, но в кабинете это характеристики типа.
+ */
+export function isOzonCategoryProductSizeAttr(attrOrName) {
+  const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
+  const axis = ozonProductDimAxis(name);
+  return axis === 'length' || axis === 'width' || axis === 'height';
+}
+
 /** Известные id атрибутов упаковки Ozon. */
 export const OZON_PACK_DIM_ATTR_IDS = {
   length: ['9802'],
