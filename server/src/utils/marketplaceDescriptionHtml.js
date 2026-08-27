@@ -88,7 +88,7 @@ function unstickOzonAnnotationTokens(text) {
 
 /**
  * Аннотация Ozon: одно { value } с <br> между строками.
- * Сырой \\n API сохраняет, но кабинет/витрина показывают портянку.
+ * Пустые строки ERP сохраняем как <br><br> — иначе кабинет склеивает блоки в сплошной список.
  * @param {unknown} text
  * @returns {string}
  */
@@ -97,13 +97,14 @@ export function formatOzonAnnotationForPush(text) {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n');
   const unstuck = unstickOzonAnnotationTokens(joined)
-    .replace(/(?:\s*\n\s*)+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
   return unstuck
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
-    .filter(Boolean)
     .join('<br>');
 }
 

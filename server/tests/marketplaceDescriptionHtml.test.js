@@ -69,4 +69,19 @@ describe('marketplaceDescriptionHtml', () => {
       { value: 'Фильтр AFAC167<br>Вес брутто [кг]: 0.334<br>Высота упаковки' },
     ]);
   });
+
+  test('blank lines between blocks stay as extra br', () => {
+    const item = { attributes: [] };
+    applyOzonDescriptionHtml(
+      item,
+      'Фильтр воздушный AFAC167\n\nВес брутто [кг]: 0.334\nВысота упаковки [мм] (H): 138\n\nInfiniti Q50'
+    );
+    const ann = item.attributes.find((a) => Number(a.id) === 4191);
+    expect(ann.values).toEqual([
+      {
+        value:
+          'Фильтр воздушный AFAC167<br><br>Вес брутто [кг]: 0.334<br>Высота упаковки [мм] (H): 138<br><br>Infiniti Q50',
+      },
+    ]);
+  });
 });
