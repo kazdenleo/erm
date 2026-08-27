@@ -55,3 +55,22 @@ export function mergeJsonObjectPatch(existing, incoming) {
   if (isEmptyAttrPatch(incoming)) return base;
   return { ...base, ...incoming };
 }
+
+const MP_CARD_TEXT_KEEP_IF_EMPTY = ['mp_ozon_name', 'mp_ozon_description'];
+
+/**
+ * Пустое название/аннотация Ozon в PUT не должно затирать БД:
+ * форма часто шлёт null, если схема характеристик уже есть, а ячейка ещё не гидратировалась.
+ */
+export function omitEmptyMpCardTextFromProductPatch(patch) {
+  if (!patch || typeof patch !== 'object') return patch;
+  let next = null;
+  for (const key of MP_CARD_TEXT_KEEP_IF_EMPTY) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const v = patch[key];
+    if (v != null && String(v).trim() !== '') continue;
+    if (!next) next = { ...patch };
+    delete next[key];
+  }
+  return next || patch;
+}

@@ -381,7 +381,8 @@ export function resolveLinkedErpAttrMirror(formData, categoryAttributes, mp, tar
   const linkKey = erpAttrLinkFieldKey(erp.id);
   if (!isMpFieldLinked(formData?.mp_field_links, linkKey, code)) return null;
   const val = formData?.attributeValues?.[String(erp.id)];
-  return val == null ? '' : String(val);
+  if (val == null || String(val).trim() === '') return null;
+  return String(val);
 }
 
 export function findLinkedMpAttributes(link, attributes, getId, getName, opts = {}) {

@@ -49,6 +49,8 @@ import {
   normalizeBarcodeRows,
   omitEmptyBarcodesFromProductPatch,
 } from '../utils/productBarcodes.js';
+import { omitEmptyMpCardTextFromProductPatch } from '../utils/productAttrPatch.js';
+import { applyLinkedOzonCardTextOnUpdate } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from './tnVedProductApply.service.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
@@ -1389,7 +1391,9 @@ class ProductsService {
     // Пустой ШК в патче не должен удалять коды в БД (форма / массовое сохранение).
     updates = omitEmptyBarcodesFromProductPatch(updates) || updates;
     normalizeMarketplaceCardTextFields(updates);
+    updates = omitEmptyMpCardTextFromProductPatch(updates) || updates;
     const existingForKits = await this.repository.findById(id);
+    updates = applyLinkedOzonCardTextOnUpdate(updates, existingForKits) || updates;
     await assertKitsFeatureAllowed(updates, null, { existingProduct: existingForKits });
     // Остаток на складе меняется только складскими операциями (движения, резерв), не через PUT карточки или импорт.
     delete updates.quantity;

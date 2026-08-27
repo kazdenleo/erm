@@ -19,6 +19,7 @@ import {
 } from '../utils/userAccessScope.js';
 import { attachImageSizeToRecord } from '../services/productImageAspect.service.js';
 import { omitEmptyBarcodesFromProductPatch } from '../utils/productBarcodes.js';
+import { omitEmptyMpCardTextFromProductPatch } from '../utils/productAttrPatch.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 /** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
@@ -682,7 +683,7 @@ class ProductsController {
           : Object.keys(body).length > 0
             ? body
             : null;
-      const pushPatch = omitEmptyBarcodesFromProductPatch(patch);
+      const pushPatch = omitEmptyMpCardTextFromProductPatch(omitEmptyBarcodesFromProductPatch(patch));
       if (pushPatch && Object.keys(pushPatch).length > 0) {
         await productsService.update(id, pushPatch, { profileId });
       }

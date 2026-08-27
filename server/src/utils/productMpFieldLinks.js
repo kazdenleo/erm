@@ -513,6 +513,58 @@ function trimOrNull(v) {
   return s === '' ? null : s;
 }
 
+const OZON_NAME_ATTR_ID = '4180';
+const OZON_ANNOTATION_ATTR_ID = '4191';
+
+function ozonAttrMissingOrEmpty(attrs, key) {
+  if (!attrs || typeof attrs !== 'object') return true;
+  const v = attrs[key] ?? attrs[Number(key)];
+  if (v == null || v === '') return true;
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    const text = v.value ?? v.dictionary_value_id ?? v.id;
+    return text == null || String(text).trim() === '';
+  }
+  return String(v).trim() === '';
+}
+
+/**
+ * Если название/описание Ozon связаны с «Основным», не даём PUT затереть их пустым патчем:
+ * подставляем текст из name/description и атрибуты 4180/4191.
+ */
+export function applyLinkedOzonCardTextOnUpdate(updates, existing) {
+  if (!updates || typeof updates !== 'object') return updates;
+  const links = normalizeMpFieldLinks(
+    Object.prototype.hasOwnProperty.call(updates, 'mp_field_links')
+      ? updates.mp_field_links
+      : existing?.mp_field_links
+  );
+  const name = trimOrNull(updates.name !== undefined ? updates.name : existing?.name);
+  const description = trimOrNull(
+    updates.description !== undefined ? updates.description : existing?.description
+  );
+
+  if (isMpFieldLinked(links, 'name', 'ozon') && name) {
+    if (!trimOrNull(updates.mp_ozon_name)) updates.mp_ozon_name = name;
+    if (updates.ozon_attributes && typeof updates.ozon_attributes === 'object') {
+      if (ozonAttrMissingOrEmpty(updates.ozon_attributes, OZON_NAME_ATTR_ID)) {
+        updates.ozon_attributes = { ...updates.ozon_attributes, [OZON_NAME_ATTR_ID]: { value: name } };
+      }
+    }
+  }
+  if (isMpFieldLinked(links, 'description', 'ozon') && description) {
+    if (!trimOrNull(updates.mp_ozon_description)) updates.mp_ozon_description = description;
+    if (updates.ozon_attributes && typeof updates.ozon_attributes === 'object') {
+      if (ozonAttrMissingOrEmpty(updates.ozon_attributes, OZON_ANNOTATION_ATTR_ID)) {
+        updates.ozon_attributes = {
+          ...updates.ozon_attributes,
+          [OZON_ANNOTATION_ATTR_ID]: { value: description },
+        };
+      }
+    }
+  }
+  return updates;
+}
+
 /**
  * Текст карточки для push: приоритет у полей вкладки МП (mp_*),
  * при пустом mp_* и включённой связи — fallback на «Основное».

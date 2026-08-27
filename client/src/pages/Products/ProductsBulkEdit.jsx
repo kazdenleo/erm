@@ -1790,6 +1790,9 @@ function stringifyMpAttrValue(v) {
       .join('; ');
   }
   if (typeof v === 'object') {
+    if (Array.isArray(v.values) && v.values.length) {
+      return v.values.map(stringifyMpAttrValue).filter(Boolean).join('; ');
+    }
     if (v.dictionary_value_id != null || v.value != null) {
       const text =
         v.value != null && String(v.value).trim() !== ''
@@ -1874,15 +1877,21 @@ function stableAttrJson(obj) {
 }
 
 /** Собрать объекты атрибутов из baseline строки и значений видимых столбцов */
-function attrsFromRow(row, mpAttrColDefs, bucket) {
+function attrsFromRow(row, mpAttrColDefs, bucket, originalRow = null) {
   const base = { ...(row._mpAttrBaseline?.[bucket] || {}) };
   for (const c of mpAttrColDefs) {
     if (c.mpAttr?.bucket !== bucket) continue;
     const { attrId } = c.mpAttr;
     const cell = row[c.key];
     const parsed = parseMpAttrCellValue(cell, bucket, base[attrId]);
-    if (parsed === undefined) delete base[attrId];
-    else base[attrId] = parsed;
+    if (parsed === undefined) {
+      // Пустая ячейка не выкидывает baseline, если пользователь её не очищал
+      // (колонка могла появиться позже и не гидратироваться).
+      const origCell = originalRow ? String(originalRow[c.key] ?? '').trim() : '';
+      if (originalRow && origCell) delete base[attrId];
+      continue;
+    }
+    base[attrId] = parsed;
   }
   return base;
 }
@@ -2533,6 +2542,7 @@ function applyLinkedOzonTextAttrColumns(row, text, fieldKey, matchAttr, mpAttrCo
       continue;
     }
     if (str(next[col.key]) === str(value)) continue;
+    if (!String(value).trim() && str(next[col.key]).trim()) continue;
     if (!changed) {
       next = { ...next };
       changed = true;
@@ -3598,6 +3608,30 @@ function applyCategoryTnVedToBulkRow(row, product, erpAttrColDefs = [], mpAttrCo
   return next;
 }
 
+function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
+  const links = normalizeMpFieldLinks(p?.mp_field_links);
+  let next = row;
+  const fill = (fieldKey, mainVal, mpKey, matchAttr) => {
+    if (!isMpFieldLinked(links, fieldKey, 'ozon')) return;
+    const text = str(mainVal).trim();
+    if (!text) return;
+    if (!str(next[mpKey]).trim()) {
+      if (next === row) next = { ...next };
+      next[mpKey] = text;
+    }
+    for (const c of mpAttrColDefs || []) {
+      if (c?.mpAttr?.bucket !== 'ozon') continue;
+      if (!matchAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })) continue;
+      if (str(next[c.key]).trim()) continue;
+      if (next === row) next = { ...next };
+      next[c.key] = text;
+    }
+  };
+  fill('name', p?.name, 'mp_ozon_name', isOzonNameAttr);
+  fill('description', p?.description, 'mp_ozon_description', isOzonAnnotationAttr);
+  return next;
+}
+
 function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g', erpAttrColDefs = [], categories = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const supplierRaw = p.supplier_id ?? p.supplierId;
@@ -3677,7 +3711,13 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     const { bucket, attrId } = c.mpAttr;
     const src = bucket === 'ozon' ? oz : bucket === 'wb' ? wb : ym;
     row[c.key] = stringifyMpAttrValue(src[attrId]);
+    if (!String(row[c.key] || '').trim() && bucket === 'ozon') {
+      const meta = { id: attrId, name: c._humanName || c.label };
+      if (isOzonNameAttr(meta)) row[c.key] = str(p.mp_ozon_name);
+      else if (isOzonAnnotationAttr(meta)) row[c.key] = str(p.mp_ozon_description);
+    }
   }
+  row = seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs);
   for (const c of erpAttrColDefs) {
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
@@ -3807,10 +3847,32 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   }
 
   const mpText = (k) => {
-    if (!eq(original[k], current[k])) touch(k, normTextOrNull(current[k]));
+    if (eq(original[k], current[k])) return;
+    const next = normTextOrNull(current[k]);
+    if (
+      (k === 'mp_ozon_name' || k === 'mp_ozon_description') &&
+      next == null &&
+      str(original[k]).trim()
+    ) {
+      return;
+    }
+    touch(k, next);
   };
   mpText('mp_ozon_name');
   mpText('mp_ozon_description');
+  const ozonCardLinks = normalizeMpFieldLinks(current.mp_field_links);
+  const ozonCardLinksSaved = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+  const persistLinkedOzonCardText = (field, mainKey, mpKey) => {
+    const linked =
+      isMpFieldLinked(ozonCardLinks, field, 'ozon') ||
+      isMpFieldLinked(ozonCardLinksSaved, field, 'ozon');
+    if (!linked) return;
+    const resolved = str(current[mainKey]).trim() || str(current[mpKey]).trim();
+    const persisted = str(current._productRef?.[mpKey]).trim();
+    if (resolved && resolved !== persisted) touch(mpKey, resolved);
+  };
+  persistLinkedOzonCardText('name', 'name', 'mp_ozon_name');
+  persistLinkedOzonCardText('description', 'description', 'mp_ozon_description');
   mpText('mp_ozon_brand');
   mpText('mp_wb_vendor_code');
   mpText('mp_wb_name');
@@ -4077,7 +4139,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       const defs = mpAttrColDefs.filter((c) => c.mpAttr?.bucket === bucket);
       if (defs.length === 0) continue;
       const before = attrsFromRow(original, mpAttrColDefs, bucket);
-      let after = attrsFromRow(current, mpAttrColDefs, bucket);
+      let after = attrsFromRow(current, mpAttrColDefs, bucket, original);
       after = mergeLinkedProductDimIntoMpAttrs(
         after,
         current,
@@ -4087,14 +4149,61 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         lengthUnit,
         weightUnit
       );
+      if (bucket === 'ozon') {
+        const links = normalizeMpFieldLinks(current.mp_field_links);
+        const savedLinks = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+        const fillLinked = (fieldKey, mainVal, matchAttr) => {
+          if (
+            !isMpFieldLinked(links, fieldKey, 'ozon') &&
+            !isMpFieldLinked(savedLinks, fieldKey, 'ozon')
+          ) {
+            return;
+          }
+          const text = str(mainVal).trim();
+          if (!text) return;
+          for (const c of defs) {
+            if (!matchAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })) continue;
+            const id = c.mpAttr.attrId;
+            if (stringifyMpAttrValue(after[id])) continue;
+            after = { ...after, [id]: text };
+          }
+        };
+        fillLinked('name', current.name, isOzonNameAttr);
+        fillLinked('description', current.description, isOzonAnnotationAttr);
+      }
+      const patch = {};
       if (stableAttrJson(before) !== stableAttrJson(after)) {
-        const patch = {};
         for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
           if (stableAttrJson({ v: before[k] }) === stableAttrJson({ v: after[k] })) continue;
           patch[k] = Object.prototype.hasOwnProperty.call(after, k) ? after[k] : null;
         }
-        if (Object.keys(patch).length) touch(map[bucket], patch);
       }
+      if (bucket === 'ozon') {
+        const baseline = original._mpAttrBaseline?.ozon || {};
+        const links = normalizeMpFieldLinks(current.mp_field_links);
+        const savedLinks = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+        const persistIfMissing = (fieldKey, mainVal, matchAttr) => {
+          if (
+            !isMpFieldLinked(links, fieldKey, 'ozon') &&
+            !isMpFieldLinked(savedLinks, fieldKey, 'ozon')
+          ) {
+            return;
+          }
+          const text = str(mainVal).trim();
+          if (!text) return;
+          for (const c of defs) {
+            if (!matchAttr({ id: c.mpAttr.attrId, name: c._humanName || c.label })) continue;
+            const id = c.mpAttr.attrId;
+            const nextVal = stringifyMpAttrValue(after[id]) ? after[id] : text;
+            if (!nextVal) continue;
+            if (stringifyMpAttrValue(baseline[id])) continue;
+            patch[id] = nextVal;
+          }
+        };
+        persistIfMissing('name', current.name, isOzonNameAttr);
+        persistIfMissing('description', current.description, isOzonAnnotationAttr);
+      }
+      if (Object.keys(patch).length) touch(map[bucket], patch);
     }
   }
 

@@ -70,11 +70,70 @@ export function findOzonPlainDescriptionAttrs(attrs) {
   return (Array.isArray(attrs) ? attrs : []).filter(isOzonPlainDescriptionAttr);
 }
 
+function isPlainObject(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** Текст характеристики Ozon из строки, `{value}`, `{values:[{value}]}`. */
 export function ozonAttrPlainText(raw) {
   if (raw == null) return '';
-  if (typeof raw === 'object' && !Array.isArray(raw)) {
-    const v = raw.value ?? raw.dictionary_value_id ?? raw.id ?? raw.name;
-    return String(v ?? '').trim();
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    const s = String(raw).trim();
+    return s === '[object Object]' ? '' : s;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map(ozonAttrPlainText).filter(Boolean).join('; ');
+  }
+  if (isPlainObject(raw)) {
+    if (Array.isArray(raw.values) && raw.values.length) {
+      return raw.values.map(ozonAttrPlainText).filter(Boolean).join('; ');
+    }
+    const nested = raw.value ?? raw.dictionary_value_id ?? raw.id ?? raw.name ?? raw.text;
+    if (nested && typeof nested === 'object') return ozonAttrPlainText(nested);
+    return ozonAttrPlainText(nested);
   }
   return String(raw).trim();
+}
+
+/**
+ * Значение для поля формы: для словаря предпочитаем dictionary_value_id,
+ * иначе тот же текст, что ozonAttrPlainText.
+ */
+export function ozonStoredAttrToFormValue(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    const s = String(raw).trim();
+    return s === '[object Object]' ? '' : s;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map(ozonStoredAttrToFormValue).filter(Boolean).join('; ');
+  }
+  if (isPlainObject(raw)) {
+    if (Array.isArray(raw.values) && raw.values.length) {
+      return raw.values.map(ozonStoredAttrToFormValue).filter(Boolean).join('; ');
+    }
+    const dict = raw.dictionary_value_id ?? (raw.id != null && raw.value == null ? raw.id : null);
+    if (dict != null && String(dict).trim() !== '') return String(dict).trim();
+    if (raw.value != null && typeof raw.value === 'object') return ozonStoredAttrToFormValue(raw.value);
+    if (raw.value != null) return String(raw.value).trim();
+    return ozonAttrPlainText(raw);
+  }
+  return String(raw).trim();
+}
+
+/** Первый непустой текст по списку атрибутов схемы и запасным ключам. */
+export function pickOzonCardText(values, attrList, extraKeys = []) {
+  const src = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+  const keys = [
+    ...(Array.isArray(attrList) ? attrList.map((a) => String(a?.id ?? a?.attribute_id ?? '')) : []),
+    ...extraKeys.map((k) => String(k)),
+  ].filter(Boolean);
+  const seen = new Set();
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const t = ozonAttrPlainText(src[key] ?? src[Number(key)]);
+    if (t) return t;
+  }
+  return '';
 }

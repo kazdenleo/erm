@@ -3,6 +3,7 @@ import {
   isEmptyJsonAttrValue,
   mergeJsonAttrPatch,
   mergeJsonObjectPatch,
+  omitEmptyMpCardTextFromProductPatch,
 } from '../src/utils/productAttrPatch.js';
 
 describe('productAttrPatch', () => {
@@ -25,6 +26,26 @@ describe('productAttrPatch', () => {
     expect(mergeJsonAttrPatch(existing, { 9048: '' })).toEqual({ 85: 'Miles' });
     expect(mergeJsonAttrPatch(existing, { 9048: null })).toEqual({ 85: 'Miles' });
     expect(isEmptyJsonAttrValue({ value: '', dictionary_value_id: '' })).toBe(true);
+  });
+
+  test('empty ozon name/annotation in patch does not wipe existing columns', () => {
+    expect(
+      omitEmptyMpCardTextFromProductPatch({
+        brand: 'Miles',
+        mp_ozon_name: null,
+        mp_ozon_description: '',
+        mp_wb_name: '',
+      })
+    ).toEqual({ brand: 'Miles', mp_wb_name: '' });
+    expect(
+      omitEmptyMpCardTextFromProductPatch({
+        mp_ozon_name: 'Фильтр',
+        mp_ozon_description: 'текст',
+      })
+    ).toEqual({
+      mp_ozon_name: 'Фильтр',
+      mp_ozon_description: 'текст',
+    });
   });
 
   test('draft patch keeps sibling keys', () => {
