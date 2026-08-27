@@ -34,6 +34,54 @@ export function isTnVedAttributeName(name) {
   );
 }
 
+export function leadingTnVedDigits(raw) {
+  const s = String(raw ?? '').trim();
+  const m = s.match(/^(\d{6,14})/);
+  return m ? m[1] : '';
+}
+
+export function matchOzonTnVedDictEntry(entries, code) {
+  const digits = String(code || '').replace(/\D/g, '');
+  if (!digits || !Array.isArray(entries) || entries.length === 0) return null;
+  const hits = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const text = String(entry.value ?? entry.name ?? entry.info ?? '').trim();
+    const lead = leadingTnVedDigits(text);
+    const compact = text.replace(/\D/g, '');
+    const startsWithCode =
+      text.startsWith(digits) && (text.length === digits.length || !/\d/.test(text.charAt(digits.length)));
+    if (lead === digits || compact === digits || startsWithCode) hits.push(entry);
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => String(b.value ?? b.name ?? '').length - String(a.value ?? a.name ?? '').length);
+  return hits[0];
+}
+
+/** 10-значный ТН ВЭД из сохранённого Ozon-значения; иначе код категории. */
+export function ozonStoredTnVedSearchCode(raw, categoryCode) {
+  const fallback = String(categoryCode || '').replace(/\D/g, '');
+  if (raw == null || raw === '') return fallback;
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    const did = Number(raw.dictionary_value_id ?? raw.id);
+    const didStr = Number.isFinite(did) && did > 0 ? String(did) : '';
+    if (didStr && didStr.length !== 10) return '';
+    const text = String(raw.value ?? '').trim();
+    const fromText = leadingTnVedDigits(text) || text.replace(/\D/g, '');
+    if (fromText.length === 10) return fromText;
+    if (didStr.length === 10) return didStr;
+    return fallback;
+  }
+  const s = String(Array.isArray(raw) ? raw[0] : raw).trim();
+  if (!s) return fallback;
+  if (/^\d{10}$/.test(s)) return s;
+  const lead = leadingTnVedDigits(s);
+  if (lead.length === 10) return lead;
+  const compact = s.replace(/\D/g, '');
+  if (compact.length === 10) return compact;
+  return '';
+}
+
 export function categoryTnVedDigits(product, categories = []) {
   const list = Array.isArray(categories) ? categories : [];
   const byId = new Map(list.map((c) => [String(c.id), c]));

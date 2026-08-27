@@ -120,6 +120,83 @@ export function storedTnVedValueForMarketplace(marketplace, code) {
   return c;
 }
 
+/** Ведущие цифры кода ТН ВЭД из текста справочника Ozon («8421310000 – Воздушные фильтры…»). */
+export function leadingTnVedDigits(raw) {
+  const s = String(raw ?? '').trim();
+  const m = s.match(/^(\d{6,14})/);
+  return m ? m[1] : '';
+}
+
+export function ozonDictEntryTnVedDigits(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+  const text = String(entry.value ?? entry.name ?? entry.info ?? entry.title ?? '').trim();
+  const lead = leadingTnVedDigits(text);
+  if (lead) return lead;
+  return normalizeTnVedDigits(text);
+}
+
+/**
+ * Код для поиска в справочнике Ozon: 10-значный ТН ВЭД из сохранённого значения.
+ * Уже выбранный dictionary_value_id (не 10 цифр) не трогаем.
+ */
+export function ozonStoredTnVedSearchCode(raw, categoryCode) {
+  const fallback = normalizeTnVedDigits(categoryCode);
+  if (raw == null || raw === '') return fallback;
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    const did = Number(raw.dictionary_value_id ?? raw.id);
+    const didStr = Number.isFinite(did) && did > 0 ? String(did) : '';
+    if (didStr && didStr.length !== 10) return '';
+    const text = String(raw.value ?? '').trim();
+    const fromText = leadingTnVedDigits(text) || normalizeTnVedDigits(text);
+    if (fromText.length === 10) return fromText;
+    if (didStr.length === 10) return didStr;
+    return fallback;
+  }
+  const s = String(Array.isArray(raw) ? raw[0] : raw).trim();
+  if (!s) return fallback;
+  if (/^\d{10}$/.test(s)) return s;
+  const lead = leadingTnVedDigits(s);
+  if (lead.length === 10) return lead;
+  const compact = normalizeTnVedDigits(s);
+  if (compact.length === 10) return compact;
+  return '';
+}
+
+/**
+ * Элемент справочника Ozon, у которого значение начинается с нужного кода ТН ВЭД.
+ * Справочник разный у разных type_id — не хардкодим подпись.
+ */
+export function matchOzonTnVedDictEntry(entries, code) {
+  const digits = normalizeTnVedDigits(code);
+  if (!digits || !Array.isArray(entries) || entries.length === 0) return null;
+  const hits = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const text = String(entry.value ?? entry.name ?? entry.info ?? '').trim();
+    const lead = leadingTnVedDigits(text);
+    const compact = normalizeTnVedDigits(text);
+    const startsWithCode =
+      text.startsWith(digits) && (text.length === digits.length || !/\d/.test(text.charAt(digits.length)));
+    if (lead === digits || compact === digits || startsWithCode) hits.push(entry);
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => String(b.value ?? b.name ?? '').length - String(a.value ?? a.name ?? '').length);
+  return hits[0];
+}
+
+export function ozonTnVedApiValuesFromDictEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = Number(entry.id ?? entry.value_id ?? entry.dictionary_value_id);
+  const text = String(entry.value ?? entry.name ?? '').trim();
+  if (Number.isFinite(id) && id > 0) {
+    const v = { dictionary_value_id: id };
+    if (text) v.value = text;
+    return [v];
+  }
+  if (text) return [{ value: text }];
+  return null;
+}
+
 /**
  * Заполняет пустые ключи в объекте атрибутов. Возвращает тот же объект, если ничего не изменилось.
  */

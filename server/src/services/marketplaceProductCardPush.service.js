@@ -45,6 +45,13 @@ import {
 } from '../utils/marketplaceDescriptionHtml.js';
 import { collapseOzonNonCollectionAttrValues, ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
 import {
+  isTnVedAttributeName,
+  leadingTnVedDigits,
+  matchOzonTnVedDictEntry,
+  normalizeTnVedDigits,
+  ozonTnVedApiValuesFromDictEntry,
+} from '../utils/tnVedAttribute.js';
+import {
   applyErpBarcodesToWbCardSizes,
   buildWbCharacteristics,
 } from '../utils/wbPushCharacteristics.js';
@@ -212,6 +219,104 @@ async function applyMappedOzonBrand(item, product) {
   const next = { complex_id: 0, id: 85, values };
   if (idx >= 0) attrs[idx] = next;
   else attrs.push(next);
+  item.attributes = attrs;
+}
+
+const ozonTnVedDictCache = new Map();
+
+function ozonTnVedCacheKey(attrId, descId, typeId, digits) {
+  return `${attrId}:${descId}:${typeId}:${digits}`;
+}
+
+function tnVedDigitsFromOzonAttrValues(vals) {
+  const list = Array.isArray(vals) ? vals : [];
+  for (const v of list) {
+    const text = String(v?.value ?? '').trim();
+    const lead = leadingTnVedDigits(text) || normalizeTnVedDigits(text);
+    if (lead) return lead;
+  }
+  return '';
+}
+
+function productTnVedFallbackCode(product) {
+  return (
+    normalizeTnVedDigits(product?.category_tn_ved_code) ||
+    normalizeTnVedDigits(product?.tn_ved_code) ||
+    normalizeTnVedDigits(product?.tnVedCode) ||
+    ''
+  );
+}
+
+/**
+ * Ozon «ТН ВЭД коды ЕАЭС» — словарная характеристика: голые цифры ('8421310000')
+ * дают недочёт. Ищем значение справочника текущей категории (type_id) и шлём dictionary_value_id.
+ */
+async function resolveOzonTnVedDictionaryAttrs(item, schemaList, descId, typeId, ctx, product) {
+  const schema = (Array.isArray(schemaList) ? schemaList : []).filter((a) =>
+    isTnVedAttributeName(a?.name ?? a?.attribute_name ?? a?.title ?? '')
+  );
+  if (!schema.length) return;
+
+  const attrs = Array.isArray(item.attributes) ? [...item.attributes] : [];
+  const apiOpts = {
+    profileId: ctx.profileId ?? ctx.profile_id ?? null,
+    organizationId: ctx.organizationId ?? ctx.organization_id ?? null,
+  };
+  const fallbackCode = productTnVedFallbackCode(product);
+
+  for (const a of schema) {
+    const id = Number(a.id ?? a.attribute_id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const idx = attrs.findIndex((x) => Number(x.id) === id);
+    const current = idx >= 0 ? attrs[idx] : null;
+    const vals = Array.isArray(current?.values) ? current.values : [];
+
+    const existingDictId = vals
+      .map((v) => Number(v?.dictionary_value_id))
+      .find((n) => Number.isFinite(n) && n > 0);
+    const existingDictStr = existingDictId != null ? String(existingDictId) : '';
+    if (existingDictStr && existingDictStr.length !== 10) continue;
+
+    let query = tnVedDigitsFromOzonAttrValues(vals);
+    if (query && /^\d+$/.test(query) && query.length !== 10) {
+      const next = {
+        complex_id: 0,
+        id,
+        values: [{ dictionary_value_id: Number(query) }],
+      };
+      if (idx >= 0) attrs[idx] = next;
+      else attrs.push(next);
+      continue;
+    }
+    if (!query) query = fallbackCode;
+    if (!query) continue;
+
+    const cacheKey = ozonTnVedCacheKey(id, descId, typeId, query);
+    let hit = ozonTnVedDictCache.get(cacheKey);
+    if (hit === undefined) {
+      let found = [];
+      try {
+        found = await integrationsService.searchOzonAttributeValues(id, descId, typeId, query, apiOpts);
+      } catch (e) {
+        logger.warn('[CardPush] Ozon TN VED dict search failed', { id, query, err: e?.message || e });
+        continue;
+      }
+      hit = matchOzonTnVedDictEntry(found, query);
+      ozonTnVedDictCache.set(cacheKey, hit || null);
+      if (ozonTnVedDictCache.size > 800) {
+        const first = ozonTnVedDictCache.keys().next().value;
+        if (first != null) ozonTnVedDictCache.delete(first);
+      }
+    }
+    const nextVals = ozonTnVedApiValuesFromDictEntry(hit);
+    if (!nextVals) {
+      logger.warn('[CardPush] Ozon TN VED dict value not found', { id, query, descId, typeId });
+      continue;
+    }
+    const next = { complex_id: 0, id, values: nextVals };
+    if (idx >= 0) attrs[idx] = next;
+    else attrs.push(next);
+  }
   item.attributes = attrs;
 }
 
@@ -1001,6 +1106,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
   applyOzonDescriptionHtml(item, description);
   item.attributes = collapseOzonNonCollectionAttrValues(item.attributes);
   await ensureOzonNeedsMarkingAttribute(item, ozonSchema, descId, typeId, ctx);
+  await resolveOzonTnVedDictionaryAttrs(item, ozonSchema, descId, typeId, ctx, product);
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);

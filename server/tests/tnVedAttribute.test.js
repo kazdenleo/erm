@@ -4,7 +4,11 @@ import {
   fillEmptyTnVedKeys,
   isEmptyMpStoredValue,
   isTnVedAttributeName,
+  leadingTnVedDigits,
+  matchOzonTnVedDictEntry,
   normalizeCategoryTnVedCode,
+  ozonStoredTnVedSearchCode,
+  ozonTnVedApiValuesFromDictEntry,
   storedTnVedValueForMarketplace,
 } from '../src/utils/tnVedAttribute.js';
 
@@ -82,5 +86,38 @@ describe('fillEmptyErpTnVedAttributeValues', () => {
     const prev = { 22: '8421310000' };
     expect(fillEmptyErpTnVedAttributeValues(prev, [22], '8421310000')).toBe(prev);
     expect(fillEmptyErpTnVedAttributeValues(prev, [], '8421310000')).toBe(prev);
+  });
+});
+
+describe('Ozon TN VED dictionary matching', () => {
+  const dict = [
+    { id: 11, value: '4011100000 – Шины пневматические новые' },
+    { id: 22, value: '8421310000 – Воздушные фильтры для двигателей внутреннего сгорания' },
+    { id: 33, value: '8421392008 – Аппараты для фильтрования или очистки газов прочие' },
+  ];
+
+  test('picks dictionary row by code prefix, not a hardcoded label', () => {
+    const hit = matchOzonTnVedDictEntry(dict, '8421310000');
+    expect(hit?.id).toBe(22);
+    expect(hit.value).toMatch(/^8421310000/);
+    expect(matchOzonTnVedDictEntry(dict, '4011100000')?.id).toBe(11);
+  });
+
+  test('reads 10-digit code from stored digits or Ozon label', () => {
+    expect(ozonStoredTnVedSearchCode({ value: '8421310000' }, '')).toBe('8421310000');
+    expect(ozonStoredTnVedSearchCode('8421310000 – Воздушные фильтры', '4011100000')).toBe('8421310000');
+    expect(ozonStoredTnVedSearchCode({ dictionary_value_id: 97100233 }, '8421310000')).toBe('');
+    expect(ozonStoredTnVedSearchCode('', '8421310000')).toBe('8421310000');
+    expect(leadingTnVedDigits('8421310000 – Воздушные фильтры')).toBe('8421310000');
+  });
+
+  test('push payload uses dictionary_value_id and directory text', () => {
+    const hit = matchOzonTnVedDictEntry(dict, '8421310000');
+    expect(ozonTnVedApiValuesFromDictEntry(hit)).toEqual([
+      {
+        dictionary_value_id: 22,
+        value: '8421310000 – Воздушные фильтры для двигателей внутреннего сгорания',
+      },
+    ]);
   });
 });

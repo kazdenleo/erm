@@ -50,6 +50,9 @@ import {
 } from '../../../utils/productCertAttributeAutofill.js';
 import {
   applyTnVedAutofillToAttributes,
+  isTnVedAttributeName,
+  matchOzonTnVedDictEntry,
+  ozonStoredTnVedSearchCode,
 } from '../../../utils/productTnVedAttributeAutofill.js';
 import {
   BARCODE_MP_TOGGLES,
@@ -801,6 +804,10 @@ function findOzonDictEntryForStored(stored, options) {
   }
   const byId = options.find((o) => o && String(o.id) === str);
   if (byId) return byId;
+  if (/^\d{10}$/.test(str)) {
+    const byTnVed = matchOzonTnVedDictEntry(options, str);
+    if (byTnVed) return byTnVed;
+  }
   const n = normOzonAttrLabel(str);
   const byExact = options.find((o) => normOzonAttrLabel(ozonDictEntryText(o)) === n);
   if (byExact) return byExact;
@@ -1767,6 +1774,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }
   const ozonDictInflightRef = useRef(new Set());
   const ozonDictPromisesRef = useRef(new Map());
+  const ozonTnVedSearchRef = useRef(new Set());
   const [ozonAttributesError, setOzonAttributesError] = useState('');
   /** Пара desc/type после ответа GET marketplace-attributes (бэкенд разрешает один id по дереву Ozon) */
   const [ozonResolvedPair, setOzonResolvedPair] = useState({ descId: null, typeId: 0 });
@@ -2515,6 +2523,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const attrId = attr?.id;
       const dict = attrId != null ? ozonDictValues[attrId] : null;
       if (!Array.isArray(dict) || dict.length === 0) return textValue;
+      if (isTnVedAttributeName(attr?.name)) {
+        const tnHit = matchOzonTnVedDictEntry(dict, textValue);
+        if (tnHit?.id != null) return String(tnHit.id);
+      }
       const norm = normalizeAttrName(textValue);
       const hit = dict.find((v) => normalizeAttrName(v.value ?? v.name ?? '') === norm);
       if (hit?.id != null) return String(hit.id);
@@ -2926,6 +2938,73 @@ export const ProductForm = React.forwardRef(function ProductForm({
       })
     );
   }, [ozonAttributes, tnVedCode, resolveOzonEnumValue]);
+
+  useEffect(() => {
+    ozonTnVedSearchRef.current.clear();
+  }, [ozonDescIdForApi, ozonTypeIdForApi, tnVedCode]);
+
+  // ТН ВЭД на Ozon — словарь категории: ищем «код – название» и сохраняем dictionary_value_id
+  useEffect(() => {
+    if (!ozonAttributes?.length) return;
+    if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
+    const targets = ozonAttributes.filter(
+      (attr) => isTnVedAttributeName(attr?.name) && ozonAttrHasDictionary(attr)
+    );
+    if (!targets.length) return;
+    let cancelled = false;
+    const queue = ozonDictQueueRef.current;
+    (async () => {
+      for (const attr of targets) {
+        if (cancelled) return;
+        const key = String(attr.id);
+        const code = tnVedCode;
+        if (!code) continue;
+        const cacheKey = `${attr.id}:${ozonDescIdForApi}:${ozonTypeIdForApi}:${code}`;
+        if (ozonTnVedSearchRef.current.has(cacheKey)) continue;
+        ozonTnVedSearchRef.current.add(cacheKey);
+        try {
+          const list = queue
+            ? await queue(() =>
+                integrationsApi.searchOzonAttributeValues(
+                  attr.id,
+                  ozonDescIdForApi,
+                  ozonTypeIdForApi,
+                  code
+                )
+              )
+            : await integrationsApi.searchOzonAttributeValues(
+                attr.id,
+                ozonDescIdForApi,
+                ozonTypeIdForApi,
+                code
+              );
+          if (cancelled) {
+            ozonTnVedSearchRef.current.delete(cacheKey);
+            return;
+          }
+          const hit = matchOzonTnVedDictEntry(Array.isArray(list) ? list : [], code);
+          if (!hit?.id) continue;
+          setOzonDictValues((prev) => {
+            const cur = Array.isArray(prev[attr.id]) ? prev[attr.id] : [];
+            if (cur.some((o) => String(o.id) === String(hit.id))) return prev;
+            return { ...prev, [attr.id]: [hit, ...cur] };
+          });
+          setOzonAttributeValues((prev) => {
+            if (String(prev[key] ?? '') === String(hit.id)) return prev;
+            const search = ozonStoredTnVedSearchCode(prev[key], code);
+            if (!search) return prev;
+            return { ...prev, [key]: String(hit.id) };
+          });
+        } catch (err) {
+          ozonTnVedSearchRef.current.delete(cacheKey);
+          console.warn('[ProductForm] Ozon TN VED dict search failed:', err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ozonAttributes, ozonDescIdForApi, ozonTypeIdForApi, tnVedCode]);
 
   // Автоподстановка НДС в Ozon-атрибуты (по названию поля)
   useEffect(() => {
@@ -4305,8 +4384,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const currentVal = ozonAttributeValues[String(attr.id)];
       if (currentVal === undefined || currentVal === null || String(currentVal).trim() === '') return;
       const str = String(currentVal).trim();
-      if (/^\d+$/.test(str)) return;
-      const hit = findOzonDictEntryForStored(str, options);
+      if (/^\d+$/.test(str) && !(isTnVedAttributeName(attr.name) && /^\d{10}$/.test(str))) return;
+      const hit = isTnVedAttributeName(attr.name)
+        ? findOzonDictEntryForStored(str, options) || matchOzonTnVedDictEntry(options, str)
+        : findOzonDictEntryForStored(str, options);
       if (hit && String(hit.id) !== str) {
         if (updated === null) updated = { ...ozonAttributeValues };
         updated[String(attr.id)] = String(hit.id);
