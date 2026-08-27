@@ -40,9 +40,10 @@ export function isOzonAnnotationAttr(attr) {
   return false;
 }
 
-/** Текст аннотации в форме: U+2028 и прежний « · » → обычные переносы строк. */
+/** Текст аннотации в форме: U+2028, <br> и прежний « · » → обычные переносы строк. */
 export function ozonAnnotationToFormText(text) {
   return String(text ?? '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
     .replace(/\u2028|\u2029/g, '\n')
     .replace(/\s*·\s*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')

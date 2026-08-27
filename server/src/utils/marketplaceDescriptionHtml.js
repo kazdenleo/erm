@@ -1,9 +1,9 @@
 /**
  * Описание карточки: WB принимает обычные переносы строк.
  * Яндекс.Маркет на витрине показывает HTML.
- * Аннотация Ozon (4191) — одно текстовое значение с обычными \\n.
- * Несколько {value} или <br> дают ERROR_ATTRIBUTE_IS_NOT_COLLECTION.
- * U+2028 кабинет не рисует как абзац (textarea смотрит только \\n).
+ * Аннотация Ozon (4191) — одно { value }.
+ * Кабинет и витрина схлопывают \\n; переносы держатся как <br> внутри одной строки.
+ * Несколько {value} дают ERROR_ATTRIBUTE_IS_NOT_COLLECTION.
  */
 
 const ALREADY_HTML_RE = /<\s*\/?\s*(br|p|b|i|strong|em|ul|ol|li|div|span)(?:\s|\/|>)/i;
@@ -87,23 +87,24 @@ function unstickOzonAnnotationTokens(text) {
 }
 
 /**
- * Аннотация Ozon: одно { value }. Кабинет рисует абзацы только по обычному \\n
- * (U+2028 API принимает, но в textarea это сплошная строка). Не режем на коллекцию.
+ * Аннотация Ozon: одно { value } с <br> между строками.
+ * Сырой \\n API сохраняет, но кабинет/витрина показывают портянку.
  * @param {unknown} text
  * @returns {string}
  */
 export function formatOzonAnnotationForPush(text) {
   const joined = ozonAnnotationToErpText(text)
     .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
-    .filter(Boolean)
-    .join('\n');
-  return unstickOzonAnnotationTokens(joined)
+    .replace(/\r/g, '\n');
+  const unstuck = unstickOzonAnnotationTokens(joined)
     .replace(/(?:\s*\n\s*)+/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+  return unstuck
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('<br>');
 }
 
 /** @deprecated имя историческое: HTML в 4191 не отправляем. */

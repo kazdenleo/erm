@@ -26,7 +26,7 @@ describe('marketplaceDescriptionHtml', () => {
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
     expect(item.description).toBeUndefined();
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'строка 1\nстрока 2' }]);
+    expect(ann.values).toEqual([{ value: 'строка 1<br>строка 2' }]);
     expect(item.attributes.some((a) => Number(a.id) === 85)).toBe(true);
   });
 
@@ -42,14 +42,14 @@ describe('marketplaceDescriptionHtml', () => {
     };
     applyOzonDescriptionHtml(item, 'строка 1\nстрока 2');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'строка 1\nстрока 2' }]);
+    expect(ann.values).toEqual([{ value: 'строка 1<br>строка 2' }]);
   });
 
   test('annotation html br becomes a line separator inside a single value', () => {
     const item = { attributes: [] };
     applyOzonDescriptionHtml(item, 'Фильтр<br>70 мм');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
-    expect(ann.values).toEqual([{ value: 'Фильтр\n70 мм' }]);
+    expect(ann.values).toEqual([{ value: 'Фильтр<br>70 мм' }]);
   });
 
   test('annotation glued after Ozon stripped newlines is unstuck', () => {
@@ -57,7 +57,7 @@ describe('marketplaceDescriptionHtml', () => {
     applyOzonDescriptionHtml(item, 'Фильтр AFAC167Вес брутто, кг0.334Высота упаковки');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
     expect(ann.values).toEqual([
-      { value: 'Фильтр AFAC167\nВес брутто, кг\n0.334\nВысота упаковки' },
+      { value: 'Фильтр AFAC167<br>Вес брутто, кг<br>0.334<br>Высота упаковки' },
     ]);
   });
 
@@ -66,7 +66,7 @@ describe('marketplaceDescriptionHtml', () => {
     applyOzonDescriptionHtml(item, 'Фильтр AFAC167 · Вес брутто [кг]: 0.334 · Высота упаковки');
     const ann = item.attributes.find((a) => Number(a.id) === 4191);
     expect(ann.values).toEqual([
-      { value: 'Фильтр AFAC167\nВес брутто [кг]: 0.334\nВысота упаковки' },
+      { value: 'Фильтр AFAC167<br>Вес брутто [кг]: 0.334<br>Высота упаковки' },
     ]);
   });
 });
