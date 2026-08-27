@@ -711,13 +711,15 @@ export function resolveProductDimensionsMmForPush(product, mp) {
     if (src.weight != null && Number(src.weight) > 0) out.weight = Number(src.weight);
     return Object.keys(out).length ? out : null;
   };
-  if (isMpFieldLinked(links, 'product_dimensions', code)) {
-    return pick({
+  const fromErp = () =>
+    pick({
       length: product.product_length ?? product.productLength,
       width: product.product_width ?? product.productWidth,
       height: product.product_height ?? product.productHeight,
       weight: product.product_weight ?? product.productWeight,
     });
+  if (isMpFieldLinked(links, 'product_dimensions', code)) {
+    return fromErp();
   }
   const draft =
     code === 'ozon'
@@ -725,6 +727,6 @@ export function resolveProductDimensionsMmForPush(product, mp) {
       : code === 'wb'
         ? parseDraftObj(product?.wb_draft)
         : parseDraftObj(product?.ym_draft);
-  return pick(draft.productDimensions);
+  return pick(draft.productDimensions) || fromErp();
 }
 

@@ -27,7 +27,10 @@ import {
   getProductImageUrlsForMarketplace,
   getProductImageUrlsForMarketplacePush,
 } from './marketplaceProductImages.service.js';
-import { WB_ITEM_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import {
+  applyOzonCategoryProductSizeAttrs,
+  WB_ITEM_DIM_CHARC,
+} from '../utils/marketplaceDimensions.js';
 import {
   detectOzonDimensionsLockedFromInfo,
   errorIndicatesOzonVwcLock,
@@ -982,12 +985,17 @@ async function pushOzonCard(product, categoryMm, ctx) {
     logger.warn('[CardPush] Ozon category attributes (schema) failed', e?.message || e);
   }
 
+  const ozonAttrsForPush = applyOzonCategoryProductSizeAttrs(
+    product.ozon_attributes,
+    resolveProductDimensionsMmForPush(product, 'ozon'),
+    ozonSchema
+  );
   const item = {
     offer_id: offerId,
     name,
     description_category_id: descId,
     type_id: typeId,
-    attributes: buildOzonAttributesArray(product.ozon_attributes, ozonSchema)
+    attributes: buildOzonAttributesArray(ozonAttrsForPush, ozonSchema)
   };
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);

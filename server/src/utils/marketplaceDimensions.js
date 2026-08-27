@@ -83,7 +83,8 @@ function isDimensionsLinked(product, mp) {
   return false;
 }
 
-/** Ozon: упаковка как в push — связь → ERP; иначе draft; иначе attrs (9802/…). */
+/** Ozon: упаковка как в push — связь → ERP; иначе draft; иначе упаковка ERP.
+ * 9802/6605/6606 не берём: в части типов это «Длина/Ширина/Высота, мм» товара. */
 export function extractOzonDimensionsMm(product) {
   if (isDimensionsLinked(product, 'ozon')) {
     const length = num(product?.length);
@@ -102,16 +103,6 @@ export function extractOzonDimensionsMm(product) {
     const height = num(wd.height);
     if (length != null && width != null && height != null) {
       return { length, width, height, source: 'ozon_draft.dimensions' };
-    }
-  }
-
-  const attrs = parseAttrs(product?.ozon_attributes);
-  if (attrs) {
-    const length = pickAttr(attrs, [9802, '9802']);
-    const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
-    const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
-    if (length != null && width != null && height != null) {
-      return { length, width, height, source: 'ozon_attributes' };
     }
   }
 
@@ -215,6 +206,24 @@ export function isOzonCategoryProductSizeAttr(attrOrName) {
   return axis === 'length' || axis === 'width' || axis === 'height';
 }
 
+/** «Длина/Ширина/Высота, мм» из габаритов товара — в JSON атрибутов перед push. */
+export function applyOzonCategoryProductSizeAttrs(ozonAttrs, dimsMm, schemaList) {
+  if (!dimsMm || typeof dimsMm !== 'object') return ozonAttrs;
+  const next = { ...(parseAttrs(ozonAttrs) || {}) };
+  let written = false;
+  for (const attr of Array.isArray(schemaList) ? schemaList : []) {
+    if (!isOzonCategoryProductSizeAttr(attr)) continue;
+    const axis = ozonProductDimAxis(attr);
+    const id = attr?.id ?? attr?.attribute_id;
+    if (!axis || id == null || String(id).trim() === '') continue;
+    const stored = productDimAttrStoredFromMm(attr, dimsMm[axis], 'ozon');
+    if (!stored) continue;
+    next[String(id)] = stored;
+    written = true;
+  }
+  return written ? next : ozonAttrs;
+}
+
 export const OZON_PACK_DIM_ATTR_IDS = {
   length: ['9802'],
   width: ['6605', '9799'],
@@ -223,6 +232,7 @@ export const OZON_PACK_DIM_ATTR_IDS = {
 };
 
 export function ozonPackDimAxis(attrOrName) {
+  if (isOzonCategoryProductSizeAttr(attrOrName)) return null;
   const id = String(
     attrOrName && typeof attrOrName === 'object'
       ? attrOrName.id ?? attrOrName.attribute_id ?? ''

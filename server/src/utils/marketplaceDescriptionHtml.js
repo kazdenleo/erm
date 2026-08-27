@@ -1,9 +1,9 @@
 /**
  * Описание карточки: WB принимает обычные переносы строк.
  * Яндекс.Маркет на витрине показывает HTML.
- * Аннотация Ozon (4191) — одно текстовое значение.
- * Сырые \\n API Ozon выкидывает (склейка AFAC167Вес), <br> режет как коллекцию.
- * Перенос в кабинете: U+2028 (LINE SEPARATOR), его API не схлопывает.
+ * Аннотация Ozon (4191) — одно текстовое значение с обычными \\n.
+ * Несколько {value} или <br> дают ERROR_ATTRIBUTE_IS_NOT_COLLECTION.
+ * U+2028 кабинет не рисует как абзац (textarea смотрит только \\n).
  */
 
 const ALREADY_HTML_RE = /<\s*\/?\s*(br|p|b|i|strong|em|ul|ol|li|div|span)(?:\s|\/|>)/i;
@@ -63,9 +63,6 @@ export function marketplaceHtmlToPlainText(html) {
 
 const OZON_ANNOTATION_ATTR_ID = 4191;
 
-/** LINE SEPARATOR: в textarea Ozon это новая строка; обычный \\n API выкидывает. */
-const OZON_ANNOTATION_LINE_SEP = '\u2028';
-
 /**
  * Текст аннотации для полей ERP: LS и прежний разделитель « · » → обычные переносы.
  * @param {unknown} text
@@ -80,18 +77,18 @@ export function ozonAnnotationToErpText(text) {
 }
 
 /**
- * Ozon склеивает «цифра/строчная + Заглавная» без пробела, если выкинул \\n.
+ * Ozon склеивает «цифра/строчная + Заглавная» без пробела, если выкинул перенос.
  * Восстанавливаем границы токенов: 0.334Высота, AFAC167Вес, н.в.Infiniti.
  */
 function unstickOzonAnnotationTokens(text) {
   return String(text || '')
-    .replace(/([0-9a-zа-яё.])([A-ZА-ЯЁ])/g, `$1${OZON_ANNOTATION_LINE_SEP}$2`)
-    .replace(/([a-zа-яё])([0-9])/g, `$1${OZON_ANNOTATION_LINE_SEP}$2`);
+    .replace(/([0-9a-zа-яё.])([A-ZА-ЯЁ])/g, '$1\n$2')
+    .replace(/([a-zа-яё])([0-9])/g, '$1\n$2');
 }
 
 /**
- * Аннотация Ozon: одно { value }, без <br> и без сырых \\n.
- * Переносы из ERP — U+2028, чтобы кабинет показывал абзацы, а не сплошной текст.
+ * Аннотация Ozon: одно { value }. Кабинет рисует абзацы только по обычному \\n
+ * (U+2028 API принимает, но в textarea это сплошная строка). Не режем на коллекцию.
  * @param {unknown} text
  * @returns {string}
  */
@@ -102,9 +99,9 @@ export function formatOzonAnnotationForPush(text) {
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
     .filter(Boolean)
-    .join(OZON_ANNOTATION_LINE_SEP);
+    .join('\n');
   return unstickOzonAnnotationTokens(joined)
-    .replace(/(?:\s*\u2028\s*)+/g, OZON_ANNOTATION_LINE_SEP)
+    .replace(/(?:\s*\n\s*)+/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }

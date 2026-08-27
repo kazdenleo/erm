@@ -83,7 +83,8 @@ function isDimensionsLinked(product, mp) {
   return false;
 }
 
-/** Ozon: упаковка как в push — связь → ERP; иначе draft; иначе attrs (9802/…). */
+/** Ozon: упаковка как в push — связь → ERP; иначе draft; иначе упаковка ERP.
+ * 9802/6605/6606 не берём: в части типов это «Длина/Ширина/Высота, мм» товара. */
 export function extractOzonDimensionsMm(product) {
   if (isDimensionsLinked(product, 'ozon')) {
     const length = num(product?.length);
@@ -102,16 +103,6 @@ export function extractOzonDimensionsMm(product) {
     const height = num(wd.height);
     if (length != null && width != null && height != null) {
       return { length, width, height, source: 'ozon_draft.dimensions' };
-    }
-  }
-
-  const attrs = parseAttrs(product?.ozon_attributes);
-  if (attrs) {
-    const length = pickAttr(attrs, [9802, '9802']);
-    const width = pickAttr(attrs, [6605, 9799, '6605', '9799']);
-    const height = pickAttr(attrs, [6606, 6859, '6606', '6859']); // 6859 = толщина
-    if (length != null && width != null && height != null) {
-      return { length, width, height, source: 'ozon_attributes' };
     }
   }
 
@@ -231,6 +222,8 @@ export const OZON_PACK_DIM_ATTR_IDS = {
 
 /** Ось габарита упаковки Ozon: length | width | height | weight. */
 export function ozonPackDimAxis(attrOrName) {
+  // В типе «Фильтр воздушный» 9802/6605/6606 — «Длина/Ширина/Высота, мм», не упаковка.
+  if (isOzonCategoryProductSizeAttr(attrOrName)) return null;
   const id = String(
     attrOrName && typeof attrOrName === 'object'
       ? attrOrName.id ?? attrOrName.attribute_id ?? ''
