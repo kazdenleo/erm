@@ -209,7 +209,7 @@ export function ozonProductDimAxis(attrOrName) {
 export function isOzonCategoryProductSizeAttr(attrOrName) {
   const name = attrOrName && typeof attrOrName === 'object' ? attrOrName.name : attrOrName;
   const axis = ozonProductDimAxis(name);
-  return axis === 'length' || axis === 'width' || axis === 'height';
+  return axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight';
 }
 
 /** Известные id атрибутов упаковки Ozon. */

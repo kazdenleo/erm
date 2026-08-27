@@ -6606,13 +6606,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
           length: formData.product_length,
           width: formData.product_width,
           height: formData.product_height,
+          weight: formData.product_weight,
         };
         for (const attr of ozonFormAttributes || []) {
           const axis = ozonProductDimAxis(attr);
-          if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+          if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
           const mm = mmOf[axis];
           const key = String(attr.id);
-          if (mm !== '' && mm != null && Number(mm) > 0) out[key] = { value: String(mm) };
+          if (mm !== '' && mm != null && Number(mm) > 0) {
+            out[key] = { value: productDimAttrStoredFromMm(attr, mm, 'ozon') || String(mm) };
+          }
         }
       }
       if (isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon')) {

@@ -262,7 +262,9 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
     expect(ozonPackDimAxis({ name: 'Длина товара с упаковкой' })).toBe('length');
     expect(isOzonCategoryProductSizeAttr({ id: 9802, name: 'Длина, мм' })).toBe(true);
     expect(isOzonCategoryProductSizeAttr({ id: 6605, name: 'Ширина, мм' })).toBe(true);
+    expect(isOzonCategoryProductSizeAttr({ id: 4383, name: 'Вес товара, г' })).toBe(true);
     expect(isOzonCategoryProductSizeAttr({ id: 4497, name: 'Вес с упаковкой, г' })).toBe(false);
+    expect(ozonPackDimAxis({ id: 4383, name: 'Вес товара, г' })).toBeNull();
   });
 
   test('WB item charc ids are product axes; pack ids are not', () => {
@@ -280,16 +282,17 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
     expect(productDimAttrStoredFromMm({ name: 'Вес товара, кг' }, 1289, 'ym')).toBe('1.289');
   });
 
-  test('applyOzonCategoryProductSizeAttrs writes L/W/H mm from product dims', () => {
+  test('applyOzonCategoryProductSizeAttrs writes L/W/H mm and product weight', () => {
     const schema = [
       { id: 9802, name: 'Длина, мм' },
       { id: 6605, name: 'Ширина, мм' },
       { id: 6606, name: 'Высота, мм' },
+      { id: 4383, name: 'Вес товара, г' },
       { id: 4497, name: 'Вес с упаковкой, г' },
     ];
     const next = applyOzonCategoryProductSizeAttrs(
       { 85: 'Miles' },
-      { length: 200, width: 214, height: 35 },
+      { length: 200, width: 214, height: 35, weight: 324 },
       schema
     );
     expect(next).toMatchObject({
@@ -297,6 +300,7 @@ describe('classifyMarketplaceDimAttrName / ozonProductDimAxis', () => {
       9802: '200',
       6605: '214',
       6606: '35',
+      4383: '324',
     });
     expect(next[4497]).toBeUndefined();
   });
