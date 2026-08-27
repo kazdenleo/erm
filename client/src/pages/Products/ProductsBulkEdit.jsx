@@ -2039,10 +2039,7 @@ function sortMpSectionColumns(dedicatedCols, attrCols) {
     if (ad !== bd) return ad - bd;
     return a.tie.localeCompare(b.tie, undefined, { numeric: true });
   });
-  return tagged.map((x) => {
-    const { _humanName, ...rest } = x.c;
-    return _humanName !== undefined ? rest : x.c;
-  });
+  return tagged.map((x) => x.c);
 }
 
 function sortAttrIdsWithLabels(set, labelMap) {
@@ -2557,9 +2554,18 @@ function applyLinkedBrandToOzonAttrColumns(row, brandText, mpAttrCols, ozonDictB
   return next;
 }
 
+function isBlankBulkAttrText(v) {
+  const plain = ozonAttrPlainText(v);
+  if (plain) return false;
+  const s = str(v).trim();
+  if (!s || s === '[object Object]' || s === 'null' || s === 'undefined') return true;
+  if (s === '{}' || s === '[]') return true;
+  return s.startsWith('{') || s.startsWith('[');
+}
+
 function resolveBulkOzonCardTextCell(row, col, raw) {
   const cur = raw != null ? raw : row?.[col?.key];
-  if (str(cur).trim()) return cur;
+  if (!isBlankBulkAttrText(cur)) return typeof cur === 'string' ? cur : ozonAttrPlainText(cur) || str(cur);
   if (isOzonCardTextColumn(col, 'name')) return str(row.name);
   if (isOzonCardTextColumn(col, 'description')) return str(row.description);
   return cur ?? '';
@@ -2571,47 +2577,79 @@ function ozonCardTextLinkActive(row, fieldKey) {
 }
 
 function isOzonCardTextColumn(col, kind) {
-  if (col?.mpAttr?.bucket !== 'ozon') return false;
-  const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+  const parsed = parseMpAttrColKey(col?.key);
+  const bucket = col?.mpAttr?.bucket || parsed?.mp || col?.mpBucket;
+  if (bucket !== 'ozon') return false;
+  const attrId = col?.mpAttr?.attrId ?? parsed?.attrId;
+  const meta = { id: attrId, name: col?._humanName || col?.label };
   if (kind === 'name') {
     return (
       isOzonNameAttr(meta) ||
-      col.linkFieldKey === 'name' ||
-      String(col.mpAttr.attrId) === String(OZON_NAME_ATTR_ID)
+      col?.linkFieldKey === 'name' ||
+      col?.dedicatedMainFieldKey === 'name' ||
+      String(attrId) === String(OZON_NAME_ATTR_ID)
     );
   }
   return (
     isOzonAnnotationAttr(meta) ||
-    col.linkFieldKey === 'description' ||
-    String(col.mpAttr.attrId) === String(OZON_ANNOTATION_ATTR_ID)
+    col?.linkFieldKey === 'description' ||
+    col?.dedicatedMainFieldKey === 'description' ||
+    String(attrId) === String(OZON_ANNOTATION_ATTR_ID)
   );
+}
+
+/** Пустые Ozon «Название»/«Аннотация» всегда берём из Основного — не из mp_ozon_name. */
+function fillEmptyOzonNameAndAnnotationCells(row, mpAttrCols, nameText, descText) {
+  const nameVal = str(nameText).trim();
+  const descVal = str(descText).trim();
+  if (!nameVal && !descVal) return row;
+  let next = row;
+  const setKey = (key, text) => {
+    if (!key || !text || !isBlankBulkAttrText(next[key])) return;
+    if (next === row) next = { ...next };
+    next[key] = text;
+  };
+  setKey(mpAttrColKey('ozon', OZON_NAME_ATTR_ID), nameVal);
+  setKey(mpAttrColKey('ozon', OZON_ANNOTATION_ATTR_ID), descVal);
+  for (const col of mpAttrCols || []) {
+    if (isOzonCardTextColumn(col, 'name')) setKey(col.key, nameVal);
+    else if (isOzonCardTextColumn(col, 'description')) setKey(col.key, descVal);
+  }
+  return next;
 }
 
 function applyLinkedOzonTextAttrColumns(row, text, fieldKey, matchAttr, mpAttrCols) {
   if (!ozonCardTextLinkActive(row, fieldKey)) return row;
-  if (!Array.isArray(mpAttrCols) || mpAttrCols.length === 0) return row;
   const value = String(text ?? '');
   let next = row;
   let changed = false;
-  for (const col of mpAttrCols) {
-    if (col?.mpAttr?.bucket !== 'ozon') continue;
+  const assign = (key) => {
+    if (!key) return;
+    if (str(next[key]) === str(value)) return;
+    if (!String(value).trim() && !isBlankBulkAttrText(next[key])) return;
+    if (!changed) {
+      next = { ...next };
+      changed = true;
+    }
+    next[key] = value;
+  };
+  if (fieldKey === 'name') assign(mpAttrColKey('ozon', OZON_NAME_ATTR_ID));
+  if (fieldKey === 'description') assign(mpAttrColKey('ozon', OZON_ANNOTATION_ATTR_ID));
+  for (const col of mpAttrCols || []) {
+    if (col?.mpAttr?.bucket !== 'ozon' && parseMpAttrColKey(col?.key)?.mp !== 'ozon') continue;
+    const attrId = col?.mpAttr?.attrId ?? parseMpAttrColKey(col?.key)?.attrId;
     const meta = {
-      id: col.mpAttr.attrId,
+      id: attrId,
       name: col._humanName || col.label,
     };
     const mapped =
       (typeof matchAttr === 'function' && matchAttr(meta)) ||
       col.linkFieldKey === fieldKey ||
-      (fieldKey === 'name' && String(col.mpAttr.attrId) === String(OZON_NAME_ATTR_ID)) ||
-      (fieldKey === 'description' && String(col.mpAttr.attrId) === String(OZON_ANNOTATION_ATTR_ID));
+      col.dedicatedMainFieldKey === fieldKey ||
+      (fieldKey === 'name' && String(attrId) === String(OZON_NAME_ATTR_ID)) ||
+      (fieldKey === 'description' && String(attrId) === String(OZON_ANNOTATION_ATTR_ID));
     if (!mapped) continue;
-    if (str(next[col.key]) === str(value)) continue;
-    if (!String(value).trim() && str(next[col.key]).trim()) continue;
-    if (!changed) {
-      next = { ...next };
-      changed = true;
-    }
-    next[col.key] = value;
+    assign(col.key);
   }
   return next;
 }
@@ -2658,6 +2696,7 @@ function applyLinkedOzonNameAndAnnotationColumns(row, mpAttrCols, lengthUnit = '
     isOzonAnnotationAttr,
     mpAttrCols
   );
+  next = fillEmptyOzonNameAndAnnotationCells(next, mpAttrCols, next?.name, next?.description);
   return applyLinkedOzonProductDimAttrColumns(next, mpAttrCols, lengthUnit, weightUnit);
 }
 
@@ -3703,7 +3742,7 @@ function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
   fill('name', nameText, 'mp_ozon_name', isOzonNameAttr);
   fill('description', descText, 'mp_ozon_description', isOzonAnnotationAttr);
   fill('sku', str(p?.sku).trim(), 'sku_ozon', (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
-  return next;
+  return fillEmptyOzonNameAndAnnotationCells(next, mpAttrColDefs, nameText, descText);
 }
 
 /** Пустые ячейки МП заполняем из сохранённых связей карточки (не из сессии тумблеров). */
@@ -3808,11 +3847,15 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     const raw = src[attrId] ?? src[String(attrId)];
     row[c.key] =
       bucket === 'ozon' ? ozonAttrPlainText(raw) || stringifyMpAttrValue(raw) : stringifyMpAttrValue(raw);
-    if (!String(row[c.key] || '').trim() && bucket === 'ozon') {
+    if (isBlankBulkAttrText(row[c.key]) && bucket === 'ozon') {
       const meta = { id: attrId, name: c._humanName || c.label };
-      if (isOzonNameAttr(meta)) row[c.key] = str(p.mp_ozon_name);
-      else if (isOzonAnnotationAttr(meta)) row[c.key] = str(p.mp_ozon_description);
-      else if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) row[c.key] = str(p.sku);
+      if (isOzonNameAttr(meta) || String(attrId) === String(OZON_NAME_ATTR_ID)) {
+        row[c.key] = str(p.mp_ozon_name || p.name);
+      } else if (isOzonAnnotationAttr(meta) || String(attrId) === String(OZON_ANNOTATION_ATTR_ID)) {
+        row[c.key] = str(p.mp_ozon_description || p.description);
+      } else if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) {
+        row[c.key] = str(p.sku);
+      }
     }
   }
   for (const c of erpAttrColDefs) {
@@ -3845,6 +3888,7 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     }
   }
   row = applyLinkedOzonNameAndAnnotationColumns(row, mpAttrColDefs, lengthUnit, weightUnit);
+  row = fillEmptyOzonNameAndAnnotationCells(row, mpAttrColDefs, row.name, row.description);
   return syncOfferFieldColsOnRow(row, mpAttrColDefs);
 }
 
