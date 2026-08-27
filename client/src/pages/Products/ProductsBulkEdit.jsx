@@ -109,7 +109,12 @@ import {
   resolveAttrMpLinkTarget,
 } from '../../utils/productAttributeMpLinks.js';
 import { isOzonManufacturerCountryAttr, OZON_MANUFACTURER_COUNTRY_ATTR_ID } from '../../utils/ozonManufacturerCountry.js';
-import { isOzonManufacturerArticleAttr, isStandaloneOemAttrName, OZON_PARTNUMBER_ATTR_ID } from '../../utils/ozonManufacturerArticle.js';
+import {
+  isOzonManufacturerArticleAttr,
+  isOzonSellerCodeAttr,
+  isStandaloneOemAttrName,
+  OZON_PARTNUMBER_ATTR_ID,
+} from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import {
   isOzonAnnotationAttr,
@@ -706,9 +711,18 @@ function mpColOwnedBySku(col) {
   return col?.dedicatedMainFieldKey === 'sku' || col?.linkFieldKey === 'sku';
 }
 
-function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps, mpAttrColDefs = []) {
+function copyErpAttrToLinkedMp(
+  row,
+  erpCol,
+  mp,
+  labelMaps = bulkEditMpLabelMaps,
+  mpAttrColDefs = [],
+  options = {}
+) {
   const fieldKey = erpCol?.linkFieldKey;
-  if (!fieldKey || !isMpFieldLinked(normalizeMpFieldLinks(row?.mp_field_links), fieldKey, mp)) {
+  const links = normalizeMpFieldLinks(options.linksSource ?? row?.mp_field_links);
+  const onlyIfEmpty = options.onlyIfEmpty === true;
+  if (!fieldKey || !isMpFieldLinked(links, fieldKey, mp)) {
     return row;
   }
   const entries = normalizeAttrMpLinkList(erpCol?.erpAttr?.mpLinks?.[mp]);
@@ -733,6 +747,10 @@ function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps,
         );
         if (mfrCol && mpColOwnedBySku(mfrCol)) continue;
       }
+      if (onlyIfEmpty) {
+        const cur = readMpOfferFieldValue(rowAsOfferFieldForm(next), target.offerId);
+        if (str(cur).trim()) continue;
+      }
       const seeded = {
         ...next,
         ym_draft: next.ym_draft || next._ymDraftBaseline,
@@ -747,6 +765,7 @@ function copyErpAttrToLinkedMp(row, erpCol, mp, labelMaps = bulkEditMpLabelMaps,
     const destKey = mpAttrColKey(mp, target.attrId);
     const destCol = (mpAttrColDefs || []).find((c) => c.key === destKey);
     if (destCol && mpColOwnedBySku(destCol)) continue;
+    if (onlyIfEmpty && str(next[destKey]).trim()) continue;
     next = { ...next, [destKey]: src };
     if (mp === 'ozon' && isOzonManufacturerArticleAttr({ id: target.attrId, name: entry.name })) {
       syncedOzonMfr = true;
@@ -3629,6 +3648,28 @@ function seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs) {
   };
   fill('name', p?.name, 'mp_ozon_name', isOzonNameAttr);
   fill('description', p?.description, 'mp_ozon_description', isOzonAnnotationAttr);
+  fill('sku', p?.sku, 'sku_ozon', (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta));
+  return next;
+}
+
+/** Пустые ячейки МП заполняем из сохранённых связей карточки (не из сессии тумблеров). */
+function seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs) {
+  let next = seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs);
+  const savedLinks = p?.mp_field_links;
+  for (const erpCol of erpAttrColDefs || []) {
+    const erpVal = str(next[erpCol.key]).trim();
+    if (!erpVal) continue;
+    for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
+      try {
+        next = copyErpAttrToLinkedMp(next, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs, {
+          linksSource: savedLinks,
+          onlyIfEmpty: true,
+        });
+      } catch {
+        /* ignore bad mapping for one cell */
+      }
+    }
+  }
   return next;
 }
 
@@ -3710,18 +3751,19 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (!c.mpAttr) continue;
     const { bucket, attrId } = c.mpAttr;
     const src = bucket === 'ozon' ? oz : bucket === 'wb' ? wb : ym;
-    row[c.key] = stringifyMpAttrValue(src[attrId]);
+    row[c.key] = stringifyMpAttrValue(src[attrId] ?? src[String(attrId)]);
     if (!String(row[c.key] || '').trim() && bucket === 'ozon') {
       const meta = { id: attrId, name: c._humanName || c.label };
       if (isOzonNameAttr(meta)) row[c.key] = str(p.mp_ozon_name);
       else if (isOzonAnnotationAttr(meta)) row[c.key] = str(p.mp_ozon_description);
+      else if (isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)) row[c.key] = str(p.sku);
     }
   }
-  row = seedBulkOzonCardTextFromProduct(row, p, mpAttrColDefs);
   for (const c of erpAttrColDefs) {
     if (!c.erpAttr) continue;
     row[c.key] = row._erpAttrBaseline[String(c.erpAttr.id)] ?? '';
   }
+  row = seedBulkLinkedMpFromProduct(row, p, mpAttrColDefs, erpAttrColDefs);
   row = applyCategoryTnVedToBulkRow(row, p, erpAttrColDefs, mpAttrColDefs, categories);
   row = applyBulkRowComputed(row, erpAttrColDefs);
   for (const c of erpAttrColDefs) {
@@ -3737,7 +3779,10 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     if (!erpVal) continue;
     for (const mp of mappedMpsFromAttrLinks(erpCol.erpAttr?.mpLinks)) {
       try {
-        row = copyErpAttrToLinkedMp(row, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs);
+        row = copyErpAttrToLinkedMp(row, erpCol, mp, bulkEditMpLabelMaps, mpAttrColDefs, {
+          linksSource: p?.mp_field_links,
+          onlyIfEmpty: true,
+        });
       } catch {
         /* ignore bad mapping for one cell */
       }
@@ -4152,13 +4197,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       if (bucket === 'ozon') {
         const links = normalizeMpFieldLinks(current.mp_field_links);
         const savedLinks = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+        const ozonLinked = (fieldKey) =>
+          isMpFieldLinked(links, fieldKey, 'ozon') || isMpFieldLinked(savedLinks, fieldKey, 'ozon');
         const fillLinked = (fieldKey, mainVal, matchAttr) => {
-          if (
-            !isMpFieldLinked(links, fieldKey, 'ozon') &&
-            !isMpFieldLinked(savedLinks, fieldKey, 'ozon')
-          ) {
-            return;
-          }
+          if (!ozonLinked(fieldKey)) return;
           const text = str(mainVal).trim();
           if (!text) return;
           for (const c of defs) {
@@ -4170,6 +4212,28 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         };
         fillLinked('name', current.name, isOzonNameAttr);
         fillLinked('description', current.description, isOzonAnnotationAttr);
+        fillLinked(
+          'sku',
+          current.sku,
+          (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)
+        );
+        for (const erpCol of erpAttrColDefs || []) {
+          if (!ozonLinked(erpCol.linkFieldKey)) continue;
+          const text = str(current[erpCol.key]).trim();
+          if (!text) continue;
+          for (const entry of normalizeAttrMpLinkList(erpCol.erpAttr?.mpLinks?.ozon)) {
+            let target;
+            try {
+              target = resolveAttrMpLinkTarget(entry, 'ozon', bulkEditMpLabelMaps);
+            } catch {
+              target = null;
+            }
+            if (!target?.attrId) continue;
+            const id = String(target.attrId);
+            if (stringifyMpAttrValue(after[id])) continue;
+            after = { ...after, [id]: text };
+          }
+        }
       }
       const patch = {};
       if (stableAttrJson(before) !== stableAttrJson(after)) {
@@ -4182,13 +4246,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         const baseline = original._mpAttrBaseline?.ozon || {};
         const links = normalizeMpFieldLinks(current.mp_field_links);
         const savedLinks = normalizeMpFieldLinks(current._productRef?.mp_field_links);
+        const ozonLinked = (fieldKey) =>
+          isMpFieldLinked(links, fieldKey, 'ozon') || isMpFieldLinked(savedLinks, fieldKey, 'ozon');
         const persistIfMissing = (fieldKey, mainVal, matchAttr) => {
-          if (
-            !isMpFieldLinked(links, fieldKey, 'ozon') &&
-            !isMpFieldLinked(savedLinks, fieldKey, 'ozon')
-          ) {
-            return;
-          }
+          if (!ozonLinked(fieldKey)) return;
           const text = str(mainVal).trim();
           if (!text) return;
           for (const c of defs) {
@@ -4202,6 +4263,29 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
         };
         persistIfMissing('name', current.name, isOzonNameAttr);
         persistIfMissing('description', current.description, isOzonAnnotationAttr);
+        persistIfMissing(
+          'sku',
+          current.sku,
+          (meta) => isOzonSellerCodeAttr(meta) || isOzonManufacturerArticleAttr(meta)
+        );
+        for (const erpCol of erpAttrColDefs || []) {
+          if (!ozonLinked(erpCol.linkFieldKey)) continue;
+          const text = str(current[erpCol.key]).trim();
+          if (!text) continue;
+          for (const entry of normalizeAttrMpLinkList(erpCol.erpAttr?.mpLinks?.ozon)) {
+            let target;
+            try {
+              target = resolveAttrMpLinkTarget(entry, 'ozon', bulkEditMpLabelMaps);
+            } catch {
+              target = null;
+            }
+            if (!target?.attrId) continue;
+            const id = String(target.attrId);
+            const nextVal = stringifyMpAttrValue(after[id]) ? after[id] : text;
+            if (!nextVal || stringifyMpAttrValue(baseline[id])) continue;
+            patch[id] = nextVal;
+          }
+        }
       }
       if (Object.keys(patch).length) touch(map[bucket], patch);
     }

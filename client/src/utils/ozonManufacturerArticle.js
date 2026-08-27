@@ -1,6 +1,7 @@
 /** Ozon: артикул производителя (партномер), не offer_id продавца и не отдельное поле OEM. */
 
 export const OZON_PARTNUMBER_ATTR_ID = 7236;
+export const OZON_SELLER_CODE_ATTR_ID = 9024;
 
 function normalizeOzonAttrName(s) {
   return String(s || '')
@@ -35,6 +36,14 @@ export function isOzonManufacturerArticleAttr(attr) {
   if (n.includes('партномер') || n.includes('partnumber') || n.includes('part number')) return true;
   if (n === 'mpn' || n.includes('manufacturer part')) return true;
   return false;
+}
+
+/** Ozon «Код продавца» (id 9024) — зеркало артикула ERP при связи sku. */
+export function isOzonSellerCodeAttr(attr) {
+  if (!attr) return false;
+  if (Number(attr.id ?? attr.attribute_id) === OZON_SELLER_CODE_ATTR_ID) return true;
+  const n = normalizeOzonAttrName(attr.name);
+  return n.includes('код продавца');
 }
 
 export function findOzonManufacturerArticleAttrs(attrs) {

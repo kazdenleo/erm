@@ -1,5 +1,6 @@
-/** Ozon: «Аннотация» (характеристика категории, id 4191). «Название» — по подписи схемы. */
+/** Ozon: «Аннотация» (характеристика категории, id 4191). «Название» — id 4180. */
 
+export const OZON_NAME_ATTR_ID = 4180;
 export const OZON_ANNOTATION_ATTR_ID = 4191;
 
 function normalizeOzonAttrName(s) {
@@ -13,6 +14,7 @@ function normalizeOzonAttrName(s) {
 /** «Название» карточки, не модели/группы/файла/видео. */
 export function isOzonNameAttr(attr) {
   if (!attr) return false;
+  if (Number(attr.id ?? attr.attribute_id) === OZON_NAME_ATTR_ID) return true;
   const n = normalizeOzonAttrName(attr.name);
   if (!n) return false;
   if (n === 'название') return true;

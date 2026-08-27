@@ -6447,6 +6447,24 @@ export const ProductForm = React.forwardRef(function ProductForm({
           out[key] = { value: vendorCode };
         }
       }
+      for (const erp of categoryAttributes || []) {
+        const lk = erpAttrLinkFieldKey(erp.id);
+        if (!isMpFieldLinked(formData.mp_field_links, lk, 'ozon')) continue;
+        const text = String(formData.attributeValues?.[String(erp.id)] ?? '').trim();
+        if (!text) continue;
+        const hits = findLinkedMpAttributes(
+          normalizeAttrMpLinks(erp.mp_links).ozon,
+          ozonAttributes,
+          undefined,
+          undefined,
+          { labelMaps: mpAttrLabelMaps, mp: 'ozon' }
+        ).filter((hit) => hit?.id != null && !isMpOfferFieldAttrId(hit.id));
+        for (const hit of hits) {
+          const key = String(hit.id);
+          if (ozonAttrPlainText(out[key])) continue;
+          out[key] = { value: text };
+        }
+      }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
     const wbAttributesPayload = (() => {
