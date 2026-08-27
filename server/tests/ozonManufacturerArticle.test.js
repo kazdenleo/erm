@@ -120,6 +120,15 @@ describe('ozon OEM / part number push', () => {
     expect(values).toEqual([{ value: 'LF0253; AG 816; AMD.AVFA446' }]);
   });
 
+  test('альтернативные артикулы 11031 stay semicolon even without is_collection', () => {
+    const values = ozonAttrValuesForApi(11031, 'LF0253; AG 816, B', { id: 11031, type: 'String' });
+    expect(values).toEqual([{ value: 'LF0253; AG 816; B' }]);
+    const collapsed = collapseOzonNonCollectionAttrValues([
+      { id: 11031, values: [{ value: 'LF0253; AG 816' }] },
+    ]);
+    expect(collapsed[0].values).toEqual([{ value: 'LF0253; AG 816' }]);
+  });
+
   test('комплектация joins list parts without comma or semicolon', () => {
     const values = ozonAttrValuesForApi(
       4384,

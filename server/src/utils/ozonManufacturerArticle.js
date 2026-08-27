@@ -41,11 +41,34 @@ export function findOzonManufacturerArticleAttrs(attrs) {
   return (Array.isArray(attrs) ? attrs : []).filter(isOzonManufacturerArticleAttr);
 }
 
+export const OZON_ALTERNATIVE_ARTICLES_ATTR_ID = 11031;
+
 /** OEM / артикул производителя — свободный текст, не справочник Ozon. */
 export function isOzonFreeTextMpAttr(attr) {
   if (!attr) return false;
   if (isOzonManufacturerArticleAttr(attr)) return true;
   return isStandaloneOemAttrName(attr.name ?? attr.attribute_name);
+}
+
+/** Списки артикулов (аналоги / OEM / альтернативные) — в Ozon через «; ». */
+export function isOzonArticleListAttr(attr) {
+  if (!attr) return false;
+  const id = Number(attr.id ?? attr.attribute_id);
+  if (id === OZON_ALTERNATIVE_ARTICLES_ATTR_ID) return true;
+  if (isOzonFreeTextMpAttr(attr)) return true;
+  const n = normalizeOzonAttrName(attr.name ?? attr.attribute_name ?? attr.label);
+  if (!n) return false;
+  if (n.includes('альтернативн') && n.includes('артикул')) return true;
+  if (/(^|\s)аналог/.test(n) && !n.includes('применимост')) return true;
+  return false;
+}
+
+export function formatOzonArticleListText(text) {
+  const parts = String(text || '')
+    .split(/[;,\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return parts.join('; ');
 }
 
 function ozonCardValuePart(v) {
@@ -172,11 +195,7 @@ function schemaIsPlainStringAttr(attr) {
  * OEM и партномер всегда уходят как { value }, иначе Ozon пишет «словарное значение» и поле пустое.
  */
 function joinOzonOemList(text) {
-  const parts = String(text || '')
-    .split(/[;,\n]+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-  return parts.join('; ');
+  return formatOzonArticleListText(text);
 }
 
 function joinOzonListAsSentence(text) {
@@ -207,9 +226,12 @@ function sanitizeOzonSingletonText(id, text, attrMeta) {
       .replace(/\s+/g, ' ')
       .trim();
   }
+  const articleList = isOzonArticleListAttr(attrMeta || { id: attrId, name: '' });
   const oem =
     attrId === OZON_OEM_ATTR_ID ||
     attrId === OZON_PARTNUMBER_ATTR_ID ||
+    attrId === OZON_ALTERNATIVE_ARTICLES_ATTR_ID ||
+    articleList ||
     isOzonFreeTextMpAttr(attrMeta || { id: attrId, name: '' });
   if (oem) return joinOzonOemList(s);
   return joinOzonListAsSentence(s);
@@ -269,7 +291,7 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
       const v = vals[0];
       const did = v != null ? Number(v.dictionary_value_id) : 0;
       if (!v || (Number.isFinite(did) && did > 0)) return a;
-      const next = sanitizeOzonSingletonText(id, v.value ?? '');
+      const next = sanitizeOzonSingletonText(id, v.value ?? '', a);
       if (!next || next === String(v.value ?? '').trim()) return a;
       return { ...a, values: [{ value: next }] };
     }
@@ -279,14 +301,19 @@ export function collapseOzonNonCollectionAttrValues(attrs) {
     if (allDict) return a;
     const texts = vals.map((v) => String(v.value ?? '').trim()).filter(Boolean);
     if (!texts.length) return { ...a, values: [vals[0]] };
-    if (id === OZON_OEM_ATTR_ID || id === OZON_PARTNUMBER_ATTR_ID) {
+    const articleList =
+      id === OZON_OEM_ATTR_ID ||
+      id === OZON_PARTNUMBER_ATTR_ID ||
+      id === OZON_ALTERNATIVE_ARTICLES_ATTR_ID ||
+      isOzonArticleListAttr(a);
+    if (articleList) {
       return {
         ...a,
         complex_id: a.complex_id ?? 0,
-        values: [{ value: sanitizeOzonSingletonText(id, texts.join('; ')) }],
+        values: [{ value: sanitizeOzonSingletonText(id, texts.join('; '), a) }],
       };
     }
     const joined = texts.join(id === OZON_ANNOTATION_ATTR_ID ? ' ' : '. ');
-    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined) }] };
+    return { ...a, complex_id: a.complex_id ?? 0, values: [{ value: sanitizeOzonSingletonText(id, joined, a) }] };
   });
 }
