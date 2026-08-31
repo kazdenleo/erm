@@ -18,10 +18,20 @@ function loadCadesApiScript() {
   if (window.__cadesApiLoading) return window.__cadesApiLoading;
 
   window.__cadesApiLoading = new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-cadesplugin-api]');
+    const existing = document.querySelector('script[data-cadesplugin-api], script[src*="cadesplugin_api.js"]');
     if (existing) {
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', () => reject(missingPluginError('Не удалось загрузить скрипт API КриптоПро')));
+      if (window.cadesplugin) {
+        resolve();
+        return;
+      }
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => {
+        window.__cadesApiLoading = null;
+        reject(missingPluginError('Не удалось загрузить скрипт API КриптоПро'));
+      }, { once: true });
+      setTimeout(() => {
+        if (window.cadesplugin) resolve();
+      }, 500);
       return;
     }
     const script = document.createElement('script');
