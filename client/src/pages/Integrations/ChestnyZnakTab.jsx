@@ -21,6 +21,15 @@ function isExpired(iso) {
   return Number.isFinite(t) && t <= Date.now();
 }
 
+function innDigits(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 12);
+}
+
+function isValidInn(value) {
+  const d = innDigits(value);
+  return d.length === 10 || d.length === 12;
+}
+
 export function ChestnyZnakTab({
   organizations = [],
   selectedOrgId,
@@ -60,6 +69,20 @@ export function ChestnyZnakTab({
     [organizations, selectedOrgId]
   );
 
+  const innOptions = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const org of organizations || []) {
+      const digits = innDigits(org.inn);
+      if (!isValidInn(digits) || seen.has(digits)) continue;
+      seen.add(digits);
+      list.push({ id: org.id, name: org.name, inn: digits });
+    }
+    return list;
+  }, [organizations]);
+
+  const resolvedInn = inn || innDigits(selectedOrg?.inn);
+
   const groupOptions = (config?.productGroupOptions && config.productGroupOptions.length)
     ? config.productGroupOptions
     : [
@@ -73,7 +96,7 @@ export function ChestnyZnakTab({
     setSandbox(Boolean(data?.sandbox));
     setApiVersion(data?.api_version === 'v4' ? 'v4' : 'v3');
     setUnitedToken(Boolean(data?.united_token));
-    setInn(data?.inn || '');
+    setInn(innDigits(data?.inn) || '');
     setProductGroups(Array.isArray(data?.product_groups) && data.product_groups.length
       ? data.product_groups
       : ['tires']);
@@ -104,6 +127,11 @@ export function ChestnyZnakTab({
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
+
+  useEffect(() => {
+    if (inn || !isValidInn(selectedOrg?.inn)) return;
+    setInn(innDigits(selectedOrg.inn));
+  }, [selectedOrg, inn]);
 
   useEffect(() => {
     let cancelled = false;
@@ -151,7 +179,7 @@ export function ChestnyZnakTab({
         sandbox,
         api_version: apiVersion,
         united_token: unitedToken,
-        inn: inn || selectedOrg?.inn || '',
+        inn: resolvedInn,
         product_groups: productGroups,
         cert_thumbprint: thumbprint,
         oms_id: omsId,
@@ -184,7 +212,7 @@ export function ChestnyZnakTab({
         sandbox,
         api_version: apiVersion,
         united_token: unitedToken,
-        inn: inn || selectedOrg?.inn || '',
+        inn: resolvedInn,
         product_groups: productGroups,
         cert_thumbprint: thumbprint,
       });
@@ -193,7 +221,7 @@ export function ChestnyZnakTab({
       const data = await chestnyZnakApi.signIn({
         uuid: key.uuid,
         signature,
-        inn: inn || selectedOrg?.inn || '',
+        inn: resolvedInn,
         unitedToken,
         cert_thumbprint: thumbprint,
       });
@@ -249,7 +277,9 @@ export function ChestnyZnakTab({
           >
             <option value="">— Выберите организацию —</option>
             {(organizations || []).map((org) => (
-              <option key={org.id} value={org.id}>{org.name}</option>
+              <option key={org.id} value={org.id}>
+                {org.name}{isValidInn(org.inn) ? ` — ${innDigits(org.inn)}` : ''}
+              </option>
             ))}
           </select>
         </div>
@@ -279,13 +309,15 @@ export function ChestnyZnakTab({
         >
           <option value="">— Выберите организацию —</option>
           {(organizations || []).map((org) => (
-            <option key={org.id} value={org.id}>{org.name}</option>
+            <option key={org.id} value={org.id}>
+              {org.name}{isValidInn(org.inn) ? ` — ${innDigits(org.inn)}` : ''}
+            </option>
           ))}
         </select>
-        {selectedOrg?.inn ? (
-          <small className="chestny-hint">ИНН организации: {selectedOrg.inn}</small>
-        ) : (
-          <small className="chestny-hint">Укажите ИНН в карточке организации или ниже — он нужен для входа в ГИС МТ.</small>
+        {!isValidInn(selectedOrg?.inn) && (
+          <small className="chestny-hint">
+            У этой организации нет ИНН. Укажите его в карточке организации или выберите ИНН другой организации ниже.
+          </small>
         )}
       </div>
 
@@ -319,14 +351,27 @@ export function ChestnyZnakTab({
               </select>
             </div>
             <div className="field">
-              <label className="label">ИНН участника (если не из организации)</label>
-              <input
+              <label className="label">ИНН участника</label>
+              <select
                 className="input"
-                value={inn}
+                value={resolvedInn}
                 onChange={(e) => setInn(e.target.value)}
-                placeholder={selectedOrg?.inn || '10 или 12 цифр'}
-                inputMode="numeric"
-              />
+              >
+                <option value="">— Выберите организацию —</option>
+                {innOptions.map((o) => (
+                  <option key={o.inn} value={o.inn}>
+                    {o.name} — {o.inn}
+                  </option>
+                ))}
+                {resolvedInn && !innOptions.some((o) => o.inn === resolvedInn) && (
+                  <option value={resolvedInn}>{resolvedInn}</option>
+                )}
+              </select>
+              {innOptions.length === 0 && (
+                <small className="chestny-hint">
+                  Нет организаций с ИНН. Добавьте ИНН в разделе «Организации».
+                </small>
+              )}
             </div>
           </div>
 
@@ -388,7 +433,7 @@ export function ChestnyZnakTab({
               </div>
             )}
             <div className="form-actions">
-              <Button type="button" variant="primary" onClick={handleSignIn} disabled={signing || !thumbprint}>
+              <Button type="button" variant="primary" onClick={handleSignIn} disabled={signing || !thumbprint || !isValidInn(resolvedInn)}>
                 {signing ? 'Подпись и вход…' : 'Войти по УКЭП'}
               </Button>
               <Button type="button" variant="secondary" onClick={handleTest} disabled={testing || !config?.token_set}>
