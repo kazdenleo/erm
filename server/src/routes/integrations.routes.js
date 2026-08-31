@@ -5,9 +5,17 @@
 
 import express from 'express';
 import integrationsController from '../controllers/integrations.controller.js';
+import chestnyZnakController from '../controllers/chestnyZnak.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 
 const router = express.Router();
+
+router.get('/chestny-znak', wrapAsync(chestnyZnakController.getConfig));
+router.put('/chestny-znak', wrapAsync(chestnyZnakController.saveConfig));
+router.get('/chestny-znak/auth/key', wrapAsync(chestnyZnakController.authKey));
+router.post('/chestny-znak/auth/sign-in', wrapAsync(chestnyZnakController.signIn));
+router.post('/chestny-znak/test', wrapAsync(chestnyZnakController.test));
+router.post('/chestny-znak/cises/info', wrapAsync(chestnyZnakController.checkCises));
 
 // Специфичные маршруты маркетплейсов (должны быть ДО /marketplaces/:type)
 // Категории Ozon

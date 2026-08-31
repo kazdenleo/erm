@@ -17,6 +17,7 @@ import { pricesApi } from '../../services/prices.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { INTEGRATION_CATALOG, INTEGRATION_TABS, findIntegration } from './integrationCatalog';
 import { IntegrationLogo } from './IntegrationLogo';
+import { ChestnyZnakTab } from './ChestnyZnakTab';
 import './Integrations.css';
 
 export function Integrations() {
@@ -28,7 +29,8 @@ export function Integrations() {
   const [error, setError] = useState(null);
   const [configs, setConfigs] = useState({
     marketplaces: { ozon: {}, wildberries: {}, yandex: {} },
-    suppliers: { mikado: {}, moskvorechie: {} }
+    suppliers: { mikado: {}, moskvorechie: {} },
+    other: {}
   });
   const [organizations, setOrganizations] = useState([]);
   const selectedOrgId = selectedOrganizationId ? Number(selectedOrganizationId) : null;
@@ -211,6 +213,17 @@ export function Integrations() {
       );
     }
 
+    if (activeTab === 'other' && selectedIntegration.id === 'chestny_znak') {
+      return (
+        <ChestnyZnakTab
+          organizations={organizations}
+          selectedOrgId={selectedOrgId}
+          onSelectOrg={(id) => setSelectedOrganizationId(id != null && id !== '' ? String(id) : null)}
+          onConfigChange={loadConfigs}
+        />
+      );
+    }
+
     return <IntegrationComingSoon name={selectedIntegration.name} />;
   };
 
@@ -285,6 +298,9 @@ export function Integrations() {
               <span className="integration-card__name">{item.name}</span>
               {!item.ready && (
                 <span className="integration-badge integration-badge--soon">В разработке</span>
+              )}
+              {item.ready && item.id === 'chestny_znak' && configs.other?.chestny_znak?.token_set && (
+                <span className="integration-badge integration-badge--ok">Подключено</span>
               )}
             </button>
           ))}

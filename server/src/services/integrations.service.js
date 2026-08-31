@@ -31,6 +31,7 @@ import {
   normalizeDirectoryBrandEntries as normalizeWbBrandEntries,
   rankDirectoryBrands as rankWbBrands,
 } from '../utils/marketplaceBrandDirectory.js';
+import { toPublicChestnyZnakConfig } from '../utils/chestnyZnak.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -1329,11 +1330,14 @@ class IntegrationsService {
 
       const mpByCode = new Map();
       const supByCode = new Map();
+      const otherByCode = new Map();
       for (const integration of integrations) {
         if (integration.type === 'marketplace' && integration.code) {
           mpByCode.set(integration.code, pickNewerIntegration(mpByCode.get(integration.code), integration));
         } else if (integration.type === 'supplier' && integration.code) {
           supByCode.set(integration.code, pickNewerIntegration(supByCode.get(integration.code), integration));
+        } else if (integration.type === 'other' && integration.code) {
+          otherByCode.set(integration.code, pickNewerIntegration(otherByCode.get(integration.code), integration));
         }
       }
       if (!orgScoped) {
@@ -1355,6 +1359,10 @@ class IntegrationsService {
       supByCode.forEach((row, code) => {
         suppliers[code] = row.config || {};
       });
+      const other = {};
+      otherByCode.forEach((row, code) => {
+        other[code] = toPublicChestnyZnakConfig(row.config || {});
+      });
 
       if (profileId != null && profileId !== '') {
         const prof = await repositoryFactory.getProfilesRepository().findById(profileId);
@@ -1363,7 +1371,7 @@ class IntegrationsService {
         }
       }
 
-      return { marketplaces, suppliers };
+      return { marketplaces, suppliers, other };
     } else {
       // Старое хранилище
       const [ozon, wb, ym, mikado, moskvorechie] = await Promise.all([
@@ -1375,7 +1383,8 @@ class IntegrationsService {
       ]);
       return {
         marketplaces: { ozon: ozon || {}, wildberries: wb || {}, yandex: ym || {} },
-        suppliers: { mikado: mikado || {}, moskvorechie: moskvorechie || {} }
+        suppliers: { mikado: mikado || {}, moskvorechie: moskvorechie || {} },
+        other: {}
       };
     }
   }
