@@ -76,21 +76,6 @@ async function syncReportsForProfile(service, label, profileId, timeZone) {
   return out;
 }
 
-/** Есть ли у профиля хотя бы одна организация с ночным импортом данных МП. */
-async function profileHasNightlyMarketplaceDataImport(profileId) {
-  const pid = Number(profileId);
-  if (!Number.isFinite(pid) || pid < 1) return false;
-  const r = await query(
-    `SELECT 1
-     FROM organizations
-     WHERE profile_id = $1
-       AND nightly_import_marketplace_data = true
-     LIMIT 1`,
-    [pid]
-  );
-  return Boolean(r.rows?.[0]);
-}
-
 async function runApiCheckForProfile(profileId) {
   const marketplaces = ['ozon', 'wildberries', 'yandex'];
   for (const code of marketplaces) {
@@ -156,7 +141,6 @@ function buildNightlyJobs() {
     jobs.push({
       key: 'marketplace-inventory-daily',
       enabled: true,
-      requiresOrgNightlyImport: true,
       cron: envCron('MP_INVENTORY_DAILY_CRON', '30 4 * * *'),
       fallbackHm: { hour: 4, minute: 30 },
       scope: 'profile',
@@ -170,7 +154,6 @@ function buildNightlyJobs() {
     jobs.push({
       key: 'marketplace-fbo-reports-daily',
       enabled: true,
-      requiresOrgNightlyImport: true,
       cron: envCron('MP_FBO_REPORTS_DAILY_CRON', '0 5 * * *'),
       fallbackHm: { hour: 5, minute: 0 },
       scope: 'profile',
@@ -189,7 +172,6 @@ function buildNightlyJobs() {
     jobs.push({
       key: 'marketplace-fbs-reports-daily',
       enabled: true,
-      requiresOrgNightlyImport: true,
       cron: envCron('MP_FBS_REPORTS_DAILY_CRON', '20 5 * * *'),
       fallbackHm: { hour: 5, minute: 20 },
       scope: 'profile',
@@ -208,7 +190,6 @@ function buildNightlyJobs() {
     jobs.push({
       key: 'buyout-rate-daily',
       enabled: true,
-      requiresOrgNightlyImport: true,
       cron: envCron('BUYOUT_RATE_DAILY_CRON', '40 5 * * *'),
       fallbackHm: { hour: 5, minute: 40 },
       scope: 'profile',
@@ -260,7 +241,7 @@ function buildNightlyJobs() {
         const result = await pruneExpiredClosedWbShipments({
           days: wbClosedShipmentRetentionDays(),
         });
-        logger.info('[NightlyTZ] WB closed shipments prune', result);
+        logger.info('[NightlyTZ] Closed shipments prune', result);
       },
     });
   }
@@ -296,17 +277,6 @@ export async function runProfileNightlyDispatcherTick(now = new Date()) {
         if (!job.enabled) continue;
         const hm = parseDailyCronHm(job.cron, job.fallbackHm);
         if (!isInLocalDailyWindow(clock, hm, windowMinutes)) continue;
-
-        if (job.requiresOrgNightlyImport && job.scope === 'profile') {
-          const allowed = await profileHasNightlyMarketplaceDataImport(profile.id);
-          if (!allowed) {
-            logger.info('[NightlyTZ] skip (nightly_import_marketplace_data off)', {
-              job: job.key,
-              profileId: profile.id,
-            });
-            continue;
-          }
-        }
 
         const scopeKey =
           job.scope === 'timezone' ? `tz:${profile.timezone}` : `p:${profile.id}`;
