@@ -407,6 +407,10 @@ const OZON_ERROR_CODE_RU = {
     'Цена не может быть отрицательной. Проверьте цену товара в кабинете Ozon / выгрузку цен.',
   PRICE_IS_NEGATIVE:
     'Цена не может быть отрицательной.',
+  barcode_already_exist_error:
+    'Штрихкод уже используется для другого товара. Если это тот же товар — не отправляйте ШК повторно, Ozon уже хранит его на карточке.',
+  barcode_already_exists_error:
+    'Штрихкод уже используется для другого товара. Если это тот же товар — не отправляйте ШК повторно, Ozon уже хранит его на карточке.',
   min_price_greater_than_price:
     'Минимальная цена должна быть меньше цены продажи. Исправьте min_price или цену в кабинете Ozon.',
   MIN_PRICE_GREATER_THAN_PRICE:
@@ -612,6 +616,65 @@ function isStaleOzonCabinetPriceError(err) {
     s.includes('цена не может быть отрицательной') ||
     s.includes('не задана цена')
   );
+}
+
+function collectOzonInfoBarcodes(info) {
+  const out = [];
+  const seen = new Set();
+  const add = (v) => {
+    const s = coerceBarcodeString(v);
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  };
+  if (!info || typeof info !== 'object') return out;
+  add(info.barcode);
+  if (Array.isArray(info.barcodes)) {
+    for (const b of info.barcodes) add(b);
+  }
+  return out;
+}
+
+function ozonBarcodesAlreadyOnCard(toSend, info) {
+  const have = new Set(collectOzonInfoBarcodes(info));
+  if (!have.size) return false;
+  const send = (Array.isArray(toSend) ? toSend : []).map((x) => coerceBarcodeString(x)).filter(Boolean);
+  if (!send.length) return true;
+  return send.every((b) => have.has(b));
+}
+
+function barcodeMentionedInOzonError(err) {
+  const s = [
+    err?.texts?.message,
+    err?.texts?.description,
+    err?.message,
+    err?.description,
+    ...(Array.isArray(err?.params) ? err.params.map((p) => (p && typeof p === 'object' ? p.value : p)) : []),
+  ]
+    .map((x) => String(x || ''))
+    .join(' ');
+  const m = s.match(/\b(\d{8,14})\b/);
+  return m ? m[1] : null;
+}
+
+/** Повторная отправка тех же ШК / параллельный import: Ozon пишет barcode_already_exist, хотя ШК уже на этой карточке. */
+function isStaleOzonBarcodeAlreadyExistsError(err, info) {
+  const code = String(err?.code || '').toLowerCase();
+  const textsMsg = String(err?.texts?.message || err?.texts?.description || err?.description || err?.message || '').toLowerCase();
+  const joined = `${code} ${textsMsg} ${String(formatOzonImportErrorLine(err) || '').toLowerCase()}`;
+  if (!joined.includes('barcode_already_exist')) return false;
+  if (textsMsg.includes('is in progress') || textsMsg.includes('another attempt to create barcode')) {
+    return true;
+  }
+  const mentioned = barcodeMentionedInOzonError(err);
+  const have = new Set(collectOzonInfoBarcodes(info));
+  if (mentioned && have.has(mentioned)) return true;
+  return false;
+}
+
+function withoutStaleOzonBarcodeErrors(errors, info) {
+  if (!Array.isArray(errors) || errors.length === 0) return errors;
+  return errors.filter((e) => !isStaleOzonBarcodeAlreadyExistsError(e, info));
 }
 
 async function fetchOzonProductInfoItem(offerId, productId, apiOpts) {
@@ -1221,8 +1284,16 @@ async function pushOzonCard(product, categoryMm, ctx) {
     };
   }
   if (ozonCodes.length) {
-    item.barcode = ozonBarcode;
-    item.barcodes = ozonCodes;
+    if (ozonExisted && ozonBarcodesAlreadyOnCard(ozonCodes, ozonInfoBefore)) {
+      logger.info('[CardPush] Ozon barcodes already on card, skip sending', {
+        offerId,
+        barcodes: ozonCodes,
+        product_id: item.product_id ?? ozonInfoBefore?.id ?? null,
+      });
+    } else {
+      item.barcode = ozonBarcode;
+      item.barcodes = ozonCodes;
+    }
   }
   logger.warn('[CardPush] Ozon pictures prepared', {
     offerId,
@@ -1282,7 +1353,14 @@ async function pushOzonCard(product, categoryMm, ctx) {
       };
     }
 
-    let result = buildOzonImportResult({ offerId, taskId, item: itemResult });
+    let result = buildOzonImportResult({
+      offerId,
+      taskId,
+      item: {
+        ...itemResult,
+        errors: withoutStaleOzonBarcodeErrors(itemResult?.errors, ozonInfoBefore),
+      },
+    });
 
     // Карточка в статусе «не создан» import часто не перезаписывает атрибуты.
     // attributes/update нужен не только при skipped — иначе старые коллекции (br/; ) остаются.
@@ -1312,7 +1390,14 @@ async function pushOzonCard(product, categoryMm, ctx) {
         const updTaskId = upd?.result?.task_id ?? upd?.task_id ?? null;
         if (updTaskId != null && updTaskId !== '') {
           const updItem = await pollOzonProductImportInfo(updTaskId, apiOpts, { offerId });
-          result = buildOzonImportResult({ offerId, taskId: updTaskId, item: updItem });
+          result = buildOzonImportResult({
+            offerId,
+            taskId: updTaskId,
+            item: {
+              ...updItem,
+              errors: withoutStaleOzonBarcodeErrors(updItem?.errors, ozonInfoBefore),
+            },
+          });
           if (result.status === 'skipped') {
             result = {
               ...result,
@@ -1413,11 +1498,16 @@ async function pushOzonCard(product, categoryMm, ctx) {
         apiOpts
       );
       let cardErrors = collectOzonProductInfoErrors(ozonInfoAfter);
+      cardErrors = withoutStaleOzonBarcodeErrors(cardErrors, ozonInfoAfter || ozonInfoBefore);
       // Если только что отправили фото — «удалили все фото» ещё может висеть, пока Ozon качает URL
       if (imagesPushed > 0) {
         cardErrors = cardErrors.filter((e) => {
           const code = String(e?.code || e?.message || e?.description || '').toLowerCase();
-          return !code.includes('error_card_with_deleted_photos') && !/удалили все фото/i.test(code);
+          return (
+            !code.includes('error_card_with_deleted_photos') &&
+            !code.includes('image_not_upload') &&
+            !/удалили все фото/i.test(code)
+          );
         });
       }
       if (priceRes?.ok) {
