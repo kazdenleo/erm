@@ -64,6 +64,7 @@ import {
   DEDICATED_MAIN_MAP_KEYS,
   DEDICATED_PACK_DIM_KEYS,
   DEDICATED_PRODUCT_DIM_KEYS,
+  productDimFieldKeyForAxis,
   supportedMpsForFieldKey,
   isMpOfferFieldAttrId,
   applyMpOfferFieldToForm,
@@ -237,14 +238,14 @@ function withSyncedProductDims(row, key, value) {
     for (const alias of aliases) {
       if (alias === base) continue;
       const mp = productDimMpFromAlias(alias);
-      if (mp && isMpFieldLinked(links, 'product_dimensions', mp)) {
+      if (mp && isMpFieldLinked(links, base, mp)) {
         next[alias] = value;
       }
     }
     return next;
   }
 
-  if (!isMpFieldLinked(links, 'product_dimensions', editedMp)) {
+  if (!isMpFieldLinked(links, base, editedMp)) {
     return next;
   }
   next[base] = value;
@@ -255,7 +256,7 @@ function withSyncedProductDims(row, key, value) {
       next[alias] = value;
       continue;
     }
-    if (mp === editedMp || isMpFieldLinked(links, 'product_dimensions', mp)) {
+    if (mp === editedMp || isMpFieldLinked(links, base, mp)) {
       next[alias] = value;
     }
   }
@@ -335,11 +336,14 @@ function bulkLinkFieldForColumn(colKey) {
   ) {
     return 'country';
   }
-  if (productDimBaseKey(k)) return 'product_dimensions';
-  if (BULK_DIM_KEYS.includes(k)) return 'dimensions';
+  const productBase = productDimBaseKey(k);
+  if (productBase) return productBase;
+  if (BULK_DIM_KEYS.includes(k)) return k;
   for (const mp of ['ozon', 'wb', 'ym']) {
     const pack = BULK_PACK_COLS[mp];
-    if (Object.values(pack).includes(k)) return 'dimensions';
+    for (const dim of BULK_DIM_KEYS) {
+      if (pack[dim] === k) return dim;
+    }
   }
   return null;
 }
@@ -844,12 +848,12 @@ function bulkMirrorFromMainFieldKey(row, fieldKey, colKey, lengthUnit, weightUni
   if (key === 'brand') return row.brand ?? '';
   if (key === 'country') return row.country_of_origin ?? '';
   if (key === 'sku') return row.sku ?? '';
-  if (key === 'dimensions') {
+  if (key === 'dimensions' || DEDICATED_PACK_DIM_KEYS.includes(key)) {
     const dimKey = BULK_DIM_KEYS.find((d) => colKey === d || String(colKey).endsWith(`_pack_${d}`));
     return dimKey ? row[dimKey] ?? '' : row[colKey];
   }
-  if (key === 'product_dimensions') {
-    const base = productDimBaseKey(colKey);
+  if (key === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(key)) {
+    const base = productDimBaseKey(colKey) || (DEDICATED_PRODUCT_DIM_KEYS.includes(key) ? key : null);
     return base ? row[base] ?? '' : row[colKey];
   }
   return row[colKey] ?? '';
@@ -951,7 +955,7 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
   const mpAttr = parseMpAttrColKey(colKey);
   if (mpAttr) {
     const col = (mpAttrCols || []).find((c) => c.key === colKey);
-    if (col?.linkFieldKey === 'product_dimensions') {
+    if (col?.linkFieldKey === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(col?.linkFieldKey)) {
       const meta = { id: mpAttr.attrId, name: col._humanName || col.label };
       const axis = productDimAxisForMpAttr(meta, mpAttr.mp);
       if (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') {
@@ -962,7 +966,7 @@ function bulkLinkedMirrorValue(row, colKey, erpAttrCols = [], mpAttrCols = [], l
     const links = normalizeMpFieldLinks(row.mp_field_links);
     for (const linkKey of linkKeys) {
       if (!isMpFieldLinked(links, linkKey, mpAttr.mp)) continue;
-      if (linkKey === 'product_dimensions') {
+      if (linkKey === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(linkKey)) {
         const meta = { id: mpAttr.attrId, name: col._humanName || col.label };
         const axis = productDimAxisForMpAttr(meta, mpAttr.mp);
         if (axis === 'length' || axis === 'width' || axis === 'height' || axis === 'weight') {
@@ -1063,19 +1067,21 @@ function copyMainCountryToMp(row, mp) {
   return { ...row, [col]: row.country_of_origin ?? '' };
 }
 
-function copyMainDimsToMp(row, mp) {
+function copyMainDimsToMp(row, mp, onlyDim = null) {
   const pack = BULK_PACK_COLS[mp];
   if (!pack) return row;
   const next = { ...row };
   for (const dim of BULK_DIM_KEYS) {
+    if (onlyDim && dim !== onlyDim) continue;
     next[pack[dim]] = row[dim] ?? '';
   }
   return next;
 }
 
-function copyMainProductDimsToMp(row, mp) {
+function copyMainProductDimsToMp(row, mp, onlyBase = null) {
   const next = { ...row };
   for (const base of Object.keys(PRODUCT_DIM_ALIAS)) {
+    if (onlyBase && base !== onlyBase) continue;
     const aliases = PRODUCT_DIM_ALIAS[base];
     const mpAlias = aliases.find((a) => productDimMpFromAlias(a) === mp);
     if (mpAlias) next[mpAlias] = row[base] ?? '';
@@ -1090,7 +1096,9 @@ function copyMainFieldToMp(row, fieldKey, mp, erpAttrCols = [], mpAttrColDefs = 
   if (fieldKey === 'brand') return copyMainBrandToMp(row, mp);
   if (fieldKey === 'country') return copyMainCountryToMp(row, mp);
   if (fieldKey === 'dimensions') return copyMainDimsToMp(row, mp);
+  if (DEDICATED_PACK_DIM_KEYS.includes(fieldKey)) return copyMainDimsToMp(row, mp, fieldKey);
   if (fieldKey === 'product_dimensions') return copyMainProductDimsToMp(row, mp);
+  if (DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)) return copyMainProductDimsToMp(row, mp, fieldKey);
   if (isAttrMpFieldLinkKey(fieldKey)) {
     const col = (erpAttrCols || []).find((c) => c.linkFieldKey === fieldKey);
     if (col) return copyErpAttrToLinkedMp(row, col, mp, bulkEditMpLabelMaps, mpAttrColDefs);
@@ -1167,12 +1175,14 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
       mp_field_links: setMpFieldLink(row.mp_field_links, fieldKey, editedMp, false),
       [key]: value,
     };
-    if (fieldKey === 'product_dimensions') return withSyncedProductDims(next, key, value);
+    if (fieldKey === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)) {
+      return withSyncedProductDims(next, key, value);
+    }
     return next;
   }
 
   let next = withSyncedProductDims(row, key, value);
-  if (!fieldKey || fieldKey === 'product_dimensions') return next;
+  if (!fieldKey || fieldKey === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)) return next;
   const links = normalizeMpFieldLinks(next.mp_field_links);
 
   const syncScalar = (mainKey, colsByMp) => {
@@ -1219,18 +1229,21 @@ function withSyncedLinkedFields(row, key, value, erpAttrCols = [], mpAttrColDefs
     return next;
   }
 
-  if (fieldKey === 'dimensions') {
-    const dimKey = BULK_DIM_KEYS.find((d) => key === d || key.endsWith(`_pack_${d}`));
+  if (fieldKey === 'dimensions' || DEDICATED_PACK_DIM_KEYS.includes(fieldKey)) {
+    const dimKey =
+      BULK_DIM_KEYS.find((d) => key === d || key.endsWith(`_pack_${d}`)) ||
+      (DEDICATED_PACK_DIM_KEYS.includes(fieldKey) ? fieldKey : null);
     if (!dimKey) return next;
+    const axisKey = DEDICATED_PACK_DIM_KEYS.includes(fieldKey) ? fieldKey : dimKey;
     if (!editedMp) {
       for (const mp of ['ozon', 'wb', 'ym']) {
-        if (isMpFieldLinked(links, 'dimensions', mp)) {
+        if (isMpFieldLinked(links, axisKey, mp)) {
           next[BULK_PACK_COLS[mp][dimKey]] = value;
         }
       }
-    } else if (isMpFieldLinked(links, 'dimensions', editedMp)) {
+    } else if (isMpFieldLinked(links, axisKey, editedMp)) {
       next[BULK_PACK_COLS[editedMp][dimKey]] = value;
-      next.mp_field_links = setMpFieldLink(next.mp_field_links, 'dimensions', editedMp, false);
+      next.mp_field_links = setMpFieldLink(next.mp_field_links, axisKey, editedMp, false);
     }
   }
   return next;
@@ -1725,14 +1738,14 @@ const COLUMNS = [
   /* описание */
   { key: 'description', label: 'Описание', input: 'textarea', minW: 160, linkFieldKey: 'description', showLinkToggles: true },
   /* габариты товара (без упаковки) — вкладка «Основное» */
-  { key: 'product_length', label: 'Длина тов.', title: 'Основное · Длина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
-  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
-  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_dimensions', showLinkToggles: true },
-  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_dimensions', showLinkToggles: true },
-  { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions', showLinkToggles: true },
-  { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'weight', label: 'Вес уп.', title: 'Основное · Вес с упаковкой', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'product_length', label: 'Длина тов.', title: 'Основное · Длина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_length', showLinkToggles: true },
+  { key: 'product_width', label: 'Ширина тов.', title: 'Основное · Ширина товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_width', showLinkToggles: true },
+  { key: 'product_height', label: 'Высота тов.', title: 'Основное · Высота товара', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'product_height', showLinkToggles: true },
+  { key: 'product_weight', label: 'Вес тов.', title: 'Основное · Вес товара', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'product_weight', showLinkToggles: true },
+  { key: 'length', label: 'Длина уп.', title: 'Основное · Длина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'length', showLinkToggles: true },
+  { key: 'width', label: 'Ширина уп.', title: 'Основное · Ширина упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'width', showLinkToggles: true },
+  { key: 'height', label: 'Высота уп.', title: 'Основное · Высота упаковки', input: 'number', minW: 88, dimKind: 'length', linkFieldKey: 'height', showLinkToggles: true },
+  { key: 'weight', label: 'Вес уп.', title: 'Основное · Вес с упаковкой', input: 'number', minW: 88, dimKind: 'weight', linkFieldKey: 'weight', showLinkToggles: true },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 80 },
   { key: 'categoryId', label: 'Категория', title: 'Категория', input: 'select_category', minW: 120 },
@@ -1747,11 +1760,11 @@ const COLUMNS = [
   { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   /* Длина/ширина/высота товара Ozon — характеристики, не отдельные колонки */
-  { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'product_dimensions' },
-  { key: 'ozon_pack_length', label: 'Длина уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ozon_pack_width', label: 'Ширина уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ozon_pack_height', label: 'Высота уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ozon_pack_weight', label: 'Вес уп.', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'product_weight' },
+  { key: 'ozon_pack_length', label: 'Длина уп.', title: 'Ozon · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'length' },
+  { key: 'ozon_pack_width', label: 'Ширина уп.', title: 'Ozon · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'width' },
+  { key: 'ozon_pack_height', label: 'Высота уп.', title: 'Ozon · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'length', linkFieldKey: 'height' },
+  { key: 'ozon_pack_weight', label: 'Вес уп.', title: 'Ozon · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'weight' },
   /* Бренд, страна, название и аннотация Ozon — характеристики, не отдельные колонки */
   /* ——— Wildberries ——— */
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'name' },
@@ -1759,11 +1772,11 @@ const COLUMNS = [
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 80, mpBucket: 'wb' },
   { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb', linkFieldKey: 'sku' },
   /* Длина/ширина/высота товара WB — характеристики, не отдельные колонки */
-  { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'product_dimensions' },
-  { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'wb_pack_width', label: 'Ширина уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'wb_pack_height', label: 'Высота уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'wb_pack_weight', label: 'Вес уп.', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'product_weight' },
+  { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'length' },
+  { key: 'wb_pack_width', label: 'Ширина уп.', title: 'Wildberries · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'width' },
+  { key: 'wb_pack_height', label: 'Высота уп.', title: 'Wildberries · Высота упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'height' },
+  { key: 'wb_pack_weight', label: 'Вес уп.', title: 'Wildberries · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'weight' },
   { key: 'mp_wb_brand', label: 'Бренд', title: 'Wildberries · Бренд', input: 'text', minW: 90, mpBucket: 'wb', linkFieldKey: 'brand' },
   { key: 'wb_country', label: 'Страна', title: 'Wildberries · Страна производителя', input: 'text', minW: 80, mpBucket: 'wb', linkFieldKey: 'country' },
   /* ——— Яндекс.Маркет ——— */
@@ -1771,10 +1784,10 @@ const COLUMNS = [
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
   { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId (артикул продавца)', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
   { key: 'ym_vendor_code', label: 'Арт. произв.', title: 'Яндекс.Маркет · Артикул производителя (vendorCode)', input: 'text', minW: 110, mpBucket: 'ym' },
-  { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'dimensions' },
-  { key: 'ym_pack_weight', label: 'Вес уп.', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight', linkFieldKey: 'dimensions' },
+  { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'length' },
+  { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'width' },
+  { key: 'ym_pack_height', label: 'Высота уп.', title: 'Яндекс.Маркет · Высота упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'height' },
+  { key: 'ym_pack_weight', label: 'Вес уп.', title: 'Яндекс.Маркет · Вес с упаковкой', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'weight', linkFieldKey: 'weight' },
   { key: 'ym_country', label: 'Страна', title: 'Яндекс.Маркет · Страна производителя', input: 'text', minW: 80, mpBucket: 'ym', linkFieldKey: 'country' },
 ];
 
@@ -2009,7 +2022,9 @@ function mergeLinkedProductDimIntoMpAttrs(
   lengthUnit,
   weightUnit
 ) {
-  if (!isMpFieldLinked(links, 'product_dimensions', bucket)) return attrs;
+  if (!isMpFieldLinked(links, 'product_dimensions', bucket) && !DEDICATED_PRODUCT_DIM_KEYS.some((k) => isMpFieldLinked(links, k, bucket))) {
+    return attrs;
+  }
   const out = { ...(attrs || {}) };
   const mmOf = {
     length: lengthDisplayToMm(row.product_length, lengthUnit),
@@ -2024,6 +2039,8 @@ function mergeLinkedProductDimIntoMpAttrs(
     const meta = { id, name: col?._humanName || col?.label || knownMpAttrLabel(bucket, id) };
     const axis = productDimAxisForMpAttr(meta, bucket);
     if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
+    const axisKey = productDimFieldKeyForAxis(axis);
+    if (!isMpFieldLinked(links, axisKey, bucket)) continue;
     const stored = productDimAttrStoredFromMm(meta, mmOf[axis], bucket);
     if (stored === '') delete out[id];
     else out[id] = stored;
@@ -2828,10 +2845,11 @@ function applyLinkedMpProductDimAttrColumns(row, mpAttrCols, lengthUnit = 'mm', 
   for (const col of mpAttrCols) {
     const mp = col?.mpAttr?.bucket;
     if (mp !== 'ozon' && mp !== 'wb' && mp !== 'ym') continue;
-    if (!isMpFieldLinked(links, 'product_dimensions', mp)) continue;
     const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
     const axis = productDimAxisForMpAttr(meta, mp);
     if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
+    const axisKey = productDimFieldKeyForAxis(axis);
+    if (!isMpFieldLinked(links, axisKey, mp)) continue;
     const value = productDimAttrStoredFromMm(meta, mmOf[axis], mp);
     if (str(next[col.key]) === str(value)) continue;
     if (!changed) {
@@ -2892,11 +2910,16 @@ function unlinkProductDimsIfMpDimAttrEdited(row, col) {
   const mp = col?.mpAttr?.bucket;
   if (!mp) return row;
   const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-  const axis = mp === 'wb' ? wbProductDimAxis(meta) : ozonProductDimAxis(meta);
-  if (axis !== 'length' && axis !== 'width' && axis !== 'height') return row;
+  const axis = productDimAxisForMpAttr(meta, mp);
+  if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') return row;
+  const axisKey = productDimFieldKeyForAxis(axis);
+  if (!axisKey) return row;
   const links = normalizeMpFieldLinks(row?.mp_field_links);
-  if (!isMpFieldLinked(links, 'product_dimensions', mp)) return row;
-  return row;
+  if (!isMpFieldLinked(links, axisKey, mp)) return row;
+  return {
+    ...row,
+    mp_field_links: setMpFieldLink(row.mp_field_links, axisKey, mp, false),
+  };
 }
 
 function knownMpAttrLabel(bucket, attrId) {
@@ -3548,14 +3571,14 @@ function mergeLinkedMpAttrColumns(mpCols, erpCols, labelMaps = {}) {
       else if (isOzonNameAttr(fake)) next = { ...next, linkFieldKey: 'name' };
       else if (isOzonAnnotationAttr(fake)) next = { ...next, linkFieldKey: 'description' };
       else if (ozonProductDimAxis(fake) && classifyMarketplaceDimAttrName(next._humanName || fake.name) === 'product') {
-        next = { ...next, linkFieldKey: 'product_dimensions' };
+        next = { ...next, linkFieldKey: productDimFieldKeyForAxis(ozonProductDimAxis(fake)) || 'product_dimensions' };
       }
     }
     if (!next.linkFieldKey && next.mpAttr.bucket === 'wb') {
       const fake = { id: next.mpAttr.attrId, name: next._humanName, charcID: next.mpAttr.attrId };
       const axis = productDimAxisForMpAttr(fake, 'wb');
       if (axis && classifyMarketplaceDimAttrName(next._humanName || fake.name) === 'product') {
-        next = { ...next, linkFieldKey: 'product_dimensions' };
+        next = { ...next, linkFieldKey: productDimFieldKeyForAxis(axis) || 'product_dimensions' };
       }
     }
     const erp = findErpAttrColForMpAttr(
@@ -3608,29 +3631,31 @@ function readProductDimsFromProduct(p, lengthUnit = 'mm', weightUnit = 'g') {
   const width = lengthMmToDisplay(p.product_width ?? p.productWidth, lengthUnit);
   const height = lengthMmToDisplay(p.product_height ?? p.productHeight, lengthUnit);
   const weight = weightGToDisplay(p.product_weight ?? p.productWeight, weightUnit);
-  const main = { length, width, height, weight };
   const links = normalizeMpFieldLinks(p.mp_field_links);
   const fromMp = (mp) => {
-    if (isMpFieldLinked(links, 'product_dimensions', mp)) return main;
     const d = getMpDraftProductDimensionsMm(p, mp);
-    if (d && (Number(d.length) > 0 || Number(d.width) > 0 || Number(d.height) > 0 || Number(d.weight) > 0)) {
-      return {
-        length: lengthMmToDisplay(d.length, lengthUnit),
-        width: lengthMmToDisplay(d.width, lengthUnit),
-        height: lengthMmToDisplay(d.height, lengthUnit),
-        weight: weightGToDisplay(d.weight, weightUnit),
-      };
-    }
-    if (mp === 'wb') {
-      const attrs = normalizeJsonAttrs(p.wb_attributes);
-      return {
-        length: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.length], lengthUnit) || '',
-        width: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.width], lengthUnit) || '',
-        height: lengthCmToDisplay(attrs[WB_ITEM_DIM_CHARC.height], lengthUnit) || '',
-        weight,
-      };
-    }
-    return { length: '', width: '', height: '', weight: '' };
+    const fromDraft = {
+      length: d?.length ? lengthMmToDisplay(d.length, lengthUnit) : '',
+      width: d?.width ? lengthMmToDisplay(d.width, lengthUnit) : '',
+      height: d?.height ? lengthMmToDisplay(d.height, lengthUnit) : '',
+      weight: d?.weight ? weightGToDisplay(d.weight, weightUnit) : '',
+    };
+    let wbAttrs = null;
+    const wbAxis = (axis) => {
+      if (mp !== 'wb') return '';
+      if (!wbAttrs) wbAttrs = normalizeJsonAttrs(p.wb_attributes);
+      return lengthCmToDisplay(wbAttrs[WB_ITEM_DIM_CHARC[axis]], lengthUnit) || '';
+    };
+    const pick = (axis, dedicated, mainVal) => {
+      if (isMpFieldLinked(links, dedicated, mp)) return mainVal;
+      return fromDraft[axis] || wbAxis(axis) || '';
+    };
+    return {
+      length: pick('length', 'product_length', length),
+      width: pick('width', 'product_width', width),
+      height: pick('height', 'product_height', height),
+      weight: pick('weight', 'product_weight', weight),
+    };
   };
   const oz = fromMp('ozon');
   const wb = fromMp('wb');
@@ -4300,7 +4325,7 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
     });
   }
 
-  // Если связь dimensions↔МП вкл. и правили «Основное» — обновим draft из Main
+  // Если связь оси упаковки↔МП вкл. и правили «Основное» — обновим draft из Main
   // (иначе UI мог показать зеркало, а draft остался старым, напр. 12×6 см на WB).
   {
     const links = normalizeMpFieldLinks(current.mp_field_links);
@@ -4309,36 +4334,39 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       !eq(original.width, current.width) ||
       !eq(original.height, current.height) ||
       !eq(original.weight, current.weight);
-    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'wb') && !wbPackChanged) {
+    const packAxisLinked = (mp) => DEDICATED_PACK_DIM_KEYS.some((k) => isMpFieldLinked(links, k, mp));
+    const packAxisSrc = (mp, axis) =>
+      isMpFieldLinked(links, axis, mp) ? current[axis] : current[`${mp}_pack_${axis}`];
+    if (mainPackTouched && packAxisLinked('wb') && !wbPackChanged) {
       const prevDraft = parseDraftBaseline(
         original._wbDraftBaseline ?? original._productRef?.wb_draft
       );
       const dimensions = buildPositiveDimsObject(
-        lengthDisplayToMm(current.length, lengthUnit),
-        lengthDisplayToMm(current.width, lengthUnit),
-        lengthDisplayToMm(current.height, lengthUnit),
-        weightDisplayToG(current.weight, weightUnit)
+        lengthDisplayToMm(packAxisSrc('wb', 'length'), lengthUnit),
+        lengthDisplayToMm(packAxisSrc('wb', 'width'), lengthUnit),
+        lengthDisplayToMm(packAxisSrc('wb', 'height'), lengthUnit),
+        weightDisplayToG(packAxisSrc('wb', 'weight'), weightUnit)
       );
       touch('wb_draft', { ...prevDraft, dimensions });
     }
-    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'ozon') && !ozPackChanged) {
+    if (mainPackTouched && packAxisLinked('ozon') && !ozPackChanged) {
       const prevDraft = parseDraftBaseline(
         original._ozonDraftBaseline ?? original._productRef?.ozon_draft
       );
       const dimensions = buildPositiveDimsObject(
-        lengthDisplayToMm(current.length, lengthUnit),
-        lengthDisplayToMm(current.width, lengthUnit),
-        lengthDisplayToMm(current.height, lengthUnit),
-        weightDisplayToG(current.weight, weightUnit)
+        lengthDisplayToMm(packAxisSrc('ozon', 'length'), lengthUnit),
+        lengthDisplayToMm(packAxisSrc('ozon', 'width'), lengthUnit),
+        lengthDisplayToMm(packAxisSrc('ozon', 'height'), lengthUnit),
+        weightDisplayToG(packAxisSrc('ozon', 'weight'), weightUnit)
       );
       touch('ozon_draft', { ...prevDraft, dimensions });
     }
-    if (mainPackTouched && isMpFieldLinked(links, 'dimensions', 'ym') && !ymPackChanged) {
+    if (mainPackTouched && packAxisLinked('ym') && !ymPackChanged) {
       const prevDraft = parseDraftBaseline(original._ymDraftBaseline ?? original._productRef?.ym_draft);
-      const L = lengthDisplayToCm(current.length, lengthUnit);
-      const W = lengthDisplayToCm(current.width, lengthUnit);
-      const H = lengthDisplayToCm(current.height, lengthUnit);
-      const g = weightDisplayToG(current.weight, weightUnit);
+      const L = lengthDisplayToCm(packAxisSrc('ym', 'length'), lengthUnit);
+      const W = lengthDisplayToCm(packAxisSrc('ym', 'width'), lengthUnit);
+      const H = lengthDisplayToCm(packAxisSrc('ym', 'height'), lengthUnit);
+      const g = weightDisplayToG(packAxisSrc('ym', 'weight'), weightUnit);
       const kg = g != null ? gramsToKg(g) : null;
       const weightDimensions = {};
       if (L != null && L > 0) weightDimensions.length = L;
@@ -4448,24 +4476,17 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
       !eq(original[`${mp}_product_width`], current[`${mp}_product_width`]) ||
       !eq(original[`${mp}_product_height`], current[`${mp}_product_height`]) ||
       (mp !== 'ym' && !eq(original[`${mp}_product_weight`], current[`${mp}_product_weight`]));
+    const pickAxis = (mp, dedicated, mainCol, mpCol) =>
+      isMpFieldLinked(links, dedicated, mp) ? current[mainCol] : current[mpCol];
     for (const mp of ['ozon', 'wb', 'ym']) {
-      const linked = isMpFieldLinked(links, 'product_dimensions', mp);
-      if (mpProductChanged(mp) && !linked) {
+      const anyLinked = DEDICATED_PRODUCT_DIM_KEYS.some((k) => isMpFieldLinked(links, k, mp));
+      if (mpProductChanged(mp) || (productDimsTouched && anyLinked)) {
         patchDraft(mp, {
           productDimensions: dimsFromDisplay(
-            current[`${mp}_product_length`],
-            current[`${mp}_product_width`],
-            current[`${mp}_product_height`],
-            mp === 'ym' ? '' : current[`${mp}_product_weight`]
-          ),
-        });
-      } else if (productDimsTouched && linked) {
-        patchDraft(mp, {
-          productDimensions: dimsFromDisplay(
-            current.product_length,
-            current.product_width,
-            current.product_height,
-            mp === 'ym' ? '' : current.product_weight
+            pickAxis(mp, 'product_length', 'product_length', `${mp}_product_length`),
+            pickAxis(mp, 'product_width', 'product_width', `${mp}_product_width`),
+            pickAxis(mp, 'product_height', 'product_height', `${mp}_product_height`),
+            mp === 'ym' ? '' : pickAxis(mp, 'product_weight', 'product_weight', `${mp}_product_weight`)
           ),
         });
       }
@@ -4686,7 +4707,10 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
 
   {
     const links = normalizeMpFieldLinks(current.mp_field_links);
-    const wbLinked = isMpFieldLinked(links, 'product_dimensions', 'wb');
+    const wbLenLinked = isMpFieldLinked(links, 'product_length', 'wb');
+    const wbWidLinked = isMpFieldLinked(links, 'product_width', 'wb');
+    const wbHgtLinked = isMpFieldLinked(links, 'product_height', 'wb');
+    const wbLinked = wbLenLinked || wbWidLinked || wbHgtLinked;
     const wbProductItemChanged =
       !eq(original.wb_product_length, current.wb_product_length) ||
       !eq(original.wb_product_width, current.wb_product_width) ||
@@ -4702,9 +4726,9 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
           : {}),
       };
       const nextWb = sanitizeMpAttrsForApi(prevWb);
-      const srcL = wbLinked ? current.product_length : current.wb_product_length;
-      const srcW = wbLinked ? current.product_width : current.wb_product_width;
-      const srcH = wbLinked ? current.product_height : current.wb_product_height;
+      const srcL = wbLenLinked ? current.product_length : current.wb_product_length;
+      const srcW = wbWidLinked ? current.product_width : current.wb_product_width;
+      const srcH = wbHgtLinked ? current.product_height : current.wb_product_height;
       const cmL = lengthDisplayToCm(srcL, lengthUnit);
       const cmW = lengthDisplayToCm(srcW, lengthUnit);
       const cmH = lengthDisplayToCm(srcH, lengthUnit);
@@ -4718,12 +4742,12 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   // WB характеристики упаковки (см) — иначе push/кабинет оставляют старые 90849/90745/90846
   {
     const links = normalizeMpFieldLinks(current.mp_field_links);
-    const wbPackSource =
-      wbPackChanged || (isMpFieldLinked(links, 'dimensions', 'wb') && (
-        !eq(original.length, current.length) ||
-        !eq(original.width, current.width) ||
-        !eq(original.height, current.height)
-      ));
+    const mainPackLenHgtTouched =
+      !eq(original.length, current.length) ||
+      !eq(original.width, current.width) ||
+      !eq(original.height, current.height);
+    const wbPackLinked = ['length', 'width', 'height'].some((k) => isMpFieldLinked(links, k, 'wb'));
+    const wbPackSource = wbPackChanged || (wbPackLinked && mainPackLenHgtTouched);
     if (wbPackSource) {
       const prevWb = {
         ...normalizeJsonAttrs(original._productRef?.wb_attributes),
@@ -4733,12 +4757,15 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
           : {}),
       };
       const nextWb = sanitizeMpAttrsForApi(prevWb);
-      const srcL = wbPackChanged ? current.wb_pack_length : current.length;
-      const srcW = wbPackChanged ? current.wb_pack_width : current.width;
-      const srcH = wbPackChanged ? current.wb_pack_height : current.height;
-      const cmL = lengthDisplayToCm(srcL, lengthUnit);
-      const cmW = lengthDisplayToCm(srcW, lengthUnit);
-      const cmH = lengthDisplayToCm(srcH, lengthUnit);
+      const src = (axis, mpCol) =>
+        wbPackChanged && !isMpFieldLinked(links, axis, 'wb')
+          ? current[mpCol]
+          : isMpFieldLinked(links, axis, 'wb')
+            ? current[axis]
+            : current[mpCol];
+      const cmL = lengthDisplayToCm(src('length', 'wb_pack_length'), lengthUnit);
+      const cmW = lengthDisplayToCm(src('width', 'wb_pack_width'), lengthUnit);
+      const cmH = lengthDisplayToCm(src('height', 'wb_pack_height'), lengthUnit);
       if (cmL != null && Number(cmL) > 0) nextWb[WB_PACK_DIM_CHARC.length] = String(cmL);
       if (cmW != null && Number(cmW) > 0) nextWb[WB_PACK_DIM_CHARC.width] = String(cmW);
       if (cmH != null && Number(cmH) > 0) nextWb[WB_PACK_DIM_CHARC.height] = String(cmH);
@@ -5244,7 +5271,12 @@ function applyOneBulkCellChange(
   if (fieldKey === 'brand') {
     next = applyLinkedBrandToOzonAttrColumns(next, next.brand, mpAttrColumnDefs, ozonDictOptions);
   }
-  if (fieldKey === 'name' || fieldKey === 'description' || fieldKey === 'product_dimensions') {
+  if (
+    fieldKey === 'name' ||
+    fieldKey === 'description' ||
+    fieldKey === 'product_dimensions' ||
+    DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)
+  ) {
     next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
   }
   const attrCol = (mpAttrColumnDefs || []).find((c) => c.key === key);
@@ -5769,7 +5801,10 @@ export function ProductsBulkEdit() {
               ...col,
               mappedMps: mapped,
               linkSupportedMps:
-                col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions'
+                col.linkFieldKey === 'product_dimensions' ||
+                col.linkFieldKey === 'dimensions' ||
+                DEDICATED_PRODUCT_DIM_KEYS.includes(col.linkFieldKey) ||
+                DEDICATED_PACK_DIM_KEYS.includes(col.linkFieldKey)
                   ? supportedMpsForFieldKey(col.linkFieldKey)
                   : mapped,
               showLinkToggles: col.showLinkToggles !== false,
@@ -7145,7 +7180,7 @@ export function ProductsBulkEdit() {
       if ((fieldKey === 'name' || fieldKey === 'description') && mp === 'ozon') {
         next = applyLinkedOzonNameAndAnnotationColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
       }
-      if (fieldKey === 'product_dimensions') {
+      if (fieldKey === 'product_dimensions' || DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey)) {
         next = applyLinkedMpProductDimAttrColumns(next, mpAttrColumnDefs, lengthUnit, weightUnit);
       }
       return syncOfferFieldColsOnRow(next, mpAttrColumnDefs);
@@ -7165,7 +7200,10 @@ export function ProductsBulkEdit() {
       if (!canToggle) continue;
       const supported =
         col.linkSupportedMps ||
-        (col.linkFieldKey === 'product_dimensions' || col.linkFieldKey === 'dimensions'
+        (col.linkFieldKey === 'product_dimensions' ||
+        col.linkFieldKey === 'dimensions' ||
+        DEDICATED_PRODUCT_DIM_KEYS.includes(col.linkFieldKey) ||
+        DEDICATED_PACK_DIM_KEYS.includes(col.linkFieldKey)
           ? supportedMpsForFieldKey(col.linkFieldKey)
           : mapped.length
             ? mapped
@@ -7180,7 +7218,10 @@ export function ProductsBulkEdit() {
       if (!rows.length) return;
       const def = bulkLinkableFieldDefs.find((d) => d.fieldKey === fieldKey);
       const supported =
-        fieldKey === 'product_dimensions' || fieldKey === 'dimensions'
+        fieldKey === 'product_dimensions' ||
+        fieldKey === 'dimensions' ||
+        DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey) ||
+        DEDICATED_PACK_DIM_KEYS.includes(fieldKey)
           ? undefined
           : def?.supported;
       const anyOn = rows.some((r) =>
@@ -8012,7 +8053,10 @@ export function ProductsBulkEdit() {
       const enable = !isMpFieldLinked(normalizeMpFieldLinks(synthetic?.mp_field_links), fieldKey, mp);
       const def = bulkLinkableFieldDefs.find((d) => d.fieldKey === fieldKey);
       const supported =
-        fieldKey === 'product_dimensions' || fieldKey === 'dimensions'
+        fieldKey === 'product_dimensions' ||
+        fieldKey === 'dimensions' ||
+        DEDICATED_PRODUCT_DIM_KEYS.includes(fieldKey) ||
+        DEDICATED_PACK_DIM_KEYS.includes(fieldKey)
           ? undefined
           : def?.supported;
       const mainCol = group.find((c) => isPopupMainColumn(c, fieldKey));

@@ -61,8 +61,36 @@ export const MP_FIELD_LINK_SUPPORT = {
   dimensions: ['ozon', 'wb', 'ym'],
   /** Размеры товара (без упаковки): product_length / width / height / weight */
   product_dimensions: ['ozon', 'wb', 'ym'],
+  product_length: ['ozon', 'wb', 'ym'],
+  product_width: ['ozon', 'wb', 'ym'],
+  product_height: ['ozon', 'wb', 'ym'],
+  product_weight: ['ozon', 'wb', 'ym'],
+  length: ['ozon', 'wb', 'ym'],
+  width: ['ozon', 'wb', 'ym'],
+  height: ['ozon', 'wb', 'ym'],
+  weight: ['ozon', 'wb', 'ym'],
   rich_content: ['ozon', 'wb', 'ym'],
 };
+
+/** Ось габаритов → групповой ключ (старые карточки хранят только группу). */
+export const DIM_AXIS_GROUP_KEY = {
+  product_length: 'product_dimensions',
+  product_width: 'product_dimensions',
+  product_height: 'product_dimensions',
+  product_weight: 'product_dimensions',
+  length: 'dimensions',
+  width: 'dimensions',
+  height: 'dimensions',
+  weight: 'dimensions',
+};
+
+export function productDimFieldKeyForAxis(axis) {
+  if (axis === 'length') return 'product_length';
+  if (axis === 'width') return 'product_width';
+  if (axis === 'height') return 'product_height';
+  if (axis === 'weight') return 'product_weight';
+  return '';
+}
 
 export const MP_FIELD_LINK_PEER_SYNC = {
   rich_content: true,
@@ -82,6 +110,14 @@ export const MP_FIELD_LINK_TITLES = {
   country: 'Связать со страной на «Основном» (не с другими МП)',
   dimensions: 'Связать вес/габариты упаковки с «Основным» (не с другими МП; единицы пересчитываются)',
   product_dimensions: 'Связать размеры товара с «Основным» (не с другими МП)',
+  product_length: 'Связать длину товара с «Основным»',
+  product_width: 'Связать ширину товара с «Основным»',
+  product_height: 'Связать высоту товара с «Основным»',
+  product_weight: 'Связать вес товара с «Основным»',
+  length: 'Связать длину упаковки с «Основным»',
+  width: 'Связать ширину упаковки с «Основным»',
+  height: 'Связать высоту упаковки с «Основным»',
+  weight: 'Связать вес упаковки с «Основным»',
   rich_content: 'Связать Rich-контент: генерация заполняет все включённые маркетплейсы из шаблона категории',
 };
 
@@ -340,6 +376,10 @@ export function normalizeMpFieldLinks(raw) {
     if (!isAttrMpFieldLinkKey(key)) continue;
     out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_MPS);
   }
+  for (const key of [...DEDICATED_PRODUCT_DIM_KEYS, ...DEDICATED_PACK_DIM_KEYS]) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+    out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_SUPPORT[key] || MP_FIELD_LINK_MPS);
+  }
   return out;
 }
 
@@ -383,7 +423,32 @@ function currentMpListForField(normalized, fieldKey, _supported) {
   if (Object.prototype.hasOwnProperty.call(normalized, fieldKey) && Array.isArray(normalized[fieldKey])) {
     return normalized[fieldKey];
   }
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (group && Array.isArray(normalized[group])) return normalized[group];
   return [];
+}
+
+function siblingDimAxisKeys(fieldKey) {
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (!group) return [];
+  return Object.keys(DIM_AXIS_GROUP_KEY).filter(
+    (k) => DIM_AXIS_GROUP_KEY[k] === group && k !== fieldKey
+  );
+}
+
+/** Первое переключение оси фиксирует остальные оси группы, чтобы они не ехали вместе. */
+function splitDimGroupOnAxisWrite(normalized, fieldKey, nextList) {
+  const out = { ...normalized, [fieldKey]: nextList };
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (!group) return out;
+  const groupList = Array.isArray(normalized[group]) ? [...normalized[group]] : [];
+  for (const sibling of siblingDimAxisKeys(fieldKey)) {
+    if (Object.prototype.hasOwnProperty.call(normalized, sibling) && Array.isArray(normalized[sibling])) {
+      continue;
+    }
+    out[sibling] = groupList;
+  }
+  return out;
 }
 
 /**
@@ -392,9 +457,18 @@ function currentMpListForField(normalized, fieldKey, _supported) {
  * @param {string} mp
  */
 export function isMpFieldLinked(links, fieldKey, mp) {
-  const list = links?.[fieldKey];
-  if (!Array.isArray(list)) return false;
-  return list.includes(String(mp || '').toLowerCase());
+  const code = String(mp || '').toLowerCase();
+  const src = links && typeof links === 'object' ? links : {};
+  if (Object.prototype.hasOwnProperty.call(src, fieldKey) && Array.isArray(src[fieldKey])) {
+    return src[fieldKey].includes(code);
+  }
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (group) {
+    const g = src[group];
+    return Array.isArray(g) && g.includes(code);
+  }
+  const list = src[fieldKey];
+  return Array.isArray(list) && list.includes(code);
 }
 
 /**
@@ -411,7 +485,11 @@ export function toggleMpFieldLink(links, fieldKey, mp, supportedOverride) {
   const set = new Set(currentMpListForField(normalized, fieldKey, supported));
   if (set.has(code)) set.delete(code);
   else set.add(code);
-  return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
+  return splitDimGroupOnAxisWrite(
+    normalized,
+    fieldKey,
+    supported.filter((m) => set.has(m))
+  );
 }
 
 /**
@@ -430,7 +508,11 @@ export function setMpFieldLink(links, fieldKey, mp, enabled, supportedOverride) 
   const set = new Set(currentMpListForField(normalized, fieldKey, supported));
   if (enabled) set.add(code);
   else set.delete(code);
-  return { ...normalized, [fieldKey]: supported.filter((m) => set.has(m)) };
+  return splitDimGroupOnAxisWrite(
+    normalized,
+    fieldKey,
+    supported.filter((m) => set.has(m))
+  );
 }
 
 /** мм → см для WB / YM */
@@ -1302,70 +1384,78 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
     if (isMpFieldLinked(normalized, 'sku', 'ozon')) next.sku_ozon = v;
     if (isMpFieldLinked(normalized, 'sku', 'ym')) next.sku_ym = v;
   }
-  if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
-    const wd = erpDimsToYmWeightDimensions(prev);
-    if (wd) {
-      const prevDraft =
-        prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
-          ? prev.ym_draft
-          : {};
-      next.ym_draft = { ...prevDraft, weightDimensions: wd };
-    }
-  }
-  if (want('country') && isMpFieldLinked(normalized, 'country', 'ym')) {
-    const c = String(prev.country_of_origin || '').trim();
-    const prevDraft =
-      next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
-        ? next.ym_draft
-        : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
-          ? prev.ym_draft
-          : {};
-    next.ym_draft = {
-      ...prevDraft,
-      manufacturerCountries: c ? [c] : [],
-    };
-  }
-  if (want('country')) {
-    const c = String(prev.country_of_origin || '').trim();
-    if (isMpFieldLinked(normalized, 'country', 'wb')) {
-      const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
-      next.wb_draft = { ...d, country: c };
-    }
-  }
-  if (want('dimensions')) {
+  if (want('dimensions') || DEDICATED_PACK_DIM_KEYS.some((k) => want(k))) {
     const dims = {
       length: prev.length !== '' && prev.length != null ? Number(prev.length) : null,
       width: prev.width !== '' && prev.width != null ? Number(prev.width) : null,
       height: prev.height !== '' && prev.height != null ? Number(prev.height) : null,
       weight: prev.weight !== '' && prev.weight != null ? Number(prev.weight) : null,
     };
-    if (isMpFieldLinked(normalized, 'dimensions', 'ozon')) {
-      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
-      next.ozon_draft = { ...d, dimensions: dims };
+    const patchPack = (mp, patch) => {
+      const key = mp === 'ozon' ? 'ozon_draft' : 'wb_draft';
+      const d = parseDraftObj(next[key] ?? prev[key]);
+      next[key] = { ...d, dimensions: { ...(d.dimensions || {}), ...patch } };
+    };
+    for (const axis of ['length', 'width', 'height', 'weight']) {
+      if (!want('dimensions') && !want(axis)) continue;
+      const patch = { [axis]: dims[axis] };
+      if (isMpFieldLinked(normalized, axis, 'ozon')) patchPack('ozon', patch);
+      if (isMpFieldLinked(normalized, axis, 'wb')) patchPack('wb', patch);
     }
-    if (isMpFieldLinked(normalized, 'dimensions', 'wb')) {
-      const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
-      next.wb_draft = { ...d, dimensions: dims };
+    if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
+      const wd = erpDimsToYmWeightDimensions(prev);
+      if (wd) {
+        const prevDraft =
+          prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+            ? prev.ym_draft
+            : {};
+        next.ym_draft = { ...prevDraft, weightDimensions: wd };
+      }
     }
   }
-  if (want('product_dimensions')) {
+  if (want('product_dimensions') || DEDICATED_PRODUCT_DIM_KEYS.some((k) => want(k))) {
     const productDims = {
       length: prev.product_length !== '' && prev.product_length != null ? Number(prev.product_length) : null,
       width: prev.product_width !== '' && prev.product_width != null ? Number(prev.product_width) : null,
       height: prev.product_height !== '' && prev.product_height != null ? Number(prev.product_height) : null,
       weight: prev.product_weight !== '' && prev.product_weight != null ? Number(prev.product_weight) : null,
     };
-    if (isMpFieldLinked(normalized, 'product_dimensions', 'ozon')) {
-      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
-      next.ozon_draft = { ...d, productDimensions: productDims };
+    const axes = [
+      { key: 'product_length', axis: 'length' },
+      { key: 'product_width', axis: 'width' },
+      { key: 'product_height', axis: 'height' },
+      { key: 'product_weight', axis: 'weight' },
+    ];
+    const patchProduct = (mp, patch) => {
+      const key = `${mp}_draft`;
+      const d = parseDraftObj(next[key] ?? prev[key]);
+      next[key] = { ...d, productDimensions: { ...(d.productDimensions || {}), ...patch } };
+    };
+    for (const spec of axes) {
+      if (!want('product_dimensions') && !want(spec.key)) continue;
+      const patch = { [spec.axis]: productDims[spec.axis] };
+      if (isMpFieldLinked(normalized, spec.key, 'ozon')) patchProduct('ozon', patch);
+      if (isMpFieldLinked(normalized, spec.key, 'wb')) patchProduct('wb', patch);
+      if (isMpFieldLinked(normalized, spec.key, 'ym')) patchProduct('ym', patch);
     }
-    if (isMpFieldLinked(normalized, 'product_dimensions', 'wb')) {
+  }
+  if (want('country')) {
+    const c = String(prev.country_of_origin || '').trim();
+    if (isMpFieldLinked(normalized, 'country', 'ym')) {
+      const prevDraft =
+        next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+          ? next.ym_draft
+          : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+            ? prev.ym_draft
+            : {};
+      next.ym_draft = {
+        ...prevDraft,
+        manufacturerCountries: c ? [c] : [],
+      };
+    }
+    if (isMpFieldLinked(normalized, 'country', 'wb')) {
       const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
-      next.wb_draft = { ...d, productDimensions: productDims };
-    }
-    if (isMpFieldLinked(normalized, 'product_dimensions', 'ym')) {
-      const d = parseDraftObj(next.ym_draft ?? prev.ym_draft);
-      next.ym_draft = { ...d, productDimensions: productDims };
+      next.wb_draft = { ...d, country: c };
     }
   }
   return next;

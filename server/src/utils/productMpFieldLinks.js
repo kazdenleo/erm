@@ -49,8 +49,35 @@ export const MP_FIELD_LINK_SUPPORT = {
   country: ['ozon', 'wb', 'ym'],
   dimensions: ['ozon', 'wb', 'ym'],
   product_dimensions: ['ozon', 'wb', 'ym'],
+  product_length: ['ozon', 'wb', 'ym'],
+  product_width: ['ozon', 'wb', 'ym'],
+  product_height: ['ozon', 'wb', 'ym'],
+  product_weight: ['ozon', 'wb', 'ym'],
+  length: ['ozon', 'wb', 'ym'],
+  width: ['ozon', 'wb', 'ym'],
+  height: ['ozon', 'wb', 'ym'],
+  weight: ['ozon', 'wb', 'ym'],
   rich_content: ['ozon', 'wb', 'ym'],
 };
+
+export const DIM_AXIS_GROUP_KEY = {
+  product_length: 'product_dimensions',
+  product_width: 'product_dimensions',
+  product_height: 'product_dimensions',
+  product_weight: 'product_dimensions',
+  length: 'dimensions',
+  width: 'dimensions',
+  height: 'dimensions',
+  weight: 'dimensions',
+};
+
+export function productDimFieldKeyForAxis(axis) {
+  if (axis === 'length') return 'product_length';
+  if (axis === 'width') return 'product_width';
+  if (axis === 'height') return 'product_height';
+  if (axis === 'weight') return 'product_weight';
+  return '';
+}
 
 export const DEDICATED_MAIN_MAP_KEYS = [
   'name',
@@ -270,6 +297,10 @@ export function normalizeMpFieldLinks(raw) {
     if (!isAttrMpFieldLinkKey(key)) continue;
     out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_MPS);
   }
+  for (const key of [...DEDICATED_PRODUCT_DIM_KEYS, ...DEDICATED_PACK_DIM_KEYS]) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+    out[key] = parseFieldMpList(obj[key], MP_FIELD_LINK_SUPPORT[key] || MP_FIELD_LINK_MPS);
+  }
   return out;
 }
 
@@ -300,10 +331,89 @@ function parseFieldMpList(v, supported) {
   return [];
 }
 
+function currentMpListForField(normalized, fieldKey, _supported) {
+  if (Object.prototype.hasOwnProperty.call(normalized, fieldKey) && Array.isArray(normalized[fieldKey])) {
+    return normalized[fieldKey];
+  }
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (group && Array.isArray(normalized[group])) return normalized[group];
+  return [];
+}
+
+function siblingDimAxisKeys(fieldKey) {
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (!group) return [];
+  return Object.keys(DIM_AXIS_GROUP_KEY).filter(
+    (k) => DIM_AXIS_GROUP_KEY[k] === group && k !== fieldKey
+  );
+}
+
+function splitDimGroupOnAxisWrite(normalized, fieldKey, nextList) {
+  const out = { ...normalized, [fieldKey]: nextList };
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (!group) return out;
+  const groupList = Array.isArray(normalized[group]) ? [...normalized[group]] : [];
+  for (const sibling of siblingDimAxisKeys(fieldKey)) {
+    if (Object.prototype.hasOwnProperty.call(normalized, sibling) && Array.isArray(normalized[sibling])) {
+      continue;
+    }
+    out[sibling] = groupList;
+  }
+  return out;
+}
+
+export function supportedMpsForFieldKey(fieldKey, supportedOverride) {
+  if (Array.isArray(supportedOverride) && supportedOverride.length) {
+    return supportedOverride.map((m) => String(m || '').toLowerCase()).filter(Boolean);
+  }
+  if (MP_FIELD_LINK_SUPPORT[fieldKey]) return MP_FIELD_LINK_SUPPORT[fieldKey];
+  if (isAttrMpFieldLinkKey(fieldKey)) return [...MP_FIELD_LINK_MPS];
+  return [];
+}
+
 export function isMpFieldLinked(links, fieldKey, mp) {
-  const list = links?.[fieldKey];
-  if (!Array.isArray(list)) return false;
-  return list.includes(String(mp || '').toLowerCase());
+  const code = String(mp || '').toLowerCase();
+  const src = links && typeof links === 'object' ? links : {};
+  if (Object.prototype.hasOwnProperty.call(src, fieldKey) && Array.isArray(src[fieldKey])) {
+    return src[fieldKey].includes(code);
+  }
+  const group = DIM_AXIS_GROUP_KEY[fieldKey];
+  if (group) {
+    const g = src[group];
+    return Array.isArray(g) && g.includes(code);
+  }
+  const list = src[fieldKey];
+  return Array.isArray(list) && list.includes(code);
+}
+
+export function toggleMpFieldLink(links, fieldKey, mp, supportedOverride) {
+  const normalized = normalizeMpFieldLinks(links);
+  const code = String(mp || '').toLowerCase();
+  const supported = supportedMpsForFieldKey(fieldKey, supportedOverride);
+  if (!supported.includes(code)) return normalized;
+  const set = new Set(currentMpListForField(normalized, fieldKey, supported));
+  if (set.has(code)) set.delete(code);
+  else set.add(code);
+  return splitDimGroupOnAxisWrite(
+    normalized,
+    fieldKey,
+    supported.filter((m) => set.has(m))
+  );
+}
+
+export function setMpFieldLink(links, fieldKey, mp, enabled, supportedOverride) {
+  const normalized = normalizeMpFieldLinks(links);
+  const code = String(mp || '').toLowerCase();
+  const supported = supportedMpsForFieldKey(fieldKey, supportedOverride);
+  if (!supported.includes(code)) return normalized;
+  const set = new Set(currentMpListForField(normalized, fieldKey, supported));
+  if (enabled) set.add(code);
+  else set.delete(code);
+  return splitDimGroupOnAxisWrite(
+    normalized,
+    fieldKey,
+    supported.filter((m) => set.has(m))
+  );
 }
 
 /** YM-параметры упаковки оффера (weightDimensions), не категорийные parameterValues. */
@@ -711,22 +821,35 @@ export function resolveProductDimensionsMmForPush(product, mp) {
     if (src.weight != null && Number(src.weight) > 0) out.weight = Number(src.weight);
     return Object.keys(out).length ? out : null;
   };
-  const fromErp = () =>
-    pick({
-      length: product.product_length ?? product.productLength,
-      width: product.product_width ?? product.productWidth,
-      height: product.product_height ?? product.productHeight,
-      weight: product.product_weight ?? product.productWeight,
-    });
-  if (isMpFieldLinked(links, 'product_dimensions', code)) {
-    return fromErp();
-  }
+  const erp = {
+    length: Number(product.product_length ?? product.productLength) || 0,
+    width: Number(product.product_width ?? product.productWidth) || 0,
+    height: Number(product.product_height ?? product.productHeight) || 0,
+    weight: Number(product.product_weight ?? product.productWeight) || 0,
+  };
   const draft =
     code === 'ozon'
       ? parseDraftObj(product?.ozon_draft)
       : code === 'wb'
         ? parseDraftObj(product?.wb_draft)
         : parseDraftObj(product?.ym_draft);
-  return pick(draft.productDimensions) || fromErp();
+  const fromDraft = pick(draft.productDimensions) || {};
+  const axes = [
+    ['length', 'product_length'],
+    ['width', 'product_width'],
+    ['height', 'product_height'],
+    ['weight', 'product_weight'],
+  ];
+  const out = {};
+  for (const [axis, key] of axes) {
+    if (isMpFieldLinked(links, key, code)) {
+      if (erp[axis] > 0) out[axis] = erp[axis];
+    } else if (fromDraft[axis] > 0) {
+      out[axis] = fromDraft[axis];
+    } else if (erp[axis] > 0) {
+      out[axis] = erp[axis];
+    }
+  }
+  return Object.keys(out).length ? out : null;
 }
 
