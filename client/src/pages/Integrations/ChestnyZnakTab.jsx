@@ -4,9 +4,10 @@ import { chestnyZnakApi } from '../../services/chestnyZnak.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
   createAttachedCadesBes,
-  isCryptoProAvailable,
+  diagnoseCryptoProSetup,
   listCryptoProCertificates,
 } from '../../utils/cryptoProSign.js';
+import { ChestnyZnakSetupChecklist } from './ChestnyZnakSetupChecklist';
 
 function formatExpiry(iso) {
   if (!iso) return '';
@@ -27,7 +28,8 @@ function innDigits(value) {
 
 function isValidInn(value) {
   const d = innDigits(value);
-  return d.length === 10 || d.length === 12;
+  if (d.length !== 10 && d.length !== 12) return false;
+  return !/^0+$/.test(d);
 }
 
 export function ChestnyZnakTab({
@@ -54,6 +56,8 @@ export function ChestnyZnakTab({
   const [omsToken, setOmsToken] = useState('');
 
   const [pluginOk, setPluginOk] = useState(null);
+  const [setup, setSetup] = useState(null);
+  const [setupChecking, setSetupChecking] = useState(false);
   const [certs, setCerts] = useState([]);
   const [certsLoading, setCertsLoading] = useState(false);
   const [thumbprint, setThumbprint] = useState('');
@@ -133,15 +137,31 @@ export function ChestnyZnakTab({
     setInn(innDigits(selectedOrg.inn));
   }, [selectedOrg, inn]);
 
-  useEffect(() => {
-    let cancelled = false;
-    isCryptoProAvailable().then((ok) => {
-      if (!cancelled) setPluginOk(ok);
-    });
-    return () => {
-      cancelled = true;
-    };
+  const runSetupCheck = useCallback(async () => {
+    setSetupChecking(true);
+    try {
+      const result = await diagnoseCryptoProSetup();
+      setSetup(result);
+      setPluginOk(Boolean(result.pluginReady));
+      if (result.certificates?.length) {
+        setCerts(result.certificates);
+        setThumbprint((prev) => {
+          if (prev) return prev;
+          const preferred = result.certificates.find((c) => !c.expired) || result.certificates[0];
+          return preferred?.thumbprint || '';
+        });
+      }
+    } catch (err) {
+      setPluginOk(false);
+      setError(err?.message || 'Не удалось проверить КриптоПро');
+    } finally {
+      setSetupChecking(false);
+    }
   }, []);
+
+  useEffect(() => {
+    runSetupCheck();
+  }, [runSetupCheck]);
 
   const loadCerts = async () => {
     setCertsLoading(true);
@@ -401,15 +421,13 @@ export function ChestnyZnakTab({
           </div>
 
           <div className="chestny-block">
+            <ChestnyZnakSetupChecklist
+              setup={setup}
+              checking={setupChecking}
+              onCheck={runSetupCheck}
+              pluginOk={pluginOk}
+            />
             <h3>Вход по УКЭП</h3>
-            <p className="chestny-hint">
-              Нужны КриптоПро CSP и «КриптоПро ЭЦП Browser plug-in». Сертификат должен быть зарегистрирован
-              как API-пользователь в личном кабинете{' '}
-              <a href="https://markirovka.crpt.ru/" target="_blank" rel="noopener noreferrer">markirovka.crpt.ru</a>.
-            </p>
-            {pluginOk === false && (
-              <p className="chestny-hint">Плагин не обнаружен. Можно сохранить настройки и вставить токен вручную.</p>
-            )}
             <div className="form-actions" style={{ marginTop: 8 }}>
               <Button type="button" variant="secondary" onClick={loadCerts} disabled={certsLoading}>
                 {certsLoading ? 'Чтение сертификатов…' : 'Показать сертификаты'}

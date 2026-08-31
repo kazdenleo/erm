@@ -179,10 +179,72 @@
   background: var(--card, #fff);
 }
 
+.chestny-setup {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chestny-setup h3,
 .chestny-block h3 {
   margin: 0 0 8px;
   font-size: 15px;
   font-weight: 600;
+}
+
+.chestny-setup-steps {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chestny-setup-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.chestny-setup-steps a {
+  font-size: 13px;
+}
+
+.chestny-setup-live {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chestny-setup-live li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.chestny-setup-live li.is-ok {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.chestny-setup-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #dc2626;
+}
+
+.chestny-setup-live li.is-ok .chestny-setup-dot {
+  background: #16a34a;
 }
 
 .chestny-token {

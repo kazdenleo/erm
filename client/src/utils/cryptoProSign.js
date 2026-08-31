@@ -1,28 +1,66 @@
 /**
- * КриптоПро ЭЦП Browser plug-in: список сертификатов и CAdES-BES подпись.
- * Плагин должен быть установлен в браузере пользователя.
+ * КриптоПро ЭЦП Browser plug-in: загрузка API, диагностика, подпись CAdES-BES.
  */
 
-function getCadesPlugin() {
-  if (typeof window === 'undefined' || !window.cadesplugin) {
-    const err = new Error(
-      'Не найден плагин «КриптоПро ЭЦП Browser plug-in». Установите его с cryptopro.ru и разрешите работу на этом сайте.'
-    );
-    err.code = 'CADES_MISSING';
-    throw err;
-  }
-  return window.cadesplugin;
+const CADES_API_SRC = `${process.env.PUBLIC_URL || ''}/cadesplugin_api.js`;
+
+function missingPluginError(message) {
+  const err = new Error(message);
+  err.code = 'CADES_MISSING';
+  return err;
 }
 
-async function waitCadesPlugin(timeoutMs = 8000) {
-  const plugin = getCadesPlugin();
+function loadCadesApiScript() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(missingPluginError('КриптоПро доступен только в браузере'));
+  }
+  if (window.cadesplugin) return Promise.resolve();
+  if (window.__cadesApiLoading) return window.__cadesApiLoading;
+
+  window.__cadesApiLoading = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-cadesplugin-api]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(missingPluginError('Не удалось загрузить скрипт API КриптоПро')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = CADES_API_SRC;
+    script.async = true;
+    script.dataset.cadespluginApi = '1';
+    script.onload = () => resolve();
+    script.onerror = () => {
+      window.__cadesApiLoading = null;
+      reject(missingPluginError(
+        'Не удалось загрузить скрипт API КриптоПро. Проверьте сеть и обновите страницу.'
+      ));
+    };
+    document.head.appendChild(script);
+  });
+  return window.__cadesApiLoading;
+}
+
+async function waitCadesPlugin(timeoutMs = 12000) {
+  await loadCadesApiScript();
+  const started = Date.now();
+  while (!window.cadesplugin && Date.now() - started < 4000) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!window.cadesplugin) {
+    throw missingPluginError(
+      'Не найден плагин «КриптоПро ЭЦП Browser plug-in». Установите расширение в браузере и разрешите работу на этом сайте, затем обновите страницу.'
+    );
+  }
+  const plugin = window.cadesplugin;
   let timer;
   try {
     await Promise.race([
       Promise.resolve(plugin),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const err = new Error('Плагин КриптоПро не ответил. Проверьте, что он включён для этого сайта.');
+          const err = new Error(
+            'Плагин КриптоПро не ответил. Разрешите доступ для этого сайта в расширении и перезагрузите вкладку.'
+          );
           err.code = 'CADES_TIMEOUT';
           reject(err);
         }, timeoutMs);
@@ -31,7 +69,7 @@ async function waitCadesPlugin(timeoutMs = 8000) {
   } finally {
     if (timer) clearTimeout(timer);
   }
-  return plugin;
+  return window.cadesplugin;
 }
 
 function parseCn(subjectName) {
@@ -44,17 +82,37 @@ export function normalizeThumbprint(value) {
   return String(value || '').replace(/\s+/g, '').toUpperCase();
 }
 
-export async function isCryptoProAvailable() {
+async function readAbout(cadesplugin) {
   try {
-    await waitCadesPlugin(2500);
-    return true;
+    const about = await cadesplugin.CreateObjectAsync('CAdESCOM.About');
+    let pluginVersion = '';
+    let csp = '';
+    try {
+      const ver = await about.PluginVersion;
+      pluginVersion = ver ? String(await ver.toString()) : '';
+    } catch {
+      try {
+        pluginVersion = String(await about.Version);
+      } catch {
+        pluginVersion = '';
+      }
+    }
+    try {
+      csp = String(await about.CSPName());
+    } catch {
+      try {
+        csp = String(await about.CSPVersion());
+      } catch {
+        csp = '';
+      }
+    }
+    return { pluginVersion, csp };
   } catch {
-    return false;
+    return { pluginVersion: '', csp: '' };
   }
 }
 
-export async function listCryptoProCertificates() {
-  const cadesplugin = await waitCadesPlugin();
+async function listCertificatesFromPlugin(cadesplugin) {
   const store = await cadesplugin.CreateObjectAsync('CAdESCOM.Store');
   await store.Open(
     cadesplugin.CAPICOM_CURRENT_USER_STORE,
@@ -97,6 +155,108 @@ export async function listCryptoProCertificates() {
       /* ignore */
     }
   }
+}
+
+export async function isCryptoProAvailable() {
+  try {
+    await waitCadesPlugin(8000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Пошаговая проверка рабочего места для УКЭП. */
+export async function diagnoseCryptoProSetup() {
+  const httpsOk = typeof window !== 'undefined' && window.location?.protocol === 'https:';
+  const items = [
+    {
+      id: 'https',
+      ok: httpsOk,
+      title: 'Сайт открыт по HTTPS',
+      hint: httpsOk
+        ? 'Соединение защищено — плагин может работать.'
+        : 'Откройте систему по https (например dttrade.ru). В обычном http плагин браузер блокирует.',
+    },
+  ];
+
+  let pluginReady = false;
+  let certificates = [];
+  let about = { pluginVersion: '', csp: '' };
+  let error = '';
+
+  try {
+    await loadCadesApiScript();
+    items.push({
+      id: 'api',
+      ok: true,
+      title: 'Скрипт API КриптоПро загружен',
+      hint: 'cadesplugin_api.js подключён на странице.',
+    });
+  } catch (err) {
+    items.push({
+      id: 'api',
+      ok: false,
+      title: 'Скрипт API КриптоПро не загрузился',
+      hint: err?.message || 'Обновите страницу или проверьте блокировщик рекламы.',
+    });
+    return { items, pluginReady, certificates, about, error: err?.message || '' };
+  }
+
+  try {
+    const cadesplugin = await waitCadesPlugin(12000);
+    pluginReady = true;
+    about = await readAbout(cadesplugin);
+    const verBits = [about.pluginVersion, about.csp].filter(Boolean).join(', ');
+    items.push({
+      id: 'plugin',
+      ok: true,
+      title: 'Плагин и расширение отвечают',
+      hint: verBits
+        ? `КриптоПро: ${verBits}`
+        : 'Расширение браузера и КриптоПро CSP доступны этой странице.',
+    });
+    try {
+      certificates = await listCertificatesFromPlugin(cadesplugin);
+      const valid = certificates.filter((c) => !c.expired);
+      items.push({
+        id: 'certs',
+        ok: valid.length > 0,
+        title: valid.length > 0 ? `Сертификаты УКЭП: ${valid.length} действующих` : 'Нет действующих сертификатов с закрытым ключом',
+        hint: valid.length > 0
+          ? certificates.map((c) => `${c.name}${c.expired ? ' (истёк)' : ''}`).join('; ')
+          : 'Установите сертификат в хранилище «Текущий пользователь» через КриптоПро CSP → Сервис → Установить сертификат.',
+      });
+    } catch (err) {
+      items.push({
+        id: 'certs',
+        ok: false,
+        title: 'Не удалось прочитать хранилище сертификатов',
+        hint: err?.message || 'Разрешите доступ к сертификатам, когда браузер спросит.',
+      });
+    }
+  } catch (err) {
+    error = err?.message || String(err);
+    items.push({
+      id: 'plugin',
+      ok: false,
+      title: 'Плагин на этом сайте не отвечает',
+      hint: error,
+    });
+    items.push({
+      id: 'certs',
+      ok: false,
+      title: 'Сертификаты не проверены',
+      hint: 'Сначала нужно, чтобы плагин ответил на этой странице.',
+    });
+  }
+
+  return { items, pluginReady, certificates, about, error };
+}
+
+export async function listCryptoProCertificates() {
+  const cadesplugin = await waitCadesPlugin();
+  return listCertificatesFromPlugin(cadesplugin);
 }
 
 export async function createAttachedCadesBes(thumbprint, data) {
