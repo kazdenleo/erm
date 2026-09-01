@@ -64,3 +64,9 @@ export function previousPeriodOfSameLength(dateFrom, dateTo) {
   const prevFrom = shiftDaysYmd(prevTo, -(len - 1));
   return { dateFrom: prevFrom, dateTo: prevTo };
 }
+
+/** Период действия: startYmd и следующие days календарных дней включая старт. */
+export function rangeFromStartDays(startYmd, days) {
+  const n = Math.max(1, Number(days) || 1);
+  return { dateFrom: startYmd, dateTo: shiftDaysYmd(startYmd, n - 1) };
+}

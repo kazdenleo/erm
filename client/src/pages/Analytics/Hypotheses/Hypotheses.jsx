@@ -1,5 +1,5 @@
 /**
- * Гипотезы по товарам: что меняли и как это сказалось на продажах и прибыли.
+ * Гипотезы по товарам: N дней до старта vs N дней действия, затем вывод.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -12,11 +12,12 @@ import { productHypothesesApi } from '../../../services/productHypotheses.api';
 import { productCardPath } from '../../../utils/productCardPath';
 import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
 import {
-  DEFAULT_ANALYTICS_PERIOD,
-  defaultAnalyticsRange,
   formatAnalyticsYmd,
+  periodLengthDays,
   previousPeriodOfSameLength,
+  rangeFromStartDays,
 } from '../shared/analyticsPeriod';
+import { HypothesesComparePanel } from './HypothesesComparePanel';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './Hypotheses.css';
 
@@ -39,17 +40,35 @@ const STATUS_OPTIONS = [
   { value: 'completed', label: 'Завершённые' },
 ];
 
+const DURATION_PRESETS = [
+  { value: 7, label: '7 дней' },
+  { value: 14, label: '14 дней' },
+  { value: 28, label: '28 дней' },
+  { value: 'custom', label: 'Свои даты' },
+];
+
 const SORT_GETTERS = {
   product: (r) => `${r.productSku || ''} ${r.productName || ''}`,
   title: (r) => r.title || '',
   dateFrom: (r) => r.dateFrom || '',
   soldQtyDelta: (r) => Number(r.comparison?.soldQtyDelta) || 0,
   netIncomeDelta: (r) => Number(r.comparison?.netIncomeDelta) || 0,
-  status: (r) => r.status || '',
+  status: (r) => {
+    if (r.status === 'completed') return 2;
+    if (r.comparison?.readyForConclusion && !r.conclusion) return 0;
+    return 1;
+  },
 };
 
+function detectDurationPreset(dateFrom, dateTo) {
+  const len = periodLengthDays(dateFrom, dateTo);
+  if (len === 7 || len === 14 || len === 28) return len;
+  return 'custom';
+}
+
 function emptyForm() {
-  const range = defaultAnalyticsRange(DEFAULT_ANALYTICS_PERIOD);
+  const today = formatAnalyticsYmd(new Date());
+  const range = rangeFromStartDays(today, 7);
   return {
     productId: null,
     productName: '',
@@ -58,6 +77,7 @@ function emptyForm() {
     description: '',
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
+    durationPreset: 7,
     marketplace: 'all',
     scheme: 'all',
     status: 'active',
@@ -108,6 +128,10 @@ function schemeLabel(v) {
   return SCHEME_OPTIONS.find((o) => o.value === v)?.label || v;
 }
 
+function needsConclusion(item) {
+  return item?.status === 'active' && item?.comparison?.readyForConclusion && !item?.conclusion;
+}
+
 function formFromItem(item) {
   return {
     productId: item.productId,
@@ -117,6 +141,7 @@ function formFromItem(item) {
     description: item.description || '',
     dateFrom: item.dateFrom,
     dateTo: item.dateTo,
+    durationPreset: detectDurationPreset(item.dateFrom, item.dateTo),
     marketplace: item.marketplace || 'all',
     scheme: item.scheme || 'all',
     status: item.status || 'active',
@@ -135,7 +160,7 @@ function DeltaCell({ current, previous, delta, deltaPct, formatValue }) {
           {' · '}
           {formatPct(deltaPct)}
         </span>
-        <span className="hypotheses__metric-prev">было {formatValue(previous)}</span>
+        <span className="hypotheses__metric-prev">до старта {formatValue(previous)}</span>
       </div>
     </td>
   );
@@ -153,7 +178,8 @@ export function Hypotheses() {
   const [form, setForm] = useState(emptyForm);
   const [productQuery, setProductQuery] = useState('');
   const [formError, setFormError] = useState(null);
-  const { sort, toggleSort } = useTableSort('dateFrom', 'desc');
+  const [openedItem, setOpenedItem] = useState(null);
+  const { sort, toggleSort } = useTableSort('status', 'asc');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,6 +199,15 @@ export function Hypotheses() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!editingId) {
+      setOpenedItem(null);
+      return;
+    }
+    const found = (data?.items || []).find((i) => Number(i.id) === Number(editingId));
+    if (found) setOpenedItem(found);
+  }, [data, editingId]);
+
   const items = useMemo(() => {
     const list = Array.isArray(data?.items) ? data.items : [];
     const q = query.trim().toLowerCase();
@@ -189,10 +224,14 @@ export function Hypotheses() {
   }, [data, query, sort]);
 
   const summary = data?.summary || {};
+  const today = formatAnalyticsYmd(new Date());
   const previewPrev = previousPeriodOfSameLength(form.dateFrom, form.dateTo);
+  const plannedDays = periodLengthDays(form.dateFrom, form.dateTo);
+  const formIncomplete = form.dateTo > today;
 
   const openCreate = () => {
     setEditingId(null);
+    setOpenedItem(null);
     setForm(emptyForm());
     setProductQuery('');
     setFormError(null);
@@ -201,6 +240,7 @@ export function Hypotheses() {
 
   const openEdit = (item) => {
     setEditingId(item.id);
+    setOpenedItem(item);
     setForm(formFromItem(item));
     setProductQuery('');
     setFormError(null);
@@ -210,10 +250,31 @@ export function Hypotheses() {
   const closeModal = () => {
     if (saving) return;
     setModalOpen(false);
+    setOpenedItem(null);
     setFormError(null);
   };
 
   const patchForm = (patch) => setForm((prev) => ({ ...prev, ...patch }));
+
+  const setDurationPreset = (preset) => {
+    if (preset === 'custom') {
+      patchForm({ durationPreset: 'custom' });
+      return;
+    }
+    const days = Number(preset);
+    const range = rangeFromStartDays(form.dateFrom || today, days);
+    patchForm({ durationPreset: days, dateFrom: range.dateFrom, dateTo: range.dateTo });
+  };
+
+  const setStartDate = (dateFrom) => {
+    if (form.durationPreset === 'custom') {
+      const dateTo = form.dateTo && form.dateTo < dateFrom ? dateFrom : form.dateTo;
+      patchForm({ dateFrom, dateTo, durationPreset: detectDurationPreset(dateFrom, dateTo) });
+      return;
+    }
+    const range = rangeFromStartDays(dateFrom, Number(form.durationPreset) || 7);
+    patchForm({ dateFrom: range.dateFrom, dateTo: range.dateTo });
+  };
 
   const handleSelectProduct = (product) => {
     patchForm({
@@ -242,6 +303,7 @@ export function Hypotheses() {
         description: form.description,
         dateFrom: form.dateFrom,
         dateTo: form.dateTo,
+        durationDays: plannedDays,
         marketplace: form.marketplace,
         scheme: form.scheme,
         status: form.status,
@@ -283,7 +345,7 @@ export function Hypotheses() {
         iconClass="pe-7s-light"
         iconBgClass="bg-mean-fruit"
         title="Гипотезы"
-        subtitle="Что меняли по товару и как это повлияло на штуки и прибыль относительно предыдущего периода той же длины"
+        subtitle="Старт сегодня — сравниваем те же N дней до изменений с N днями действия. Когда срок выйдет, записываем вывод"
         actions={
           <Button variant="primary" size="small" onClick={openCreate}>
             Новая гипотеза
@@ -327,15 +389,15 @@ export function Hypotheses() {
           <div className="sales-analytics__card-label">Активные</div>
           <div className="sales-analytics__card-value">{formatQty(summary.activeCount || 0)}</div>
         </div>
-        <div className="sales-analytics__card">
-          <div className="sales-analytics__card-label">Продажи выросли</div>
-          <div className="sales-analytics__card-value">{formatQty(summary.withSalesUp || 0)}</div>
-          <div className="sales-analytics__card-sub">гипотез со штуками выше прошлого периода</div>
+        <div className="sales-analytics__card hypotheses__card--await">
+          <div className="sales-analytics__card-label">Нужен вывод</div>
+          <div className="sales-analytics__card-value">{formatQty(summary.awaitingConclusion || 0)}</div>
+          <div className="sales-analytics__card-sub">срок действия уже прошёл</div>
         </div>
         <div className="sales-analytics__card sales-analytics__card--net">
           <div className="sales-analytics__card-label">Прибыль выросла</div>
           <div className="sales-analytics__card-value">{formatQty(summary.withProfitUp || 0)}</div>
-          <div className="sales-analytics__card-sub">гипотез с прибылью выше прошлого периода</div>
+          <div className="sales-analytics__card-sub">по прошедшим дням действия vs до старта</div>
         </div>
       </div>
 
@@ -350,7 +412,7 @@ export function Hypotheses() {
                 Гипотеза
               </SortableTh>
               <SortableTh sortKey="dateFrom" sort={sort} onSort={toggleSort}>
-                Период
+                До старта → действие
               </SortableTh>
               <SortableTh sortKey="soldQtyDelta" sort={sort} onSort={toggleSort} className="sales-analytics__num">
                 Штуки
@@ -374,16 +436,21 @@ export function Hypotheses() {
             {!loading && items.length === 0 && (
               <tr>
                 <td colSpan={6} className="sales-analytics__empty">
-                  Пока нет гипотез. Добавьте первую — укажите товар, что меняли и за какие даты сравнивать.
+                  Пока нет гипотез. Создайте: товар, что меняете, старт и срок (например 7 дней вперёд).
                 </td>
               </tr>
             )}
             {items.map((row) => {
               const cmp = row.comparison || {};
+              const actionFrom = cmp.action?.dateFrom || row.dateFrom;
+              const actionTo = cmp.action?.dateTo || row.dateTo;
+              const prevFrom = cmp.previousFull?.dateFrom || cmp.previous?.dateFrom;
+              const prevTo = cmp.previousFull?.dateTo || cmp.previous?.dateTo;
+              const awaiting = needsConclusion(row);
               return (
                 <tr
                   key={row.id}
-                  className="hypotheses__row"
+                  className={`hypotheses__row${awaiting ? ' hypotheses__row--await' : ''}`}
                   onClick={() => openEdit(row)}
                 >
                   <td>
@@ -401,16 +468,21 @@ export function Hypotheses() {
                     {row.description ? (
                       <div className="hypotheses__desc">{row.description}</div>
                     ) : null}
+                    {row.conclusion ? (
+                      <div className="hypotheses__conclusion-preview">{row.conclusion}</div>
+                    ) : null}
                   </td>
                   <td className="sales-analytics__date">
                     <div>
-                      {formatYmdRu(row.dateFrom)} — {formatYmdRu(row.dateTo)}
+                      {formatYmdRu(prevFrom)} — {formatYmdRu(prevTo)}
+                    </div>
+                    <div>
+                      → {formatYmdRu(actionFrom)} — {formatYmdRu(actionTo)}
                     </div>
                     <div className="hypotheses__period-note">
-                      vs {formatYmdRu(cmp.previous?.dateFrom)} — {formatYmdRu(cmp.previous?.dateTo)}
                       {cmp.incomplete
-                        ? ` · ${cmp.elapsedDays} из ${cmp.plannedDays} дн.`
-                        : ''}
+                        ? `сравниваем ${cmp.elapsedDays} из ${cmp.plannedDays} дн. действия`
+                        : `${cmp.plannedDays} дн. vs ${cmp.plannedDays} дн.`}
                     </div>
                   </td>
                   <DeltaCell
@@ -428,11 +500,13 @@ export function Hypotheses() {
                     formatValue={formatRub}
                   />
                   <td>
-                    <span
-                      className={`hypotheses__status hypotheses__status--${row.status}`}
-                    >
-                      {row.status === 'completed' ? 'Завершена' : 'Активна'}
-                    </span>
+                    {row.status === 'completed' ? (
+                      <span className="hypotheses__status hypotheses__status--completed">Завершена</span>
+                    ) : awaiting ? (
+                      <span className="hypotheses__status hypotheses__status--await">Нужен вывод</span>
+                    ) : (
+                      <span className="hypotheses__status hypotheses__status--active">Идёт</span>
+                    )}
                     {row.marketplace !== 'all' || row.scheme !== 'all' ? (
                       <div className="hypotheses__period-note">
                         {marketplaceLabel(row.marketplace)}
@@ -448,19 +522,23 @@ export function Hypotheses() {
       </div>
 
       <p className="sales-analytics__hint">
-        Сравнение идёт с предыдущим отрезком той же длины. Если период гипотезы ещё не закончился,
-        берём уже прошедшие дни и столько же дней до старта. Цифры — из отчётов FBO/FBS.
+        Если сегодня старт на 7 дней — сравниваем предыдущие 7 дней с этими семью. Пока срок не вышел,
+        цифры считаются по уже прошедшим дням действия и такому же числу дней до старта. Полный вывод —
+        после окончания периода.
       </p>
 
       <Modal
         isOpen={modalOpen}
         onClose={closeModal}
         title={editingId ? 'Гипотеза' : 'Новая гипотеза'}
-        size="large"
+        size={editingId ? 'xl' : 'large'}
         scrollable
       >
         <div className="hypotheses-form">
           {formError ? <div className="sales-analytics__error">{formError}</div> : null}
+          {editingId && openedItem?.comparison ? (
+            <HypothesesComparePanel comparison={openedItem.comparison} />
+          ) : null}
 
           <label className="hypotheses-form__field">
             <span>Товар</span>
@@ -513,34 +591,75 @@ export function Hypotheses() {
             />
           </label>
 
+          <div className="hypotheses-form__field">
+            <span>Срок действия</span>
+            <div className="hypotheses-form__presets" role="group" aria-label="Срок действия">
+              {DURATION_PRESETS.map((opt) => (
+                <button
+                  key={String(opt.value)}
+                  type="button"
+                  className={`hypotheses-form__preset${form.durationPreset === opt.value ? ' is-active' : ''}`}
+                  onClick={() => setDurationPreset(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="hypotheses-form__row">
             <label className="hypotheses-form__field">
-              <span>С</span>
+              <span>Старт действия</span>
               <input
                 type="date"
                 value={form.dateFrom}
-                max={form.dateTo || undefined}
-                onChange={(e) => patchForm({ dateFrom: e.target.value })}
+                onChange={(e) => setStartDate(e.target.value)}
               />
             </label>
-            <label className="hypotheses-form__field">
-              <span>По</span>
-              <input
-                type="date"
-                value={form.dateTo}
-                min={form.dateFrom || undefined}
-                onChange={(e) => patchForm({ dateTo: e.target.value })}
-              />
-            </label>
+            {form.durationPreset === 'custom' ? (
+              <label className="hypotheses-form__field">
+                <span>Конец действия</span>
+                <input
+                  type="date"
+                  value={form.dateTo}
+                  min={form.dateFrom || undefined}
+                  onChange={(e) => {
+                    const dateTo = e.target.value;
+                    patchForm({
+                      dateTo,
+                      durationPreset: detectDurationPreset(form.dateFrom, dateTo),
+                    });
+                  }}
+                />
+              </label>
+            ) : (
+              <label className="hypotheses-form__field">
+                <span>Конец действия</span>
+                <input type="date" value={form.dateTo} readOnly />
+              </label>
+            )}
           </div>
-          <p className="hypotheses-form__hint">
-            Предыдущий период для сравнения:{' '}
-            {formatYmdRu(previewPrev.dateFrom)} — {formatYmdRu(previewPrev.dateTo)}. Сегодня{' '}
-            {formatYmdRu(formatAnalyticsYmd(new Date()))}
-            {form.dateTo > formatAnalyticsYmd(new Date())
-              ? ' — пока сравним только прошедшие дни.'
-              : '.'}
-          </p>
+
+          <div className="hypotheses-form__windows">
+            <div>
+              <b>До старта</b>
+              <div>
+                {formatYmdRu(previewPrev.dateFrom)} — {formatYmdRu(previewPrev.dateTo)}
+              </div>
+              <span>{plannedDays} дн. до изменений</span>
+            </div>
+            <div>
+              <b>Действие гипотезы</b>
+              <div>
+                {formatYmdRu(form.dateFrom)} — {formatYmdRu(form.dateTo)}
+              </div>
+              <span>
+                {formIncomplete
+                  ? `ещё идёт, полный вывод после ${formatYmdRu(form.dateTo)}`
+                  : 'срок вышел — можно записать вывод'}
+              </span>
+            </div>
+          </div>
 
           <div className="hypotheses-form__row">
             <label className="hypotheses-form__field">
@@ -575,19 +694,23 @@ export function Hypotheses() {
                 value={form.status}
                 onChange={(e) => patchForm({ status: e.target.value })}
               >
-                <option value="active">Активна</option>
+                <option value="active">Идёт</option>
                 <option value="completed">Завершена</option>
               </select>
             </label>
           </div>
 
           <label className="hypotheses-form__field">
-            <span>Вывод</span>
+            <span>Вывод{formIncomplete ? ' (после окончания срока)' : ''}</span>
             <textarea
               rows={2}
               value={form.conclusion}
               onChange={(e) => patchForm({ conclusion: e.target.value })}
-              placeholder="Сработало / не сработало и почему — по желанию"
+              placeholder={
+                formIncomplete
+                  ? `Заполните после ${formatYmdRu(form.dateTo)}, когда наберётся полный период действия`
+                  : 'Сработало / не сработало и почему'
+              }
             />
           </label>
 

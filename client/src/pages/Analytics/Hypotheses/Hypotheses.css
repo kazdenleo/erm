@@ -11,8 +11,28 @@
   cursor: pointer;
 }
 
-.hypotheses__row:hover td {
-  background: #f8fafc;
+.hypotheses__row--await td:first-child {
+  box-shadow: inset 3px 0 0 #d97706;
+}
+
+.hypotheses__card--await {
+  border-left: 4px solid #d97706;
+}
+
+.hypotheses__status--await {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.hypotheses__conclusion-preview {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #334155;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 28rem;
 }
 
 .hypotheses__sku {
@@ -153,6 +173,59 @@
   color: #64748b;
 }
 
+.hypotheses-form__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hypotheses-form__preset {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+}
+
+.hypotheses-form__preset:hover {
+  background: #f8fafc;
+}
+
+.hypotheses-form__preset.is-active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.hypotheses-form__windows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.hypotheses-form__windows span {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+@media (max-width: 640px) {
+  .hypotheses-form__windows {
+    grid-template-columns: 1fr;
+  }
+}
+
 .hypotheses-form__actions {
   display: flex;
   align-items: center;
@@ -164,4 +237,160 @@
 .hypotheses-form__actions-right {
   display: flex;
   gap: 8px;
+}
+
+.hypotheses-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 4px;
+}
+
+.hypotheses-compare__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.hypotheses-compare__cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.hypotheses-compare__card {
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.hypotheses-compare__card--prev {
+  border-left: 4px solid #64748b;
+}
+
+.hypotheses-compare__card--now {
+  border-left: 4px solid #2563eb;
+}
+
+.hypotheses-compare__card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.hypotheses-compare__card-dates {
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.hypotheses-compare__card-note {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.hypotheses-compare__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.hypotheses-compare__stats span {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.hypotheses-compare__stats b {
+  display: block;
+  margin-top: 2px;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.hypotheses-compare__deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.hypotheses-compare__delta-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.hypotheses-compare__delta-row > span:first-child {
+  color: #64748b;
+}
+
+.hypotheses-compare__warn {
+  margin: 0;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.hypotheses-compare__metric-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hypotheses-compare__chart {
+  width: 100%;
+  min-width: 0;
+  min-height: 260px;
+  padding: 8px 4px 0;
+}
+
+.hypotheses-compare__empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.hypotheses-compare__tip {
+  min-width: 220px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+}
+
+.hypotheses-compare__tip b {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.hypotheses-compare__tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hypotheses-compare__tip-row span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .hypotheses-compare__cards,
+  .hypotheses-compare__stats {
+    grid-template-columns: 1fr;
+  }
 }

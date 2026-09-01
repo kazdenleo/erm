@@ -156,23 +156,33 @@ function deltaPct(curr, prev) {
 
 function comparisonWindows(dateFrom, dateTo, today) {
   const plannedDays = periodLengthDays(dateFrom, dateTo);
+  const prevTo = shiftDaysYmd(dateFrom, -1);
+  const previousFullFrom = shiftDaysYmd(prevTo, -(plannedDays - 1));
+  const previousFull = { dateFrom: previousFullFrom, dateTo: prevTo };
+  const action = { dateFrom, dateTo };
   const effectiveTo = minYmd(dateTo, today);
   if (effectiveTo < dateFrom) {
     return {
       plannedDays,
       elapsedDays: 0,
       incomplete: true,
+      readyForConclusion: false,
+      action,
+      previousFull,
       current: { dateFrom, dateTo: dateFrom },
-      previous: { dateFrom, dateTo: dateFrom },
+      previous: previousFull,
     };
   }
   const elapsedDays = periodLengthDays(dateFrom, effectiveTo);
-  const prevTo = shiftDaysYmd(dateFrom, -1);
+  const incomplete = effectiveTo < dateTo;
   const prevFrom = shiftDaysYmd(prevTo, -(elapsedDays - 1));
   return {
     plannedDays,
     elapsedDays,
-    incomplete: effectiveTo < dateTo,
+    incomplete,
+    readyForConclusion: !incomplete,
+    action,
+    previousFull,
     current: { dateFrom, dateTo: effectiveTo },
     previous: { dateFrom: prevFrom, dateTo: prevTo },
   };
@@ -187,6 +197,50 @@ function rowMatchesHypothesis(row, hyp) {
 
 function inDateRange(ymd, from, to) {
   return ymd >= from && ymd <= to;
+}
+
+function eachYmd(from, to) {
+  const out = [];
+  if (!from || !to || to < from) return out;
+  let cur = from;
+  while (cur <= to) {
+    out.push(cur);
+    cur = shiftDaysYmd(cur, 1);
+  }
+  return out;
+}
+
+function seriesForWindow(dayRows, hypRow, from, to, taxContext, productId, today = null) {
+  const byDate = new Map();
+  for (const row of dayRows) {
+    if (!rowMatchesHypothesis(row, hypRow)) continue;
+    if (!inDateRange(row.operationDate, from, to)) continue;
+    const acc = byDate.get(row.operationDate) || emptyEconomics();
+    addEconomics(acc, row);
+    byDate.set(row.operationDate, acc);
+  }
+  return eachYmd(from, to).map((date, idx) => {
+    if (today && date > today) {
+      return {
+        day: idx + 1,
+        date,
+        soldQty: null,
+        soldAmount: null,
+        netIncome: null,
+        isFuture: true,
+      };
+    }
+    const acc = byDate.get(date) || emptyEconomics();
+    const eco = finalizeEconomics(acc, taxContext, productId);
+    return {
+      day: idx + 1,
+      date,
+      soldQty: eco.soldQty,
+      soldAmount: eco.soldAmount,
+      netIncome: eco.netIncome,
+      isFuture: false,
+    };
+  });
 }
 
 function mapHypothesisRow(row) {
@@ -249,8 +303,12 @@ function parseBody(body = {}) {
   if (title.length > 500) throw httpError('Формулировка слишком длинная', 400);
 
   const dateFrom = parseDateYmd(body.dateFrom ?? body.date_from);
-  const dateTo = parseDateYmd(body.dateTo ?? body.date_to);
-  if (!dateFrom || !dateTo) throw httpError('Укажите период гипотезы', 400);
+  let dateTo = parseDateYmd(body.dateTo ?? body.date_to);
+  const durationDays = Number(body.durationDays ?? body.duration_days);
+  if (dateFrom && !dateTo && Number.isFinite(durationDays) && durationDays >= 1) {
+    dateTo = shiftDaysYmd(dateFrom, durationDays - 1);
+  }
+  if (!dateFrom || !dateTo) throw httpError('Укажите дату старта и срок действия гипотезы', 400);
   if (dateTo < dateFrom) throw httpError('Дата окончания не может быть раньше начала', 400);
 
   return {
@@ -272,12 +330,14 @@ async function attachComparisons(profileId, rows) {
 
   const today = todayYmd();
   const windows = items.map((h) => comparisonWindows(h.dateFrom, h.dateTo, today));
-  let rangeFrom = windows[0].previous.dateFrom;
+  let rangeFrom = windows[0].previousFull.dateFrom;
   let rangeTo = windows[0].current.dateTo;
   for (const w of windows) {
+    rangeFrom = minYmd(rangeFrom, w.previousFull.dateFrom);
     rangeFrom = minYmd(rangeFrom, w.previous.dateFrom);
     rangeTo = maxYmd(rangeTo, w.current.dateTo);
     rangeTo = maxYmd(rangeTo, w.previous.dateTo);
+    rangeTo = maxYmd(rangeTo, w.previousFull.dateTo);
   }
 
   const productIds = [...new Set(items.map((h) => h.productId))];
@@ -295,6 +355,7 @@ async function attachComparisons(profileId, rows) {
     const w = windows[idx];
     const currentAcc = emptyEconomics();
     const previousAcc = emptyEconomics();
+    const previousFullAcc = emptyEconomics();
     const hypRow = {
       product_id: item.productId,
       marketplace: item.marketplace,
@@ -304,17 +365,51 @@ async function attachComparisons(profileId, rows) {
       if (!rowMatchesHypothesis(row, hypRow)) continue;
       if (inDateRange(row.operationDate, w.current.dateFrom, w.current.dateTo)) {
         addEconomics(currentAcc, row);
-      } else if (inDateRange(row.operationDate, w.previous.dateFrom, w.previous.dateTo)) {
+      }
+      if (inDateRange(row.operationDate, w.previous.dateFrom, w.previous.dateTo)) {
         addEconomics(previousAcc, row);
+      }
+      if (inDateRange(row.operationDate, w.previousFull.dateFrom, w.previousFull.dateTo)) {
+        addEconomics(previousFullAcc, row);
       }
     }
     const current = {
       ...w.current,
       ...finalizeEconomics(currentAcc, taxContext, item.productId),
+      series: seriesForWindow(
+        dayRows,
+        hypRow,
+        w.action.dateFrom,
+        w.action.dateTo,
+        taxContext,
+        item.productId,
+        today
+      ),
     };
     const previous = {
       ...w.previous,
       ...finalizeEconomics(previousAcc, taxContext, item.productId),
+      series: seriesForWindow(
+        dayRows,
+        hypRow,
+        w.previous.dateFrom,
+        w.previous.dateTo,
+        taxContext,
+        item.productId
+      ),
+    };
+    const previousFullSeries = seriesForWindow(
+      dayRows,
+      hypRow,
+      w.previousFull.dateFrom,
+      w.previousFull.dateTo,
+      taxContext,
+      item.productId
+    );
+    const previousFull = {
+      ...w.previousFull,
+      ...finalizeEconomics(previousFullAcc, taxContext, item.productId),
+      series: previousFullSeries,
     };
     return {
       ...item,
@@ -322,6 +417,9 @@ async function attachComparisons(profileId, rows) {
         plannedDays: w.plannedDays,
         elapsedDays: w.elapsedDays,
         incomplete: w.incomplete,
+        readyForConclusion: Boolean(w.readyForConclusion),
+        action: w.action,
+        previousFull,
         current,
         previous,
         soldQtyDelta: current.soldQty - previous.soldQty,
@@ -358,6 +456,9 @@ class ProductHypothesesService {
     const items = await attachComparisons(pid, res.rows || []);
     const activeCount = items.filter((h) => h.status === 'active').length;
     const completedCount = items.filter((h) => h.status === 'completed').length;
+    const awaitingConclusion = items.filter(
+      (h) => h.status === 'active' && h.comparison?.readyForConclusion && !h.conclusion
+    ).length;
     const withSalesUp = items.filter((h) => (h.comparison?.soldQtyDelta || 0) > 0).length;
     const withProfitUp = items.filter((h) => (h.comparison?.netIncomeDelta || 0) > 0).length;
     return {
@@ -366,6 +467,7 @@ class ProductHypothesesService {
         total: items.length,
         activeCount,
         completedCount,
+        awaitingConclusion,
         withSalesUp,
         withProfitUp,
       },
