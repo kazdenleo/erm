@@ -115,42 +115,105 @@ export async function gigachatListModels(settings) {
   });
 }
 
-const FUNCTION_MESSAGE_ROLES = new Set(['user', 'function', 'tool', 'random']);
-
 function cloneFunctions(functions) {
   return Array.isArray(functions) && functions.length ? functions : null;
 }
 
-function sanitizeChatMessages(messages, functionsForLast = null, { withThinking = true } = {}) {
-  if (!Array.isArray(messages)) return [];
-  const lastIdx = messages.length - 1;
-  return messages.map((raw, i) => {
-    const msg = raw && typeof raw === 'object' ? raw : {};
-    const role = msg.role;
-    const out = {
-      role,
-      content: msg.content == null ? '' : msg.content,
-    };
-    if (msg.name) out.name = msg.name;
-    if (msg.function_call) out.function_call = msg.function_call;
-    if (msg.functions_state_id) out.functions_state_id = msg.functions_state_id;
-    if (msg.tools_state_id) out.tools_state_id = msg.tools_state_id;
+function stateIdOf(msg) {
+  return msg?.functions_state_id || msg?.tools_state_id || msg?.tool_state_id || null;
+}
 
-    if (FUNCTION_MESSAGE_ROLES.has(role)) {
-      const fns = (i === lastIdx && functionsForLast) || cloneFunctions(msg.functions);
-      if (fns) {
-        out.functions = fns;
-        if (withThinking) {
-          out.thinking_functions = cloneFunctions(msg.thinking_functions) || fns;
-        }
-      }
+function parseJsonContent(content) {
+  if (content && typeof content === 'object' && !Array.isArray(content)) return content;
+  if (typeof content !== 'string') return { result: content ?? null };
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' ? parsed : { result: parsed };
+  } catch {
+    return { result: content };
+  }
+}
+
+function stripMessage(raw) {
+  const msg = raw && typeof raw === 'object' ? raw : {};
+  const out = {
+    role: msg.role,
+    content: msg.content == null ? '' : msg.content,
+  };
+  if (msg.name) out.name = msg.name;
+  if (msg.function_call) out.function_call = msg.function_call;
+  const stateId = stateIdOf(msg);
+  if (stateId) {
+    out.functions_state_id = stateId;
+    out.tools_state_id = stateId;
+  }
+  return out;
+}
+
+function lastUserIndex(messages) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') return i;
+  }
+  return -1;
+}
+
+/** Схемы инструментов только на user — не на assistant и не на результат function. */
+function withFunctionsOnUser(messages, functions) {
+  const list = (Array.isArray(messages) ? messages : []).map(stripMessage);
+  const fns = cloneFunctions(functions);
+  const idx = lastUserIndex(list);
+  if (!fns || idx < 0) return list;
+  list[idx] = { ...list[idx], functions: fns };
+  return list;
+}
+
+function toToolsApiMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).map((raw) => {
+    const msg = stripMessage(raw);
+    if (msg.role === 'function' || msg.role === 'tool') {
+      const name = msg.name || msg.function_call?.name || '';
+      const result = parseJsonContent(msg.content);
+      const out = {
+        role: 'tool',
+        content: [{ function_result: { name, result } }],
+      };
+      const sid = stateIdOf(msg);
+      if (sid) out.tools_state_id = sid;
+      return out;
     }
-    return out;
+    if (msg.role === 'assistant' && msg.function_call) {
+      const out = {
+        role: 'assistant',
+        content: msg.content || '',
+        function_call: msg.function_call,
+      };
+      const sid = stateIdOf(msg);
+      if (sid) out.tools_state_id = sid;
+      return out;
+    }
+    return msg;
   });
 }
 
-function isFunctionsPlacementError(err) {
-  return /thinking_functions|functions or thinking|should only appeal/i.test(String(err?.message || ''));
+function isRetryableChatError(err) {
+  return /thinking_functions|functions or thinking|should only appeal|every assistant function call must have a result/i.test(
+    String(err?.message || '')
+  );
+}
+
+function normalizeChatCompletion(json) {
+  if (!json || typeof json !== 'object') return json;
+  if (Array.isArray(json.choices) && json.choices.length) return json;
+  const messages = Array.isArray(json.messages) ? json.messages : [];
+  if (!messages.length) return json;
+  const message = messages[messages.length - 1] || {};
+  const finish =
+    json.finish_reason ||
+    (message.function_call?.name ? 'function_call' : 'stop');
+  return {
+    ...json,
+    choices: [{ message, index: 0, finish_reason: finish }],
+  };
 }
 
 export async function gigachatChatCompletions(settings, payload) {
@@ -161,17 +224,11 @@ export async function gigachatChatCompletions(settings, payload) {
   const attempts = [];
   if (functions) {
     attempts.push({
-      label: 'message-functions+thinking',
+      label: 'functions-on-user',
       body: {
         ...src,
-        messages: sanitizeChatMessages(src.messages, functions, { withThinking: true }),
-      },
-    });
-    attempts.push({
-      label: 'message-functions',
-      body: {
-        ...src,
-        messages: sanitizeChatMessages(src.messages, functions, { withThinking: false }),
+        function_call: src.function_call || 'auto',
+        messages: withFunctionsOnUser(src.messages, functions),
       },
     });
     attempts.push({
@@ -179,7 +236,7 @@ export async function gigachatChatCompletions(settings, payload) {
       body: (() => {
         const body = {
           ...src,
-          messages: sanitizeChatMessages(src.messages, null, { withThinking: false }),
+          messages: toToolsApiMessages(src.messages),
           tools: [{ functions: { specifications: functions } }],
           tool_config: { mode: 'auto' },
         };
@@ -190,10 +247,7 @@ export async function gigachatChatCompletions(settings, payload) {
   } else {
     attempts.push({
       label: 'plain',
-      body: {
-        ...src,
-        messages: sanitizeChatMessages(src.messages, null, { withThinking: false }),
-      },
+      body: { ...src, messages: (src.messages || []).map(stripMessage) },
     });
   }
 
@@ -216,23 +270,8 @@ export async function gigachatChatCompletions(settings, payload) {
         message: String(err?.message || err).slice(0, 240),
         roles: (attempt.body.messages || []).map((m) => m.role),
       });
-      if (!functions || !isFunctionsPlacementError(err)) throw err;
+      if (!functions || !isRetryableChatError(err)) throw err;
     }
   }
   throw lastErr;
-}
-
-function normalizeChatCompletion(json) {
-  if (!json || typeof json !== 'object') return json;
-  if (Array.isArray(json.choices) && json.choices.length) return json;
-  const messages = Array.isArray(json.messages) ? json.messages : [];
-  if (!messages.length) return json;
-  const message = messages[messages.length - 1] || {};
-  const finish =
-    json.finish_reason ||
-    (message.function_call?.name ? 'function_call' : 'stop');
-  return {
-    ...json,
-    choices: [{ message, index: 0, finish_reason: finish }],
-  };
 }

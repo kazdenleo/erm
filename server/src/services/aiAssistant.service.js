@@ -439,22 +439,25 @@ class AiAssistantService {
           result = { error: err.message || String(err) };
         }
         lastToolResult = result;
+        const stateId = message.functions_state_id || message.tools_state_id || message.tool_state_id;
         const assistantMsg = {
           role: 'assistant',
-          content: messageText(message),
+          content: '',
           function_call: this._functionCallPayload(fn),
         };
-        if (message.functions_state_id) {
-          assistantMsg.functions_state_id = message.functions_state_id;
+        if (stateId) {
+          assistantMsg.functions_state_id = stateId;
+          assistantMsg.tools_state_id = stateId;
         }
         dialog.push(assistantMsg);
         const fnMsg = {
           role: 'function',
           name: fn.name,
-          content: JSON.stringify(result),
+          content: JSON.stringify(result && typeof result === 'object' ? result : { result }),
         };
-        if (message.functions_state_id) {
-          fnMsg.functions_state_id = message.functions_state_id;
+        if (stateId) {
+          fnMsg.functions_state_id = stateId;
+          fnMsg.tools_state_id = stateId;
         }
         dialog.push(fnMsg);
         continue;
