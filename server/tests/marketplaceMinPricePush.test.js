@@ -6,6 +6,7 @@ import {
   wbPriceToMeetFloor,
   resolveOzonPushTargetPrice,
   buildOzonPriceImportEntry,
+  buildWbPriceUploadPayload,
   needsOzonMinPricePush,
   needsWbFloorPush,
   needsYmFloorPush,
@@ -113,6 +114,30 @@ describe('marketplaceMinPricePush helpers', () => {
     });
     expect(entry.price).toBe('3071');
     expect(entry.min_price).toBe('3071');
+  });
+
+  test('buildWbPriceUploadPayload sync mode uses exact price without stale WB discount', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const pack = buildWbPriceUploadPayload({
+      floor: 2569,
+      sellingTarget: 2028,
+      currentWbDiscount: 10,
+    });
+    expect(pack.price).toBe(2569);
+    expect(pack.discount).toBe(0);
+    expect(pack.targetEff).toBe(2569);
+  });
+
+  test('buildWbPriceUploadPayload uses ERP before and discount', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const pack = buildWbPriceUploadPayload({
+      floor: 2569,
+      sellingTarget: 2569,
+      priceBeforeDiscount: 3200,
+      discountPercent: 20,
+    });
+    expect(pack.price).toBe(3200);
+    expect(pack.discount).toBe(20);
   });
 });
 

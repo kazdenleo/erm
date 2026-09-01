@@ -154,6 +154,47 @@ export function buildOzonPriceImportEntry({
   return entry;
 }
 
+/** price + discount для WB upload/task (effective >= floor). */
+export function buildWbPriceUploadPayload({
+  floor,
+  sellingTarget,
+  priceBeforeDiscount = null,
+  discountPercent = null,
+  currentWbDiscount = 0,
+}) {
+  const targetEff = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
+  if (targetEff == null) return null;
+
+  const erpBefore = floorRub(priceBeforeDiscount);
+  let erpDiscount = null;
+  if (discountPercent != null && discountPercent !== '' && Number.isFinite(Number(discountPercent))) {
+    erpDiscount = Math.max(0, Math.min(99, Math.round(Number(discountPercent))));
+  }
+
+  if (erpBefore != null && erpBefore > targetEff) {
+    const discount =
+      erpDiscount != null && erpDiscount > 0
+        ? erpDiscount
+        : Math.max(1, Math.min(99, Math.round((1 - targetEff / erpBefore) * 100)));
+    return { price: erpBefore, discount, targetEff };
+  }
+
+  if (erpDiscount != null && erpDiscount > 0) {
+    const price = wbPriceToMeetFloor(targetEff, erpDiscount);
+    if (price == null) return null;
+    return { price, discount: erpDiscount, targetEff };
+  }
+
+  if (isSyncSellingPriceToMinEnabled()) {
+    return { price: targetEff, discount: 0, targetEff };
+  }
+
+  const d = Math.max(0, Math.min(99, Math.round(Number(currentWbDiscount) || 0)));
+  const price = wbPriceToMeetFloor(targetEff, d);
+  if (price == null) return null;
+  return { price, discount: d, targetEff };
+}
+
 function isRateLimitStatus(status, text = '') {
   if (Number(status) === 429) return true;
   const t = String(text || '').toLowerCase();
@@ -228,7 +269,8 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   if (!product) return null;
 
   const pricesRes = await query(
-    `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, price_before_discount
+    `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price,
+            price_before_discount, discount_percent
      FROM product_marketplace_prices
      WHERE product_id = $1
        AND (
@@ -241,6 +283,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   const floors = {};
   const selling = {};
   const priceBeforeDiscount = {};
+  const discountPercent = {};
   for (const row of pricesRes.rows || []) {
     const mp = String(row.marketplace || '').toLowerCase();
     const floor = resolvePushFloorForMarketplace(row, mp, schemes);
@@ -249,6 +292,9 @@ async function loadProductPushContext(productId, pushSchemes = null) {
     if (s != null) selling[mp] = s;
     const before = row.price_before_discount != null ? floorRub(row.price_before_discount) : null;
     if (before != null) priceBeforeDiscount[mp] = before;
+    if (row.discount_percent != null && Number.isFinite(Number(row.discount_percent))) {
+      discountPercent[mp] = Math.max(0, Math.min(99, Math.round(Number(row.discount_percent))));
+    }
   }
 
   const skusRes = await query(
@@ -258,7 +304,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   );
   const productSkus = skusRes.rows || [];
 
-  return { product, floors, selling, priceBeforeDiscount, productSkus };
+  return { product, floors, selling, priceBeforeDiscount, discountPercent, productSkus };
 }
 
 function resolveOzonIds(productSkus, product) {
@@ -419,7 +465,6 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'wb', skipped: true, reason: 'not_linked' };
   }
 
-  const targetEff = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
   let price = null;
   let discount = 0;
   try {
@@ -462,22 +507,33 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   if (price == null || !Number.isFinite(price)) {
     return { marketplace: 'wb', skipped: true, reason: 'unknown_current' };
   }
-  const eff = wbEffectivePrice(price, discount);
-  if (!needsWbFloorPush({ erpFloor: floor, price, discount })) {
-    return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor, selling: targetEff };
+
+  const uploadPack = buildWbPriceUploadPayload({
+    floor,
+    sellingTarget,
+    priceBeforeDiscount: ctx.priceBeforeDiscount?.wb ?? null,
+    discountPercent: ctx.discountPercent?.wb ?? null,
+    currentWbDiscount: discount,
+  });
+  if (!uploadPack) {
+    return { marketplace: 'wb', skipped: true, reason: 'invalid_floor' };
   }
 
-  const newPrice = wbPriceToMeetFloor(targetEff, discount);
-  if (newPrice == null) {
-    return { marketplace: 'wb', skipped: true, reason: 'invalid_floor' };
+  const targetEff = uploadPack.targetEff;
+  const currentEff = wbEffectivePrice(price, discount);
+  const priceMatch =
+    Math.round(Number(price)) === Math.round(uploadPack.price) &&
+    Math.round(Number(discount) || 0) === Math.round(uploadPack.discount);
+  if (priceMatch && currentEff != null && pricesRoughlyEqual(currentEff, targetEff)) {
+    return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor, selling: targetEff };
   }
 
   const payload = {
     data: [
       {
         nmID,
-        price: newPrice,
-        ...(Number.isFinite(discount) ? { discount: Math.round(discount) } : {}),
+        price: uploadPack.price,
+        ...(Number.isFinite(uploadPack.discount) ? { discount: Math.round(uploadPack.discount) } : {}),
       },
     ],
   };
@@ -505,11 +561,18 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     productId: ctx.product.id,
     nmID,
     floor,
-    selling: targetEff,
-    newPrice,
-    discount,
+    selling: uploadPack.targetEff,
+    newPrice: uploadPack.price,
+    discount: uploadPack.discount,
   });
-  return { marketplace: 'wb', ok: true, floor, selling: targetEff, newPrice };
+  return {
+    marketplace: 'wb',
+    ok: true,
+    floor,
+    selling: uploadPack.targetEff,
+    newPrice: uploadPack.price,
+    discount: uploadPack.discount,
+  };
 }
 
 async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
