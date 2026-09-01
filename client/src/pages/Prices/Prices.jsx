@@ -18,7 +18,7 @@ import { Button } from '../../components/common/Button/Button';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
-import { PushPricesModal } from './PushPricesModal.jsx';
+import { PricesPushSettingsPanel } from './PricesPushSettingsPanel.jsx';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -64,7 +64,7 @@ export function Prices() {
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
-  const { organizations } = useOrganizations();
+  const { organizations, updateOrganization } = useOrganizations();
   const { warehouses } = useWarehouses();
   const { openProductCardFromClick } = useProductCardModal();
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
@@ -107,8 +107,8 @@ export function Prices() {
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
-  const [pushModalOpen, setPushModalOpen] = useState(false);
-  const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
@@ -116,61 +116,32 @@ export function Prices() {
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
 
-  const allVisibleSelected =
-    visibleProducts.length > 0 &&
-    visibleProducts.every((p) => selectedProductIds.has(String(p.id)));
-  const someVisibleSelected = visibleProducts.some((p) => selectedProductIds.has(String(p.id)));
-
-  const toggleProductSelected = (productId, event) => {
-    if (event) event.stopPropagation();
-    const key = String(productId);
-    setSelectedProductIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const toggleAllVisibleSelected = () => {
-    setSelectedProductIds((prev) => {
-      const next = new Set(prev);
-      if (allVisibleSelected) {
-        visibleProducts.forEach((p) => next.delete(String(p.id)));
-      } else {
-        visibleProducts.forEach((p) => next.add(String(p.id)));
-      }
-      return next;
-    });
-  };
-
-  const pageFilterLabels = useMemo(() => {
-    const org = filterOrganizationId
-      ? organizations.find((o) => String(o.id) === String(filterOrganizationId))
-      : null;
-    const brand = filterBrandId ? brands.find((b) => String(b.id) === String(filterBrandId)) : null;
-    const category =
-      filterCategoryId === FILTER_CATEGORY_NONE
-        ? { name: 'Без категории' }
-        : filterCategoryId
-          ? categories.find((c) => String(c.id) === String(filterCategoryId))
-          : null;
-    return {
-      organizationId: filterOrganizationId || '',
-      brandId: filterBrandId || '',
-      categoryId: filterCategoryId || '',
-      orgName: org?.name || '',
-      brandName: brand?.name || '',
-      categoryName: category?.name || '',
+  useEffect(() => {
+    let cancelled = false;
+    pricesApi
+      .getPushSettings()
+      .then((res) => {
+        if (cancelled) return;
+        const data = res?.data ?? res;
+        setPushSettingsSummary(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
     };
-  }, [
-    filterOrganizationId,
-    filterBrandId,
-    filterCategoryId,
-    organizations,
-    brands,
-    categories,
-  ]);
+  }, [settingsOpen]);
+
+  const pushScopeSummaryText = useMemo(() => {
+    const s = pushSettingsSummary;
+    if (!s) return 'по сохранённым настройкам';
+    if (s.scope === 'products' && s.productIds?.length) {
+      return `${s.productIds.length} выбранных товаров`;
+    }
+    if (s.scope === 'categories' && s.categoryIds?.length) {
+      return `${s.categoryIds.length} категорий`;
+    }
+    return 'все товары организаций с включённой отправкой';
+  }, [pushSettingsSummary]);
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -745,40 +716,29 @@ export function Prices() {
     }
   };
 
-  /** Открыть диалог отправки цен на МП. */
-  const handlePushAll = () => {
-    if (filterOrganizationId) {
-      const org = organizations.find((o) => String(o.id) === String(filterOrganizationId));
-      if (org && org.auto_push_marketplace_prices !== true) {
-        setRecalcAllMessage(
-          'Ошибка: у выбранной организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в разделе Организации.'
-        );
-        setTimeout(() => setRecalcAllMessage(null), 10000);
-        return;
-      }
+  /** Запуск отправки цен по сохранённым настройкам раздела «Цены». */
+  const handlePushAll = async () => {
+    const enabledOrgs = (pushSettingsSummary?.organizations || organizations).filter(
+      (o) => o.autoPushMarketplacePrices === true || o.auto_push_marketplace_prices === true
+    );
+    if (!enabledOrgs.length) {
+      setRecalcAllMessage(
+        'Ошибка: ни у одной организации не включена отправка цен на маркетплейсы. Откройте «Настройки» выше.'
+      );
+      setTimeout(() => setRecalcAllMessage(null), 10000);
+      return;
     }
-    setPushModalOpen(true);
-  };
 
-  const handlePushSubmit = async ({ scope, payload }) => {
+    const ok = window.confirm(
+      `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${pushScopeSummaryText}.\nОрганизации с включённой отправкой: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
+    );
+    if (!ok) return;
+
     try {
       setPushAllLoading(true);
       setRecalcAllMessage(null);
-      setPushModalOpen(false);
-
-      if (scope === 'all' && !payload.organizationId) {
-        const ok = window.confirm(
-          'Отправить сохранённые минимальные цены на маркетплейсы для всех организаций с включённой автоотправкой?\n\nОперация выполняется в фоне.'
-        );
-        if (!ok) return;
-      }
-
-      const res = await pricesApi.pushAll(payload);
-      const msg = res?.message || 'Отправка цен на маркетплейсы запущена в фоне.';
-      setRecalcAllMessage(msg);
-      if (scope === 'selected') {
-        setSelectedProductIds(new Set());
-      }
+      const res = await pricesApi.pushAll({ useSavedSettings: true });
+      setRecalcAllMessage(res?.message || 'Отправка цен на маркетплейсы запущена в фоне.');
       setTimeout(() => setRecalcAllMessage(null), 15000);
     } catch (err) {
       console.error('[Prices] push failed:', err);
@@ -787,6 +747,21 @@ export function Prices() {
     } finally {
       setPushAllLoading(false);
     }
+  };
+
+  const handleOrgPushToggle = async (orgId, data) => {
+    await updateOrganization(orgId, data);
+    setPushSettingsSummary((prev) => {
+      if (!prev?.organizations) return prev;
+      return {
+        ...prev,
+        organizations: prev.organizations.map((o) =>
+          String(o.id) === String(orgId)
+            ? { ...o, autoPushMarketplacePrices: data.auto_push_marketplace_prices === true }
+            : o
+        ),
+      };
+    });
   };
 
   if (loading && products.length === 0) {
@@ -799,13 +774,41 @@ export function Prices() {
 
   return (
     <div className="card">
-      <h1 className="title">💰 Цены</h1>
-      <p className="subtitle">
-        Управление ценами товаров на маркетплейсах ·{' '}
-        <Link to="/prices/strategies" style={{ color: 'var(--primary)' }}>Стратегии ценообразования</Link>
-        {' · '}
-        <Link to="/prices/history" style={{ color: 'var(--primary)' }}>История изменения цен</Link>
-      </p>
+      <div className="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
+        <div>
+          <h1 className="title mb-1">💰 Цены</h1>
+          <p className="subtitle mb-0">
+            Управление ценами товаров на маркетплейсах ·{' '}
+            <Link to="/prices/strategies" style={{ color: 'var(--primary)' }}>Стратегии ценообразования</Link>
+            {' · '}
+            <Link to="/prices/history" style={{ color: 'var(--primary)' }}>История изменения цен</Link>
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          className="btn-shadow"
+          onClick={() => setSettingsOpen((v) => !v)}
+        >
+          {settingsOpen ? 'Скрыть настройки' : 'Настройки'}
+        </Button>
+      </div>
+
+      {settingsOpen && (
+        <div
+          className="main-card mb-3 card"
+          style={{ padding: '12px 16px', border: '1px solid rgba(255,255,255,0.1)' }}
+        >
+          <PricesPushSettingsPanel
+            categories={categories}
+            showUncategorizedCategoryOption={showNoneCategoryOption}
+            organizations={organizations}
+            onOrganizationsChange={handleOrgPushToggle}
+            onSaved={(payload) => setPushSettingsSummary((prev) => ({ ...(prev || {}), ...payload }))}
+          />
+        </div>
+      )}
 
       <div className="main-card mb-3 card">
         <div className="card-body p-0">
@@ -1041,41 +1044,10 @@ export function Prices() {
           </div>
         ) : (
           <div className={`prices-table-container card ${listRefreshing ? 'opacity-75' : ''}`}>
-            {selectedProductIds.size > 0 && (
-              <div className="prices-bulk-bar">
-                <div className="prices-bulk-bar-title">
-                  Выбрано товаров: {selectedProductIds.size}
-                </div>
-                <div className="prices-bulk-bar-row">
-                  <Button
-                    variant="secondary"
-                    onClick={() => setPushModalOpen(true)}
-                    disabled={pushAllLoading || listRefreshing}
-                  >
-                    📤 Отправить цены для выбранных
-                  </Button>
-                  <Button variant="secondary" onClick={() => setSelectedProductIds(new Set())}>
-                    Снять выделение
-                  </Button>
-                </div>
-              </div>
-            )}
             {renderPricesListPager('top')}
             <table className="prices-table table prices-table-commercial">
               <thead>
                 <tr>
-                  <th rowSpan={2} style={{ width: '36px', verticalAlign: 'middle', padding: '2px !important' }}>
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      ref={(el) => {
-                        if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
-                      }}
-                      onChange={toggleAllVisibleSelected}
-                      title="Выбрать все на странице"
-                      aria-label="Выбрать все товары на странице"
-                    />
-                  </th>
                   <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Артикул</th>
                   <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
                   <th
@@ -1228,18 +1200,9 @@ export function Prices() {
                       : null) ||
                     product.sku_wb;
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
-                  const isRowSelected = selectedProductIds.has(String(product.id));
 
                   return (
-                    <tr key={product.id} className={isRowSelected ? 'prices-row-selected' : undefined}>
-                      <td style={{ verticalAlign: 'middle', padding: '2px !important' }}>
-                        <input
-                          type="checkbox"
-                          checked={isRowSelected}
-                          onChange={(e) => toggleProductSelected(product.id, e)}
-                          aria-label={`Выбрать ${product.sku || product.id}`}
-                        />
-                      </td>
+                    <tr key={product.id}>
                       <td style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         {product?.id ? (
                           <button
@@ -1507,11 +1470,7 @@ export function Prices() {
           {recalcAllLoading ? '⏳ Запуск пересчёта...' : '📊 Пересчитать и сохранить все минимальные цены'}
         </Button>
         <Button variant="secondary" onClick={handlePushAll} disabled={recalcAllLoading || pushAllLoading || listRefreshing}>
-          {pushAllLoading
-            ? '⏳ Запуск отправки...'
-            : filterOrganizationId
-              ? '📤 Отправить цены на маркетплейсы (организация)'
-              : '📤 Отправить цены на маркетплейсы'}
+          {pushAllLoading ? '⏳ Запуск отправки...' : '📤 Отправить цены на маркетплейсы'}
         </Button>
         <div style={{marginTop: '8px', fontSize: '12px', color: 'var(--muted)', width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px'}}>
           {recalcAllMessage && (
@@ -1573,17 +1532,6 @@ export function Prices() {
         )}
       />
 
-      <PushPricesModal
-        isOpen={pushModalOpen}
-        onClose={() => setPushModalOpen(false)}
-        onSubmit={handlePushSubmit}
-        loading={pushAllLoading}
-        organizations={organizations}
-        categories={categories}
-        showUncategorizedCategoryOption={showNoneCategoryOption}
-        pageFilters={pageFilterLabels}
-        selectedProductIds={[...selectedProductIds]}
-      />
     </div>
   );
 }

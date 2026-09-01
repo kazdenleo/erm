@@ -11,6 +11,8 @@ import {
   pushForOrganization,
   pushWithFilters,
 } from '../services/marketplaceMinPricePush.service.js';
+import pricePushSettingsService from '../services/pricePushSettings.service.js';
+import { describePricePushScope } from '../utils/pricePushSettings.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
 
 function formatPushSkipReason(reason) {
@@ -20,7 +22,7 @@ function formatPushSkipReason(reason) {
     case 'in_progress':
       return 'Уже выполняется другая отправка цен. Подождите и попробуйте снова';
     case 'org_price_push_disabled':
-      return 'У организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в настройках организации.';
+      return 'У организации выключена отправка цен на маркетплейсы. Включите в разделе «Цены» → «Настройки».';
     case 'no_organization':
       return 'У товара не указана организация';
     case 'no_stored_min_prices':
@@ -422,9 +424,46 @@ class PricesController {
   }
 
   /**
+   * GET /api/product/prices/push-settings — настройки отправки цен (scope + организации).
+   */
+  async getPushSettings(req, res, next) {
+    try {
+      const profileId = req.user?.profileId;
+      if (!profileId) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      const data = await pricePushSettingsService.getForProfile(profileId);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      const status = error.statusCode || 500;
+      if (status >= 500) logger.error('[Prices Controller] getPushSettings error:', error);
+      return res.status(status).json({ ok: false, message: error.message || 'Ошибка' });
+    }
+  }
+
+  /**
+   * PATCH /api/product/prices/push-settings — сохранить scope / категории / товары.
+   * Body: { scope?, categoryIds?, productIds? }
+   */
+  async updatePushSettings(req, res, next) {
+    try {
+      const profileId = req.user?.profileId;
+      if (!profileId) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      const data = await pricePushSettingsService.saveForProfile(profileId, req.body || {});
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      const status = error.statusCode || 500;
+      if (status >= 500) logger.error('[Prices Controller] updatePushSettings error:', error);
+      return res.status(status).json({ ok: false, message: error.message || 'Ошибка' });
+    }
+  }
+
+  /**
    * POST /api/product/prices/push-all — отправить мин. цены на МП (фон).
    * Body: {
-   *   organizationId?, brandId?, categoryIds?, productIds?
+   *   organizationId?, brandId?, categoryIds?, productIds?, useSavedSettings?: boolean
    * }
    */
   async pushAll(req, res, next) {
@@ -442,11 +481,14 @@ class PricesController {
           ? [body.categoryId]
           : null;
       const productIds = Array.isArray(body.productIds) ? body.productIds : null;
+      const useSavedSettings = body.useSavedSettings !== false;
 
       const hasScopedFilter =
         (Array.isArray(categoryIds) && categoryIds.length > 0) ||
         (Array.isArray(productIds) && productIds.length > 0) ||
         (brandId != null && !isNaN(brandId) && brandId > 0);
+
+      const profileId = req.user?.profileId ?? null;
 
       const validateOrg = async (orgId) => {
         if (orgId == null) return true;
@@ -510,6 +552,34 @@ class PricesController {
           ok: true,
           message:
             'Отправка цен на маркетплейсы запущена в фоне для выбранной организации. Обычно занимает несколько минут.',
+        });
+      }
+
+      if (useSavedSettings && profileId) {
+        const saved = await pricePushSettingsService.getForProfile(profileId);
+        const enabledOrgs = (saved.organizations || []).filter((o) => o.autoPushMarketplacePrices);
+        if (!enabledOrgs.length) {
+          return res.status(400).json({
+            ok: false,
+            message:
+              'Ни у одной организации не включена отправка цен на маркетплейсы. Включите в разделе «Цены» → «Настройки».',
+            reason: 'org_price_push_disabled',
+          });
+        }
+        const filters = await pricePushSettingsService.buildPushFiltersForProfile(profileId);
+        const scopeHint = describePricePushScope(saved);
+
+        pushWithFilters(filters)
+          .then((data) => {
+            logger.info('[Prices Controller] push-all (saved settings) завершён', data);
+          })
+          .catch((err) => {
+            logger.error('[Prices Controller] push-all (saved settings) ошибка:', err);
+          });
+
+        return res.status(202).json({
+          ok: true,
+          message: `Отправка цен на маркетплейсы запущена в фоне (${scopeHint}). Обычно занимает несколько минут.`,
         });
       }
 

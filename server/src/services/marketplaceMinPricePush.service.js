@@ -14,6 +14,7 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
+import { filtersFromPricePushSettings } from '../utils/pricePushSettings.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -673,6 +674,13 @@ export async function resolvePushProductIds(filters = {}) {
     sql += ` AND p.id = ANY($${i++}::bigint[])`;
     params.push(productIds);
   }
+  const profileId =
+    filters.profileId != null && filters.profileId !== '' ? Number(filters.profileId) : null;
+  if (Number.isFinite(profileId) && profileId > 0) {
+    sql += ` AND o.profile_id = $${i++}`;
+    params.push(profileId);
+  }
+
   if (categoryIds.length) {
     const normal = categoryIds.filter((c) => c !== PUSH_FILTER_CATEGORY_NONE);
     const wantNone = categoryIds.includes(PUSH_FILTER_CATEGORY_NONE);
@@ -806,7 +814,16 @@ export async function pushForAllProfiles({ limit = null } = {}) {
       return { skipped: true, reason: 'not_pg' };
     }
 
-    let ids = await resolvePushProductIds({});
+    const profilesRes = await query(
+      'SELECT id, price_push_settings FROM profiles ORDER BY id ASC'
+    );
+    const idSet = new Set();
+    for (const row of profilesRes.rows || []) {
+      const filters = filtersFromPricePushSettings(row.price_push_settings, row.id);
+      const chunk = await resolvePushProductIds(filters);
+      chunk.forEach((id) => idSet.add(id));
+    }
+    let ids = [...idSet].sort((a, b) => a - b);
     const lim = limit != null && Number.isFinite(Number(limit)) ? Number(limit) : null;
     if (lim != null) ids = ids.slice(0, Math.max(1, Math.floor(lim)));
 

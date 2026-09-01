@@ -57,6 +57,10 @@ router.post('/push-one', (req, res, next) => pricesController.pushOne(req, res, 
 // Отправить мин. цены на МП (фон; body.organizationId — опционально)
 router.post('/push-all', (req, res, next) => pricesController.pushAll(req, res, next));
 
+// Настройки отправки цен на маркетплейсы
+router.get('/push-settings', (req, res, next) => pricesController.getPushSettings(req, res, next));
+router.patch('/push-settings', (req, res, next) => pricesController.updatePushSettings(req, res, next));
+
 // Сохранить переданные рассчитанные цены в БД (массив { productId, ozon?, wb?, ym? })
 router.post('/save-bulk', (req, res, next) => pricesController.saveBulk(req, res, next));
 

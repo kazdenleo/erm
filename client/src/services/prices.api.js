@@ -47,17 +47,31 @@ export const pricesApi = {
     return response.data;
   },
 
+  /** Настройки отправки цен на маркетплейсы */
+  async getPushSettings() {
+    const response = await api.get('/product/prices/push-settings');
+    return response.data;
+  },
+
+  async updatePushSettings(payload) {
+    const response = await api.patch('/product/prices/push-settings', payload);
+    return response.data;
+  },
+
   /**
    * Отправить мин. цены на маркетплейсы (фон).
+   * По умолчанию использует сохранённые настройки аккаунта.
    * @param {{
    *   organizationId?: number|string|null,
    *   brandId?: number|string|null,
    *   categoryIds?: Array<string|number>,
    *   productIds?: Array<number|string>,
+   *   useSavedSettings?: boolean,
    * }} [opts]
    */
   async pushAll(opts = {}) {
     const body = {};
+    if (opts.useSavedSettings === false) body.useSavedSettings = false;
     if (opts.organizationId != null && String(opts.organizationId).trim() !== '') {
       body.organizationId = Number(opts.organizationId);
     }

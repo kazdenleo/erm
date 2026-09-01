@@ -125,6 +125,9 @@ export const productsApi = {
     if (options.offset != null && options.offset !== '') {
       params.offset = String(options.offset);
     }
+    if (Array.isArray(options.ids) && options.ids.length > 0) {
+      params.ids = options.ids.map((x) => String(x)).filter(Boolean).join(',');
+    }
     if (options.includeArchived === true) params.includeArchived = '1';
     if (options.archivedOnly === true) params.archivedOnly = '1';
     if (options.unlinkedMp != null && options.unlinkedMp !== '') {
