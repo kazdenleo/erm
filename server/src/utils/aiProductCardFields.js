@@ -24,3 +24,13 @@ export function normalizeAiCardFields(keys) {
     .filter((k) => allow.has(k));
   return list.length ? [...new Set(list)] : [...AI_CARD_FIELD_KEYS];
 }
+
+/** Запрос явно просит переписать текст, а не только дырки. */
+export function instructionAllowsOverwrite(instruction) {
+  const t = String(instruction || '').toLowerCase();
+  if (!t.trim()) return false;
+  const mentionsEmpty = /пуст/.test(t);
+  const wantsRewrite = /перепиш|сделай|продающ|улучш|сократи|перефразир|заполни названия|заполни описан/.test(t);
+  if (mentionsEmpty && !wantsRewrite) return false;
+  return wantsRewrite;
+}

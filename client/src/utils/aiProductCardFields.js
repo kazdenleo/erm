@@ -15,6 +15,16 @@ export const AI_CARD_FIELD_KEYS = AI_CARD_FIELDS.map((f) => f.key);
 export const AI_CARD_FIELD_LABEL = Object.fromEntries(AI_CARD_FIELDS.map((f) => [f.key, f.label]));
 export const MAX_BULK_AI_CARDS = 8;
 
+/** Запрос явно просит переписать текст, а не только дырки. */
+export function instructionAllowsOverwrite(instruction) {
+  const t = String(instruction || '').toLowerCase();
+  if (!t.trim()) return false;
+  const mentionsEmpty = /пуст/.test(t);
+  const wantsRewrite = /перепиш|сделай|продающ|улучш|сократи|перефразир|заполни названия|заполни описан/.test(t);
+  if (mentionsEmpty && !wantsRewrite) return false;
+  return wantsRewrite;
+}
+
 export function snapshotAiCardFields(src) {
   const out = {};
   for (const { key } of AI_CARD_FIELDS) {

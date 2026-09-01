@@ -10,11 +10,12 @@ import {
   aiHttpError,
 } from '../utils/aiSettings.js';
 import {
-  AI_CARD_FIELD_KEYS,
   AI_CARD_FIELD_MAX,
   AI_CARD_FIELD_LABEL,
+  AI_CARD_FIELDS,
   MAX_BULK_AI_CARDS,
   normalizeAiCardFields,
+  instructionAllowsOverwrite,
 } from '../utils/aiProductCardFields.js';
 import logger from '../utils/logger.js';
 import repositoryFactory from '../config/repository-factory.js';
@@ -28,24 +29,54 @@ function str(v) {
 
 function parseToolArgs(raw) {
   if (raw == null) return {};
-  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'object' && !Array.isArray(raw)) return unwrapPatch(raw);
   if (typeof raw === 'string') {
+    const s = raw.trim();
     try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      const parsed = JSON.parse(s);
+      return parsed && typeof parsed === 'object' ? unwrapPatch(parsed) : {};
     } catch {
-      return {};
+      const m = s.match(/\{[\s\S]*\}/);
+      if (!m) return {};
+      try {
+        const parsed = JSON.parse(m[0]);
+        return parsed && typeof parsed === 'object' ? unwrapPatch(parsed) : {};
+      } catch {
+        return {};
+      }
     }
   }
   return {};
 }
 
+function unwrapPatch(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const nested = raw[PROPOSE_FN] || raw[PROPOSE_BULK_FN] || raw.patch || raw.fields;
+  const src = nested && typeof nested === 'object' && !Array.isArray(nested) ? nested : raw;
+  const byLabel = Object.fromEntries(AI_CARD_FIELDS.map((f) => [f.label.toLowerCase(), f.key]));
+  const out = { ...src };
+  for (const [k, v] of Object.entries(src)) {
+    const mapped = byLabel[String(k).toLowerCase()];
+    if (mapped && (out[mapped] == null || out[mapped] === '')) out[mapped] = v;
+  }
+  return out;
+}
+
 function extractFunctionCall(message) {
   if (message?.function_call?.name) return message.function_call;
   const c = message?.content;
-  if (!Array.isArray(c)) return null;
-  for (const part of c) {
-    if (part?.function_call?.name) return part.function_call;
+  if (Array.isArray(c)) {
+    for (const part of c) {
+      if (part?.function_call?.name) return part.function_call;
+    }
+  }
+  const extra = message?.functions_state || message?.thinking_functions;
+  if (Array.isArray(extra)) {
+    for (const part of extra) {
+      if (part?.name || part?.function_call?.name) {
+        return part.function_call || part;
+      }
+    }
   }
   return null;
 }
@@ -55,13 +86,13 @@ function parseJsonObject(text) {
   if (!s) return null;
   try {
     const parsed = JSON.parse(s);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    return parsed && typeof parsed === 'object' ? unwrapPatch(parsed) : null;
   } catch {
     const m = s.match(/\{[\s\S]*\}/);
     if (!m) return null;
     try {
       const parsed = JSON.parse(m[0]);
-      return parsed && typeof parsed === 'object' ? parsed : null;
+      return parsed && typeof parsed === 'object' ? unwrapPatch(parsed) : null;
     } catch {
       return null;
     }
@@ -93,6 +124,7 @@ function sanitizePatch(raw, current, fields, { fillEmptyOnly }) {
   const proposed = {};
   const changes = [];
   const warnings = [];
+  const skippedFilled = [];
   for (const key of fields) {
     let next = str(src[key]);
     if (!next) continue;
@@ -103,7 +135,10 @@ function sanitizePatch(raw, current, fields, { fillEmptyOnly }) {
     }
     const prev = str(current[key]);
     if (next === prev) continue;
-    if (fillEmptyOnly && prev.length >= 12) continue;
+    if (fillEmptyOnly && prev.length >= 12) {
+      skippedFilled.push({ field: key, label: AI_CARD_FIELD_LABEL[key] || key, from: prev });
+      continue;
+    }
     proposed[key] = next;
     changes.push({
       field: key,
@@ -112,7 +147,7 @@ function sanitizePatch(raw, current, fields, { fillEmptyOnly }) {
       to: next,
     });
   }
-  return { proposed, changes, warnings, comment: str(src.comment) };
+  return { proposed, changes, warnings, skippedFilled, comment: str(src.comment) };
 }
 
 function fieldProperties(fields) {
@@ -122,7 +157,7 @@ function fieldProperties(fields) {
   for (const key of fields) {
     properties[key] = {
       type: 'string',
-      description: `${AI_CARD_FIELD_LABEL[key] || key}. Пустая строка = не менять.`,
+      description: `${AI_CARD_FIELD_LABEL[key] || key}. Обязательно верни новый текст, если поле нужно заполнить или переписать.`,
     };
   }
   return properties;
@@ -161,8 +196,8 @@ function buildUserPrompt({ instruction, fields, fillEmptyOnly, items }) {
     'Пиши по-русски, коротко, без воды и эмодзи. Не выдумывай характеристики, сертификаты, размеры и совместимость, которых нет во входных данных.',
     'SKU, штрихкоды, цены и id не трогай.',
     fillEmptyOnly
-      ? 'Заполняй в первую очередь пустые поля. Уже заполненные длинные тексты не переписывай, если пользователь явно не попросил.'
-      : 'Можно переписать указанные поля, если так просит пользователь.',
+      ? 'Заполняй пустые поля. Уже заполненные не переписывай, если пользователь явно не попросил переписать.'
+      : 'Перепиши указанные поля по пожеланию пользователя, даже если они уже заполнены.',
     'Названия для МП — продающие, но без капса и без спама ключами. Описание — факты из карточки.',
   ];
   const userNote = str(instruction).slice(0, MAX_INSTRUCTION);
@@ -181,16 +216,32 @@ async function callPropose(settings, { functionName, parameters, userContent }) 
     functions: [
       {
         name: functionName,
-        description: 'Черновик текстовых полей карточки. Пустое поле = не менять.',
+        description: 'Черновик текстовых полей карточки. Верни готовый текст по каждому полю, которое нужно заполнить или переписать.',
         parameters,
       },
     ],
   });
   const message = response?.choices?.[0]?.message || {};
   const fn = extractFunctionCall(message);
+  if (fn?.name) {
+    const args = parseToolArgs(fn.arguments);
+    const hasText = Object.entries(args).some(([k, v]) => k !== 'comment' && str(v));
+    if (hasText) return args;
+  }
+  const fromText = parseJsonObject(
+    typeof message.content === 'string'
+      ? message.content
+      : Array.isArray(message.content)
+        ? message.content
+            .map((p) => (typeof p === 'string' ? p : p?.text || p?.content || ''))
+            .join('\n')
+        : ''
+  );
+  if (fromText) {
+    const hasText = Object.entries(fromText).some(([k, v]) => k !== 'comment' && str(v));
+    if (hasText) return fromText;
+  }
   if (fn?.name) return parseToolArgs(fn.arguments);
-  const fromText = parseJsonObject(typeof message.content === 'string' ? message.content : '');
-  if (fromText) return fromText;
   throw aiHttpError('GigaChat не вернул черновик полей. Попробуйте ещё раз или упростите запрос.', 422);
 }
 
@@ -198,7 +249,7 @@ class AiProductCardService {
   async propose(profileId, { productId, draft, instruction, fields, fillEmptyOnly } = {}) {
     const settings = await loadAiSettings(profileId);
     const wanted = normalizeAiCardFields(fields);
-    const fillEmpty = fillEmptyOnly !== false;
+    const fillEmpty = fillEmptyOnly !== false && !instructionAllowsOverwrite(instruction);
     let current = {};
     let sku = '';
     let id = productId || null;
@@ -225,12 +276,13 @@ class AiProductCardService {
         items: current,
       }),
     });
-    const { proposed, changes, warnings, comment } = sanitizePatch(raw, current, wanted, {
+    const { proposed, changes, warnings, skippedFilled, comment } = sanitizePatch(raw, current, wanted, {
       fillEmptyOnly: fillEmpty,
     });
     logger.info('[AI] product card draft', {
       productId: id,
       changed: changes.length,
+      fillEmpty,
     });
     return {
       productId: id,
@@ -240,6 +292,12 @@ class AiProductCardService {
       changes,
       warnings,
       comment,
+      fillEmptyOnlyApplied: fillEmpty,
+      emptyReason: changes.length
+        ? null
+        : skippedFilled.length
+          ? 'all_filled'
+          : 'no_model_changes',
       model: settings.model,
     };
   }
@@ -247,7 +305,7 @@ class AiProductCardService {
   async proposeBulk(profileId, { items, instruction, fields, fillEmptyOnly } = {}) {
     const settings = await loadAiSettings(profileId);
     const wanted = normalizeAiCardFields(fields);
-    const fillEmpty = fillEmptyOnly !== false;
+    const fillEmpty = fillEmptyOnly !== false && !instructionAllowsOverwrite(instruction);
     const list = Array.isArray(items) ? items : [];
     if (!list.length) throw aiHttpError('Нет товаров для черновика');
     if (list.length > MAX_BULK_AI_CARDS) {
@@ -312,7 +370,7 @@ class AiProductCardService {
 
     const outItems = packed.map((p, idx) => {
       const rawItem = bySku.get(str(p.sku).toLowerCase()) || rawItems[idx] || {};
-      const { proposed, changes, warnings, comment } = sanitizePatch(rawItem, p.current, wanted, {
+      const { proposed, changes, warnings, skippedFilled, comment } = sanitizePatch(rawItem, p.current, wanted, {
         fillEmptyOnly: fillEmpty,
       });
       return {
@@ -323,6 +381,11 @@ class AiProductCardService {
         changes,
         warnings,
         comment,
+        emptyReason: changes.length
+          ? null
+          : skippedFilled.length
+            ? 'all_filled'
+            : 'no_model_changes',
       };
     });
 
@@ -334,6 +397,12 @@ class AiProductCardService {
     return {
       items: outItems,
       comment: str(raw.comment),
+      fillEmptyOnlyApplied: fillEmpty,
+      emptyReason: outItems.some((x) => x.changes.length)
+        ? null
+        : outItems.some((x) => x.emptyReason === 'all_filled')
+          ? 'all_filled'
+          : 'no_model_changes',
       model: settings.model,
     };
   }

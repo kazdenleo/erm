@@ -8,6 +8,7 @@ import {
   AI_CARD_FIELDS,
   AI_CARD_FIELD_KEYS,
   MAX_BULK_AI_CARDS,
+  instructionAllowsOverwrite,
 } from '../../utils/aiProductCardFields.js';
 import './ProductAiDraftModal.css';
 
@@ -24,9 +25,16 @@ function previewText(value, limit = 220) {
   return `${s.slice(0, limit)}…`;
 }
 
-function DiffTable({ changes }) {
+function emptyHint(reason) {
+  if (reason === 'all_filled') {
+    return 'Все выбранные поля уже заполнены. Снимите галочку «Только пустые поля», чтобы модель переписала текст.';
+  }
+  return 'Модель не предложила изменений. Уточните запрос или снимите галочку «Только пустые поля».';
+}
+
+function DiffTable({ changes, emptyReason }) {
   if (!changes?.length) {
-    return <p className="product-ai-draft__empty">Модель не предложила изменений по выбранным полям.</p>;
+    return <p className="product-ai-draft__empty">{emptyHint(emptyReason)}</p>;
   }
   return (
     <div className="product-ai-draft__table-wrap">
@@ -212,7 +220,10 @@ export function ProductAiDraftModal({
                   key={q}
                   type="button"
                   disabled={loading}
-                  onClick={() => setInstruction(q)}
+                  onClick={() => {
+                    setInstruction(q);
+                    setFillEmptyOnly(/пуст/.test(q.toLowerCase()) && !/перепиш|сделай|продающ/.test(q.toLowerCase()));
+                  }}
                 >
                   {q}
                 </button>
@@ -241,6 +252,11 @@ export function ProductAiDraftModal({
               />
               Только пустые поля — не переписывать уже заполненное
             </label>
+            {fillEmptyOnly && instructionAllowsOverwrite(instruction) ? (
+              <p className="product-ai-draft__meta">
+                В запросе просят заполнить или переписать текст — модель сможет менять уже заполненные поля.
+              </p>
+            ) : null}
 
             {error ? <div className="product-ai-draft__error">{error}</div> : null}
 
@@ -256,7 +272,7 @@ export function ProductAiDraftModal({
                 {(result.warnings || []).length ? (
                   <p className="product-ai-draft__warn">{result.warnings.join(' ')}</p>
                 ) : null}
-                <DiffTable changes={result.changes} />
+                <DiffTable changes={result.changes} emptyReason={result.emptyReason} />
               </>
             ) : null}
 
@@ -269,7 +285,7 @@ export function ProductAiDraftModal({
                       {it.changes?.length ? ` · ${it.changes.length} полей` : ' · без изменений'}
                     </summary>
                     {it.comment ? <p className="product-ai-draft__comment">{it.comment}</p> : null}
-                    <DiffTable changes={it.changes} />
+                    <DiffTable changes={it.changes} emptyReason={it.emptyReason || result.emptyReason} />
                   </details>
                 ))}
               </div>
