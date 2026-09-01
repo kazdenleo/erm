@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { integrationsApi } from '../../services/integrations.api';
 import { organizationsApi } from '../../services/organizations.api';
 import { marketplaceCabinetsApi } from '../../services/marketplaceCabinets.api';
@@ -18,10 +19,12 @@ import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { INTEGRATION_CATALOG, INTEGRATION_TABS, findIntegration } from './integrationCatalog';
 import { IntegrationLogo } from './IntegrationLogo';
 import { ChestnyZnakTab } from './ChestnyZnakTab';
+import { GigaChatTab } from './GigaChatTab';
 import './Integrations.css';
 
 export function Integrations() {
   const { selectedOrganizationId, setSelectedOrganizationId, profile } = useAuth();
+  const [searchParams] = useSearchParams();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const [activeTab, setActiveTab] = useState('marketplaces');
   const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
@@ -44,6 +47,15 @@ export function Integrations() {
   const selectedIntegration = selectedIntegrationId
     ? findIntegration(activeTab, selectedIntegrationId)
     : null;
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const id = searchParams.get('id');
+    if (tab && INTEGRATION_TABS.some((t) => t.id === tab)) {
+      setActiveTab(tab);
+    }
+    if (id) setSelectedIntegrationId(id);
+  }, [searchParams]);
 
   const loadConfigs = useCallback(async () => {
     try {
@@ -224,6 +236,10 @@ export function Integrations() {
       );
     }
 
+    if (activeTab === 'other' && selectedIntegration.id === 'gigachat') {
+      return <GigaChatTab onConfigChange={loadConfigs} />;
+    }
+
     return <IntegrationComingSoon name={selectedIntegration.name} />;
   };
 
@@ -300,6 +316,9 @@ export function Integrations() {
                 <span className="integration-badge integration-badge--soon">В разработке</span>
               )}
               {item.ready && item.id === 'chestny_znak' && configs.other?.chestny_znak?.token_set && (
+                <span className="integration-badge integration-badge--ok">Подключено</span>
+              )}
+              {item.ready && item.id === 'gigachat' && configs.other?.gigachat?.configured && (
                 <span className="integration-badge integration-badge--ok">Подключено</span>
               )}
             </button>

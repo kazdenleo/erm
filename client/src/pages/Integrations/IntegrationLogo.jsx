@@ -188,6 +188,17 @@ export function IntegrationLogo({ type, size = 56 }) {
           </svg>
         </div>
       );
+    case 'gigachat':
+      return (
+        <div className="int-logo int-logo--gigachat" style={style} aria-hidden>
+          <svg viewBox="0 0 56 56" width={size} height={size}>
+            <rect width="56" height="56" rx="12" fill="#21A038" />
+            <text x="28" y="34" textAnchor="middle" fill="#fff" fontSize="15" fontWeight="700" fontFamily="system-ui,sans-serif">
+              G
+            </text>
+          </svg>
+        </div>
+      );
     default:
       return (
         <div className="int-logo int-logo--default" style={style} aria-hidden>

@@ -31,6 +31,7 @@ export const INTEGRATION_CATALOG = {
   other: [
     { id: '1c', name: '1С', ready: false },
     { id: 'chestny_znak', name: 'Честный знак', ready: true },
+    { id: 'gigachat', name: 'GigaChat', ready: true },
   ],
 };
 

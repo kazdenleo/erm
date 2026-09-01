@@ -12,6 +12,7 @@ import { AmountCell } from '../shared/AmountCell';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { OrderEconomicsOrderTable } from '../shared/OrderEconomicsOrderTable';
 import { marketplaceRevenueAmount } from '../shared/orderEconomics';
+import { AnalyticsAiChat } from '../shared/AnalyticsAiChat';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 
 function formatQty(n) {
@@ -142,6 +143,13 @@ export function SalesAnalytics() {
           {syncing ? 'Загрузка с МП…' : 'Загрузить с маркетплейсов'}
         </Button>
       </div>
+
+      <AnalyticsAiChat
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        marketplace={marketplace}
+        source="fbs"
+      />
 
       {error && <div className="sales-analytics__error">{error}</div>}
       {syncMessage && <div className="fbo-sales-analytics__sync-msg">{syncMessage}</div>}

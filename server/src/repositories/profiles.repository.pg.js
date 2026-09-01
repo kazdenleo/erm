@@ -7,6 +7,7 @@ import { parseRoleNavSections } from '../utils/userNavSections.js';
 import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
+import { parseAiSettings } from '../utils/aiSettings.js';
 
 /**
  * Таблицы с profile_id (shared DB). Оценка размера аккаунта =
@@ -554,6 +555,10 @@ class ProfilesRepositoryPG {
     if (updates.partsindex_keys !== undefined || updates.partsindexKeys !== undefined) {
       const raw = updates.partsindex_keys ?? updates.partsindexKeys;
       set('partsindex_keys', JSON.stringify(normalizePartsIndexKeys(raw)));
+    }
+    if (updates.ai_settings !== undefined || updates.aiSettings !== undefined) {
+      const raw = updates.ai_settings ?? updates.aiSettings;
+      set('ai_settings', JSON.stringify(parseAiSettings(raw)));
     }
     if (
       updates.fbo_deduction_warehouse_id !== undefined ||

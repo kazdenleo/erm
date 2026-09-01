@@ -32,6 +32,7 @@ import {
   rankDirectoryBrands as rankWbBrands,
 } from '../utils/marketplaceBrandDirectory.js';
 import { toPublicChestnyZnakConfig } from '../utils/chestnyZnak.js';
+import { toPublicAiSettings } from '../utils/aiSettings.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -1361,7 +1362,10 @@ class IntegrationsService {
       });
       const other = {};
       otherByCode.forEach((row, code) => {
-        other[code] = toPublicChestnyZnakConfig(row.config || {});
+        other[code] = {
+          ...toPublicChestnyZnakConfig(row.config || {}),
+          configured: true,
+        };
       });
 
       if (profileId != null && profileId !== '') {
@@ -1369,6 +1373,7 @@ class IntegrationsService {
         if (!isProfileSupplierSyncEnabled(prof)) {
           suppliers = { mikado: {}, moskvorechie: {} };
         }
+        other.gigachat = toPublicAiSettings(prof?.ai_settings ?? prof?.aiSettings);
       }
 
       return { marketplaces, suppliers, other };
