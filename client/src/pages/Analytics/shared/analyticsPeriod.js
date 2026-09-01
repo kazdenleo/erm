@@ -70,3 +70,18 @@ export function rangeFromStartDays(startYmd, days) {
   const n = Math.max(1, Number(days) || 1);
   return { dateFrom: startYmd, dateTo: shiftDaysYmd(startYmd, n - 1) };
 }
+
+/**
+ * Гипотеза: предыдущий период [previousFrom, createdOn], наблюдение той же длины с createdOn вперёд.
+ * Дата создания входит в оба окна как граница.
+ */
+export function hypothesisPeriodWindows(previousFrom, createdOn) {
+  const plannedDays = periodLengthDays(previousFrom, createdOn);
+  return {
+    previousFrom,
+    previousTo: createdOn,
+    actionFrom: createdOn,
+    actionTo: shiftDaysYmd(createdOn, plannedDays - 1),
+    plannedDays,
+  };
+}

@@ -156,9 +156,9 @@ function deltaPct(curr, prev) {
 
 function comparisonWindows(dateFrom, dateTo, today) {
   const plannedDays = periodLengthDays(dateFrom, dateTo);
-  const prevTo = shiftDaysYmd(dateFrom, -1);
-  const previousFullFrom = shiftDaysYmd(prevTo, -(plannedDays - 1));
-  const previousFull = { dateFrom: previousFullFrom, dateTo: prevTo };
+  // Предыдущий период той же длины заканчивается в дату создания/старта (dateFrom).
+  const previousFullFrom = shiftDaysYmd(dateFrom, -(plannedDays - 1));
+  const previousFull = { dateFrom: previousFullFrom, dateTo: dateFrom };
   const action = { dateFrom, dateTo };
   const effectiveTo = minYmd(dateTo, today);
   if (effectiveTo < dateFrom) {
@@ -175,7 +175,7 @@ function comparisonWindows(dateFrom, dateTo, today) {
   }
   const elapsedDays = periodLengthDays(dateFrom, effectiveTo);
   const incomplete = effectiveTo < dateTo;
-  const prevFrom = shiftDaysYmd(prevTo, -(elapsedDays - 1));
+  const prevMatchedTo = shiftDaysYmd(previousFullFrom, elapsedDays - 1);
   return {
     plannedDays,
     elapsedDays,
@@ -184,7 +184,7 @@ function comparisonWindows(dateFrom, dateTo, today) {
     action,
     previousFull,
     current: { dateFrom, dateTo: effectiveTo },
-    previous: { dateFrom: prevFrom, dateTo: prevTo },
+    previous: { dateFrom: previousFullFrom, dateTo: prevMatchedTo },
   };
 }
 
@@ -304,12 +304,20 @@ function parseBody(body = {}) {
 
   const dateFrom = parseDateYmd(body.dateFrom ?? body.date_from);
   let dateTo = parseDateYmd(body.dateTo ?? body.date_to);
+  const previousFrom = parseDateYmd(body.previousFrom ?? body.previous_from);
   const durationDays = Number(body.durationDays ?? body.duration_days);
+  if (dateFrom && previousFrom) {
+    if (previousFrom > dateFrom) {
+      throw httpError('Начало предыдущего периода не может быть позже даты создания', 400);
+    }
+    const plannedDays = periodLengthDays(previousFrom, dateFrom);
+    dateTo = shiftDaysYmd(dateFrom, plannedDays - 1);
+  }
   if (dateFrom && !dateTo && Number.isFinite(durationDays) && durationDays >= 1) {
     dateTo = shiftDaysYmd(dateFrom, durationDays - 1);
   }
-  if (!dateFrom || !dateTo) throw httpError('Укажите дату старта и срок действия гипотезы', 400);
-  if (dateTo < dateFrom) throw httpError('Дата окончания не может быть раньше начала', 400);
+  if (!dateFrom || !dateTo) throw httpError('Укажите начало предыдущего периода и дату создания гипотезы', 400);
+  if (dateTo < dateFrom) throw httpError('Дата окончания наблюдения не может быть раньше даты создания', 400);
 
   return {
     productId: body.productId ?? body.product_id,
@@ -514,6 +522,7 @@ class ProductHypothesesService {
       productId: body.productId ?? body.product_id ?? existing.product_id,
       title: body.title ?? existing.title,
       description: body.description !== undefined ? body.description : existing.description,
+      previousFrom: body.previousFrom ?? body.previous_from,
       dateFrom: body.dateFrom ?? body.date_from ?? existing.date_from,
       dateTo: body.dateTo ?? body.date_to ?? existing.date_to,
       marketplace: body.marketplace ?? existing.marketplace,

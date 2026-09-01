@@ -177,16 +177,16 @@ export function HypothesesComparePanel({ comparison }) {
           title="Предыдущий период"
           period={previous}
           tone="prev"
-          note={`${comparison.plannedDays || previous?.series?.length || 0} дн. до старта гипотезы`}
+          note={`${comparison.plannedDays || previous?.series?.length || 0} дн. до даты создания`}
         />
         <PeriodCard
-          title="Период гипотезы"
+          title="Наблюдение"
           period={current}
           tone="now"
           note={
             comparison.incomplete
               ? `${comparison.elapsedDays} из ${comparison.plannedDays} дн. уже прошло`
-              : `${comparison.plannedDays} дн. действия`
+              : `${comparison.plannedDays} дн. наблюдения`
           }
         />
       </div>
@@ -213,8 +213,8 @@ export function HypothesesComparePanel({ comparison }) {
       </div>
       {comparison.incomplete ? (
         <p className="hypotheses-compare__warn">
-          Дельта считается по прошедшим дням действия и такому же числу дней сразу до старта.
-          На графике серая линия — предыдущий период целиком, синяя — уже прошедшие дни гипотезы.
+          Дельта считается по прошедшим дням наблюдения и тем же порядковым дням предыдущего периода.
+          На графике серая линия — предыдущий период целиком, синяя — уже прошедшие дни наблюдения.
         </p>
       ) : null}
 
@@ -258,7 +258,7 @@ export function HypothesesComparePanel({ comparison }) {
               <Line
                 type="monotone"
                 dataKey="current"
-                name="Гипотеза"
+                name="Наблюдение"
                 stroke="#2563eb"
                 strokeWidth={2}
                 dot={{ r: 3 }}
