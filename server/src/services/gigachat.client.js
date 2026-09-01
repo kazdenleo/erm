@@ -115,30 +115,124 @@ export async function gigachatListModels(settings) {
   });
 }
 
-function sanitizeChatMessages(messages) {
+const FUNCTION_MESSAGE_ROLES = new Set(['user', 'function', 'tool', 'random']);
+
+function cloneFunctions(functions) {
+  return Array.isArray(functions) && functions.length ? functions : null;
+}
+
+function sanitizeChatMessages(messages, functionsForLast = null, { withThinking = true } = {}) {
   if (!Array.isArray(messages)) return [];
-  return messages.map((raw) => {
+  const lastIdx = messages.length - 1;
+  return messages.map((raw, i) => {
     const msg = raw && typeof raw === 'object' ? raw : {};
+    const role = msg.role;
     const out = {
-      role: msg.role,
+      role,
       content: msg.content == null ? '' : msg.content,
     };
     if (msg.name) out.name = msg.name;
     if (msg.function_call) out.function_call = msg.function_call;
     if (msg.functions_state_id) out.functions_state_id = msg.functions_state_id;
+    if (msg.tools_state_id) out.tools_state_id = msg.tools_state_id;
+
+    if (FUNCTION_MESSAGE_ROLES.has(role)) {
+      const fns = (i === lastIdx && functionsForLast) || cloneFunctions(msg.functions);
+      if (fns) {
+        out.functions = fns;
+        if (withThinking) {
+          out.thinking_functions = cloneFunctions(msg.thinking_functions) || fns;
+        }
+      }
+    }
     return out;
   });
 }
 
+function isFunctionsPlacementError(err) {
+  return /thinking_functions|functions or thinking|should only appeal/i.test(String(err?.message || ''));
+}
+
 export async function gigachatChatCompletions(settings, payload) {
-  const body = payload && typeof payload === 'object' ? { ...payload } : {};
-  body.messages = sanitizeChatMessages(body.messages);
-  return gigachatRequest({
-    credentials: settings.credentials,
-    scope: settings.scope,
-    apiBase: settings.apiBase,
-    path: '/chat/completions',
-    method: 'POST',
-    body,
-  });
+  const src = payload && typeof payload === 'object' ? { ...payload } : {};
+  const functions = cloneFunctions(src.functions);
+  delete src.functions;
+
+  const attempts = [];
+  if (functions) {
+    attempts.push({
+      label: 'message-functions+thinking',
+      body: {
+        ...src,
+        messages: sanitizeChatMessages(src.messages, functions, { withThinking: true }),
+      },
+    });
+    attempts.push({
+      label: 'message-functions',
+      body: {
+        ...src,
+        messages: sanitizeChatMessages(src.messages, functions, { withThinking: false }),
+      },
+    });
+    attempts.push({
+      label: 'tools-spec',
+      body: (() => {
+        const body = {
+          ...src,
+          messages: sanitizeChatMessages(src.messages, null, { withThinking: false }),
+          tools: [{ functions: { specifications: functions } }],
+          tool_config: { mode: 'auto' },
+        };
+        delete body.function_call;
+        return body;
+      })(),
+    });
+  } else {
+    attempts.push({
+      label: 'plain',
+      body: {
+        ...src,
+        messages: sanitizeChatMessages(src.messages, null, { withThinking: false }),
+      },
+    });
+  }
+
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      const json = await gigachatRequest({
+        credentials: settings.credentials,
+        scope: settings.scope,
+        apiBase: settings.apiBase,
+        path: '/chat/completions',
+        method: 'POST',
+        body: attempt.body,
+      });
+      return normalizeChatCompletion(json);
+    } catch (err) {
+      lastErr = err;
+      logger.warn('[GigaChat] chat attempt failed', {
+        label: attempt.label,
+        message: String(err?.message || err).slice(0, 240),
+        roles: (attempt.body.messages || []).map((m) => m.role),
+      });
+      if (!functions || !isFunctionsPlacementError(err)) throw err;
+    }
+  }
+  throw lastErr;
+}
+
+function normalizeChatCompletion(json) {
+  if (!json || typeof json !== 'object') return json;
+  if (Array.isArray(json.choices) && json.choices.length) return json;
+  const messages = Array.isArray(json.messages) ? json.messages : [];
+  if (!messages.length) return json;
+  const message = messages[messages.length - 1] || {};
+  const finish =
+    json.finish_reason ||
+    (message.function_call?.name ? 'function_call' : 'stop');
+  return {
+    ...json,
+    choices: [{ message, index: 0, finish_reason: finish }],
+  };
 }

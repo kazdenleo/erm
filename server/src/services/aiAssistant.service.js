@@ -166,6 +166,31 @@ function ymdOr(value, fallback) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : fallback;
 }
 
+function messageText(message) {
+  const c = message?.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object') return part.text || part.content || '';
+        return '';
+      })
+      .join('');
+  }
+  return '';
+}
+
+function extractFunctionCall(message) {
+  if (message?.function_call?.name) return message.function_call;
+  const c = message?.content;
+  if (!Array.isArray(c)) return null;
+  for (const part of c) {
+    if (part?.function_call?.name) return part.function_call;
+  }
+  return null;
+}
+
 function parseToolArgs(raw) {
   if (raw == null) return {};
   if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
@@ -394,15 +419,14 @@ class AiAssistantService {
         messages: dialog,
         temperature: 0.2,
         max_tokens: 1800,
-        ...(canSendFunctions
-          ? { function_call: 'auto', functions: FUNCTIONS }
-          : { function_call: 'none' }),
+        function_call: canSendFunctions ? 'auto' : 'none',
+        ...(canSendFunctions ? { functions: FUNCTIONS } : {}),
       });
 
       const choice = response?.choices?.[0] || {};
       const message = choice.message || {};
       const finish = choice.finish_reason;
-      const fn = message.function_call;
+      const fn = extractFunctionCall(message);
 
       if ((finish === 'function_call' || fn?.name) && fn?.name) {
         const args = parseToolArgs(fn.arguments);
@@ -417,7 +441,7 @@ class AiAssistantService {
         lastToolResult = result;
         const assistantMsg = {
           role: 'assistant',
-          content: String(message.content || ''),
+          content: messageText(message),
           function_call: this._functionCallPayload(fn),
         };
         if (message.functions_state_id) {
@@ -436,7 +460,7 @@ class AiAssistantService {
         continue;
       }
 
-      const text = String(message.content || '').trim();
+      const text = messageText(message).trim();
       if (!text) {
         if (lastToolResult) {
           return {
