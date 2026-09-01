@@ -43,3 +43,24 @@ export function detectAnalyticsPeriodPreset(dateFrom, dateTo) {
   }
   return 'custom';
 }
+
+export function shiftDaysYmd(ymd, days) {
+  const [y, m, d] = String(ymd).slice(0, 10).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + Number(days || 0));
+  return formatAnalyticsYmd(dt);
+}
+
+export function periodLengthDays(from, to) {
+  const a = new Date(`${from}T00:00:00`);
+  const b = new Date(`${to}T00:00:00`);
+  return Math.max(1, Math.round((b - a) / 86400000) + 1);
+}
+
+/** Предыдущий отрезок той же длины сразу до dateFrom. */
+export function previousPeriodOfSameLength(dateFrom, dateTo) {
+  const len = periodLengthDays(dateFrom, dateTo);
+  const prevTo = shiftDaysYmd(dateFrom, -1);
+  const prevFrom = shiftDaysYmd(prevTo, -(len - 1));
+  return { dateFrom: prevFrom, dateTo: prevTo };
+}

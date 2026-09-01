@@ -1,0 +1,167 @@
+.hypotheses__search {
+  min-width: 240px;
+  flex: 1;
+}
+
+.hypotheses__search input {
+  min-width: 240px;
+}
+
+.hypotheses__row {
+  cursor: pointer;
+}
+
+.hypotheses__row:hover td {
+  background: #f8fafc;
+}
+
+.hypotheses__sku {
+  color: #1d4ed8;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.hypotheses__sku:hover {
+  text-decoration: underline;
+}
+
+.hypotheses__name,
+.hypotheses__desc,
+.hypotheses__period-note {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.hypotheses__desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 28rem;
+}
+
+.hypotheses__title {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.hypotheses__metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.hypotheses__metric-now {
+  font-weight: 700;
+}
+
+.hypotheses__metric-prev {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.hypotheses__delta {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+}
+
+.hypotheses__delta--up {
+  color: #15803d;
+}
+
+.hypotheses__delta--down {
+  color: #b91c1c;
+}
+
+.hypotheses__status {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hypotheses__status--active {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.hypotheses__status--completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.hypotheses-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hypotheses-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #64748b;
+  flex: 1;
+  min-width: 0;
+}
+
+.hypotheses-form__field input,
+.hypotheses-form__field select,
+.hypotheses-form__field textarea,
+.hypotheses-form__search-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #0f172a;
+  background: #fff;
+}
+
+.hypotheses-form__field textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.hypotheses-form__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hypotheses-form__picked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.hypotheses-form__hint {
+  margin: -4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.hypotheses-form__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.hypotheses-form__actions-right {
+  display: flex;
+  gap: 8px;
+}

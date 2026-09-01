@@ -22,6 +22,7 @@ import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesA
 import { ProductDynamics } from './pages/Analytics/ProductDynamics/ProductDynamics';
 import { ProductTurnover } from './pages/Analytics/ProductTurnover/ProductTurnover';
 import { CardWork } from './pages/Analytics/CardWork/CardWork';
+import { Hypotheses } from './pages/Analytics/Hypotheses/Hypotheses';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { ProductCard } from './pages/Products/ProductCard';
@@ -136,6 +137,7 @@ function App() {
             <Route path="dynamics" element={<ProductDynamics />} />
             <Route path="turnover" element={<ProductTurnover />} />
             <Route path="card-work" element={<CardWork />} />
+            <Route path="hypotheses" element={<Hypotheses />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />

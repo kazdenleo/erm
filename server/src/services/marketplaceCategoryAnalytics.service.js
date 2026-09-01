@@ -98,6 +98,80 @@ function buildAggSelect(saleExpr) {
   `;
 }
 
+function buildDayAggSelect(saleExpr, schemeLabel) {
+  return `
+    l.operation_date::date AS operation_date,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END AS marketplace,
+    '${schemeLabel}'::text AS scheme,
+    COALESCE(l.product_id, m.product_id, nm.product_id, 0) AS product_id,
+    SUM(CASE WHEN ${saleExpr} THEN GREATEST(l.quantity, 0) ELSE 0 END)::numeric AS sold_qty,
+    SUM(CASE WHEN ${saleExpr} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount,
+    SUM(l.commission_amount)::numeric AS commission_amount,
+    SUM(l.logistics_amount)::numeric AS logistics_amount,
+    SUM(l.storage_amount)::numeric AS storage_amount,
+    SUM(l.penalty_amount)::numeric AS penalty_amount,
+    SUM(l.acquiring_amount)::numeric AS acquiring_amount,
+    SUM(l.other_deductions)::numeric AS other_deductions,
+    SUM(l.payout_amount)::numeric AS payout_amount,
+    SUM(
+      CASE WHEN ${saleExpr}
+        THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
+        ELSE 0
+      END
+    )::numeric AS cost_amount,
+    SUM(
+      CASE WHEN ${saleExpr}
+        THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+        ELSE 0
+      END
+    )::numeric AS additional_expenses_amount
+  `;
+}
+
+function buildDayGroupBy() {
+  return `
+    l.operation_date::date,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END,
+    COALESCE(l.product_id, m.product_id, nm.product_id, 0)
+  `;
+}
+
+function mapDayEconomicsRow(row) {
+  const operationDate =
+    typeof row.operation_date === 'string'
+      ? String(row.operation_date).slice(0, 10)
+      : row.operation_date instanceof Date
+        ? `${row.operation_date.getFullYear()}-${String(row.operation_date.getMonth() + 1).padStart(2, '0')}-${String(row.operation_date.getDate()).padStart(2, '0')}`
+        : String(row.operation_date || '').slice(0, 10);
+  return {
+    operationDate,
+    marketplace: row.marketplace || 'unknown',
+    scheme: row.scheme === 'fbs' ? 'fbs' : 'fbo',
+    productId: Number(row.product_id) || 0,
+    soldQty: Number(row.sold_qty) || 0,
+    soldAmount: Number(row.sold_amount) || 0,
+    commissionAmount: Number(row.commission_amount) || 0,
+    logisticsAmount: Number(row.logistics_amount) || 0,
+    storageAmount: Number(row.storage_amount) || 0,
+    penaltyAmount: Number(row.penalty_amount) || 0,
+    acquiringAmount: Number(row.acquiring_amount) || 0,
+    otherDeductions: Number(row.other_deductions) || 0,
+    payoutAmount: Number(row.payout_amount) || 0,
+    costAmount: Number(row.cost_amount) || 0,
+    additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
+  };
+}
+
 /**
  * Fallback: ERP sku (normalized, ±DT) встречается в product_name строки отчёта
  * ИЛИ длинный alnum-префикс имени совпадает (уникально).
@@ -979,6 +1053,86 @@ class MarketplaceCategoryAnalyticsService {
       periods: periodResults,
       productCatalog,
     };
+  }
+
+  /**
+   * Поденная экономика выбранных товаров (FBO+FBS) — для сравнения периодов гипотез.
+   */
+  async getProductDayEconomics({
+    profileId,
+    productIds = [],
+    dateFrom = null,
+    dateTo = null,
+  } = {}) {
+    const pid = profileId != null ? Number(profileId) : null;
+    if (!Number.isFinite(pid) || pid < 1) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Доступно только с PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map((x) => Number(x)))]
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return [];
+
+    const defaults = defaultDateRange();
+    const fromYmd = parseDateYmd(dateFrom, defaults.dateFrom);
+    const toYmd = parseDateYmd(dateTo, defaults.dateTo);
+    const params = [pid, fromYmd, toYmd, ids];
+    const productClause = `AND COALESCE(l.product_id, m.product_id, nm.product_id, 0) = ANY($4::bigint[])`;
+
+    try {
+      await ensureOzonFinanceSkuLinks(pid, { limit: 50 });
+    } catch (e) {
+      logger.warn('[Hypotheses] ensureOzonFinanceSkuLinks failed', e?.message || e);
+    }
+
+    const sql = `
+      WITH ${sqlOzonSkuMapCte()},
+      ${sqlOzonNameMapCte()}
+      SELECT
+        to_char(operation_date, 'YYYY-MM-DD') AS operation_date,
+        marketplace,
+        scheme,
+        product_id,
+        SUM(sold_qty)::numeric AS sold_qty,
+        SUM(sold_amount)::numeric AS sold_amount,
+        SUM(commission_amount)::numeric AS commission_amount,
+        SUM(logistics_amount)::numeric AS logistics_amount,
+        SUM(storage_amount)::numeric AS storage_amount,
+        SUM(penalty_amount)::numeric AS penalty_amount,
+        SUM(acquiring_amount)::numeric AS acquiring_amount,
+        SUM(other_deductions)::numeric AS other_deductions,
+        SUM(payout_amount)::numeric AS payout_amount,
+        SUM(cost_amount)::numeric AS cost_amount,
+        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount
+      FROM (
+        SELECT ${buildDayAggSelect(FBO_SALE, 'fbo')}
+        FROM marketplace_fbo_report_lines l
+        ${lineProductJoins()}
+        WHERE l.profile_id = $1
+          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+          ${productClause}
+        GROUP BY ${buildDayGroupBy()}
+        UNION ALL
+        SELECT ${buildDayAggSelect(FBS_SALE, 'fbs')}
+        FROM marketplace_fbs_report_lines l
+        ${lineProductJoins()}
+        WHERE l.profile_id = $1
+          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+          ${productClause}
+        GROUP BY ${buildDayGroupBy()}
+      ) u
+      GROUP BY operation_date, marketplace, scheme, product_id
+    `;
+
+    const res = await query(sql, params);
+    return (res.rows || []).map(mapDayEconomicsRow).filter((r) => r.productId > 0);
   }
 }
 

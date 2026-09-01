@@ -105,6 +105,12 @@ const analyticsChildren = [
     iconClass: 'pe-7s-angle-right',
     sectionKey: 'analytics_sales',
   },
+  {
+    path: '/analytics/hypotheses',
+    label: 'Гипотезы',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'analytics_sales',
+  },
 ];
 
 const menuItems = [

@@ -14,6 +14,7 @@ const TABS = [
   { to: '/analytics/dynamics', label: 'Динамика' },
   { to: '/analytics/turnover', label: 'Оборачиваемость' },
   { to: '/analytics/card-work', label: 'Работа с карточками' },
+  { to: '/analytics/hypotheses', label: 'Гипотезы' },
 ];
 export function AnalyticsSubNav() {
   return (
