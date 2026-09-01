@@ -114,6 +114,46 @@ export function needsYmFloorPush({ erpFloor, currentPrice }) {
   return cur < floor - 0.5;
 }
 
+/** Цена для Ozon import/prices: в режиме sync-to-min = пол, иначе max(факт, пол). */
+export function resolveOzonPushTargetPrice(floor, sellingTarget) {
+  const floorVal = floorRub(floor);
+  if (floorVal == null) return null;
+  if (isSyncSellingPriceToMinEnabled()) return floorVal;
+  const selling = floorRub(sellingTarget) ?? floorVal;
+  return Math.max(selling, floorVal);
+}
+
+/** Payload для Ozon import/prices (price >= min_price). */
+export function buildOzonPriceImportEntry({
+  floor,
+  sellingTarget,
+  ozonProductId,
+  offerId,
+  priceBeforeDiscount = null,
+}) {
+  const floorVal = floorRub(floor);
+  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
+  if (floorVal == null || targetPrice == null) return null;
+
+  const entry = {
+    price: String(targetPrice),
+    currency_code: 'RUB',
+    auto_action_enabled: 'DISABLED',
+    auto_add_to_ozon_actions_list_enabled: 'DISABLED',
+  };
+  if (floorVal <= targetPrice) {
+    entry.min_price = String(floorVal);
+  }
+  const before = floorRub(priceBeforeDiscount);
+  if (before != null && before > targetPrice + 0.009) {
+    entry.old_price = String(before);
+  }
+  if (ozonProductId) entry.product_id = ozonProductId;
+  else if (offerId) entry.offer_id = offerId;
+  else return null;
+  return entry;
+}
+
 function isRateLimitStatus(status, text = '') {
   if (Number(status) === 429) return true;
   const t = String(text || '').toLowerCase();
@@ -188,7 +228,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   if (!product) return null;
 
   const pricesRes = await query(
-    `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price
+    `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, price_before_discount
      FROM product_marketplace_prices
      WHERE product_id = $1
        AND (
@@ -200,12 +240,15 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   );
   const floors = {};
   const selling = {};
+  const priceBeforeDiscount = {};
   for (const row of pricesRes.rows || []) {
     const mp = String(row.marketplace || '').toLowerCase();
     const floor = resolvePushFloorForMarketplace(row, mp, schemes);
     if (floor != null) floors[mp] = floor;
     const s = row.selling_price != null ? floorRub(row.selling_price) : null;
     if (s != null) selling[mp] = s;
+    const before = row.price_before_discount != null ? floorRub(row.price_before_discount) : null;
+    if (before != null) priceBeforeDiscount[mp] = before;
   }
 
   const skusRes = await query(
@@ -215,7 +258,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   );
   const productSkus = skusRes.rows || [];
 
-  return { product, floors, selling, productSkus };
+  return { product, floors, selling, priceBeforeDiscount, productSkus };
 }
 
 function resolveOzonIds(productSkus, product) {
@@ -303,7 +346,10 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'ozon', skipped: true, reason: 'not_linked' };
   }
 
-  const targetPrice = floorRub(sellingTarget) ?? floor;
+  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
+  if (targetPrice == null) {
+    return { marketplace: 'ozon', skipped: true, reason: 'invalid_floor' };
+  }
   const ozonApiOpts = { ozonOverride: { client_id: clientId, api_key: apiKey } };
   let mpMin = null;
   let mpPrice = null;
@@ -325,22 +371,20 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     logger.warn('[MP MinPrice Push] Ozon read failed', { message: e?.message || String(e) });
   }
 
-  const minOk = pricesRoughlyEqual(mpMin, floor);
-  const priceOk =
-    mpPrice != null && Number.isFinite(Number(mpPrice)) && pricesRoughlyEqual(mpPrice, targetPrice);
-  if (minOk && priceOk) {
+  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice })) {
     return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
-  const entry = {
-    min_price: String(floor),
-    price: String(targetPrice),
-    currency_code: 'RUB',
-    auto_action_enabled: 'DISABLED',
-    auto_add_to_ozon_actions_list_enabled: 'DISABLED',
-  };
-  if (ozonProductId) entry.product_id = ozonProductId;
-  else entry.offer_id = offerId;
+  const entry = buildOzonPriceImportEntry({
+    floor,
+    sellingTarget,
+    ozonProductId,
+    offerId,
+    priceBeforeDiscount: ctx.priceBeforeDiscount?.ozon ?? null,
+  });
+  if (!entry) {
+    return { marketplace: 'ozon', skipped: true, reason: 'invalid_entry' };
+  }
 
   try {
     await ozonApiPostWithRetry('/v1/product/import/prices', { prices: [entry] }, ozonApiOpts);
@@ -375,7 +419,7 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'wb', skipped: true, reason: 'not_linked' };
   }
 
-  const targetEff = floorRub(sellingTarget) ?? floor;
+  const targetEff = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
   let price = null;
   let discount = 0;
   try {
@@ -419,7 +463,7 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'wb', skipped: true, reason: 'unknown_current' };
   }
   const eff = wbEffectivePrice(price, discount);
-  if (eff != null && pricesRoughlyEqual(eff, targetEff)) {
+  if (!needsWbFloorPush({ erpFloor: floor, price, discount })) {
     return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor, selling: targetEff };
   }
 
@@ -488,7 +532,7 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     return { marketplace: 'ym', skipped: true, reason: 'not_linked' };
   }
 
-  const targetPrice = floorRub(sellingTarget) ?? floor;
+  const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget) ?? floorRub(floor);
   const useBusiness = Boolean(businessId);
   const pricesPath = useBusiness
     ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices`
@@ -529,7 +573,7 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   if (currentPrice == null || !Number.isFinite(currentPrice)) {
     return { marketplace: 'ym', skipped: true, reason: 'unknown_current' };
   }
-  if (pricesRoughlyEqual(currentPrice, targetPrice)) {
+  if (!needsYmFloorPush({ erpFloor: floor, currentPrice })) {
     return { marketplace: 'ym', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 

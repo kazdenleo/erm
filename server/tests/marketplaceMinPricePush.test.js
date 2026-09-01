@@ -4,6 +4,8 @@ import {
   pricesRoughlyEqual,
   wbEffectivePrice,
   wbPriceToMeetFloor,
+  resolveOzonPushTargetPrice,
+  buildOzonPriceImportEntry,
   needsOzonMinPricePush,
   needsWbFloorPush,
   needsYmFloorPush,
@@ -89,6 +91,28 @@ describe('marketplaceMinPricePush helpers', () => {
     process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = 'off';
     expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 600 })).toBe(false);
     expect(needsYmFloorPush({ erpFloor: 500, currentPrice: 400 })).toBe(true);
+  });
+
+  test('resolveOzonPushTargetPrice sync mode uses floor', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    expect(resolveOzonPushTargetPrice(3071, 2946)).toBe(3071);
+  });
+
+  test('resolveOzonPushTargetPrice floor-only uses max(selling, floor)', () => {
+    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = '0';
+    expect(resolveOzonPushTargetPrice(3071, 2946)).toBe(3071);
+    expect(resolveOzonPushTargetPrice(3071, 3200)).toBe(3200);
+  });
+
+  test('buildOzonPriceImportEntry keeps price >= min_price', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const entry = buildOzonPriceImportEntry({
+      floor: 3071,
+      sellingTarget: 2946,
+      ozonProductId: 1063548244,
+    });
+    expect(entry.price).toBe('3071');
+    expect(entry.min_price).toBe('3071');
   });
 });
 
