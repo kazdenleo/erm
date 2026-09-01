@@ -115,13 +115,30 @@ export async function gigachatListModels(settings) {
   });
 }
 
+function sanitizeChatMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((raw) => {
+    const msg = raw && typeof raw === 'object' ? raw : {};
+    const out = {
+      role: msg.role,
+      content: msg.content == null ? '' : msg.content,
+    };
+    if (msg.name) out.name = msg.name;
+    if (msg.function_call) out.function_call = msg.function_call;
+    if (msg.functions_state_id) out.functions_state_id = msg.functions_state_id;
+    return out;
+  });
+}
+
 export async function gigachatChatCompletions(settings, payload) {
+  const body = payload && typeof payload === 'object' ? { ...payload } : {};
+  body.messages = sanitizeChatMessages(body.messages);
   return gigachatRequest({
     credentials: settings.credentials,
     scope: settings.scope,
     apiBase: settings.apiBase,
     path: '/chat/completions',
     method: 'POST',
-    body: payload,
+    body,
   });
 }

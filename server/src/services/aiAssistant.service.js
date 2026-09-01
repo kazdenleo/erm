@@ -328,6 +328,33 @@ class AiAssistantService {
     return out.slice(-MAX_HISTORY);
   }
 
+  /**
+   * GigaChat 2 Max / thinking: functions нельзя слать вместе с role=system
+   * (и с обычными assistant-репликами без function_call).
+   */
+  _buildFunctionDialog(system, history) {
+    const prior = history.slice(0, -1);
+    const last = history[history.length - 1];
+    const parts = [system];
+    if (prior.length) {
+      parts.push(
+        `Предыдущий диалог:\n${prior
+          .map((m) => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`)
+          .join('\n')}`
+      );
+    }
+    parts.push(`Вопрос: ${last.content}`);
+    return [{ role: 'user', content: parts.join('\n\n') }];
+  }
+
+  _functionCallPayload(fn) {
+    const args = parseToolArgs(fn?.arguments);
+    return {
+      name: String(fn?.name || ''),
+      arguments: args,
+    };
+  }
+
   async chat(profileId, { messages, context } = {}) {
     const row = await this._loadProfile(profileId);
     const settings = assertAiReady(row.ai_settings ?? row.aiSettings);
@@ -355,17 +382,21 @@ class AiAssistantService {
       .filter(Boolean)
       .join(' ');
 
-    const dialog = [{ role: 'system', content: system }, ...history];
+    const dialog = this._buildFunctionDialog(system, history);
     const usedTools = [];
+    let lastToolResult = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      const last = dialog[dialog.length - 1];
+      const canSendFunctions = last?.role === 'user' || last?.role === 'function';
       const response = await gigachatChatCompletions(settings, {
         model: settings.model,
         messages: dialog,
         temperature: 0.2,
         max_tokens: 1800,
-        function_call: 'auto',
-        functions: FUNCTIONS,
+        ...(canSendFunctions
+          ? { function_call: 'auto', functions: FUNCTIONS }
+          : { function_call: 'none' }),
       });
 
       const choice = response?.choices?.[0] || {};
@@ -373,7 +404,7 @@ class AiAssistantService {
       const finish = choice.finish_reason;
       const fn = message.function_call;
 
-      if (finish === 'function_call' && fn?.name) {
+      if ((finish === 'function_call' || fn?.name) && fn?.name) {
         const args = parseToolArgs(fn.arguments);
         usedTools.push(fn.name);
         let result;
@@ -383,10 +414,11 @@ class AiAssistantService {
           logger.warn('[AI] tool failed', { name: fn.name, message: err.message });
           result = { error: err.message || String(err) };
         }
+        lastToolResult = result;
         const assistantMsg = {
           role: 'assistant',
-          content: message.content || '',
-          function_call: fn,
+          content: String(message.content || ''),
+          function_call: this._functionCallPayload(fn),
         };
         if (message.functions_state_id) {
           assistantMsg.functions_state_id = message.functions_state_id;
@@ -406,6 +438,14 @@ class AiAssistantService {
 
       const text = String(message.content || '').trim();
       if (!text) {
+        if (lastToolResult) {
+          return {
+            reply:
+              'Получил данные из отчёта FBS, но модель не сформулировала текст. Попробуйте уточнить вопрос — например: «итоги за период» или «топ товаров по прибыли».',
+            usedTools,
+            model: settings.model,
+          };
+        }
         throw aiHttpError('GigaChat вернул пустой ответ. Попробуйте переформулировать вопрос.', 502);
       }
       return { reply: text, usedTools, model: settings.model };
