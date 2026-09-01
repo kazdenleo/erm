@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { AmountCell, otherDeductionsTotal } from './AmountCell';
 import { formatQty, formatRub, orderEconomicsFromRow } from './orderEconomics';
+import { SortableTh, sortRows, useTableSort } from './tableSort';
 
 function costsParts(row) {
   return [
@@ -41,79 +42,174 @@ function marketplaceLabel(mp) {
   return mp || '—';
 }
 
+const ORDER_SORT_GETTERS = {
+  operationDate: (r) => r.operationDate || '',
+  marketplace: (r) => marketplaceLabel(r.marketplace),
+  orderId: (r) => r.orderId || (r.postingNumber && r.postingNumber !== '0' ? r.postingNumber : '') || '',
+  productName: (r) => r.productName || '',
+  quantity: (r) => Number(r.quantity) || 0,
+  saleAmount: (r) => orderEconomicsFromRow(r).saleAmount,
+  costsTotal: (r) => orderEconomicsFromRow(r).costsTotal,
+  commissionAmount: (r) => Number(r.commissionAmount) || 0,
+  logisticsAmount: (r) => Number(r.logisticsAmount) || 0,
+  storageAmount: (r) => Number(r.storageAmount) || 0,
+  otherDeductions: (r) => otherDeductionsTotal(r),
+  receivedAmount: (r) => orderEconomicsFromRow(r).receivedAmount,
+  costAmount: (r) => Number(r.costAmount) || 0,
+  additionalExpensesAmount: (r) => orderEconomicsFromRow(r).additionalExpensesAmount,
+  revenueAmount: (r) => orderEconomicsFromRow(r).revenueAmount,
+  taxAmount: (r) => Number(r.taxAmount) || 0,
+  netIncome: (r) => Number(r.netIncome) || 0,
+};
+
 /**
  * Таблица «По заказам»: цена продажи, затраты, сколько пришло — затем разбивка.
  */
 export function OrderEconomicsOrderTable({ loading, emptyMessage, orders }) {
+  const { sort, toggleSort } = useTableSort('operationDate', 'desc');
+  const sorted = useMemo(() => sortRows(orders, sort, ORDER_SORT_GETTERS), [orders, sort]);
+
   return (
     <div className="sales-analytics__table-wrap">
       <table className="sales-analytics__table">
         <thead>
           <tr>
-            <th className="sales-analytics__date">Дата</th>
-            <th>МП</th>
-            <th className="sales-analytics__order" title="Заказ / отправление">
+            <SortableTh sortKey="operationDate" sort={sort} onSort={toggleSort} className="sales-analytics__date">
+              Дата
+            </SortableTh>
+            <SortableTh sortKey="marketplace" sort={sort} onSort={toggleSort}>
+              МП
+            </SortableTh>
+            <SortableTh
+              sortKey="orderId"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__order"
+              title="Заказ / отправление"
+            >
               Заказ
-            </th>
-            <th>Товар</th>
-            <th className="sales-analytics__num">Кол-во</th>
-            <th
+            </SortableTh>
+            <SortableTh sortKey="productName" sort={sort} onSort={toggleSort}>
+              Товар
+            </SortableTh>
+            <SortableTh sortKey="quantity" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+              Кол-во
+            </SortableTh>
+            <SortableTh
+              sortKey="saleAmount"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num"
               title="У WB — цена до скидки маркетплейса (от неё считается комиссия). Оплата покупателя после скидки — в подсказке к сумме."
             >
               Цена продажи
-            </th>
-            <th
+            </SortableTh>
+            <SortableTh
+              sortKey="costsTotal"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num sales-analytics__num--hint sales-analytics__col-cost-total"
               title="Удержания МП (комиссия, логистика, хранение, штрафы, эквайринг, прочее). Себестоимость и доп. расходы не входят. Наведите на сумму — разбивка."
             >
               Итого затрат
-            </th>
-            <th className="sales-analytics__num sales-analytics__col-cost-part">Комиссия</th>
-            <th className="sales-analytics__num sales-analytics__col-cost-part">Логистика</th>
-            <th className="sales-analytics__num sales-analytics__col-cost-part">Хранение</th>
-            <th className="sales-analytics__num sales-analytics__col-cost-part">Прочее</th>
-            <th className="sales-analytics__num" title="Сумма к перечислению в финансовом отчёте МП">
+            </SortableTh>
+            <SortableTh
+              sortKey="commissionAmount"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num sales-analytics__col-cost-part"
+            >
+              Комиссия
+            </SortableTh>
+            <SortableTh
+              sortKey="logisticsAmount"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num sales-analytics__col-cost-part"
+            >
+              Логистика
+            </SortableTh>
+            <SortableTh
+              sortKey="storageAmount"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num sales-analytics__col-cost-part"
+            >
+              Хранение
+            </SortableTh>
+            <SortableTh
+              sortKey="otherDeductions"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num sales-analytics__col-cost-part"
+            >
+              Прочее
+            </SortableTh>
+            <SortableTh
+              sortKey="receivedAmount"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num"
+              title="Сумма к перечислению в финансовом отчёте МП"
+            >
               Пришло от МП
-            </th>
-            <th className="sales-analytics__num" title="qty × себестоимость товара в ERP">
+            </SortableTh>
+            <SortableTh
+              sortKey="costAmount"
+              sort={sort}
+              onSort={toggleSort}
+              className="sales-analytics__num"
+              title="qty × себестоимость товара в ERP"
+            >
               Себестоимость
-            </th>
-            <th
+            </SortableTh>
+            <SortableTh
+              sortKey="additionalExpensesAmount"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num"
               title="qty × дополнительные расходы из карточки товара"
             >
               Доп. расходы
-            </th>
-            <th
+            </SortableTh>
+            <SortableTh
+              sortKey="revenueAmount"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num"
               title="Пришло от МП − себестоимость − доп. расходы. У WB ещё − логистика (в выплате её нет)."
             >
               Выручка
-            </th>
-            <th
+            </SortableTh>
+            <SortableTh
+              sortKey="taxAmount"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num"
               title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
             >
               Налоги
-            </th>
-            <th
+            </SortableTh>
+            <SortableTh
+              sortKey="netIncome"
+              sort={sort}
+              onSort={toggleSort}
               className="sales-analytics__num"
               title="Выручка − налоги. Удержания МП в выплате, кроме логистики WB (она в выручке)."
             >
               Чистый доход
-            </th>
+            </SortableTh>
           </tr>
         </thead>
         <tbody>
-          {!loading && orders.length === 0 && (
+          {!loading && sorted.length === 0 && (
             <tr>
               <td colSpan={17} className="sales-analytics__empty">
                 {emptyMessage}
               </td>
             </tr>
           )}
-          {orders.map((row, idx) => {
+          {sorted.map((row, idx) => {
             const eco = orderEconomicsFromRow(row);
             return (
               <tr key={`${row.orderId || row.postingNumber || idx}`}>

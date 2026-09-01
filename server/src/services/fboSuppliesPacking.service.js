@@ -21,6 +21,8 @@ import {
   ozonPlacementZoneLabel,
   ozonPlacementZonesConflict,
 } from '../constants/ozonPlacementZones.js';
+import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -162,6 +164,16 @@ async function assertCargoPlacementZoneCompatible(cargoUnitId, supplyItem, suppl
 }
 
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
+  const codes = productLookupCodesFromScan(barcode);
+  const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
+  for (const code of toTry) {
+    const found = await findSupplyItemForScanExact(supplyId, code, profileId);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function findSupplyItemForScanExact(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
 
@@ -463,7 +475,7 @@ class FboSuppliesPackingService {
       throw err;
     }
 
-    const mode = scanMode === 'cargo' ? 'cargo' : 'product';
+    const mode = looksLikeCis(code) ? 'product' : scanMode === 'cargo' ? 'cargo' : 'product';
     const ozonStrictCargo = isOzonSupply(supply);
     const activeId = activeCargoUnitId != null ? Number(activeCargoUnitId) : null;
 
@@ -521,6 +533,24 @@ class FboSuppliesPackingService {
 
       await assertCargoPlacementZoneCompatible(activeId, supplyItem, supply);
 
+      if (looksLikeCis(code)) {
+        const organizationId = supply.organizationId;
+        const prev = await chestnyZnakOps.findCis(code, { profileId, organizationId });
+        if (
+          prev &&
+          String(prev.source_type || '') === 'fbo_supply' &&
+          Number(prev.source_id) === Number(supplyId)
+        ) {
+          const packing = await this.getPackingState(supplyId, packingCtx);
+          return {
+            action: 'ignored_duplicate',
+            message: 'Этот код маркировки уже отсканирован в поставке',
+            packing,
+            activeCargoUnitId: activeId,
+          };
+        }
+      }
+
       if (!allowOverage) {
         const packedR = await query(
           `SELECT COALESCE(SUM(cc.quantity), 0)::int AS packed
@@ -568,6 +598,17 @@ class FboSuppliesPackingService {
       const weightWarning = buildWeightExceededMessage(activeCargo);
       let message = `${name}: ${newQty} шт. в грузоместе`;
       if (weightWarning) message += `. ${weightWarning}`;
+      if (looksLikeCis(code)) {
+        await chestnyZnakOps.tryBindCis({
+          code,
+          kind: 'fbo_transfer',
+          sourceType: 'fbo_supply',
+          sourceId: supplyId,
+          productId: supplyItem.product_id ?? supplyItem.productId ?? null,
+          profileId,
+          organizationId: supply.organizationId,
+        });
+      }
       return {
         action: 'product_added',
         message,
@@ -575,6 +616,7 @@ class FboSuppliesPackingService {
         activeCargoUnitId: activeId,
         supplyItemId: supplyItem.id,
         quantityInCargo: newQty,
+        cis: looksLikeCis(code),
         ...syncMeta,
       };
     }

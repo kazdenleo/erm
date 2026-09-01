@@ -15,10 +15,23 @@ import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 const SHIPMENT_STICKERS_DIR = join(DATA_DIR, 'shipment-stickers');
 
-/** Сколько дней хранить закрытые WB-отгрузки в списке (ENV: WB_CLOSED_SHIPMENT_RETENTION_DAYS). */
-function wbClosedShipmentRetentionDays() {
-  const raw = parseInt(process.env.WB_CLOSED_SHIPMENT_RETENTION_DAYS || '2', 10);
+/**
+ * Сколько дней хранить закрытые отгрузки (сборки) в списке.
+ * ENV: CLOSED_SHIPMENT_RETENTION_DAYS (предпочтительно) или WB_CLOSED_SHIPMENT_RETENTION_DAYS.
+ */
+function closedShipmentRetentionDays() {
+  const raw = parseInt(
+    process.env.CLOSED_SHIPMENT_RETENTION_DAYS ||
+      process.env.WB_CLOSED_SHIPMENT_RETENTION_DAYS ||
+      '2',
+    10
+  );
   return Number.isFinite(raw) && raw >= 0 ? raw : 2;
+}
+
+/** @deprecated имя оставлено для совместимости nightly/скриптов — то же, что closedShipmentRetentionDays */
+function wbClosedShipmentRetentionDays() {
+  return closedShipmentRetentionDays();
 }
 
 function sleep(ms) {
@@ -158,19 +171,12 @@ function shipmentRetentionTimeMs(s) {
   return Number.isFinite(t) ? t : null;
 }
 
-function isWbMarketplaceCode(code) {
-  const m = String(code || '').toLowerCase();
-  return m === 'wildberries' || m === 'wb';
-}
-
 /**
- * Закрытая WB-отгрузка старше retentionDays (по closedAt / дате).
- * Без даты не удаляем — безопаснее оставить.
+ * Закрытая отгрузка старше retentionDays (по closedAt / дате).
+ * Для всех МП (Ozon / WB / YM / manual). Без даты не удаляем — безопаснее оставить.
  */
-function isClosedWbPastRetention(s, retentionDays = wbClosedShipmentRetentionDays()) {
+function isClosedShipmentPastRetention(s, retentionDays = closedShipmentRetentionDays()) {
   if (!s) return false;
-  const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
-  if (!isWbMarketplaceCode(m)) return false;
   const closed =
     s.closed === true ||
     s.done === true ||
@@ -184,26 +190,31 @@ function isClosedWbPastRetention(s, retentionDays = wbClosedShipmentRetentionDay
   return Date.now() - t >= days * 24 * 60 * 60 * 1000;
 }
 
+/** @deprecated совместимость — то же, что isClosedShipmentPastRetention */
+function isClosedWbPastRetention(s, retentionDays = closedShipmentRetentionDays()) {
+  return isClosedShipmentPastRetention(s, retentionDays);
+}
+
 /**
- * Перед созданием новой поставки: убираем закрытые WB того же scope старше retention,
- * чтобы список не копился. QR оставляем в stickerArchiveOnly.
+ * Перед созданием новой поставки: убираем закрытые того же МП/scope старше retention.
+ * Для WB QR оставляем в stickerArchiveOnly.
  */
 async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileId = null, organizationId = null } = {}) {
   const org = normalizeOrgId(organizationId);
   const all = await getLocalShipments();
   const next = [];
   let pruned = 0;
+  const mpNorm = marketplaceCode === 'wb' ? 'wildberries' : marketplaceCode;
   for (const s of all) {
     const isLocal = s?.id && String(s.id).startsWith('ship-');
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     const drop =
       isLocal &&
-      m === marketplaceCode &&
-      isWbMarketplaceCode(marketplaceCode) &&
+      m === mpNorm &&
       s.closed === true &&
       shipmentVisibleForScope(s, profileId, org) &&
       !s.stickerArchiveOnly &&
-      isClosedWbPastRetention(s);
+      isClosedShipmentPastRetention(s);
     if (drop) {
       pruned += 1;
       if (s.qrStickerPath) {
@@ -216,24 +227,24 @@ async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileI
   if (pruned > 0) {
     await saveLocalShipments(next);
     logger.info(
-      `[Shipments] Pruned ${pruned} closed WB shipment(s) older than ${wbClosedShipmentRetentionDays()}d before new create`
+      `[Shipments] Pruned ${pruned} closed ${mpNorm} shipment(s) older than ${closedShipmentRetentionDays()}d before new create`
     );
   }
   return next;
 }
 
 /**
- * Ежедневная очистка: закрытые локальные WB-отгрузки старше N дней.
+ * Ежедневная очистка: закрытые локальные отгрузки старше N дней (все МП).
  * @returns {{ pruned: number, retentionDays: number }}
  */
-async function pruneExpiredClosedWbShipments({ days = wbClosedShipmentRetentionDays() } = {}) {
+async function pruneExpiredClosedWbShipments({ days = closedShipmentRetentionDays() } = {}) {
   const retentionDays = Math.max(0, Number(days) || 0);
   const all = await getLocalShipments();
   const next = [];
   let pruned = 0;
   for (const s of all) {
     const isLocal = s?.id && String(s.id).startsWith('ship-');
-    if (isLocal && isClosedWbPastRetention(s, retentionDays)) {
+    if (isLocal && isClosedShipmentPastRetention(s, retentionDays)) {
       pruned += 1;
       if (s.qrStickerPath) {
         next.push(buildStickerArchiveStub(s));
@@ -244,7 +255,7 @@ async function pruneExpiredClosedWbShipments({ days = wbClosedShipmentRetentionD
   }
   if (pruned > 0) {
     await saveLocalShipments(next);
-    logger.info(`[Shipments] Pruned ${pruned} expired closed WB shipment(s) (retention=${retentionDays}d)`);
+    logger.info(`[Shipments] Pruned ${pruned} expired closed shipment(s) (retention=${retentionDays}d)`);
   }
   return { pruned, retentionDays };
 }
@@ -259,8 +270,8 @@ async function getShipments({ profileId, organizationId } = {}) {
 
   for (const s of local) {
     if (s.stickerArchiveOnly) continue;
-    // Закрытые WB старше retention не показываем (файл чистит nightly / создание новой).
-    if (isClosedWbPastRetention(s)) continue;
+    // Закрытые отгрузки старше retention не показываем (файл чистит nightly / создание новой).
+    if (isClosedShipmentPastRetention(s)) continue;
     const code = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (byMarketplace[code]) {
       byMarketplace[code].push(normalizeShipment(s));
@@ -274,7 +285,7 @@ async function getShipments({ profileId, organizationId } = {}) {
       const localWbIds = new Set(byMarketplace.wildberries.map(s => s.externalId).filter(Boolean));
       for (const s of wbList) {
         if (localWbIds.has(s.id) || localWbIds.has(s.externalId)) continue;
-        if (isClosedWbPastRetention(s)) continue;
+        if (isClosedShipmentPastRetention(s)) continue;
         byMarketplace.wildberries.push(s);
       }
       byMarketplace.wildberries.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
@@ -1052,6 +1063,20 @@ async function closeShipment(
 
   const out = normalizeShipment(shipToClose);
   if (stockClose) out.stockClose = stockClose;
+  if (stockOrderIdsNoCancelled.length > 0 && shipToClose.marketplace) {
+    import('./chestnyZnakOps.service.js')
+      .then(({ default: chestnyZnakOps }) =>
+        chestnyZnakOps.createFbsDocumentsForOrders({
+          marketplace: shipToClose.marketplace,
+          orderIds: [...stockOrderIdsNoCancelled],
+          profileId: effectiveProfileId,
+          fallbackOrganizationId: organizationId,
+        })
+      )
+      .catch((e) => {
+        logger.warn(`[Shipments] Честный знак FBS ${shipmentId}:`, e?.message || e);
+      });
+  }
   return out;
 }
 
@@ -1989,8 +2014,14 @@ const shipmentsService = {
   getQrStickerFilePath,
   pruneExpiredClosedWbShipments,
   wbClosedShipmentRetentionDays,
+  closedShipmentRetentionDays,
   getMarketplaces: () => MARKETPLACES
 };
 
 export default shipmentsService;
-export { pickWbOverflowShipment, pruneExpiredClosedWbShipments, wbClosedShipmentRetentionDays };
+export {
+  pickWbOverflowShipment,
+  pruneExpiredClosedWbShipments,
+  wbClosedShipmentRetentionDays,
+  closedShipmentRetentionDays
+};

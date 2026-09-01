@@ -1229,7 +1229,7 @@ class SchedulerService {
         job: null,
         schedule: process.env.WB_CLOSED_SHIPMENTS_PRUNE_CRON || '55 3 * * *',
         description:
-          'Удаление закрытых WB-отгрузок старше WB_CLOSED_SHIPMENT_RETENTION_DAYS (по умолчанию 2) через profile-nightly-dispatch',
+          'Удаление закрытых отгрузок (все МП) старше CLOSED_SHIPMENT_RETENTION_DAYS / WB_CLOSED_SHIPMENT_RETENTION_DAYS (по умолчанию 2) через profile-nightly-dispatch',
       });
 
       if (isOrdersArchiveEnabled()) {

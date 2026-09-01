@@ -8,6 +8,7 @@ import {
   isCorruptBarcodeString,
   shouldUseBarcodeDigitFallback,
 } from './productBarcodes.js';
+import { looksLikeCis, productLookupCodesFromScan } from './chestnyZnakCis.js';
 
 export function normalizeProductSearchQuery(value) {
   return String(value || '')
@@ -33,34 +34,46 @@ export function unwrapProductFromApiResponse(wrap) {
  * Без fuzzy-поиска по каталогу — он подставлял чужие товары.
  */
 export async function fetchProductByScanCode(code) {
-  const v = normalizeProductSearchQuery(code);
-  if (!v) {
+  const raw = normalizeProductSearchQuery(code);
+  if (!raw) {
     throw new Error('Введите штрихкод / артикул');
   }
-  if (isCorruptBarcodeString(v)) {
+  const codes = productLookupCodesFromScan(raw);
+  const toTry = codes.length ? codes : [raw];
+  let lastCorrupt = false;
+  for (const v of toTry) {
+    if (isCorruptBarcodeString(v)) {
+      lastCorrupt = true;
+      continue;
+    }
+    try {
+      const wrap = await productsApi.getByBarcode(v);
+      const product = unwrapProductFromApiResponse(wrap);
+      if (product?.id) return product;
+    } catch (err) {
+      if (err?.response?.status === 404) continue;
+      const msg = err?.response?.data?.message || err?.message;
+      if (msg) throw new Error(msg);
+      throw new Error('Не удалось найти товар по штрихкоду');
+    }
+  }
+  if (lastCorrupt && toTry.every((v) => isCorruptBarcodeString(v))) {
     throw new Error(
       'Битый штрихкод (object). Откройте карточку товара, введите правильный код и сохраните.'
     );
   }
-  try {
-    const wrap = await productsApi.getByBarcode(v);
-    const product = unwrapProductFromApiResponse(wrap);
-    if (product?.id) return product;
-  } catch (err) {
-    if (err?.response?.status === 404) {
-      throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
-    }
-    const msg = err?.response?.data?.message || err?.message;
-    if (msg) throw new Error(msg);
-    throw new Error('Не удалось найти товар по штрихкоду');
-  }
-  throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
+  throw new Error(
+    looksLikeCis(raw)
+      ? 'Товар не найден по GTIN из кода маркировки'
+      : `Товар со штрихкодом «${raw}» не найден в базе`
+  );
 }
 
-/** Скорее всего ввод со сканера (цифры, без букв). */
+/** Скорее всего ввод со сканера (цифры, без букв) или Data Matrix КИ. */
 export function isLikelyBarcodeScan(raw) {
   const v = normalizeProductSearchQuery(raw);
   if (!v) return false;
+  if (looksLikeCis(v)) return true;
   if (/[a-zа-я]/i.test(v)) return false;
   return /^\d{4,}$/.test(v);
 }

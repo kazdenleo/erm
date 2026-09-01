@@ -1085,33 +1085,72 @@ async function enrichWbLinesFromOrderSale(profileId) {
      SET
        sku = sale.sku,
        product_name = sale.product_name,
-       product_id = COALESCE(child.product_id, sale.product_id)
+       product_id = COALESCE(child.product_id, sale.product_id),
+       order_id = CASE
+         WHEN child.order_id IS NOT NULL AND TRIM(child.order_id) ~ '^[0-9]+$' THEN TRIM(child.order_id)
+         ELSE sale.order_id
+       END
      FROM (
-       SELECT DISTINCT ON (profile_id, order_id)
+       SELECT DISTINCT ON (profile_id, link_key)
          profile_id,
+         link_key,
          order_id,
          sku,
          product_name,
          product_id
-       FROM marketplace_fbo_report_lines
-       WHERE marketplace = 'wb'
-         AND profile_id = $1
-         AND operation_type = 'Продажа'
-         AND order_id IS NOT NULL
-         AND TRIM(order_id) <> ''
-         AND sku IS NOT NULL
-         AND TRIM(sku) <> ''
-         AND sku <> '0'
-       ORDER BY profile_id, order_id, id DESC
+       FROM (
+         SELECT
+           profile_id,
+           TRIM(order_id) AS link_key,
+           TRIM(order_id) AS order_id,
+           sku,
+           product_name,
+           product_id,
+           id
+         FROM marketplace_fbo_report_lines
+         WHERE marketplace = 'wb'
+           AND profile_id = $1
+           AND operation_type = 'Продажа'
+           AND order_id IS NOT NULL
+           AND TRIM(order_id) ~ '^[0-9]+$'
+           AND sku IS NOT NULL
+           AND TRIM(sku) <> ''
+           AND sku <> '0'
+         UNION ALL
+         SELECT
+           profile_id,
+           TRIM(posting_number) AS link_key,
+           TRIM(order_id) AS order_id,
+           sku,
+           product_name,
+           product_id,
+           id
+         FROM marketplace_fbo_report_lines
+         WHERE marketplace = 'wb'
+           AND profile_id = $1
+           AND operation_type = 'Продажа'
+           AND order_id IS NOT NULL
+           AND TRIM(order_id) ~ '^[0-9]+$'
+           AND posting_number IS NOT NULL
+           AND TRIM(posting_number) <> ''
+           AND sku IS NOT NULL
+           AND TRIM(sku) <> ''
+           AND sku <> '0'
+       ) sale_src
+       ORDER BY profile_id, link_key, id DESC
      ) sale
      WHERE child.marketplace = 'wb'
        AND child.profile_id = sale.profile_id
-       AND child.order_id = sale.order_id
        AND child.profile_id = $1
+       AND (
+         (child.order_id IS NOT NULL AND TRIM(child.order_id) <> '' AND child.order_id = sale.link_key)
+         OR (child.posting_number IS NOT NULL AND TRIM(child.posting_number) <> '' AND TRIM(child.posting_number) = sale.link_key)
+       )
        AND (
          child.sku IS NULL OR TRIM(child.sku) = '' OR child.sku = '0'
          OR child.product_name IS NULL OR TRIM(child.product_name) = ''
          OR child.product_id IS NULL
+         OR child.order_id IS NULL OR TRIM(child.order_id) = '' OR TRIM(child.order_id) !~ '^[0-9]+$'
        )`,
     [profileId]
   );
@@ -1737,6 +1776,25 @@ class MarketplaceFboReportsService {
           AND l.operation_date >= $2::date AND l.operation_date <= $3::date
           ${orderQuery.mpClause}
       ),
+      profile_sales AS (
+        SELECT DISTINCT ON (l.marketplace, canonical_key)
+          l.marketplace,
+          COALESCE(NULLIF(TRIM(l.order_id), ''), NULLIF(TRIM(l.posting_number), '')) AS canonical_key,
+          l.order_id,
+          l.posting_number,
+          l.product_id,
+          NULLIF(TRIM(l.sku), '') AS sku,
+          NULLIF(TRIM(l.product_name), '') AS product_name,
+          l.barcode,
+          NULLIF(TRIM(COALESCE(l.raw_json->>'shk_id', '')), '') AS shk_id,
+          l.operation_date
+        FROM marketplace_fbo_report_lines l
+        WHERE l.profile_id = $1
+          AND l.marketplace IN ('wb', 'wildberries')
+          AND l.operation_type = 'Продажа'
+          AND COALESCE(NULLIF(TRIM(l.order_id), ''), NULLIF(TRIM(l.posting_number), '')) IS NOT NULL
+        ORDER BY l.marketplace, canonical_key, l.id DESC
+      ),
       sales AS (
         SELECT DISTINCT ON (f.marketplace, f.order_key)
           f.marketplace,
@@ -1761,7 +1819,7 @@ class MarketplaceFboReportsService {
           marketplace,
           barcode,
           canonical_key
-        FROM sales
+        FROM profile_sales
         WHERE NULLIF(TRIM(barcode), '') IS NOT NULL
         ORDER BY marketplace, barcode, operation_date DESC
       ),
@@ -1770,9 +1828,18 @@ class MarketplaceFboReportsService {
           marketplace,
           posting_number,
           canonical_key
-        FROM sales
+        FROM profile_sales
         WHERE NULLIF(TRIM(posting_number), '') IS NOT NULL
         ORDER BY marketplace, posting_number, operation_date DESC
+      ),
+      shk_to_sale AS (
+        SELECT DISTINCT ON (marketplace, shk_id)
+          marketplace,
+          shk_id,
+          canonical_key
+        FROM profile_sales
+        WHERE shk_id IS NOT NULL
+        ORDER BY marketplace, shk_id, operation_date DESC
       ),
       mapped AS (
         SELECT
@@ -1784,7 +1851,8 @@ class MarketplaceFboReportsService {
             END,
             s_same.canonical_key,
             pts.canonical_key,
-            bts.canonical_key
+            bts.canonical_key,
+            sts.canonical_key
           ) AS canonical_key
         FROM filtered f
         LEFT JOIN sales s_same
@@ -1799,6 +1867,11 @@ class MarketplaceFboReportsService {
          AND f.marketplace IN ('wb', 'wildberries')
          AND NULLIF(TRIM(f.barcode), '') IS NOT NULL
          AND bts.barcode = f.barcode
+        LEFT JOIN shk_to_sale sts
+          ON sts.marketplace = f.marketplace
+         AND f.marketplace IN ('wb', 'wildberries')
+         AND NULLIF(TRIM(COALESCE(f.raw_json->>'shk_id', '')), '') IS NOT NULL
+         AND sts.shk_id = TRIM(COALESCE(f.raw_json->>'shk_id', ''))
       ),
       identity AS (
         SELECT DISTINCT ON (marketplace, canonical_key)
@@ -1812,6 +1885,19 @@ class MarketplaceFboReportsService {
           erp_sku
         FROM (
           SELECT
+            ps.marketplace,
+            ps.canonical_key,
+            ps.order_id,
+            ps.posting_number,
+            ps.product_id,
+            ps.sku,
+            COALESCE(p.name, ps.product_name) AS product_name,
+            p.sku AS erp_sku,
+            0 AS prio
+          FROM profile_sales ps
+          LEFT JOIN products p ON p.id = ps.product_id
+          UNION ALL
+          SELECT
             s.marketplace,
             s.canonical_key,
             s.order_id,
@@ -1820,9 +1906,10 @@ class MarketplaceFboReportsService {
             s.sku,
             COALESCE(p.name, s.product_name) AS product_name,
             p.sku AS erp_sku,
-            0 AS prio
+            1 AS prio
           FROM sales s
           LEFT JOIN products p ON p.id = s.product_id
+          WHERE s.marketplace NOT IN ('wb', 'wildberries')
           UNION ALL
           SELECT
             m.marketplace,
@@ -1834,7 +1921,7 @@ class MarketplaceFboReportsService {
             COALESCE(p.name, NULLIF(TRIM(m.product_name), '')) AS product_name,
             p.sku AS erp_sku,
             CASE
-              WHEN m.sku IS NOT NULL AND TRIM(m.sku) <> '' AND m.sku <> '0' THEN 1
+              WHEN m.sku IS NOT NULL AND TRIM(m.sku) <> '' AND m.sku <> '0' THEN 2
               ELSE 9
             END AS prio
           FROM mapped m
@@ -1847,7 +1934,13 @@ class MarketplaceFboReportsService {
         SELECT
           m.marketplace,
           m.canonical_key,
-          MAX(m.order_id) FILTER (WHERE NULLIF(TRIM(m.order_id), '') IS NOT NULL) AS order_id,
+          COALESCE(
+            MAX(m.order_id) FILTER (
+              WHERE NULLIF(TRIM(m.order_id), '') IS NOT NULL
+                AND TRIM(m.order_id) ~ '^[0-9]+$'
+            ),
+            MAX(m.order_id) FILTER (WHERE NULLIF(TRIM(m.order_id), '') IS NOT NULL)
+          ) AS order_id,
           MAX(m.posting_number) FILTER (
             WHERE NULLIF(TRIM(m.posting_number), '') IS NOT NULL AND TRIM(m.posting_number) <> '0'
           ) AS posting_number,
@@ -1911,17 +2004,23 @@ class MarketplaceFboReportsService {
         FROM mapped m
         LEFT JOIN products pc ON pc.id = m.product_id
         WHERE m.canonical_key IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM sales s
-            WHERE s.marketplace = m.marketplace AND s.canonical_key = m.canonical_key
+          AND (
+            EXISTS (
+              SELECT 1 FROM profile_sales ps
+              WHERE ps.marketplace = m.marketplace AND ps.canonical_key = m.canonical_key
+            )
+            OR EXISTS (
+              SELECT 1 FROM sales s
+              WHERE s.marketplace = m.marketplace AND s.canonical_key = m.canonical_key
+            )
           )
         GROUP BY m.marketplace, m.canonical_key
       )
       SELECT
         a.marketplace,
         a.operation_date,
-        a.order_id,
-        a.posting_number,
+        COALESCE(NULLIF(TRIM(i.order_id), ''), a.order_id) AS order_id,
+        COALESCE(NULLIF(TRIM(i.posting_number), ''), a.posting_number) AS posting_number,
         i.sku,
         i.product_id,
         i.product_name,

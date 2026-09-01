@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { chestnyZnakApi } from '../../services/chestnyZnak.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
@@ -8,6 +9,8 @@ import {
   listCryptoProCertificates,
 } from '../../utils/cryptoProSign.js';
 import { ChestnyZnakSetupChecklist } from './ChestnyZnakSetupChecklist';
+import { CHESTNY_ZNAK_OPERATIONS, mergeProductGroupOptions } from './chestnyZnakGroups';
+import { invalidateChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 
 function formatExpiry(iso) {
   if (!iso) return '';
@@ -49,6 +52,9 @@ export function ChestnyZnakTab({
   const [unitedToken, setUnitedToken] = useState(false);
   const [inn, setInn] = useState('');
   const [productGroups, setProductGroups] = useState(['tires']);
+  const [operations, setOperations] = useState(() => (
+    Object.fromEntries(CHESTNY_ZNAK_OPERATIONS.map((o) => [o.id, true]))
+  ));
   const [manualToken, setManualToken] = useState('');
   const [omsOpen, setOmsOpen] = useState(false);
   const [omsId, setOmsId] = useState('');
@@ -67,6 +73,7 @@ export function ChestnyZnakTab({
   const [cisText, setCisText] = useState('');
   const [cisChecking, setCisChecking] = useState(false);
   const [cisItems, setCisItems] = useState(null);
+  const [groupQuery, setGroupQuery] = useState('');
 
   const selectedOrg = useMemo(
     () => (organizations || []).find((o) => String(o.id) === String(selectedOrgId)) || null,
@@ -87,13 +94,18 @@ export function ChestnyZnakTab({
 
   const resolvedInn = inn || innDigits(selectedOrg?.inn);
 
-  const groupOptions = (config?.productGroupOptions && config.productGroupOptions.length)
-    ? config.productGroupOptions
-    : [
-      { id: 'tires', name: 'Шины' },
-      { id: 'shoes', name: 'Обувь' },
-      { id: 'lp', name: 'Одежда (лёгпром)' },
-    ];
+  const groupOptions = useMemo(
+    () => mergeProductGroupOptions(config?.productGroupOptions),
+    [config]
+  );
+  const visibleGroupOptions = useMemo(() => {
+    const q = groupQuery.trim().toLowerCase();
+    if (!q) return groupOptions;
+    return groupOptions.filter((g) => (
+      String(g.name || '').toLowerCase().includes(q)
+      || String(g.id || '').toLowerCase().includes(q)
+    ));
+  }, [groupOptions, groupQuery]);
 
   const applyConfig = useCallback((data) => {
     setConfig(data || {});
@@ -104,6 +116,10 @@ export function ChestnyZnakTab({
     setProductGroups(Array.isArray(data?.product_groups) && data.product_groups.length
       ? data.product_groups
       : ['tires']);
+    setOperations({
+      ...Object.fromEntries(CHESTNY_ZNAK_OPERATIONS.map((o) => [o.id, true])),
+      ...(data?.operations && typeof data.operations === 'object' ? data.operations : {}),
+    });
     setThumbprint(data?.cert_thumbprint || '');
     setOmsId(data?.oms_id || '');
     setOmsConnection(data?.oms_connection || '');
@@ -201,6 +217,7 @@ export function ChestnyZnakTab({
         united_token: unitedToken,
         inn: resolvedInn,
         product_groups: productGroups,
+        operations,
         cert_thumbprint: thumbprint,
         oms_id: omsId,
         oms_connection: omsConnection,
@@ -210,6 +227,7 @@ export function ChestnyZnakTab({
       const data = await chestnyZnakApi.saveConfig(payload);
       applyConfig(data);
       setNotice('Настройки сохранены');
+      invalidateChestnyZnakEnabled();
       if (onConfigChange) onConfigChange();
     } catch (err) {
       setError(getApiErrorMessage(err, 'Не удалось сохранить настройки'));
@@ -234,6 +252,7 @@ export function ChestnyZnakTab({
         united_token: unitedToken,
         inn: resolvedInn,
         product_groups: productGroups,
+        operations,
         cert_thumbprint: thumbprint,
       });
       const key = await chestnyZnakApi.fetchAuthKey();
@@ -247,6 +266,7 @@ export function ChestnyZnakTab({
       });
       applyConfig(data);
       setNotice('Вход в Честный знак выполнен');
+      invalidateChestnyZnakEnabled();
       if (onConfigChange) onConfigChange();
     } catch (err) {
       setError(getApiErrorMessage(err, err?.message || 'Не удалось войти по УКЭП'));
@@ -406,8 +426,15 @@ export function ChestnyZnakTab({
 
           <div className="field">
             <label className="label">Товарные группы</label>
+            <input
+              type="search"
+              className="input"
+              value={groupQuery}
+              onChange={(e) => setGroupQuery(e.target.value)}
+              placeholder="Найти группу (масла, шины, химия…)"
+            />
             <div className="chestny-groups">
-              {groupOptions.map((g) => (
+              {visibleGroupOptions.map((g) => (
                 <label key={g.id} className="chestny-check">
                   <input
                     type="checkbox"
@@ -417,7 +444,40 @@ export function ChestnyZnakTab({
                   {g.name}
                 </label>
               ))}
+              {visibleGroupOptions.length === 0 && (
+                <span className="chestny-hint">Ничего не найдено</span>
+              )}
             </div>
+            <small className="chestny-hint">
+              Выбрано {productGroups.length} из {groupOptions.length}. Отметьте группы, подключённые в ЛК Честного знака.
+            </small>
+          </div>
+
+          <div className="field">
+            <label className="label">Схемы работы этой организации</label>
+            <p className="chestny-hint">
+              У каждой организации свой кабинет и свои схемы. Выключите то, чем эта фирма не пользуется.
+            </p>
+            <div className="chestny-groups">
+              {(config?.operationOptions?.length ? config.operationOptions : CHESTNY_ZNAK_OPERATIONS).map((op) => (
+                <label key={op.id} className="chestny-check">
+                  <input
+                    type="checkbox"
+                    checked={operations[op.id] !== false}
+                    onChange={() => setOperations((prev) => ({ ...prev, [op.id]: prev[op.id] === false }))}
+                  />
+                  <span>
+                    <strong>{op.name}</strong>
+                    {op.hint ? <span className="chestny-hint">{op.hint}</span> : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {config?.configured ? (
+              <p className="chestny-hint" style={{ marginTop: 8 }}>
+                <Link to="/stock-levels/marking">Открыть журнал КИ и документы →</Link>
+              </p>
+            ) : null}
           </div>
 
           <div className="chestny-block">

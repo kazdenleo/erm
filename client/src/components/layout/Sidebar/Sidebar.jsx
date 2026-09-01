@@ -12,6 +12,7 @@ import {
   isProfileProductionEnabled,
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
+import { useChestnyZnakEnabled } from '../../../hooks/useChestnyZnakEnabled.js';
 import { questionsApi } from '../../../services/questions.api';
 import { reviewsApi } from '../../../services/reviews.api';
 import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api';
@@ -75,6 +76,13 @@ const stockWarehouseChildren = [
     warehouseOp: 'writeoff',
     sectionKey: 'warehouse_writeoff',
   },
+  {
+    path: '/stock-levels/marking',
+    label: '▣ Маркировка',
+    iconClass: 'pe-7s-ticket',
+    sectionKey: 'warehouse_stock',
+    requiresChestnyZnak: true,
+  },
 ];
 
 const analyticsChildren = [
@@ -90,6 +98,12 @@ const analyticsChildren = [
     iconClass: 'pe-7s-angle-right',
     sectionKey: 'analytics_sales',
     requiresFbo: true,
+  },
+  {
+    path: '/analytics/card-work',
+    label: 'Работа с карточками',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'analytics_sales',
   },
 ];
 
@@ -154,6 +168,7 @@ export function Sidebar({ onNavigate }) {
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
   const fboMenuEnabled = isProfileFboEnabled(profile);
+  const { enabled: chestnyZnakMenuEnabled } = useChestnyZnakEnabled();
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [reviewsNewCount, setReviewsNewCount] = useState(0);
@@ -352,6 +367,7 @@ export function Sidebar({ onNavigate }) {
         if (sub.adminOnly && !canManageUsers) return false;
         if (sub.requiresProduction && !productionMenuEnabled) return false;
         if (sub.requiresFbo && !fboMenuEnabled) return false;
+        if (sub.requiresChestnyZnak && !chestnyZnakMenuEnabled) return false;
         if (!navAllowed(sub.sectionKey)) return false;
         return true;
       });
@@ -361,10 +377,11 @@ export function Sidebar({ onNavigate }) {
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .filter((i) => !i.requiresFbo || fboMenuEnabled)
       .filter((i) => !i.requiresProduction || productionMenuEnabled)
+      .filter((i) => !i.requiresChestnyZnak || chestnyZnakMenuEnabled)
       .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, navAllowed]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, chestnyZnakMenuEnabled, navAllowed]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 

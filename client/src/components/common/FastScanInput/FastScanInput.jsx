@@ -5,6 +5,7 @@
 
 import React, { memo, useEffect, useRef } from 'react';
 import { isLikelyBarcodeScan, normalizeProductSearchQuery } from '../../../utils/productSearch';
+import { looksLikeCis } from '../../../utils/chestnyZnakCis';
 import { clearScanField, readScanFieldValue } from '../../../utils/scanInput';
 
 function assignRef(ref, el) {
@@ -16,6 +17,7 @@ function assignRef(ref, el) {
 function isBarcodeLikeForScan(raw, { manualTypingMode = false } = {}) {
   const v = normalizeProductSearchQuery(raw);
   if (!v) return false;
+  if (looksLikeCis(v)) return true;
   if (/[a-zа-я]/i.test(v)) return false;
   if (!manualTypingMode) return isLikelyBarcodeScan(v);
   return /^\d{8,}$/.test(v);

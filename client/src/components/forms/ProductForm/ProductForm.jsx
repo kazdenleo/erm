@@ -142,6 +142,7 @@ import {
   gramsToKg,
   isAttrMpFieldLinkKey,
   isMpFieldLinked,
+  isMpDimGroupLinked,
   isMpOfferFieldAttrId,
   isWbCharcDuplicatingDedicatedField,
   isWbCountryCharcName,
@@ -154,6 +155,7 @@ import {
   mergeOzonFormAttributes,
   ozonTypePairFromFetchedProduct,
   unionOzonAttrSchemas,
+  productDimFieldKeyForAxis,
   readMpOfferFieldValue,
   readMpSellerSku,
   setMpFieldLink,
@@ -449,7 +451,7 @@ function ozonAttrFromMainLinked(formData, attr, categoryAttributes, labelMaps, d
   }
   const dimAxis = ozonProductDimAxis(attr);
   if (dimAxis && classifyMarketplaceDimAttrName(attr?.name) === 'product') {
-    if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) return true;
+    if (isMpFieldLinked(formData.mp_field_links, productDimFieldKeyForAxis(dimAxis), 'ozon')) return true;
   }
   const packAxis = ozonPackDimAxis(attr);
   if (packAxis && isMpFieldLinked(formData.mp_field_links, packAxis, 'ozon')) return true;
@@ -921,7 +923,7 @@ function mergeWbCharacteristicsIntoValues(characteristics, prev = {}) {
     if (isWbCharcDuplicatingDedicatedField(name) && !isWbCountryCharcName(name)) continue;
     const key = id != null ? String(id) : String(name).trim();
     if (!key) continue;
-    if (!isEmptyMarketplaceValue(next[key])) continue;
+    if (!isWbDedicatedDimCharcId(key) && !isEmptyMarketplaceValue(next[key])) continue;
     const raw = c?.value;
     const normalized = normalizeWbAttributeScalar(raw);
     if (isEmptyMarketplaceValue(normalized)) continue;
@@ -1404,27 +1406,33 @@ function MpSkuCountryDimsEditor({
   const code = String(mp || '').toLowerCase();
   const ozonDimsLocked = code === 'ozon' && isOzonPackagingDimensionsLocked(formData);
   const linkedCountry = isMpFieldLinked(formData.mp_field_links, 'country', code);
-  const linkedDims = isMpFieldLinked(formData.mp_field_links, 'dimensions', code);
-  const linkedProductDims = isMpFieldLinked(formData.mp_field_links, 'product_dimensions', code);
+  const linkedDims = isMpDimGroupLinked(formData.mp_field_links, 'dimensions', code);
+  const linkedProductDims = isMpDimGroupLinked(formData.mp_field_links, 'product_dimensions', code);
   const countryValue = linkedCountry
     ? formData.country_of_origin || ''
     : getMpDraftCountry(formData, code);
-  const dimsMm = linkedDims
-    ? {
-        length: formData.length,
-        width: formData.width,
-        height: formData.height,
-        weight: formData.weight,
-      }
-    : getMpDraftDimensionsMm(formData, code) || {};
-  const productDimsMm = linkedProductDims
-    ? {
-        length: formData.product_length,
-        width: formData.product_width,
-        height: formData.product_height,
-        weight: formData.product_weight,
-      }
-    : getMpDraftProductDimensionsMm(formData, code) || {};
+  const draftPack = getMpDraftDimensionsMm(formData, code) || {};
+  const dimsMm = {
+    length: isMpFieldLinked(formData.mp_field_links, 'length', code) ? formData.length : draftPack.length,
+    width: isMpFieldLinked(formData.mp_field_links, 'width', code) ? formData.width : draftPack.width,
+    height: isMpFieldLinked(formData.mp_field_links, 'height', code) ? formData.height : draftPack.height,
+    weight: isMpFieldLinked(formData.mp_field_links, 'weight', code) ? formData.weight : draftPack.weight,
+  };
+  const draftProduct = getMpDraftProductDimensionsMm(formData, code) || {};
+  const productDimsMm = {
+    length: isMpFieldLinked(formData.mp_field_links, 'product_length', code)
+      ? formData.product_length
+      : draftProduct.length,
+    width: isMpFieldLinked(formData.mp_field_links, 'product_width', code)
+      ? formData.product_width
+      : draftProduct.width,
+    height: isMpFieldLinked(formData.mp_field_links, 'product_height', code)
+      ? formData.product_height
+      : draftProduct.height,
+    weight: isMpFieldLinked(formData.mp_field_links, 'product_weight', code)
+      ? formData.product_weight
+      : draftProduct.weight,
+  };
   const L = lengthUnitLabel(lengthUnit);
   const Wt = weightUnitLabel(weightUnit);
   const dimDisp = (key) =>
@@ -3735,11 +3743,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (Object.keys(draftPatch).length > 0) {
         next = withMpDraftPatch(next, 'ozon', draftPatch);
       }
-      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ozon')) {
-        if (weight != null) next.weight = String(weight);
-        if (width != null) next.width = String(width);
-        if (height != null) next.height = String(height);
-        if (length != null) next.length = String(length);
+      if (!isMpDimGroupLinked(prev.mp_field_links, 'dimensions', 'ozon')) {
+        if (weight != null && !toNum(prev.weight)) next.weight = String(weight);
+        if (width != null && !toNum(prev.width)) next.width = String(width);
+        if (height != null && !toNum(prev.height)) next.height = String(height);
+        if (length != null && !toNum(prev.length)) next.length = String(length);
       }
       const mergedOzBc = mergeBarcodesFromMarketplace(
         prev.barcodes,
@@ -3914,13 +3922,28 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const widthCm = toNumber(width);
     const heightCm = toNumber(height);
 
+    const pickCharcCm = (charcId) => {
+      const hit = (Array.isArray(p.characteristics) ? p.characteristics : []).find(
+        (c) => String(c?.id ?? c?.charcID ?? c?.characteristic_id ?? '') === String(charcId)
+      );
+      if (!hit) return null;
+      const raw = Array.isArray(hit.value) ? hit.value[0] : hit.value;
+      return toNumber(raw);
+    };
+    const itemLcm = pickCharcCm(WB_ITEM_DIM_CHARC.length);
+    const itemWcm = pickCharcCm(WB_ITEM_DIM_CHARC.width);
+    const itemHcm = pickCharcCm(WB_ITEM_DIM_CHARC.height);
+    const itemLmm = cmToMm(itemLcm);
+    const itemWmm = cmToMm(itemWcm);
+    const itemHmm = cmToMm(itemHcm);
+
     setFormData((prev) => {
       let next = { ...prev };
       if (name) next.mp_wb_name = name;
       if (description) next.mp_wb_description = description;
       if (brand) next.mp_wb_brand = brand;
       if (vendorCode) next.mp_wb_vendor_code = vendorCode;
-      // Габариты упаковки Content API → всегда в wb_draft; в ERP — при связи
+      // Габариты упаковки Content API → всегда в wb_draft; в «Основное» — только если нет связи
       if (lMm != null || wMm != null || hMm != null || wG != null) {
         const prevDims = getMpDraftDimensionsMm(prev, 'wb') || {};
         const nextDims = {
@@ -3932,11 +3955,22 @@ export const ProductForm = React.forwardRef(function ProductForm({
         };
         next = withMpDraftPatch(next, 'wb', { dimensions: nextDims });
       }
-      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'wb')) {
-        if (wG != null) next.weight = String(wG);
-        if (lMm != null) next.length = String(lMm);
-        if (wMm != null) next.width = String(wMm);
-        if (hMm != null) next.height = String(hMm);
+      if (itemLmm != null || itemWmm != null || itemHmm != null) {
+        const prevProduct = getMpDraftProductDimensionsMm(next, 'wb') || {};
+        next = withMpDraftPatch(next, 'wb', {
+          productDimensions: {
+            ...prevProduct,
+            ...(itemLmm != null ? { length: itemLmm } : {}),
+            ...(itemWmm != null ? { width: itemWmm } : {}),
+            ...(itemHmm != null ? { height: itemHmm } : {}),
+          },
+        });
+      }
+      if (!isMpDimGroupLinked(prev.mp_field_links, 'dimensions', 'wb')) {
+        if (wG != null && !toNumber(prev.weight)) next.weight = String(wG);
+        if (lMm != null && !toNumber(prev.length)) next.length = String(lMm);
+        if (wMm != null && !toNumber(prev.width)) next.width = String(wMm);
+        if (hMm != null && !toNumber(prev.height)) next.height = String(hMm);
       }
       const mergedBc = mergeBarcodesFromMarketplace(prev.barcodes, barcodes, 'wb');
       if (mergedBc) next.barcodes = mergedBc;
@@ -4205,11 +4239,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
             },
           };
         }
-        if (dimsErp && isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ym')) {
-          if (dimsErp.length != null) next.length = String(dimsErp.length);
-          if (dimsErp.width != null) next.width = String(dimsErp.width);
-          if (dimsErp.height != null) next.height = String(dimsErp.height);
-          if (dimsErp.weight != null) next.weight = String(dimsErp.weight);
+        if (dimsErp && !isMpDimGroupLinked(prev.mp_field_links, 'dimensions', 'ym')) {
+          if (dimsErp.length != null && !Number(prev.length)) next.length = String(dimsErp.length);
+          if (dimsErp.width != null && !Number(prev.width)) next.width = String(dimsErp.width);
+          if (dimsErp.height != null && !Number(prev.height)) next.height = String(dimsErp.height);
+          if (dimsErp.weight != null && !Number(prev.weight)) next.weight = String(dimsErp.weight);
         }
         const mergedYmBc = mergeBarcodesFromMarketplace(
           prev.barcodes,
@@ -4958,9 +4992,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
             : field === 'product_height'
               ? WB_ITEM_DIM_CHARC.height
               : null;
-      if (itemCharc && isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) {
+      if (itemCharc && isMpFieldLinked(formData.mp_field_links, field, 'wb')) {
         const cm = value === '' || value == null ? '' : (mmToCm(value) != null ? String(mmToCm(value)) : '');
         setWbAttributeValues((prev) => ({ ...prev, [itemCharc]: cm }));
+      }
+      const packCharc =
+        field === 'length'
+          ? WB_PACK_DIM_CHARC.length
+          : field === 'width'
+            ? WB_PACK_DIM_CHARC.width
+            : field === 'height'
+              ? WB_PACK_DIM_CHARC.height
+              : null;
+      if (packCharc && isMpFieldLinked(formData.mp_field_links, field, 'wb')) {
+        const cm = value === '' || value == null ? '' : (mmToCm(value) != null ? String(mmToCm(value)) : '');
+        setWbAttributeValues((prev) => ({ ...prev, [packCharc]: cm }));
       }
       // Размеры товара → атрибуты Ozon «Длина/ширина/высота/вес товара» (без дубля в UI)
       if (
@@ -4968,7 +5014,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           field === 'product_width' ||
           field === 'product_height' ||
           field === 'product_weight') &&
-        isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')
+        isMpFieldLinked(formData.mp_field_links, field, 'ozon')
       ) {
         const dimKey =
           field === 'product_weight'
@@ -4982,13 +5028,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       if (
         (field === 'length' || field === 'width' || field === 'height' || field === 'weight') &&
-        isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon')
+        isMpFieldLinked(formData.mp_field_links, field, 'ozon')
       ) {
         syncOzonPackDimAttrsFromMm(ozonAttributes, setOzonAttributeValues, field, value);
       }
       if (
         (field === 'product_length' || field === 'product_width' || field === 'product_height') &&
-        isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')
+        isMpFieldLinked(formData.mp_field_links, field, 'ym')
       ) {
         const dimKey =
           field === 'product_length' ? 'length' : field === 'product_width' ? 'width' : 'height';
@@ -5174,10 +5220,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
     setFormData((prev) => {
       let next;
-      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', code)) {
+      if (isMpFieldLinked(prev.mp_field_links, key, code)) {
         next = {
           ...prev,
-          mp_field_links: setMpFieldLink(prev.mp_field_links, 'dimensions', code, false),
+          mp_field_links: setMpFieldLink(
+            setMpFieldLink(prev.mp_field_links, 'dimensions', code, false),
+            key,
+            code,
+            false
+          ),
         };
         const prevDims = getMpDraftDimensionsMm(next, code) || {};
         const nextDims = { ...prevDims };
@@ -6682,7 +6733,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (annText) out[key] = { value: annText };
         else delete out[key];
       }
-      if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) {
+      if (isMpDimGroupLinked(formData.mp_field_links, 'product_dimensions', 'ozon')) {
         const mmOf = {
           length: formData.product_length,
           width: formData.product_width,
@@ -6692,6 +6743,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         for (const attr of ozonFormAttributes || []) {
           const axis = ozonProductDimAxis(attr);
           if (axis !== 'length' && axis !== 'width' && axis !== 'height' && axis !== 'weight') continue;
+          if (!isMpFieldLinked(formData.mp_field_links, productDimFieldKeyForAxis(axis), 'ozon')) continue;
           const mm = mmOf[axis];
           const key = String(attr.id);
           if (mm !== '' && mm != null && Number(mm) > 0) {
@@ -6699,7 +6751,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           }
         }
       }
-      if (isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon')) {
+      if (isMpDimGroupLinked(formData.mp_field_links, 'dimensions', 'ozon')) {
         const mmOf = {
           length: formData.length,
           width: formData.width,
@@ -6709,6 +6761,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         for (const attr of ozonFormAttributes || []) {
           const axis = ozonPackDimAxis(attr);
           if (!axis) continue;
+          if (!isMpFieldLinked(formData.mp_field_links, axis, 'ozon')) continue;
           const mm = mmOf[axis];
           const key = String(attr.id);
           if (mm !== '' && mm != null && Number(mm) > 0) {
@@ -6762,13 +6815,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
           out[key] = normalized;
         }
       }
-      if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'wb')) {
+      if (isMpFieldLinked(formData.mp_field_links, 'product_length', 'wb')) {
         const l = mmToCm(formData.product_length);
-        const w = mmToCm(formData.product_width);
-        const h = mmToCm(formData.product_height);
         if (l != null) out[WB_ITEM_DIM_CHARC.length] = String(l);
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'product_width', 'wb')) {
+        const w = mmToCm(formData.product_width);
         if (w != null) out[WB_ITEM_DIM_CHARC.width] = String(w);
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'product_height', 'wb')) {
+        const h = mmToCm(formData.product_height);
         if (h != null) out[WB_ITEM_DIM_CHARC.height] = String(h);
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'length', 'wb')) {
+        const l = mmToCm(formData.length);
+        if (l != null) out[WB_PACK_DIM_CHARC.length] = String(l);
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'width', 'wb')) {
+        const w = mmToCm(formData.width);
+        if (w != null) out[WB_PACK_DIM_CHARC.width] = String(w);
+      }
+      if (isMpFieldLinked(formData.mp_field_links, 'height', 'wb')) {
+        const h = mmToCm(formData.height);
+        if (h != null) out[WB_PACK_DIM_CHARC.height] = String(h);
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
@@ -6909,7 +6978,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             return v != null && String(v).trim() !== '';
           })
         );
-        if (isMpFieldLinked(formData.mp_field_links, 'product_dimensions', 'ym')) {
+        if (isMpDimGroupLinked(formData.mp_field_links, 'product_dimensions', 'ym')) {
           const mmOf = {
             length: formData.product_length,
             width: formData.product_width,
@@ -6918,6 +6987,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           for (const attr of ymCategoryAttributes || []) {
             const axis = ozonProductDimAxis(attr);
             if (axis !== 'length' && axis !== 'width' && axis !== 'height') continue;
+            if (!isMpFieldLinked(formData.mp_field_links, productDimFieldKeyForAxis(axis), 'ym')) continue;
             const stored = productDimAttrStoredFromMm(attr, mmOf[axis], 'ym');
             const key = String(attr.id);
             if (stored) cleaned[key] = stored;

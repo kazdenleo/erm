@@ -18,6 +18,7 @@ import {
   splitCisList,
   toPublicChestnyZnakConfig,
   tokenExpiryIso,
+  normalizeOperations,
 } from '../utils/chestnyZnak.js';
 
 const FETCH_TIMEOUT_MS = 25000;
@@ -71,8 +72,19 @@ class ChestnyZnakService {
   }
 
   async getPublicConfig({ profileId, organizationId } = {}) {
-    const cfg = await this._loadConfig({ profileId, organizationId });
-    return toPublicChestnyZnakConfig(cfg);
+    let row = null;
+    try {
+      row = await this._loadRow({ profileId, organizationId });
+    } catch (err) {
+      if (err.statusCode === 400 || err.statusCode === 403) {
+        return { ...toPublicChestnyZnakConfig({}), configured: false };
+      }
+      throw err;
+    }
+    return {
+      ...toPublicChestnyZnakConfig(parseIntegrationConfig(row?.config)),
+      configured: Boolean(row),
+    };
   }
 
   async saveConfig(body, { profileId, organizationId } = {}) {
@@ -104,6 +116,9 @@ class ChestnyZnakService {
         ? incoming.product_groups
         : String(incoming.product_groups || '').split(',');
       next.product_groups = list.map((x) => String(x).trim()).filter(Boolean);
+    }
+    if (incoming.operations !== undefined) {
+      next.operations = normalizeOperations(incoming.operations);
     }
     if (incoming.oms_id !== undefined) next.oms_id = String(incoming.oms_id || '').trim();
     if (incoming.oms_connection !== undefined) {

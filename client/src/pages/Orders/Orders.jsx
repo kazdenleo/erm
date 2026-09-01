@@ -251,6 +251,71 @@ function formatMarketplaceDate(createdAt) {
   }
 }
 
+const ORDER_ELAPSED_MS_HOUR = 60 * 60 * 1000;
+const ORDER_ELAPSED_MS_DAY = 24 * ORDER_ELAPSED_MS_HOUR;
+
+/** Сколько прошло с createdAt (для списка заказов). */
+function formatOrderElapsedSince(createdAt, nowMs = Date.now()) {
+  if (createdAt == null || createdAt === '') return null;
+  const t = new Date(createdAt).getTime();
+  if (Number.isNaN(t)) return null;
+  const ms = Math.max(0, nowMs - t);
+  const hours = Math.floor(ms / ORDER_ELAPSED_MS_HOUR);
+  const mins = Math.floor((ms % ORDER_ELAPSED_MS_HOUR) / 60000);
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remH = hours % 24;
+    return remH > 0 ? `${days} д ${remH} ч` : `${days} д`;
+  }
+  if (hours > 0) return mins > 0 ? `${hours} ч ${mins} мин` : `${hours} ч`;
+  return mins > 0 ? `${mins} мин` : '< 1 мин';
+}
+
+function isOrderElapsedWithin24h(createdAt, nowMs = Date.now()) {
+  if (createdAt == null || createdAt === '') return false;
+  const t = new Date(createdAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return nowMs - t < ORDER_ELAPSED_MS_DAY;
+}
+
+function OrderArrivalCell({ createdAt, nowMs }) {
+  const elapsed = formatOrderElapsedSince(createdAt, nowMs);
+  const fresh = isOrderElapsedWithin24h(createdAt, nowMs);
+  return (
+    <div className="orders-arrival-cell">
+      <span className="orders-arrival-date">{formatMarketplaceDate(createdAt)}</span>
+      {elapsed ? (
+        <span
+          className={`orders-arrival-elapsed${fresh ? ' orders-arrival-elapsed--fresh' : ' orders-arrival-elapsed--stale'}`}
+          title="Прошло с момента появления заказа"
+        >
+          Прошло: {elapsed}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Дата отгрузки с МП: только дата, если время нулевое / дата без времени. */
+function formatShipmentDate(shipmentDate) {
+  if (shipmentDate == null || shipmentDate === '') return '—';
+  try {
+    const raw = String(shipmentDate).trim();
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return '—';
+    const dateOnly =
+      /^\d{4}-\d{2}-\d{2}$/.test(raw) ||
+      /^\d{1,2}\.\d{1,2}\.\d{4}$/.test(raw) ||
+      /T00:00:00(\.\d+)?(Z|[+-]00:00)?$/i.test(raw) ||
+      (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0);
+    return dateOnly
+      ? d.toLocaleDateString('ru-RU', { timeZone: 'UTC' })
+      : d.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    return '—';
+  }
+}
+
 function orderSupportsFbsShipment(marketplace) {
   const mp = normalizeMarketplaceForUI(marketplace);
   return ['wildberries', 'ozon', 'yandex', 'manual'].includes(mp);
@@ -468,6 +533,12 @@ export function Orders() {
   /** Колонка «Стикер» — на сборке и у собранных (не на «Новый» / «В закупке») */
   const showStickerColumn = shouldShowOrdersStickerColumn(statusFilter);
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  /** Обновление «прошло с появления» в колонке «Появился» (раз в минуту). */
+  const [orderElapsedNowMs, setOrderElapsedNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setOrderElapsedNowMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   useEffect(() => {
     const sp = new URLSearchParams(location.search);
     const q = sp.get('search');
@@ -3432,6 +3503,7 @@ export function Orders() {
                 </th>
                 <th>ID заказа</th>
                 <th>Появился</th>
+                <th title="Плановая дата отгрузки с маркетплейса">Отгрузка МП</th>
                 <th>Товары</th>
                 <th
                   className={`orders-th-sortable${sortByArticle ? ' orders-th-sortable--active' : ''}`}
@@ -3635,7 +3707,17 @@ export function Orders() {
                     className="orders-col-date"
                     title={first.createdAt ? new Date(first.createdAt).toLocaleString() : ''}
                   >
-                    {formatMarketplaceDate(first.createdAt)}
+                    <OrderArrivalCell createdAt={first.createdAt} nowMs={orderElapsedNowMs} />
+                  </td>
+                  <td
+                    className="orders-col-date"
+                    title={
+                      first.shipmentDate || first.shipment_date
+                        ? new Date(first.shipmentDate || first.shipment_date).toLocaleString('ru-RU')
+                        : 'Дата отгрузки на маркетплейсе не указана'
+                    }
+                  >
+                    {formatShipmentDate(first.shipmentDate ?? first.shipment_date)}
                   </td>
                   <td
                     className="orders-col-products"

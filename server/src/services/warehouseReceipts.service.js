@@ -9,6 +9,9 @@ import stockMovementsService from './stockMovements.service.js';
 import { isKitProductId } from './kitStock.service.js';
 import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.js';
 import { requireWarehouseDocumentScope, requireTransferDocumentScope, assertWarehouseBelongsToOrganization } from '../utils/stockDocumentScope.js';
+import { looksLikeCis } from '../utils/chestnyZnak.js';
+import chestnyZnakOps from './chestnyZnakOps.service.js';
+import logger from '../utils/logger.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -759,7 +762,7 @@ class WarehouseReceiptsService {
    * @param {string} params.writeoffReason — «Брак» или «Утеря»
    * @param {Array<{productId: number, quantity: number}>} params.lines
    */
-  async createWriteoff({ organizationId = null, warehouseId = null, writeoffReason = null, lines = [] }) {
+  async createWriteoff({ organizationId = null, warehouseId = null, writeoffReason = null, lines = [], profileId = null }) {
     const ALLOWED_WRITEOFF_REASONS = ['Брак', 'Утеря'];
     const reasonLabel = String(writeoffReason || '').trim();
     if (!ALLOWED_WRITEOFF_REASONS.includes(reasonLabel)) {
@@ -853,6 +856,48 @@ class WarehouseReceiptsService {
           ...(isKit ? { kit_writeoff: true } : {}),
         },
       });
+    }
+
+    const cisCodes = [];
+    for (const line of lines || []) {
+      const pidLine = line.productId ?? line.product_id ?? null;
+      const list = Array.isArray(line.cises)
+        ? line.cises
+        : line.cis
+          ? [line.cis]
+          : [];
+      for (const raw of list) {
+        if (looksLikeCis(raw)) cisCodes.push({ cis: raw, productId: pidLine });
+      }
+    }
+    if (cisCodes.length && profileId && scope.organizationId) {
+      for (const row of cisCodes) {
+        try {
+          await chestnyZnakOps.tryBindCis({
+            code: row.cis,
+            kind: 'own_use',
+            sourceType: 'writeoff',
+            sourceId: receipt.id,
+            productId: row.productId,
+            warehouseId: whId,
+            profileId,
+            organizationId: scope.organizationId,
+          });
+        } catch (e) {
+          logger.warn('[ChestnyZnak] writeoff CIS bind:', e?.message || e);
+        }
+      }
+      await chestnyZnakOps
+        .maybeCreateDocument({
+          kind: 'own_use',
+          sourceType: 'writeoff',
+          sourceId: receipt.id,
+          profileId,
+          organizationId: scope.organizationId,
+        })
+        .catch((e) => {
+          logger.warn('[ChestnyZnak] own_use after writeoff:', e?.message || e);
+        });
     }
 
     return {

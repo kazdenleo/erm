@@ -37,6 +37,8 @@ import {
   readDocumentIncomingNetOnWarehouse,
   transferIncomingBetweenWarehouses,
 } from '../utils/stockWarehouseReassign.js';
+import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 /** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
 const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.address, w.wb_warehouse_name, '')), '')`;
@@ -3910,6 +3912,35 @@ class PurchasesService {
       return { ok: true, ignoredDuplicate: true };
     }
 
+    let cisMeta = null;
+    let cisProductId = null;
+    if (looksLikeCis(bc)) {
+      const head = await query(
+        `SELECT r.id, r.status, p.organization_id, p.warehouse_id
+         FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         WHERE r.id = $1 AND p.profile_id = $2`,
+        [rid, pid]
+      );
+      const headRow = head.rows?.[0];
+      if (headRow) {
+        cisProductId = pidNum || (await chestnyZnakOps.findProductIdByScanCode(bc, { profileId: pid }));
+        cisMeta = await chestnyZnakOps.tryBindCis({
+          code: bc,
+          kind: 'purchase_accept',
+          sourceType: 'purchase_receipt',
+          sourceId: rid,
+          productId: cisProductId,
+          warehouseId: headRow.warehouse_id,
+          profileId: pid,
+          organizationId: headRow.organization_id,
+        });
+        if (cisMeta.duplicate) {
+          return { ok: true, ignoredDuplicate: true, cis: true };
+        }
+      }
+    }
+
     return transaction(async (client) => {
       // lock receipt row
       const r = await client.query(
@@ -3932,30 +3963,44 @@ class PurchasesService {
         throw err;
       }
 
-      let resolvedProductId = pidNum;
-      if (!resolvedProductId && bc) {
-        const bcDigits = bc.replace(/\D+/g, '');
-        const br = await client.query(
-          `SELECT product_id
-           FROM barcodes
-           WHERE TRIM(barcode) = TRIM($1)
-              OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = $2
-           LIMIT 1`,
-          [bc, bcDigits]
-        );
-        if (br.rows?.[0]?.product_id) resolvedProductId = Number(br.rows[0].product_id);
+      let resolvedProductId = pidNum || cisProductId;
+      const codesToTry = productLookupCodesFromScan(bc);
+      if (!resolvedProductId) {
+        for (const code of codesToTry) {
+          const bcDigits = String(code).replace(/\D+/g, '');
+          const br = await client.query(
+            `SELECT product_id
+             FROM barcodes
+             WHERE TRIM(barcode) = TRIM($1)
+                OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = $2
+             LIMIT 1`,
+            [code, bcDigits]
+          );
+          if (br.rows?.[0]?.product_id) {
+            resolvedProductId = Number(br.rows[0].product_id);
+            break;
+          }
+        }
       }
       if (!resolvedProductId && skuStr) {
         const pr = await client.query('SELECT id FROM products WHERE sku = $1 LIMIT 1', [skuStr]);
         if (pr.rows?.[0]?.id) resolvedProductId = Number(pr.rows[0].id);
       }
       if (!resolvedProductId && bc) {
-        // fallback: иногда штрихкод хранится в SKU (или сканер шлёт EAN13, а SKU=EAN13)
-        const pr = await client.query('SELECT id FROM products WHERE sku = $1 LIMIT 1', [bc]);
-        if (pr.rows?.[0]?.id) resolvedProductId = Number(pr.rows[0].id);
+        for (const code of codesToTry.length ? codesToTry : [bc]) {
+          const pr = await client.query('SELECT id FROM products WHERE sku = $1 LIMIT 1', [code]);
+          if (pr.rows?.[0]?.id) {
+            resolvedProductId = Number(pr.rows[0].id);
+            break;
+          }
+        }
       }
       if (!resolvedProductId) {
-        const err = new Error('Товар не найден по скану');
+        const err = new Error(
+          looksLikeCis(bc)
+            ? 'Товар не найден по GTIN из кода маркировки'
+            : 'Товар не найден по скану'
+        );
         err.statusCode = 404;
         throw err;
       }
@@ -3966,7 +4011,12 @@ class PurchasesService {
         scannerId: sc || null,
         userId,
       });
-      return { ok: true, productId: resolvedProductId, scannedQuantity };
+      return {
+        ok: true,
+        productId: resolvedProductId,
+        scannedQuantity,
+        cis: Boolean(cisMeta?.bound),
+      };
     });
   }
 
@@ -4207,17 +4257,28 @@ class PurchasesService {
       await assertPurchaseNotArchivedInTx(client, purchaseId);
 
       // lock purchase
-      const pHead = await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [purchaseId]);
+      const pHead = await client.query(
+        'SELECT id, organization_id FROM purchases WHERE id = $1 FOR UPDATE',
+        [purchaseId]
+      );
       if (!pHead.rows?.[0]) {
         const err = new Error('Закупка не найдена');
         err.statusCode = 404;
         throw err;
       }
+      const purchaseOrganizationId = pHead.rows[0].organization_id ?? null;
 
       const scanLines = await client.query(
         'SELECT product_id, scanned_quantity FROM purchase_receipt_items WHERE receipt_id = $1',
         [rid]
       );
+
+      await chestnyZnakOps.assertReceiptCisQty({
+        receiptId: rid,
+        profileId: pid,
+        organizationId: purchaseOrganizationId,
+        scanLines: scanLines.rows || [],
+      });
 
       const byProduct = new Map();
       for (const row of scanLines.rows || []) {
@@ -4345,10 +4406,24 @@ class PurchasesService {
         extras,
         stockProblems: problems.rows || [],
         warehouseId: receiptWarehouseId,
+        organizationId: purchaseOrganizationId,
         completedAt: nowIso(),
       };
     });
     await reapplyInProcurementReservesForPurchase(result.purchaseId, pid).catch(() => {});
+    if (result.organizationId) {
+      await chestnyZnakOps
+        .maybeCreateDocument({
+          kind: 'purchase_accept',
+          sourceType: 'purchase_receipt',
+          sourceId: result.receiptId,
+          profileId: pid,
+          organizationId: result.organizationId,
+        })
+        .catch((err) => {
+          logger.warn('[ChestnyZnak] purchase_accept after receipt:', err?.message || err);
+        });
+    }
     return result;
   }
 

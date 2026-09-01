@@ -104,6 +104,27 @@
   font-variant-numeric: tabular-nums;
 }
 
+.orders-arrival-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
+.orders-arrival-elapsed {
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 500;
+}
+
+.orders-arrival-elapsed--fresh {
+  color: #15803d;
+}
+
+.orders-arrival-elapsed--stale {
+  color: #dc2626;
+}
+
 .orders-product-single-cell {
   display: flex;
   flex-direction: column;

@@ -386,6 +386,13 @@ export function isMpFieldLinked(links, fieldKey, mp) {
   return Array.isArray(list) && list.includes(code);
 }
 
+/** Группа или любая ось (после раздельных тумблеров в массовом редакторе). */
+export function isMpDimGroupLinked(links, groupKey, mp) {
+  if (isMpFieldLinked(links, groupKey, mp)) return true;
+  const axes = groupKey === 'product_dimensions' ? DEDICATED_PRODUCT_DIM_KEYS : DEDICATED_PACK_DIM_KEYS;
+  return axes.some((k) => isMpFieldLinked(links, k, mp));
+}
+
 export function toggleMpFieldLink(links, fieldKey, mp, supportedOverride) {
   const normalized = normalizeMpFieldLinks(links);
   const code = String(mp || '').toLowerCase();
@@ -762,41 +769,50 @@ function parseDraftObj(raw) {
 }
 
 /**
- * Габариты для push (мм / г): связь вкл. → ERP; выкл. → draft МП.
+ * Габариты упаковки для push (мм / г): связь оси вкл. → ERP; выкл. → draft МП.
+ * Учитывает и группу `dimensions`, и раздельные length/width/height/weight.
  * @returns {{ length?: number, width?: number, height?: number, weight?: number }|null}
  */
 export function resolveDimensionsMmForPush(product, mp) {
   const links = normalizeMpFieldLinks(product?.mp_field_links);
   const code = String(mp || '').toLowerCase();
-  if (isMpFieldLinked(links, 'dimensions', code)) {
-    const out = {};
-    if (product.length != null && Number(product.length) > 0) out.length = Number(product.length);
-    if (product.width != null && Number(product.width) > 0) out.width = Number(product.width);
-    if (product.height != null && Number(product.height) > 0) out.height = Number(product.height);
-    if (product.weight != null && Number(product.weight) > 0) out.weight = Number(product.weight);
-    return Object.keys(out).length ? out : null;
-  }
+  const erp = {
+    length: Number(product.length) || 0,
+    width: Number(product.width) || 0,
+    height: Number(product.height) || 0,
+    weight: Number(product.weight) || 0,
+  };
+  let fromDraft = {};
   if (code === 'ym') {
-    const draft = parseDraftObj(product?.ym_draft);
-    const fromOffer = ymWeightDimensionsToErp(draft.weightDimensions);
-    if (fromOffer && Number(fromOffer.length) > 0 && Number(fromOffer.width) > 0 && Number(fromOffer.height) > 0) {
-      return fromOffer;
+    fromDraft = ymWeightDimensionsToErp(parseDraftObj(product?.ym_draft).weightDimensions) || {};
+  } else {
+    const draft = parseDraftObj(code === 'ozon' ? product?.ozon_draft : product?.wb_draft);
+    const d = draft.dimensions;
+    if (d && typeof d === 'object') {
+      fromDraft = {
+        length: Number(d.length) || 0,
+        width: Number(d.width) || 0,
+        height: Number(d.height) || 0,
+        weight: Number(d.weight) || 0,
+      };
     }
-    const erp = {};
-    if (product.length != null && Number(product.length) > 0) erp.length = Number(product.length);
-    if (product.width != null && Number(product.width) > 0) erp.width = Number(product.width);
-    if (product.height != null && Number(product.height) > 0) erp.height = Number(product.height);
-    if (product.weight != null && Number(product.weight) > 0) erp.weight = Number(product.weight);
-    return Object.keys(erp).length ? erp : fromOffer;
   }
-  const draft = parseDraftObj(code === 'ozon' ? product?.ozon_draft : product?.wb_draft);
-  const d = draft.dimensions;
-  if (!d || typeof d !== 'object') return null;
+  const axes = [
+    ['length', 'length'],
+    ['width', 'width'],
+    ['height', 'height'],
+    ['weight', 'weight'],
+  ];
   const out = {};
-  if (d.length != null && Number(d.length) > 0) out.length = Number(d.length);
-  if (d.width != null && Number(d.width) > 0) out.width = Number(d.width);
-  if (d.height != null && Number(d.height) > 0) out.height = Number(d.height);
-  if (d.weight != null && Number(d.weight) > 0) out.weight = Number(d.weight);
+  for (const [axis, key] of axes) {
+    if (isMpFieldLinked(links, key, code)) {
+      if (erp[axis] > 0) out[axis] = erp[axis];
+    } else if (fromDraft[axis] > 0) {
+      out[axis] = fromDraft[axis];
+    } else if (erp[axis] > 0) {
+      out[axis] = erp[axis];
+    }
+  }
   return Object.keys(out).length ? out : null;
 }
 

@@ -11,6 +11,7 @@ import './AbcSalesAnalytics.css';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 import { ABC_METRICS, classifyAbc } from '../shared/abcClassify';
+import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
 
 function formatQty(n) {
   if (!Number.isFinite(n)) return '0';
@@ -30,6 +31,18 @@ function formatPct(n) {
   if (!Number.isFinite(n)) return '—';
   return `${(n * 100).toFixed(1)}%`;
 }
+
+const ABC_SORT_GETTERS = {
+  abcClass: (r) => r.abcClass || '',
+  productName: (r) => r.productName || '',
+  erpSku: (r) => r.erpSku || r.sku || '',
+  categoryName: (r) => r.categoryName || '',
+  soldQty: (r) => Number(r.soldQty) || 0,
+  soldAmount: (r) => Number(r.soldAmount) || 0,
+  netIncome: (r) => Number(r.netIncome) || 0,
+  share: (r) => Number(r.share) || 0,
+  cumulativeShare: (r) => Number(r.cumulativeShare) || 0,
+};
 
 const MARKETPLACE_OPTIONS = [
   { value: 'all', label: 'Все маркетплейсы' },
@@ -63,6 +76,7 @@ export function AbcSalesAnalytics() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
+  const { sort, toggleSort } = useTableSort(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,9 +103,13 @@ export function AbcSalesAnalytics() {
   );
 
   const items = useMemo(() => {
-    if (classFilter === 'all') return classified.items;
-    return classified.items.filter((r) => r.abcClass === classFilter);
-  }, [classified.items, classFilter]);
+    const filtered =
+      classFilter === 'all'
+        ? classified.items
+        : classified.items.filter((r) => r.abcClass === classFilter);
+    if (!sort.key) return filtered;
+    return sortRows(filtered, sort, ABC_SORT_GETTERS);
+  }, [classified.items, classFilter, sort]);
 
   const metricLabel = ABC_METRICS.find((m) => m.value === metric)?.label || 'Выручка';
 
@@ -201,15 +219,33 @@ export function AbcSalesAnalytics() {
         <table className="sales-analytics__table">
           <thead>
             <tr>
-              <th>Класс</th>
-              <th>Товар</th>
-              <th>Артикул</th>
-              <th>Категория</th>
-              <th className="sales-analytics__num">Штуки</th>
-              <th className="sales-analytics__num">Выручка</th>
-              <th className="sales-analytics__num">Прибыль</th>
-              <th className="sales-analytics__num">Доля</th>
-              <th className="sales-analytics__num">Накопит.</th>
+              <SortableTh sortKey="abcClass" sort={sort} onSort={toggleSort}>
+                Класс
+              </SortableTh>
+              <SortableTh sortKey="productName" sort={sort} onSort={toggleSort}>
+                Товар
+              </SortableTh>
+              <SortableTh sortKey="erpSku" sort={sort} onSort={toggleSort}>
+                Артикул
+              </SortableTh>
+              <SortableTh sortKey="categoryName" sort={sort} onSort={toggleSort}>
+                Категория
+              </SortableTh>
+              <SortableTh sortKey="soldQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Штуки
+              </SortableTh>
+              <SortableTh sortKey="soldAmount" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Выручка
+              </SortableTh>
+              <SortableTh sortKey="netIncome" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Прибыль
+              </SortableTh>
+              <SortableTh sortKey="share" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Доля
+              </SortableTh>
+              <SortableTh sortKey="cumulativeShare" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Накопит.
+              </SortableTh>
             </tr>
           </thead>
           <tbody>

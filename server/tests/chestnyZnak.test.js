@@ -2,6 +2,8 @@ import {
   buildTrueApiBaseUrl,
   cisStatusLabel,
   extractGtinFromCis,
+  looksLikeCis,
+  productLookupCodesFromScan,
   isTokenPlaceholder,
   mapCisInfoResponse,
   normalizeCis,
@@ -12,6 +14,8 @@ import {
   TRUE_API_PROD_V3,
   TRUE_API_PROD_V4,
   TRUE_API_SANDBOX_V3,
+  normalizeOperations,
+  buildLkReceiptPayload,
 } from '../src/utils/chestnyZnak.js';
 
 describe('chestnyZnak utils', () => {
@@ -28,6 +32,17 @@ describe('chestnyZnak utils', () => {
   test('extracts GTIN-14 from AI 01', () => {
     expect(extractGtinFromCis('010460123456789021SERIAL')).toBe('04601234567890');
     expect(extractGtinFromCis('not-a-cis')).toBeNull();
+  });
+
+  test('detects CIS vs EAN and builds product lookup codes', () => {
+    expect(looksLikeCis('4601234567890')).toBe(false);
+    expect(looksLikeCis('04601234567890')).toBe(false);
+    expect(looksLikeCis('010460123456789021SERIAL')).toBe(true);
+    expect(productLookupCodesFromScan('010460123456789021SERIAL')).toEqual([
+      '04601234567890',
+      '4601234567890',
+    ]);
+    expect(productLookupCodesFromScan('4601234567890')).toEqual(['4601234567890']);
   });
 
   test('maps CIS status labels', () => {
@@ -72,6 +87,15 @@ describe('chestnyZnak utils', () => {
     expect(pub.token_preview).toMatch(/^••••/);
     expect(pub.sandbox).toBe(true);
     expect(pub.product_groups).toEqual(['tires']);
+    expect(pub.productGroupOptions.map((g) => g.id)).toEqual(
+      expect.arrayContaining(['tires', 'autofluids', 'chemistry', 'radio', 'construction', 'furs', 'shoes'])
+    );
+    expect(pub.productGroupOptions.length).toBeGreaterThanOrEqual(35);
+    expect(pub.operations.purchase_accept).toBe(true);
+    expect(pub.operations.fbs_distance).toBe(true);
+    expect(pub.operationOptions.map((o) => o.id)).toEqual(
+      expect.arrayContaining(['purchase_accept', 'fbo_transfer', 'fbs_distance', 'own_use'])
+    );
     expect(tokenExpiryIso(token)).toBe(new Date(exp * 1000).toISOString());
     expect(parseJwtPayload(token).inn).toBe('7700000000');
   });
@@ -80,5 +104,20 @@ describe('chestnyZnak utils', () => {
     expect(isTokenPlaceholder('')).toBe(true);
     expect(isTokenPlaceholder('••••ab12')).toBe(true);
     expect(isTokenPlaceholder('eyJhbGciOiJub25lIn0.payload.sig')).toBe(false);
+  });
+
+  test('normalizes per-org operation flags and LK_RECEIPT payload', () => {
+    expect(normalizeOperations({ fbs_distance: false }).fbs_distance).toBe(false);
+    expect(normalizeOperations({ fbs_distance: false }).own_use).toBe(true);
+    const payload = buildLkReceiptPayload({
+      inn: '7700000000',
+      action: 'OWN_USE',
+      actionDate: '2026-08-31',
+      documentNumber: 'СП-1',
+      documentDate: '2026-08-31',
+      products: ['010460123456789021AAA'],
+    });
+    expect(payload.action).toBe('OWN_USE');
+    expect(payload.products).toEqual([{ cis: '010460123456789021AAA' }]);
   });
 });

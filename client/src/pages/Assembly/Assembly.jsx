@@ -14,6 +14,7 @@ import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
+import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
@@ -209,6 +210,7 @@ function assemblyCompositionParts(item, quantityOverride) {
 }
 
 export function Assembly() {
+  const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1097,7 +1099,11 @@ export function Assembly() {
             id="assembly-barcode"
             inputRef={barcodeInputRef}
             className="assembly-scan-input"
-            placeholder="Отсканируйте или введите штрихкод — поиск автоматически"
+            placeholder={
+              chestnyZnakEnabled
+                ? 'Штрихкод или код маркировки — поиск автоматически'
+                : 'Отсканируйте или введите штрихкод — поиск автоматически'
+            }
             onScan={handleAssemblyScan}
             debounceMs={400}
             enableGlobalCapture

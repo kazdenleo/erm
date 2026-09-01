@@ -1,0 +1,42 @@
+.product-turnover__status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.product-turnover__status--fast {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.product-turnover__status--ok {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.product-turnover__status--slow {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.product-turnover__status--dead {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.product-turnover__status--stockout {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.product-turnover__status--empty {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.product-turnover__row.is-selected {
+  background: #eff6ff;
+}

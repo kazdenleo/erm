@@ -1,9 +1,18 @@
 import {
   attachOrderEconomics,
+  isWbNumericOrderId,
+  isWbSridOrderId,
   orderLookupKeys,
 } from '../src/utils/marketplaceOrderEconomics.js';
 
 describe('marketplaceOrderEconomics', () => {
+  test('WB order id helpers', () => {
+    expect(isWbNumericOrderId('5420991920')).toBe(true);
+    expect(isWbNumericOrderId('ey.ra30788bbc72d4a159b71ff3755158feb.0.0')).toBe(false);
+    expect(isWbSridOrderId('ey.ra30788bbc72d4a159b71ff3755158feb.0.0')).toBe(true);
+    expect(isWbSridOrderId('5420991920')).toBe(false);
+  });
+
   test('orderLookupKeys strips Ozon ~n and YM :sku', () => {
     expect(orderLookupKeys('43536637-0509-1~1')).toEqual(['43536637-0509-1~1', '43536637-0509-1']);
     expect(orderLookupKeys('60267017346:AN1014M')).toEqual(['60267017346:AN1014M', '60267017346']);

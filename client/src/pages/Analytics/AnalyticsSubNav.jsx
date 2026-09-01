@@ -11,6 +11,9 @@ const TABS = [
   { to: '/analytics/fbo-sales', label: 'Продажи FBO' },
   { to: '/analytics/categories', label: 'По категориям' },
   { to: '/analytics/abc', label: 'ABC' },
+  { to: '/analytics/dynamics', label: 'Динамика' },
+  { to: '/analytics/turnover', label: 'Оборачиваемость' },
+  { to: '/analytics/card-work', label: 'Работа с карточками' },
 ];
 export function AnalyticsSubNav() {
   return (

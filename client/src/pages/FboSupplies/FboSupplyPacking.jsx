@@ -8,6 +8,7 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { BarcodeScanField } from '../../components/common/BarcodeScanField/BarcodeScanField';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
+import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
 import { FboCargoContentMeta } from './FboCargoContentMeta.jsx';
 import { FboCargoUnitKind } from './FboCargoUnitKind.jsx';
@@ -79,6 +80,7 @@ export function FboSupplyPacking({
   itemSearchQuery = '',
 }) {
   const [scanLoading, setScanLoading] = useState(false);
+  const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const [scanError, setScanError] = useState(null);
   const [scanMsg, setScanMsg] = useState(null);
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
@@ -142,6 +144,18 @@ export function FboSupplyPacking({
 
   const applyScanResult = useCallback(
     (data, { scannedAsNewCargo = false } = {}) => {
+      if (data?.action === 'ignored_duplicate') {
+        setScanMsg(data.message || 'Этот КИ уже в поставке');
+        playEventSound(SOUND_EVENTS.scan_error);
+        if (data?.packing) {
+          onPackingChange(data.packing, {
+            supplyStatus: data.supplyStatus,
+            packingAllMatch: data.packingAllMatch,
+            statusReverted: data.statusReverted,
+          });
+        }
+        return;
+      }
       if (data?.activeCargoUnitId != null) {
         setActiveCargoUnitId(data.activeCargoUnitId);
       }
@@ -419,13 +433,27 @@ export function FboSupplyPacking({
                 Создайте грузоместо кнопкой <strong>«Короб на Ozon»</strong> или{' '}
                 <strong>«Паллета на Ozon»</strong>, либо отсканируйте этикетку через{' '}
                 <strong>«Новое грузоместо»</strong>. Затем сканируйте <strong>товары из поставки</strong>{' '}
-                (+1 шт. за скан). Если состав в Ozon уже заполнен — обновляйте через{' '}
+                (+1 шт. за скан).
+                {chestnyZnakEnabled ? (
+                  <>
+                    {' '}
+                    Можно сканировать <strong>код маркировки</strong> (Data Matrix).
+                  </>
+                ) : null}{' '}
+                Если состав в Ozon уже заполнен — обновляйте через{' '}
                 <strong>Excel</strong>, а не кнопку отправки состава.
               </>
             ) : (
               <>
                 Сначала отсканируйте штрихкод <strong>коробки или паллеты</strong> — откроется грузоместо.
-                Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
+                Затем сканируйте <strong>товары из этой поставки</strong>
+                {chestnyZnakEnabled ? (
+                  <>
+                    {' '}
+                    или <strong>код маркировки</strong>
+                  </>
+                ) : null}{' '}
+                (+1 шт. за скан).
                 Для следующей коробки нажмите <strong>«Новое грузоместо»</strong> и отсканируйте её штрихкод.
               </>
             )

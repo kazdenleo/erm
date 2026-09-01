@@ -18,6 +18,7 @@ import { purchasesApi } from '../../services/purchases.api';
 import { productsApi } from '../../services/products.api';
 import { usersApi } from '../../services/users.api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { useProducts } from '../../hooks/useProducts';
 import './WarehouseOperations.css';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -308,6 +309,7 @@ export function Purchases() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const { products } = useProducts({ autoLoad: false });
   const { warehouses } = useWarehouses();
   const { suppliers } = useSuppliers();
@@ -1546,6 +1548,7 @@ export function Purchases() {
             received,
             scanned: updatedScannedQty,
             over,
+            cis: Boolean(scanRes?.cis),
           });
         }
       }
@@ -2487,7 +2490,11 @@ export function Purchases() {
                 onScan={scan}
                 debounceMs={120}
                 minLength={4}
-                placeholder="Сканируйте штрихкод (1 скан = +1)"
+                placeholder={
+                  chestnyZnakEnabled
+                    ? 'Штрихкод или код маркировки (1 скан = +1)'
+                    : 'Сканируйте штрихкод (1 скан = +1)'
+                }
               />
             </form>
             ) : null}
@@ -2516,6 +2523,7 @@ export function Purchases() {
                   Ожидалось: {lastScanLine.expected ?? '—'} · Принято: {lastScanLine.scanned}
                   {lastScanLine.received != null ? `/${lastScanLine.received}` : ''}
                   {lastScanLine.over ? ' · Перескан!' : ''}
+                  {chestnyZnakEnabled && lastScanLine.cis ? ' · КИ записан' : ''}
                 </div>
               </div>
             )}

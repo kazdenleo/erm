@@ -209,3 +209,44 @@
   background-color: #fed7aa;
   color: #9a3412;
 }
+
+.sales-analytics__th-sortable {
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.sales-analytics__sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+  max-width: 100%;
+}
+
+.sales-analytics__num .sales-analytics__sort-btn {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.sales-analytics__sort-btn:hover {
+  text-decoration: underline;
+}
+
+.sales-analytics__th-sortable.is-active .sales-analytics__sort-btn {
+  font-weight: 700;
+}
+
+.sales-analytics__sort-ind {
+  display: inline-block;
+  min-width: 0.7em;
+  font-size: 0.85em;
+  opacity: 0.85;
+}

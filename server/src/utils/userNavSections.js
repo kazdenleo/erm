@@ -307,6 +307,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/prices')) return 'prices';
   if (path.startsWith('/production')) return 'warehouse_production';
   if (path.startsWith('/stock-levels/purchases')) return 'warehouse_purchases';
+  if (path.startsWith('/stock-levels/marking')) return 'warehouse_stock';
   if (path.startsWith('/stock-levels/warehouse')) {
     const op = sp.get('op') || 'table';
     const opMap = {

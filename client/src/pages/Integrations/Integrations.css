@@ -157,11 +157,12 @@
 
 .chestny-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 4px 12px;
-  max-height: 220px;
+  max-height: 420px;
   overflow: auto;
   padding: 8px 10px;
+  margin-top: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card, #fff);

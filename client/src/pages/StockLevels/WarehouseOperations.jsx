@@ -10,6 +10,8 @@ import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
 import { fetchProductByScanCode } from '../../utils/productSearch.js';
+import { looksLikeCis, normalizeCis } from '../../utils/chestnyZnakCis.js';
+import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { clearScanField, readScanFieldValue } from '../../utils/scanInput.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
@@ -278,6 +280,7 @@ export function WarehouseOperations({
   const location = useLocation();
   const navigate = useNavigate();
   const { user, selectedOrganizationId } = useAuth();
+  const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
@@ -1958,8 +1961,19 @@ export function WarehouseOperations({
     }
     setLookupError(null);
     try {
+      const cis = chestnyZnakEnabled && looksLikeCis(v) ? normalizeCis(v) : null;
+      if (cis) {
+        const already = writeoffList.some((item) => (item.cises || []).includes(cis));
+        if (already) {
+          setLookupError('Этот код маркировки уже в списке списания');
+          playEventSound(SOUND_EVENTS.scan_error);
+          clearScanField(writeoffScanInputRef.current);
+          writeoffScanInputRef.current?.focus();
+          return;
+        }
+      }
       const product = await lookupProductByAny(v, { title: 'Выберите товар для списания' });
-      const added = await addToWriteoffList(product, 1);
+      const added = await addToWriteoffList(product, 1, { cis });
       if (added < 1) {
         setOpMessage(null);
         setLookupError('Нет остатка на выбранном складе');
@@ -2152,7 +2166,7 @@ export function WarehouseOperations({
   };
 
   /** Добавить товар в список списания (qty ограничено остатком на выбранном складе). Возвращает добавленное кол-во или 0. */
-  const addToWriteoffList = async (product, add) => {
+  const addToWriteoffList = async (product, add, { cis = null } = {}) => {
     if (!writeoffWarehouseId) return 0;
     const maxQty = await warehouseQtyForProduct(product, writeoffWarehouseId);
     if (maxQty < 1) return 0;
@@ -2162,14 +2176,27 @@ export function WarehouseOperations({
     const pc = product?.cost;
     const defaultCost =
       pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : null;
+    const cisCode = cis ? normalizeCis(cis) : null;
+    let applied = qty;
     setWriteoffList((prev) => {
       const existing = prev.find((item) => String(item.productId) === String(id));
       if (existing) {
+        if (cisCode && (existing.cises || []).includes(cisCode)) {
+          applied = 0;
+          return prev;
+        }
         const newQty = Math.min(existing.quantity + qty, maxQty);
-        if (newQty <= 0) return prev;
+        if (newQty <= 0) {
+          applied = 0;
+          return prev;
+        }
+        applied = newQty - existing.quantity;
+        const nextCises = cisCode
+          ? [...(existing.cises || []), cisCode]
+          : existing.cises || [];
         return prev.map((item) =>
           String(item.productId) === String(id)
-            ? { ...item, quantity: newQty, warehouseMaxQty: maxQty }
+            ? { ...item, quantity: newQty, warehouseMaxQty: maxQty, cises: nextCises }
             : item
         );
       }
@@ -2182,10 +2209,11 @@ export function WarehouseOperations({
           quantity: qty,
           warehouseMaxQty: maxQty,
           cost: defaultCost,
+          cises: cisCode ? [cisCode] : [],
         },
       ];
     });
-    return qty;
+    return applied;
   };
 
   const removeFromWriteoffList = (index) => {
@@ -2199,7 +2227,15 @@ export function WarehouseOperations({
     const maxQty = Math.max(0, Number(item.warehouseMaxQty) || 0);
     const qty = Math.min(isNaN(num) || num < 1 ? 1 : num, maxQty || 1);
     setWriteoffList((prev) =>
-      prev.map((it, i) => (i === index ? { ...it, quantity: qty } : it))
+      prev.map((it, i) =>
+        i === index
+          ? {
+              ...it,
+              quantity: qty,
+              cises: Array.isArray(it.cises) ? it.cises.slice(0, qty) : it.cises,
+            }
+          : it
+      )
     );
   };
 
@@ -2248,7 +2284,11 @@ export function WarehouseOperations({
         const maxQty = await warehouseQtyForProduct(product, writeoffWarehouseId);
         if (maxQty < 1) continue;
         const qty = Math.min(Math.max(1, parseInt(l.quantity, 10) || 1), maxQty);
-        lines.push({ productId: pid, quantity: qty });
+        lines.push({
+          productId: pid,
+          quantity: qty,
+          ...((Array.isArray(l.cises) && l.cises.length) ? { cises: l.cises } : {}),
+        });
       }
       if (lines.length === 0) {
         setOpMessage(
@@ -3517,7 +3557,9 @@ export function WarehouseOperations({
           </div>
 
           <p className="warehouse-ops-hint">
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.
+            {chestnyZnakEnabled
+              ? 'Сканируйте штрихкод или код маркировки (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.'
+              : 'Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.'}
           </p>
           <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
@@ -3527,7 +3569,11 @@ export function WarehouseOperations({
                 onManualQuery={handleWriteoffManualQuery}
                 debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Штрихкод, артикул или название"
+                placeholder={
+                  chestnyZnakEnabled
+                    ? 'Штрихкод, КИ, артикул или название'
+                    : 'Штрихкод, артикул или название'
+                }
                 disabled={!writeoffWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {

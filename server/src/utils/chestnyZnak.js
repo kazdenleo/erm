@@ -10,32 +10,133 @@ export const TRUE_API_PROD_V4 = 'https://markirovka.crpt.ru/api/v4/true-api';
 export const TRUE_API_SANDBOX_V3 = 'https://markirovka.sandbox.crpt.ru/api/v3/true-api';
 export const TRUE_API_SANDBOX_V4 = 'https://markirovka.sandbox.crpt.ru/api/v4/true-api';
 
-/** Коды товарных групп True API (pg). Шины — основные для автозапчастей. */
+/** Коды товарных групп True API (pg). Справочник ГИС МТ, актуальные группы включая 2025–2026. */
 export const CHESTNY_ZNAK_PRODUCT_GROUPS = [
-  { id: 'tires', name: 'Шины' },
-  { id: 'shoes', name: 'Обувь' },
-  { id: 'lp', name: 'Одежда (лёгпром)' },
-  { id: 'perfumery', name: 'Духи и туалетная вода' },
+  { id: 'tires', name: 'Шины и покрышки' },
+  { id: 'autofluids', name: 'Моторные масла' },
+  { id: 'chemistry', name: 'Косметика и бытовая химия' },
+  { id: 'radio', name: 'Радиоэлектронная продукция' },
+  { id: 'fire', name: 'Средства пожарной безопасности' },
+  { id: 'heater', name: 'Отопительные приборы' },
   { id: 'electronics', name: 'Фотокамеры и вспышки' },
-  { id: 'milk', name: 'Молочная продукция' },
-  { id: 'water', name: 'Упакованная вода' },
-  { id: 'beer', name: 'Пиво' },
-  { id: 'nabeer', name: 'Слабоалкогольные напитки' },
-  { id: 'softdrinks', name: 'Безалкогольные напитки' },
-  { id: 'tobacco', name: 'Табак' },
-  { id: 'otp', name: 'Альтернативный табак' },
-  { id: 'ncp', name: 'Никотинсодержащая продукция' },
-  { id: 'bio', name: 'БАД' },
+  { id: 'construction', name: 'Строительные материалы' },
   { id: 'antiseptic', name: 'Антисептики' },
-  { id: 'medical', name: 'Медизделия' },
-  { id: 'pharma', name: 'Лекарства' },
-  { id: 'petfood', name: 'Корма для животных' },
-  { id: 'seafood', name: 'Морепродукты' },
-  { id: 'conserve', name: 'Консервы' },
-  { id: 'vegetableoil', name: 'Растительные масла' },
+  { id: 'bio', name: 'БАД' },
+  { id: 'grocery', name: 'Бакалея' },
+  { id: 'nabeer', name: 'Безалкогольное пиво' },
+  { id: 'softdrinks', name: 'Безалкогольные напитки' },
+  { id: 'otp', name: 'Альтернативный табак' },
   { id: 'bicycle', name: 'Велосипеды' },
+  { id: 'water', name: 'Упакованная вода' },
+  { id: 'petfood', name: 'Корма для животных' },
   { id: 'wheelchairs', name: 'Кресла-коляски' },
+  { id: 'lp', name: 'Одежда (лёгпром)' },
+  { id: 'conserve', name: 'Консервы' },
+  { id: 'perfumery', name: 'Духи и туалетная вода' },
+  { id: 'toys', name: 'Игры и игрушки' },
+  { id: 'cabling', name: 'Кабельная продукция' },
+  { id: 'pharma', name: 'Лекарственные препараты' },
+  { id: 'medical', name: 'Медицинские изделия' },
+  { id: 'furs', name: 'Меховые изделия' },
+  { id: 'milk', name: 'Молочная продукция' },
+  { id: 'seafood', name: 'Морепродукты' },
+  { id: 'meat', name: 'Мясные изделия' },
+  { id: 'ncp', name: 'Никотинсодержащая продукция' },
+  { id: 'shoes', name: 'Обувь' },
+  { id: 'opticfiber', name: 'Оптоволокно' },
+  { id: 'beer', name: 'Пиво и слабоалкогольные напитки' },
+  { id: 'vegetableoil', name: 'Растительные масла' },
+  { id: 'sweets', name: 'Сладости и кондитерские изделия' },
+  { id: 'tobacco', name: 'Табачная продукция' },
+  { id: 'titan', name: 'Титановая металлопродукция' },
+  { id: 'vetpharma', name: 'Ветеринарные препараты' },
+  { id: 'books', name: 'Печатная продукция' },
 ];
+
+export const CHESTNY_ZNAK_OPERATIONS = [
+  {
+    id: 'purchase_accept',
+    name: 'Закупка / приёмка',
+    hint: 'Входящий УПД с КИ от поставщика. Для шин обязателен ЭДО.',
+    gis_type: 'LP_ACCEPT_GOODS',
+    gis_action: null,
+    channel: 'edo',
+  },
+  {
+    id: 'wholesale_ship',
+    name: 'Оптовая отгрузка',
+    hint: 'Исходящий УПД покупателю — участнику оборота.',
+    gis_type: 'LP_SHIP_GOODS',
+    gis_action: null,
+    channel: 'edo',
+  },
+  {
+    id: 'fbo_transfer',
+    name: 'Поставка FBO',
+    hint: 'Передача КИ на склад маркетплейса УПД. Вывод при продаже делает площадка.',
+    gis_type: 'LP_SHIP_GOODS',
+    gis_action: null,
+    channel: 'edo',
+  },
+  {
+    id: 'fbs_distance',
+    name: 'Продажа FBS / DBS',
+    hint: 'Вывод из оборота «дистанционная продажа» после отгрузки со своего склада.',
+    gis_type: 'LK_RECEIPT',
+    gis_action: 'DISTANCE',
+    channel: 'true_api',
+  },
+  {
+    id: 'own_use',
+    name: 'Покупка / списание себе',
+    hint: 'Вывод «использование для собственных нужд» — со склада или сразу из закупки.',
+    gis_type: 'LK_RECEIPT',
+    gis_action: 'OWN_USE',
+    channel: 'true_api',
+  },
+  {
+    id: 'retail',
+    name: 'Розница',
+    hint: 'Вывод «розничная реализация», если продаёте не через маркетплейс.',
+    gis_type: 'LK_RECEIPT',
+    gis_action: 'RETAIL',
+    channel: 'true_api',
+  },
+];
+
+export function operationById(id) {
+  return CHESTNY_ZNAK_OPERATIONS.find((o) => o.id === id) || null;
+}
+
+export function normalizeOperations(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const out = {};
+  for (const op of CHESTNY_ZNAK_OPERATIONS) {
+    const v = src[op.id];
+    if (v === false || v === 'false') out[op.id] = false;
+    else if (v && typeof v === 'object' && v.enabled === false) out[op.id] = false;
+    else out[op.id] = true;
+  }
+  return out;
+}
+
+export function buildLkReceiptPayload({ inn, action, actionDate, documentNumber, documentDate, products }) {
+  return {
+    inn: String(inn || ''),
+    action: String(action || 'OWN_USE'),
+    action_date: String(actionDate || '').slice(0, 10),
+    document_type: 'OTHER',
+    document_number: String(documentNumber || ''),
+    document_date: String(documentDate || actionDate || '').slice(0, 10),
+    products: (products || []).map((p) => (
+      typeof p === 'string' ? { cis: p } : { cis: p.cis, ...(p.product_cost != null ? { product_cost: p.product_cost } : {}) }
+    )),
+  };
+}
+
+export function encodeProductDocument(payload) {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+}
 
 export const CIS_STATUS_LABELS = {
   EMITTED: 'Эмитирован',
@@ -80,6 +181,32 @@ export function extractGtinFromCis(cis) {
     return s.slice(2, 16);
   }
   return null;
+}
+
+/**
+ * Data Matrix КИ, а не обычный EAN/GTIN/артикул.
+ * EAN-8…GTIN-14 (только цифры) не считаем КИ.
+ */
+export function looksLikeCis(raw) {
+  const s = normalizeCis(raw);
+  if (!s) return false;
+  if (/^\d{8,14}$/.test(s)) return false;
+  if (s.startsWith('01') && s.length >= 16) return true;
+  if (s.length >= 20) return true;
+  return false;
+}
+
+/** Коды для поиска товара: сам скан или GTIN/EAN из КИ. */
+export function productLookupCodesFromScan(raw) {
+  const s = normalizeCis(raw);
+  if (!s) return [];
+  if (!looksLikeCis(s)) return [s];
+  const gtin = extractGtinFromCis(s);
+  if (!gtin) return [s];
+  const codes = [gtin];
+  if (gtin.length === 14 && gtin.startsWith('0')) codes.push(gtin.slice(1));
+  if (gtin.length === 14 && gtin.startsWith('00')) codes.push(gtin.slice(2));
+  return [...new Set(codes.filter(Boolean))];
 }
 
 export function cisStatusLabel(status) {
@@ -163,6 +290,8 @@ export function toPublicChestnyZnakConfig(config) {
     product_groups: Array.isArray(cfg.product_groups)
       ? cfg.product_groups.map((x) => String(x)).filter(Boolean)
       : [],
+    operations: normalizeOperations(cfg.operations),
+    operationOptions: CHESTNY_ZNAK_OPERATIONS,
     token_set: Boolean(token),
     token_preview: token ? `••••${last4}` : '',
     token_expires_at: expiresAt || null,

@@ -1,0 +1,43 @@
+.card-work__reason {
+  display: inline-block;
+  margin: 0 6px 6px 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.card-work__reason--high_turnover {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.card-work__reason--overstock {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.card-work__reason--stockout {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.card-work__hint {
+  color: #64748b;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
+.card-work__link {
+  color: #1d4ed8;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.card-work__link:hover {
+  text-decoration: underline;
+}
+
+.card-work__severity-high td:first-child {
+  box-shadow: inset 3px 0 0 #dc2626;
+}

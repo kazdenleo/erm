@@ -30,6 +30,7 @@ import {
 import {
   applyOzonCategoryProductSizeAttrs,
   WB_ITEM_DIM_CHARC,
+  WB_PACK_DIM_CHARC,
 } from '../utils/marketplaceDimensions.js';
 import {
   detectOzonDimensionsLockedFromInfo,
@@ -1934,6 +1935,20 @@ function buildWbCardPayload(product, existing, { nmId, vendorCode, title, descri
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
             : {}),
       };
+      const packIds = new Set(
+        [Number(WB_PACK_DIM_CHARC.length), Number(WB_PACK_DIM_CHARC.width), Number(WB_PACK_DIM_CHARC.height)].filter(
+          (n) => Number.isFinite(n) && n > 0
+        )
+      );
+      const withoutPack = (Array.isArray(card.characteristics) ? card.characteristics : []).filter(
+        (c) => !packIds.has(Number(c?.id ?? c?.charcID))
+      );
+      card.characteristics = [
+        ...withoutPack,
+        { id: Number(WB_PACK_DIM_CHARC.length), value: [String(lengthCm)] },
+        { id: Number(WB_PACK_DIM_CHARC.width), value: [String(widthCm)] },
+        { id: Number(WB_PACK_DIM_CHARC.height), value: [String(heightCm)] },
+      ];
     } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
       card.dimensions = existing.dimensions;
     }

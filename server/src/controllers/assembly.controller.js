@@ -12,6 +12,8 @@ import {
   buildAssemblyOrderItems,
   buildAssemblyOrderItemsFromGroup
 } from '../services/assemblyOrderItems.service.js';
+import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import chestnyZnakOps from '../services/chestnyZnakOps.service.js';
 
 function norm(s) {
   return String(s || '').trim().toLowerCase();
@@ -81,11 +83,18 @@ class AssemblyController {
       const preferMarketplace =
         !preferMarketplaceRaw || preferMarketplaceRaw === 'all' ? null : preferMarketplaceRaw;
 
-      const productFound = await productsService.getByBarcode(barcode);
+      let productFound = null;
+      const lookupCodes = productLookupCodesFromScan(barcode);
+      for (const code of lookupCodes.length ? lookupCodes : [barcode]) {
+        productFound = await productsService.getByBarcode(code);
+        if (productFound) break;
+      }
       if (!productFound) {
         return res.status(404).json({
           ok: false,
-          message: 'Товар с таким штрихкодом не найден'
+          message: looksLikeCis(barcode)
+            ? 'Товар не найден по GTIN из кода маркировки'
+            : 'Товар с таким штрихкодом не найден'
         });
       }
       const product =
@@ -224,6 +233,32 @@ class AssemblyController {
         }
       }
 
+      let cisMeta = null;
+      if (looksLikeCis(barcode) && order?.id) {
+        const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+        const organizationId = await chestnyZnakOps.resolveOrganizationId({
+          warehouseId: order.warehouseId ?? order.warehouse_id,
+          organizationId: orgHeader,
+        });
+        cisMeta = await chestnyZnakOps.tryBindCis({
+          code: barcode,
+          kind: 'fbs_distance',
+          sourceType: 'order',
+          sourceId: order.id,
+          productId: product.id,
+          warehouseId: order.warehouseId ?? order.warehouse_id,
+          profileId,
+          organizationId,
+        });
+        if (cisMeta.duplicate) {
+          return res.status(409).json({
+            ok: false,
+            message: 'Этот код маркировки уже отсканирован на заказе',
+            code: 'CIS_DUPLICATE',
+          });
+        }
+      }
+
       return res.status(200).json({
         ok: true,
         data: {
@@ -231,7 +266,8 @@ class AssemblyController {
           // иначе фронт не сможет корректно считать "осталось дособрать".
           order: order.productId ? order : { ...order, productId: product.id },
           product,
-          orderItems
+          orderItems,
+          cis: Boolean(cisMeta?.isCis && cisMeta?.bound),
         }
       });
     } catch (error) {

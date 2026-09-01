@@ -10,6 +10,7 @@ import '../SalesAnalytics/SalesAnalytics.css';
 import './CategorySalesAnalytics.css';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
+import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
 
 function formatQty(n) {
   if (!Number.isFinite(n)) return '0';
@@ -24,6 +25,23 @@ function formatRub(n) {
     maximumFractionDigits: 0,
   }).format(n);
 }
+
+const CATEGORY_SORT_GETTERS = {
+  categoryName: (r) => r.categoryName || r.productName || '',
+  soldQty: (r) => Number(r.soldQty) || 0,
+  soldAmount: (r) => Number(r.soldAmount) || 0,
+  costsTotal: (r) => Number(r.costsTotal) || 0,
+  costAmount: (r) => Number(r.costAmount) || 0,
+  additionalExpensesAmount: (r) => Number(r.additionalExpensesAmount) || 0,
+  taxAmount: (r) => Number(r.taxAmount) || 0,
+  netIncome: (r) => Number(r.netIncome) || 0,
+  commissionAmount: (r) => Number(r.commissionAmount) || 0,
+  logisticsAmount: (r) => Number(r.logisticsAmount) || 0,
+  storageAmount: (r) => Number(r.storageAmount) || 0,
+  penaltyAmount: (r) => Number(r.penaltyAmount) || 0,
+  acquiringAmount: (r) => Number(r.acquiringAmount) || 0,
+  otherDeductions: (r) => Number(r.otherDeductions) || 0,
+};
 
 const MARKETPLACE_OPTIONS = [
   { value: 'all', label: 'Все маркетплейсы' },
@@ -69,6 +87,7 @@ export function CategorySalesAnalytics() {
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
   const [costsExpanded, setCostsExpanded] = useState(false);
+  const { sort, toggleSort } = useTableSort('soldAmount', 'desc');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,40 +110,43 @@ export function CategorySalesAnalytics() {
 
   const summary = data?.summary || {};
   const taxMeta = data?.taxMeta || null;
-  const categories = (Array.isArray(data?.categories) ? data.categories : [])
-    .map((cat) => {
-      const products = (cat.products || []).filter((p) => {
-        const pid = Number(p.productId) || 0;
-        const sku = String(p.sku || '').trim();
-        const name = String(p.productName || '').trim();
-        const soldQty = Number(p.soldQty) || 0;
-        const soldAmount = Number(p.soldAmount) || 0;
-        if (pid > 0) return true;
-        if (!sku || sku === '—' || sku === '-' || sku === '0') return false;
-        if (soldQty === 0 && soldAmount === 0 && (!name || name === '—')) return false;
-        return true;
-      });
-      if (!products.length) return null;
-      const taxAmount = products.reduce((s, p) => s + (Number(p.taxAmount) || 0), 0);
-      const netIncome = products.reduce((s, p) => s + (Number(p.netIncome) || 0), 0);
-      const costsTotal = products.reduce((s, p) => s + (Number(p.costsTotal) || 0), 0);
-      const costAmount = products.reduce((s, p) => s + (Number(p.costAmount) || 0), 0);
-      const additionalExpensesAmount = products.reduce(
-        (s, p) => s + (Number(p.additionalExpensesAmount) || 0),
-        0
-      );
-      return {
-        ...cat,
-        products,
-        productsCount: products.length,
-        taxAmount,
-        netIncome,
-        costsTotal,
-        costAmount,
-        additionalExpensesAmount,
-      };
-    })
-    .filter(Boolean);
+  const categories = useMemo(() => {
+    const list = (Array.isArray(data?.categories) ? data.categories : [])
+      .map((cat) => {
+        const products = (cat.products || []).filter((p) => {
+          const pid = Number(p.productId) || 0;
+          const sku = String(p.sku || '').trim();
+          const name = String(p.productName || '').trim();
+          const soldQty = Number(p.soldQty) || 0;
+          const soldAmount = Number(p.soldAmount) || 0;
+          if (pid > 0) return true;
+          if (!sku || sku === '—' || sku === '-' || sku === '0') return false;
+          if (soldQty === 0 && soldAmount === 0 && (!name || name === '—')) return false;
+          return true;
+        });
+        if (!products.length) return null;
+        const taxAmount = products.reduce((s, p) => s + (Number(p.taxAmount) || 0), 0);
+        const netIncome = products.reduce((s, p) => s + (Number(p.netIncome) || 0), 0);
+        const costsTotal = products.reduce((s, p) => s + (Number(p.costsTotal) || 0), 0);
+        const costAmount = products.reduce((s, p) => s + (Number(p.costAmount) || 0), 0);
+        const additionalExpensesAmount = products.reduce(
+          (s, p) => s + (Number(p.additionalExpensesAmount) || 0),
+          0
+        );
+        return {
+          ...cat,
+          products: sortRows(products, sort, CATEGORY_SORT_GETTERS),
+          productsCount: products.length,
+          taxAmount,
+          netIncome,
+          costsTotal,
+          costAmount,
+          additionalExpensesAmount,
+        };
+      })
+      .filter(Boolean);
+    return sortRows(list, sort, CATEGORY_SORT_GETTERS);
+  }, [data, sort]);
   const colCount = 9 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
 
   const toggleCategory = (categoryId) => {
@@ -228,20 +250,50 @@ export function CategorySalesAnalytics() {
           <thead>
             <tr>
               <th className="category-sales-analytics__col-toggle" />
-              <th>Категория / товар</th>
-              <th className="sales-analytics__num">Продано</th>
-              <th className="sales-analytics__num">Сумма продаж</th>
+              <SortableTh sortKey="categoryName" sort={sort} onSort={toggleSort}>
+                Категория / товар
+              </SortableTh>
+              <SortableTh sortKey="soldQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Продано
+              </SortableTh>
+              <SortableTh sortKey="soldAmount" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Сумма продаж
+              </SortableTh>
               {costsExpanded &&
                 COST_BREAKDOWN_COLS.map((col) => (
-                  <th
+                  <SortableTh
                     key={col.key}
+                    sortKey={col.key}
+                    sort={sort}
+                    onSort={toggleSort}
                     className="sales-analytics__num category-sales-analytics__cost-detail-th"
                     title={col.title}
                   >
                     {col.label}
-                  </th>
+                  </SortableTh>
                 ))}
-              <th className="sales-analytics__num">
+              <th
+                className={`sales-analytics__num sales-analytics__th-sortable${
+                  sort.key === 'costsTotal' ? ' is-active' : ''
+                }`}
+                aria-sort={
+                  sort.key === 'costsTotal'
+                    ? sort.dir === 'asc'
+                      ? 'ascending'
+                      : 'descending'
+                    : 'none'
+                }
+              >
+                <button
+                  type="button"
+                  className="sales-analytics__sort-btn"
+                  onClick={() => toggleSort('costsTotal')}
+                >
+                  <span>Затраты</span>
+                  <span className="sales-analytics__sort-ind" aria-hidden>
+                    {sort.key === 'costsTotal' ? (sort.dir === 'asc' ? '↑' : '↓') : ''}
+                  </span>
+                </button>
                 <button
                   type="button"
                   className={`category-sales-analytics__col-expand${
@@ -255,25 +307,41 @@ export function CategorySalesAnalytics() {
                   }
                   aria-expanded={costsExpanded}
                 >
-                  <span>Затраты</span>
                   <span className="category-sales-analytics__chevron" aria-hidden>
                     {costsExpanded ? '▾' : '▸'}
                   </span>
                 </button>
               </th>
-              <th className="sales-analytics__num" title="qty × себестоимость товара в ERP">
+              <SortableTh
+                sortKey="costAmount"
+                sort={sort}
+                onSort={toggleSort}
+                className="sales-analytics__num"
+                title="qty × себестоимость товара в ERP"
+              >
                 Себестоимость
-              </th>
-              <th className="sales-analytics__num" title="qty × дополнительные расходы из карточки товара">
+              </SortableTh>
+              <SortableTh
+                sortKey="additionalExpensesAmount"
+                sort={sort}
+                onSort={toggleSort}
+                className="sales-analytics__num"
+                title="qty × дополнительные расходы из карточки товара"
+              >
                 Доп. расходы
-              </th>
-              <th
+              </SortableTh>
+              <SortableTh
+                sortKey="taxAmount"
+                sort={sort}
+                onSort={toggleSort}
                 className="sales-analytics__num"
                 title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
               >
                 Налоги
-              </th>
-              <th className="sales-analytics__num">Чистая прибыль</th>
+              </SortableTh>
+              <SortableTh sortKey="netIncome" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                Чистая прибыль
+              </SortableTh>
             </tr>
           </thead>
           <tbody>

@@ -57,6 +57,7 @@ class WarehouseReceiptsController {
           warehouseId: whRaw,
           writeoffReason: writeoffReason ?? writeoff_reason ?? null,
           lines: linesArr,
+          profileId: req.user?.profileId ?? null,
         });
         return res.status(200).json({ ok: true, data: result });
       }

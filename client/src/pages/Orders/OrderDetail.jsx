@@ -1500,6 +1500,15 @@ export function YandexDetail({ detail, localLines }) {
           </dd>
           <dt>Создан</dt>
           <dd>{formatYandexApiDate(detail.creationDate)}</dd>
+          <dt>Дата отгрузки</dt>
+          <dd>
+            {formatYandexApiDate(
+              detail.delivery?.shipment?.shipmentDate ??
+                detail.delivery?.shipmentDate ??
+                detail.shipmentDate ??
+                detail.shipment_date
+            )}
+          </dd>
           <dt>Обновлён</dt>
           <dd>{formatYandexApiDate(detail.updatedAt)}</dd>
           {detail.currency && (
@@ -1596,6 +1605,18 @@ export function WildberriesDetail({ detail, localLines, assemblyStickerNumber = 
           ) : null}
           <dt>Артикул</dt><dd>{detail.article}</dd>
           <dt>Время появления на маркетплейсе</dt><dd>{detail.createdAt ? new Date(detail.createdAt).toLocaleString('ru-RU') : '—'}</dd>
+          {(detail.sellerDate || detail.ddate || detail.shipmentDate || detail.shipment_date) ? (
+            <>
+              <dt>Дата отгрузки</dt>
+              <dd>
+                {(() => {
+                  const raw = detail.sellerDate || detail.ddate || detail.shipmentDate || detail.shipment_date;
+                  const d = new Date(raw);
+                  return Number.isNaN(d.getTime()) ? String(raw) : d.toLocaleDateString('ru-RU');
+                })()}
+              </dd>
+            </>
+          ) : null}
           <dt>Цена</dt><dd>{detail.priceRub != null ? detail.priceRub : detail.price} ₽</dd>
           <dt>Тип доставки</dt><dd>{detail.deliveryType || '—'}</dd>
           {detail.supplyId && <><dt>Поставка</dt><dd>{detail.supplyId}</dd></>}

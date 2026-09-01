@@ -18,6 +18,7 @@ import {
   pickBarcodeForMarketplace,
   parseBarcodesMarketplacesColumn,
 } from '../utils/productBarcodes.js';
+import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 const FBO_RESERVE_TERMINAL_STATUSES = new Set(['shipped', 'closed', 'return']);
 
@@ -192,6 +193,20 @@ class FboSuppliesService {
     return (m.rows?.length ?? 0) > 0;
   }
 
+  async _maybeChestnyZnakFboDoc(supply) {
+    if (!supply || supply.status !== 'shipped') return null;
+    const org = supply.organizationId ?? supply.organization_id;
+    const profileId = supply.profileId ?? supply.profile_id;
+    if (!org || !profileId) return null;
+    return chestnyZnakOps.maybeCreateDocument({
+      kind: 'fbo_transfer',
+      sourceType: 'fbo_supply',
+      sourceId: supply.id,
+      profileId,
+      organizationId: org,
+    });
+  }
+
   /**
    * Списание остатков при статусе «Отгружен», если включён флаг deduct_stock.
    */
@@ -203,6 +218,9 @@ class FboSuppliesService {
     if (supply.status !== 'shipped') {
       return { applied: false, reason: 'not_shipped' };
     }
+    this._maybeChestnyZnakFboDoc(supply).catch((e) => {
+      console.warn('[FboSupplies] chestny znak fbo_transfer:', e?.message || e);
+    });
     if (!supply.deductStock) {
       return { applied: false, reason: 'deduct_disabled' };
     }
@@ -562,6 +580,11 @@ class FboSuppliesService {
       }
       return this.getById(supplyId, { profileId: pid });
     }
+    if (created.status === 'shipped') {
+      this._maybeChestnyZnakFboDoc(created).catch((e) => {
+        console.warn('[FboSupplies] chestny znak fbo_transfer:', e?.message || e);
+      });
+    }
     return created;
   }
 
@@ -679,6 +702,12 @@ class FboSuppliesService {
         );
         throw e;
       }
+    }
+
+    if (result.status === 'shipped') {
+      this._maybeChestnyZnakFboDoc(result).catch((e) => {
+        console.warn('[FboSupplies] chestny znak fbo_transfer:', e?.message || e);
+      });
     }
 
     // Терминальные статусы: всегда снимаем резерв (идемпотентно).

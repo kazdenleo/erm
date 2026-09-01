@@ -8,10 +8,9 @@ import { Button } from '../../../components/common/Button/Button';
 import { marketplaceFboReportsApi } from '../../../services/marketplaceFboReports.api';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './FboSalesAnalytics.css';
-import { AmountCell } from '../shared/AmountCell';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { OrderEconomicsOrderTable } from '../shared/OrderEconomicsOrderTable';
-import { marketplaceRevenueAmount } from '../shared/orderEconomics';
+import { ProductEconomicsTable } from '../shared/ProductEconomicsTable';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 
 function formatQty(n) {
@@ -203,89 +202,15 @@ export function FboSalesAnalytics() {
       </div>
 
       {view === 'product' ? (
-        <div className="sales-analytics__table-wrap">
-          <table className="sales-analytics__table">
-            <thead>
-              <tr>
-                <th>Товар</th>
-                <th>Артикул</th>
-                <th className="sales-analytics__num">Продано</th>
-                <th className="sales-analytics__num">Сумма продаж</th>
-                <th className="sales-analytics__num">Комиссия</th>
-                <th className="sales-analytics__num">Логистика</th>
-                <th className="sales-analytics__num">Хранение</th>
-                <th className="sales-analytics__num">Прочее</th>
-                <th className="sales-analytics__num">К выплате</th>
-                <th className="sales-analytics__num">Себестоимость</th>
-                <th
-                  className="sales-analytics__num"
-                  title="qty × дополнительные расходы из карточки товара"
-                >
-                  Доп. расходы
-                </th>
-                <th
-                  className="sales-analytics__num"
-                  title="К выплате − себестоимость − доп. расходы. У WB ещё − логистика."
-                >
-                  Выручка
-                </th>
-                <th
-                  className="sales-analytics__num"
-                  title="По схеме организации. УСН 15% / ОСН — только с прибыли; при убытке = 0"
-                >
-                  Налоги
-                </th>
-                <th
-                  className="sales-analytics__num"
-                  title="Пришло от МП − себестоимость − доп. расходы − налоги"
-                >
-                  Чистый доход
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {!loading && items.length === 0 && (
-                <tr>
-                  <td colSpan={14} className="sales-analytics__empty">
-                    {data == null
-                      ? 'Выберите параметры и нажмите «Показать».'
-                      : 'Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.'}
-                  </td>
-                </tr>
-              )}
-              {items.map((row) => (
-                <tr key={`${row.productId || 'x'}-${row.sku}`}>
-                  <td>{row.productName || '—'}</td>
-                  <td>
-                    {row.erpSku ? (
-                      <span title={row.productId ? `ID ${row.productId}` : undefined}>{row.erpSku}</span>
-                    ) : (
-                      <span className="fbo-sales-analytics__unlinked">—</span>
-                    )}
-                  </td>
-                  <td className="sales-analytics__num">{formatQty(row.soldQty)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.soldAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.commissionAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.logisticsAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.storageAmount)}</td>
-                  <td className="sales-analytics__num">
-                    {formatRub(
-                      (row.penaltyAmount || 0) +
-                        (row.acquiringAmount || 0) +
-                        (row.otherDeductions || 0)
-                    )}
-                  </td>
-                  <td className="sales-analytics__num">{formatRub(row.payoutAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.additionalExpensesAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(marketplaceRevenueAmount(row))}</td>
-                  <AmountCell value={row.taxAmount} format={formatRub} tooltip={row.taxTooltip} />
-                  <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ProductEconomicsTable
+          loading={loading}
+          items={items}
+          emptyMessage={
+            data == null
+              ? 'Выберите параметры и нажмите «Показать».'
+              : 'Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.'
+          }
+        />
       ) : (
         <OrderEconomicsOrderTable
           loading={loading}

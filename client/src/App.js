@@ -19,6 +19,9 @@ import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics'
 import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesAnalytics';
 import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
 import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
+import { ProductDynamics } from './pages/Analytics/ProductDynamics/ProductDynamics';
+import { ProductTurnover } from './pages/Analytics/ProductTurnover/ProductTurnover';
+import { CardWork } from './pages/Analytics/CardWork/CardWork';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { ProductCard } from './pages/Products/ProductCard';
@@ -38,6 +41,7 @@ import { PrintProductLabelsBatch } from './pages/PrintProductLabel/PrintProductL
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
+import { ChestnyZnakMarking } from './pages/StockLevels/ChestnyZnakMarking';
 import { FboSupplies } from './pages/FboSupplies/FboSupplies';
 import { FboSupplyDetail } from './pages/FboSupplies/FboSupplyDetail';
 import { FboSupplyForecast } from './pages/FboSupplies/FboSupplyForecast';
@@ -129,6 +133,9 @@ function App() {
             <Route path="fbo-sales" element={<FboSalesAnalytics />} />
             <Route path="categories" element={<CategorySalesAnalytics />} />
             <Route path="abc" element={<AbcSalesAnalytics />} />
+            <Route path="dynamics" element={<ProductDynamics />} />
+            <Route path="turnover" element={<ProductTurnover />} />
+            <Route path="card-work" element={<CardWork />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />
@@ -161,6 +168,7 @@ function App() {
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases/forecast" element={<ProcurementForecast />} />
             <Route path="purchases" element={<Purchases />} />
+            <Route path="marking" element={<ChestnyZnakMarking />} />
             <Route path="fbo-supplies/purchase-calc" element={<FboPurchaseCalculation />} />
             <Route path="fbo-supplies/forecasting" element={<FboSupplyForecast />} />
             <Route path="fbo-supplies/:id" element={<FboSupplyDetail />} />

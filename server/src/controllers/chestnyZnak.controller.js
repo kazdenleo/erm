@@ -3,6 +3,7 @@
  */
 
 import chestnyZnakService from '../services/chestnyZnak.service.js';
+import chestnyZnakDocsService from '../services/chestnyZnakDocs.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 function scopeFromReq(req) {
@@ -83,6 +84,98 @@ class ChestnyZnakController {
       if (!requireTenant(res, profileId)) return;
       const codes = req.body?.codes ?? req.body?.cis ?? req.body?.text ?? '';
       const data = await chestnyZnakService.checkCises(codes, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listCis(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.listCis(req.query || {}, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async scanCis(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.scanCis(req.body || {}, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listDocuments(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.listDocuments(req.query || {}, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async createDocument(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.createDocument(req.body || {}, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getDocument(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.getDocument(req.params.id, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async signingPayload(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.signingPayload(req.params.id, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async markEdoDone(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.markEdoDone(req.params.id, { profileId, organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async submitDocument(req, res, next) {
+    try {
+      const { profileId, organizationId } = scopeFromReq(req);
+      if (!requireTenant(res, profileId)) return;
+      const data = await chestnyZnakDocsService.submitDocument(
+        req.params.id,
+        req.body || {},
+        { profileId, organizationId }
+      );
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);

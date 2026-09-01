@@ -200,6 +200,236 @@ const SQL_EXCLUDE_JUNK_UNLINKED = `
   )
 `;
 
+function normalizeGranularity(raw) {
+  const v = String(raw || 'day').trim().toLowerCase();
+  if (['day', 'week', 'month', 'quarter', 'year'].includes(v)) return v;
+  return 'day';
+}
+
+function buildDynamicsSelect(saleExpr) {
+  return `
+    date_trunc($4, l.operation_date)::date AS bucket,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END AS marketplace,
+    COALESCE(l.product_id, m.product_id, nm.product_id, 0) AS product_id,
+    COALESCE(NULLIF(TRIM(l.sku), ''), COALESCE(NULLIF(TRIM(p.sku), ''), '—')) AS sku,
+    MAX(COALESCE(p.name, l.product_name, '—')) AS product_name,
+    MAX(p.sku) AS erp_sku,
+    SUM(CASE WHEN ${saleExpr} THEN GREATEST(l.quantity, 0) ELSE 0 END)::numeric AS sold_qty,
+    SUM(CASE WHEN ${saleExpr} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount
+  `;
+}
+
+function buildDynamicsGroupBy() {
+  return `
+    date_trunc($4, l.operation_date)::date,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END,
+    COALESCE(l.product_id, m.product_id, nm.product_id, 0),
+    COALESCE(NULLIF(TRIM(l.sku), ''), COALESCE(NULLIF(TRIM(p.sku), ''), '—'))
+  `;
+}
+
+function mapDynamicsRow(row) {
+  return {
+    bucket: row.bucket instanceof Date ? row.bucket.toISOString().slice(0, 10) : String(row.bucket || '').slice(0, 10),
+    marketplace: row.marketplace || 'unknown',
+    productId: Number(row.product_id) || null,
+    sku: row.sku || '—',
+    erpSku: row.erp_sku || null,
+    productName: row.product_name || '—',
+    soldQty: Number(row.sold_qty) || 0,
+    soldAmount: Number(row.sold_amount) || 0,
+  };
+}
+
+function mergeDynamicsRows(rows) {
+  const merged = new Map();
+  for (const row of rows) {
+    const key = `${row.bucket}|${row.marketplace}|${row.productId || 0}|${row.sku}`;
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, { ...row });
+      continue;
+    }
+    prev.soldQty += row.soldQty;
+    prev.soldAmount += row.soldAmount;
+    if ((!prev.erpSku || prev.erpSku === '—') && row.erpSku) prev.erpSku = row.erpSku;
+    if ((!prev.productName || prev.productName === '—') && row.productName !== '—') {
+      prev.productName = row.productName;
+    }
+  }
+  return [...merged.values()];
+}
+
+function buildProductCatalog(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const pid = Number(row.productId) || 0;
+    const key = pid > 0 ? `p:${pid}` : `s:${row.sku}`;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, {
+        productId: pid || null,
+        sku: row.sku,
+        erpSku: row.erpSku,
+        productName: row.productName,
+        soldQty: row.soldQty,
+        soldAmount: row.soldAmount,
+      });
+      continue;
+    }
+    prev.soldQty += row.soldQty;
+    prev.soldAmount += row.soldAmount;
+  }
+  return [...map.values()]
+    .filter((p) => p.soldQty > 0 || p.soldAmount > 0)
+    .sort((a, b) => b.soldAmount - a.soldAmount || b.soldQty - a.soldQty);
+}
+
+function productKey(row) {
+  const pid = Number(row.productId) || 0;
+  return pid > 0 ? `p:${pid}` : `s:${String(row.sku || '').trim() || '—'}`;
+}
+
+function buildBucketsFromRows(rows, marketplaces, granularity) {
+  const buckets = [...new Set(rows.map((r) => r.bucket))].sort();
+  return buckets.map((bucket) => {
+    const bucketRows = rows.filter((r) => r.bucket === bucket);
+    const byMarketplace = {};
+    let totalQty = 0;
+    let totalAmount = 0;
+    for (const mp of marketplaces) {
+      const mpRows = bucketRows.filter((r) => r.marketplace === mp);
+      const soldQty = mpRows.reduce((s, r) => s + r.soldQty, 0);
+      const soldAmount = mpRows.reduce((s, r) => s + r.soldAmount, 0);
+      byMarketplace[mp] = { soldQty, soldAmount };
+      totalQty += soldQty;
+      totalAmount += soldAmount;
+    }
+    return {
+      bucket,
+      bucketLabel: formatBucketLabel(bucket, granularity),
+      soldQty: totalQty,
+      soldAmount: totalAmount,
+      marketplaces: byMarketplace,
+    };
+  });
+}
+
+function buildPeriodSeries(rows, { productId = null, productIds = null, granularity = 'day', maxProducts = 100 } = {}) {
+  const pidFilter = productId != null ? Number(productId) : null;
+  const idSet =
+    Array.isArray(productIds) && productIds.length
+      ? new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))
+      : null;
+
+  const filtered = rows.filter((row) => {
+    if (isJunkUnlinkedProduct(row)) return false;
+    if (pidFilter != null && Number(row.productId) !== pidFilter) return false;
+    if (idSet && !idSet.has(Number(row.productId) || 0)) return false;
+    return true;
+  });
+
+  const marketplaces = [...new Set(filtered.map((r) => r.marketplace))].sort();
+  const points = buildBucketsFromRows(filtered, marketplaces, granularity);
+
+  const byProduct = new Map();
+  for (const row of filtered) {
+    const key = productKey(row);
+    if (!byProduct.has(key)) {
+      byProduct.set(key, {
+        key,
+        productId: Number(row.productId) || null,
+        sku: row.sku,
+        erpSku: row.erpSku,
+        productName: row.productName,
+        rows: [],
+      });
+    }
+    const p = byProduct.get(key);
+    p.rows.push(row);
+    if ((!p.erpSku || p.erpSku === '—') && row.erpSku) p.erpSku = row.erpSku;
+    if ((!p.productName || p.productName === '—') && row.productName && row.productName !== '—') {
+      p.productName = row.productName;
+    }
+    if ((!p.sku || isBadMpSku(p.sku)) && !isBadMpSku(row.sku)) p.sku = row.sku;
+  }
+
+  const products = [...byProduct.values()]
+    .map((p) => {
+      const soldQty = p.rows.reduce((s, r) => s + r.soldQty, 0);
+      const soldAmount = p.rows.reduce((s, r) => s + r.soldAmount, 0);
+      const pMarketplaces = [...new Set(p.rows.map((r) => r.marketplace))].sort();
+      return {
+        productId: p.productId,
+        sku: p.sku,
+        erpSku: p.erpSku,
+        productName: p.productName,
+        soldQty,
+        soldAmount,
+        marketplaces: pMarketplaces,
+        buckets: buildBucketsFromRows(p.rows, pMarketplaces, granularity),
+      };
+    })
+    .sort((a, b) => b.soldAmount - a.soldAmount || b.soldQty - a.soldQty)
+    .slice(0, Math.max(1, Math.min(500, Number(maxProducts) || 100)));
+
+  return {
+    buckets: points,
+    marketplaces,
+    products,
+    totals: {
+      soldQty: filtered.reduce((s, r) => s + r.soldQty, 0),
+      soldAmount: filtered.reduce((s, r) => s + r.soldAmount, 0),
+      productsCount: byProduct.size,
+    },
+  };
+}
+
+function formatBucketLabel(bucketYmd, granularity) {
+  const s = String(bucketYmd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const [y, m, d] = s.split('-').map(Number);
+  const dd = String(d).padStart(2, '0');
+  const mm = String(m).padStart(2, '0');
+  if (granularity === 'day') return `${dd}.${mm}`;
+  if (granularity === 'week') return `${dd}.${mm}.${y}`;
+  if (granularity === 'month') {
+    const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    return `${months[m - 1]} ${y}`;
+  }
+  if (granularity === 'quarter') return `Q${Math.ceil(m / 3)} ${y}`;
+  if (granularity === 'year') return String(y);
+  return s;
+}
+
+function parseComparePeriods(raw, defaults) {
+  if (!raw) return [];
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((p, idx) => ({
+        id: String(p.id || `compare-${idx + 1}`),
+        label: String(p.label || `Период ${idx + 2}`).trim() || `Период ${idx + 2}`,
+        dateFrom: parseDateYmd(p.dateFrom, defaults.dateFrom),
+        dateTo: parseDateYmd(p.dateTo, defaults.dateTo),
+      }))
+      .filter((p) => p.dateFrom && p.dateTo);
+  } catch {
+    return [];
+  }
+}
+
 function mapProductRow(row) {
   const commissionAmount = Number(row.commission_amount) || 0;
   const logisticsAmount = Number(row.logistics_amount) || 0;
@@ -582,6 +812,172 @@ class MarketplaceCategoryAnalyticsService {
         productsCount: products.length,
       },
       products,
+    };
+  }
+
+  /**
+   * Динамика продаж по товару и маркетплейсу с группировкой day/week/month/quarter/year.
+   * Поддерживает сравнение нескольких периодов (comparePeriods JSON).
+   */
+  async getProductDynamics({
+    profileId,
+    dateFrom = null,
+    dateTo = null,
+    comparePeriods = null,
+    granularity = 'day',
+    marketplace = 'all',
+    scheme = 'all',
+    productId = null,
+    productIds = null,
+  } = {}) {
+    const pid = profileId != null ? Number(profileId) : null;
+    if (!Number.isFinite(pid) || pid < 1) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Доступно только с PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const defaults = defaultDateRange();
+    const gran = normalizeGranularity(granularity);
+    const schemeNorm = normalizeScheme(scheme);
+    const mpFilter = normalizeMarketplaceFilter(marketplace);
+    const productFilter = productId != null && Number(productId) > 0 ? Number(productId) : null;
+    let productIdList = null;
+    if (productIds != null) {
+      try {
+        const parsed = typeof productIds === 'string' ? JSON.parse(productIds) : productIds;
+        if (Array.isArray(parsed)) {
+          productIdList = parsed.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+        }
+      } catch {
+        productIdList = null;
+      }
+    }
+    if (productFilter && (!productIdList || !productIdList.length)) {
+      productIdList = [productFilter];
+    }
+
+    const primaryPeriod = {
+      id: 'primary',
+      label: 'Основной период',
+      dateFrom: parseDateYmd(dateFrom, defaults.dateFrom),
+      dateTo: parseDateYmd(dateTo, defaults.dateTo),
+    };
+    const extraPeriods = parseComparePeriods(comparePeriods, defaults);
+    const periods = [primaryPeriod, ...extraPeriods].slice(0, 4);
+
+    try {
+      await ensureOzonFinanceSkuLinks(pid, { limit: 50 });
+    } catch (e) {
+      logger.warn('[Product Dynamics] ensureOzonFinanceSkuLinks failed', e?.message || e);
+    }
+
+    const fetchPeriod = async (period, { productFilter: pf = productFilter } = {}) => {
+      const params = [pid, period.dateFrom, period.dateTo, gran];
+      let mpClause = '';
+      if (mpFilter) {
+        params.push(mpFilterValues(mpFilter));
+        mpClause = `AND LOWER(TRIM(l.marketplace)) = ANY($${params.length}::text[])`;
+      }
+      let productClause = '';
+      if (pf) {
+        params.push(pf);
+        productClause = `AND COALESCE(l.product_id, m.product_id, nm.product_id, 0) = $${params.length}`;
+      }
+
+      const parts = [];
+      if (schemeNorm === 'all' || schemeNorm === 'fbo') {
+        parts.push(`
+          SELECT ${buildDynamicsSelect(FBO_SALE)}
+          FROM marketplace_fbo_report_lines l
+          ${lineProductJoins()}
+          WHERE l.profile_id = $1
+            AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+            ${mpClause}
+            ${productClause}
+            ${SQL_EXCLUDE_JUNK_UNLINKED}
+          GROUP BY ${buildDynamicsGroupBy()}
+        `);
+      }
+      if (schemeNorm === 'all' || schemeNorm === 'fbs') {
+        parts.push(`
+          SELECT ${buildDynamicsSelect(FBS_SALE)}
+          FROM marketplace_fbs_report_lines l
+          ${lineProductJoins()}
+          WHERE l.profile_id = $1
+            AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+            ${mpClause}
+            ${productClause}
+            ${SQL_EXCLUDE_JUNK_UNLINKED}
+          GROUP BY ${buildDynamicsGroupBy()}
+        `);
+      }
+
+      const sql = `
+        WITH ${sqlOzonSkuMapCte()},
+        ${sqlOzonNameMapCte()}
+        SELECT
+          bucket,
+          marketplace,
+          product_id,
+          sku,
+          MAX(product_name) AS product_name,
+          MAX(erp_sku) AS erp_sku,
+          SUM(sold_qty)::numeric AS sold_qty,
+          SUM(sold_amount)::numeric AS sold_amount
+        FROM (
+          ${parts.join('\nUNION ALL\n')}
+        ) u
+        GROUP BY bucket, marketplace, product_id, sku
+        HAVING SUM(sold_qty) <> 0 OR SUM(sold_amount) <> 0
+        ORDER BY bucket ASC, marketplace ASC
+      `;
+
+      const res = await query(sql, params);
+      return mergeDynamicsRows((res.rows || []).map(mapDynamicsRow));
+    };
+
+    const periodResults = await Promise.all(
+      periods.map(async (period) => {
+        const rows = await fetchPeriod(period, { productFilter: null });
+        const series = buildPeriodSeries(rows, {
+          productId: productFilter,
+          productIds: productIdList,
+          granularity: gran,
+          maxProducts: productIdList?.length ? Math.max(productIdList.length, 50) : 150,
+        });
+        return {
+          id: period.id,
+          label: period.label,
+          dateFrom: period.dateFrom,
+          dateTo: period.dateTo,
+          ...series,
+        };
+      })
+    );
+
+    const productCatalog =
+      periodResults[0]?.products?.map((p) => ({
+        productId: p.productId,
+        sku: p.sku,
+        erpSku: p.erpSku,
+        productName: p.productName,
+        soldQty: p.soldQty,
+        soldAmount: p.soldAmount,
+      })) || [];
+
+    return {
+      granularity: gran,
+      marketplace: mpFilter ? marketplace : 'all',
+      scheme: schemeNorm,
+      productId: productFilter,
+      periods: periodResults,
+      productCatalog,
     };
   }
 }

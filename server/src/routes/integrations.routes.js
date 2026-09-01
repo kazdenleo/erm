@@ -16,6 +16,14 @@ router.get('/chestny-znak/auth/key', wrapAsync(chestnyZnakController.authKey));
 router.post('/chestny-znak/auth/sign-in', wrapAsync(chestnyZnakController.signIn));
 router.post('/chestny-znak/test', wrapAsync(chestnyZnakController.test));
 router.post('/chestny-znak/cises/info', wrapAsync(chestnyZnakController.checkCises));
+router.get('/chestny-znak/cis', wrapAsync(chestnyZnakController.listCis));
+router.post('/chestny-znak/cis/scan', wrapAsync(chestnyZnakController.scanCis));
+router.get('/chestny-znak/documents', wrapAsync(chestnyZnakController.listDocuments));
+router.post('/chestny-znak/documents', wrapAsync(chestnyZnakController.createDocument));
+router.get('/chestny-znak/documents/:id', wrapAsync(chestnyZnakController.getDocument));
+router.get('/chestny-znak/documents/:id/payload', wrapAsync(chestnyZnakController.signingPayload));
+router.post('/chestny-znak/documents/:id/edo-done', wrapAsync(chestnyZnakController.markEdoDone));
+router.post('/chestny-znak/documents/:id/submit', wrapAsync(chestnyZnakController.submitDocument));
 
 // Специфичные маршруты маркетплейсов (должны быть ДО /marketplaces/:type)
 // Категории Ozon

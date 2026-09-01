@@ -1,7 +1,9 @@
 import {
   applyLinkedOzonCardTextOnUpdate,
+  isMpDimGroupLinked,
   isMpFieldLinked,
   normalizeMpFieldLinks,
+  resolveDimensionsMmForPush,
   setMpFieldLink,
 } from '../src/utils/productMpFieldLinks.js';
 
@@ -63,6 +65,60 @@ describe('setMpFieldLink dim axes', () => {
     expect(isMpFieldLinked(links, 'product_length', 'ozon')).toBe(true);
     expect(isMpFieldLinked(links, 'product_length', 'wb')).toBe(false);
     expect(isMpFieldLinked(links, 'product_height', 'ozon')).toBe(true);
+  });
+});
+
+describe('resolveDimensionsMmForPush pack axes', () => {
+  test('uses ERP when group dimensions is linked', () => {
+    const product = {
+      length: 70,
+      width: 40,
+      height: 40,
+      weight: 30,
+      mp_field_links: { dimensions: ['wb'] },
+      wb_draft: { dimensions: { length: 10, width: 10, height: 10, weight: 5 } },
+    };
+    expect(resolveDimensionsMmForPush(product, 'wb')).toEqual({
+      length: 70,
+      width: 40,
+      height: 40,
+      weight: 30,
+    });
+  });
+
+  test('uses ERP for linked pack axis even if group key is empty', () => {
+    const product = {
+      length: 70,
+      width: 40,
+      height: 40,
+      weight: 30,
+      mp_field_links: { dimensions: [], length: ['wb'], width: ['wb'], height: ['wb'], weight: ['wb'] },
+      wb_draft: { dimensions: { length: 10, width: 10, height: 10, weight: 5 } },
+    };
+    expect(isMpDimGroupLinked(product.mp_field_links, 'dimensions', 'wb')).toBe(true);
+    expect(resolveDimensionsMmForPush(product, 'wb')).toEqual({
+      length: 70,
+      width: 40,
+      height: 40,
+      weight: 30,
+    });
+  });
+
+  test('unlinked axis keeps draft, linked axis takes ERP', () => {
+    const product = {
+      length: 70,
+      width: 40,
+      height: 40,
+      weight: 30,
+      mp_field_links: { length: ['wb'], width: [], height: [], weight: [] },
+      wb_draft: { dimensions: { length: 10, width: 11, height: 12, weight: 5 } },
+    };
+    expect(resolveDimensionsMmForPush(product, 'wb')).toEqual({
+      length: 70,
+      width: 11,
+      height: 12,
+      weight: 5,
+    });
   });
 });
 

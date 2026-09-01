@@ -8,8 +8,14 @@ import productsService from './products.service.js';
 import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { isOzonFreeTextMpAttr, isOzonManufacturerArticleAttr } from '../utils/ozonManufacturerArticle.js';
-import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
-import { WB_PACK_DIM_CHARC } from '../utils/marketplaceDimensions.js';
+import {
+  cmToMm,
+  DEDICATED_PACK_DIM_KEYS,
+  isMpFieldLinked,
+  normalizeMpFieldLinks,
+  ymWeightDimensionsToErp,
+} from '../utils/productMpFieldLinks.js';
+import { WB_ITEM_DIM_CHARC, WB_PACK_DIM_CHARC, isWbDedicatedDimCharcId } from '../utils/marketplaceDimensions.js';
 import {
   barcodesFromWbSizes,
   barcodesFromOzonCard,
@@ -430,12 +436,15 @@ function mapOzonCardToUpdates(product, data) {
   const apiHeight = toPos(dy);
   const apiWeight = toPos(data.weight ?? data.weight_brutto);
 
-  // Габариты с Ozon всегда пишем в ERP (ночная выгрузка / pull), даже если
-  // mp_field_links.dimensions связан с ozon — иначе после замера Ozon ERP остаётся со старыми мм.
-  if (apiWidth != null) updates.width = apiWidth;
-  if (apiHeight != null) updates.height = apiHeight;
-  if (apiLength != null) updates.length = apiLength;
-  if (apiWeight != null) updates.weight = apiWeight;
+  // Габариты с Ozon в ozon_draft всегда. В «Основное» — только если упаковка
+  // не связана с Ozon (иначе импорт откатывает только что изменённые мм).
+  const packLinked = isPackLinkedToMp(product, 'ozon');
+  if (!packLinked) {
+    if (apiWidth != null) updates.width = apiWidth;
+    if (apiHeight != null) updates.height = apiHeight;
+    if (apiLength != null) updates.length = apiLength;
+    if (apiWeight != null) updates.weight = apiWeight;
+  }
 
   // Как WB: габариты упаковки в ozon_draft (для мин. цен без связи dimensions↔ozon)
   const erpLength = toPos(product.length);
@@ -481,6 +490,22 @@ function mapOzonCardToUpdates(product, data) {
   return updates;
 }
 
+function isPackLinkedToMp(product, mp) {
+  const links = normalizeMpFieldLinks(product?.mp_field_links);
+  if (isMpFieldLinked(links, 'dimensions', mp)) return true;
+  return DEDICATED_PACK_DIM_KEYS.some((k) => isMpFieldLinked(links, k, mp));
+}
+
+function wbCharcNumeric(characteristics, charcId) {
+  if (!Array.isArray(characteristics)) return null;
+  const want = String(charcId);
+  const hit = characteristics.find((c) => String(c?.id ?? c?.characteristic_id ?? c?.charcID ?? '') === want);
+  if (!hit) return null;
+  const raw = hit.value;
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return toNumber(v);
+}
+
 function mergeWbAttrsFromCard(characteristics, prev = {}) {
   const next = { ...prev };
   if (!Array.isArray(characteristics)) return next;
@@ -488,7 +513,7 @@ function mergeWbAttrsFromCard(characteristics, prev = {}) {
     const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
     const key = id != null ? String(id) : String(c?.name ?? c?.characteristic_name ?? '').trim();
     if (!key) continue;
-    if (!isEmptyVal(next[key])) continue;
+    if (!isWbDedicatedDimCharcId(key) && !isEmptyVal(next[key])) continue;
     const raw = c?.value;
     let normalized = '';
     if (raw === undefined || raw === null) normalized = '';
@@ -603,6 +628,29 @@ function mapWbCardToUpdates(product, data) {
     };
   }
 
+  const itemLcm = wbCharcNumeric(data.characteristics, WB_ITEM_DIM_CHARC.length);
+  const itemWcm = wbCharcNumeric(data.characteristics, WB_ITEM_DIM_CHARC.width);
+  const itemHcm = wbCharcNumeric(data.characteristics, WB_ITEM_DIM_CHARC.height);
+  const itemLmm = cmToMm(itemLcm);
+  const itemWmm = cmToMm(itemWcm);
+  const itemHmm = cmToMm(itemHcm);
+  if (itemLmm != null || itemWmm != null || itemHmm != null) {
+    const prevDraft = parseJsonObject(updates.wb_draft ?? product.wb_draft);
+    const prevProduct =
+      prevDraft.productDimensions && typeof prevDraft.productDimensions === 'object'
+        ? prevDraft.productDimensions
+        : {};
+    updates.wb_draft = {
+      ...prevDraft,
+      productDimensions: {
+        ...prevProduct,
+        ...(itemLmm != null ? { length: itemLmm } : {}),
+        ...(itemWmm != null ? { width: itemWmm } : {}),
+        ...(itemHmm != null ? { height: itemHmm } : {}),
+      },
+    };
+  }
+
   const wbBarcodes = barcodesFromWbSizes(data.sizes);
   const mergedWbBc = mergeBarcodesFromMarketplace(product.barcodes, wbBarcodes, 'wb');
   if (mergedWbBc) updates.barcodes = mergedWbBc;
@@ -621,6 +669,9 @@ function mapWbCardToUpdates(product, data) {
       [WB_PACK_DIM_CHARC.height]: String(heightCm),
     };
   }
+  if (itemLcm != null) mergedAttrs = { ...mergedAttrs, [WB_ITEM_DIM_CHARC.length]: String(itemLcm) };
+  if (itemWcm != null) mergedAttrs = { ...mergedAttrs, [WB_ITEM_DIM_CHARC.width]: String(itemWcm) };
+  if (itemHcm != null) mergedAttrs = { ...mergedAttrs, [WB_ITEM_DIM_CHARC.height]: String(itemHcm) };
   if (Object.keys(mergedAttrs).length > 0) {
     updates.wb_attributes = mergedAttrs;
   }

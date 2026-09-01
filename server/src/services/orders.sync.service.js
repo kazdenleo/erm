@@ -100,6 +100,27 @@ export function wbOrderPriceToRub(order) {
   return Math.round(n) / 100;
 }
 
+/**
+ * Дата отгрузки / рекомендуемой сдачи на склад WB, если МП её отдаёт
+ * (часто только для СГТ: sellerDate / ddate в формате DD.MM.YYYY).
+ */
+export function wbExtractShipmentDate(order) {
+  if (order == null) return '';
+  const raw = order.sellerDate ?? order.seller_date ?? order.ddate ?? order.dDate ?? null;
+  if (raw == null || String(raw).trim() === '') return '';
+  const s = String(raw).trim();
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s);
+  if (m) {
+    const dd = String(m[1]).padStart(2, '0');
+    const mm = String(m[2]).padStart(2, '0');
+    const iso = `${m[3]}-${mm}-${dd}`;
+    const d = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? '' : iso;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? '' : s;
+}
+
 /** Поля цен в сыром ответе WB → рубли (для карточки заказа). */
 export function normalizeWbOrderDetailPrices(detail) {
   if (!detail || typeof detail !== 'object') return detail;
@@ -2639,7 +2660,7 @@ async function fetchWildberriesFBSOrders(config, { skipTitles = false } = {}) {
         status: mappedStatus,
         createdAt: order.createdAt || '',
         inProcessAt: order.createdAt || '',
-        shipmentDate: '',
+        shipmentDate: wbExtractShipmentDate(order),
         customerName: '',
         customerPhone: '',
         deliveryAddress: (() => {
@@ -2740,7 +2761,7 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
       status: WB_STATUS_PENDING,
       createdAt: order.createdAt || order.sellerDate || '',
       inProcessAt: order.createdAt || order.sellerDate || '',
-      shipmentDate: '',
+      shipmentDate: wbExtractShipmentDate(order),
       customerName: '',
       customerPhone: '',
       deliveryAddress: order.offices?.[0] || ''
@@ -3502,8 +3523,26 @@ function yandexBusinessOrderRawId(o) {
 }
 
 /**
- * Цена строки заказа YM (руб.). У позиции часто пустой `item.prices.payment`;
- * тогда смотрим buyerPrice, price, массив prices[] (BUYER/costPerItem), иначе долю от `order.prices.payment`.
+ * Сумма payment + subsidy + cashback из блока prices (Business API) — обычно равна цене до скидок.
+ */
+function yandexPricesBlockBeforeDiscountRub(prices) {
+  if (!prices || typeof prices !== 'object' || Array.isArray(prices)) return null;
+  const parts = [prices.payment?.value, prices.subsidy?.value, prices.cashback?.value];
+  let sum = 0;
+  let any = false;
+  for (const raw of parts) {
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) continue;
+    sum += v;
+    any = true;
+  }
+  return any && sum > 0 ? sum : null;
+}
+
+/**
+ * Цена строки заказа YM (руб.) — витринная / до скидок (как «Цена за шт.» в кабинете Маркета).
+ * Приоритет: buyerPriceBeforeDiscount / priceBeforeDiscount / buyerItemsTotalBeforeDiscount,
+ * затем payment+subsidy+cashback (Business API), иначе цена после акций.
  */
 function yandexExtractLinePriceRub(item, order, rawItemsList) {
   const qty = item != null && item.count != null ? Number(item.count) : 1;
@@ -3514,7 +3553,37 @@ function yandexExtractLinePriceRub(item, order, rawItemsList) {
     return Number.isFinite(v) && v > 0 ? v : null;
   };
 
-  let p = pos(item?.prices?.payment?.value);
+  const listQty = () => {
+    const list = Array.isArray(rawItemsList) && rawItemsList.length ? rawItemsList : [item];
+    let sumQty = 0;
+    for (const it of list) {
+      const c = it != null && it.count != null ? Number(it.count) : 1;
+      sumQty += Number.isFinite(c) && c > 0 ? c : 1;
+    }
+    return sumQty > 0 ? sumQty : 1;
+  };
+
+  let p = pos(item?.buyerPriceBeforeDiscount);
+  if (p != null) return p;
+
+  p = pos(item?.priceBeforeDiscount);
+  if (p != null) return p;
+
+  const orderBefore = pos(order?.buyerItemsTotalBeforeDiscount);
+  if (orderBefore != null) {
+    return (orderBefore * qtySafe) / listQty();
+  }
+
+  p = yandexPricesBlockBeforeDiscountRub(item?.prices);
+  if (p != null) return p;
+
+  const orderBlock = yandexPricesBlockBeforeDiscountRub(order?.prices);
+  if (orderBlock != null) {
+    return (orderBlock * qtySafe) / listQty();
+  }
+
+  // Fallback: цена после акций / оплата покупателя
+  p = pos(item?.prices?.payment?.value);
   if (p != null) return p;
 
   p = pos(item?.buyerPrice);
@@ -3524,11 +3593,6 @@ function yandexExtractLinePriceRub(item, order, rawItemsList) {
   if (p != null) return p;
 
   const ip = item?.prices;
-  if (ip && typeof ip === 'object' && !Array.isArray(ip)) {
-    p = pos(ip.subsidy?.value) || pos(ip.cashback?.value);
-    if (p != null) return p;
-  }
-
   if (Array.isArray(ip)) {
     for (const block of ip) {
       if (!block || typeof block !== 'object') continue;
@@ -3541,14 +3605,7 @@ function yandexExtractLinePriceRub(item, order, rawItemsList) {
 
   const orderPay = pos(order?.prices?.payment?.value);
   if (orderPay != null) {
-    const list = Array.isArray(rawItemsList) && rawItemsList.length ? rawItemsList : [item];
-    let sumQty = 0;
-    for (const it of list) {
-      const c = it != null && it.count != null ? Number(it.count) : 1;
-      sumQty += Number.isFinite(c) && c > 0 ? c : 1;
-    }
-    if (sumQty <= 0) sumQty = 1;
-    return (orderPay * qtySafe) / sumQty;
+    return (orderPay * qtySafe) / listQty();
   }
 
   return 0;
@@ -3709,6 +3766,10 @@ const ordersSyncService = new OrdersSyncService();
 
 export default ordersSyncService;
 
-export { getYandexBusinessAndCampaigns, normalizeYandexApiKey };
+export {
+  getYandexBusinessAndCampaigns,
+  normalizeYandexApiKey,
+  yandexExtractLinePriceRub
+};
 
 

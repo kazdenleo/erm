@@ -471,6 +471,13 @@ export function isMpFieldLinked(links, fieldKey, mp) {
   return Array.isArray(list) && list.includes(code);
 }
 
+/** Группа или любая ось (после раздельных тумблеров в массовом редакторе). */
+export function isMpDimGroupLinked(links, groupKey, mp) {
+  if (isMpFieldLinked(links, groupKey, mp)) return true;
+  const axes = groupKey === 'product_dimensions' ? DEDICATED_PRODUCT_DIM_KEYS : DEDICATED_PACK_DIM_KEYS;
+  return axes.some((k) => isMpFieldLinked(links, k, mp));
+}
+
 /**
  * @param {Record<string, string[]>} links
  * @param {string} fieldKey

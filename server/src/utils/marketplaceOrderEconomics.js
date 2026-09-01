@@ -26,6 +26,17 @@ export function isWbMarketplace(mp) {
   return v === 'wb' || v === 'wildberries';
 }
 
+/** Числовой assembly_id / номер сборочного задания WB. */
+export function isWbNumericOrderId(orderId) {
+  return /^[0-9]+$/.test(String(orderId || '').trim());
+}
+
+/** srid/rid и прочие нечисловые ключи отгрузки WB. */
+export function isWbSridOrderId(orderId) {
+  const s = String(orderId || '').trim();
+  return s.length > 0 && !isWbNumericOrderId(s);
+}
+
 /**
  * Выручка: пришло от МП − себестоимость − доп. расходы.
  * У WB дополнительно − логистика (в payout она не вычтена).
@@ -120,6 +131,91 @@ export async function backfillReportOrderIds(table, profileId) {
        AND (order_id IS NULL OR TRIM(order_id) = '')
        AND NULLIF(TRIM(posting_number), '') IS NOT NULL
        AND TRIM(posting_number) <> '0'`,
+    [pid]
+  );
+
+  await backfillWbOrderIdsFromSales(table, pid);
+}
+
+/**
+ * WB: логистика/возмещения без assembly_id хранят srid в order_id.
+ * Подставляем числовой order_id из строки «Продажа» по posting_number / barcode / shk_id.
+ */
+export async function backfillWbOrderIdsFromSales(table, profileId) {
+  const allowed = new Set(['marketplace_fbs_report_lines', 'marketplace_fbo_report_lines']);
+  if (!allowed.has(table)) return;
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return;
+
+  const saleSubquery = `
+    SELECT DISTINCT ON (link_key)
+      link_key,
+      order_id
+    FROM (
+      SELECT TRIM(posting_number) AS link_key, TRIM(order_id) AS order_id, id
+      FROM ${table}
+      WHERE profile_id = $1
+        AND LOWER(TRIM(marketplace)) IN ('wb', 'wildberries')
+        AND operation_type = 'Продажа'
+        AND order_id IS NOT NULL AND TRIM(order_id) ~ '^[0-9]+$'
+        AND posting_number IS NOT NULL AND TRIM(posting_number) <> ''
+      UNION ALL
+      SELECT TRIM(barcode) AS link_key, TRIM(order_id) AS order_id, id
+      FROM ${table}
+      WHERE profile_id = $1
+        AND LOWER(TRIM(marketplace)) IN ('wb', 'wildberries')
+        AND operation_type = 'Продажа'
+        AND order_id IS NOT NULL AND TRIM(order_id) ~ '^[0-9]+$'
+        AND barcode IS NOT NULL AND TRIM(barcode) <> ''
+      UNION ALL
+      SELECT TRIM(COALESCE(raw_json->>'shk_id', '')) AS link_key, TRIM(order_id) AS order_id, id
+      FROM ${table}
+      WHERE profile_id = $1
+        AND LOWER(TRIM(marketplace)) IN ('wb', 'wildberries')
+        AND operation_type = 'Продажа'
+        AND order_id IS NOT NULL AND TRIM(order_id) ~ '^[0-9]+$'
+        AND NULLIF(TRIM(COALESCE(raw_json->>'shk_id', '')), '') IS NOT NULL
+    ) src
+    WHERE link_key IS NOT NULL AND link_key <> ''
+    ORDER BY link_key, id DESC`;
+
+  const orphanWhere = `
+    orphan.profile_id = $1
+    AND LOWER(TRIM(orphan.marketplace)) IN ('wb', 'wildberries')
+    AND orphan.operation_type <> 'Продажа'
+    AND (
+      orphan.order_id IS NULL OR TRIM(orphan.order_id) = '' OR TRIM(orphan.order_id) !~ '^[0-9]+$'
+    )`;
+
+  await query(
+    `UPDATE ${table} orphan
+     SET order_id = src.order_id
+     FROM (${saleSubquery}) src
+     WHERE ${orphanWhere}
+       AND orphan.posting_number IS NOT NULL
+       AND TRIM(orphan.posting_number) <> ''
+       AND src.link_key = TRIM(orphan.posting_number)`,
+    [pid]
+  );
+
+  await query(
+    `UPDATE ${table} orphan
+     SET order_id = src.order_id
+     FROM (${saleSubquery}) src
+     WHERE ${orphanWhere}
+       AND orphan.barcode IS NOT NULL
+       AND TRIM(orphan.barcode) <> ''
+       AND src.link_key = TRIM(orphan.barcode)`,
+    [pid]
+  );
+
+  await query(
+    `UPDATE ${table} orphan
+     SET order_id = src.order_id
+     FROM (${saleSubquery}) src
+     WHERE ${orphanWhere}
+       AND NULLIF(TRIM(COALESCE(orphan.raw_json->>'shk_id', '')), '') IS NOT NULL
+       AND src.link_key = TRIM(COALESCE(orphan.raw_json->>'shk_id', ''))`,
     [pid]
   );
 }

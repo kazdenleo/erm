@@ -1,8 +1,18 @@
 /**
  * КриптоПро ЭЦП Browser plug-in: загрузка API, диагностика, подпись CAdES-BES.
+ *
+ * Важно: cadesplugin — это Promise. Расширение часто вызывает plugin_loaded()
+ * раньше, чем cadesplugin.set(nativeObject). Поэтому нельзя считать плагин
+ * готовым сразу после then(): нужно дождаться рабочего CreateObjectAsync.
+ * Вызовы COM идут через async_spawn, как в примерах КриптоПро.
  */
 
 const CADES_API_SRC = `${process.env.PUBLIC_URL || ''}/cadesplugin_api.js`;
+const PLUGIN_OBJECT_HINT = 'Расширение КриптоПро отвечает, но не создало объект CAdESCOM. Закройте все окна браузера, убедитесь что КриптоПро CSP установлен и запущен, разрешите этот сайт в расширении и откройте страницу заново.';
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function missingPluginError(message) {
   const err = new Error(message);
@@ -10,10 +20,41 @@ function missingPluginError(message) {
   return err;
 }
 
+function asErrorMessage(err, plugin) {
+  try {
+    if (plugin && typeof plugin.getLastError === 'function') {
+      const last = plugin.getLastError(err);
+      if (last) return String(last);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (err == null) return '';
+  if (typeof err === 'string') return err;
+  return String(err.message || err);
+}
+
+function isPluginObjectMissing(message) {
+  return /undefined/i.test(message) && /(CreateObjectAsync|async_spawn)/i.test(message);
+}
+
+function wrapCadesError(err, plugin) {
+  const message = asErrorMessage(err, plugin);
+  if (isPluginObjectMissing(message)) {
+    return missingPluginError(PLUGIN_OBJECT_HINT);
+  }
+  const wrapped = new Error(message || 'Ошибка КриптоПро');
+  wrapped.code = 'CADES_COM';
+  return wrapped;
+}
+
 function loadCadesApiScript() {
   if (typeof window === 'undefined') {
     return Promise.reject(missingPluginError('КриптоПро доступен только в браузере'));
   }
+  // Не показывать штатную модалку КриптоПро («Скачать расширение») —
+  // диагностика и чеклист Честного знака сами подскажут, что установить.
+  window.cadesplugin_skip_extension_install = true;
   if (window.cadesplugin) return Promise.resolve();
   if (window.__cadesApiLoading) return window.__cadesApiLoading;
 
@@ -50,22 +91,56 @@ function loadCadesApiScript() {
   return window.__cadesApiLoading;
 }
 
-async function waitCadesPlugin(timeoutMs = 12000) {
-  await loadCadesApiScript();
-  const started = Date.now();
-  while (!window.cadesplugin && Date.now() - started < 4000) {
-    await new Promise((r) => setTimeout(r, 100));
+function awaitPluginThen(plugin) {
+  if (plugin && typeof plugin.then === 'function') {
+    return new Promise((resolve, reject) => {
+      plugin.then(() => resolve(true), reject);
+    });
   }
-  if (!window.cadesplugin) {
+  return Promise.resolve(plugin);
+}
+
+function getCadesPlugin() {
+  const plugin = typeof window !== 'undefined' ? window.cadesplugin : null;
+  if (!plugin) {
     throw missingPluginError(
       'Не найден плагин «КриптоПро ЭЦП Browser plug-in». Установите расширение в браузере и разрешите работу на этом сайте, затем обновите страницу.'
     );
   }
-  const plugin = window.cadesplugin;
+  return plugin;
+}
+
+function createAboutObject(plugin) {
+  if (!plugin) {
+    return Promise.reject(new Error('Плагин КриптоПро не инициализирован'));
+  }
+  if (typeof plugin.CreateObjectAsync === 'function' && typeof plugin.async_spawn === 'function') {
+    return plugin.async_spawn(function* () {
+      return yield plugin.CreateObjectAsync('CAdESCOM.About');
+    });
+  }
+  if (typeof plugin.CreateObject === 'function') {
+    return Promise.resolve(plugin.CreateObject('CAdESCOM.About'));
+  }
+  return Promise.reject(new Error('CreateObjectAsync отсутствует'));
+}
+
+/**
+ * Ждёт готовности плагина. Не возвращает сам cadesplugin: это Promise,
+ * и async-функция разворачивает его в undefined (plugin_resolve() без аргумента).
+ */
+async function waitCadesPlugin(timeoutMs = 20000) {
+  await loadCadesApiScript();
+  const started = Date.now();
+  while (!window.cadesplugin && Date.now() - started < 4000) {
+    await delay(100);
+  }
+  const plugin = getCadesPlugin();
+
   let timer;
   try {
     await Promise.race([
-      Promise.resolve(plugin),
+      awaitPluginThen(plugin),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
           const err = new Error(
@@ -76,10 +151,50 @@ async function waitCadesPlugin(timeoutMs = 12000) {
         }, timeoutMs);
       }),
     ]);
+  } catch (err) {
+    if (err?.code === 'CADES_TIMEOUT') throw err;
+    throw missingPluginError(asErrorMessage(err, plugin) || 'Плагин КриптоПро не загрузился');
   } finally {
     if (timer) clearTimeout(timer);
   }
-  return window.cadesplugin;
+
+  const bindDeadline = Date.now() + 8000;
+  let lastErr = '';
+  while (Date.now() < bindDeadline) {
+    try {
+      const about = await createAboutObject(plugin);
+      if (about) return;
+    } catch (err) {
+      lastErr = asErrorMessage(err, plugin);
+      if (
+        typeof plugin.CreateObjectAsync === 'function'
+        && typeof plugin.async_spawn === 'function'
+        && lastErr
+        && !isPluginObjectMissing(lastErr)
+      ) {
+        return;
+      }
+    }
+    await delay(150);
+  }
+
+  throw missingPluginError(lastErr && isPluginObjectMissing(lastErr)
+    ? PLUGIN_OBJECT_HINT
+    : (lastErr || PLUGIN_OBJECT_HINT));
+}
+
+function runCades(generatorFn) {
+  return waitCadesPlugin().then(() => {
+    const plugin = getCadesPlugin();
+    if (typeof plugin.async_spawn !== 'function') {
+      throw missingPluginError(PLUGIN_OBJECT_HINT);
+    }
+    return Promise.resolve(plugin.async_spawn(function* () {
+      return yield* generatorFn(plugin);
+    })).catch((err) => {
+      throw wrapCadesError(err, plugin);
+    });
+  });
 }
 
 function parseCn(subjectName) {
@@ -92,9 +207,8 @@ export function normalizeThumbprint(value) {
   return String(value || '').replace(/\s+/g, '').toUpperCase();
 }
 
-async function readAbout(cadesplugin) {
-  try {
-    const about = await cadesplugin.CreateObjectAsync('CAdESCOM.About');
+function readAboutFromObject(about) {
+  return (async () => {
     let pluginVersion = '';
     let csp = '';
     try {
@@ -117,35 +231,42 @@ async function readAbout(cadesplugin) {
       }
     }
     return { pluginVersion, csp };
+  })();
+}
+
+async function readAbout(cadesplugin) {
+  try {
+    const about = await createAboutObject(cadesplugin);
+    return await readAboutFromObject(about);
   } catch {
     return { pluginVersion: '', csp: '' };
   }
 }
 
-async function listCertificatesFromPlugin(cadesplugin) {
-  const store = await cadesplugin.CreateObjectAsync('CAdESCOM.Store');
-  await store.Open(
+function* listCertificatesGenerator(cadesplugin) {
+  const store = yield cadesplugin.CreateObjectAsync('CAdESCOM.Store');
+  yield store.Open(
     cadesplugin.CAPICOM_CURRENT_USER_STORE,
-    'My',
+    cadesplugin.CAPICOM_MY_STORE || 'My',
     cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
   );
   try {
-    const certsObj = await store.Certificates;
-    const count = await certsObj.Count;
+    const certsObj = yield store.Certificates;
+    const count = yield certsObj.Count;
     const list = [];
     for (let i = 1; i <= count; i += 1) {
-      const cert = await certsObj.Item(i);
+      const cert = yield certsObj.Item(i);
       let hasPrivate = false;
       try {
-        hasPrivate = Boolean(await cert.HasPrivateKey());
+        hasPrivate = Boolean(yield cert.HasPrivateKey());
       } catch {
         hasPrivate = false;
       }
       if (!hasPrivate) continue;
-      const subject = await cert.SubjectName;
-      const thumbprint = normalizeThumbprint(await cert.Thumbprint);
-      const validFrom = await cert.ValidFromDate;
-      const validTo = await cert.ValidToDate;
+      const subject = yield cert.SubjectName;
+      const thumbprint = normalizeThumbprint(yield cert.Thumbprint);
+      const validFrom = yield cert.ValidFromDate;
+      const validTo = yield cert.ValidToDate;
       const validToDate = new Date(validTo);
       list.push({
         thumbprint,
@@ -160,7 +281,7 @@ async function listCertificatesFromPlugin(cadesplugin) {
     return list;
   } finally {
     try {
-      await store.Close();
+      yield store.Close();
     } catch {
       /* ignore */
     }
@@ -214,7 +335,8 @@ export async function diagnoseCryptoProSetup() {
   }
 
   try {
-    const cadesplugin = await waitCadesPlugin(12000);
+    await waitCadesPlugin(20000);
+    const cadesplugin = getCadesPlugin();
     pluginReady = true;
     about = await readAbout(cadesplugin);
     const verBits = [about.pluginVersion, about.csp].filter(Boolean).join(', ');
@@ -224,10 +346,10 @@ export async function diagnoseCryptoProSetup() {
       title: 'Плагин и расширение отвечают',
       hint: verBits
         ? `КриптоПро: ${verBits}`
-        : 'Расширение браузера и КриптоПро CSP доступны этой странице.',
+        : 'Расширение браузера связано с КриптоПро CSP — объект CAdESCOM создан.',
     });
     try {
-      certificates = await listCertificatesFromPlugin(cadesplugin);
+      certificates = await runCades(listCertificatesGenerator);
       const valid = certificates.filter((c) => !c.expired);
       items.push({
         id: 'certs',
@@ -257,7 +379,7 @@ export async function diagnoseCryptoProSetup() {
       id: 'certs',
       ok: false,
       title: 'Сертификаты не проверены',
-      hint: 'Сначала нужно, чтобы плагин ответил на этой странице.',
+      hint: 'Сначала нужно, чтобы плагин создал объект CAdESCOM на этой странице.',
     });
   }
 
@@ -265,45 +387,86 @@ export async function diagnoseCryptoProSetup() {
 }
 
 export async function listCryptoProCertificates() {
-  const cadesplugin = await waitCadesPlugin();
-  return listCertificatesFromPlugin(cadesplugin);
+  return runCades(listCertificatesGenerator);
 }
 
 export async function createAttachedCadesBes(thumbprint, data) {
-  const cadesplugin = await waitCadesPlugin();
   const needle = normalizeThumbprint(thumbprint);
   if (!needle) {
     throw new Error('Выберите сертификат УКЭП');
   }
-  const store = await cadesplugin.CreateObjectAsync('CAdESCOM.Store');
-  await store.Open(
-    cadesplugin.CAPICOM_CURRENT_USER_STORE,
-    'My',
-    cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
-  );
-  try {
-    const certs = await store.Certificates;
-    const found = await certs.Find(cadesplugin.CAPICOM_CERTIFICATE_FIND_SHA1_HASH, needle);
-    const count = await found.Count;
-    if (!count) {
-      throw new Error('Сертификат не найден в хранилище текущего пользователя');
-    }
-    const cert = await found.Item(1);
-    const signer = await cadesplugin.CreateObjectAsync('CAdESCOM.CPSigner');
-    await signer.propset_Certificate(cert);
+  return runCades(function* (cadesplugin) {
+    const store = yield cadesplugin.CreateObjectAsync('CAdESCOM.Store');
+    yield store.Open(
+      cadesplugin.CAPICOM_CURRENT_USER_STORE,
+      cadesplugin.CAPICOM_MY_STORE || 'My',
+      cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
+    );
     try {
-      await signer.propset_CheckCertificate(false);
-    } catch {
-      /* старые версии плагина */
+      const certs = yield store.Certificates;
+      const found = yield certs.Find(cadesplugin.CAPICOM_CERTIFICATE_FIND_SHA1_HASH, needle);
+      const count = yield found.Count;
+      if (!count) {
+        throw new Error('Сертификат не найден в хранилище текущего пользователя');
+      }
+      const cert = yield found.Item(1);
+      const signer = yield cadesplugin.CreateObjectAsync('CAdESCOM.CPSigner');
+      yield signer.propset_Certificate(cert);
+      try {
+        yield signer.propset_CheckCertificate(false);
+      } catch {
+        /* старые версии плагина */
+      }
+      const signedData = yield cadesplugin.CreateObjectAsync('CAdESCOM.CadesSignedData');
+      yield signedData.propset_Content(String(data ?? ''));
+      return yield signedData.SignCades(signer, cadesplugin.CADESCOM_CADES_BES);
+    } finally {
+      try {
+        yield store.Close();
+      } catch {
+        /* ignore */
+      }
     }
-    const signedData = await cadesplugin.CreateObjectAsync('CAdESCOM.CadesSignedData');
-    await signedData.propset_Content(String(data ?? ''));
-    return signedData.SignCades(signer, cadesplugin.CADESCOM_CADES_BES);
-  } finally {
-    try {
-      await store.Close();
-    } catch {
-      /* ignore */
-    }
+  });
+}
+
+/** Откреплённая CAdES-BES — для документов True API (product_document). */
+export async function createDetachedCadesBes(thumbprint, data) {
+  const needle = normalizeThumbprint(thumbprint);
+  if (!needle) {
+    throw new Error('Выберите сертификат УКЭП');
   }
+  return runCades(function* (cadesplugin) {
+    const store = yield cadesplugin.CreateObjectAsync('CAdESCOM.Store');
+    yield store.Open(
+      cadesplugin.CAPICOM_CURRENT_USER_STORE,
+      cadesplugin.CAPICOM_MY_STORE || 'My',
+      cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
+    );
+    try {
+      const certs = yield store.Certificates;
+      const found = yield certs.Find(cadesplugin.CAPICOM_CERTIFICATE_FIND_SHA1_HASH, needle);
+      const count = yield found.Count;
+      if (!count) {
+        throw new Error('Сертификат не найден в хранилище текущего пользователя');
+      }
+      const cert = yield found.Item(1);
+      const signer = yield cadesplugin.CreateObjectAsync('CAdESCOM.CPSigner');
+      yield signer.propset_Certificate(cert);
+      try {
+        yield signer.propset_CheckCertificate(false);
+      } catch {
+        /* старые версии плагина */
+      }
+      const signedData = yield cadesplugin.CreateObjectAsync('CAdESCOM.CadesSignedData');
+      yield signedData.propset_Content(String(data ?? ''));
+      return yield signedData.SignCades(signer, cadesplugin.CADESCOM_CADES_BES, true);
+    } finally {
+      try {
+        yield store.Close();
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 }

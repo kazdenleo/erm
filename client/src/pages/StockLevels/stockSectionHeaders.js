@@ -40,6 +40,10 @@ export const STOCK_SECTION_HEADERS = {
     title: '📤 Списание',
     subtitle: 'Списание товара со склада по скану штрихкода или из списка',
   },
+  marking: {
+    title: '▣ Маркировка (Честный знак)',
+    subtitle: 'КИ и документы ГИС МТ текущей организации: закупка, опт, FBO, FBS и списание себе',
+  },
   fbo_supplies: {
     title: '📦 Поставки FBO',
     subtitle: 'Поставки товаров на склады маркетплейсов (FBO)',
@@ -60,6 +64,9 @@ export function resolveStockSectionHeader(pathname, search = '') {
 
   if (path.startsWith('/stock-levels/purchases')) {
     return STOCK_SECTION_HEADERS.purchases;
+  }
+  if (path.startsWith('/stock-levels/marking')) {
+    return STOCK_SECTION_HEADERS.marking;
   }
 
   if (/^\/stock-levels\/fbo-supplies\/[^/]+/.test(path)) {
