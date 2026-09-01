@@ -8485,7 +8485,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
           <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
             Общий — запасной, если по МП ещё нет статистики. Ozon / WB / Я.Маркет обновляются раз в сутки
-            (FBS из заказов, FBO из финансовых отчётов).
+            из API маркетплейсов (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
           </div>
           <div className="row g-2 mt-2">
             <div className="col-md-4">

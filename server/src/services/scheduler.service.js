@@ -360,7 +360,7 @@ function isMarketplaceFbsReportsDailyEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-/** Суточный пересчёт % выкупа (FBS заказы + FBO отчёты). По умолчанию 05:40 МСК. */
+/** Суточная синхронизация % выкупа из API маркетплейсов. По умолчанию 05:40 МСК. */
 function getBuyoutRateDailyCron() {
   const c = process.env.BUYOUT_RATE_DAILY_CRON;
   return c && String(c).trim() ? String(c).trim() : '40 5 * * *';
@@ -1298,7 +1298,7 @@ class SchedulerService {
           job: null,
           schedule: getBuyoutRateDailyCron(),
           description:
-            '% выкупа: FBS из заказов, FBO из отчётов. BUYOUT_RATE_DAILY_CRON + profiles.timezone (после FBO/FBS отчётов)',
+            '% выкупа: Ozon Analytics + WB Sales Funnel (+ YM из заказов). BUYOUT_RATE_DAILY_CRON + profiles.timezone',
         });
       } else {
         logger.info('[Scheduler] Buyout rate daily disabled (BUYOUT_RATE_DAILY_ENABLED)');

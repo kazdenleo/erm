@@ -28,3 +28,31 @@ export function computeBuyoutPercent(deliveredQty, returnedQty, minUnits = 3) {
   if (total < minUnits) return null;
   return Math.max(0, Math.min(100, Math.round((d / total) * 100)));
 }
+
+/**
+ * % выкупа по метрикам маркетплейса (как в ЛК: delivered / ordered).
+ * @param {{ ordered?: number, delivered?: number, returns?: number, buyoutPercent?: number }} metrics
+ * @param {number} [minUnits=3]
+ * @returns {number|null}
+ */
+export function computeBuyoutFromMpAnalytics(metrics = {}, minUnits = 3) {
+  const direct = Number(metrics.buyoutPercent);
+  if (Number.isFinite(direct) && direct >= 0 && direct <= 100) {
+    return Math.round(direct);
+  }
+
+  const ordered = Math.max(0, Number(metrics.ordered) || 0);
+  const delivered = Math.max(0, Number(metrics.delivered) || 0);
+  const returns = Math.max(0, Number(metrics.returns) || 0);
+
+  if (ordered >= minUnits && delivered > 0) {
+    return Math.max(0, Math.min(100, Math.round((delivered / ordered) * 100)));
+  }
+  if (delivered + returns >= minUnits && delivered > 0) {
+    return Math.max(0, Math.min(100, Math.round((delivered / (delivered + returns)) * 100)));
+  }
+  if (delivered >= minUnits && ordered === 0 && returns === 0) {
+    return 100;
+  }
+  return null;
+}

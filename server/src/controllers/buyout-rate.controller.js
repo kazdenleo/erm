@@ -95,7 +95,7 @@ class BuyoutRateController {
   }
 
   /**
-   * Пересчитать % выкупа из FBS-заказов и FBO-отчётов (как ночной крон).
+   * Пересчитать % выкупа из API маркетплейсов (как ночной крон).
    * POST /api/buyout-rate/recalculate-daily
    */
   async recalculateDaily(req, res) {
