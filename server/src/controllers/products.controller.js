@@ -253,7 +253,18 @@ class ProductsController {
       if (options.warehouseId != null && !isWarehouseAllowed(accessScope, options.warehouseId)) {
         return res.status(200).json({ ok: true, data: [] });
       }
-      if (accessScope.organizationIds != null && options.organizationId == null) {
+      if (req.query.ids != null && String(req.query.ids).trim() !== '') {
+        const parts = String(req.query.ids).split(',');
+        const ids = parts
+          .map((x) => (typeof x === 'string' ? parseInt(x.trim(), 10) : Number(x)))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (ids.length) options.productIds = ids;
+      }
+      if (
+        accessScope.organizationIds != null &&
+        options.organizationId == null &&
+        !(Array.isArray(options.productIds) && options.productIds.length)
+      ) {
         options.organizationIds = accessScope.organizationIds;
       }
       if (accessScope.warehouseIds != null && options.warehouseId == null) {

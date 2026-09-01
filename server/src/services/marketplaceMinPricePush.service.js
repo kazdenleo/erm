@@ -14,7 +14,7 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
-import { filtersFromPricePushSettings } from '../utils/pricePushSettings.js';
+import { filtersFromPricePushSettings, parsePricePushSettings, resolvePushFloorForMarketplace } from '../utils/pricePushSettings.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -159,9 +159,24 @@ export function schedulePushForProduct(productId, delayMs = 2500) {
   _debounceTimers.set(id, t);
 }
 
-async function loadProductPushContext(productId) {
+async function loadProfilePushSchemes(profileId) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) {
+    return parsePricePushSettings(null);
+  }
+  try {
+    const res = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [pid]);
+    return parsePricePushSettings(res.rows?.[0]?.price_push_settings);
+  } catch {
+    return parsePricePushSettings(null);
+  }
+}
+
+async function loadProductPushContext(productId, pushSchemes = null) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return null;
+
+  const schemes = pushSchemes || parsePricePushSettings(null);
 
   const prodRes = await query(
     `SELECT id, profile_id, organization_id, sku, wb_draft,
@@ -173,17 +188,22 @@ async function loadProductPushContext(productId) {
   if (!product) return null;
 
   const pricesRes = await query(
-    `SELECT marketplace, min_price, selling_price
+    `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price
      FROM product_marketplace_prices
-     WHERE product_id = $1 AND min_price IS NOT NULL AND min_price > 0`,
+     WHERE product_id = $1
+       AND (
+         (min_price IS NOT NULL AND min_price > 0)
+         OR (min_price_fbs IS NOT NULL AND min_price_fbs > 0)
+         OR (min_price_fbo IS NOT NULL AND min_price_fbo > 0)
+       )`,
     [pid]
   );
   const floors = {};
   const selling = {};
   for (const row of pricesRes.rows || []) {
     const mp = String(row.marketplace || '').toLowerCase();
-    const f = floorRub(row.min_price);
-    if (f != null) floors[mp] = f;
+    const floor = resolvePushFloorForMarketplace(row, mp, schemes);
+    if (floor != null) floors[mp] = floor;
     const s = row.selling_price != null ? floorRub(row.selling_price) : null;
     if (s != null) selling[mp] = s;
   }
@@ -558,7 +578,12 @@ export async function pushForProduct(productId) {
   if (!isMinPricePushEnabled()) {
     return { skipped: true, reason: 'disabled' };
   }
-  let ctx = await loadProductPushContext(productId);
+  let profileIdForSettings = null;
+  const prodPeek = await query('SELECT profile_id FROM products WHERE id = $1 LIMIT 1', [Number(productId)]);
+  profileIdForSettings = prodPeek.rows?.[0]?.profile_id ?? null;
+  const pushSchemes = await loadProfilePushSchemes(profileIdForSettings);
+
+  let ctx = await loadProductPushContext(productId, pushSchemes);
   if (!ctx) return { skipped: true, reason: 'product_not_found' };
   if (!Object.keys(ctx.floors).length) {
     return { skipped: true, reason: 'no_stored_min_prices' };
@@ -579,7 +604,7 @@ export async function pushForProduct(productId) {
   try {
     const { recalculateSellingPricesForProduct } = await import('./pricingStrategy.service.js');
     await recalculateSellingPricesForProduct(productId);
-    ctx = (await loadProductPushContext(productId)) || ctx;
+    ctx = (await loadProductPushContext(productId, pushSchemes)) || ctx;
   } catch (e) {
     logger.warn('[MP MinPrice Push] strategy recalc failed', {
       productId,
@@ -659,7 +684,11 @@ export async function resolvePushProductIds(filters = {}) {
     FROM product_marketplace_prices pmp
     JOIN products p ON p.id = pmp.product_id
     JOIN organizations o ON o.id = p.organization_id
-    WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0
+    WHERE (
+      (pmp.min_price IS NOT NULL AND pmp.min_price > 0)
+      OR (pmp.min_price_fbs IS NOT NULL AND pmp.min_price_fbs > 0)
+      OR (pmp.min_price_fbo IS NOT NULL AND pmp.min_price_fbo > 0)
+    )
       AND o.auto_push_marketplace_prices = true`;
 
   if (Number.isFinite(organizationId) && organizationId > 0) {

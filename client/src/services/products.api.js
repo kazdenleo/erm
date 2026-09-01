@@ -190,6 +190,57 @@ export const productsApi = {
     return response.data;
   },
 
+  /** Загрузка карточек по списку ERP id (batch + getById для пропущенных). */
+  getManyByIds: async function getManyByIds(ids, options = {}) {
+    const uniqueIds = [...new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    )];
+    if (!uniqueIds.length) return [];
+
+    const extractOne = (response) => {
+      if (!response || typeof response !== 'object') return null;
+      if (response.id != null) return response;
+      const data = response.data;
+      if (data && typeof data === 'object' && data.id != null) return data;
+      return null;
+    };
+
+    const byId = new Map();
+    try {
+      const res = await this.getAll({
+        ids: uniqueIds,
+        limit: uniqueIds.length,
+        includeArchived: true,
+        ...options,
+      });
+      const batch = Array.isArray(res?.data) ? res.data : [];
+      for (const p of batch) {
+        if (p?.id != null) byId.set(String(p.id), p);
+      }
+    } catch (err) {
+      console.warn('[productsApi.getManyByIds] batch load failed:', err?.message || err);
+    }
+
+    const missing = uniqueIds.filter((id) => !byId.has(String(id)));
+    if (missing.length) {
+      await Promise.all(
+        missing.map(async (id) => {
+          try {
+            const res = await this.getById(id);
+            const p = extractOne(res);
+            if (p?.id != null) byId.set(String(p.id), p);
+          } catch {
+            /* skip */
+          }
+        })
+      );
+    }
+
+    return uniqueIds.map((id) => byId.get(String(id)) || null);
+  },
+
   /** { [userCategoryId: string]: number[] } — без полной выгрузки товаров (страница «Категории»). */
   getProductIdsGroupedByUserCategory: async () => {
     const response = await api.get('/products/grouped-by-user-category');

@@ -18,7 +18,7 @@ import { Button } from '../../components/common/Button/Button';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
-import { PricesPushSettingsPanel } from './PricesPushSettingsPanel.jsx';
+import { PricesPushSettingsPanel, buildScopeSummaryText } from './PricesPushSettingsPanel.jsx';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -131,17 +131,12 @@ export function Prices() {
     };
   }, [settingsOpen]);
 
-  const pushScopeSummaryText = useMemo(() => {
-    const s = pushSettingsSummary;
-    if (!s) return 'по сохранённым настройкам';
-    if (s.scope === 'products' && s.productIds?.length) {
-      return `${s.productIds.length} выбранных товаров`;
-    }
-    if (s.scope === 'categories' && s.categoryIds?.length) {
-      return `${s.categoryIds.length} категорий`;
-    }
-    return 'все товары организаций с включённой отправкой';
-  }, [pushSettingsSummary]);
+  const getEnabledPushOrgs = (settings) => {
+    const list = settings?.organizations || organizations;
+    return list.filter(
+      (o) => o.autoPushMarketplacePrices === true || o.auto_push_marketplace_prices === true
+    );
+  };
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -716,34 +711,44 @@ export function Prices() {
     }
   };
 
-  /** Запуск отправки цен по сохранённым настройкам раздела «Цены». */
-  const handlePushAll = async () => {
-    const enabledOrgs = (pushSettingsSummary?.organizations || organizations).filter(
-      (o) => o.autoPushMarketplacePrices === true || o.auto_push_marketplace_prices === true
-    );
+  /** Ручная отправка по сохранённым настройкам (из панели «Настройки»). */
+  const handlePushNow = async (savedPayload) => {
+    const summarySettings = {
+      ...(pushSettingsSummary || {}),
+      ...(savedPayload || {}),
+      organizations: pushSettingsSummary?.organizations || organizations.map((o) => ({
+        id: o.id,
+        name: o.name,
+        autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
+      })),
+    };
+    const enabledOrgs = getEnabledPushOrgs(summarySettings);
     if (!enabledOrgs.length) {
-      setRecalcAllMessage(
-        'Ошибка: ни у одной организации не включена отправка цен на маркетплейсы. Откройте «Настройки» выше.'
-      );
+      const msg =
+        'Ошибка: ни у одной организации не включена отправка цен на маркетплейсы.';
+      setRecalcAllMessage(msg);
       setTimeout(() => setRecalcAllMessage(null), 10000);
-      return;
+      throw new Error(msg);
     }
 
+    const scopeHint = buildScopeSummaryText(savedPayload || pushSettingsSummary);
     const ok = window.confirm(
-      `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${pushScopeSummaryText}.\nОрганизации с включённой отправкой: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
+      `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${scopeHint}.\nОрганизации: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
     );
     if (!ok) return;
 
+    setPushAllLoading(true);
+    setRecalcAllMessage(null);
     try {
-      setPushAllLoading(true);
-      setRecalcAllMessage(null);
       const res = await pricesApi.pushAll({ useSavedSettings: true });
       setRecalcAllMessage(res?.message || 'Отправка цен на маркетплейсы запущена в фоне.');
       setTimeout(() => setRecalcAllMessage(null), 15000);
     } catch (err) {
       console.error('[Prices] push failed:', err);
-      setRecalcAllMessage('Ошибка: ' + (err.response?.data?.message || err.message));
+      const msg = 'Ошибка: ' + (err.response?.data?.message || err.message);
+      setRecalcAllMessage(msg);
       setTimeout(() => setRecalcAllMessage(null), 10000);
+      throw err;
     } finally {
       setPushAllLoading(false);
     }
@@ -803,9 +808,20 @@ export function Prices() {
           <PricesPushSettingsPanel
             categories={categories}
             showUncategorizedCategoryOption={showNoneCategoryOption}
+            showFbsOption={showFbsPrices}
+            showFboOption={showFboPrices}
             organizations={organizations}
             onOrganizationsChange={handleOrgPushToggle}
-            onSaved={(payload) => setPushSettingsSummary((prev) => ({ ...(prev || {}), ...payload }))}
+            onSaved={(payload) =>
+              setPushSettingsSummary((prev) => ({
+                ...(prev || {}),
+                ...payload,
+                organizations: prev?.organizations,
+              }))
+            }
+            onPushNow={handlePushNow}
+            pushLoading={pushAllLoading}
+            pushFeedback={recalcAllMessage}
           />
         </div>
       )}
@@ -1469,11 +1485,8 @@ export function Prices() {
         <Button variant="primary" onClick={handleRecalcAndSave} disabled={recalcAllLoading || pushAllLoading || listRefreshing}>
           {recalcAllLoading ? '⏳ Запуск пересчёта...' : '📊 Пересчитать и сохранить все минимальные цены'}
         </Button>
-        <Button variant="secondary" onClick={handlePushAll} disabled={recalcAllLoading || pushAllLoading || listRefreshing}>
-          {pushAllLoading ? '⏳ Запуск отправки...' : '📤 Отправить цены на маркетплейсы'}
-        </Button>
         <div style={{marginTop: '8px', fontSize: '12px', color: 'var(--muted)', width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px'}}>
-          {recalcAllMessage && (
+          {!settingsOpen && recalcAllMessage && (
             <span style={{color: recalcAllMessage.startsWith('Ошибка') ? 'var(--danger, #ef4444)' : 'var(--primary)'}}>
               {recalcAllMessage.startsWith('Ошибка') ? '⚠️' : 'ℹ️'} {recalcAllMessage}
             </span>

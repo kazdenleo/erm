@@ -8,13 +8,56 @@ const SCOPES = {
   all: 'all',
   categories: 'categories',
   products: 'products',
+  categoriesAndProducts: 'categories_and_products',
 };
 
+function normalizeScopeFromApi(rawScope) {
+  if (rawScope === SCOPES.categoriesAndProducts) return SCOPES.categoriesAndProducts;
+  if (rawScope === SCOPES.products) return SCOPES.products;
+  if (rawScope === SCOPES.categories) return SCOPES.categories;
+  return SCOPES.all;
+}
+
 function extractProductList(response) {
-  const list = Array.isArray(response?.data)
-    ? response.data
-    : (response?.data?.data ?? response?.data ?? response ?? []);
-  return Array.isArray(list) ? list.filter(Boolean) : [];
+  if (Array.isArray(response)) return response.filter(Boolean);
+  const data = response?.data;
+  if (Array.isArray(data)) return data.filter(Boolean);
+  if (Array.isArray(data?.data)) return data.data.filter(Boolean);
+  if (Array.isArray(response?.items)) return response.items.filter(Boolean);
+  return [];
+}
+
+function buildScopePayload(scope, pushFbs, pushFbo, pickedCategoryIds, selectedProducts, showFbsOption, showFboOption) {
+  return {
+    scope,
+    pushFbs: showFbsOption ? pushFbs === true : false,
+    pushFbo: showFboOption ? pushFbo === true : false,
+    categoryIds:
+      scope === SCOPES.categories || scope === SCOPES.categoriesAndProducts
+        ? [...pickedCategoryIds]
+        : [],
+    productIds:
+      scope === SCOPES.categoriesAndProducts || scope === SCOPES.products
+        ? selectedProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0)
+        : [],
+  };
+}
+
+function buildScopeSummaryText(settings) {
+  if (!settings) return 'по сохранённым настройкам';
+  const schemeParts = [];
+  if (settings.pushFbs !== false) schemeParts.push('FBS');
+  if (settings.pushFbo !== false) schemeParts.push('FBO');
+  const schemeText = schemeParts.length ? schemeParts.join(' + ') : 'FBS';
+  let scopeText = 'все товары организаций с включённой отправкой';
+  if (settings.scope === 'categories_and_products' && settings.categoryIds?.length && settings.productIds?.length) {
+    scopeText = `${settings.categoryIds.length} категор(ий), ${settings.productIds.length} товар(ов)`;
+  } else if (settings.scope === 'products' && settings.productIds?.length) {
+    scopeText = `${settings.productIds.length} выбранных товаров`;
+  } else if (settings.scope === 'categories' && settings.categoryIds?.length) {
+    scopeText = `${settings.categoryIds.length} категор(ий)`;
+  }
+  return `${scopeText}, мин. ${schemeText}`;
 }
 
 function productLabel(p) {
@@ -24,15 +67,22 @@ function productLabel(p) {
   return name ? `${sku} — ${name}` : sku;
 }
 
+export { buildScopeSummaryText };
+
 /**
  * Панель настроек отправки цен на маркетплейсы (раздел «Цены»).
  */
 export function PricesPushSettingsPanel({
   categories = [],
   showUncategorizedCategoryOption = false,
+  showFbsOption = true,
+  showFboOption = true,
   organizations = [],
   onOrganizationsChange,
   onSaved,
+  onPushNow,
+  pushLoading = false,
+  pushFeedback = null,
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -41,6 +91,8 @@ export function PricesPushSettingsPanel({
   const [error, setError] = useState(null);
 
   const [scope, setScope] = useState(SCOPES.all);
+  const [pushFbs, setPushFbs] = useState(true);
+  const [pushFbo, setPushFbo] = useState(true);
   const [pickedCategoryIds, setPickedCategoryIds] = useState(() => new Set());
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [orgToggles, setOrgToggles] = useState([]);
@@ -62,16 +114,18 @@ export function PricesPushSettingsPanel({
     try {
       const res = await pricesApi.getPushSettings();
       const data = res?.data ?? res;
-      setScope(data?.scope || SCOPES.all);
+      setScope(normalizeScopeFromApi(data?.scope));
+      setPushFbs(data?.pushFbs !== false);
+      setPushFbo(data?.pushFbo !== false);
       setPickedCategoryIds(new Set((data?.categoryIds || []).map(String)));
       setOrgToggles(data?.organizations || []);
 
       const ids = (data?.productIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
       if (ids.length) {
-        const prodRes = await productsApi.getAll({ ids, limit: ids.length });
-        const list = extractProductList(prodRes);
-        const byId = new Map((Array.isArray(list) ? list : []).map((p) => [String(p.id), p]));
-        setSelectedProducts(ids.map((id) => byId.get(String(id)) || { id, sku: `#${id}` }));
+        const loaded = await productsApi.getManyByIds(ids);
+        setSelectedProducts(
+          ids.map((id, idx) => loaded[idx] || { id, sku: `#${id}`, name: '' })
+        );
       } else {
         setSelectedProducts([]);
       }
@@ -98,7 +152,12 @@ export function PricesPushSettingsPanel({
     setSearchLoading(true);
     searchDebounceRef.current = setTimeout(async () => {
       try {
-        const res = await productsApi.getAll({ search: q, limit: 15 });
+        const searchOpts = { search: q, limit: 15 };
+        const catIds = [...pickedCategoryIds].filter((id) => id !== FILTER_CATEGORY_NONE);
+        if (scope === SCOPES.categoriesAndProducts && catIds.length === 1) {
+          searchOpts.categoryId = catIds[0];
+        }
+        const res = await productsApi.getAll(searchOpts);
         const list = extractProductList(res);
         const selectedIds = new Set(selectedProducts.map((p) => String(p.id)));
         setSearchResults(list.filter((p) => p?.id && !selectedIds.has(String(p.id))));
@@ -112,7 +171,7 @@ export function PricesPushSettingsPanel({
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     };
-  }, [productSearch, selectedProducts]);
+  }, [productSearch, selectedProducts, scope, pickedCategoryIds]);
 
   const toggleCategory = (id) => {
     setPickedCategoryIds((prev) => {
@@ -165,14 +224,15 @@ export function PricesPushSettingsPanel({
     setMessage(null);
     setError(null);
     try {
-      const payload = {
+      const payload = buildScopePayload(
         scope,
-        categoryIds: scope === SCOPES.categories ? [...pickedCategoryIds] : [],
-        productIds:
-          scope === SCOPES.products
-            ? selectedProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0)
-            : [],
-      };
+        pushFbs,
+        pushFbo,
+        pickedCategoryIds,
+        selectedProducts,
+        showFbsOption,
+        showFboOption
+      );
       await pricesApi.updatePushSettings(payload);
       setMessage('Настройки сохранены');
       onSaved?.(payload);
@@ -184,10 +244,209 @@ export function PricesPushSettingsPanel({
     }
   };
 
+  const orgList = orgToggles.length ? orgToggles : organizations.map((o) => ({
+    id: o.id,
+    name: o.name,
+    autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
+  }));
+
+  const hasEnabledOrg = orgList.some((o) => o.autoPushMarketplacePrices === true);
+
   const canSaveScope =
-    scope === SCOPES.all ||
-    (scope === SCOPES.categories && pickedCategoryIds.size > 0) ||
-    (scope === SCOPES.products && selectedProducts.length > 0);
+    (showFbsOption ? pushFbs : false) || (showFboOption ? pushFbo : false)
+      ? scope === SCOPES.all ||
+        (scope === SCOPES.categories && pickedCategoryIds.size > 0) ||
+        (scope === SCOPES.products && selectedProducts.length > 0) ||
+        (scope === SCOPES.categoriesAndProducts &&
+          pickedCategoryIds.size > 0 &&
+          selectedProducts.length > 0)
+      : false;
+
+  const canPushNow = canSaveScope && hasEnabledOrg && typeof onPushNow === 'function';
+
+  const pushDisabledReason = (() => {
+    if (!hasEnabledOrg) return 'Включите отправку хотя бы для одной организации.';
+    if (!(showFbsOption ? pushFbs : false) && !(showFboOption ? pushFbo : false)) {
+      return 'Выберите хотя бы одну схему (FBS или FBO).';
+    }
+    if (scope === SCOPES.categories && pickedCategoryIds.size === 0) {
+      return 'Выберите хотя бы одну категорию.';
+    }
+    if (scope === SCOPES.products && selectedProducts.length === 0) {
+      return 'Добавьте хотя бы один товар.';
+    }
+    if (scope === SCOPES.categoriesAndProducts) {
+      if (pickedCategoryIds.size === 0) return 'Выберите хотя бы одну категорию.';
+      if (selectedProducts.length === 0) return 'Добавьте хотя бы один товар.';
+    }
+    return null;
+  })();
+
+  const handleSaveAndPush = async () => {
+    if (!canPushNow) return;
+    setSaving(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const payload = buildScopePayload(
+        scope,
+        pushFbs,
+        pushFbo,
+        pickedCategoryIds,
+        selectedProducts,
+        showFbsOption,
+        showFboOption
+      );
+      await pricesApi.updatePushSettings(payload);
+      onSaved?.(payload);
+      await onPushNow(payload);
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Ошибка отправки');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const currentScopeSummary = useMemo(
+    () =>
+      buildScopeSummaryText(
+        buildScopePayload(
+          scope,
+          pushFbs,
+          pushFbo,
+          pickedCategoryIds,
+          selectedProducts,
+          showFbsOption,
+          showFboOption
+        )
+      ),
+    [
+      scope,
+      pushFbs,
+      pushFbo,
+      pickedCategoryIds,
+      selectedProducts,
+      showFbsOption,
+      showFboOption,
+    ]
+  );
+
+  const renderCategoryPicker = () => (
+    <div
+      className="prices-push-categories"
+      style={{
+        maxHeight: '180px',
+        overflowY: 'auto',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '6px',
+        padding: '6px 8px',
+        fontSize: '12px',
+        marginTop: '6px',
+      }}
+    >
+      {showUncategorizedCategoryOption && (
+        <label style={{ display: 'flex', gap: '6px', marginBottom: '4px', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={pickedCategoryIds.has(FILTER_CATEGORY_NONE)}
+            onChange={() => toggleCategory(FILTER_CATEGORY_NONE)}
+          />
+          <span>Без категории</span>
+        </label>
+      )}
+      {sortedCategories.map((cat) => (
+        <label
+          key={cat.id}
+          style={{ display: 'flex', gap: '6px', marginBottom: '4px', cursor: 'pointer' }}
+        >
+          <input
+            type="checkbox"
+            checked={pickedCategoryIds.has(String(cat.id))}
+            onChange={() => toggleCategory(String(cat.id))}
+          />
+          <span>{cat.name || `#${cat.id}`}</span>
+        </label>
+      ))}
+      {!sortedCategories.length && !showUncategorizedCategoryOption && (
+        <span style={{ color: 'var(--muted)' }}>Категории не найдены</span>
+      )}
+    </div>
+  );
+
+  const renderProductPicker = () => (
+    <div style={{ marginTop: '6px' }}>
+      <input
+        type="search"
+        className="form-control form-control-sm"
+        placeholder="Поиск по артикулу или названию…"
+        value={productSearch}
+        onChange={(e) => setProductSearch(e.target.value)}
+        autoComplete="off"
+      />
+      {searchLoading && <div className="text-muted small mt-1">Поиск…</div>}
+      {searchResults.length > 0 && (
+        <div
+          style={{
+            marginTop: '4px',
+            maxHeight: '140px',
+            overflowY: 'auto',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '6px',
+          }}
+        >
+          {searchResults.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className="btn btn-link btn-sm text-start w-100 text-decoration-none"
+              style={{ fontSize: '12px', padding: '4px 8px' }}
+              onClick={() => addProduct(p)}
+            >
+              + {productLabel(p)}
+            </button>
+          ))}
+        </div>
+      )}
+      {selectedProducts.length > 0 && (
+        <ul
+          style={{
+            margin: '8px 0 0',
+            padding: 0,
+            listStyle: 'none',
+            maxHeight: '160px',
+            overflowY: 'auto',
+            fontSize: '12px',
+          }}
+        >
+          {selectedProducts.map((p) => (
+            <li
+              key={p.id}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '8px',
+                padding: '2px 0',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+              }}
+            >
+              <span>{productLabel(p)}</span>
+              <button
+                type="button"
+                className="btn btn-link btn-sm p-0 text-danger"
+                onClick={() => removeProduct(p.id)}
+                title="Убрать"
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {selectedProducts.length === 0 && (
+        <p className="text-muted small mt-2 mb-0">Добавьте товары через поиск выше.</p>
+      )}
+    </div>
+  );
 
   if (loading) {
     return (
@@ -196,12 +455,6 @@ export function PricesPushSettingsPanel({
       </section>
     );
   }
-
-  const orgList = orgToggles.length ? orgToggles : organizations.map((o) => ({
-    id: o.id,
-    name: o.name,
-    autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
-  }));
 
   return (
     <section className="prices-push-settings" style={{ marginBottom: '16px' }}>
@@ -244,6 +497,48 @@ export function PricesPushSettingsPanel({
         </p>
       </div>
 
+      {(showFbsOption || showFboOption) && (
+        <div style={{ marginBottom: '16px' }}>
+          <strong className="small d-block mb-2">Какие мин. цены отправлять</strong>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {showFbsOption && (
+              <div className="form-check form-switch mb-0">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="prices-push-scheme-fbs"
+                  checked={pushFbs === true}
+                  onChange={(e) => setPushFbs(e.target.checked)}
+                />
+                <label className="form-check-label" htmlFor="prices-push-scheme-fbs">
+                  FBS
+                </label>
+              </div>
+            )}
+            {showFboOption && (
+              <div className="form-check form-switch mb-0">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="prices-push-scheme-fbo"
+                  checked={pushFbo === true}
+                  onChange={(e) => setPushFbo(e.target.checked)}
+                />
+                <label className="form-check-label" htmlFor="prices-push-scheme-fbo">
+                  FBO / FBY
+                </label>
+              </div>
+            )}
+          </div>
+          <p className="text-muted small mt-2 mb-0">
+            На карточке маркетплейса одна цена. Если выбраны обе схемы — отправляется максимум из
+            выбранных мин. цен, чтобы не опуститься ниже любого из порогов.
+          </p>
+        </div>
+      )}
+
       <div style={{ marginBottom: '12px' }}>
         <strong className="small d-block mb-2">Область отправки</strong>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -273,47 +568,10 @@ export function PricesPushSettingsPanel({
             />
             <span style={{ flex: 1 }}>
               <strong>По категориям</strong>
-              {scope === SCOPES.categories && (
-                <div
-                  className="prices-push-categories"
-                  style={{
-                    maxHeight: '180px',
-                    overflowY: 'auto',
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    borderRadius: '6px',
-                    padding: '6px 8px',
-                    fontSize: '12px',
-                    marginTop: '6px',
-                  }}
-                >
-                  {showUncategorizedCategoryOption && (
-                    <label style={{ display: 'flex', gap: '6px', marginBottom: '4px', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={pickedCategoryIds.has(FILTER_CATEGORY_NONE)}
-                        onChange={() => toggleCategory(FILTER_CATEGORY_NONE)}
-                      />
-                      <span>Без категории</span>
-                    </label>
-                  )}
-                  {sortedCategories.map((cat) => (
-                    <label
-                      key={cat.id}
-                      style={{ display: 'flex', gap: '6px', marginBottom: '4px', cursor: 'pointer' }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={pickedCategoryIds.has(String(cat.id))}
-                        onChange={() => toggleCategory(String(cat.id))}
-                      />
-                      <span>{cat.name || `#${cat.id}`}</span>
-                    </label>
-                  ))}
-                  {!sortedCategories.length && !showUncategorizedCategoryOption && (
-                    <span style={{ color: 'var(--muted)' }}>Категории не найдены</span>
-                  )}
-                </div>
-              )}
+              <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                Все товары из выбранных категорий
+              </div>
+              {scope === SCOPES.categories && renderCategoryPicker()}
             </span>
           </label>
 
@@ -327,81 +585,31 @@ export function PricesPushSettingsPanel({
             />
             <span style={{ flex: 1 }}>
               <strong>Выбранные товары</strong>
-              {scope === SCOPES.products && (
-                <div style={{ marginTop: '6px' }}>
-                  <input
-                    type="search"
-                    className="form-control form-control-sm"
-                    placeholder="Поиск по артикулу или названию…"
-                    value={productSearch}
-                    onChange={(e) => setProductSearch(e.target.value)}
-                    autoComplete="off"
-                  />
-                  {searchLoading && (
-                    <div className="text-muted small mt-1">Поиск…</div>
-                  )}
-                  {searchResults.length > 0 && (
-                    <div
-                      style={{
-                        marginTop: '4px',
-                        maxHeight: '140px',
-                        overflowY: 'auto',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        borderRadius: '6px',
-                      }}
-                    >
-                      {searchResults.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          className="btn btn-link btn-sm text-start w-100 text-decoration-none"
-                          style={{ fontSize: '12px', padding: '4px 8px' }}
-                          onClick={() => addProduct(p)}
-                        >
-                          + {productLabel(p)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {selectedProducts.length > 0 && (
-                    <ul
-                      style={{
-                        margin: '8px 0 0',
-                        padding: 0,
-                        listStyle: 'none',
-                        maxHeight: '160px',
-                        overflowY: 'auto',
-                        fontSize: '12px',
-                      }}
-                    >
-                      {selectedProducts.map((p) => (
-                        <li
-                          key={p.id}
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            gap: '8px',
-                            padding: '2px 0',
-                            borderBottom: '1px solid rgba(255,255,255,0.06)',
-                          }}
-                        >
-                          <span>{productLabel(p)}</span>
-                          <button
-                            type="button"
-                            className="btn btn-link btn-sm p-0 text-danger"
-                            onClick={() => removeProduct(p.id)}
-                            title="Убрать"
-                          >
-                            ✕
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {selectedProducts.length === 0 && (
-                    <p className="text-muted small mt-2 mb-0">Добавьте товары через поиск выше.</p>
-                  )}
-                </div>
+              <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                Только указанные товары, без фильтра по категориям
+              </div>
+              {scope === SCOPES.products && renderProductPicker()}
+            </span>
+          </label>
+
+          <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer' }}>
+            <input
+              type="radio"
+              name="prices-push-scope"
+              checked={scope === SCOPES.categoriesAndProducts}
+              onChange={() => setScope(SCOPES.categoriesAndProducts)}
+              style={{ marginTop: '3px' }}
+            />
+            <span style={{ flex: 1 }}>
+              <strong>Категории и выбранные товары</strong>
+              <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                Только указанные товары из выбранных категорий
+              </div>
+              {scope === SCOPES.categoriesAndProducts && (
+                <>
+                  {renderCategoryPicker()}
+                  {renderProductPicker()}
+                </>
               )}
             </span>
           </label>
@@ -414,10 +622,54 @@ export function PricesPushSettingsPanel({
           variant="primary"
           size="small"
           onClick={handleSaveScope}
-          disabled={saving || !canSaveScope}
+          disabled={saving || pushLoading || !canSaveScope}
         >
-          {saving ? 'Сохранение…' : 'Сохранить настройки'}
+          {saving && !pushLoading ? 'Сохранение…' : 'Сохранить настройки'}
         </Button>
+      </div>
+
+      <div
+        style={{
+          marginTop: '16px',
+          padding: '12px 14px',
+          borderRadius: '8px',
+          border: '1px solid rgba(59,130,246,0.35)',
+          background: 'rgba(59,130,246,0.08)',
+        }}
+      >
+        <p className="small mb-2 mb-md-2" style={{ marginBottom: '8px' }}>
+          <strong>Отправка:</strong>{' '}
+          {canSaveScope ? currentScopeSummary : 'настройте область отправки выше'}
+        </p>
+        <p className="text-muted small mb-2">
+          По расписанию цены отправляются автоматически. Нажмите кнопку ниже, чтобы отправить
+          сейчас по выбранным настройкам.
+        </p>
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          onClick={handleSaveAndPush}
+          disabled={saving || pushLoading || !canPushNow}
+          title={!canPushNow ? pushDisabledReason || undefined : undefined}
+        >
+          {pushLoading ? '⏳ Запуск отправки…' : '📤 Отправить на маркетплейсы'}
+        </Button>
+        {!canPushNow && pushDisabledReason && (
+          <p className="text-muted small mt-2 mb-0">{pushDisabledReason}</p>
+        )}
+        {pushFeedback && (
+          <div
+            className="small mt-2"
+            style={{
+              color: String(pushFeedback).startsWith('Ошибка')
+                ? 'var(--danger, #ef4444)'
+                : 'var(--primary)',
+            }}
+          >
+            {String(pushFeedback).startsWith('Ошибка') ? '⚠️' : 'ℹ️'} {pushFeedback}
+          </div>
+        )}
       </div>
     </section>
   );

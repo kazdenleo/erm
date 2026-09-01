@@ -12,7 +12,7 @@ import {
   pushWithFilters,
 } from '../services/marketplaceMinPricePush.service.js';
 import pricePushSettingsService from '../services/pricePushSettings.service.js';
-import { describePricePushScope } from '../utils/pricePushSettings.js';
+import { describePricePushScope, describePricePushSchemes } from '../utils/pricePushSettings.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
 
 function formatPushSkipReason(reason) {
@@ -567,7 +567,7 @@ class PricesController {
           });
         }
         const filters = await pricePushSettingsService.buildPushFiltersForProfile(profileId);
-        const scopeHint = describePricePushScope(saved);
+        const scopeHint = `${describePricePushScope(saved)}, ${describePricePushSchemes(saved)}`;
 
         pushWithFilters(filters)
           .then((data) => {

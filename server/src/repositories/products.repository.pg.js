@@ -723,6 +723,7 @@ function buildFindAllFilters(options = {}) {
     linkedMp,
     requireAnyMarketplaceLink,
     mpStockBlockedOnly,
+    productIds,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -944,6 +945,16 @@ function buildFindAllFilters(options = {}) {
       OR COALESCE(p.block_stock_wb, false) = true
       OR COALESCE(p.block_stock_ym, false) = true
     )`;
+  }
+
+  if (Array.isArray(productIds) && productIds.length > 0) {
+    const ids = productIds
+      .map((x) => (typeof x === 'string' ? parseInt(x, 10) : Number(x)))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length > 0) {
+      whereSql += ` AND p.id = ANY($${paramIndex++}::bigint[])`;
+      params.push(ids);
+    }
   }
 
   return { whereSql, params, paramIndex };

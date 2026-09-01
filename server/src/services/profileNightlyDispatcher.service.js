@@ -197,6 +197,25 @@ function buildNightlyJobs() {
         const { recalculateBuyoutRatesForProfile } = await import('./buyoutRateDaily.service.js');
         const result = await recalculateBuyoutRatesForProfile(profileId);
         logger.info('[NightlyTZ] Buyout rate daily', { profileId, ...result });
+
+        if (result?.ok && (result.productsWithData > 0 || result.updated > 0)) {
+          try {
+            const pricesService = (await import('./prices.service.js')).default;
+            const recalc = await pricesService.recalculateAndSaveAllFromCache({
+              profileId,
+              skipBuyoutSync: true,
+            });
+            logger.info('[NightlyTZ] Min prices after buyout sync', {
+              profileId,
+              totalProcessed: recalc?.totalProcessed ?? 0,
+            });
+          } catch (e) {
+            logger.error('[NightlyTZ] Min prices after buyout sync failed', {
+              profileId,
+              message: e?.message || String(e),
+            });
+          }
+        }
       },
     });
   }

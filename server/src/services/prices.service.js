@@ -3580,7 +3580,9 @@ class PricesService {
    * Пересчитать и сохранить минимальные цены для одного товара.
    * Использовать в течение дня при изменении карточки (себестоимость, габариты, категория и т.д.):
    * по умолчанию запрашиваются актуальные данные MP (live); ночной массовый прогон строится на кэше после обновления комиссий.
-   * @param {{ useCalculatorCache?: boolean }} [options] — true: только product_mp_calculator_cache (без HTTP к MP на этот вызов)
+   * @param {{ useCalculatorCache?: boolean, skipBuyoutSync?: boolean }} [options]
+   *   useCalculatorCache — только product_mp_calculator_cache (без HTTP к MP на этот вызов)
+   *   skipBuyoutSync — не обновлять % выкупа из API МП перед расчётом
    */
   async recalculateAndSaveForProduct(productId, options = {}) {
     const errors = {};
@@ -3939,25 +3941,38 @@ class PricesService {
   async recalculateAndSaveAllFromCache(opts = {}) {
     const productsRepo = repositoryFactory.getProductsRepository();
     const batchSize = opts.batchSize != null ? Number(opts.batchSize) : 500;
+    const profileId =
+      opts.profileId != null && String(opts.profileId).trim() !== ''
+        ? Number(opts.profileId)
+        : null;
     let offset = 0;
     let totalProcessed = 0;
 
     while (true) {
-      const products = await productsRepo.findAll({ limit: batchSize, offset });
+      const findOpts = { limit: batchSize, offset };
+      if (Number.isFinite(profileId) && profileId > 0) findOpts.profileId = profileId;
+      const products = await productsRepo.findAll(findOpts);
       if (!products.length) break;
 
       for (let i = 0; i < products.length; i++) {
         await this.recalculateAndSaveForProduct(products[i].id, {
           useCalculatorCache: true,
           skipMinPricePush: true,
+          skipBuyoutSync: opts.skipBuyoutSync !== false,
         });
         totalProcessed++;
       }
-      logger.info(`[Prices Service] Recalculated from cache batch: ${totalProcessed} products so far`);
+      logger.info(
+        `[Prices Service] Recalculated from cache batch: ${totalProcessed} products so far` +
+          (profileId ? ` (profile ${profileId})` : '')
+      );
       offset += batchSize;
     }
 
-    logger.info(`[Prices Service] Recalculated from cache for ${totalProcessed} products total`);
+    logger.info(
+      `[Prices Service] Recalculated from cache for ${totalProcessed} products total` +
+        (profileId ? ` (profile ${profileId})` : '')
+    );
     return { totalProcessed };
   }
 }

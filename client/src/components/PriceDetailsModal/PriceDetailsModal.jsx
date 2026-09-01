@@ -13,6 +13,7 @@ import {
   resolveMarketplaceMinProfit,
 } from '../../utils/marketplaceMinProfit.js';
 import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
+import { resolveOzonLogisticsCostsForReturn, computeOzonReturnUnitAmount } from '../../utils/ozonReturnAmount.js';
 import { calculateMinPrice } from '../../utils/calculateMinPrice.js';
 import './PriceDetailsModal.css';
 
@@ -517,11 +518,13 @@ function PriceDetailsModalInner({
     deliveryToCustomer = atPrice(d) + atPrice(cr) + atPrice(ex);
   }
 
-  const quantity = Number(product.quantity) || 1;
   const buyoutRateInput = resolveMarketplaceBuyoutRate(product, marketplace);
-  const hasBuyoutRate = buyoutRateInput != null;
   const buyoutRate = buyoutRateInput != null ? buyoutRateInput / 100 : 1;
   const returnRate = buyoutRateInput != null && buyoutRateInput < 100 ? (1 - buyoutRate) : 0;
+  const buyoutPercentLabel =
+    buyoutRateInput != null && buyoutRateInput < 100
+      ? `выкуп ${Math.round(buyoutRateInput)}%`
+      : null;
 
   console.log(`[PriceDetailsModal] Returns for ${marketplace}:`, {
     buyoutRateFromProduct: buyoutRateInput,
@@ -530,46 +533,17 @@ function PriceDetailsModalInner({
     basePrice
   });
 
-  let returnCostPerUnit = 0;
-  let returnProcessingCostPerUnit = 0;
-  let returnLossCostPerUnit = 0;
-  let returnAmount = 0;
-
+  let returnAmountAtMax = 0;
+  let returnProcessingAtMax = 0;
   if (returnRate > 0) {
-    returnLossCostPerUnit = basePrice * returnRate;
     if (commission.return_amount !== undefined && commission.return_amount !== null) {
-      returnAmount = Number(commission.return_amount);
+      returnAmountAtMax = Number(commission.return_amount);
     }
-    returnCostPerUnit = returnAmount * returnRate;
-    const returnProcessingFromApi = (commission.return_processing_amount !== undefined && commission.return_processing_amount !== null)
-      ? Number(commission.return_processing_amount)
-      : 0;
-    returnProcessingCostPerUnit = returnProcessingFromApi * returnRate;
-
-    console.log(`[PriceDetailsModal] ${marketplace} return costs (from API only):`, {
-      return_amount: commission.return_amount,
-      returnAmount,
-      returnCostPerUnit: returnCostPerUnit.toFixed(2),
-      returnProcessingCostPerUnit: returnProcessingCostPerUnit.toFixed(2),
-      returnLossCostPerUnit: returnLossCostPerUnit.toFixed(2)
-    });
+    returnProcessingAtMax =
+      commission.return_processing_amount !== undefined && commission.return_processing_amount !== null
+        ? Number(commission.return_processing_amount)
+        : 0;
   }
-  
-  // Для отображения показываем стоимость возврата на единицу товара
-  const returnCost = Number(returnCostPerUnit) || 0;
-  const returnProcessingCost = Number(returnProcessingCostPerUnit) || 0;
-  const returnLossCost = Number(returnLossCostPerUnit) || 0;
-  const expectedReturns = quantity * returnRate; // Для отображения в модальном окне
-  
-  // Отладочное логирование для проверки значений
-  console.log(`[PriceDetailsModal] Return costs values:`, {
-    returnLossCost: returnLossCost,
-    returnCost: returnCost,
-    returnProcessingCost: returnProcessingCost,
-    shouldShow: (returnLossCost > 0 || returnCost > 0 || returnProcessingCost > 0),
-    buyoutRate: buyoutRateInput,
-    returnRate: returnRate
-  });
   
   // Комиссия за продвижение бренда — из API или настроек бренда
   const brandPromotionPercent = (resolvedCalculatorData.brand_promotion_percent != null && !isNaN(Number(resolvedCalculatorData.brand_promotion_percent)))
@@ -662,6 +636,18 @@ function PriceDetailsModalInner({
     );
     if (solved != null) calculatedPrice = solved;
   }
+
+  let ozonReturnMeta = null;
+  let returnAmount = returnAmountAtMax;
+  if (marketplace === 'ozon' && returnRate > 0) {
+    const ozonLogistics = resolveOzonLogisticsCostsForReturn(resolvedCalculatorData, commission, priceScheme);
+    const lc = ozonLogistics.logisticsCost > 0 ? ozonLogistics.logisticsCost : logisticsCost;
+    const lcMax = ozonLogistics.logisticsCostMax ?? logisticsCostMax;
+    ozonReturnMeta = computeOzonReturnUnitAmount(lc, lcMax, returnAmountAtMax);
+    returnAmount = ozonReturnMeta.unitAmount;
+  }
+  const returnCost = returnAmount * returnRate;
+  const returnProcessingCost = returnProcessingAtMax * returnRate;
   
   // ВАЖНО: Для WB проверяем, что используется FBS комиссия, а не FBO
   if (marketplace === 'wb') {
@@ -687,7 +673,7 @@ function PriceDetailsModalInner({
   const brandPromotionAmount = calculatedPrice * brandPromotionPercent;
   const adsPromotionAmount = calculatedPrice * adsPromotionPercent;
   const gemServicesAmount = calculatedPrice * gemServicesPercent;
-  const fixedExpenses = processingCost + logisticsCost + deliveryToCustomer + returnCost + returnProcessingCost + returnLossCost;
+  const fixedExpenses = processingCost + logisticsCost + deliveryToCustomer + returnCost + returnProcessingCost;
 
   // Для YM: приём (AGENCY_COMMISSION) и перевод (PAYMENT_TRANSFER) — считаем по valueType из API
   // absolute = фиксированная сумма в ₽, relative = процент от цены
@@ -724,10 +710,9 @@ function PriceDetailsModalInner({
     marketplace,
     buyoutRate: buyoutRateInput,
     returnRate: (returnRate * 100).toFixed(2) + '%',
-    returnLossCost: returnLossCost.toFixed(2),
     returnCost: returnCost.toFixed(2),
     returnProcessingCost: returnProcessingCost.toFixed(2),
-    totalReturnCosts: (returnLossCost + returnCost + returnProcessingCost).toFixed(2),
+    totalReturnCosts: (returnCost + returnProcessingCost).toFixed(2),
     fixedExpenses: fixedExpenses.toFixed(2),
     basePrice: basePrice.toFixed(2),
     totalExpenses: totalExpenses.toFixed(2)
@@ -937,28 +922,30 @@ function PriceDetailsModalInner({
               </div>
             )}
             
-            {/* Всегда показываем возвраты, если buyout_rate < 100% */}
-            {returnRate > 0 && (
+            {returnRate > 0 && (returnCost > 0 || returnProcessingCost > 0) && (
               <>
-                <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">
-                    Потеря себестоимости возвращенных товаров{expectedReturns > 0 ? ` (${expectedReturns.toFixed(2)} шт, выкуп ${buyoutRateInput.toFixed(0)}%)` : ` (выкуп ${buyoutRateInput.toFixed(0)}%)`}:
-                  </span>
-                  <PriceBreakdownValue
-                    className="negative"
-                    formula={`= ${basePrice.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnLossCost.toFixed(2)} ₽`}
-                  >
-                    -{returnLossCost.toFixed(2)} ₽
-                  </PriceBreakdownValue>
-                </div>
                 {returnCost > 0 && (
                   <div className="price-breakdown-item">
-                    <span className="price-breakdown-label">
-                      Возвраты{expectedReturns > 0 ? ` (${expectedReturns.toFixed(2)} шт)` : ` (${(returnRate * 100).toFixed(1)}%)`}:
+                    <span
+                      className="price-breakdown-label"
+                      title={
+                        buyoutRateInput != null
+                          ? `% выкупа по ${marketplace.toUpperCase()} из карточки товара (обновляется раз в сутки из API маркетплейса)`
+                          : undefined
+                      }
+                    >
+                      Возвраты ({buyoutPercentLabel}):
                     </span>
                     <PriceBreakdownValue
                       className="negative"
-                      formula={`= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`}
+                      formula={
+                        marketplace === 'ozon' &&
+                        returnRate > 0 &&
+                        ozonReturnMeta?.logisticsMax &&
+                        ozonReturnMeta.logisticsMin > 0
+                          ? `= (${ozonReturnMeta.logisticsMin.toFixed(0)} + ${ozonReturnMeta.logisticsMax.toFixed(0)}) / 2 × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`
+                          : `= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`
+                      }
                     >
                       -{returnCost.toFixed(2)} ₽
                     </PriceBreakdownValue>

@@ -7,6 +7,7 @@ import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from './organ
 import { resolveMarketplaceBuyoutRate } from './marketplaceBuyoutRate.js';
 import { resolveMarketplaceMinProfit } from './marketplaceMinProfit.js';
 import { enrichOzonCalculatorFromProduct } from './ozonBrandPromotion.js';
+import { resolveOzonReturnUnitAmount } from './ozonReturnAmount.js';
 
 export const MIN_USABLE_COMMISSION_PERCENT = 0.01;
 
@@ -175,20 +176,9 @@ export function calculateMinPrice(
     deliveryToCustomer = 0;
   }
 
-  let returnCost = 0;
-  let returnProcessingCost = 0;
-  let returnLossCost = 0;
   const buyoutRateInput = resolveMarketplaceBuyoutRate(product, marketplace);
-  if (buyoutRateInput != null) {
-    const returnRate = 1 - buyoutRateInput / 100;
-    if (buyoutRateInput < 100 && returnRate > 0) {
-      returnLossCost = basePriceNum * returnRate;
-      const returnAmount = safeExpenseNum(commission.return_amount);
-      returnCost = returnAmount * returnRate;
-      const rp = safeExpenseNum(commission.return_processing_amount);
-      returnProcessingCost = rp * returnRate;
-    }
-  }
+  const returnRate =
+    buyoutRateInput != null && buyoutRateInput < 100 ? 1 - buyoutRateInput / 100 : 0;
 
   const marketplaceCommissionPercent = (extractMinPriceCommissionPercent(calculator, marketplace, priceScheme) || 0) / 100;
   if (marketplaceCommissionPercent < MIN_USABLE_COMMISSION_PERCENT / 100) return null;
@@ -200,15 +190,6 @@ export function calculateMinPrice(
 
   const profile = resolveMinPriceTaxProfile(product, taxProfile);
 
-  const fixedExpenses =
-    safeExpenseNum(processingCost) +
-    safeExpenseNum(logisticsCost) +
-    safeExpenseNum(deliveryToCustomer) +
-    safeExpenseNum(returnCost) +
-    safeExpenseNum(returnProcessingCost) +
-    safeExpenseNum(returnLossCost) +
-    (marketplace === 'ym' ? safeExpenseNum(ymAgencyFixed) + safeExpenseNum(ymPaymentTransferFixed) : 0);
-
   const variableRate =
     marketplaceCommissionPercent +
     acquiringPercent +
@@ -217,68 +198,92 @@ export function calculateMinPrice(
     gemServicesPercent +
     (marketplace === 'ym' ? ymDeliveryPercent : 0);
 
-  const calculateNetProfit = (price) => {
-    const priceNum = Number(price) || 0;
-    const commissionAmount = priceNum * marketplaceCommissionPercent;
-    let acquiringAmount = priceNum * acquiringPercent;
-    if (marketplace === 'ym') acquiringAmount = ymAgencyFixed + ymPaymentTransferFixed + priceNum * ymPaymentTransferPercent;
-    else if (marketplace === 'ozon') acquiringAmount = Math.round(acquiringAmount * 100) / 100;
-    const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-    const mpExpensesWithoutBase =
-      fixedExpenses +
-      commissionAmount +
-      acquiringAmount +
-      deliveryAmountAtPrice +
-      priceNum * brandPromotionPercent +
-      priceNum * adsPromotionPercent +
-      priceNum * gemServicesPercent;
-    const { netProfit } = computeTaxesAndNetProfit({
-      price: priceNum,
-      totalExpenses: basePriceNum + mpExpensesWithoutBase,
-      taxProfile: profile,
-    });
-    return netProfit;
-  };
-
-  const denominator = 1 - variableRate;
-  if (denominator <= 0) return null;
-
   const targetNet = Number(minProfitNum);
   const vatR = Number(profile.vatRate) || 0;
   const incR = Number(profile.incomeTaxRate) || 0;
-  const fixedTotal = basePriceNum + fixedExpenses;
-  let seedDenom;
-  let seedNumerator;
-  if (profile.incomeTaxOnRevenue) {
-    seedDenom = 1 - variableRate - vatR - incR;
-    seedNumerator = fixedTotal + targetNet;
-  } else {
-    seedDenom = 1 - variableRate - vatR;
-    seedNumerator = fixedTotal + (incR < 1 ? targetNet / (1 - incR) : targetNet);
-  }
-  if (!(seedDenom > 0.01)) seedDenom = denominator;
+  const denominator = 1 - variableRate;
+  if (denominator <= 0) return null;
 
-  let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));
-  let netProfit = calculateNetProfit(recommendedPrice);
-  const maxIterations = 5000;
-  let iterations = 0;
-  while (netProfit < targetNet && iterations < maxIterations) {
-    recommendedPrice += 1;
-    netProfit = calculateNetProfit(recommendedPrice);
-    iterations++;
-    if (recommendedPrice > basePriceNum * 20 + 1000) break;
-  }
+  const baseFixedExpenses =
+    safeExpenseNum(processingCost) +
+    safeExpenseNum(logisticsCost) +
+    safeExpenseNum(deliveryToCustomer) +
+    (marketplace === 'ym' ? safeExpenseNum(ymAgencyFixed) + safeExpenseNum(ymPaymentTransferFixed) : 0);
 
-  while (recommendedPrice > 1 && calculateNetProfit(recommendedPrice - 1) >= targetNet) {
-    recommendedPrice -= 1;
-  }
+  const solveForReturnCosts = (returnCost, returnProcessingCost) => {
+    const fixedExpenses = baseFixedExpenses + safeExpenseNum(returnCost) + safeExpenseNum(returnProcessingCost);
 
-  let finalPrice = recommendedPrice;
-  while (calculateNetProfit(finalPrice) < targetNet) {
-    finalPrice += 1;
-    if (finalPrice > basePriceNum * 20 + 1000) break;
-  }
-  return finalPrice > 0 ? Math.round(finalPrice) : null;
+    const calculateNetProfit = (price) => {
+      const priceNum = Number(price) || 0;
+      const commissionAmount = priceNum * marketplaceCommissionPercent;
+      let acquiringAmount = priceNum * acquiringPercent;
+      if (marketplace === 'ym') acquiringAmount = ymAgencyFixed + ymPaymentTransferFixed + priceNum * ymPaymentTransferPercent;
+      else if (marketplace === 'ozon') acquiringAmount = Math.round(acquiringAmount * 100) / 100;
+      const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
+      const mpExpensesWithoutBase =
+        fixedExpenses +
+        commissionAmount +
+        acquiringAmount +
+        deliveryAmountAtPrice +
+        priceNum * brandPromotionPercent +
+        priceNum * adsPromotionPercent +
+        priceNum * gemServicesPercent;
+      const { netProfit } = computeTaxesAndNetProfit({
+        price: priceNum,
+        totalExpenses: basePriceNum + mpExpensesWithoutBase,
+        taxProfile: profile,
+      });
+      return netProfit;
+    };
+
+    const fixedTotal = basePriceNum + fixedExpenses;
+    let seedDenom;
+    let seedNumerator;
+    if (profile.incomeTaxOnRevenue) {
+      seedDenom = 1 - variableRate - vatR - incR;
+      seedNumerator = fixedTotal + targetNet;
+    } else {
+      seedDenom = 1 - variableRate - vatR;
+      seedNumerator = fixedTotal + (incR < 1 ? targetNet / (1 - incR) : targetNet);
+    }
+    if (!(seedDenom > 0.01)) seedDenom = denominator;
+
+    let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));
+    let netProfit = calculateNetProfit(recommendedPrice);
+    const maxIterations = 5000;
+    let iterations = 0;
+    while (netProfit < targetNet && iterations < maxIterations) {
+      recommendedPrice += 1;
+      netProfit = calculateNetProfit(recommendedPrice);
+      iterations++;
+      if (recommendedPrice > basePriceNum * 20 + 1000) break;
+    }
+
+    while (recommendedPrice > 1 && calculateNetProfit(recommendedPrice - 1) >= targetNet) {
+      recommendedPrice -= 1;
+    }
+
+    let finalPrice = recommendedPrice;
+    while (calculateNetProfit(finalPrice) < targetNet) {
+      finalPrice += 1;
+      if (finalPrice > basePriceNum * 20 + 1000) break;
+    }
+    return finalPrice > 0 ? Math.round(finalPrice) : null;
+  };
+
+  const computeReturnCosts = () => {
+    if (!(returnRate > 0)) return { returnCost: 0, returnProcessingCost: 0 };
+    let returnAmount = safeExpenseNum(commission.return_amount);
+    if (marketplace === 'ozon') {
+      returnAmount = resolveOzonReturnUnitAmount(returnAmount, calculator, commission, priceScheme);
+    }
+    const returnCost = returnAmount * returnRate;
+    const returnProcessingCost = safeExpenseNum(commission.return_processing_amount) * returnRate;
+    return { returnCost, returnProcessingCost };
+  };
+
+  const { returnCost, returnProcessingCost } = computeReturnCosts();
+  return solveForReturnCosts(returnCost, returnProcessingCost);
 }
 
 export function resolveMinPriceTaxProfile(product, taxProfile = null) {
