@@ -19,6 +19,8 @@ import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPriceHistoryTab } from './ProductPriceHistoryTab.jsx';
+import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
+import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import {
   applyComputedAttributeValues,
@@ -1850,6 +1852,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageLightboxIndex, setImageLightboxIndex] = useState(null);
+  const [aiDraftOpen, setAiDraftOpen] = useState(false);
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
   const [imageAspectLoadingId, setImageAspectLoadingId] = useState('');
   const [imageError, setImageError] = useState('');
@@ -7207,6 +7210,53 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return true;
   };
 
+  const applyAiDraft = (proposed) => {
+    const patch = proposed && typeof proposed === 'object' ? proposed : {};
+    const keys = AI_CARD_FIELDS.map((f) => f.key).filter((key) => patch[key] != null && String(patch[key]).trim());
+    if (!keys.length) return;
+    setFormData((prev) => {
+      let next = { ...prev };
+      for (const key of keys) next[key] = String(patch[key]);
+      const unlink = (linkKey, mp, dedicatedKey) => {
+        if (!keys.includes(dedicatedKey)) return;
+        if (!isMpFieldLinked(next.mp_field_links, linkKey, mp)) return;
+        next = { ...next, mp_field_links: setMpFieldLink(next.mp_field_links, linkKey, mp, false) };
+      };
+      unlink('name', 'ozon', 'mp_ozon_name');
+      unlink('name', 'wb', 'mp_wb_name');
+      unlink('name', 'ym', 'mp_ym_name');
+      unlink('description', 'ozon', 'mp_ozon_description');
+      unlink('description', 'wb', 'mp_wb_description');
+      unlink('description', 'ym', 'mp_ym_description');
+      const syncFields = [];
+      if (keys.includes('name')) syncFields.push('name');
+      if (keys.includes('description')) syncFields.push('description');
+      if (syncFields.length) {
+        next = applyLinkedMpFieldsFromMain(next, next.mp_field_links, syncFields);
+        for (const key of keys) next[key] = String(patch[key]);
+      }
+      return next;
+    });
+    if (keys.includes('mp_ozon_name') || keys.includes('mp_ozon_description')) {
+      setOzonAttributeValues((prev) => {
+        const next = { ...prev };
+        if (keys.includes('mp_ozon_name')) {
+          for (const attr of findOzonNameAttrs(ozonAttributes)) {
+            next[String(attr.id)] = String(patch.mp_ozon_name);
+          }
+        }
+        if (keys.includes('mp_ozon_description')) {
+          const anns = findOzonAnnotationAttrs(ozonAttributes);
+          const targets = anns.length ? anns : [{ id: OZON_ANNOTATION_ATTR_ID }];
+          for (const attr of targets) {
+            next[String(attr.id)] = String(patch.mp_ozon_description);
+          }
+        }
+        return next;
+      });
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -10562,6 +10612,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {richContentLoading ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
           ) : null}
+          <Button
+            type="button"
+            variant="secondary"
+            title="GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните"
+            onClick={() => setAiDraftOpen(true)}
+          >
+            Черновик ИИ
+          </Button>
           <Button type="submit" form={productFormDomId} variant="primary">
             Сохранить
           </Button>
@@ -10580,6 +10638,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
           onClose={() => setImageLightboxIndex(null)}
         />
       ) : null}
+      <ProductAiDraftModal
+        isOpen={aiDraftOpen}
+        onClose={() => setAiDraftOpen(false)}
+        productId={currentProduct?.id || product?.id || null}
+        getDraft={() =>
+          snapshotAiCardDraft(formData, {
+            categoryName: selectedCategoryForCert?.name || '',
+          })
+        }
+        onApply={applyAiDraft}
+      />
     </>
   );
 });

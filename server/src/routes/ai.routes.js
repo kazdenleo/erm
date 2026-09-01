@@ -11,6 +11,8 @@ router.get('/config', wrapAsync(controller.getConfig));
 router.put('/config', requireProfileAdmin, wrapAsync(controller.saveConfig));
 router.post('/test', requireProfileAdmin, wrapAsync(controller.testConnection));
 router.post('/chat', wrapAsync(controller.chat));
+router.post('/product-card/propose', wrapAsync(controller.proposeProductCard));
+router.post('/product-card/propose-bulk', wrapAsync(controller.proposeProductCardsBulk));
 
 export default router;
 

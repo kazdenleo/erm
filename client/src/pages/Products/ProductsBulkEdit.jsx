@@ -8,6 +8,8 @@ import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { ProductAiDraftModal } from '../../components/products/ProductAiDraftModal.jsx';
+import { snapshotAiCardDraft, AI_CARD_FIELDS, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
 import { ImageLightbox } from '../../components/common/ImageLightbox/ImageLightbox';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useCategories } from '../../hooks/useCategories';
@@ -5387,6 +5389,7 @@ export function ProductsBulkEdit() {
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState(null);
+  const [aiDraftOpen, setAiDraftOpen] = useState(false);
   const [pushMpLoading, setPushMpLoading] = useState(null);
   const [pushMpMessage, setPushMpMessage] = useState(null);
   const [barcodeGeneratingId, setBarcodeGeneratingId] = useState(null);
@@ -7129,6 +7132,36 @@ export function ProductsBulkEdit() {
     );
   }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
 
+  const applyAiBulkDraft = useCallback((items) => {
+    for (const it of items || []) {
+      const id = str(it?.productId);
+      if (!id) continue;
+      const pairs = [];
+      for (const { key } of AI_CARD_FIELDS) {
+        const val = it?.proposed?.[key];
+        if (val == null || !String(val).trim()) continue;
+        pairs.push([key, String(val)]);
+      }
+      if (pairs.length) updateCells(id, pairs);
+    }
+  }, [updateCells]);
+
+  const aiBulkItems = useMemo(() => {
+    const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
+    const out = [];
+    for (const sid of selectedRowIds) {
+      const row = rows.find((r) => str(r.id) === str(sid));
+      if (!row || isNewBulkRowId(row.id)) continue;
+      const nid = Number(row.id);
+      if (!Number.isInteger(nid) || nid < 1) continue;
+      out.push({
+        productId: nid,
+        draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
+      });
+    }
+    return out;
+  }, [selectedRowIds, rows, categories]);
+
   const handleGenerateBarcode = useCallback(
     async (row) => {
       const id = row?.id;
@@ -8694,6 +8727,20 @@ export function ProductsBulkEdit() {
                     >
                       {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
                     </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || !!pullMpLoading || aiBulkItems.length === 0}
+                      title={
+                        aiBulkItems.length === 0
+                          ? 'Отметьте сохранённые товары галочками'
+                          : 'GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните'
+                      }
+                      onClick={() => setAiDraftOpen(true)}
+                    >
+                      Черновик ИИ{aiBulkItems.length > 0 ? ` (${Math.min(aiBulkItems.length, MAX_BULK_AI_CARDS)})` : ''}
+                    </Button>
                   </div>
                   {pushMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>
@@ -9682,6 +9729,14 @@ export function ProductsBulkEdit() {
           onClose={() => setImageLightbox({ urls: [], index: 0 })}
         />
       ) : null}
+
+      <ProductAiDraftModal
+        isOpen={aiDraftOpen}
+        onClose={() => setAiDraftOpen(false)}
+        mode="bulk"
+        bulkItems={aiBulkItems}
+        onApplyBulk={applyAiBulkDraft}
+      />
 
       </div>
       ) : null}

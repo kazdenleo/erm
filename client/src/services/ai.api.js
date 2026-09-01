@@ -24,4 +24,14 @@ export const aiApi = {
     );
     return response.data?.data ?? response.data;
   },
+
+  proposeProductCard: async (payload) => {
+    const response = await api.post('/ai/product-card/propose', payload, { timeout: 120000 });
+    return response.data?.data ?? response.data;
+  },
+
+  proposeProductCardsBulk: async (payload) => {
+    const response = await api.post('/ai/product-card/propose-bulk', payload, { timeout: 180000 });
+    return response.data?.data ?? response.data;
+  },
 };

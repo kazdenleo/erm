@@ -22,8 +22,12 @@ export function getApiErrorMessage(error, fallback = 'Ошибка запрос�
     return TIMEOUT_HINT;
   }
 
-  if (status === 504) return NGINX_504_HINT;
-  if (status === 502) return NGINX_502_HINT;
+  const apiMessage =
+    data && typeof data === 'object' ? String(data.message || data.error || '').trim() : '';
+  const apiMessageUsable = apiMessage && !/<html|Gateway Time-out|Bad Gateway/i.test(apiMessage);
+
+  if (status === 504) return apiMessageUsable ? apiMessage : NGINX_504_HINT;
+  if (status === 502) return apiMessageUsable ? apiMessage : NGINX_502_HINT;
 
   if (typeof data === 'string' && /Gateway Time-out|<title>504/i.test(data)) {
     return NGINX_504_HINT;
