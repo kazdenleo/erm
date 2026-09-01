@@ -372,14 +372,6 @@ class AiAssistantService {
     return [{ role: 'user', content: parts.join('\n\n') }];
   }
 
-  _functionCallPayload(fn) {
-    const args = parseToolArgs(fn?.arguments);
-    return {
-      name: String(fn?.name || ''),
-      arguments: args,
-    };
-  }
-
   async chat(profileId, { messages, context } = {}) {
     const row = await this._loadProfile(profileId);
     const settings = assertAiReady(row.ai_settings ?? row.aiSettings);
@@ -400,6 +392,7 @@ class AiAssistantService {
       'Отвечай по-русски, кратко и по цифрам из инструментов. Не выдумывай суммы, которых нет в ответе функции.',
       'Деньги — целые рубли. Если данных нет — скажи, что нужно нажать «Загрузить с маркетплейсов».',
       'Ты только читаешь данные, не меняешь товары и заказы.',
+      'Если в сообщении уже есть блок «Результат функции» — отвечай по этим цифрам. Повторно вызывай функцию только если нужны другие данные.',
       pageContext.dateFrom && pageContext.dateTo
         ? `Период на экране: ${pageContext.dateFrom} … ${pageContext.dateTo}, маркетплейс: ${pageContext.marketplace}. Если пользователь не задал другой период — используй этот.`
         : '',
@@ -412,15 +405,13 @@ class AiAssistantService {
     let lastToolResult = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const last = dialog[dialog.length - 1];
-      const canSendFunctions = last?.role === 'user' || last?.role === 'function';
       const response = await gigachatChatCompletions(settings, {
         model: settings.model,
         messages: dialog,
         temperature: 0.2,
         max_tokens: 1800,
-        function_call: canSendFunctions ? 'auto' : 'none',
-        ...(canSendFunctions ? { functions: FUNCTIONS } : {}),
+        function_call: 'auto',
+        functions: FUNCTIONS,
       });
 
       const choice = response?.choices?.[0] || {};
@@ -439,27 +430,11 @@ class AiAssistantService {
           result = { error: err.message || String(err) };
         }
         lastToolResult = result;
-        const stateId = message.functions_state_id || message.tools_state_id || message.tool_state_id;
-        const assistantMsg = {
-          role: 'assistant',
-          content: '',
-          function_call: this._functionCallPayload(fn),
+        const payload = JSON.stringify(result);
+        dialog[0] = {
+          role: 'user',
+          content: `${dialog[0].content}\n\nРезультат функции ${fn.name}:\n${payload}`.slice(0, 24000),
         };
-        if (stateId) {
-          assistantMsg.functions_state_id = stateId;
-          assistantMsg.tools_state_id = stateId;
-        }
-        dialog.push(assistantMsg);
-        const fnMsg = {
-          role: 'function',
-          name: fn.name,
-          content: JSON.stringify(result && typeof result === 'object' ? result : { result }),
-        };
-        if (stateId) {
-          fnMsg.functions_state_id = stateId;
-          fnMsg.tools_state_id = stateId;
-        }
-        dialog.push(fnMsg);
         continue;
       }
 

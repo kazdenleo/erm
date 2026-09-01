@@ -119,35 +119,12 @@ function cloneFunctions(functions) {
   return Array.isArray(functions) && functions.length ? functions : null;
 }
 
-function stateIdOf(msg) {
-  return msg?.functions_state_id || msg?.tools_state_id || msg?.tool_state_id || null;
-}
-
-function parseJsonContent(content) {
-  if (content && typeof content === 'object' && !Array.isArray(content)) return content;
-  if (typeof content !== 'string') return { result: content ?? null };
-  try {
-    const parsed = JSON.parse(content);
-    return parsed && typeof parsed === 'object' ? parsed : { result: parsed };
-  } catch {
-    return { result: content };
-  }
-}
-
 function stripMessage(raw) {
   const msg = raw && typeof raw === 'object' ? raw : {};
-  const out = {
+  return {
     role: msg.role,
     content: msg.content == null ? '' : msg.content,
   };
-  if (msg.name) out.name = msg.name;
-  if (msg.function_call) out.function_call = msg.function_call;
-  const stateId = stateIdOf(msg);
-  if (stateId) {
-    out.functions_state_id = stateId;
-    out.tools_state_id = stateId;
-  }
-  return out;
 }
 
 function lastUserIndex(messages) {
@@ -157,7 +134,7 @@ function lastUserIndex(messages) {
   return -1;
 }
 
-/** Схемы инструментов только на user — не на assistant и не на результат function. */
+/** Схемы инструментов только на user: Max не принимает function_call в истории assistant. */
 function withFunctionsOnUser(messages, functions) {
   const list = (Array.isArray(messages) ? messages : []).map(stripMessage);
   const fns = cloneFunctions(functions);
@@ -165,40 +142,6 @@ function withFunctionsOnUser(messages, functions) {
   if (!fns || idx < 0) return list;
   list[idx] = { ...list[idx], functions: fns };
   return list;
-}
-
-function toToolsApiMessages(messages) {
-  return (Array.isArray(messages) ? messages : []).map((raw) => {
-    const msg = stripMessage(raw);
-    if (msg.role === 'function' || msg.role === 'tool') {
-      const name = msg.name || msg.function_call?.name || '';
-      const result = parseJsonContent(msg.content);
-      const out = {
-        role: 'tool',
-        content: [{ function_result: { name, result } }],
-      };
-      const sid = stateIdOf(msg);
-      if (sid) out.tools_state_id = sid;
-      return out;
-    }
-    if (msg.role === 'assistant' && msg.function_call) {
-      const out = {
-        role: 'assistant',
-        content: msg.content || '',
-        function_call: msg.function_call,
-      };
-      const sid = stateIdOf(msg);
-      if (sid) out.tools_state_id = sid;
-      return out;
-    }
-    return msg;
-  });
-}
-
-function isRetryableChatError(err) {
-  return /thinking_functions|functions or thinking|should only appeal|every assistant function call must have a result/i.test(
-    String(err?.message || '')
-  );
 }
 
 function normalizeChatCompletion(json) {
@@ -220,58 +163,18 @@ export async function gigachatChatCompletions(settings, payload) {
   const src = payload && typeof payload === 'object' ? { ...payload } : {};
   const functions = cloneFunctions(src.functions);
   delete src.functions;
-
-  const attempts = [];
-  if (functions) {
-    attempts.push({
-      label: 'functions-on-user',
-      body: {
-        ...src,
-        function_call: src.function_call || 'auto',
-        messages: withFunctionsOnUser(src.messages, functions),
-      },
-    });
-    attempts.push({
-      label: 'tools-spec',
-      body: (() => {
-        const body = {
-          ...src,
-          messages: toToolsApiMessages(src.messages),
-          tools: [{ functions: { specifications: functions } }],
-          tool_config: { mode: 'auto' },
-        };
-        delete body.function_call;
-        return body;
-      })(),
-    });
-  } else {
-    attempts.push({
-      label: 'plain',
-      body: { ...src, messages: (src.messages || []).map(stripMessage) },
-    });
-  }
-
-  let lastErr = null;
-  for (const attempt of attempts) {
-    try {
-      const json = await gigachatRequest({
-        credentials: settings.credentials,
-        scope: settings.scope,
-        apiBase: settings.apiBase,
-        path: '/chat/completions',
-        method: 'POST',
-        body: attempt.body,
-      });
-      return normalizeChatCompletion(json);
-    } catch (err) {
-      lastErr = err;
-      logger.warn('[GigaChat] chat attempt failed', {
-        label: attempt.label,
-        message: String(err?.message || err).slice(0, 240),
-        roles: (attempt.body.messages || []).map((m) => m.role),
-      });
-      if (!functions || !isRetryableChatError(err)) throw err;
-    }
-  }
-  throw lastErr;
+  const body = {
+    ...src,
+    messages: functions ? withFunctionsOnUser(src.messages, functions) : (src.messages || []).map(stripMessage),
+  };
+  if (functions) body.function_call = src.function_call || 'auto';
+  const json = await gigachatRequest({
+    credentials: settings.credentials,
+    scope: settings.scope,
+    apiBase: settings.apiBase,
+    path: '/chat/completions',
+    method: 'POST',
+    body,
+  });
+  return normalizeChatCompletion(json);
 }
