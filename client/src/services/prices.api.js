@@ -49,12 +49,26 @@ export const pricesApi = {
 
   /**
    * Отправить мин. цены на маркетплейсы (фон).
-   * @param {{ organizationId?: number|string|null }} [opts]
+   * @param {{
+   *   organizationId?: number|string|null,
+   *   brandId?: number|string|null,
+   *   categoryIds?: Array<string|number>,
+   *   productIds?: Array<number|string>,
+   * }} [opts]
    */
   async pushAll(opts = {}) {
     const body = {};
     if (opts.organizationId != null && String(opts.organizationId).trim() !== '') {
       body.organizationId = Number(opts.organizationId);
+    }
+    if (opts.brandId != null && String(opts.brandId).trim() !== '') {
+      body.brandId = Number(opts.brandId);
+    }
+    if (Array.isArray(opts.categoryIds) && opts.categoryIds.length) {
+      body.categoryIds = opts.categoryIds;
+    }
+    if (Array.isArray(opts.productIds) && opts.productIds.length) {
+      body.productIds = opts.productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
     }
     const response = await api.post('/product/prices/push-all', body);
     return response.data;

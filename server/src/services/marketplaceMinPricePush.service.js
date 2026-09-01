@@ -624,6 +624,156 @@ export async function pushForProduct(productId) {
 
 let _fullRunInProgress = false;
 
+/** Sentinel «без категории» — как на странице цен/товаров. */
+export const PUSH_FILTER_CATEGORY_NONE = '__no_category__';
+
+function parsePositiveIntList(raw) {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.map((v) => Number(v)).filter((n) => Number.isFinite(n) && n > 0))];
+}
+
+function parseCategoryIdList(raw) {
+  if (raw == null || raw === '') return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return [...new Set(arr.map((v) => String(v).trim()).filter(Boolean))];
+}
+
+/**
+ * ID товаров для пуша цен по фильтрам (только org с auto_push и сохранённым min_price).
+ */
+export async function resolvePushProductIds(filters = {}) {
+  const organizationId =
+    filters.organizationId != null && filters.organizationId !== ''
+      ? Number(filters.organizationId)
+      : null;
+  const brandId =
+    filters.brandId != null && filters.brandId !== '' ? Number(filters.brandId) : null;
+  const productIds = parsePositiveIntList(filters.productIds);
+  const categoryIds = parseCategoryIdList(filters.categoryIds);
+
+  const params = [];
+  let i = 1;
+  let sql = `
+    SELECT DISTINCT pmp.product_id
+    FROM product_marketplace_prices pmp
+    JOIN products p ON p.id = pmp.product_id
+    JOIN organizations o ON o.id = p.organization_id
+    WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0
+      AND o.auto_push_marketplace_prices = true`;
+
+  if (Number.isFinite(organizationId) && organizationId > 0) {
+    sql += ` AND p.organization_id = $${i++}`;
+    params.push(organizationId);
+  }
+  if (Number.isFinite(brandId) && brandId > 0) {
+    sql += ` AND p.brand_id = $${i++}`;
+    params.push(brandId);
+  }
+  if (productIds.length) {
+    sql += ` AND p.id = ANY($${i++}::bigint[])`;
+    params.push(productIds);
+  }
+  if (categoryIds.length) {
+    const normal = categoryIds.filter((c) => c !== PUSH_FILTER_CATEGORY_NONE);
+    const wantNone = categoryIds.includes(PUSH_FILTER_CATEGORY_NONE);
+    if (normal.length && wantNone) {
+      sql += ` AND (p.user_category_id IS NULL OR p.user_category_id::text = ANY($${i++}::text[]))`;
+      params.push(normal);
+    } else if (wantNone) {
+      sql += ' AND p.user_category_id IS NULL';
+    } else if (normal.length) {
+      sql += ` AND p.user_category_id::text = ANY($${i++}::text[])`;
+      params.push(normal);
+    }
+  }
+
+  sql += ' ORDER BY pmp.product_id ASC';
+
+  const r = await query(sql, params);
+  return (r.rows || [])
+    .map((row) => Number(row.product_id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+async function pushProductIdList(ids, logMeta = {}) {
+  let pushed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const out = await pushForProduct(ids[i]).catch((e) => ({
+      failed: 1,
+      error: e?.message || String(e),
+    }));
+    pushed += out.pushed || 0;
+    failed += out.failed || 0;
+    skipped += out.skipped || (out.reason ? 1 : 0);
+    if (i > 0 && i % 20 === 0) await sleep(200);
+  }
+  const result = { products: ids.length, pushed, failed, skipped, ...logMeta };
+  return result;
+}
+
+/**
+ * Пуш по явному списку product_id (после фильтра auto_push / min_price).
+ */
+export async function pushForProductIds(productIds, opts = {}) {
+  if (!isMinPricePushEnabled()) {
+    return { skipped: true, reason: 'disabled' };
+  }
+  if (_fullRunInProgress) {
+    return { skipped: true, reason: 'in_progress' };
+  }
+  const ids = parsePositiveIntList(productIds);
+  if (!ids.length) {
+    return { skipped: true, reason: 'no_products', products: 0, pushed: 0, failed: 0, skipped: 0 };
+  }
+  _fullRunInProgress = true;
+  try {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { skipped: true, reason: 'not_pg' };
+    }
+    const resolved = await resolvePushProductIds({
+      productIds: ids,
+      ...(opts.filters || {}),
+    });
+    if (!resolved.length) {
+      return { skipped: true, reason: 'no_products', products: 0, pushed: 0, failed: 0, skipped: 0 };
+    }
+    const out = await pushProductIdList(resolved, { mode: 'product_ids', requested: ids.length });
+    logger.info('[MP MinPrice Push] product ids run done', out);
+    return out;
+  } finally {
+    _fullRunInProgress = false;
+  }
+}
+
+/**
+ * Пуш с фильтрами: organizationId, brandId, categoryIds, productIds.
+ */
+export async function pushWithFilters(filters = {}) {
+  if (!isMinPricePushEnabled()) {
+    return { skipped: true, reason: 'disabled' };
+  }
+  if (_fullRunInProgress) {
+    return { skipped: true, reason: 'in_progress' };
+  }
+  _fullRunInProgress = true;
+  try {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { skipped: true, reason: 'not_pg' };
+    }
+    const ids = await resolvePushProductIds(filters);
+    if (!ids.length) {
+      return { skipped: true, reason: 'no_products', products: 0, pushed: 0, failed: 0, skipped: 0 };
+    }
+    const out = await pushProductIdList(ids, { mode: 'filters', filters });
+    logger.info('[MP MinPrice Push] filtered run done', out);
+    return out;
+  } finally {
+    _fullRunInProgress = false;
+  }
+}
+
 /**
  * Дневная сверка (каждые ~2 ч): для org с auto_push пересчитывает стратегию и
  * пушит на МП, если цена/пол отличаются от целевых в ERP (selling или мин.).
@@ -656,42 +806,13 @@ export async function pushForAllProfiles({ limit = null } = {}) {
       return { skipped: true, reason: 'not_pg' };
     }
 
+    let ids = await resolvePushProductIds({});
     const lim = limit != null && Number.isFinite(Number(limit)) ? Number(limit) : null;
-    const r = await query(
-      `SELECT DISTINCT pmp.product_id
-       FROM product_marketplace_prices pmp
-       JOIN products p ON p.id = pmp.product_id
-       JOIN organizations o ON o.id = p.organization_id
-       WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0
-         AND o.auto_push_marketplace_prices = true
-       ORDER BY pmp.product_id ASC
-       ${lim != null ? `LIMIT ${Math.max(1, Math.floor(lim))}` : ''}`
-    );
-    const ids = (r.rows || [])
-      .map((row) => Number(row.product_id))
-      .filter((n) => Number.isFinite(n) && n > 0);
+    if (lim != null) ids = ids.slice(0, Math.max(1, Math.floor(lim)));
 
-    let pushed = 0;
-    let failed = 0;
-    let skipped = 0;
-    for (let i = 0; i < ids.length; i++) {
-      const out = await pushForProduct(ids[i]).catch((e) => ({
-        failed: 1,
-        error: e?.message || String(e),
-      }));
-      pushed += out.pushed || 0;
-      failed += out.failed || 0;
-      skipped += out.skipped || (out.reason ? 1 : 0);
-      if (i > 0 && i % 20 === 0) await sleep(200);
-    }
-
-    logger.info('[MP MinPrice Push] full run done', {
-      products: ids.length,
-      pushed,
-      failed,
-      skipped,
-    });
-    return { products: ids.length, pushed, failed, skipped };
+    const out = await pushProductIdList(ids, { mode: 'all' });
+    logger.info('[MP MinPrice Push] full run done', out);
+    return out;
   } finally {
     _fullRunInProgress = false;
   }
@@ -728,42 +849,12 @@ export async function pushForOrganization(organizationId, { limit = null } = {})
     }
 
     const lim = limit != null && Number.isFinite(Number(limit)) ? Number(limit) : null;
-    const r = await query(
-      `SELECT DISTINCT pmp.product_id
-       FROM product_marketplace_prices pmp
-       JOIN products p ON p.id = pmp.product_id
-       WHERE p.organization_id = $1
-         AND pmp.min_price IS NOT NULL AND pmp.min_price > 0
-       ORDER BY pmp.product_id ASC
-       ${lim != null ? `LIMIT ${Math.max(1, Math.floor(lim))}` : ''}`,
-      [orgId]
-    );
-    const ids = (r.rows || [])
-      .map((row) => Number(row.product_id))
-      .filter((n) => Number.isFinite(n) && n > 0);
+    let ids = await resolvePushProductIds({ organizationId: orgId });
+    if (lim != null) ids = ids.slice(0, Math.max(1, Math.floor(lim)));
 
-    let pushed = 0;
-    let failed = 0;
-    let skipped = 0;
-    for (let i = 0; i < ids.length; i++) {
-      const out = await pushForProduct(ids[i]).catch((e) => ({
-        failed: 1,
-        error: e?.message || String(e),
-      }));
-      pushed += out.pushed || 0;
-      failed += out.failed || 0;
-      skipped += out.skipped || (out.reason ? 1 : 0);
-      if (i > 0 && i % 20 === 0) await sleep(200);
-    }
-
-    logger.info('[MP MinPrice Push] org run done', {
-      organizationId: orgId,
-      products: ids.length,
-      pushed,
-      failed,
-      skipped,
-    });
-    return { organizationId: orgId, products: ids.length, pushed, failed, skipped };
+    const out = await pushProductIdList(ids, { mode: 'organization', organizationId: orgId });
+    logger.info('[MP MinPrice Push] org run done', { organizationId: orgId, ...out });
+    return { organizationId: orgId, ...out };
   } finally {
     _fullRunInProgress = false;
   }
@@ -782,7 +873,11 @@ export default {
   needsYmFloorPush,
   schedulePushForProduct,
   pushForProduct,
+  pushForProductIds,
+  pushWithFilters,
+  resolvePushProductIds,
   pushForAllProfiles,
   pushForOrganization,
   reconcileBelowFloor,
+  PUSH_FILTER_CATEGORY_NONE,
 };

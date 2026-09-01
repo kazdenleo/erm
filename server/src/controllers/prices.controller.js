@@ -9,6 +9,7 @@ import {
   pushForProduct,
   pushForAllProfiles,
   pushForOrganization,
+  pushWithFilters,
 } from '../services/marketplaceMinPricePush.service.js';
 import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
 
@@ -422,26 +423,82 @@ class PricesController {
 
   /**
    * POST /api/product/prices/push-all — отправить мин. цены на МП (фон).
-   * Body: { organizationId? } — если указан, только эта организация (нужен флаг auto_push).
+   * Body: {
+   *   organizationId?, brandId?, categoryIds?, productIds?
+   * }
    */
   async pushAll(req, res, next) {
     try {
-      const rawOrg = req.body?.organizationId ?? req.query?.organizationId ?? null;
+      const body = req.body || {};
+      const rawOrg = body.organizationId ?? req.query?.organizationId ?? null;
       const organizationId =
         rawOrg != null && String(rawOrg).trim() !== '' ? parseInt(rawOrg, 10) : null;
+      const rawBrand = body.brandId ?? null;
+      const brandId =
+        rawBrand != null && String(rawBrand).trim() !== '' ? parseInt(rawBrand, 10) : null;
+      const categoryIds = Array.isArray(body.categoryIds)
+        ? body.categoryIds
+        : body.categoryId != null && String(body.categoryId).trim() !== ''
+          ? [body.categoryId]
+          : null;
+      const productIds = Array.isArray(body.productIds) ? body.productIds : null;
 
-      if (organizationId != null) {
-        if (isNaN(organizationId) || organizationId <= 0) {
-          return res.status(400).json({ ok: false, message: 'Некорректный organizationId' });
+      const hasScopedFilter =
+        (Array.isArray(categoryIds) && categoryIds.length > 0) ||
+        (Array.isArray(productIds) && productIds.length > 0) ||
+        (brandId != null && !isNaN(brandId) && brandId > 0);
+
+      const validateOrg = async (orgId) => {
+        if (orgId == null) return true;
+        if (isNaN(orgId) || orgId <= 0) {
+          res.status(400).json({ ok: false, message: 'Некорректный organizationId' });
+          return false;
         }
-        const allowed = await isMarketplacePricePushEnabledForOrg(organizationId);
+        const allowed = await isMarketplacePricePushEnabledForOrg(orgId);
         if (!allowed) {
-          return res.status(400).json({
+          res.status(400).json({
             ok: false,
             message: formatPushSkipReason('org_price_push_disabled'),
             reason: 'org_price_push_disabled',
           });
+          return false;
         }
+        return true;
+      };
+
+      if (hasScopedFilter) {
+        if (!(await validateOrg(organizationId))) return;
+        const filters = {};
+        if (organizationId != null && !isNaN(organizationId) && organizationId > 0) {
+          filters.organizationId = organizationId;
+        }
+        if (brandId != null && !isNaN(brandId) && brandId > 0) filters.brandId = brandId;
+        if (categoryIds?.length) filters.categoryIds = categoryIds;
+        if (productIds?.length) filters.productIds = productIds;
+
+        pushWithFilters(filters)
+          .then((data) => {
+            logger.info('[Prices Controller] push-all (filtered) завершён', data);
+          })
+          .catch((err) => {
+            logger.error('[Prices Controller] push-all (filtered) ошибка:', err);
+          });
+
+        let scopeHint = 'по выбранным фильтрам';
+        if (productIds?.length && !categoryIds?.length && brandId == null) {
+          scopeHint = `для ${productIds.length} товар(ов)`;
+        } else if (categoryIds?.length) {
+          scopeHint = `для ${categoryIds.length} категор(ий)`;
+        }
+
+        return res.status(202).json({
+          ok: true,
+          message: `Отправка цен на маркетплейсы запущена в фоне (${scopeHint}). Обычно занимает несколько минут.`,
+        });
+      }
+
+      if (organizationId != null) {
+        if (!(await validateOrg(organizationId))) return;
         pushForOrganization(organizationId)
           .then((data) => {
             logger.info('[Prices Controller] push-all (org) завершён', data);

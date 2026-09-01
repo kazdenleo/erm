@@ -18,6 +18,7 @@ import { Button } from '../../components/common/Button/Button';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
+import { PushPricesModal } from './PushPricesModal.jsx';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -106,12 +107,70 @@ export function Prices() {
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
+  const [pushModalOpen, setPushModalOpen] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
   const wbWarehouseName = mainWarehouse?.wbWarehouseName || null;
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
+
+  const allVisibleSelected =
+    visibleProducts.length > 0 &&
+    visibleProducts.every((p) => selectedProductIds.has(String(p.id)));
+  const someVisibleSelected = visibleProducts.some((p) => selectedProductIds.has(String(p.id)));
+
+  const toggleProductSelected = (productId, event) => {
+    if (event) event.stopPropagation();
+    const key = String(productId);
+    setSelectedProductIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAllVisibleSelected = () => {
+    setSelectedProductIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleProducts.forEach((p) => next.delete(String(p.id)));
+      } else {
+        visibleProducts.forEach((p) => next.add(String(p.id)));
+      }
+      return next;
+    });
+  };
+
+  const pageFilterLabels = useMemo(() => {
+    const org = filterOrganizationId
+      ? organizations.find((o) => String(o.id) === String(filterOrganizationId))
+      : null;
+    const brand = filterBrandId ? brands.find((b) => String(b.id) === String(filterBrandId)) : null;
+    const category =
+      filterCategoryId === FILTER_CATEGORY_NONE
+        ? { name: 'Без категории' }
+        : filterCategoryId
+          ? categories.find((c) => String(c.id) === String(filterCategoryId))
+          : null;
+    return {
+      organizationId: filterOrganizationId || '',
+      brandId: filterBrandId || '',
+      categoryId: filterCategoryId || '',
+      orgName: org?.name || '',
+      brandName: brand?.name || '',
+      categoryName: category?.name || '',
+    };
+  }, [
+    filterOrganizationId,
+    filterBrandId,
+    filterCategoryId,
+    organizations,
+    brands,
+    categories,
+  ]);
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -686,36 +745,43 @@ export function Prices() {
     }
   };
 
-  /** Отправить мин. цены на МП (фон). Если выбран фильтр организации — только она. */
-  const handlePushAll = async () => {
+  /** Открыть диалог отправки цен на МП. */
+  const handlePushAll = () => {
+    if (filterOrganizationId) {
+      const org = organizations.find((o) => String(o.id) === String(filterOrganizationId));
+      if (org && org.auto_push_marketplace_prices !== true) {
+        setRecalcAllMessage(
+          'Ошибка: у выбранной организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в разделе Организации.'
+        );
+        setTimeout(() => setRecalcAllMessage(null), 10000);
+        return;
+      }
+    }
+    setPushModalOpen(true);
+  };
+
+  const handlePushSubmit = async ({ scope, payload }) => {
     try {
       setPushAllLoading(true);
       setRecalcAllMessage(null);
-      if (filterOrganizationId) {
-        const org = organizations.find((o) => String(o.id) === String(filterOrganizationId));
-        if (org && org.auto_push_marketplace_prices !== true) {
-          setRecalcAllMessage(
-            'Ошибка: у выбранной организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в разделе Организации.'
-          );
-          setTimeout(() => setRecalcAllMessage(null), 10000);
-          return;
-        }
-      } else {
+      setPushModalOpen(false);
+
+      if (scope === 'all' && !payload.organizationId) {
         const ok = window.confirm(
-          'Отправить сохранённые минимальные цены на маркетплейсы для всех организаций с включённой автоотправкой цен?\n\nОперация выполняется в фоне.'
+          'Отправить сохранённые минимальные цены на маркетплейсы для всех организаций с включённой автоотправкой?\n\nОперация выполняется в фоне.'
         );
         if (!ok) return;
       }
-      const res = await pricesApi.pushAll({
-        organizationId: filterOrganizationId || undefined,
-      });
-      const msg =
-        res?.message ||
-        'Отправка цен на маркетплейсы запущена в фоне.';
+
+      const res = await pricesApi.pushAll(payload);
+      const msg = res?.message || 'Отправка цен на маркетплейсы запущена в фоне.';
       setRecalcAllMessage(msg);
+      if (scope === 'selected') {
+        setSelectedProductIds(new Set());
+      }
       setTimeout(() => setRecalcAllMessage(null), 15000);
     } catch (err) {
-      console.error('[Prices] push all failed:', err);
+      console.error('[Prices] push failed:', err);
       setRecalcAllMessage('Ошибка: ' + (err.response?.data?.message || err.message));
       setTimeout(() => setRecalcAllMessage(null), 10000);
     } finally {
@@ -975,10 +1041,41 @@ export function Prices() {
           </div>
         ) : (
           <div className={`prices-table-container card ${listRefreshing ? 'opacity-75' : ''}`}>
+            {selectedProductIds.size > 0 && (
+              <div className="prices-bulk-bar">
+                <div className="prices-bulk-bar-title">
+                  Выбрано товаров: {selectedProductIds.size}
+                </div>
+                <div className="prices-bulk-bar-row">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setPushModalOpen(true)}
+                    disabled={pushAllLoading || listRefreshing}
+                  >
+                    📤 Отправить цены для выбранных
+                  </Button>
+                  <Button variant="secondary" onClick={() => setSelectedProductIds(new Set())}>
+                    Снять выделение
+                  </Button>
+                </div>
+              </div>
+            )}
             {renderPricesListPager('top')}
             <table className="prices-table table prices-table-commercial">
               <thead>
                 <tr>
+                  <th rowSpan={2} style={{ width: '36px', verticalAlign: 'middle', padding: '2px !important' }}>
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
+                      }}
+                      onChange={toggleAllVisibleSelected}
+                      title="Выбрать все на странице"
+                      aria-label="Выбрать все товары на странице"
+                    />
+                  </th>
                   <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Артикул</th>
                   <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
                   <th
@@ -1131,9 +1228,18 @@ export function Prices() {
                       : null) ||
                     product.sku_wb;
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
+                  const isRowSelected = selectedProductIds.has(String(product.id));
 
                   return (
-                    <tr key={product.id}>
+                    <tr key={product.id} className={isRowSelected ? 'prices-row-selected' : undefined}>
+                      <td style={{ verticalAlign: 'middle', padding: '2px !important' }}>
+                        <input
+                          type="checkbox"
+                          checked={isRowSelected}
+                          onChange={(e) => toggleProductSelected(product.id, e)}
+                          aria-label={`Выбрать ${product.sku || product.id}`}
+                        />
+                      </td>
                       <td style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         {product?.id ? (
                           <button
@@ -1465,6 +1571,18 @@ export function Prices() {
           priceModal.product,
           filterOrganizationId || getApiSessionContext().organizationId || null
         )}
+      />
+
+      <PushPricesModal
+        isOpen={pushModalOpen}
+        onClose={() => setPushModalOpen(false)}
+        onSubmit={handlePushSubmit}
+        loading={pushAllLoading}
+        organizations={organizations}
+        categories={categories}
+        showUncategorizedCategoryOption={showNoneCategoryOption}
+        pageFilters={pageFilterLabels}
+        selectedProductIds={[...selectedProductIds]}
       />
     </div>
   );
