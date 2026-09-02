@@ -1057,6 +1057,7 @@ class MarketplaceCategoryAnalyticsService {
 
   /**
    * Поденная экономика выбранных товаров (FBO+FBS) — для сравнения периодов гипотез.
+   * Без ensureOzonFinanceSkuLinks и без ozon_name_map: они сканируют все отчёты/заказы профиля.
    */
   async getProductDayEconomics({
     profileId,
@@ -1084,17 +1085,86 @@ class MarketplaceCategoryAnalyticsService {
     const fromYmd = parseDateYmd(dateFrom, defaults.dateFrom);
     const toYmd = parseDateYmd(dateTo, defaults.dateTo);
     const params = [pid, fromYmd, toYmd, ids];
-    const productClause = `AND COALESCE(l.product_id, m.product_id, nm.product_id, 0) = ANY($4::bigint[])`;
-
-    try {
-      await ensureOzonFinanceSkuLinks(pid, { limit: 50 });
-    } catch (e) {
-      logger.warn('[Hypotheses] ensureOzonFinanceSkuLinks failed', e?.message || e);
-    }
+    const hypDaySelect = (schemeLabel, productIdExpr) => `
+    l.operation_date::date AS operation_date,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END AS marketplace,
+    '${schemeLabel}'::text AS scheme,
+    ${productIdExpr} AS product_id,
+    SUM(CASE WHEN ${FBO_SALE} THEN GREATEST(l.quantity, 0) ELSE 0 END)::numeric AS sold_qty,
+    SUM(CASE WHEN ${FBO_SALE} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount,
+    SUM(l.commission_amount)::numeric AS commission_amount,
+    SUM(l.logistics_amount)::numeric AS logistics_amount,
+    SUM(l.storage_amount)::numeric AS storage_amount,
+    SUM(l.penalty_amount)::numeric AS penalty_amount,
+    SUM(l.acquiring_amount)::numeric AS acquiring_amount,
+    SUM(l.other_deductions)::numeric AS other_deductions,
+    SUM(l.payout_amount)::numeric AS payout_amount,
+    SUM(
+      CASE WHEN ${FBO_SALE}
+        THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
+        ELSE 0
+      END
+    )::numeric AS cost_amount,
+    SUM(
+      CASE WHEN ${FBO_SALE}
+        THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
+        ELSE 0
+      END
+    )::numeric AS additional_expenses_amount
+  `;
+    const hypDayGroupBy = (productIdExpr) => `
+    l.operation_date::date,
+    CASE LOWER(TRIM(l.marketplace))
+      WHEN 'wildberries' THEN 'wb'
+      WHEN 'yandex' THEN 'ym'
+      WHEN 'yandexmarket' THEN 'ym'
+      ELSE LOWER(TRIM(l.marketplace))
+    END,
+    ${productIdExpr}
+  `;
+    const linkedPart = (table, scheme) => `
+        SELECT ${hypDaySelect(scheme, 'l.product_id')}
+        FROM ${table} l
+        LEFT JOIN products p ON p.id = l.product_id
+        WHERE l.profile_id = $1
+          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+          AND l.product_id = ANY($4::bigint[])
+        GROUP BY ${hypDayGroupBy('l.product_id')}
+    `;
+    const unlinkedPart = (table, scheme) => `
+        SELECT ${hypDaySelect(scheme, 'm.product_id')}
+        FROM ${table} l
+        INNER JOIN hyp_sku_map m
+          ON LOWER(TRIM(l.marketplace)) = 'ozon'
+          AND l.sku IS NOT NULL
+          AND TRIM(l.sku) <> ''
+          AND m.mp_sku = TRIM(l.sku)
+        LEFT JOIN products p ON p.id = m.product_id
+        WHERE l.profile_id = $1
+          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
+          AND l.product_id IS NULL
+        GROUP BY ${hypDayGroupBy('m.product_id')}
+    `;
 
     const sql = `
-      WITH ${sqlOzonSkuMapCte()},
-      ${sqlOzonNameMapCte()}
+      WITH hyp_sku_map AS (
+        SELECT TRIM(ps.mp_extra->>'ozon_sku') AS mp_sku, ps.product_id
+        FROM product_skus ps
+        WHERE ps.product_id = ANY($4::bigint[])
+          AND ps.marketplace = 'ozon'
+          AND NULLIF(TRIM(ps.mp_extra->>'ozon_sku'), '') IS NOT NULL
+        UNION
+        SELECT TRIM(CAST(ps.marketplace_product_id AS TEXT)), ps.product_id
+        FROM product_skus ps
+        WHERE ps.product_id = ANY($4::bigint[])
+          AND ps.marketplace = 'ozon'
+          AND ps.marketplace_product_id IS NOT NULL
+      )
       SELECT
         to_char(operation_date, 'YYYY-MM-DD') AS operation_date,
         marketplace,
@@ -1112,21 +1182,13 @@ class MarketplaceCategoryAnalyticsService {
         SUM(cost_amount)::numeric AS cost_amount,
         SUM(additional_expenses_amount)::numeric AS additional_expenses_amount
       FROM (
-        SELECT ${buildDayAggSelect(FBO_SALE, 'fbo')}
-        FROM marketplace_fbo_report_lines l
-        ${lineProductJoins()}
-        WHERE l.profile_id = $1
-          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
-          ${productClause}
-        GROUP BY ${buildDayGroupBy()}
+        ${linkedPart('marketplace_fbo_report_lines', 'fbo')}
         UNION ALL
-        SELECT ${buildDayAggSelect(FBS_SALE, 'fbs')}
-        FROM marketplace_fbs_report_lines l
-        ${lineProductJoins()}
-        WHERE l.profile_id = $1
-          AND l.operation_date >= $2::date AND l.operation_date <= $3::date
-          ${productClause}
-        GROUP BY ${buildDayGroupBy()}
+        ${unlinkedPart('marketplace_fbo_report_lines', 'fbo')}
+        UNION ALL
+        ${linkedPart('marketplace_fbs_report_lines', 'fbs')}
+        UNION ALL
+        ${unlinkedPart('marketplace_fbs_report_lines', 'fbs')}
       ) u
       GROUP BY operation_date, marketplace, scheme, product_id
     `;

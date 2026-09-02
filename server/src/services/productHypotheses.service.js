@@ -359,7 +359,15 @@ async function attachComparisons(profileId, rows) {
     loadMarketplaceTaxContext(profileId),
   ]);
 
-  return items.map((item, idx) => {
+    const rowsByProduct = new Map();
+    for (const row of dayRows) {
+      const pidKey = Number(row.productId);
+      const list = rowsByProduct.get(pidKey);
+      if (list) list.push(row);
+      else rowsByProduct.set(pidKey, [row]);
+    }
+
+    return items.map((item, idx) => {
     const w = windows[idx];
     const currentAcc = emptyEconomics();
     const previousAcc = emptyEconomics();
@@ -369,7 +377,8 @@ async function attachComparisons(profileId, rows) {
       marketplace: item.marketplace,
       scheme: item.scheme,
     };
-    for (const row of dayRows) {
+    const productRows = rowsByProduct.get(Number(item.productId)) || [];
+    for (const row of productRows) {
       if (!rowMatchesHypothesis(row, hypRow)) continue;
       if (inDateRange(row.operationDate, w.current.dateFrom, w.current.dateTo)) {
         addEconomics(currentAcc, row);
@@ -385,7 +394,7 @@ async function attachComparisons(profileId, rows) {
       ...w.current,
       ...finalizeEconomics(currentAcc, taxContext, item.productId),
       series: seriesForWindow(
-        dayRows,
+        productRows,
         hypRow,
         w.action.dateFrom,
         w.action.dateTo,
@@ -398,7 +407,7 @@ async function attachComparisons(profileId, rows) {
       ...w.previous,
       ...finalizeEconomics(previousAcc, taxContext, item.productId),
       series: seriesForWindow(
-        dayRows,
+        productRows,
         hypRow,
         w.previous.dateFrom,
         w.previous.dateTo,
@@ -407,7 +416,7 @@ async function attachComparisons(profileId, rows) {
       ),
     };
     const previousFullSeries = seriesForWindow(
-      dayRows,
+      productRows,
       hypRow,
       w.previousFull.dateFrom,
       w.previousFull.dateTo,
