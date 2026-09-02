@@ -164,7 +164,7 @@ function DeltaCell({ current, previous, delta, deltaPct, formatValue }) {
           {' · '}
           {formatPct(deltaPct)}
         </span>
-        <span className="hypotheses__metric-prev">было {formatValue(previous)}</span>
+        <span className="hypotheses__metric-prev">за те же дни {formatValue(previous)}</span>
       </div>
     </td>
   );

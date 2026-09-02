@@ -96,7 +96,7 @@ function formatAxis(metric, value) {
   return formatQty(n);
 }
 
-function PeriodCard({ title, period, note, tone }) {
+function PeriodCard({ title, period, note, tone, fullPeriod, plannedDays }) {
   if (!period) return null;
   return (
     <div className={`hypotheses-compare__card hypotheses-compare__card--${tone}`}>
@@ -119,6 +119,12 @@ function PeriodCard({ title, period, note, tone }) {
           <b>{formatRub(period.netIncome)}</b>
         </div>
       </div>
+      {fullPeriod ? (
+        <div className="hypotheses-compare__card-full">
+          За все {plannedDays || 0} дн. ({formatYmdRu(fullPeriod.dateFrom)} — {formatYmdRu(fullPeriod.dateTo)}
+          ): {formatQty(fullPeriod.soldQty)} шт · {formatRub(fullPeriod.netIncome)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -140,12 +146,14 @@ function DeltaRow({ label, current, previous, formatValue }) {
 
 export function HypothesesComparePanel({ comparison }) {
   const [metric, setMetric] = useState('soldQty');
-  const previous = comparison?.previousFull || comparison?.previous;
+  const previousFull = comparison?.previousFull || comparison?.previous;
+  const previousMatched = comparison?.previous || previousFull;
   const current = comparison?.current;
-  const deltaBase = comparison?.previous || previous;
+  const incomplete = Boolean(comparison?.incomplete);
+  const cardPrevious = incomplete ? previousMatched : previousFull;
 
   const chart = useMemo(() => {
-    const prevSeries = Array.isArray(previous?.series) ? previous.series : [];
+    const prevSeries = Array.isArray(previousFull?.series) ? previousFull.series : [];
     const currSeries = Array.isArray(current?.series) ? current.series : [];
     const len = Math.max(prevSeries.length, currSeries.length, Number(comparison?.plannedDays) || 0);
     if (!len) return [];
@@ -163,7 +171,7 @@ export function HypothesesComparePanel({ comparison }) {
       });
     }
     return rows;
-  }, [previous, current, comparison?.plannedDays, metric]);
+  }, [previousFull, current, comparison?.plannedDays, metric]);
 
   if (!comparison || !current) return null;
 
@@ -175,16 +183,22 @@ export function HypothesesComparePanel({ comparison }) {
       <div className="hypotheses-compare__cards">
         <PeriodCard
           title="Предыдущий период"
-          period={previous}
+          period={cardPrevious}
           tone="prev"
-          note={`${comparison.plannedDays || previous?.series?.length || 0} дн. до даты создания`}
+          note={
+            incomplete
+              ? `первые ${comparison.elapsedDays} из ${comparison.plannedDays} дн.`
+              : `${comparison.plannedDays} дн. до даты создания`
+          }
+          fullPeriod={incomplete ? previousFull : null}
+          plannedDays={comparison.plannedDays}
         />
         <PeriodCard
           title="Наблюдение"
           period={current}
           tone="now"
           note={
-            comparison.incomplete
+            incomplete
               ? `${comparison.elapsedDays} из ${comparison.plannedDays} дн. уже прошло`
               : `${comparison.plannedDays} дн. наблюдения`
           }
@@ -195,26 +209,26 @@ export function HypothesesComparePanel({ comparison }) {
         <DeltaRow
           label="Штуки"
           current={current.soldQty}
-          previous={deltaBase?.soldQty}
+          previous={previousMatched?.soldQty}
           formatValue={formatQty}
         />
         <DeltaRow
           label="Выручка"
           current={current.soldAmount}
-          previous={deltaBase?.soldAmount}
+          previous={previousMatched?.soldAmount}
           formatValue={formatRub}
         />
         <DeltaRow
           label="Прибыль"
           current={current.netIncome}
-          previous={deltaBase?.netIncome}
+          previous={previousMatched?.netIncome}
           formatValue={formatRub}
         />
       </div>
-      {comparison.incomplete ? (
+      {incomplete ? (
         <p className="hypotheses-compare__warn">
-          Дельта считается по прошедшим дням наблюдения и тем же порядковым дням предыдущего периода.
-          На графике серая линия — предыдущий период целиком, синяя — уже прошедшие дни наблюдения.
+          Пока срок не вышел, сравниваем столько же дней предыдущего периода, сколько уже прошло
+          наблюдения. На графике серая линия — предыдущий период целиком.
         </p>
       ) : null}
 
