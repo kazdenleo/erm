@@ -1552,6 +1552,98 @@ class IntegrationsService {
   }
 
   /**
+   * Тарифы возвратов WB (GET /api/v1/tariffs/return) — отдельно от box.
+   * Нужны для return_amount в мин. цене.
+   */
+  async getWildberriesReturnTariffs(date = null, opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+
+    const loadAndMaybeCache = async () => {
+      const data = await this._fetchWildberriesReturnTariffsFromAPI(date, scope);
+      if (hasWbTariffsWarehouseList(data)) {
+        await writeData('wbReturnTariffsCache', {
+          data,
+          lastUpdate: new Date().toISOString(),
+          profileId: scope.profileId ?? null,
+        });
+      }
+      return data;
+    };
+
+    try {
+      const cachedData = await readData('wbReturnTariffsCache');
+      const scopePid =
+        scope.profileId != null && scope.profileId !== '' ? String(scope.profileId) : null;
+      const cachePid =
+        cachedData?.profileId != null && cachedData.profileId !== ''
+          ? String(cachedData.profileId)
+          : null;
+      const profileCacheOk =
+        scopePid == null || cachePid == null || scopePid === cachePid;
+
+      if (
+        cachedData?.data &&
+        cachedData.lastUpdate &&
+        hasWbTariffsWarehouseList(cachedData.data) &&
+        profileCacheOk
+      ) {
+        const hoursSinceUpdate =
+          (Date.now() - new Date(cachedData.lastUpdate).getTime()) / (1000 * 60 * 60);
+        if (hoursSinceUpdate < 24) {
+          return cachedData.data;
+        }
+      }
+
+      return await loadAndMaybeCache();
+    } catch (error) {
+      logger.error('[Integrations Service] Error getting WB return tariffs:', error);
+      try {
+        return await loadAndMaybeCache();
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  async ensureWildberriesReturnTariffs(opts = {}) {
+    let data = await this.getWildberriesReturnTariffs(null, opts);
+    if (hasWbTariffsWarehouseList(data)) return data;
+    data = await this.getWildberriesReturnTariffs(null, opts);
+    return data;
+  }
+
+  async _fetchWildberriesReturnTariffsFromAPI(date = null, scope = {}) {
+    const config = await this.getMarketplaceConfig('wildberries', scope);
+    if (!config || !config.api_key) {
+      const err = new Error('API ключ Wildberries не настроен');
+      err.statusCode = 400;
+      throw err;
+    }
+    const apiKey = this._normalizeWbToken(config.api_key);
+    if (!apiKey) {
+      const err = new Error('API ключ Wildberries не настроен');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const url = `https://common-api.wildberries.ru/api/v1/tariffs/return?date=${targetDate}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unknown error');
+      const err = new Error(`Ошибка API Wildberries return tariffs: ${response.status} - ${errorText}`);
+      err.statusCode = response.status;
+      throw err;
+    }
+
+    return response.json();
+  }
+
+  /**
    * Загрузить тарифы из API Wildberries
    * @private
    */
@@ -1882,7 +1974,8 @@ class IntegrationsService {
     const url = path.startsWith('http') ? path : `https://content-api.wildberries.ru${path.startsWith('/') ? path : '/' + path}`;
     let response;
     try {
-      const fetchWithTimeout = async (init, timeoutMs = 8000) => {
+      // Content API на первом запросе часто холодный; 8s давало ложный «товар не найден»
+      const fetchWithTimeout = async (init, timeoutMs = 25000) => {
         const controller = new AbortController();
         const t = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -1984,7 +2077,7 @@ class IntegrationsService {
     const url = path.startsWith('http') ? path : `https://content-api.wildberries.ru${path.startsWith('/') ? path : '/' + path}`;
     let response;
     try {
-      const fetchWithTimeout = async (init, timeoutMs = 8000) => {
+      const fetchWithTimeout = async (init, timeoutMs = 25000) => {
         const controller = new AbortController();
         const t = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -2456,11 +2549,10 @@ class IntegrationsService {
       } catch {
         full = null;
       }
-      const codes = full
-        ? this._wbCardVendorCodes(full)
-        : listCard
-          ? this._wbCardVendorCodes(listCard)
-          : [];
+      const codes = [
+        ...(full ? this._wbCardVendorCodes(full) : []),
+        ...(listCard ? this._wbCardVendorCodes(listCard) : []),
+      ];
       if (!codes.some((c) => this._wbNormVendor(c) === want)) return null;
       const matched = codes.find((c) => this._wbNormVendor(c) === want) || vc;
       return {
@@ -2536,6 +2628,10 @@ class IntegrationsService {
           const key = String(nm);
           if (seenNm.has(key)) continue;
           seenNm.add(key);
+          // Сначала дешёвая проверка по ответу textSearch — не тратим лимит verify на чужие карточки
+          if (!this._wbCardVendorCodes(c).some((code) => this._wbNormVendor(code) === want)) {
+            continue;
+          }
           const hit = await verifyNmId(nm, c);
           if (hit) return hit;
           if (seenNm.size >= MAX_VERIFY) break;
@@ -2959,6 +3055,19 @@ class IntegrationsService {
         lastUpdate: new Date().toISOString(),
         profileId: scope.profileId ?? null,
       });
+
+      try {
+        const returnData = await this._fetchWildberriesReturnTariffsFromAPI(null, scope);
+        if (hasWbTariffsWarehouseList(returnData)) {
+          await writeData('wbReturnTariffsCache', {
+            data: returnData,
+            lastUpdate: new Date().toISOString(),
+            profileId: scope.profileId ?? null,
+          });
+        }
+      } catch (e) {
+        logger.warn('[Integrations Service] WB return tariffs update skipped:', e?.message || e);
+      }
 
       logger.info('[Integrations Service] WB tariffs updated successfully', {
         warehouses: extractWbWarehouseList(tariffsData).length,

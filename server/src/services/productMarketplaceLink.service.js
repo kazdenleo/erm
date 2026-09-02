@@ -163,6 +163,26 @@ export async function resolveMarketplaceListingByErpSku({
     const wbOpts = { profileId, organizationId, wbOverride: cfg };
     let card = null;
     const vendorHint = String(h.mp_wb_vendor_code ?? '').trim();
+    const wantVcs = vendorCandidates
+      .map((v) => integrationsService._wbNormVendor(v))
+      .filter(Boolean);
+    const cardMatchesWantedVendor = (info) => {
+      if (wantVcs.length === 0) return true;
+      const cardCodes = integrationsService
+        ._wbCardVendorCodes(info)
+        .map((c) => integrationsService._wbNormVendor(c))
+        .filter(Boolean);
+      // Карточка без артикула в ответе API — не отвергаем найденный nmId
+      if (cardCodes.length === 0) return true;
+      return wantVcs.some((v) => cardCodes.includes(v));
+    };
+    const pickVendorFromCard = (info) => {
+      const codes = integrationsService._wbCardVendorCodes(info);
+      const match = codes.find((c) =>
+        wantVcs.includes(integrationsService._wbNormVendor(c))
+      );
+      return String(match || codes[0] || vendorCandidates[0] || sku).trim();
+    };
     if (nmId) {
       const info = await integrationsService.getWildberriesProductInfo({
         nm_id: nmId,
@@ -171,15 +191,11 @@ export async function resolveMarketplaceListingByErpSku({
         organizationId,
         wbOverride: cfg
       });
-      if (info) {
-        const cardVc = integrationsService._wbNormVendor(info.vendorCode ?? info.vendor_code);
-        const wantVcs = vendorCandidates.map((v) => integrationsService._wbNormVendor(v));
-        if (wantVcs.length === 0 || wantVcs.some((v) => v && v === cardVc)) {
-          card = {
-            nmId: Number(info.nmId ?? info.nmID ?? nmId),
-            vendorCode: String(info.vendorCode ?? info.vendor_code ?? vendorCandidates[0] ?? sku).trim()
-          };
-        }
+      if (info && cardMatchesWantedVendor(info)) {
+        card = {
+          nmId: Number(info.nmId ?? info.nmID ?? nmId),
+          vendorCode: pickVendorFromCard(info)
+        };
       }
     }
     if (!card) {
