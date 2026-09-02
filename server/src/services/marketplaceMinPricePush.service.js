@@ -15,6 +15,8 @@ import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
 import { filtersFromPricePushSettings, parsePricePushSettings, resolvePushFloorForMarketplace } from '../utils/pricePushSettings.js';
+import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
+import { refreshComputedAttributeValues } from './computedAttributes.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -253,6 +255,36 @@ async function loadProfilePushSchemes(profileId) {
   }
 }
 
+async function loadCardPriceAttributes(productId) {
+  const out = { before: null, after: null };
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return out;
+  try {
+    await refreshComputedAttributeValues(query, pid);
+  } catch (e) {
+    logger.warn('[MP MinPrice Push] refresh card prices failed', e?.message || e);
+  }
+  try {
+    const r = await query(
+      `SELECT pa.system_key, pav.value
+       FROM product_attributes pa
+       LEFT JOIN product_attribute_values pav
+         ON pav.attribute_id = pa.id AND pav.product_id = $1
+       WHERE pa.system_key IN ($2, $3)`,
+      [pid, SYSTEM_ATTR_KEYS.PRICE_BEFORE_DISCOUNT, SYSTEM_ATTR_KEYS.PRICE_AFTER_DISCOUNT]
+    );
+    for (const row of r.rows || []) {
+      const n = floorRub(row.value);
+      if (n == null) continue;
+      if (row.system_key === SYSTEM_ATTR_KEYS.PRICE_BEFORE_DISCOUNT) out.before = n;
+      if (row.system_key === SYSTEM_ATTR_KEYS.PRICE_AFTER_DISCOUNT) out.after = n;
+    }
+  } catch (e) {
+    logger.warn('[MP MinPrice Push] load card price attributes failed', e?.message || e);
+  }
+  return out;
+}
+
 async function loadProductPushContext(productId, pushSchemes = null) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return null;
@@ -294,6 +326,20 @@ async function loadProductPushContext(productId, pushSchemes = null) {
     if (before != null) priceBeforeDiscount[mp] = before;
     if (row.discount_percent != null && Number.isFinite(Number(row.discount_percent))) {
       discountPercent[mp] = Math.max(0, Math.min(99, Math.round(Number(row.discount_percent))));
+    }
+  }
+
+  // Источник «цены до скидки» — атрибут карточки; применяется ко всем МП при пуше.
+  const cardPrices = await loadCardPriceAttributes(pid);
+  if (cardPrices.before != null) {
+    for (const mp of Object.keys(floors)) {
+      priceBeforeDiscount[mp] = cardPrices.before;
+    }
+  }
+  // Если нет selling в таблице МП — берём «после скидки» из карточки.
+  if (cardPrices.after != null) {
+    for (const mp of Object.keys(floors)) {
+      if (selling[mp] == null) selling[mp] = cardPrices.after;
     }
   }
 

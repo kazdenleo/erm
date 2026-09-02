@@ -1,5 +1,5 @@
 /**
- * Вкладка «Цена»: история изменения минимума и фактической цены.
+ * Вкладка «Цены»: история изменения минимума и фактической цены.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
