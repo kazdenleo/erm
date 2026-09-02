@@ -2398,6 +2398,24 @@ class IntegrationsService {
     } catch {
       first = null;
     }
+    // Фильтр nmID у WB часто пустой. Если есть vendorCode — ищем по нему сразу,
+    // не сканируя весь каталог (иначе первый клик «связи» ловит таймаут/404).
+    if (!first) {
+      const vc = params.vendor_code ?? params.vendorCode;
+      if (vc != null && String(vc).trim() !== '') {
+        const byVc = await this.getWildberriesProductByVendorCode(String(vc).trim(), {
+          ...scope,
+          // Без полного скана: textSearch обычно достаточно; иначе ниже будет nm-scan
+          skipCatalogScan: true,
+        });
+        if (byVc?.nmId != null && Number(byVc.nmId) === wantNm) {
+          return this._normalizeWbListCard(
+            { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode },
+            nmId
+          );
+        }
+      }
+    }
     if (!first) {
       first = await this._wbFindListCardByNmId(nmId, scope);
     }
@@ -2406,7 +2424,7 @@ class IntegrationsService {
       if (vc != null && String(vc).trim() !== '') {
         const byVc = await this.getWildberriesProductByVendorCode(String(vc).trim(), scope);
         if (byVc?.nmId != null && Number(byVc.nmId) === wantNm) {
-          first = await this._wbFindListCardByNmId(byVc.nmId, scope);
+          first = { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode };
         }
       }
     }
@@ -2543,9 +2561,18 @@ class IntegrationsService {
 
     const verifyNmId = async (nm, listCard = null) => {
       if (nm == null) return null;
+      // textSearch уже отдал карточку с нужным vendor — не дергаем снова Content API
+      if (listCard && this._wbCardVendorCodes(listCard).some((c) => this._wbNormVendor(c) === want)) {
+        return {
+          nmId: Number(listCard?.nmID ?? listCard?.nmId ?? nm),
+          vendorCode: String(
+            this._wbCardVendorCodes(listCard).find((c) => this._wbNormVendor(c) === want) || vc
+          ).trim(),
+        };
+      }
       let full = null;
       try {
-        full = await this.getWildberriesProductInfo({ nm_id: nm, ...scope });
+        full = await this.getWildberriesProductInfo({ nm_id: nm, vendor_code: vc, ...scope });
       } catch {
         full = null;
       }

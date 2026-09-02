@@ -121,9 +121,17 @@ function pickProductMarketplaceNumber(product, marketplace) {
 }
 
 function pickOzonMarketSkuFromInfo(info) {
-  const sku = info?.sku;
-  const skuStr = sku != null ? String(sku).trim() : '';
-  if (skuStr && /^\d+$/.test(skuStr)) return skuStr;
+  const candidates = [
+    info?.sku,
+    info?.ozon_sku,
+    info?.ozonSku,
+    ...(Array.isArray(info?.sources) ? info.sources.map((s) => s?.sku) : []),
+    ...(Array.isArray(info?.stocks?.stocks) ? info.stocks.stocks.map((s) => s?.sku) : []),
+  ];
+  for (const sku of candidates) {
+    const skuStr = sku != null ? String(sku).trim() : '';
+    if (skuStr && /^\d+$/.test(skuStr)) return skuStr;
+  }
   return null;
 }
 
@@ -1888,6 +1896,20 @@ class ProductsService {
       profileId: options.profileId ?? product.profile_id ?? product.profileId ?? null,
       organizationId: orgId,
       hints
+    }).catch(async (e) => {
+      // WB Content API на первом запросе иногда пустой — одна повторная попытка
+      if (String(marketplace).toLowerCase() !== 'wb' && String(marketplace).toLowerCase() !== 'wildberries') {
+        throw e;
+      }
+      if (e?.statusCode !== 404) throw e;
+      await new Promise((r) => setTimeout(r, 700));
+      return resolveMarketplaceListingByErpSku({
+        marketplace,
+        erpSku,
+        profileId: options.profileId ?? product.profile_id ?? product.profileId ?? null,
+        organizationId: orgId,
+        hints
+      });
     });
 
     const updates = {
@@ -1940,7 +1962,11 @@ class ProductsService {
     if (Object.keys(updates).length > 0) {
       await this.update(productId, updates, { profileId });
     }
-    await this.repository.patchProductSkuMpExtra(productId, 'ozon', { ozonSku });
+    // snake + camel: buyout sync и другие сервисы читают оба ключа
+    await this.repository.patchProductSkuMpExtra(productId, 'ozon', {
+      ozonSku,
+      ozon_sku: ozonSku,
+    });
     return ozonSku;
   }
 

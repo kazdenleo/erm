@@ -51,15 +51,18 @@ export function collectWbVendorCandidates({ hints = {}, product = null, erpSku =
     .map((v) => (v != null ? String(v).trim() : ''))
     .find(Boolean);
   const nmId = parsePositiveInt(skuWbRaw);
+  const looksLikeBarcode = (raw) => /^\d{8,14}$/.test(String(raw ?? '').trim());
+  const ozonOffer = h.sku_ozon ?? product?.sku_ozon ?? null;
   return uniqueNonEmpty(
     [
       h.mp_wb_vendor_code,
       h.wbVendorCode,
       product?.mp_wb_vendor_code,
       product?.marketplace_skus?.wb,
-      h.sku_ozon,
-      product?.sku_ozon,
-      skuWbRaw && !nmId ? skuWbRaw : null
+      // offer_id Ozon часто = ШК, для WB textSearch это мусор
+      ozonOffer && !looksLikeBarcode(ozonOffer) ? ozonOffer : null,
+      skuWbRaw && !nmId ? skuWbRaw : null,
+      erpSku && !looksLikeBarcode(erpSku) && !parsePositiveInt(erpSku) ? erpSku : null,
     ].map((v) => sanitizeWbVendorCode(v))
   );
 }
@@ -183,7 +186,30 @@ export async function resolveMarketplaceListingByErpSku({
       );
       return String(match || codes[0] || vendorCandidates[0] || sku).trim();
     };
-    if (nmId) {
+
+    // 1) Сначала vendorCode — у WB фильтр nmID часто пустой на первом запросе
+    for (const vc of vendorCandidates) {
+      const hit = await integrationsService.getWildberriesProductByVendorCode(vc, {
+        ...wbOpts,
+        skipCatalogScan: true,
+      });
+      if (hit?.nmId == null) continue;
+      if (nmId && Number(hit.nmId) !== Number(nmId)) continue;
+      card = hit;
+      break;
+    }
+    if (!card) {
+      for (const vc of vendorCandidates) {
+        const hit = await integrationsService.getWildberriesProductByVendorCode(vc, wbOpts);
+        if (hit?.nmId == null) continue;
+        if (nmId && Number(hit.nmId) !== Number(nmId)) continue;
+        card = hit;
+        break;
+      }
+    }
+
+    // 2) Fallback: nmId (+ vendor как подсказка)
+    if (!card && nmId) {
       const info = await integrationsService.getWildberriesProductInfo({
         nm_id: nmId,
         vendor_code: vendorHint || vendorCandidates[0] || undefined,
@@ -196,15 +222,6 @@ export async function resolveMarketplaceListingByErpSku({
           nmId: Number(info.nmId ?? info.nmID ?? nmId),
           vendorCode: pickVendorFromCard(info)
         };
-      }
-    }
-    if (!card) {
-      for (const vc of vendorCandidates) {
-        const hit = await integrationsService.getWildberriesProductByVendorCode(vc, wbOpts);
-        if (hit?.nmId != null) {
-          card = hit;
-          break;
-        }
       }
     }
     if (!card || card.nmId == null) {
