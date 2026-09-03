@@ -477,12 +477,6 @@ function PriceDetailsModalInner({
     ?? toFiniteNumber(resolvedCalculatorData.logistics_liter);
   const wbLogisticsPrecomputed = toFiniteNumber(resolvedCalculatorData[`logistics_cost_${wbSchemeKey}`])
     ?? toFiniteNumber(resolvedCalculatorData.logistics_cost);
-  const wbLogisticsCoef = toFiniteNumber(resolvedCalculatorData[`logistics_coef_${wbSchemeKey}`])
-    ?? toFiniteNumber(resolvedCalculatorData.logistics_coef);
-  const wbLogisticsRawBase = toFiniteNumber(resolvedCalculatorData[`logistics_raw_base_${wbSchemeKey}`])
-    ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_base);
-  const wbLogisticsRawLiter = toFiniteNumber(resolvedCalculatorData[`logistics_raw_liter_${wbSchemeKey}`])
-    ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_liter);
   const wbLocalizationFromSettings = wbLocalizationIndex != null && wbLocalizationIndex !== '';
   let wbLogisticsLocalizationIndex = 1;
   if (wbLocalizationFromSettings) {
@@ -974,26 +968,25 @@ function PriceDetailsModalInner({
                         const volume = productVolume;
                         const base = wbLogisticsBase;
                         const liter = wbLogisticsLiter ?? 0;
-                        const coef = wbLogisticsCoef;
                         const il = wbLogisticsLocalizationIndex;
-                        const schemeLabel = wantFbo ? 'FBO boxDelivery' : 'FBS marketplace';
                         if (!(base > 0) && !(liter > 0)) {
-                          return `= 0 ₽ (${schemeLabel}: в тарифах склада нет базовой ставки)`;
+                          return '= 0 ₽ (в тарифах склада нет базовой ставки)';
                         }
-                        const coefNote =
-                          coef != null && coef !== 100
-                            ? `; коэф склада ${coef}% уже в тарифе API`
-                            : '';
-                        const ilNote = `; × ИЛ ${il}${wbLocalizationFromSettings || il !== 1 ? ' (настройки интеграции)' : ''}`;
+                        const applyIl = il !== 1;
                         if (!volume || volume <= 1) {
-                          const withIl = Math.round(base * il * 100) / 100;
-                          return `= ${base.toFixed(2)} × ИЛ ${il} = ${withIl.toFixed(2)} ₽ (базовый тариф за 1-й литр, ${schemeLabel}${coefNote}${ilNote})`;
+                          if (applyIl) {
+                            const withIl = Math.round(base * il * 100) / 100;
+                            return `= ${base.toFixed(2)} × ИЛ ${il} = ${withIl.toFixed(2)} ₽`;
+                          }
+                          return `= ${base.toFixed(2)} ₽ (базовый тариф за 1-й литр)`;
                         }
                         const additionalLiters = Math.ceil(volume - 1);
-                        const additionalCost = liter * additionalLiters;
-                        const volumeCost = base + additionalCost;
-                        const withIl = Math.round(volumeCost * il * 100) / 100;
-                        return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ИЛ ${il} = ${withIl.toFixed(2)} ₽ (${schemeLabel}${coefNote}${ilNote})`;
+                        const volumeCost = base + liter * additionalLiters;
+                        if (applyIl) {
+                          const withIl = Math.round(volumeCost * il * 100) / 100;
+                          return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ИЛ ${il} = ${withIl.toFixed(2)} ₽`;
+                        }
+                        return `= ${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л = ${volumeCost.toFixed(2)} ₽`;
                       })()
                     : marketplace === 'ozon'
                       ? logisticsCostMax != null
