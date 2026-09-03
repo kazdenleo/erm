@@ -561,10 +561,12 @@ export function Prices() {
         ozonFbo: liveMinPriceForProduct(product, 'ozon', 'FBO', { ...optsBase, sppPercent: ozonSppPercent }),
         wbFbs: liveMinPriceForProduct(product, 'wb', 'FBS', { ...optsBase, sppPercent: wbSppPercent }),
         wbFbo: liveMinPriceForProduct(product, 'wb', 'FBO', { ...optsBase, sppPercent: wbSppPercent }),
+        ymFbs: liveMinPriceForProduct(product, 'ym', 'FBS', { ...optsBase, sppPercent: ymSppPercent }),
+        ymFbo: liveMinPriceForProduct(product, 'ym', 'FBO', { ...optsBase, sppPercent: ymSppPercent }),
       };
     }
     return map;
-  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId, ozonSppPercent, wbSppPercent]);
+  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId, ozonSppPercent, wbSppPercent, ymSppPercent]);
 
   // Сохраняем живой расчёт, если он разошёлся с БД — иначе «Отправить цены» уйдёт со старым значением.
   useEffect(() => {
@@ -617,12 +619,24 @@ export function Prices() {
         product.storedMinPriceOzonFbo,
         pickStoredCalculator(product, 'ozon', 'FBO')
       );
+      applyIfChanged(
+        'ymFbs',
+        live.ymFbs,
+        product.storedMinPriceYmFbs ?? product.storedMinPriceYm ?? product.stored_min_price_ym,
+        pickStoredCalculator(product, 'ym', 'FBS')
+      );
+      applyIfChanged(
+        'ymFbo',
+        live.ymFbo,
+        product.storedMinPriceYmFbo,
+        pickStoredCalculator(product, 'ym', 'FBO')
+      );
 
       if (dirty) payload.push(item);
     }
     if (!payload.length) return;
     const persistSig = payload
-      .map((row) => `${row.productId}:${row.wbFbo ?? ''}:${row.wbFbs ?? ''}:${row.ozonFbs ?? ''}:${row.ozonFbo ?? ''}`)
+      .map((row) => `${row.productId}:${row.wbFbo ?? ''}:${row.wbFbs ?? ''}:${row.ozonFbs ?? ''}:${row.ozonFbo ?? ''}:${row.ymFbs ?? ''}:${row.ymFbo ?? ''}`)
       .join('|');
     if (persistDoneRef.current.has(persistSig)) return;
     persistDoneRef.current.add(persistSig);

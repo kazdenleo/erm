@@ -672,7 +672,7 @@ function PriceDetailsModalInner({
           ? ymSppPercent
           : null;
   const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
-  if (marketplace !== 'ym' && targetProfit != null && targetProfit >= 0) {
+  if (targetProfit != null && targetProfit >= 0) {
     let calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
       ? { ...resolvedCalculatorData, acquiring: Number(ozonAcquiringPercent) || 0 }
       : resolvedCalculatorData;

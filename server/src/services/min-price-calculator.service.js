@@ -70,15 +70,19 @@ export function calculateMinPrice(
     acquiring = (calculator.acquiring != null && calculator.acquiring !== undefined) ? Number(calculator.acquiring) : 0;
   }
 
-  let ymAgencyFixed = 0, ymPaymentTransferPercent = 0, ymPaymentTransferFixed = 0;
+  let ymAgencyFixed = 0, ymAgencyPercent = 0, ymPaymentTransferPercent = 0, ymPaymentTransferFixed = 0;
   if (marketplace === 'ym' && calculator.ymTariffs) {
     const agency = calculator.ymTariffs.AGENCY_COMMISSION;
     const payment = calculator.ymTariffs.PAYMENT_TRANSFER;
-    const agencyVT = (agency?.valueType || '').toLowerCase();
+    const agencyVT = (agency?.valueType || 'absolute').toLowerCase();
     const agencyVal = Number(agency?.value) ?? Number(agency?.amount) ?? 0;
-    const paymentVT = (payment?.valueType || '').toLowerCase();
+    const paymentVT = (payment?.valueType || 'absolute').toLowerCase();
     const paymentVal = Number(payment?.value) ?? Number(payment?.amount) ?? 0;
-    ymAgencyFixed = agencyVT === 'absolute' ? agencyVal : 0;
+    if (agencyVT === 'relative') {
+      ymAgencyPercent = agencyVal / 100;
+    } else {
+      ymAgencyFixed = agencyVal;
+    }
     if (paymentVT === 'relative') {
       ymPaymentTransferPercent = paymentVal / 100;
       acquiring = paymentVal;
@@ -181,7 +185,7 @@ export function calculateMinPrice(
     brandPromotionPercent +
     adsPromotionPercent +
     gemServicesPercent +
-    (marketplace === 'ym' ? ymDeliveryPercent : 0);
+    (marketplace === 'ym' ? ymDeliveryPercent + ymAgencyPercent : 0);
   const vatR = Number(profile.vatRate) || 0;
   const incR = Number(profile.incomeTaxRate) || 0;
   const targetNet = Number(minProfitNum);
@@ -212,8 +216,13 @@ export function calculateMinPrice(
       const priceNum = Number(price) || 0;
       const commissionAmount = priceNum * marketplaceCommissionPercent;
       let acquiringAmount = priceNum * acquiringPercent;
-      if (marketplace === 'ym') acquiringAmount = ymAgencyFixed + ymPaymentTransferFixed + priceNum * ymPaymentTransferPercent;
-      else if (marketplace === 'ozon') acquiringAmount = Math.ceil(acquiringAmount);
+      if (marketplace === 'ym') {
+        acquiringAmount =
+          ymAgencyFixed +
+          ymPaymentTransferFixed +
+          priceNum * ymPaymentTransferPercent +
+          priceNum * ymAgencyPercent;
+      } else if (marketplace === 'ozon') acquiringAmount = Math.ceil(acquiringAmount);
       const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
       const mpExpensesWithoutBase =
         fixedExpenses +
