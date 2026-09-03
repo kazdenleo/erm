@@ -952,7 +952,7 @@ function PriceDetailsModalInner({
             )}
             
             <div className="price-breakdown-item">
-              <BreakdownLabel fromSettings={marketplace === 'wb' && (wbLocalizationFromSettings || wbLogisticsLocalizationIndex !== 1)}>
+              <BreakdownLabel fromSettings={marketplace === 'wb'}>
                 Логистика
                 {productVolume > 0
                   ? wbCmDims && wbCmDims.length > 0
@@ -972,21 +972,17 @@ function PriceDetailsModalInner({
                         if (!(base > 0) && !(liter > 0)) {
                           return '= 0 ₽ (в тарифах склада нет базовой ставки)';
                         }
-                        const applyIl = il !== 1;
+                        const ilSuffix = wbLocalizationFromSettings
+                          ? `ИЛ ${il} (настройки интеграции)`
+                          : `ИЛ ${il}`;
                         if (!volume || volume <= 1) {
-                          if (applyIl) {
-                            const withIl = Math.round(base * il * 100) / 100;
-                            return `= ${base.toFixed(2)} × ИЛ ${il} = ${withIl.toFixed(2)} ₽`;
-                          }
-                          return `= ${base.toFixed(2)} ₽ (базовый тариф за 1-й литр)`;
+                          const withIl = Math.round(base * il * 100) / 100;
+                          return `= ${base.toFixed(2)} × ${ilSuffix} = ${withIl.toFixed(2)} ₽`;
                         }
                         const additionalLiters = Math.ceil(volume - 1);
                         const volumeCost = base + liter * additionalLiters;
-                        if (applyIl) {
-                          const withIl = Math.round(volumeCost * il * 100) / 100;
-                          return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ИЛ ${il} = ${withIl.toFixed(2)} ₽`;
-                        }
-                        return `= ${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л = ${volumeCost.toFixed(2)} ₽`;
+                        const withIl = Math.round(volumeCost * il * 100) / 100;
+                        return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ${ilSuffix} = ${withIl.toFixed(2)} ₽`;
                       })()
                     : marketplace === 'ozon'
                       ? logisticsCostMax != null

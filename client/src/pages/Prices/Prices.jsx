@@ -452,9 +452,10 @@ export function Prices() {
         const localizationIndex = wbConfig.localization_index ?? wbConfig.localizationIndex;
         if (localizationIndex !== undefined && localizationIndex !== null && localizationIndex !== '') {
           const n = Number(localizationIndex);
-          setWbLocalizationIndex(!isNaN(n) && isFinite(n) && n > 0 ? n : null);
+          setWbLocalizationIndex(!isNaN(n) && isFinite(n) && n > 0 ? n : 1);
         } else {
-          setWbLocalizationIndex(null);
+          // Пусто в настройках = ИЛ 1 (явно, чтобы формула и live-расчёт всегда брали значение)
+          setWbLocalizationIndex(1);
         }
         const ozonConfig = ozonRes?.data || ozonRes || {};
         const ozonAcq = ozonConfig.acquiring_percent;
@@ -477,7 +478,7 @@ export function Prices() {
           console.error('[Prices] Error loading marketplace settings:', err);
           setWbAcquiringPercent(null);
           setWbGemServicesPercent(null);
-          setWbLocalizationIndex(null);
+          setWbLocalizationIndex(1);
           setOzonAcquiringPercent(null);
           setYmEarlyShipmentDiscountPp(null);
         }
