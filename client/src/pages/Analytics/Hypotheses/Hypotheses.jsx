@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
@@ -36,7 +36,7 @@ const SCHEME_OPTIONS = [
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'Все статусы' },
-  { value: 'active', label: 'Активные' },
+  { value: 'active', label: 'В работе' },
   { value: 'completed', label: 'Завершённые' },
 ];
 
@@ -171,6 +171,8 @@ function DeltaCell({ current, previous, delta, deltaPct, formatValue }) {
 }
 
 export function Hypotheses() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -202,6 +204,33 @@ export function Hypotheses() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const payload = location.state?.createFromAbc;
+    if (!payload?.productId) return;
+    const base = emptyForm();
+    const abcNote = payload.abcClass
+      ? `Из ABC-анализа: класс ${payload.abcClass}${
+          payload.metricLabel ? ` по «${payload.metricLabel}»` : ''
+        }.`
+      : '';
+    setEditingId(null);
+    setOpenedItem(null);
+    setForm({
+      ...base,
+      productId: Number(payload.productId),
+      productName: payload.productName || '',
+      productSku: payload.productSku || '',
+      marketplace: payload.marketplace || 'all',
+      scheme: payload.scheme || 'all',
+      status: 'active',
+      description: abcNote,
+    });
+    setProductQuery('');
+    setFormError(null);
+    setModalOpen(true);
+    navigate(location.pathname, { replace: true, state: {} });
+  }, [location.state, location.pathname, navigate]);
 
   useEffect(() => {
     if (!editingId) {
@@ -401,7 +430,7 @@ export function Hypotheses() {
           <div className="sales-analytics__card-value">{formatQty(summary.total || 0)}</div>
         </div>
         <div className="sales-analytics__card sales-analytics__card--sold">
-          <div className="sales-analytics__card-label">Активные</div>
+          <div className="sales-analytics__card-label">В работе</div>
           <div className="sales-analytics__card-value">{formatQty(summary.activeCount || 0)}</div>
         </div>
         <div className="sales-analytics__card hypotheses__card--await">
@@ -520,7 +549,7 @@ export function Hypotheses() {
                     ) : awaiting ? (
                       <span className="hypotheses__status hypotheses__status--await">Нужен вывод</span>
                     ) : (
-                      <span className="hypotheses__status hypotheses__status--active">Идёт</span>
+                      <span className="hypotheses__status hypotheses__status--active">В работе</span>
                     )}
                     {row.marketplace !== 'all' || row.scheme !== 'all' ? (
                       <div className="hypotheses__period-note">
@@ -698,7 +727,7 @@ export function Hypotheses() {
                 value={form.status}
                 onChange={(e) => patchForm({ status: e.target.value })}
               >
-                <option value="active">Идёт</option>
+                <option value="active">В работе</option>
                 <option value="completed">Завершена</option>
               </select>
             </label>

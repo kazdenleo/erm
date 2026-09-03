@@ -11,6 +11,7 @@ import { clearProfileFeatureFlagsCache } from '../utils/profileFeatureFlags.js';
 import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
+import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
   formStateToNavSections,
@@ -127,6 +128,9 @@ function pickAccountOwnerProfilePayload(body) {
   }
   if (b.partsindex_keys !== undefined || b.partsindexKeys !== undefined) {
     out.partsindex_keys = normalizePartsIndexKeys(b.partsindex_keys ?? b.partsindexKeys);
+  }
+  if (b.card_quality_settings !== undefined || b.cardQualitySettings !== undefined) {
+    out.card_quality_settings = parseCardQualitySettings(b.card_quality_settings ?? b.cardQualitySettings);
   }
   if (b.fbo_deduction_warehouse_id !== undefined || b.fboDeductionWarehouseId !== undefined) {
     const raw = b.fbo_deduction_warehouse_id ?? b.fboDeductionWarehouseId;
@@ -347,6 +351,14 @@ export const profilesController = {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
       clearProfileFeatureFlagsCache(id);
+      const quality = parseCardQualitySettings(item.card_quality_settings ?? payload.card_quality_settings);
+      if (quality.showInCardWork) {
+        setTimeout(() => {
+          import('../services/marketplaceCardQuality.service.js')
+            .then((mod) => mod.default.refreshForProfile(id))
+            .catch((e) => console.warn('[CardQuality] refresh after settings save failed', e?.message || e));
+        }, 0);
+      }
       res.json({ ok: true, data: jsonSafeRow(item) });
     } catch (error) {
       next(error);

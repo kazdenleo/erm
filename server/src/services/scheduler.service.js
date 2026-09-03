@@ -1298,7 +1298,7 @@ class SchedulerService {
           job: null,
           schedule: getBuyoutRateDailyCron(),
           description:
-            '% выкупа: Ozon Analytics + WB Sales Funnel (+ YM из заказов). BUYOUT_RATE_DAILY_CRON + profiles.timezone',
+            '% выкупа: Ozon Analytics + WB Sales Funnel + YM shows-sales (fallback: заказы). BUYOUT_RATE_DAILY_CRON + profiles.timezone',
         });
       } else {
         logger.info('[Scheduler] Buyout rate daily disabled (BUYOUT_RATE_DAILY_ENABLED)');

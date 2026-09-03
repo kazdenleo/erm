@@ -133,14 +133,18 @@ export const productsApi = {
     if (options.unlinkedMp != null && options.unlinkedMp !== '') {
       const list = Array.isArray(options.unlinkedMp)
         ? options.unlinkedMp
-        : String(options.unlinkedMp).split(',');
+        : options.unlinkedMp instanceof Set
+          ? [...options.unlinkedMp]
+          : String(options.unlinkedMp).split(',');
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.unlinkedMp = cleaned.join(',');
     }
     if (options.linkedMp != null && options.linkedMp !== '') {
       const list = Array.isArray(options.linkedMp)
         ? options.linkedMp
-        : String(options.linkedMp).split(',');
+        : options.linkedMp instanceof Set
+          ? [...options.linkedMp]
+          : String(options.linkedMp).split(',');
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.linkedMp = cleaned.join(',');
     }
@@ -264,14 +268,18 @@ export const productsApi = {
     if (options.unlinkedMp != null && options.unlinkedMp !== '') {
       const list = Array.isArray(options.unlinkedMp)
         ? options.unlinkedMp
-        : String(options.unlinkedMp).split(',');
+        : options.unlinkedMp instanceof Set
+          ? [...options.unlinkedMp]
+          : String(options.unlinkedMp).split(',');
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.unlinkedMp = cleaned.join(',');
     }
     if (options.linkedMp != null && options.linkedMp !== '') {
       const list = Array.isArray(options.linkedMp)
         ? options.linkedMp
-        : String(options.linkedMp).split(',');
+        : options.linkedMp instanceof Set
+          ? [...options.linkedMp]
+          : String(options.linkedMp).split(',');
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.linkedMp = cleaned.join(',');
     }
@@ -491,6 +499,20 @@ export const productsApi = {
   },
 
   /**
+   * Сгенерировать слайды видеообложки Ozon из фото карточки по шаблону категории/товара.
+   */
+  generateVideoCover: async (productId, productPatch = null, settings = null) => {
+    const id = encodeURIComponent(String(productId));
+    const body = {};
+    if (productPatch && typeof productPatch === 'object') body.product = productPatch;
+    if (settings && typeof settings === 'object') body.settings = settings;
+    const response = await api.post(`/products/${id}/generate-video-cover`, body, {
+      timeout: 120000,
+    });
+    return response.data;
+  },
+
+  /**
    * Отправить карточку на МП. При productPatch сначала сохраняет поля в ERP (тот же запрос).
    * @param {object|null} [productPatch]
    */
@@ -543,6 +565,20 @@ export const productsApi = {
     const id = encodeURIComponent(String(productId));
     const mp = encodeURIComponent(String(marketplace).trim());
     const response = await api.post(`/products/${id}/pull-images/${mp}`, null, { timeout: 120000 });
+    return response.data;
+  },
+
+  saveContentRating: async (productId, marketplace, rating) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.put(`/products/${id}/content-rating/${mp}`, { rating });
+    return response.data;
+  },
+
+  refreshContentRating: async (productId, marketplace) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.post(`/products/${id}/content-rating/${mp}`, null, { timeout: 60000 });
     return response.data;
   },
 

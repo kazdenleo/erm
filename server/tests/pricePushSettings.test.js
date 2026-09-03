@@ -2,6 +2,7 @@ import {
   filtersFromPricePushSettings,
   parsePricePushSettings,
   PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS,
+  isProductInPricePushScope,
   resolvePushFloorForMarketplace,
 } from '../src/utils/pricePushSettings.js';
 
@@ -40,5 +41,11 @@ describe('pricePushSettings', () => {
     expect(filters.profileId).toBe(6);
     expect(filters.categoryIds).toEqual(['12']);
     expect(filters.productIds).toEqual([1, 2]);
+  });
+
+  it('isProductInPricePushScope respects products list', () => {
+    const settings = { scope: 'products', productIds: [294, 399] };
+    expect(isProductInPricePushScope({ id: 294 }, settings)).toBe(true);
+    expect(isProductInPricePushScope({ id: 100 }, settings)).toBe(false);
   });
 });

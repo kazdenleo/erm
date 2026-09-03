@@ -187,3 +187,19 @@
   --erm-sticky-table-header-top: 0px;
 }
 
+/*
+  Sticky на <thead> внутри overflow:auto даёт рассинхрон ширин колонок шапки и тела
+  (заголовки «уезжают» относительно данных). Липнем по ячейкам th.
+*/
+.app-main__inner .sales-analytics__table-wrap > table > thead,
+.platform-main .sales-analytics__table-wrap > table > thead {
+  position: static;
+}
+
+.app-main__inner .sales-analytics__table-wrap > table > thead > tr > th,
+.platform-main .sales-analytics__table-wrap > table > thead > tr > th {
+  position: sticky;
+  top: var(--erm-sticky-table-header-top);
+  z-index: 6;
+}
+

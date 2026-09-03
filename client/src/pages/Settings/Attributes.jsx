@@ -310,6 +310,9 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const [showRelatedFields, setShowRelatedFields] = useState(
     !!(attribute?.show_related_fields ?? attribute?.showRelatedFields)
   );
+  const [aiChatEnabled, setAiChatEnabled] = useState(
+    !!(attribute?.ai_chat_enabled ?? attribute?.aiChatEnabled)
+  );
   const isSystem = isSystemCardAttr(attribute);
   const isMainField = isSystemMainFieldAttr(attribute);
   const priceLocked = isSystemPriceAttr(attribute);
@@ -362,6 +365,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
       formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
       show_related_fields: isEditableAttrType(type) ? !!showRelatedFields : false,
+      ai_chat_enabled: isEditableAttrType(type) ? !!aiChatEnabled : false,
     };
     if (!nameLocked) payload.name = name.trim();
     onSubmit(payload);
@@ -458,6 +462,23 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
           <p className="form-hint">
             В массовом редактировании при правке открывается окно с основным значением и связанными полями
             маркетплейсов (как у «Название» и «Описание»).
+          </p>
+        </div>
+      )}
+      {isEditableAttrType(type) && (
+        <div className="form-group">
+          <label className="form-check-label d-flex align-items-center gap-2">
+            <input
+              type="checkbox"
+              className="form-check-input m-0"
+              checked={aiChatEnabled}
+              onChange={(e) => setAiChatEnabled(e.target.checked)}
+            />
+            ИИ-чат в редакторе
+          </label>
+          <p className="form-hint">
+            В попапе редактирования — чат GigaChat: модель видит выбранные поля карточки (название, OEM, бренд…)
+            и может заполнить это поле и связанные характеристики МП. Результат применяется кнопкой «Вставить».
           </p>
         </div>
       )}

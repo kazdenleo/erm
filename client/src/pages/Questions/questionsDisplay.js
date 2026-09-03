@@ -144,18 +144,28 @@ function ozonProductNameFromSubject(subject, sellerArticle) {
   if (!subj) return null;
   const art = sellerArticle != null ? String(sellerArticle).trim() : '';
   const dash = subj.match(/^[A-Za-z0-9][A-Za-z0-9._\-/]{2,}\s*[—–-]\s*(.+)$/);
-  if (dash) return dash[1].trim();
+  if (dash) {
+    const afterDash = dash[1].trim();
+    // «ART — ART Название» → «Название»
+    const cleaned = stripArticlePrefix(art, afterDash);
+    if (cleaned && cleaned.toLowerCase() !== art.toLowerCase()) return cleaned;
+    if (afterDash && afterDash.toLowerCase() !== art.toLowerCase()) return afterDash;
+    return null;
+  }
   if (subj.includes(' · ')) {
     const head = subj.split(' · ')[0].trim();
     const tail = subj.split(' · ').pop().trim();
     if (isOzonNumericMarketSku(tail) && head) {
       const headDash = head.match(/^[A-Za-z0-9][A-Za-z0-9._\-/]{2,}\s*[—–-]\s*(.+)$/);
-      if (headDash) return headDash[2].trim();
+      if (headDash) {
+        const cleaned = stripArticlePrefix(art, headDash[1].trim());
+        return cleaned || headDash[1].trim() || null;
+      }
       return stripArticlePrefix(art, head) || head;
     }
   }
   if (art && subj.toLowerCase() !== art.toLowerCase()) return stripArticlePrefix(art, subj) || subj;
-  return subj;
+  return null;
 }
 
 function pickOfferSku(q) {

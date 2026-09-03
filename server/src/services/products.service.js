@@ -2216,6 +2216,23 @@ class ProductsService {
       notifyChanges: options.notifyChanges,
     });
   }
+
+  async saveMarketplaceContentRating(productId, marketplace, rating) {
+    const quality = (await import('./marketplaceCardQuality.service.js')).default;
+    return quality.persistRating(productId, marketplace, rating);
+  }
+
+  async refreshMarketplaceContentRating(productId, marketplace, options = {}) {
+    const quality = (await import('./marketplaceCardQuality.service.js')).default;
+    return quality.refreshForProduct({
+      productId,
+      marketplace,
+      profileId: options.profileId ?? null,
+      organizationId: options.organizationId ?? null,
+      ozonItem: options.ozonItem ?? null,
+      ymItem: options.ymItem ?? null,
+    });
+  }
 }
 
 export default new ProductsService();

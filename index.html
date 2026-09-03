@@ -1810,7 +1810,7 @@
             tooltipText += `Магистраль: ${magistral}₽\n`;
             tooltipText += `Приемка: ${acceptance}₽\n`;
             tooltipText += `Доставка до клиента: ${deliveryToCustomer}₽\n`;
-            tooltipText += `Возврат: ${returnCost.toFixed(0)}₽\n`;
+            tooltipText += `Обратная логистика: ${returnCost.toFixed(0)}₽\n`;
             
             // Используем те же данные, что и в расчете цены
             const processingCost = 30; // Обработка заказа
@@ -1845,7 +1845,7 @@
             
             tooltipText += `Цена: ${recommendedPrice.toFixed(0)}₽\n`;
             tooltipText += `Комиссия ${commission}%: ${(recommendedPrice * commission / 100).toFixed(0)}₽\n`;
-            tooltipText += `Возврат: ${returnCost.toFixed(0)}₽\n`;
+            tooltipText += `Обратная логистика: ${returnCost.toFixed(0)}₽\n`;
             
             const totalExpenses = (recommendedPrice * commission / 100) + returnCost + returnProcessingCost;
             const profit = recommendedPrice - basePrice - totalExpenses;
@@ -1876,7 +1876,7 @@
             tooltipText += `Цена: ${recommendedPrice.toFixed(0)}₽\n`;
             tooltipText += `Комиссия ${commission}%: ${(recommendedPrice * commission / 100).toFixed(0)}₽\n`;
             tooltipText += `Эквайринг ${acquiring.toFixed(1)}%: ${(recommendedPrice * acquiring / 100).toFixed(0)}₽\n`;
-            tooltipText += `Возврат: ${returnCost.toFixed(0)}₽\n`;
+            tooltipText += `Обратная логистика: ${returnCost.toFixed(0)}₽\n`;
             
             const totalExpenses = (recommendedPrice * commission / 100) + (recommendedPrice * acquiring / 100) + returnCost + returnProcessingCost;
             const profit = recommendedPrice - basePrice - totalExpenses;

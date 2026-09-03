@@ -150,6 +150,66 @@ function isOzonNumericMarketSku(value) {
   return /^\d{6,}$/.test(String(value ?? '').trim());
 }
 
+function escapeRegExpLiteral(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Убрать артикул из начала названия («ART Название» / «ART — Название»). */
+function stripLeadingArticleFromName(article, name) {
+  const art = article != null ? String(article).trim() : '';
+  let nm = name != null ? String(name).trim() : '';
+  if (!nm) return '';
+  if (!art) return nm;
+  if (nm.toLowerCase() === art.toLowerCase()) return '';
+  const patterns = [
+    new RegExp(`^${escapeRegExpLiteral(art)}\\s*[—–\\-·|:]\\s*`, 'i'),
+    new RegExp(`^${escapeRegExpLiteral(art)}\\s+`, 'i'),
+  ];
+  for (const re of patterns) {
+    if (re.test(nm)) return nm.replace(re, '').trim();
+  }
+  return nm;
+}
+
+/** subject вида «ART — Название» (название не пустое и не равно артикулу). */
+function ozonSubjectHasProductName(subject, skuOrOffer) {
+  const subjectStr = subject != null ? String(subject).trim() : '';
+  const sku = skuOrOffer != null ? String(skuOrOffer).trim() : '';
+  if (!subjectStr) return false;
+  if (sku && subjectStr.toLowerCase() === sku.toLowerCase()) return false;
+  if (isOzonNumericMarketSku(subjectStr) || subjectStr === '0') return false;
+  const dash = subjectStr.match(/^[A-Za-z0-9][A-Za-z0-9._\-/]{2,}\s*[—–-]\s*(.+)$/);
+  if (dash) {
+    const namePart = String(dash[1] || '').trim();
+    if (!namePart) return false;
+    if (sku && namePart.toLowerCase() === sku.toLowerCase()) return false;
+    return true;
+  }
+  // Название без артикула в subject — тоже ок, если это не сам артикул.
+  return Boolean(sku ? subjectStr.toLowerCase() !== sku.toLowerCase() : subjectStr.length > 3);
+}
+
+function buildOzonQuestionSubject(offerId, name) {
+  const art = offerId != null ? String(offerId).trim() : '';
+  const cleanName = stripLeadingArticleFromName(art, name);
+  if (art && cleanName && cleanName.toLowerCase() !== art.toLowerCase()) {
+    return `${art} — ${cleanName}`;
+  }
+  if (art) return art;
+  if (cleanName) return cleanName;
+  return null;
+}
+
+/** Нужно ли дотянуть название/артикул продавца из каталога ERP / Ozon API. */
+function ozonQuestionNeedsProductEnrichment(row) {
+  if (!row || row.marketplace !== 'ozon') return false;
+  const sku = row.sku_or_offer != null ? String(row.sku_or_offer).trim() : '';
+  const subject = row.subject != null ? String(row.subject).trim() : '';
+  if (!sku || isOzonNumericMarketSku(sku)) return true;
+  if (!ozonSubjectHasProductName(subject, sku)) return true;
+  return false;
+}
+
 async function lookupOzonProductByMarketSku(ozonSku) {
   const skuStr = String(ozonSku ?? '').trim();
   if (!skuStr || !isOzonNumericMarketSku(skuStr)) return null;
@@ -232,27 +292,37 @@ async function enrichOzonQuestionFromCatalog(row, profileId = null) {
   const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
   const ozonSku = raw.sku ?? raw.product_sku;
   if (ozonSku == null || String(ozonSku).trim() === '') return row;
-  if (row.sku_or_offer && !isOzonNumericMarketSku(row.sku_or_offer) && row.subject) return row;
+  // Раньше выходили при любом subject + offer_id → после refresh оставался только артикул.
+  if (!ozonQuestionNeedsProductEnrichment(row)) return row;
 
   const pid = profileId ?? row.profile_id ?? null;
   const info = pid != null ? await fetchOzonProductMetaBySku(pid, ozonSku) : await lookupOzonProductByMarketSku(ozonSku);
   if (!info?.offerId && !info?.name) return row;
 
   if (info.offerId) row.sku_or_offer = info.offerId;
-  if (info.name && info.offerId) {
-    row.subject = `${info.offerId} — ${info.name}`;
-  } else if (info.name) {
-    row.subject = info.name;
-  } else if (info.offerId) {
-    row.subject = info.offerId;
-  }
+  const nextSubject = buildOzonQuestionSubject(info.offerId || row.sku_or_offer, info.name);
+  if (nextSubject) row.subject = nextSubject;
   return row;
 }
 
-async function finalizeOzonQuestionRow(q, profileId) {
+async function finalizeOzonQuestionRow(q, profileId, previousRow = null) {
   const row = mapOzonQuestion(q, profileId);
   if (!row) return null;
-  return enrichOzonQuestionFromCatalog(row, profileId);
+  const enriched = await enrichOzonQuestionFromCatalog(row, profileId);
+  // Если refresh с МП снова не дал название, не затираем уже обогащённый subject.
+  if (
+    previousRow &&
+    ozonQuestionNeedsProductEnrichment(enriched) &&
+    !ozonQuestionNeedsProductEnrichment(previousRow)
+  ) {
+    enriched.subject = previousRow.subject;
+    const prevSku =
+      previousRow.sku_or_offer != null ? String(previousRow.sku_or_offer).trim() : '';
+    if (prevSku && !isOzonNumericMarketSku(prevSku)) {
+      enriched.sku_or_offer = prevSku;
+    }
+  }
+  return enriched;
 }
 
 function mapOzonQuestion(q, profileId) {
@@ -289,14 +359,10 @@ function mapOzonQuestion(q, profileId) {
     q.offer_id != null && String(q.offer_id).trim() !== '' ? String(q.offer_id).trim() : null;
   const ozonMarketSku = q.sku != null && String(q.sku).trim() !== '' ? String(q.sku).trim() : null;
   const baseName = q.product_name ?? q.product_title ?? q.name ?? null;
-  let subject = baseName != null && String(baseName).trim() !== '' ? String(baseName).trim() : null;
-  if (subject && offerId) {
-    subject = `${offerId} — ${subject}`;
-  } else if (!subject && offerId) {
-    subject = offerId;
-  } else if (!subject && ozonMarketSku && !isOzonNumericMarketSku(ozonMarketSku)) {
-    subject = ozonMarketSku;
-  }
+  const subject = buildOzonQuestionSubject(
+    offerId || (!isOzonNumericMarketSku(ozonMarketSku) ? ozonMarketSku : null),
+    baseName
+  );
   const sku = offerId;
   const status = q.status ?? q.question_status ?? null;
   const sourceCreatedAt =
@@ -592,15 +658,17 @@ async function reEnrichOzonQuestionsMissingProduct(profileId) {
   if (!Number.isFinite(pid) || pid < 1) return 0;
   const result = await query(
     `SELECT * FROM marketplace_questions
-     WHERE profile_id = $1 AND marketplace = 'ozon'
-       AND (subject IS NULL OR TRIM(COALESCE(subject, '')) = ''
-            OR sku_or_offer IS NULL OR TRIM(COALESCE(sku_or_offer, '')) = '')`,
+     WHERE profile_id = $1 AND marketplace = 'ozon'`,
     [pid]
   );
   let updated = 0;
   for (const row of result.rows || []) {
+    if (!ozonQuestionNeedsProductEnrichment(row)) continue;
     const enriched = await enrichOzonQuestionFromCatalog({ ...row }, pid);
-    if (enriched?.subject && enriched.subject !== row.subject) {
+    if (
+      enriched &&
+      (enriched.subject !== row.subject || enriched.sku_or_offer !== row.sku_or_offer)
+    ) {
       await marketplaceQuestionsRepo.upsertRow(enriched);
       updated += 1;
     }
@@ -853,7 +921,7 @@ async function refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride) {
       ...info,
       id: questionId,
     };
-    return finalizeOzonQuestionRow(merged, profileId);
+    return finalizeOzonQuestionRow(merged, profileId, row);
   } catch (e) {
     logger.warn('[MarketplaceQuestions] Ozon question/info on archive check failed', {
       profileId,
@@ -1028,15 +1096,19 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
         const itemId = String(item?.id ?? item?.question_id ?? item?.questionId ?? '').trim();
         const wantId = String(qid).trim();
         if (item && itemId && itemId === wantId) {
-          return finalizeOzonQuestionRow(item, profileId);
+          return finalizeOzonQuestionRow(item, profileId, row);
         }
       } catch {
         /* fallback to stored raw */
       }
     }
-    const mapped = await finalizeOzonQuestionRow(raw, profileId);
+    const mapped = await finalizeOzonQuestionRow(raw, profileId, row);
     if (mapped && String(mapped.external_id) !== String(row.external_id)) {
-      return finalizeOzonQuestionRow({ ...raw, id: row.external_id, question_id: row.external_id }, profileId);
+      return finalizeOzonQuestionRow(
+        { ...raw, id: row.external_id, question_id: row.external_id },
+        profileId,
+        row
+      );
     }
     return mapped;
   }
@@ -1067,12 +1139,12 @@ export async function getMarketplaceQuestionById(profileId, questionRowId, opts 
   }
 
   const current = await marketplaceQuestionsRepo.findRowByIdAndProfile(questionRowId, profileId);
-  if (
-    current?.marketplace === 'ozon' &&
-    (!current.subject || !current.sku_or_offer || isOzonNumericMarketSku(current.sku_or_offer))
-  ) {
+  if (current?.marketplace === 'ozon' && ozonQuestionNeedsProductEnrichment(current)) {
     const enriched = await enrichOzonQuestionFromCatalog({ ...current }, profileId);
-    if (enriched?.subject) {
+    if (
+      enriched &&
+      (enriched.subject !== current.subject || enriched.sku_or_offer !== current.sku_or_offer)
+    ) {
       await marketplaceQuestionsRepo.upsertRow(enriched);
     }
   }

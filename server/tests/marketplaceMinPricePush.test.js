@@ -7,6 +7,7 @@ import {
   resolveOzonPushTargetPrice,
   buildOzonPriceImportEntry,
   buildWbPriceUploadPayload,
+  buildYmOfferPrice,
   needsOzonMinPricePush,
   needsWbFloorPush,
   needsYmFloorPush,
@@ -128,8 +129,8 @@ describe('marketplaceMinPricePush helpers', () => {
     expect(pack.targetEff).toBe(2569);
   });
 
-  test('buildWbPriceUploadPayload uses ERP before and discount', () => {
-    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+  test('buildWbPriceUploadPayload uses ERP before and discount when not sync-to-min', () => {
+    process.env.MARKETPLACE_SYNC_PRICE_TO_MIN = '0';
     const pack = buildWbPriceUploadPayload({
       floor: 2569,
       sellingTarget: 2569,
@@ -138,6 +139,34 @@ describe('marketplaceMinPricePush helpers', () => {
     });
     expect(pack.price).toBe(3200);
     expect(pack.discount).toBe(20);
+  });
+
+  test('buildWbPriceUploadPayload sync+before tweaks list price so after ≈ floor', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const pack = buildWbPriceUploadPayload({
+      floor: 2393,
+      sellingTarget: 4105,
+      priceBeforeDiscount: 5132,
+    });
+    expect(pack.targetEff).toBe(2393);
+    expect(pack.discount).toBe(53);
+    expect(pack.price).toBe(wbPriceToMeetFloor(2393, 53));
+    const eff = wbEffectivePrice(pack.price, pack.discount);
+    expect(eff).toBeGreaterThanOrEqual(2393 - 0.01);
+    expect(Math.abs(eff - 2393)).toBeLessThan(1);
+  });
+
+  test('buildYmOfferPrice sets discountBase when discount 5–99%', () => {
+    const price = buildYmOfferPrice({ value: 2500, priceBeforeDiscount: 3000 });
+    expect(price.value).toBe(2500);
+    expect(price.discountBase).toBe(3000);
+    expect(price.currencyId).toBe('RUR');
+  });
+
+  test('buildYmOfferPrice omits discountBase when discount below 5%', () => {
+    const price = buildYmOfferPrice({ value: 2900, priceBeforeDiscount: 3000 });
+    expect(price.value).toBe(2900);
+    expect(price.discountBase).toBeUndefined();
   });
 });
 

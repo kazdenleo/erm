@@ -41,6 +41,42 @@ function litersFromMm(length, width, height) {
   return Math.round(liters * 1000) / 1000;
 }
 
+/**
+ * WB принимает габариты в целых см (как при push: мм → см через Math.round).
+ * Объём для логистики/мин. цены: ceil не используем — сторона 164 мм → 16 см, 165 → 17.
+ */
+export function mmToWbWholeCm(mm) {
+  const n = Number(mm);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(1, Math.round(n / 10));
+}
+
+/** Литры по правилам WB: (Lсм × Wсм × Hсм) / 1000 после округления каждой стороны. */
+export function litersFromMmWbLogistics(lengthMm, widthMm, heightMm) {
+  const L = mmToWbWholeCm(lengthMm);
+  const W = mmToWbWholeCm(widthMm);
+  const H = mmToWbWholeCm(heightMm);
+  if (L == null || W == null || H == null) return null;
+  const liters = (L * W * H) / 1000;
+  if (!(liters > 0)) return null;
+  return Math.round(liters * 1000) / 1000;
+}
+
+/**
+ * Целые см для логистики WB (из мм упаковки МП).
+ * @returns {{ length: number, width: number, height: number, liters: number, source: string }|null}
+ */
+export function resolveWbLogisticsDimensionsCm(product, opts = {}) {
+  const dims = resolveMarketplaceDimensionsMm(product, 'wb', opts);
+  if (!dims) return null;
+  const length = mmToWbWholeCm(dims.length);
+  const width = mmToWbWholeCm(dims.width);
+  const height = mmToWbWholeCm(dims.height);
+  if (length == null || width == null || height == null) return null;
+  const liters = Math.round(((length * width * height) / 1000) * 1000) / 1000;
+  return { length, width, height, liters, source: dims.source };
+}
+
 function pickAttr(attrs, keys) {
   if (!attrs) return null;
   for (const k of keys) {
@@ -295,7 +331,8 @@ export function isCoveredByDedicatedProductDimFields(name) {
  * @param {unknown} width
  * @param {unknown} height
  * @param {'mm'|'cm'} [unit='mm']
- * @param {{ roundUpToWholeCm?: boolean }} [opts] — как логистика WB: каждая сторона в целых см вверх
+ * @param {{ roundUpToWholeCm?: boolean, roundToWholeCm?: boolean }} [opts]
+ *   roundToWholeCm / roundUpToWholeCm — стороны в целых см (Math.round), как WB
  * @returns {string|null}
  */
 export function formatVolumeLitersLabel(length, width, height, unit = 'mm', opts = {}) {
@@ -304,8 +341,8 @@ export function formatVolumeLitersLabel(length, width, height, unit = 'mm', opts
   const H = Number(height);
   if (!(L > 0 && W > 0 && H > 0)) return null;
   let liters;
-  if (opts.roundUpToWholeCm) {
-    const toCm = (v) => (unit === 'cm' ? Math.ceil(v) : Math.ceil(v / 10));
+  if (opts.roundToWholeCm || opts.roundUpToWholeCm) {
+    const toCm = (v) => (unit === 'cm' ? Math.max(1, Math.round(v)) : Math.max(1, Math.round(v / 10)));
     liters = (toCm(L) * toCm(W) * toCm(H)) / 1000;
   } else {
     liters = unit === 'cm' ? (L * W * H) / 1000 : (L * W * H) / 1_000_000;
@@ -437,7 +474,12 @@ export function resolveMarketplaceDimensionsMm(product, marketplace, opts = {}) 
 export function resolveMarketplaceVolumeLiters(product, marketplace, opts = {}) {
   const mp = String(marketplace || '').toLowerCase();
   const dims = resolveMarketplaceDimensionsMm(product, marketplace, opts);
-  if (dims) return litersFromMm(dims.length, dims.width, dims.height);
+  if (dims) {
+    if (mp === 'wb' || mp === 'wildberries') {
+      return litersFromMmWbLogistics(dims.length, dims.width, dims.height);
+    }
+    return litersFromMm(dims.length, dims.width, dims.height);
+  }
 
   if (isKnownMarketplace(mp) && opts.allowGeneralFallback !== true) return null;
 

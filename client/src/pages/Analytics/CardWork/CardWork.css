@@ -7,11 +7,7 @@
   font-weight: 600;
 }
 
-.card-work__reason--high_turnover {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
+.card-work__reason--low_turnover,
 .card-work__reason--overstock {
   background: #ffedd5;
   color: #9a3412;
@@ -20,6 +16,16 @@
 .card-work__reason--stockout {
   background: #f3e8ff;
   color: #6b21a8;
+}
+
+.card-work__reason--low_content_rating {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.card-work__reason--dim_mismatch {
+  background: #ecfccb;
+  color: #3f6212;
 }
 
 .card-work__hint {

@@ -6,6 +6,13 @@
   margin-bottom: 16px;
 }
 
+.sales-analytics__filter-hint {
+  align-self: flex-end;
+  padding-bottom: 8px;
+  font-size: 13px;
+  color: #64748b;
+}
+
 .sales-analytics__filter {
   display: flex;
   flex-direction: column;
@@ -95,7 +102,9 @@
 
 .sales-analytics__table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate нужен для sticky th; collapse ломает липкую шапку и ширины колонок */
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 14px;
 }
 

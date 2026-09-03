@@ -153,6 +153,38 @@ export function filtersFromPricePushSettings(raw, profileId) {
   return filters;
 }
 
+/**
+ * Товар входит в область автоотправки цен профиля?
+ * (ручной push-one / schedule после пересчёта тоже должны это учитывать)
+ */
+export function isProductInPricePushScope(product, settingsRaw) {
+  if (!product) return false;
+  const s = parsePricePushSettings(settingsRaw);
+  const productId = Number(product.id ?? product.product_id);
+  if (!Number.isFinite(productId) || productId < 1) return false;
+
+  if (s.scope === PRICE_PUSH_SCOPE_ALL) return true;
+
+  if (s.scope === PRICE_PUSH_SCOPE_PRODUCTS) {
+    return s.productIds.includes(productId);
+  }
+
+  const catRaw = product.user_category_id ?? product.userCategoryId ?? null;
+  const catKey =
+    catRaw == null || String(catRaw).trim() === '' ? PRICE_PUSH_CATEGORY_NONE : String(catRaw).trim();
+  const inCategory = s.categoryIds.includes(catKey);
+
+  if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES) {
+    return inCategory;
+  }
+
+  if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS) {
+    return inCategory && s.productIds.includes(productId);
+  }
+
+  return true;
+}
+
 export function describePricePushScope(settings, { categoryNamesById = {} } = {}) {
   const s = parsePricePushSettings(settings);
   if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS) {

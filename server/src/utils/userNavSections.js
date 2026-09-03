@@ -28,6 +28,7 @@ export const NAV_SECTION_KEYS = [
   'settings_attributes',
   'settings_certificates',
   'settings_labels',
+  'settings_video_cover',
   'settings_users',
   'settings_roles',
   'organizations',
@@ -64,6 +65,7 @@ export const NAV_SECTION_LABELS = {
   settings_attributes: 'Настройки — атрибуты',
   settings_certificates: 'Настройки — сертификаты',
   settings_labels: 'Настройки — этикетки',
+  settings_video_cover: 'Настройки — видеообложка',
   settings_users: 'Настройки — пользователи',
   settings_roles: 'Настройки — роли',
   organizations: 'Организации',
@@ -105,6 +107,7 @@ export const NAV_SECTION_GROUPS = [
       'settings_attributes',
       'settings_certificates',
       'settings_labels',
+      'settings_video_cover',
       'settings_users',
       'settings_roles',
       'organizations',
@@ -132,6 +135,7 @@ export const ROLE_NAV_PRESETS = {
     settings_attributes: false,
     settings_certificates: false,
     settings_labels: false,
+    settings_video_cover: false,
     settings_users: false,
     settings_roles: false,
     organizations: false,
@@ -326,6 +330,9 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/settings/attributes')) return 'settings_attributes';
   if (path.startsWith('/settings/certificates')) return 'settings_certificates';
   if (path.startsWith('/settings/labels')) return 'settings_labels';
+  if (path.startsWith('/settings/video-cover') || path.startsWith('/products/video-cover')) {
+    return 'settings_video_cover';
+  }
   if (path.startsWith('/settings/rich-content') || path.startsWith('/products/rich-content')) return 'products';
   if (path.startsWith('/settings')) return 'settings_general';
   if (path.startsWith('/organizations')) return 'organizations';

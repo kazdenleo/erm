@@ -574,11 +574,17 @@ function parseMpExtraColumn(raw) {
 function attachMarketplaceSkuMeta(bucket, row) {
   if (!bucket || !row) return;
   bucket[row.marketplace] = row.sku;
+  const extra = parseMpExtraColumn(row.mp_extra);
+  if (!bucket.content_ratings || typeof bucket.content_ratings !== 'object') {
+    bucket.content_ratings = {};
+  }
+  if (extra.content_rating && typeof extra.content_rating === 'object') {
+    bucket.content_ratings[row.marketplace] = extra.content_rating;
+  }
   if (row.marketplace === 'ozon') {
     if (row.marketplace_product_id != null) {
       bucket.ozon_product_id = Number(row.marketplace_product_id);
     }
-    const extra = parseMpExtraColumn(row.mp_extra);
     const ozonSku = extra?.ozonSku ?? extra?.ozon_sku ?? extra?.marketSku ?? null;
     if (ozonSku != null && String(ozonSku).trim() !== '') {
       bucket.ozon_market_sku = String(ozonSku).trim();
@@ -588,7 +594,6 @@ function attachMarketplaceSkuMeta(bucket, row) {
     if (row.marketplace_product_id != null) {
       bucket.ym_product_id = String(row.marketplace_product_id);
     }
-    const extra = parseMpExtraColumn(row.mp_extra);
     const marketSku = extra?.marketSku ?? extra?.market_sku ?? null;
     if (marketSku != null && String(marketSku).trim() !== '') {
       bucket.ym_market_sku = String(marketSku).trim();
@@ -1681,6 +1686,8 @@ class ProductsRepositoryPG {
         product.ozon_market_sku = skus.ozon_market_sku ?? null;
         product.ym_market_sku = skus.ym_market_sku ?? null;
         product.ym_product_id = skus.ym_product_id ?? null;
+        product.content_ratings =
+          skus.content_ratings && typeof skus.content_ratings === 'object' ? skus.content_ratings : {};
         product.mp_linked = linksByProduct[String(product.id)] || {};
         applyWbListingFields(product);
         product.barcodes = barcodesByProduct[String(product.id)] || [];
@@ -2232,6 +2239,8 @@ class ProductsRepositoryPG {
     product.ozon_market_sku = skuMeta.ozon_market_sku ?? null;
     product.ym_market_sku = skuMeta.ym_market_sku ?? null;
     product.ym_product_id = skuMeta.ym_product_id ?? null;
+    product.content_ratings =
+      skuMeta.content_ratings && typeof skuMeta.content_ratings === 'object' ? skuMeta.content_ratings : {};
     applyWbListingFields(product);
     try {
       const maxRows = await query(
@@ -3132,6 +3141,30 @@ class ProductsRepositoryPG {
           ? productData.rich_content_modules
           : null;
       }
+      if (productData.video_cover_template !== undefined) {
+        await client.query(
+          'UPDATE products SET video_cover_template = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [
+            productData.video_cover_template && typeof productData.video_cover_template === 'object'
+              ? JSON.stringify(productData.video_cover_template)
+              : null,
+            product.id,
+          ]
+        );
+        product.video_cover_template = productData.video_cover_template ?? null;
+      }
+      if (productData.video_cover_slides !== undefined) {
+        await client.query(
+          'UPDATE products SET video_cover_slides = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [
+            productData.video_cover_slides && typeof productData.video_cover_slides === 'object'
+              ? JSON.stringify(productData.video_cover_slides)
+              : null,
+            product.id,
+          ]
+        );
+        product.video_cover_slides = productData.video_cover_slides ?? null;
+      }
       return product;
     });
   }
@@ -3179,7 +3212,7 @@ class ProductsRepositoryPG {
         'block_stock_ozon', 'block_stock_wb', 'block_stock_ym',
         'ozon_attributes', 'wb_attributes', 'ym_attributes',
         'ozon_draft', 'wb_draft', 'ym_draft',
-        'images', 'rich_content_modules'
+        'images', 'rich_content_modules', 'video_cover_template', 'video_cover_slides'
       ];
       const updateFields = [];
       const params = [];
@@ -3242,7 +3275,8 @@ class ProductsRepositoryPG {
         if (
           field === 'ozon_attributes' || field === 'wb_attributes' || field === 'ym_attributes' ||
           field === 'ozon_draft' || field === 'wb_draft' || field === 'ym_draft' ||
-          field === 'images' || field === 'mp_field_links' || field === 'rich_content_modules'
+          field === 'images' || field === 'mp_field_links' || field === 'rich_content_modules' ||
+          field === 'video_cover_template' || field === 'video_cover_slides'
         ) {
           updateFields.push(`${field} = $${paramIndex++}::jsonb`);
           if (field === 'rich_content_modules') {

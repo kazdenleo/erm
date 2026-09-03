@@ -683,6 +683,30 @@ class ProductsController {
     }
   }
 
+  async generateVideoCover(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const patch =
+        body.product && typeof body.product === 'object'
+          ? body.product
+          : (() => {
+              const { product: _p, settings: _s, ...rest } = body;
+              return Object.keys(rest).length > 0 ? rest : null;
+            })();
+      const { generateProductVideoCover } = await import('../services/marketplaceVideoCover.service.js');
+      const result = await generateProductVideoCover(id, {
+        productPatch: patch,
+        settings: body.settings,
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async pushCard(req, res, next) {
     try {
       const { id, marketplace } = req.params;
@@ -765,6 +789,28 @@ class ProductsController {
       });
       const status = result?.ok === false && !result?.skipped ? 422 : 200;
       return res.status(status).json({ ok: result?.ok !== false, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async saveContentRating(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const rating = req.body?.rating ?? req.body;
+      const data = await productsService.saveMarketplaceContentRating(id, marketplace, rating);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async refreshContentRating(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await productsService.refreshMarketplaceContentRating(id, marketplace, { profileId });
+      return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
     }

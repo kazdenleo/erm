@@ -22,10 +22,20 @@ import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
 import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
-import { extractWbWarehouseList, findWbTariffWarehouse, wbTariffWarehouseLabel } from '../utils/wbTariffs.js';
+import {
+  extractWbWarehouseList,
+  findWbTariffWarehouse,
+  wbTariffWarehouseLabel,
+  computeWbReturnAmount,
+  computeWbLogisticsCost,
+  parseWbTariffAmount,
+} from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
-import { resolveMarketplaceVolumeLiters } from '../utils/productVolume.js';
-import { resolveMarketplaceDimensionsMm } from '../utils/marketplaceDimensions.js';
+import {
+  resolveMarketplaceVolumeLiters,
+  resolveMarketplaceDimensionsMm,
+  resolveWbLogisticsDimensionsCm,
+} from '../utils/marketplaceDimensions.js';
 
 import { schedulePushForProduct } from './marketplaceMinPricePush.service.js';
 import {
@@ -57,13 +67,7 @@ function getWBCachedData() {
   }
 }
 
-/** Число из тарифа WB (запятая, пробелы); NaN → fallback. */
-function parseWbTariffAmount(value, fallback = 0) {
-  if (value == null || value === '') return fallback;
-  const s = String(value).replace(/\s/g, '').replace(',', '.');
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : fallback;
-}
+/** Число из тарифа WB — см. parseWbTariffAmount из wbTariffs.js */
 
 function parseWbDraftColumn(raw) {
   if (raw == null) return null;
@@ -1673,6 +1677,81 @@ class PricesService {
     return applyOzonAdsPromotion(calculator, drr, source);
   }
 
+  async _enrichWbCalculatorReturnAmount(calculator, volumeLiters = 0, integrationScope = null) {
+    if (!calculator || typeof calculator !== 'object') return calculator;
+
+    let boxRow = calculator.boxTariffs;
+    if (!boxRow || typeof boxRow !== 'object') {
+      try {
+        const boxData = await integrationsService.ensureWildberriesTariffs(integrationScope || {});
+        const list = extractWbWarehouseList(boxData);
+        boxRow =
+          list.find((w) => parseWbTariffAmount(w?.boxDeliveryBase) > 0) ||
+          list.find((w) => parseWbTariffAmount(w?.boxDeliveryMarketplaceBase) > 0) ||
+          list[0] ||
+          null;
+      } catch (e) {
+        logger.warn('[Prices Service] WB box tariffs enrich failed:', e?.message || e);
+      }
+    }
+
+    const vol = Number(volumeLiters) || Number(calculator.volume_weight) || 0;
+    const fboLog = computeWbLogisticsCost(boxRow, vol, 'fbo');
+    const fbsLog = computeWbLogisticsCost(boxRow, vol, 'fbs');
+
+    const fallbackBase =
+      fbsLog.base > 0
+        ? { base: fbsLog.base, liter: fbsLog.liter }
+        : fboLog.base > 0
+          ? { base: fboLog.base, liter: fboLog.liter }
+          : Number(calculator.logistics_base_fbs) > 0
+            ? { base: Number(calculator.logistics_base_fbs), liter: Number(calculator.logistics_liter_fbs) || 0 }
+            : Number(calculator.logistics_base_fbo) > 0
+              ? { base: Number(calculator.logistics_base_fbo), liter: Number(calculator.logistics_liter_fbo) || 0 }
+              : Number(calculator.logistics_base) > 0
+                ? { base: Number(calculator.logistics_base), liter: Number(calculator.logistics_liter) || 0 }
+                : null;
+
+    const returnFbo = computeWbReturnAmount(boxRow, vol, fallbackBase, 'fbo');
+    const returnFbs = computeWbReturnAmount(boxRow, vol, fallbackBase, 'fbs');
+    const returnAmount = returnFbo > 0 ? returnFbo : returnFbs;
+
+    const next = {
+      ...calculator,
+      boxTariffs: boxRow || calculator.boxTariffs,
+      logistics_cost: fboLog.cost,
+      logistics_base: fboLog.base,
+      logistics_liter: fboLog.liter,
+      logistics_coef: fboLog.coef,
+      logistics_raw_base: fboLog.rawBase,
+      logistics_raw_liter: fboLog.rawLiter,
+      logistics_cost_fbo: fboLog.cost,
+      logistics_base_fbo: fboLog.base,
+      logistics_liter_fbo: fboLog.liter,
+      logistics_coef_fbo: fboLog.coef,
+      logistics_raw_base_fbo: fboLog.rawBase,
+      logistics_raw_liter_fbo: fboLog.rawLiter,
+      logistics_cost_fbs: fbsLog.cost,
+      logistics_base_fbs: fbsLog.base,
+      logistics_liter_fbs: fbsLog.liter,
+      logistics_coef_fbs: fbsLog.coef,
+      logistics_raw_base_fbs: fbsLog.rawBase,
+      logistics_raw_liter_fbs: fbsLog.rawLiter,
+      commissions: { ...(calculator.commissions || {}) },
+    };
+
+    if (returnAmount > 0) {
+      if (next.commissions.FBO) {
+        next.commissions.FBO = { ...next.commissions.FBO, return_amount: returnFbo > 0 ? returnFbo : returnAmount };
+      }
+      if (next.commissions.FBS) {
+        next.commissions.FBS = { ...next.commissions.FBS, return_amount: returnFbs > 0 ? returnFbs : returnAmount };
+      }
+    }
+
+    return next;
+  }
+
   async _enrichOzonCalculatorForMinPrice(
     calculator,
     { productId = null, brandId = null, offerId = null, integrationScope = null } = {}
@@ -2242,6 +2321,7 @@ class PricesService {
       const wbWarehouses = getWBWarehousesCache();
       
       let boxTariffsData = null;
+      let returnTariffsData = null;
       try {
         boxTariffsData = await integrationsService.ensureWildberriesTariffs(integrationScope);
       } catch (error) {
@@ -2252,6 +2332,11 @@ class PricesService {
             error?.message ||
             'Не удалось загрузить тарифы Wildberries. Обновите тарифы в настройках интеграции WB.',
         };
+      }
+      try {
+        returnTariffsData = await integrationsService.ensureWildberriesReturnTariffs(integrationScope);
+      } catch (error) {
+        console.warn('[Prices Service] WB return tariffs unavailable:', error?.message || error);
       }
       
       // Ищем склад для расчета логистики через маппинг основного склада
@@ -2384,6 +2469,24 @@ class PricesService {
       }
 
       if (!selectedBoxTariffs) {
+        // Маппинг часто хранит warehouseId, которого нет в /tariffs/box — берём склад с FBO-логистикой
+        selectedBoxTariffs =
+          warehouseList.find((w) => {
+            const mp = parseWbTariffAmount(w?.boxDeliveryMarketplaceBase);
+            return mp > 0;
+          }) ||
+          warehouseList.find((w) => /свой склад/i.test(wbTariffWarehouseLabel(w))) ||
+          warehouseList[0] ||
+          null;
+        if (selectedBoxTariffs) {
+          logger.warn(
+            `[Prices Service] WB warehouse "${finalWbWarehouseName}" not in box tariffs; fallback → "${wbTariffWarehouseLabel(selectedBoxTariffs)}"`
+          );
+          finalWbWarehouseName = wbTariffWarehouseLabel(selectedBoxTariffs) || finalWbWarehouseName;
+        }
+      }
+
+      if (!selectedBoxTariffs) {
         const availableWarehouses = warehouseList.map(w => w.warehouseName ?? w.geoName).filter(Boolean).join(', ');
         return {
           found: false,
@@ -2393,16 +2496,19 @@ class PricesService {
       
       console.log(`[Prices Service] Found tariffs for warehouse: "${selectedBoxTariffs.warehouseName}" (requested: "${finalWbWarehouseName}", original: "${wbWarehouseName || 'not provided'}")`);
       
-      // Для возвратов используем первый склад (возвраты обычно не зависят от склада)
-      const baseReturnTariffs = warehouseList[0] || null;
+      // Тарифы возвратов — из /api/v1/tariffs/return (не из box)
+      const returnWarehouseList = extractWbWarehouseList(returnTariffsData);
+      const selectedReturnTariffs =
+        findWbTariffWarehouse(returnWarehouseList, finalWbWarehouseName) ||
+        returnWarehouseList[0] ||
+        null;
       
       const fbsLogisticsFirstLiter = selectedBoxTariffs?.boxDeliveryBase || 0;
       const fboLogisticsFirstLiter = selectedBoxTariffs?.boxDeliveryMarketplaceBase || 0;
-      const returnDeliveryBase = baseReturnTariffs?.deliveryDumpSupOfficeBase || 0;
-      const returnDeliveryExpr = baseReturnTariffs?.deliveryDumpSupReturnExpr || 0;
       
       // Получаем объем и себестоимость товара из базы данных
       let productVolume = null;
+      let wbLogisticsCm = null;
       let productCost = null;
       try {
         const productIdOpt = options.productId ?? options.product_id ?? null;
@@ -2452,9 +2558,14 @@ class PricesService {
           const row = productResult.rows[0];
           console.log(`[Prices Service] Found product: id=${row.id}, sku="${row.sku}", sku_wb="${row.sku_wb || 'N/A'}", cost=${row.cost}, price=${row.price}`);
           
-          productVolume = resolveMarketplaceVolumeLiters(row, 'wb');
+          const wbCm = resolveWbLogisticsDimensionsCm(row);
+          wbLogisticsCm = wbCm;
+          productVolume = wbCm?.liters ?? resolveMarketplaceVolumeLiters(row, 'wb');
           if (productVolume != null && productVolume > 0) {
-            console.log(`[Prices Service] Got product volume: ${productVolume} liters for ${offer_id}`);
+            console.log(
+              `[Prices Service] Got product volume: ${productVolume} liters for ${offer_id}` +
+                (wbCm ? ` (WB см: ${wbCm.length}×${wbCm.width}×${wbCm.height})` : '')
+            );
           } else {
             console.warn(`[Prices Service] getWBPrices: missing WB packaging dimensions`, { offer_id });
             return {
@@ -2484,24 +2595,27 @@ class PricesService {
         console.error(`[Prices Service] Error stack:`, dbError.stack);
       }
       
-      // FBO (склад WB): boxDeliveryBase/Liter. FBS (маркетплейс): boxDeliveryMarketplace*.
-      const parseWbBox = (v) => parseFloat(String(v || '0').replace(',', '.')) || 0;
+      // FBO: boxDelivery* × коэф склада. FBS: boxDeliveryMarketplace* × коэф склада.
       const box = selectedBoxTariffs || {};
-      const fboBase = parseWbBox(box.boxDeliveryBase);
-      const fboLiter = parseWbBox(box.boxDeliveryLiter);
-      const fbsBase = parseWbBox(box.boxDeliveryMarketplaceBase);
-      const fbsLiter = parseWbBox(box.boxDeliveryMarketplaceLiter);
+      const fboLog = computeWbLogisticsCost(box, productVolume, 'fbo');
+      const fbsLog = computeWbLogisticsCost(box, productVolume, 'fbs');
+      const logisticsCostFbo = fboLog.cost;
+      const logisticsCostFbs = fbsLog.cost;
+      const fboBase = fboLog.base;
+      const fboLiter = fboLog.liter;
+      const fbsBase = fbsLog.base;
+      const fbsLiter = fbsLog.liter;
       const extraLiters = productVolume > 1 ? Math.ceil(productVolume - 1) : 0;
-      const logisticsCostFbo = fboBase + fboLiter * extraLiters;
-      const logisticsCostFbs = fbsBase + fbsLiter * extraLiters;
 
       // Рассчитываем логистику по схемам. Дефолт калькулятора — FBO (основная мин. цена WB).
       let logisticsCost = logisticsCostFbo;
       let logisticsBase = fboBase;
       let logisticsLiter = fboLiter;
-      
+
       if (selectedBoxTariffs && productVolume && productVolume > 0) {
-        console.log(`[Prices Service] Calculated WB logistics: FBO=${logisticsCostFbo}₽ FBS=${logisticsCostFbs}₽ (volume: ${productVolume}L, extraLiters: ${extraLiters})`);
+        console.log(
+          `[Prices Service] Calculated WB logistics: FBO=${logisticsCostFbo}₽ (coef ${fboLog.coef}%) FBS=${logisticsCostFbs}₽ (coef ${fbsLog.coef}%) (volume: ${productVolume}L, extraLiters: ${extraLiters})`
+        );
       } else {
         console.warn(`[Prices Service] Cannot calculate logistics from volume, using FBO base: ${logisticsCost}₽`);
       }
@@ -2646,6 +2760,11 @@ class PricesService {
       console.log(`[Prices Service]   FBO/FBW (Склад WB, paidStorageKgvp) ← used in min-price: ${fboPercent}%`);
       console.log(`[Prices Service]   FBS (Маркетплейс, kgvpMarketplace) reference: ${fbsPercent}%`);
       
+      // Обратная доставка (отказ/невыкуп) = базовый тариф box по объёму, не returnExpr 250₽
+      const wbReturnAmountFbo = computeWbReturnAmount(selectedBoxTariffs, productVolume, null, 'fbo');
+      const wbReturnAmountFbs = computeWbReturnAmount(selectedBoxTariffs, productVolume, null, 'fbs');
+      const wbReturnAmount = wbReturnAmountFbo > 0 ? wbReturnAmountFbo : wbReturnAmountFbs;
+
       const calculatorData = {
         offer_id: offer_id,
         product_id: offer_id,
@@ -2656,30 +2775,42 @@ class PricesService {
             percent: fboPercent, // используется в расчёте мин. цены WB
             value: 0,
             delivery_amount: parseWbTariffAmount(fboLogisticsFirstLiter),
-            return_amount: parseWbTariffAmount(returnDeliveryBase)
+            return_amount: wbReturnAmountFbo > 0 ? wbReturnAmountFbo : wbReturnAmount,
           },
           FBS: {
             percent: fbsPercent, // справочно
             value: 0,
             delivery_amount: parseWbTariffAmount(fbsLogisticsFirstLiter),
-            return_amount: parseWbTariffAmount(returnDeliveryExpr)
+            return_amount: wbReturnAmountFbs > 0 ? wbReturnAmountFbs : wbReturnAmount,
           }
         },
         fullCommissions: {},
         rawCommissions: {},
         boxTariffs: selectedBoxTariffs,
-        returnTariffs: baseReturnTariffs,
+        returnTariffs: selectedReturnTariffs,
         categoryCommission: categoryCommission,
         logistics_cost: logisticsCost,
         logistics_base: logisticsBase,
         logistics_liter: logisticsLiter,
+        logistics_coef: fboLog.coef,
+        logistics_raw_base: fboLog.rawBase,
+        logistics_raw_liter: fboLog.rawLiter,
         logistics_cost_fbo: logisticsCostFbo,
         logistics_base_fbo: fboBase,
         logistics_liter_fbo: fboLiter,
+        logistics_coef_fbo: fboLog.coef,
+        logistics_raw_base_fbo: fboLog.rawBase,
+        logistics_raw_liter_fbo: fboLog.rawLiter,
         logistics_cost_fbs: logisticsCostFbs,
         logistics_base_fbs: fbsBase,
         logistics_liter_fbs: fbsLiter,
+        logistics_coef_fbs: fbsLog.coef,
+        logistics_raw_base_fbs: fbsLog.rawBase,
+        logistics_raw_liter_fbs: fbsLog.rawLiter,
         volume_weight: productVolume,
+        wb_logistics_cm: wbLogisticsCm
+          ? { length: wbLogisticsCm.length, width: wbLogisticsCm.width, height: wbLogisticsCm.height }
+          : null,
         marketplace: 'wb',
         wb_price_scheme: 'FBO'
       };
@@ -3779,21 +3910,30 @@ class PricesService {
               meta: { productId, offerId: skuWb },
             });
           } else {
+            const volume =
+              Number(data.calculator.volume_weight) ||
+              Number(product.volume) ||
+              0;
+            const wbCalc = await this._enrichWbCalculatorReturnAmount(
+              data.calculator,
+              volume,
+              integrationScope
+            );
             const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
-              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
             );
             const priceFbs = calculateMinPrice(
-              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
             );
-            console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs}`);
+            console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs} return=${wbCalc?.commissions?.FBO?.return_amount}`);
             if (priceFbo != null) {
-              await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, data.calculator, { scheme: 'FBO' });
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, wbCalc, { scheme: 'FBO' });
               console.log(`[Prices Service] *** Saved WB FBO min price for product ${productId}: ${priceFbo} ₽ ***`);
             }
             if (priceFbs != null) {
-              await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...data.calculator, price_scheme: 'FBS' }, { scheme: 'FBS' });
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
             }
             if (priceFbo == null && priceFbs == null) {
               errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
@@ -3802,8 +3942,57 @@ class PricesService {
             }
           }
         } else {
-          errors.wb = data?.error || data?.message || 'Не удалось рассчитать цену WB. Проверьте категорию, комиссии и привязку склада WB в настройках.';
-          logger.warn(`[Prices Service] recalc WB for product ${productId}:`, errors.wb);
+          // Live getWBPrices упал — пробуем кэш/сохранённые детали + тариф возврата
+          let fallbackCalc = null;
+          try {
+            const cached = await this._getMpCalculatorCacheRow(productId, 'wb');
+            fallbackCalc = cached?.calculator || null;
+            if (typeof fallbackCalc === 'string') {
+              try { fallbackCalc = JSON.parse(fallbackCalc); } catch { fallbackCalc = null; }
+            }
+          } catch { /* ignore */ }
+          if (!fallbackCalc) {
+            try {
+              const prev = await query(
+                `SELECT calculation_details FROM product_marketplace_prices
+                 WHERE product_id = $1 AND marketplace = 'wb' AND calculation_details IS NOT NULL
+                 LIMIT 1`,
+                [productId]
+              );
+              fallbackCalc = prev.rows[0]?.calculation_details || null;
+              if (typeof fallbackCalc === 'string') {
+                try { fallbackCalc = JSON.parse(fallbackCalc); } catch { fallbackCalc = null; }
+              }
+            } catch { /* ignore */ }
+          }
+          if (fallbackCalc && hasUsableCommissionPercent(fallbackCalc, 'wb')) {
+            const volume = Number(fallbackCalc.volume_weight) || Number(product.volume) || 0;
+            const wbCalc = await this._enrichWbCalculatorReturnAmount(fallbackCalc, volume, integrationScope);
+            const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
+            const taxProfile = resolveMinPriceTaxProfile(product);
+            const priceFbo = calculateMinPrice(
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
+            );
+            const priceFbs = calculateMinPrice(
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
+            );
+            if (priceFbo != null) {
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, wbCalc, { scheme: 'FBO' });
+            }
+            if (priceFbs != null) {
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
+            }
+            if (priceFbo != null || priceFbs != null) {
+              errors.wb = `${data?.error || 'WB live tariffs'} — пересчёт из кэша с тарифом возврата`;
+              logger.warn(`[Prices Service] recalc WB product ${productId} via cache fallback`, errors.wb);
+            } else {
+              errors.wb = data?.error || data?.message || 'Не удалось рассчитать цену WB. Проверьте категорию, комиссии и привязку склада WB в настройках.';
+              logger.warn(`[Prices Service] recalc WB for product ${productId}:`, errors.wb);
+            }
+          } else {
+            errors.wb = data?.error || data?.message || 'Не удалось рассчитать цену WB. Проверьте категорию, комиссии и привязку склада WB в настройках.';
+            logger.warn(`[Prices Service] recalc WB for product ${productId}:`, errors.wb);
+          }
         }
       } catch (err) {
         errors.wb = err.message || String(err);

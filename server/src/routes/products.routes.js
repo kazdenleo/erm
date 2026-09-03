@@ -232,6 +232,12 @@ router.post(
 );
 
 router.post(
+  '/:id/generate-video-cover',
+  validateProductId,
+  wrapAsync(productsController.generateVideoCover.bind(productsController))
+);
+
+router.post(
   '/:id/generate-barcode',
   validateProductId,
   wrapAsync(productsController.generateBarcode.bind(productsController))
@@ -256,6 +262,17 @@ router.post(
   '/:id/pull-images/:marketplace',
   validateProductId,
   wrapAsync(productsController.pullImages.bind(productsController))
+);
+
+router.post(
+  '/:id/content-rating/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.refreshContentRating.bind(productsController))
+);
+router.put(
+  '/:id/content-rating/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.saveContentRating.bind(productsController))
 );
 
 router.get(

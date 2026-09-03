@@ -284,22 +284,31 @@ export function PricesPushSettingsPanel({
 
   const handleSaveAndPush = async () => {
     if (!canPushNow) return;
+
+    const payload = buildScopePayload(
+      scope,
+      pushFbs,
+      pushFbo,
+      pickedCategoryIds,
+      selectedProducts,
+      showFbsOption,
+      showFboOption
+    );
+    const enabledOrgs = orgList.filter((o) => o.autoPushMarketplacePrices === true);
+    if (!enabledOrgs.length) {
+      setError('Включите отправку хотя бы для одной организации.');
+      return;
+    }
+
+    // Без window.confirm: после клика по «Отправить» диалог часто блокируется /
+    // сразу даёт false → ложное «Отправка отменена».
     setSaving(true);
     setMessage(null);
     setError(null);
     try {
-      const payload = buildScopePayload(
-        scope,
-        pushFbs,
-        pushFbo,
-        pickedCategoryIds,
-        selectedProducts,
-        showFbsOption,
-        showFboOption
-      );
       await pricesApi.updatePushSettings(payload);
       onSaved?.(payload);
-      await onPushNow(payload);
+      await onPushNow(payload, { skipConfirm: true, organizations: enabledOrgs });
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Ошибка отправки');
     } finally {

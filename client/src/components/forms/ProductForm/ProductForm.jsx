@@ -20,6 +20,7 @@ import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.j
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
+import { ProductDescriptionAiChat } from '../../products/ProductDescriptionAiChat.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import {
@@ -32,6 +33,13 @@ import {
 import { isEditableAttrType } from '../../../utils/editableAttribute.js';
 import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
+import {
+  VideoCoverPreview,
+  productImageUrlsForVideoCoverPreview,
+} from '../../common/VideoCoverPreview/VideoCoverPreview.jsx';
+import { categoryVideoCoverTemplatesApi } from '../../../services/categoryVideoCoverTemplates.api.js';
+import { normalizeVideoCoverSettings } from '../../../utils/videoCoverTemplate.js';
+import { MarketplaceCardQualityPanel } from './MarketplaceCardQualityPanel.jsx';
 import { isOzonRichContentAttrId, OZON_RICH_CONTENT_ATTR_ID } from '../../../constants/marketplaceRichContent.js';
 import { WbBrandSuggest } from '../../common/WbBrandSuggest/WbBrandSuggest.jsx';
 import {
@@ -1739,6 +1747,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const { suppliers } = useSuppliers();
   const productFormDomId = useId();
   const mpBaselineRef = useRef(null);
+  const formDataRef = useRef(null);
+  const ozonAttributeValuesRef = useRef(null);
+  const wbAttributeValuesRef = useRef(null);
+  const ymAttributeValuesRef = useRef(null);
+  const onCancelRef = useRef(_onCancel);
+  const mpBaselineSettledForIdRef = useRef(null);
   /** Последнее поле мин. наценки, которое правил пользователь: 'rub' | 'percent'. */
   const minMarkupLastEditedRef = useRef('rub');
   const [printHelperUrl, setPrintHelperUrl] = useState('');
@@ -1849,6 +1863,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ymFetchedProduct, setYmFetchedProduct] = useState(null);
   /** Раскрыт ли сырой ответ API YM */
   const [ymShowAllFields, setYmShowAllFields] = useState(false);
+  const [mpContentRatings, setMpContentRatings] = useState({});
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageLightboxIndex, setImageLightboxIndex] = useState(null);
@@ -1905,6 +1920,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setYmFetchedProduct(null);
       setYmShowAllFields(false);
       setYmAttributeValues({});
+      setMpContentRatings(
+        product.content_ratings && typeof product.content_ratings === 'object' ? product.content_ratings : {}
+      );
       setProductImages([]);
       setImageError('');
       ozonFilledFromProductIdRef.current = null;
@@ -1936,6 +1954,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setYmSyncSuccess('');
       setYmFetchedProduct(null);
       setYmShowAllFields(false);
+      setMpContentRatings({});
       setCalculatedVolume('');
       setErrors({});
       const t = String(initialTab || 'main').trim();
@@ -2248,6 +2267,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       setProductImages(normalizeProductImagesOrder(currentProduct.images));
 
+      mpBaselineSettledForIdRef.current = null;
       mpBaselineRef.current = buildMpBaseline({
         fields: {
           mp_wb_vendor_code: currentProduct.mp_wb_vendor_code || '',
@@ -3823,6 +3843,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setOzonFetchedProduct(data);
       setOzonShowAllFields(true);
       mergeOzonFetchedIntoForm(data);
+      if (data.content_rating && currentProduct?.id) {
+        setMpContentRatings((prev) => ({ ...prev, ozon: data.content_rating }));
+        productsApi.saveContentRating(currentProduct.id, 'ozon', data.content_rating).catch(() => {});
+      }
       const offerIdFromOzon = (data.offer_id ?? data.sku ?? '').trim();
       setFormData((prev) => {
         const next = { ...prev };
@@ -4165,6 +4189,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       setYmFetchedProduct(data);
       setYmShowAllFields(true);
+      if (data.content_rating && currentProduct?.id) {
+        setMpContentRatings((prev) => ({ ...prev, ym: data.content_rating }));
+        productsApi.saveContentRating(currentProduct.id, 'ym', data.content_rating).catch(() => {});
+      }
       const resolvedOfferId = String(data.offerId ?? offerId).trim();
       const name = data.name != null ? String(data.name).trim() : '';
       const description = data.description != null ? String(data.description).trim() : '';
@@ -5630,6 +5658,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [barcodeGenerateError, setBarcodeGenerateError] = useState('');
   const [richContentLoading, setRichContentLoading] = useState(null);
   const [richContentError, setRichContentError] = useState('');
+  const [videoCoverLoading, setVideoCoverLoading] = useState(false);
+  const [videoCoverMessage, setVideoCoverMessage] = useState('');
+  const [videoCoverError, setVideoCoverError] = useState('');
+  const [videoCoverSlides, setVideoCoverSlides] = useState(() => currentProduct?.video_cover_slides || null);
+  const [videoCoverTemplateSettings, setVideoCoverTemplateSettings] = useState(null);
   const [richContentResult, setRichContentResult] = useState(null);
   const [richContentModulesDraft, setRichContentModulesDraft] = useState(null);
 
@@ -5778,6 +5811,49 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   };
 
+  useEffect(() => {
+    setVideoCoverSlides(currentProduct?.video_cover_slides || null);
+  }, [currentProduct?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const own = currentProduct?.video_cover_template;
+    if (own && typeof own === 'object') {
+      setVideoCoverTemplateSettings(normalizeVideoCoverSettings(own));
+      return undefined;
+    }
+    if (videoCoverSlides?.settings) {
+      setVideoCoverTemplateSettings(normalizeVideoCoverSettings(videoCoverSlides.settings));
+      return undefined;
+    }
+    const catId = formData.categoryId || currentProduct?.user_category_id || currentProduct?.categoryId;
+    if (!catId) {
+      setVideoCoverTemplateSettings(null);
+      return undefined;
+    }
+    (async () => {
+      try {
+        const res = await categoryVideoCoverTemplatesApi.getByCategoryId(catId);
+        if (cancelled) return;
+        setVideoCoverTemplateSettings(
+          normalizeVideoCoverSettings(res?.data?.settings || res?.settings)
+        );
+      } catch {
+        if (!cancelled) setVideoCoverTemplateSettings(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentProduct?.id,
+    currentProduct?.video_cover_template,
+    currentProduct?.user_category_id,
+    currentProduct?.categoryId,
+    formData.categoryId,
+    videoCoverSlides?.settings,
+  ]);
+
   const handleGenerateRichContent = async (marketplace, linksOverride = null) => {
     if (!currentProduct?.id) {
       setRichContentError('Сначала сохраните товар в ERP.');
@@ -5886,6 +5962,52 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   };
   generateRichContentRef.current = handleGenerateRichContent;
+
+  const handleGenerateVideoCover = async () => {
+    if (!currentProduct?.id) {
+      alert('Сначала сохраните товар');
+      return;
+    }
+    setVideoCoverLoading(true);
+    setVideoCoverError('');
+    setVideoCoverMessage('');
+    try {
+      const productPatch = {
+        images: productImages,
+        ozon_attributes: ozonAttributeValues,
+        categoryId: formData.categoryId || undefined,
+        user_category_id: formData.categoryId || undefined,
+      };
+      if (currentProduct.video_cover_template != null) {
+        productPatch.video_cover_template = currentProduct.video_cover_template;
+      }
+      const body = await productsApi.generateVideoCover(currentProduct.id, productPatch);
+      const payload = body?.data ?? body;
+      if (payload?.slides) setVideoCoverSlides(payload.slides);
+      if (payload?.ozonAttributeValue != null) {
+        setOzonAttributeValues((prev) => ({
+          ...prev,
+          '21845': payload.ozonAttributeValue,
+        }));
+      }
+      if (payload?.product) {
+        setCurrentProduct(payload.product);
+        onProductUpdate?.(payload.product);
+      }
+      const n = Array.isArray(payload?.slides?.slides) ? payload.slides.slides.length : 0;
+      setVideoCoverMessage(
+        n
+          ? `Готово: ${n} слайд(ов). При «Сохранить и отправить на Ozon» уйдёт в видеообложку.`
+          : 'Слайды сформированы'
+      );
+    } catch (e) {
+      setVideoCoverError(
+        e?.response?.data?.message || e?.message || 'Не удалось сгенерировать видеообложку'
+      );
+    } finally {
+      setVideoCoverLoading(false);
+    }
+  };
 
   const handleBarcodeChange = (index, value) => {
     const next = coerceBarcodeString(value);
@@ -7072,6 +7194,34 @@ export const ProductForm = React.forwardRef(function ProductForm({
     });
   }, [formData, ozonAttributeValues, wbAttributeValues, ymAttributeValues]);
 
+  formDataRef.current = formData;
+  ozonAttributeValuesRef.current = ozonAttributeValues;
+  wbAttributeValuesRef.current = wbAttributeValues;
+  ymAttributeValuesRef.current = ymAttributeValues;
+  onCancelRef.current = _onCancel;
+
+  // Автоподстановка атрибутов МП после загрузки даёт ложный dirty — «Назад» тогда только показывает confirm.
+  // Один раз на товар фиксируем baseline после короткой паузы на autofill.
+  useEffect(() => {
+    const id = currentProduct?.id;
+    if (!id) {
+      mpBaselineSettledForIdRef.current = null;
+      return undefined;
+    }
+    if (mpBaselineSettledForIdRef.current === id) return undefined;
+    const t = setTimeout(() => {
+      if (mpBaselineSettledForIdRef.current === id) return;
+      mpBaselineSettledForIdRef.current = id;
+      mpBaselineRef.current = buildMpBaseline({
+        fields: formDataRef.current,
+        ozonAttrs: ozonAttributeValuesRef.current,
+        wbAttrs: wbAttributeValuesRef.current,
+        ymAttrs: ymAttributeValuesRef.current,
+      });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [currentProduct?.id, ozonAttributes, wbCategoryAttributes, ymCategoryAttributes]);
+
   const dirtyMarketplaces = useMemo(
     () =>
       getDirtyMarketplaces(
@@ -7205,7 +7355,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
     refreshMpBaselineFromState(formData, ozonAttributeValues, wbAttributeValues, ymAttributeValues);
     if (closeAfter) {
-      _onCancel?.();
+      onCancelRef.current?.();
     }
     return true;
   };
@@ -7271,13 +7421,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
     async requestClose() {
       const dirtyMps = getDirtyMarketplaces(
         mpBaselineRef.current,
-        formData,
-        ozonAttributeValues,
-        wbAttributeValues,
-        ymAttributeValues
+        formDataRef.current,
+        ozonAttributeValuesRef.current,
+        wbAttributeValuesRef.current,
+        ymAttributeValuesRef.current
       );
       if (dirtyMps.length === 0) {
-        _onCancel?.();
+        onCancelRef.current?.();
         return true;
       }
       const names = formatDirtyMpList(dirtyMps);
@@ -7294,7 +7444,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       const discard = window.confirm('Закрыть без сохранения изменений полей маркетплейсов?');
       if (discard) {
-        _onCancel?.();
+        onCancelRef.current?.();
         return true;
       }
       return false;
@@ -7432,6 +7582,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           );
         })()}
+        <div style={{ marginTop: '12px' }}>
+          <ProductDescriptionAiChat
+            compact
+            productId={currentProduct?.id || product?.id || null}
+            getDraft={() =>
+              snapshotAiCardDraft(formData, {
+                categoryName: selectedCategoryForCert?.name || '',
+              })
+            }
+            onApply={applyAiDraft}
+          />
+        </div>
       </div>
 
       {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
@@ -8484,8 +8646,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             placeholder="95"
           />
           <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Общий — запасной, если по МП ещё нет статистики. Ozon / WB / Я.Маркет обновляются раз в сутки
-            из API маркетплейсов (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
+            Общий — запасной для расчёта мин. цены, если по МП ещё нет статистики («нет данных»).
+            Ozon / WB / Я.Маркет обновляются раз в сутки из API (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
           </div>
           <div className="row g-2 mt-2">
             <div className="col-md-4">
@@ -8699,6 +8861,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge ozon">OZ</span>
             Данные для Ozon
           </h4>
+          <MarketplaceCardQualityPanel
+            marketplace="ozon"
+            rating={ozonFetchedProduct?.content_rating || mpContentRatings.ozon}
+          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -8743,6 +8909,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
+              variant="secondary"
+              onClick={handleGenerateVideoCover}
+              disabled={!currentProduct?.id || videoCoverLoading}
+              title={
+                !currentProduct?.id
+                  ? 'Сначала сохраните товар'
+                  : 'Слайды из фото по шаблону товара / категории / всех товаров'
+              }
+            >
+              {videoCoverLoading ? 'Слайды…' : 'Сгенерировать видеообложку'}
+            </Button>
+            <a
+              className="btn btn-outline-secondary btn-sm"
+              href={`/settings/video-cover?productId=${encodeURIComponent(currentProduct?.id || '')}&categoryId=${encodeURIComponent(formData.categoryId || '')}`}
+              title="Шаблон слайдов и эффект перехода (Настройки)"
+            >
+              Шаблон обложки
+            </a>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('ozon')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
@@ -8753,6 +8939,52 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="text-muted small">
               «Обновить с Ozon» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
             </span>
+          </div>
+          {videoCoverError ? <div className="alert alert-danger py-2">{videoCoverError}</div> : null}
+          {videoCoverMessage ? <div className="alert alert-success py-2">{videoCoverMessage}</div> : null}
+          <div className="mb-3 d-flex flex-wrap align-items-start gap-3">
+            <VideoCoverPreview
+              settings={
+                videoCoverSlides?.settings ||
+                videoCoverTemplateSettings ||
+                currentProduct?.video_cover_template ||
+                undefined
+              }
+              imageUrls={
+                Array.isArray(videoCoverSlides?.slides) && videoCoverSlides.slides.length
+                  ? videoCoverSlides.slides.map((s) => s.publicUrl || s.url).filter(Boolean)
+                  : productImageUrlsForVideoCoverPreview(productImages)
+              }
+              size="md"
+            />
+            {videoCoverSlides?.slides?.length ? (
+              <div>
+                <div className="text-muted small mb-1">
+                  Сгенерированные кадры ({videoCoverSlides.slides.length})
+                </div>
+                <div className="d-flex flex-wrap gap-2">
+                  {videoCoverSlides.slides.map((s) => (
+                    <img
+                      key={s.index ?? s.url}
+                      src={s.publicUrl || s.url}
+                      alt=""
+                      style={{
+                        width: 56,
+                        height: 74,
+                        objectFit: 'cover',
+                        borderRadius: 6,
+                        border: '1px solid #e5e7eb',
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-muted small mb-0" style={{ maxWidth: 280 }}>
+                Превью по текущему шаблону и фото с бейджем Ozon. Нажмите «Сгенерировать
+                видеообложку», чтобы зафиксировать слайды для отправки.
+              </p>
+            )}
           </div>
           <MarketplaceRichContentPanel
             marketplace="ozon"
@@ -9242,6 +9474,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge wb">WB</span>
             Данные для Wildberries
           </h4>
+          <MarketplaceCardQualityPanel marketplace="wb" rating={mpContentRatings.wb} />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -9672,6 +9905,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <span className="mp-badge ym">YM</span>
             Данные для Яндекс.Маркет
           </h4>
+          <MarketplaceCardQualityPanel
+            marketplace="ym"
+            rating={ymFetchedProduct?.content_rating || mpContentRatings.ym}
+          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"

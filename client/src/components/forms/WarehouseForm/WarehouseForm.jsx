@@ -66,7 +66,6 @@ export function WarehouseForm({
   const [exclusionError, setExclusionError] = useState(null);
   const [wbWarehouses, setWbWarehouses] = useState([]);
   const [loadingWbWarehouses, setLoadingWbWarehouses] = useState(false);
-  const [wbWarehouseToBind, setWbWarehouseToBind] = useState('');
   const [wbOffices, setWbOffices] = useState([]);
   const [loadingWbOffices, setLoadingWbOffices] = useState(false);
   const [wbOfficesError, setWbOfficesError] = useState(null);
@@ -315,7 +314,6 @@ export function WarehouseForm({
       });
       setExclusionCount(Number(warehouse.stockSyncExclusionCount) || 0);
       setOzonWarehouseName('');
-      setWbWarehouseToBind('');
       setYmCampaignId('');
       setWbOfficeToBind('');
       loadMappings(warehouse.id);
@@ -336,7 +334,6 @@ export function WarehouseForm({
       });
       setExclusionCount(0);
       setOzonWarehouseName('');
-      setWbWarehouseToBind('');
       setYmCampaignId('');
       setWbOfficeToBind('');
       setExistingMappings([]);
@@ -789,9 +786,10 @@ export function WarehouseForm({
 
       {formData.type === 'warehouse' && (
         <div className="mt-3">
-          <label className="form-label" htmlFor="wbWarehouseSelect">Склад Wildberries</label>
+          <label className="form-label" htmlFor="wbWarehouseSelect">Wildberries: склад для расчёта логистики</label>
           <div className="text-muted small mb-2">
-            Выберите соответствующий склад Wildberries из списка тарифов. Это необходимо для корректного расчета логистики.
+            Склад из тарифов WB — только для расчёта логистики в ERP. Привязка заказов FBS к этому складу —
+            в блоке ниже.
           </div>
           {loadingWbWarehouses ? (
             <div className="alert alert-secondary py-2">Загрузка складов Wildberries...</div>
@@ -800,84 +798,31 @@ export function WarehouseForm({
               Склады Wildberries не загружены. Убедитесь, что в настройках интеграции Wildberries указан API ключ и загружены тарифы.
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <select
-                id="wbWarehouseSelect"
-                className="form-select form-select-sm"
-                value={formData.wbWarehouseName}
-                onChange={(e) => handleChange('wbWarehouseName', e.target.value)}
-              >
-                <option value="">-- Выберите склад Wildberries --</option>
-                {wbWarehouses.map((wbWarehouse, index) => {
-                  const warehouseName = wbWarehouse.warehouseName || '';
-                  if (index === 0) {
-                    console.log(`[WarehouseForm] First warehouse option:`, { warehouseName, fullWarehouse: wbWarehouse });
-                  }
-                  return (
-                    <option key={index} value={warehouseName}>
-                      {warehouseName} {wbWarehouse.geoName ? `(${wbWarehouse.geoName})` : ''}
-                    </option>
-                  );
-                })}
-              </select>
-              {canManageMappings && (
-                <>
-                  <select
-                    className="form-select form-select-sm"
-                    style={{ maxWidth: 240 }}
-                    value={wbWarehouseToBind}
-                    onChange={(e) => setWbWarehouseToBind(e.target.value)}
-                    title="Выберите склад WB для привязки к этому складу"
-                  >
-                    <option value="">-- Привязать WB склад --</option>
-                    {wbWarehouses.map((w, i) => (
-                      <option key={i} value={String(w.warehouseName || '')}>
-                        {String(w.warehouseName || '')}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="small"
-                    disabled={mappingBusy || !wbWarehouseToBind}
-                    onClick={() => bindMarketplaceWarehouse('wb', wbWarehouseToBind)}
-                  >
-                    Привязать
-                  </Button>
-                </>
-              )}
-            </div>
-          )}
-
-          {canManageMappings && wbWarehouses.length === 0 && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input
-                className="form-control form-control-sm"
-                style={{ maxWidth: 420 }}
-                value={wbWarehouseToBind}
-                onChange={(e) => setWbWarehouseToBind(e.target.value)}
-                placeholder="Введите название/ID склада WB (как в заказе/тарифах)"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={mappingBusy || !String(wbWarehouseToBind || '').trim()}
-                onClick={() => bindMarketplaceWarehouse('wb', wbWarehouseToBind)}
-              >
-                Привязать
-              </Button>
-            </div>
+            <select
+              id="wbWarehouseSelect"
+              className="form-select form-select-sm"
+              value={formData.wbWarehouseName}
+              onChange={(e) => handleChange('wbWarehouseName', e.target.value)}
+            >
+              <option value="">-- Выберите склад Wildberries --</option>
+              {wbWarehouses.map((wbWarehouse, index) => {
+                const warehouseName = wbWarehouse.warehouseName || '';
+                return (
+                  <option key={index} value={warehouseName}>
+                    {warehouseName} {wbWarehouse.geoName ? `(${wbWarehouse.geoName})` : ''}
+                  </option>
+                );
+              })}
+            </select>
           )}
         </div>
       )}
 
       {formData.type === 'warehouse' && (
         <div className="mt-3">
-          <label className="form-label" htmlFor="wbOfficeSelect">Wildberries: склад продавца (FBS)</label>
+          <label className="form-label" htmlFor="wbOfficeSelect">Wildberries: привязка склада (FBS)</label>
           <div className="text-muted small mb-2">
-            Это склад продавца WB (FBS). Его нужно привязать к фактическому складу.
+            Склад продавца WB из заказов FBS. Одна привязка на фактический склад — для резервирования и отгрузки.
           </div>
           {!canManageMappings ? (
             <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>

@@ -8,6 +8,7 @@ import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
+import { resolveWbLogisticsDimensionsCm } from '../../utils/marketplaceDimensions.js';
 import {
   privateClientPriceParts,
   resolveMarketplaceMinProfit,
@@ -449,6 +450,12 @@ function PriceDetailsModalInner({
     ?? toFiniteNumber(resolvedCalculatorData.logistics_liter);
   const wbLogisticsPrecomputed = toFiniteNumber(resolvedCalculatorData[`logistics_cost_${wbSchemeKey}`])
     ?? toFiniteNumber(resolvedCalculatorData.logistics_cost);
+  const wbLogisticsCoef = toFiniteNumber(resolvedCalculatorData[`logistics_coef_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_coef);
+  const wbLogisticsRawBase = toFiniteNumber(resolvedCalculatorData[`logistics_raw_base_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_base);
+  const wbLogisticsRawLiter = toFiniteNumber(resolvedCalculatorData[`logistics_raw_liter_${wbSchemeKey}`])
+    ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_liter);
   if (marketplace === 'wb' && wbLogisticsBase != null) {
     const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
     const liter = wbLogisticsLiter ?? 0;
@@ -526,7 +533,7 @@ function PriceDetailsModalInner({
       ? `выкуп ${Math.round(buyoutRateInput)}%`
       : null;
 
-  console.log(`[PriceDetailsModal] Returns for ${marketplace}:`, {
+  console.log(`[PriceDetailsModal] Reverse logistics inputs for ${marketplace}:`, {
     buyoutRateFromProduct: buyoutRateInput,
     buyoutRateInput,
     returnRate: (returnRate * 100).toFixed(2) + '%',
@@ -705,14 +712,14 @@ function PriceDetailsModalInner({
   const profit = calculatedPrice - totalExpenses;
   const profitPercent = calculatedPrice > 0 ? (profit / calculatedPrice) * 100 : 0;
   
-  // Отладочное логирование для диагностики возвратов
-  console.log(`[PriceDetailsModal] Final return costs calculation:`, {
+  // Отладочное логирование обратной логистики
+  console.log(`[PriceDetailsModal] Final reverse logistics calculation:`, {
     marketplace,
     buyoutRate: buyoutRateInput,
     returnRate: (returnRate * 100).toFixed(2) + '%',
     returnCost: returnCost.toFixed(2),
     returnProcessingCost: returnProcessingCost.toFixed(2),
-    totalReturnCosts: (returnCost + returnProcessingCost).toFixed(2),
+    totalReverseLogistics: (returnCost + returnProcessingCost).toFixed(2),
     fixedExpenses: fixedExpenses.toFixed(2),
     basePrice: basePrice.toFixed(2),
     totalExpenses: totalExpenses.toFixed(2)
@@ -777,6 +784,23 @@ function PriceDetailsModalInner({
   const isEstimatedTariffs = marketplace === 'wb' && resolvedCalculatorData._estimatedTariffs;
 
   const headerVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
+  const wbCmDims =
+    marketplace === 'wb'
+      ? resolveWbLogisticsDimensionsCm(product) ||
+        (resolvedCalculatorData?.wb_logistics_cm
+          ? {
+              length: Number(resolvedCalculatorData.wb_logistics_cm.length),
+              width: Number(resolvedCalculatorData.wb_logistics_cm.width),
+              height: Number(resolvedCalculatorData.wb_logistics_cm.height),
+            }
+          : null)
+      : null;
+  const volumeLabel =
+    headerVolume > 0
+      ? wbCmDims && wbCmDims.length > 0
+        ? `${headerVolume.toFixed(2)} л (${wbCmDims.length}×${wbCmDims.width}×${wbCmDims.height} см)`
+        : `${headerVolume.toFixed(2)} л`
+      : 'нет габаритов';
 
   return (
     <Modal
@@ -790,7 +814,7 @@ function PriceDetailsModalInner({
           <span><strong>Артикул:</strong> {product.sku || '—'}</span>
           <span style={{ marginLeft: '16px' }}><strong>Название:</strong> {product.name || 'Без названия'}</span>
           <span style={{ marginLeft: '16px' }}><strong>Объём:</strong>{' '}
-            {headerVolume > 0 ? `${headerVolume.toFixed(2)} л` : 'нет габаритов'}
+            {volumeLabel}
           </span>
         </div>
         {isEstimatedTariffs && (
@@ -875,7 +899,13 @@ function PriceDetailsModalInner({
             
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">
-                Логистика{productVolume > 0 ? ` (${productVolume.toFixed(2)} л)` : ''}:
+                Логистика
+                {productVolume > 0
+                  ? wbCmDims && wbCmDims.length > 0
+                    ? ` (${productVolume.toFixed(2)} л, ${wbCmDims.length}×${wbCmDims.width}×${wbCmDims.height} см)`
+                    : ` (${productVolume.toFixed(2)} л)`
+                  : ''}
+                :
               </span>
               <PriceBreakdownValue
                 formula={
@@ -884,13 +914,25 @@ function PriceDetailsModalInner({
                         const volume = productVolume;
                         const base = wbLogisticsBase;
                         const liter = wbLogisticsLiter ?? 0;
+                        const coef = wbLogisticsCoef;
+                        const rawBase = wbLogisticsRawBase;
+                        const rawLiter = wbLogisticsRawLiter;
+                        const schemeLabel = wantFbo ? 'FBO boxDelivery' : 'FBS marketplace';
+                        if (!(base > 0) && !(liter > 0)) {
+                          return `= 0 ₽ (${schemeLabel}: в тарифах склада нет базовой ставки)`;
+                        }
+                        const coefNote =
+                          coef != null && coef !== 100 && rawBase > 0
+                            ? ` (${rawBase.toFixed(2)} × ${coef}% = ${base.toFixed(2)}`
+                              + (rawLiter > 0 ? `; ${rawLiter.toFixed(2)} × ${coef}% = ${liter.toFixed(2)} л)` : ')')
+                            : '';
                         if (!volume || volume <= 1) {
-                          return `= ${base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
+                          return `= ${base.toFixed(2)} ₽ (базовый тариф за 1-й литр, ${schemeLabel}${coefNote})`;
                         }
                         const additionalLiters = Math.ceil(volume - 1);
                         const additionalCost = liter * additionalLiters;
                         const recalculatedLogisticsCost = base + additionalCost;
-                        return `= ${base.toFixed(2)} ₽ + ${liter.toFixed(2)} ₽ × ${additionalLiters} л = ${base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
+                        return `= ${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л = ${recalculatedLogisticsCost.toFixed(2)} ₽ (${schemeLabel}${coefNote})`;
                       })()
                     : marketplace === 'ozon'
                       ? logisticsCostMax != null
@@ -934,7 +976,8 @@ function PriceDetailsModalInner({
                           : undefined
                       }
                     >
-                      Возвраты ({buyoutPercentLabel}):
+                      Обратная логистика
+                      {buyoutPercentLabel ? ` (${buyoutPercentLabel})` : ''}:
                     </span>
                     <PriceBreakdownValue
                       className="negative"
@@ -943,8 +986,10 @@ function PriceDetailsModalInner({
                         returnRate > 0 &&
                         ozonReturnMeta?.logisticsMax &&
                         ozonReturnMeta.logisticsMin > 0
-                          ? `= (${ozonReturnMeta.logisticsMin.toFixed(0)} + ${ozonReturnMeta.logisticsMax.toFixed(0)}) / 2 × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`
-                          : `= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% = ${returnCost.toFixed(2)} ₽`
+                          ? `= (${ozonReturnMeta.logisticsMin.toFixed(0)} + ${ozonReturnMeta.logisticsMax.toFixed(0)}) / 2 × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
+                          : marketplace === 'wb'
+                            ? `= ${returnAmount.toFixed(2)} ₽ (базовый тариф по объёму) × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
+                            : `= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
                       }
                     >
                       -{returnCost.toFixed(2)} ₽
@@ -953,10 +998,10 @@ function PriceDetailsModalInner({
                 )}
                 {returnProcessingCost > 0 && (
                   <div className="price-breakdown-item">
-                    <span className="price-breakdown-label">Обработка возвратов:</span>
+                    <span className="price-breakdown-label">Обработка обратной логистики:</span>
                     <PriceBreakdownValue
                       className="negative"
-                      formula={`= ${returnProcessingCost.toFixed(2)} ₽ (из API × ${(returnRate * 100).toFixed(1)}% возвратов)`}
+                      formula={`= ${returnProcessingCost.toFixed(2)} ₽ (из API × ${(returnRate * 100).toFixed(1)}% невыкупа)`}
                     >
                       -{returnProcessingCost.toFixed(2)} ₽
                     </PriceBreakdownValue>

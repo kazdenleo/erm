@@ -1044,6 +1044,20 @@ async function pullOneMarketplace(product, mp, opts = {}) {
     });
   }
 
+  try {
+    const marketplaceCardQualityService = (await import('./marketplaceCardQuality.service.js')).default;
+    await marketplaceCardQualityService.persistFromFetchedItem(product.id, mp, data, {
+      profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
+      organizationId: organizationId || null,
+    });
+  } catch (e) {
+    logger.warn('[CardPull] content rating persist failed', {
+      productId: product.id,
+      mp,
+      error: e?.message || String(e),
+    });
+  }
+
   const profileIdForTask = opts.profileId ?? product.profile_id ?? product.profileId ?? null;
   if (profileIdForTask != null && changedLabels.length > 0) {
     try {

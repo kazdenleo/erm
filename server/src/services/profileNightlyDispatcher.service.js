@@ -231,6 +231,22 @@ function buildNightlyJobs() {
     },
   });
 
+  if (envFlagEnabled('MP_CARD_QUALITY_DAILY_ENABLED', true)) {
+    jobs.push({
+      key: 'marketplace-card-quality-daily',
+      enabled: true,
+      cron: envCron('MP_CARD_QUALITY_DAILY_CRON', '50 4 * * *'),
+      fallbackHm: { hour: 4, minute: 50 },
+      scope: 'profile',
+      run: async ({ profileId }) => {
+        const quality = (await import('./marketplaceCardQuality.service.js')).default;
+        const settings = await quality.getSettings(profileId);
+        if (!settings.showInCardWork) return;
+        await quality.refreshForProfile(profileId);
+      },
+    });
+  }
+
   if (envFlagEnabled('CACHE_ENTRIES_CLEAR_EXPIRED_ENABLED', true)) {
     jobs.push({
       key: 'cache-entries-clear-expired',

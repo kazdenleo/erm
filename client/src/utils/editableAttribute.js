@@ -17,3 +17,15 @@ export function attrShowsRelatedFields(attr) {
     attr.showRelatedFields === true
   );
 }
+
+/** ИИ-чат в попапе редактора (контекст из других полей карточки). */
+export function attrAiChatEnabled(attr) {
+  if (!attr || typeof attr !== 'object') return false;
+  if (!isEditableAttrType(attr.type)) return false;
+  return (
+    attr.ai_chat_enabled === true ||
+    attr.ai_chat_enabled === 'true' ||
+    attr.ai_chat_enabled === 1 ||
+    attr.aiChatEnabled === true
+  );
+}

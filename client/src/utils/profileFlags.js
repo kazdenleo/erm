@@ -50,6 +50,27 @@ export function accountSettingsFromProfile(profile) {
         ? 'kg'
         : 'g',
     timezone: String(profile.timezone ?? profile.timeZone ?? 'Europe/Moscow').trim() || 'Europe/Moscow',
+    card_quality_settings: parseClientCardQualitySettings(
+      profile.card_quality_settings ?? profile.cardQualitySettings
+    ),
+  };
+}
+
+function parseClientCardQualitySettings(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const th = src.thresholds && typeof src.thresholds === 'object' ? src.thresholds : {};
+  const clamp = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 70;
+    return Math.min(100, Math.max(0, Math.round(n)));
+  };
+  return {
+    showInCardWork: isProfileBoolFlag(src.showInCardWork ?? src.show_in_card_work),
+    thresholds: {
+      ozon: clamp(th.ozon),
+      wb: clamp(th.wb),
+      ym: clamp(th.ym),
+    },
   };
 }
 

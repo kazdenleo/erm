@@ -712,15 +712,18 @@ export function Prices() {
   };
 
   /** Ручная отправка по сохранённым настройкам (из панели «Настройки»). */
-  const handlePushNow = async (savedPayload) => {
+  const handlePushNow = async (savedPayload, opts = {}) => {
     const summarySettings = {
       ...(pushSettingsSummary || {}),
       ...(savedPayload || {}),
-      organizations: pushSettingsSummary?.organizations || organizations.map((o) => ({
-        id: o.id,
-        name: o.name,
-        autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
-      })),
+      organizations:
+        opts.organizations ||
+        pushSettingsSummary?.organizations ||
+        organizations.map((o) => ({
+          id: o.id,
+          name: o.name,
+          autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
+        })),
     };
     const enabledOrgs = getEnabledPushOrgs(summarySettings);
     if (!enabledOrgs.length) {
@@ -731,11 +734,13 @@ export function Prices() {
       throw new Error(msg);
     }
 
-    const scopeHint = buildScopeSummaryText(savedPayload || pushSettingsSummary);
-    const ok = window.confirm(
-      `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${scopeHint}.\nОрганизации: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
-    );
-    if (!ok) return;
+    if (!opts.skipConfirm) {
+      const scopeHint = buildScopeSummaryText(savedPayload || pushSettingsSummary);
+      const ok = window.confirm(
+        `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${scopeHint}.\nОрганизации: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
+      );
+      if (!ok) return;
+    }
 
     setPushAllLoading(true);
     setRecalcAllMessage(null);

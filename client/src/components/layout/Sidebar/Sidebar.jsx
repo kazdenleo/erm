@@ -148,6 +148,7 @@ const menuItems = [
       { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket', sectionKey: 'settings_attributes' },
       { path: '/settings/certificates', label: 'Сертификаты', iconClass: 'pe-7s-portfolio', sectionKey: 'settings_certificates' },
       { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels' },
+      { path: '/settings/video-cover', label: 'Видеообложка', iconClass: 'pe-7s-film', sectionKey: 'settings_video_cover' },
       { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', tenantAdminOnly: true, sectionKey: 'settings_users' },
       { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture', sectionKey: 'organizations' },
       { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home', sectionKey: 'warehouses' },

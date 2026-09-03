@@ -29,14 +29,16 @@ const SCHEME_OPTIONS = [
 
 const REASON_FILTERS = [
   { value: 'all', label: 'Все причины' },
-  { value: 'high_turnover', label: 'Высокая оборачиваемость' },
-  { value: 'overstock', label: 'Затоварен / не продаётся' },
+  { value: 'low_turnover', label: 'Низкая оборачиваемость' },
   { value: 'stockout', label: 'Нет остатка' },
+  { value: 'low_content_rating', label: 'Качество' },
+  { value: 'dim_mismatch', label: 'Размеры' },
 ];
 
 const SORT_GETTERS = {
   article: (r) => r.erpSku || r.sku || '',
   productName: (r) => r.productName || '',
+  marketplace: (r) => r.marketplaceLabel || r.marketplace || '',
   soldQty: (r) => Number(r.soldQty) || 0,
   stockQty: (r) => Number(r.stockQty) || 0,
   primary: (r) => r.primaryReason?.label || '',
@@ -46,6 +48,18 @@ const SORT_GETTERS = {
 function formatQty(n) {
   if (!Number.isFinite(Number(n))) return '0';
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number(n));
+}
+
+function uniqueByCode(reasons) {
+  const out = [];
+  const seen = new Set();
+  for (const r of reasons || []) {
+    const code = r?.code || r?.label;
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(r);
+  }
+  return out;
 }
 
 export function CardWork() {
@@ -94,7 +108,7 @@ export function CardWork() {
         iconClass="pe-7s-note2"
         iconBgClass="bg-mean-fruit"
         title="Работа с карточками"
-        subtitle="Карточки, с которыми нужно провести работу: слишком высокая оборачиваемость, затоваривание, нет остатка"
+        subtitle="Карточки, с которыми нужно провести работу: оборачиваемость, остаток, качество и размеры"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -156,16 +170,22 @@ export function CardWork() {
             <div className="product-dynamics__summary-card-value">{formatQty(summary.cardsCount)}</div>
           </div>
           <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Высокая оборачиваемость</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.highTurnoverCount)}</div>
-          </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Затоварен / не продаётся</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.overstockCount)}</div>
+            <div className="product-dynamics__summary-card-label">Низкая оборачиваемость</div>
+            <div className="product-dynamics__summary-card-value">
+              {formatQty(summary.lowTurnoverCount ?? summary.overstockCount)}
+            </div>
           </div>
           <div className="product-dynamics__summary-card">
             <div className="product-dynamics__summary-card-label">Нет остатка</div>
             <div className="product-dynamics__summary-card-value">{formatQty(summary.stockoutCount)}</div>
+          </div>
+          <div className="product-dynamics__summary-card">
+            <div className="product-dynamics__summary-card-label">Качество</div>
+            <div className="product-dynamics__summary-card-value">{formatQty(summary.lowContentRatingCount)}</div>
+          </div>
+          <div className="product-dynamics__summary-card">
+            <div className="product-dynamics__summary-card-label">Размеры</div>
+            <div className="product-dynamics__summary-card-value">{formatQty(summary.dimMismatchCount)}</div>
           </div>
         </div>
       )}
@@ -180,6 +200,9 @@ export function CardWork() {
               <SortableTh sortKey="productName" sort={sort} onSort={toggleSort}>
                 Карточка
               </SortableTh>
+              <SortableTh sortKey="marketplace" sort={sort} onSort={toggleSort}>
+                Маркетплейс
+              </SortableTh>
               <SortableTh sortKey="primary" sort={sort} onSort={toggleSort}>
                 Что сделать
               </SortableTh>
@@ -187,28 +210,28 @@ export function CardWork() {
                 Продано, шт
               </SortableTh>
               <SortableTh sortKey="stockQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Остаток МП
+                Остаток на МП
               </SortableTh>
             </tr>
           </thead>
           <tbody>
             {!loading && data != null && items.length === 0 && (
               <tr>
-                <td colSpan={5} className="sales-analytics__empty">
+                <td colSpan={6} className="sales-analytics__empty">
                   Нет карточек, требующих работы, по выбранным фильтрам.
                 </td>
               </tr>
             )}
             {data == null && !loading && (
               <tr>
-                <td colSpan={5} className="sales-analytics__empty">
+                <td colSpan={6} className="sales-analytics__empty">
                   Выберите период и нажмите «Показать».
                 </td>
               </tr>
             )}
             {items.map((row) => (
               <tr
-                key={`${row.productId || 'x'}-${row.sku}`}
+                key={`${row.productId || 'x'}-${row.sku}-${row.marketplace || 'mp'}`}
                 className={row.severity === 'high' ? 'card-work__severity-high' : undefined}
               >
                 <td>
@@ -229,14 +252,15 @@ export function CardWork() {
                     row.productName || '—'
                   )}
                 </td>
+                <td>{row.marketplaceLabel || row.marketplace || '—'}</td>
                 <td>
-                  {(row.reasons || []).map((r) => (
-                    <span key={`${r.code}-${r.marketplace}`} className={`card-work__reason card-work__reason--${r.code}`}>
+                  {uniqueByCode(row.reasons).map((r) => (
+                    <span key={r.code} className={`card-work__reason card-work__reason--${r.code}`}>
                       {r.label}
                     </span>
                   ))}
-                  {(row.reasons || []).map((r) => (
-                    <p key={`${r.code}-${r.marketplace}-h`} className="card-work__hint">
+                  {uniqueByCode(row.reasons).map((r) => (
+                    <p key={`${r.code}-h`} className="card-work__hint">
                       {r.hint}
                     </p>
                   ))}
@@ -250,9 +274,13 @@ export function CardWork() {
       </div>
 
       <p className="sales-analytics__hint">
-        Высокая оборачиваемость — остатка хватает меньше чем на 10 дней или продажи за период ≥ 1,5× остатка.
-        Затоварен — запас больше 45 дней или продаж нет при остатке. Нет остатка — продажи есть, на складе МП 0.
-        Клик по артикулу открывает карточку товара.
+        Каждая строка — один маркетплейс: продажи и остаток не суммируются между Ozon / WB / Яндекс.
+        Низкая оборачиваемость — запас больше 45 дней или продаж нет при остатке на МП.
+        Нет остатка — на этом МП продажи есть, а склад МП 0.
+        Качество — контент-рейтинг Ozon или Яндекс.Маркета ниже порога из настроек аккаунта
+        (включается тумблером «Показывать в работе над карточкой»). Оценки обновляются при синхронизации карточки
+        и ночью. Размеры — габариты упаковки на маркетплейсе не совпадают с вкладкой «Основное» (пустые значения
+        не считаются расхождением; для WB и Яндекс.Маркета сравнение в сантиметрах). Клик по артикулу открывает карточку товара.
       </p>
     </div>
   );

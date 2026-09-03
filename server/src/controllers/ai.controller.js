@@ -1,5 +1,6 @@
 import aiAssistantService from '../services/aiAssistant.service.js';
 import aiProductCardService from '../services/aiProductCard.service.js';
+import aiAttributeEditorService from '../services/aiAttributeEditor.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { aiHttpError } from '../utils/aiSettings.js';
 

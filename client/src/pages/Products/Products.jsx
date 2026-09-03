@@ -451,34 +451,27 @@ export function Products() {
 
   const toggleUnlinkedMpFilter = (mpCode) => {
     setCurrentPage(1);
-    setFilterUnlinkedMp((prev) => {
-      const next = new Set(prev);
-      if (next.has(mpCode)) next.delete(mpCode);
-      else next.add(mpCode);
-      return next;
-    });
-    setFilterLinkedMp((prev) => {
-      if (!prev.has(mpCode)) return prev;
-      const next = new Set(prev);
-      next.delete(mpCode);
-      return next;
-    });
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    if (nextUnlinked.has(mpCode)) nextUnlinked.delete(mpCode);
+    else nextUnlinked.add(mpCode);
+    const nextLinked = new Set(filterLinkedMp);
+    // Один и тот же МП нельзя одновременно в «Не связан» и «Связан»
+    if (nextUnlinked.has(mpCode)) nextLinked.delete(mpCode);
+    setFilterUnlinkedMp(nextUnlinked);
+    setFilterLinkedMp(nextLinked);
+    loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
 
   const toggleLinkedMpFilter = (mpCode) => {
     setCurrentPage(1);
-    setFilterLinkedMp((prev) => {
-      const next = new Set(prev);
-      if (next.has(mpCode)) next.delete(mpCode);
-      else next.add(mpCode);
-      return next;
-    });
-    setFilterUnlinkedMp((prev) => {
-      if (!prev.has(mpCode)) return prev;
-      const next = new Set(prev);
-      next.delete(mpCode);
-      return next;
-    });
+    const nextLinked = new Set(filterLinkedMp);
+    if (nextLinked.has(mpCode)) nextLinked.delete(mpCode);
+    else nextLinked.add(mpCode);
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    if (nextLinked.has(mpCode)) nextUnlinked.delete(mpCode);
+    setFilterLinkedMp(nextLinked);
+    setFilterUnlinkedMp(nextUnlinked);
+    loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -558,6 +551,7 @@ export function Products() {
     loadListRef.current({ page: next });
   };
 
+  // Тумблеры МП сами вызывают loadList; этот эффект — остальные фильтры при mount/смене
   useEffect(() => {
     const isFirstLoad = !listBootstrappedRef.current;
     listBootstrappedRef.current = true;
@@ -569,8 +563,6 @@ export function Products() {
     filterCategoryId,
     filterProductType,
     filterArchiveMode,
-    filterUnlinkedMp,
-    filterLinkedMp,
     supplierBindingEnabled,
   ]);
 
@@ -605,11 +597,11 @@ export function Products() {
       window.open(path, '_blank', 'noopener,noreferrer');
       return;
     }
-    navigate(path);
+    navigate(path, { state: { from: '/products' } });
   };
 
   const handleCreate = () => {
-    navigate('/products/new');
+    navigate('/products/new', { state: { from: '/products' } });
   };
 
   const handleCreateMany = () => {
@@ -1087,7 +1079,13 @@ export function Products() {
 
   const openLegacyId = Number(openProductIdParam);
   if (openProductIdParam && Number.isInteger(openLegacyId) && openLegacyId >= 1) {
-    return <Navigate to={productCardPath(openLegacyId, { tab: openProductTabParam })} replace />;
+    return (
+      <Navigate
+        to={productCardPath(openLegacyId, { tab: openProductTabParam })}
+        replace
+        state={{ from: '/products' }}
+      />
+    );
   }
 
   return (

@@ -1,5 +1,6 @@
 /**
  * Процент выкупа для расчёта мин. цены: сначала по МП, иначе общий.
+ * 0% считается «нет данных» (у новых SKU без продаж), не реальным выкупом.
  * @returns {number|null} 0–100 или null, если не задан
  */
 export function resolveMarketplaceBuyoutRate(product, marketplace) {
@@ -13,11 +14,19 @@ export function resolveMarketplaceBuyoutRate(product, marketplace) {
   } else if (mp === 'ym' || mp === 'yandex' || mp === 'yandexmarket') {
     perMp = product.buyout_rate_ym ?? product.buyoutRateYm;
   }
-  const raw = perMp != null && perMp !== '' ? perMp : product.buyout_rate;
-  if (raw == null || raw === '') return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(100, n));
+
+  const pick = (v) => {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.max(0, Math.min(100, n));
+  };
+
+  const fromMp = pick(perMp);
+  if (fromMp != null) return fromMp;
+  const fromGeneral = pick(product.buyout_rate);
+  if (fromGeneral != null) return fromGeneral;
+  return 95;
 }
 
 /** Выкуп = delivered / (delivered + returned) * 100. */
@@ -26,7 +35,8 @@ export function computeBuyoutPercent(deliveredQty, returnedQty, minUnits = 3) {
   const r = Math.max(0, Number(returnedQty) || 0);
   const total = d + r;
   if (total < minUnits) return null;
-  return Math.max(0, Math.min(100, Math.round((d / total) * 100)));
+  const pct = Math.max(0, Math.min(100, Math.round((d / total) * 100)));
+  return pct > 0 ? pct : null;
 }
 
 /**
@@ -37,7 +47,7 @@ export function computeBuyoutPercent(deliveredQty, returnedQty, minUnits = 3) {
  */
 export function computeBuyoutFromMpAnalytics(metrics = {}, minUnits = 3) {
   const direct = Number(metrics.buyoutPercent);
-  if (Number.isFinite(direct) && direct >= 0 && direct <= 100) {
+  if (Number.isFinite(direct) && direct > 0 && direct <= 100) {
     return Math.round(direct);
   }
 
@@ -46,10 +56,12 @@ export function computeBuyoutFromMpAnalytics(metrics = {}, minUnits = 3) {
   const returns = Math.max(0, Number(metrics.returns) || 0);
 
   if (ordered >= minUnits && delivered > 0) {
-    return Math.max(0, Math.min(100, Math.round((delivered / ordered) * 100)));
+    const pct = Math.max(0, Math.min(100, Math.round((delivered / ordered) * 100)));
+    return pct > 0 ? pct : null;
   }
   if (delivered + returns >= minUnits && delivered > 0) {
-    return Math.max(0, Math.min(100, Math.round((delivered / (delivered + returns)) * 100)));
+    const pct = Math.max(0, Math.min(100, Math.round((delivered / (delivered + returns)) * 100)));
+    return pct > 0 ? pct : null;
   }
   if (delivered >= minUnits && ordered === 0 && returns === 0) {
     return 100;

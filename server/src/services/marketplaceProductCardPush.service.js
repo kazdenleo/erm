@@ -41,6 +41,12 @@ import {
 } from '../utils/ozonDimensionsLock.js';
 import { isOzonRichContentAttrId } from '../utils/marketplaceRichContent.js';
 import {
+  isOzonVideoCoverAttrId,
+  OZON_VIDEO_COVER_ATTR_ID,
+  OZON_VIDEO_COVER_COMPLEX_ID,
+} from '../utils/videoCoverTemplate.js';
+import { absoluteProductImageUrl } from './marketplaceProductImages.service.js';
+import {
   applyOzonDescriptionHtml,
   plainTextToMarketplaceHtml,
 } from '../utils/marketplaceDescriptionHtml.js';
@@ -189,6 +195,10 @@ function buildOzonAttributesArray(ozonAttrs, schemaList) {
     const id = Number(key);
     if (!Number.isFinite(id) || id <= 0) continue;
     if (raw == null || raw === '') continue;
+    // Видеообложка — только в complex_attributes
+    if (isOzonVideoCoverAttrId(id)) continue;
+    // Обычное видео (имя/ссылка) тоже не дублируем в плоских attributes
+    if (id === 21837 || id === 21841) continue;
 
     if (isOzonRichContentAttrId(id)) {
       const s = ozonRichContentValue(raw);
@@ -202,6 +212,34 @@ function buildOzonAttributesArray(ozonAttrs, schemaList) {
     out.push({ complex_id: 0, id, values });
   }
   return collapseOzonNonCollectionAttrValues(out);
+}
+
+/** Видеообложка Ozon: complex_id 100002, attribute 21845. */
+function buildOzonVideoCoverComplexAttributes(ozonAttrs, videoCoverSlides) {
+  const obj = parseJsonObject(ozonAttrs);
+  let url = String(obj[String(OZON_VIDEO_COVER_ATTR_ID)] ?? obj[OZON_VIDEO_COVER_ATTR_ID] ?? '').trim();
+  if (!url && videoCoverSlides?.coverPublicUrl) {
+    url = String(videoCoverSlides.coverPublicUrl).trim();
+  }
+  if (!url && videoCoverSlides?.coverUrl) {
+    url = absoluteProductImageUrl(videoCoverSlides.coverUrl);
+  }
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) {
+    url = absoluteProductImageUrl(url);
+  }
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  return [
+    {
+      attributes: [
+        {
+          id: OZON_VIDEO_COVER_ATTR_ID,
+          complex_id: OZON_VIDEO_COVER_COMPLEX_ID,
+          values: [{ dictionary_value_id: 0, value: url }],
+        },
+      ],
+    },
+  ];
 }
 
 async function applyMappedOzonBrand(item, product) {
@@ -1166,6 +1204,13 @@ async function pushOzonCard(product, categoryMm, ctx) {
     type_id: typeId,
     attributes: buildOzonAttributesArray(ozonAttrsForPush, ozonSchema)
   };
+  const videoCoverComplex = buildOzonVideoCoverComplexAttributes(
+    ozonAttrsForPush,
+    product.video_cover_slides
+  );
+  if (videoCoverComplex) {
+    item.complex_attributes = videoCoverComplex;
+  }
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);
   item.attributes = collapseOzonNonCollectionAttrValues(item.attributes);

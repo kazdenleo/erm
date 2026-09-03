@@ -53,14 +53,22 @@ export function useProducts(options = {}) {
         params.productType = String(opts.productType).trim();
       }
       if (opts.unlinkedMp != null && opts.unlinkedMp !== '') {
-        params.unlinkedMp = Array.isArray(opts.unlinkedMp)
+        const list = Array.isArray(opts.unlinkedMp)
           ? opts.unlinkedMp
-          : String(opts.unlinkedMp);
+          : opts.unlinkedMp instanceof Set
+            ? [...opts.unlinkedMp]
+            : String(opts.unlinkedMp).split(',');
+        const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+        if (cleaned.length) params.unlinkedMp = cleaned.join(',');
       }
       if (opts.linkedMp != null && opts.linkedMp !== '') {
-        params.linkedMp = Array.isArray(opts.linkedMp)
+        const list = Array.isArray(opts.linkedMp)
           ? opts.linkedMp
-          : String(opts.linkedMp);
+          : opts.linkedMp instanceof Set
+            ? [...opts.linkedMp]
+            : String(opts.linkedMp).split(',');
+        const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+        if (cleaned.length) params.linkedMp = cleaned.join(',');
       }
       if (
         opts.requireAnyMarketplaceLink === true ||

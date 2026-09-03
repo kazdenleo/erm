@@ -1,9 +1,13 @@
 /**
  * Очередь «Работа с карточками»: товары, по которым нужна реакция
- * (слишком высокая оборачиваемость, затоваривание, нет остатка).
+ * (низкая оборачиваемость, нет остатка, качество, размеры).
+ * Одна строка = товар + маркетплейс (остатки не суммируем между МП).
  */
 
 import marketplaceTurnoverAnalyticsService from './marketplaceTurnoverAnalytics.service.js';
+import marketplaceCardQualityService from './marketplaceCardQuality.service.js';
+import { query } from '../config/database.js';
+import { describePackDimensionMismatch } from '../utils/packDimensionsDiff.js';
 
 const MP_LABEL = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс' };
 
@@ -12,36 +16,33 @@ function toNum(v, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function buildReasons(row, { fastDays, slowDays, minTurnover }) {
+function mpLabel(marketplace) {
+  return MP_LABEL[marketplace] || marketplace || 'МП';
+}
+
+function rowKey(productId, sku, erpSku, marketplace) {
+  const pid = Number(productId) || 0;
+  const base = pid > 0 ? `p:${pid}` : `s:${sku || erpSku || '—'}`;
+  return `${base}|${marketplace || '—'}`;
+}
+
+function buildReasons(row, { slowDays }) {
   const reasons = [];
   const days = row.daysOfStock;
-  const turnover = row.turnover;
-  const mp = MP_LABEL[row.marketplace] || row.marketplace || 'МП';
+  const tooSlow =
+    row.status === 'dead' ||
+    row.status === 'slow' ||
+    (days != null && Number.isFinite(days) && days > slowDays && row.stockQty > 0);
 
-  const tooFast =
-    (days != null && Number.isFinite(days) && days < fastDays && row.soldQty > 0 && row.stockQty > 0) ||
-    (turnover != null && Number.isFinite(turnover) && turnover >= minTurnover && row.stockQty > 0);
-
-  if (tooFast) {
-    const daysTxt = days != null ? `${days} дн. запаса` : 'остаток быстро уходит';
-    const turnTxt = turnover != null ? `оборачиваемость ${turnover}` : '';
+  if (tooSlow) {
+    const isDead = row.status === 'dead';
     reasons.push({
-      code: 'high_turnover',
-      label: 'Слишком высокая оборачиваемость',
-      hint: `${mp}: ${[daysTxt, turnTxt].filter(Boolean).join(', ')}. Нужно проверить цену, остаток и карточку.`,
-      severity: 'high',
-    });
-  }
-
-  if (row.status === 'dead' || (days != null && days > slowDays && row.stockQty > 0)) {
-    reasons.push({
-      code: 'overstock',
-      label: row.status === 'dead' ? 'Не продаётся при остатке' : 'Затоварен (медленная оборачиваемость)',
-      hint:
-        row.status === 'dead'
-          ? `${mp}: остаток ${row.stockQty} шт., продаж за период нет. Улучшить карточку, цену или рекламу.`
-          : `${mp}: запаса хватит на ${days} дн. Карточка продаёт слишком медленно.`,
-      severity: row.status === 'dead' ? 'high' : 'medium',
+      code: 'low_turnover',
+      label: isDead ? 'Не продаётся при остатке' : 'Низкая оборачиваемость',
+      hint: isDead
+        ? `Остаток ${row.stockQty} шт., продаж за период нет. Улучшить карточку, цену или рекламу.`
+        : `Запаса хватит на ${days != null ? days : '—'} дн. Карточка продаёт слишком медленно.`,
+      severity: isDead ? 'high' : 'medium',
     });
   }
 
@@ -49,7 +50,7 @@ function buildReasons(row, { fastDays, slowDays, minTurnover }) {
     reasons.push({
       code: 'stockout',
       label: 'Продажи без остатка на МП',
-      hint: `${mp}: продано ${row.soldQty} шт., остаток на складе МП 0. Пополнить FBO или проверить выгрузку остатков.`,
+      hint: `Продано ${row.soldQty} шт., остаток на складе МП 0. Пополнить FBO или проверить выгрузку остатков.`,
       severity: 'high',
     });
   }
@@ -68,6 +69,121 @@ function severityRank(s) {
   if (s === 'high') return 0;
   if (s === 'medium') return 1;
   return 2;
+}
+
+function qualityHintPart(r) {
+  const mp = mpLabel(r.marketplace);
+  const score = r.score != null && Number.isFinite(Number(r.score)) ? Math.round(Number(r.score)) : '—';
+  const threshold = r.threshold != null ? r.threshold : '—';
+  return `${mp}: ${score} из 100, порог ${threshold}`;
+}
+
+function mergeReasons(reasons) {
+  const uniqueReasons = [];
+  const seen = new Set();
+  for (const r of reasons || []) {
+    const collapseQuality = r.code === 'low_content_rating';
+    const k = collapseQuality ? r.code : `${r.code}|${r.marketplace || ''}`;
+    if (seen.has(k)) {
+      if (!collapseQuality) continue;
+      const prev = uniqueReasons.find((x) => x.code === 'low_content_rating');
+      if (!prev) continue;
+      const part = qualityHintPart(r);
+      if (prev.hint && !String(prev.hint).includes(part)) {
+        prev.hint = `${prev.hint}; ${part}`;
+      }
+      if (severityRank(r.severity) < severityRank(prev.severity)) prev.severity = r.severity;
+      continue;
+    }
+    seen.add(k);
+    uniqueReasons.push(
+      collapseQuality
+        ? { ...r, label: 'Качество', hint: qualityHintPart(r) }
+        : r.code === 'dim_mismatch'
+          ? { ...r, label: 'Размеры' }
+          : r
+    );
+  }
+  for (const r of uniqueReasons) {
+    if (r.code === 'low_content_rating') {
+      r.hint = `${r.hint}. Дополните фото, описание и характеристики.`;
+    }
+  }
+  uniqueReasons.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  return uniqueReasons;
+}
+
+function finalizeItems(map, reasonFilter) {
+  let items = [...map.values()].map((item) => {
+    const uniqueReasons = mergeReasons(item.reasons);
+    const severity = uniqueReasons.some((r) => r.severity === 'high') ? 'high' : 'medium';
+    return {
+      ...item,
+      marketplaceLabel: mpLabel(item.marketplace),
+      reasons: uniqueReasons,
+      reasonCodes: [...new Set(uniqueReasons.map((r) => r.code))],
+      primaryReason: uniqueReasons[0] || null,
+      severity,
+    };
+  });
+
+  if (reasonFilter && reasonFilter !== 'all') {
+    items = items.filter((i) => i.reasonCodes.includes(reasonFilter));
+  }
+
+  items.sort((a, b) => {
+    const sr = severityRank(a.severity) - severityRank(b.severity);
+    if (sr !== 0) return sr;
+    const mpCmp = String(a.marketplace || '').localeCompare(String(b.marketplace || ''), 'ru');
+    if (mpCmp !== 0) return mpCmp;
+    return (b.stockQty || 0) - (a.stockQty || 0);
+  });
+
+  return items;
+}
+
+async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = {}) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return [];
+  const mpFilter = String(marketplace || 'all').toLowerCase();
+  const mps =
+    mpFilter && mpFilter !== 'all' && ['ozon', 'wb', 'ym'].includes(mpFilter)
+      ? [mpFilter]
+      : ['ozon', 'wb', 'ym'];
+  let rows = [];
+  try {
+    const res = await query(
+      `SELECT DISTINCT ON (p.id, ps.marketplace)
+              p.id, p.sku, p.name, p.length, p.width, p.height, p.weight,
+              p.ozon_draft, p.wb_draft, p.ym_draft, p.wb_attributes,
+              ps.marketplace
+         FROM products p
+         JOIN product_skus ps ON ps.product_id = p.id
+        WHERE p.profile_id = $1
+          AND COALESCE(p.is_archived, false) = false
+          AND ps.marketplace = ANY($2::text[])
+        ORDER BY p.id, ps.marketplace`,
+      [pid, mps]
+    );
+    rows = res.rows || [];
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const row of rows) {
+    const mp = String(row.marketplace || '').toLowerCase();
+    const diff = describePackDimensionMismatch(row, mp);
+    if (!diff) continue;
+    out.push({
+      productId: Number(row.id) || null,
+      sku: row.sku,
+      erpSku: row.sku,
+      productName: row.name,
+      marketplace: mp,
+      hint: `В ERP: ${diff.erpText}. На ${mpLabel(mp)}: ${diff.mpText}. Сверьте и обновите карточку.`,
+    });
+  }
+  return out;
 }
 
 class MarketplaceCardWorkService {
@@ -96,73 +212,131 @@ class MarketplaceCardWorkService {
       minTurnover: Math.max(0.1, toNum(minTurnover, 1.5)),
     };
 
-    const byProduct = new Map();
+    const byKey = new Map();
     for (const row of turnoverData.items || []) {
       const reasons = buildReasons(row, thresholds);
       if (!reasons.length) continue;
       const pid = Number(row.productId) || 0;
-      const key = pid > 0 ? `p:${pid}` : `s:${row.sku || row.erpSku || '—'}`;
-      const prev = byProduct.get(key) || {
+      const mp = row.marketplace || '—';
+      const key = rowKey(pid, row.sku, row.erpSku, mp);
+      const prev = byKey.get(key) || {
         productId: pid || null,
         sku: row.sku,
         erpSku: row.erpSku,
         productName: row.productName,
+        marketplace: mp,
         reasons: [],
         soldQty: 0,
         soldAmount: 0,
         stockQty: 0,
+        daysOfStock: row.daysOfStock,
+        turnover: row.turnover,
+        status: row.status,
       };
-      prev.soldQty += Number(row.soldQty) || 0;
-      prev.soldAmount += Number(row.soldAmount) || 0;
-      prev.stockQty += Number(row.stockQty) || 0;
+      prev.soldQty = Number(row.soldQty) || 0;
+      prev.soldAmount = Number(row.soldAmount) || 0;
+      prev.stockQty = Number(row.stockQty) || 0;
+      prev.daysOfStock = row.daysOfStock;
+      prev.turnover = row.turnover;
+      prev.status = row.status;
       if ((!prev.erpSku || prev.erpSku === '—') && row.erpSku) prev.erpSku = row.erpSku;
       if ((!prev.productName || prev.productName === '—') && row.productName) prev.productName = row.productName;
       prev.reasons.push(...reasons);
-      byProduct.set(key, prev);
+      byKey.set(key, prev);
     }
 
-    const reasonFilter = String(reason || 'all').trim();
-    let items = [...byProduct.values()].map((item) => {
-      const uniqueReasons = [];
-      const seen = new Set();
-      for (const r of item.reasons) {
-        const k = `${r.code}|${r.marketplace}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        uniqueReasons.push(r);
+    const reasonFilterRaw = String(reason || 'all').trim();
+    const reasonFilter =
+      reasonFilterRaw === 'overstock' || reasonFilterRaw === 'high_turnover'
+        ? 'low_turnover'
+        : reasonFilterRaw;
+
+    const qualitySettings = await marketplaceCardQualityService.getSettings(profileId);
+    if (qualitySettings.showInCardWork) {
+      const qualityRows = await marketplaceCardQualityService.listBelowThreshold({
+        profileId,
+        marketplace,
+      });
+      for (const q of qualityRows) {
+        const pid = Number(q.productId) || 0;
+        const mp = String(q.marketplace || '').toLowerCase();
+        if (mp !== 'ozon' && mp !== 'ym') continue;
+        const key = rowKey(pid, q.sku, q.erpSku, mp);
+        const reasonItem = {
+          code: 'low_content_rating',
+          label: 'Качество',
+          hint: qualityHintPart({ marketplace: mp, score: q.score, threshold: q.threshold }),
+          severity: Number(q.score) < q.threshold * 0.6 ? 'high' : 'medium',
+          marketplace: mp,
+          score: q.score,
+          threshold: q.threshold,
+        };
+        const prev = byKey.get(key);
+        if (prev) {
+          prev.reasons.push(reasonItem);
+          continue;
+        }
+        byKey.set(key, {
+          productId: pid || null,
+          sku: q.sku,
+          erpSku: q.erpSku,
+          productName: q.productName,
+          marketplace: mp,
+          reasons: [reasonItem],
+          soldQty: 0,
+          soldAmount: 0,
+          stockQty: 0,
+        });
       }
-      uniqueReasons.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-      const severity = uniqueReasons.some((r) => r.severity === 'high') ? 'high' : 'medium';
-      return {
-        ...item,
-        reasons: uniqueReasons,
-        reasonCodes: [...new Set(uniqueReasons.map((r) => r.code))],
-        primaryReason: uniqueReasons[0] || null,
-        severity,
-      };
-    });
-
-    if (reasonFilter && reasonFilter !== 'all') {
-      items = items.filter((i) => i.reasonCodes.includes(reasonFilter));
     }
 
-    items.sort((a, b) => {
-      const sr = severityRank(a.severity) - severityRank(b.severity);
-      if (sr !== 0) return sr;
-      return (b.stockQty || 0) - (a.stockQty || 0);
-    });
+    const dimRows = await listPackDimensionMismatches({ profileId, marketplace });
+    for (const d of dimRows) {
+      const pid = Number(d.productId) || 0;
+      const mp = String(d.marketplace || '').toLowerCase();
+      const key = rowKey(pid, d.sku, d.erpSku, mp);
+      const reasonItem = {
+        code: 'dim_mismatch',
+        label: 'Размеры',
+        hint: d.hint,
+        severity: 'medium',
+        marketplace: mp,
+      };
+      const prev = byKey.get(key);
+      if (prev) {
+        if (!prev.reasons.some((r) => r.code === 'dim_mismatch')) prev.reasons.push(reasonItem);
+        continue;
+      }
+      byKey.set(key, {
+        productId: pid || null,
+        sku: d.sku,
+        erpSku: d.erpSku,
+        productName: d.productName,
+        marketplace: mp,
+        reasons: [reasonItem],
+        soldQty: 0,
+        soldAmount: 0,
+        stockQty: 0,
+      });
+    }
+
+    const items = finalizeItems(byKey, reasonFilter);
 
     return {
       period: turnoverData.period,
       marketplace: turnoverData.marketplace,
       scheme: turnoverData.scheme,
       thresholds,
+      cardQuality: qualitySettings,
       summary: {
         cardsCount: items.length,
         highCount: items.filter((i) => i.severity === 'high').length,
-        highTurnoverCount: items.filter((i) => i.reasonCodes.includes('high_turnover')).length,
-        overstockCount: items.filter((i) => i.reasonCodes.includes('overstock')).length,
+        highTurnoverCount: items.filter((i) => i.reasonCodes.includes('low_turnover')).length,
+        overstockCount: items.filter((i) => i.reasonCodes.includes('low_turnover')).length,
+        lowTurnoverCount: items.filter((i) => i.reasonCodes.includes('low_turnover')).length,
         stockoutCount: items.filter((i) => i.reasonCodes.includes('stockout')).length,
+        lowContentRatingCount: items.filter((i) => i.reasonCodes.includes('low_content_rating')).length,
+        dimMismatchCount: items.filter((i) => i.reasonCodes.includes('dim_mismatch')).length,
       },
       items,
     };

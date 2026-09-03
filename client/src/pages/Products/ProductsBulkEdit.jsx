@@ -3,12 +3,13 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { ProductAiDraftModal } from '../../components/products/ProductAiDraftModal.jsx';
+import { ProductDescriptionAiChat } from '../../components/products/ProductDescriptionAiChat.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
 import { ImageLightbox } from '../../components/common/ImageLightbox/ImageLightbox';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
@@ -34,6 +35,7 @@ import {
   formatBarcodesCell,
   isCorruptBarcodeString,
 } from '../../utils/productBarcodes.js';
+import { createAsyncQueue } from '../../utils/asyncQueue.js';
 import {
   applyComputedAttributeValues,
   isComputedAttrType,
@@ -126,6 +128,7 @@ import {
 } from '../../utils/ozonManufacturerArticle.js';
 import { isOzonBrandAttr, OZON_BRAND_ATTR_ID } from '../../utils/ozonBrandAttr.js';
 import { isOzonRichContentAttrId } from '../../constants/marketplaceRichContent.js';
+import { isOzonVideoCoverAttrId } from '../../utils/videoCoverTemplate.js';
 import {
   isOzonAnnotationAttr,
   isOzonNameAttr,
@@ -1256,6 +1259,7 @@ function linksSignature(links) {
 }
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
+const BULK_SAVE_CONCURRENCY = 8;
 const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
 /** Фильтры списка и выбор категории — переживают F5 (localStorage; миграция из sessionStorage) */
 const LS_BULK_FILTERS = 'productsBulkEditFilters';
@@ -3051,6 +3055,7 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   for (const id of sortAttrIdsWithLabels(oz, ozM)) {
     if (isMpOfferFieldAttrId(id)) continue;
     if (isOzonRichContentAttrId(id)) continue;
+    if (isOzonVideoCoverAttrId(id)) continue;
     const meta = ozM[id] || ozM[String(id)];
     const human = schemaAttrName(meta) || knownMpAttrLabel('ozon', id);
     if (OZON_PACK_DIM_ATTR_IDS.has(String(id)) && !isOzonCategoryProductSizeAttr(human)) continue;
@@ -3403,6 +3408,7 @@ function extraLinkedMpAttrColumn(mp, attrId, humanName, labelMaps = {}) {
   const id = String(attrId);
   if (!id.trim() || isMpOfferFieldAttrId(id)) return null;
   if (mp === 'ozon' && isOzonRichContentAttrId(id)) return null;
+  if (mp === 'ozon' && isOzonVideoCoverAttrId(id)) return null;
   if (mp === 'wb' && WB_PACK_DIM_ATTR_IDS.has(id)) return null;
   const maps = labelMaps?.[mp] || {};
   const meta = maps[id] || maps[attrId];
@@ -5248,6 +5254,44 @@ function rowWithPopupDraftLinks(row, textPopup, group, erpAttrCols = []) {
 
 const EMPTY_TEXT_POPUP = { open: false, rowId: null, col: null, drafts: {}, independent: {} };
 
+function isDescriptionTextColumn(col, erpAttrCols = []) {
+  if (!col) return false;
+  if (col.key === 'description' || col.linkFieldKey === 'description') return true;
+  if (String(col.key || '').includes('description')) return true;
+  if (col.mpAttr?.bucket === 'ozon') {
+    const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
+    if (isOzonAnnotationAttr(meta)) return true;
+  }
+  if (col.mpAttr && erpAttrCols.length) {
+    const erp = findErpColForMpAttrMirror(erpAttrCols, col.mpAttr, col);
+    if (erp?.linkFieldKey === 'description') return true;
+  }
+  return false;
+}
+
+function applyProposedToTextPopupGroup(group, proposed, linkKey) {
+  const drafts = {};
+  const independent = {};
+  if (!proposed || typeof proposed !== 'object') return { drafts, independent };
+  for (const c of group || []) {
+    let val = proposed[c.key];
+    if (val == null && c.key === 'description') val = proposed.description;
+    if (val == null && c.key === 'mp_ozon_description') val = proposed.mp_ozon_description;
+    if (val == null && c.key === 'mp_wb_description') val = proposed.mp_wb_description;
+    if (val == null && c.key === 'mp_ym_description') val = proposed.mp_ym_description;
+    if (val == null && c.mpAttr) {
+      const meta = { id: c.mpAttr.attrId, name: c._humanName || c.label };
+      if (isOzonAnnotationAttr(meta) && proposed.mp_ozon_description != null) {
+        val = proposed.mp_ozon_description;
+      }
+    }
+    if (val == null || !String(val).trim()) continue;
+    drafts[c.key] = String(val);
+    if (linkKey && !isPopupMainColumn(c, linkKey)) independent[c.key] = true;
+  }
+  return { drafts, independent };
+}
+
 function applyOneBulkCellChange(
   row,
   key,
@@ -5388,9 +5432,11 @@ export function ProductsBulkEdit() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState(null);
   const [saveMessage, setSaveMessage] = useState(null);
   const [aiDraftOpen, setAiDraftOpen] = useState(false);
   const [pushMpLoading, setPushMpLoading] = useState(null);
+  const [videoCoverBulkLoading, setVideoCoverBulkLoading] = useState(false);
   const [pushMpMessage, setPushMpMessage] = useState(null);
   const [barcodeGeneratingId, setBarcodeGeneratingId] = useState(null);
   const [pullMpLoading, setPullMpLoading] = useState(null);
@@ -7162,6 +7208,20 @@ export function ProductsBulkEdit() {
     return out;
   }, [selectedRowIds, rows, categories]);
 
+  const pageDescriptionAiItems = useMemo(() => {
+    const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
+    return rows
+      .filter((r) => {
+        if (!r?.id || isNewBulkRowId(r.id)) return false;
+        const nid = Number(r.id);
+        return Number.isInteger(nid) && nid >= 1;
+      })
+      .map((row) => ({
+        productId: Number(row.id),
+        draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
+      }));
+  }, [rows, categories]);
+
   const handleGenerateBarcode = useCallback(
     async (row) => {
       const id = row?.id;
@@ -7362,12 +7422,16 @@ export function ProductsBulkEdit() {
     }
     setSaving(true);
     setSaveMessage(null);
+    setSaveProgress(null);
     const errors = [];
     const savedIds = [];
     let ok = 0;
     let createdCount = 0;
     let skippedEmpty = 0;
+    const createResults = [];
+    const updateResults = [];
     try {
+      const workItems = [];
       for (const r of rows) {
         if (isNewBulkRowId(r.id)) {
           const orig = originals[r.id];
@@ -7384,64 +7448,111 @@ export function ProductsBulkEdit() {
             skippedEmpty += 1;
             continue;
           }
-          try {
-            const wrap = await productsApi.create(payload);
-            const u = wrap?.data !== undefined ? wrap.data : wrap;
-            let nextRow = productToRow(
-              u,
-              mpAttrColumnDefs,
-              lengthUnit,
-              weightUnit,
-              erpAttrColumnDefs,
-              categories
-            );
-            nextRow = {
-              ...nextRow,
-              mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
-            };
-            nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, payload, lengthUnit, weightUnit);
-            const newId = str(u?.id ?? nextRow.id);
-            setOriginals((o) => {
-              const next = { ...o };
-              delete next[r.id];
-              next[newId] = cloneRow(nextRow);
-              return next;
-            });
-            setRows((list) =>
-              list.map((row) => (row.id === r.id ? { ...nextRow, id: newId, _productRef: u } : row))
-            );
-            markChangedForPush(newId);
-            savedIds.push(newId);
-            ok += 1;
-            createdCount += 1;
-          } catch (e) {
-            const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
-            errors.push({ id: r.id, sku: r.sku, msg });
-          }
+          workItems.push({ type: 'create', row: r, payload });
           continue;
         }
         const orig = originals[r.id];
         if (!orig) continue;
         const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
         if (Object.keys(payload).length === 0) continue;
-        try {
-          const wrap = await productsApi.update(r.id, payload);
-          const u = wrap?.data !== undefined ? wrap.data : wrap;
-          let nextRow = productToRow(u, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs, categories);
-          nextRow = {
-            ...nextRow,
-            mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
-          };
-          // Если API по какой-то причине не вернул габариты — не затираем только что сохранённые значения в таблице
-          nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, payload, lengthUnit, weightUnit);
-          setOriginals((o) => ({ ...o, [r.id]: cloneRow(nextRow) }));
-          setRows((list) => list.map((row) => (row.id === r.id ? { ...nextRow, _productRef: u } : row)));
-          markChangedForPush(r.id);
-          savedIds.push(str(r.id));
-          ok += 1;
-        } catch (e) {
-          const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
-          errors.push({ id: r.id, sku: r.sku, msg });
+        workItems.push({ type: 'update', row: r, payload });
+      }
+
+      const totalToSave = workItems.length;
+      let doneCount = 0;
+      const enqueueSave = createAsyncQueue(BULK_SAVE_CONCURRENCY);
+
+      await Promise.all(
+        workItems.map((item) =>
+          enqueueSave(async () => {
+            const r = item.row;
+            try {
+              if (item.type === 'create') {
+                const wrap = await productsApi.create(item.payload);
+                const u = wrap?.data !== undefined ? wrap.data : wrap;
+                let nextRow = productToRow(
+                  u,
+                  mpAttrColumnDefs,
+                  lengthUnit,
+                  weightUnit,
+                  erpAttrColumnDefs,
+                  categories
+                );
+                nextRow = {
+                  ...nextRow,
+                  mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
+                };
+                nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, item.payload, lengthUnit, weightUnit);
+                const newId = str(u?.id ?? nextRow.id);
+                createResults.push({ oldId: r.id, newId, nextRow, u });
+                savedIds.push(newId);
+                ok += 1;
+                createdCount += 1;
+              } else {
+                const wrap = await productsApi.update(r.id, item.payload);
+                const u = wrap?.data !== undefined ? wrap.data : wrap;
+                let nextRow = productToRow(
+                  u,
+                  mpAttrColumnDefs,
+                  lengthUnit,
+                  weightUnit,
+                  erpAttrColumnDefs,
+                  categories
+                );
+                nextRow = {
+                  ...nextRow,
+                  mp_field_links: normalizeMpFieldLinks(r.mp_field_links),
+                };
+                // Если API по какой-то причине не вернул габариты — не затираем только что сохранённые значения в таблице
+                nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, item.payload, lengthUnit, weightUnit);
+                updateResults.push({ id: r.id, nextRow, u });
+                savedIds.push(str(r.id));
+                ok += 1;
+              }
+            } catch (e) {
+              const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Ошибка';
+              errors.push({ id: r.id, sku: r.sku, msg });
+            } finally {
+              doneCount += 1;
+              if (totalToSave > 1) {
+                setSaveProgress(`${doneCount}/${totalToSave}`);
+              }
+            }
+          })
+        )
+      );
+
+      if (createResults.length > 0 || updateResults.length > 0) {
+        setOriginals((o) => {
+          const next = { ...o };
+          for (const res of createResults) {
+            delete next[res.oldId];
+            next[res.newId] = cloneRow(res.nextRow);
+          }
+          for (const res of updateResults) {
+            next[res.id] = cloneRow(res.nextRow);
+          }
+          return next;
+        });
+        setRows((list) => {
+          let nextList = list;
+          for (const res of createResults) {
+            nextList = nextList.map((row) =>
+              row.id === res.oldId ? { ...res.nextRow, id: res.newId, _productRef: res.u } : row
+            );
+          }
+          for (const res of updateResults) {
+            nextList = nextList.map((row) =>
+              row.id === res.id ? { ...res.nextRow, _productRef: res.u } : row
+            );
+          }
+          return nextList;
+        });
+        for (const res of createResults) {
+          markChangedForPush(res.newId);
+        }
+        for (const res of updateResults) {
+          markChangedForPush(res.id);
         }
       }
       if (errors.length === 0) {
@@ -7473,6 +7584,7 @@ export function ProductsBulkEdit() {
       }
       return { ok, errorCount: errors.length };
     } finally {
+      setSaveProgress(null);
       setSaving(false);
     }
   };
@@ -7499,6 +7611,42 @@ export function ProductsBulkEdit() {
 
   const handleLeaveDiscard = () => {
     runPendingLeaveAction();
+  };
+
+  const handleBulkGenerateVideoCover = async () => {
+    const rowIdsOnPage = new Set(rows.map((r) => str(r.id)).filter(Boolean));
+    const productIds = getSelectedProductIds().filter((id) => rowIdsOnPage.has(id));
+    if (productIds.length === 0) {
+      setPushMpMessage('Отметьте товары галочками — генерация видеообложки только по выделенным.');
+      return;
+    }
+    const ok = window.confirm(
+      `Сгенерировать слайды видеообложки Ozon для ${productIds.length} товар(ов)?\n\n` +
+        'Нужен шаблон категории или товара. Если шаблона нет — товар будет пропущен с ошибкой.'
+    );
+    if (!ok) return;
+    setVideoCoverBulkLoading(true);
+    setPushMpMessage('');
+    const errors = [];
+    let okCount = 0;
+    try {
+      for (const id of productIds) {
+        try {
+          await productsApi.generateVideoCover(id);
+          okCount += 1;
+        } catch (e) {
+          errors.push(
+            `#${id}: ${e?.response?.data?.message || e?.message || 'ошибка'}`
+          );
+        }
+      }
+      setPushMpMessage(
+        `Видеообложка: успешно ${okCount} из ${productIds.length}` +
+          (errors.length ? `\n${errors.slice(0, 8).join('\n')}${errors.length > 8 ? '\n…' : ''}` : '')
+      );
+    } finally {
+      setVideoCoverBulkLoading(false);
+    }
   };
 
   const handlePushToMarketplaces = async (marketplaces, opts = {}) => {
@@ -8186,6 +8334,11 @@ export function ProductsBulkEdit() {
               : popupFieldTitle(textPopup.col)
       }${textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''}`
     : '';
+  const textPopupIsDescription =
+    textPopupLinkKey === 'description' || isDescriptionTextColumn(textPopup.col, erpAttrColumnDefs);
+  const bulkModalIsDescription = bulkModalCol
+    ? isDescriptionTextColumn(bulkModalCol, erpAttrColumnDefs)
+    : false;
 
   return (
     <div key={location.key} className="products-bulk-page">
@@ -8214,7 +8367,13 @@ export function ProductsBulkEdit() {
                     (!hasUnsavedChanges && !rows.some((r) => isNewBulkRowId(r.id)))
                   }
                 >
-                  {saving ? 'Сохранение…' : createMode ? 'Создать товары' : 'Сохранить'}
+                  {saving
+                    ? saveProgress
+                      ? `Сохранение ${saveProgress}…`
+                      : 'Сохранение…'
+                    : createMode
+                      ? 'Создать товары'
+                      : 'Сохранить'}
                 </Button>
                 ) : null}
               </>
@@ -8681,6 +8840,23 @@ export function ProductsBulkEdit() {
                     >
                       {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
                     </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={videoCoverBulkLoading || rows.length === 0 || selectedCount === 0}
+                      onClick={() => void handleBulkGenerateVideoCover()}
+                      title="Слайды видеообложки по шаблону категории/товара для выделенных"
+                    >
+                      {videoCoverBulkLoading ? 'Обложки…' : 'Видеообложка'}
+                    </Button>
+                    <Link
+                      to="/settings/video-cover"
+                      className="btn btn-outline-secondary btn-sm"
+                      title="Настроить шаблон в Настройках"
+                    >
+                      Шаблон
+                    </Link>
                     <span
                       className="text-muted small text-nowrap ms-2 me-1"
                       title={
@@ -9310,10 +9486,10 @@ export function ProductsBulkEdit() {
         isOpen={!!(textPopup.open && textPopup.col && textPopupRow)}
         onClose={() => setTextPopup(EMPTY_TEXT_POPUP)}
         title={textPopupModalTitle}
-        size="large"
+        size={textPopupIsDescription ? 'xl' : 'large'}
       >
         {textPopup.col && textPopupRow ? (
-          <div>
+          <div className={textPopupIsDescription ? 'products-bulk-text-popup-layout' : undefined}>
             <div className="products-bulk-text-popup-group">
               {textPopupGroup.map((c) => {
                 const linkKey = popupLinkFieldKey(c, erpAttrColumnDefs);
@@ -9398,7 +9574,37 @@ export function ProductsBulkEdit() {
                 );
               })}
             </div>
-            <div className="d-flex justify-content-end gap-2 mt-3">
+            {textPopupIsDescription ? (
+              <ProductDescriptionAiChat
+                compact
+                productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
+                getDraft={() => {
+                  const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
+                  const base = textPopupSyntheticRow || textPopupRow;
+                  const draft = snapshotAiCardDraft(base, { categoryName: cat?.name || '' });
+                  const drafts = textPopup.drafts || {};
+                  for (const c of textPopupGroup) {
+                    if (Object.prototype.hasOwnProperty.call(drafts, c.key)) {
+                      draft[c.key] = drafts[c.key];
+                    }
+                  }
+                  return draft;
+                }}
+                onApply={(proposed) => {
+                  const patch = applyProposedToTextPopupGroup(
+                    textPopupGroup,
+                    proposed,
+                    textPopupLinkKey
+                  );
+                  setTextPopup((prev) => ({
+                    ...prev,
+                    drafts: { ...(prev.drafts || {}), ...patch.drafts },
+                    independent: { ...(prev.independent || {}), ...patch.independent },
+                  }));
+                }}
+              />
+            ) : null}
+            <div className="d-flex justify-content-end gap-2 mt-3 products-bulk-text-popup-footer">
               <Button
                 type="button"
                 variant="secondary"
@@ -9458,13 +9664,27 @@ export function ProductsBulkEdit() {
                 .trim()}`
             : ''
         }
-        size="large"
+        size={bulkModalIsDescription ? 'xl' : 'large'}
       >
         {bulkModalCol ? (
           <div>
             <p className="text-muted small">
               Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
             </p>
+            {bulkModalIsDescription && pageDescriptionAiItems.length > 0 ? (
+              <div className="products-bulk-modal-ai-desc mb-3">
+                <ProductDescriptionAiChat
+                  bulkItems={pageDescriptionAiItems}
+                  onApplyBulk={(items) => {
+                    applyAiBulkDraft(items);
+                    setBulkModal({ open: false, column: null });
+                  }}
+                />
+                <p className="text-muted small mt-2 mb-0">
+                  Или введите одно описание вручную для всех строк ниже.
+                </p>
+              </div>
+            ) : null}
             {bulkModalCol.input === 'checkbox' ? (
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
                 <option value="true">Да</option>
@@ -9648,7 +9868,7 @@ export function ProductsBulkEdit() {
             onClick={handleLeaveSaveAndContinue}
             disabled={saving}
           >
-            {saving ? 'Сохранение…' : 'Сохранить'}
+            {saving ? (saveProgress ? `Сохранение ${saveProgress}…` : 'Сохранение…') : 'Сохранить'}
           </Button>
         </div>
       </Modal>

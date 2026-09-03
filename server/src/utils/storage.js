@@ -46,6 +46,7 @@ const DATA_FILES = {
   wbCommissionsCache: join(DATA_DIR, 'wbCommissionsCache.json'),
   wbWarehousesCache: join(DATA_DIR, 'wbWarehousesCache.json'),
   wbTariffsCache: join(DATA_DIR, 'wbTariffsCache.json'),
+  wbReturnTariffsCache: join(DATA_DIR, 'wbReturnTariffsCache.json'),
   ozonActionsCache: join(DATA_DIR, 'ozonActionsCache.json'),
   ozonActionProductsCache: join(DATA_DIR, 'ozonActionProductsCache.json'),
   wbPromotionsCache: join(DATA_DIR, 'wbPromotionsCache.json'),

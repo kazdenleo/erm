@@ -92,7 +92,7 @@ export function FboSalesAnalytics() {
       const isTimeout = e?.code === 'ECONNABORTED' || /timeout/i.test(String(e?.message || ''));
       setError(
         isTimeout
-          ? 'Превышено время ожидания. Попробуйте короче период или загружайте по одному маркетплейсу. Данные могли частично сохраниться — нажмите «Показать».'
+          ? 'Превышено время ожидания. Попробуйте короче период или загружайте по одному маркетплейсу. Данные могли частично сохраниться — таблица обновится сама.'
           : e?.response?.data?.message || e?.message || 'Не удалось загрузить отчёты с маркетплейсов'
       );
       await load();
@@ -134,12 +134,12 @@ export function FboSalesAnalytics() {
             ))}
           </select>
         </label>
-        <Button variant="primary" size="small" onClick={load} disabled={loading || syncing}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
-        </Button>
-        <Button variant="secondary" size="small" onClick={syncFromMarketplaces} disabled={loading || syncing}>
+        <Button variant="primary" size="small" onClick={syncFromMarketplaces} disabled={loading || syncing}>
           {syncing ? 'Загрузка с МП…' : 'Загрузить с маркетплейсов'}
         </Button>
+        {loading && !syncing ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
       </div>
 
       {error && <div className="sales-analytics__error">{error}</div>}
@@ -207,7 +207,7 @@ export function FboSalesAnalytics() {
           items={items}
           emptyMessage={
             data == null
-              ? 'Выберите параметры и нажмите «Показать».'
+              ? 'Загрузка…'
               : 'Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.'
           }
         />
@@ -217,7 +217,7 @@ export function FboSalesAnalytics() {
           orders={orders}
           emptyMessage={
             data == null
-              ? 'Выберите параметры и нажмите «Показать».'
+              ? 'Загрузка…'
               : 'Нет данных по заказам за выбранный период.'
           }
         />

@@ -53,6 +53,10 @@ export function Settings() {
     display_length_unit: 'mm',
     display_weight_unit: 'g',
     timezone: 'Europe/Moscow',
+    card_quality_settings: {
+      showInCardWork: false,
+      thresholds: { ozon: 70, wb: 70, ym: 70 },
+    },
   });
 
   const loadAccount = useCallback(async () => {
@@ -121,6 +125,14 @@ export function Settings() {
         display_length_unit: form.display_length_unit === 'cm' ? 'cm' : 'mm',
         display_weight_unit: form.display_weight_unit === 'kg' ? 'kg' : 'g',
         timezone: form.timezone || 'Europe/Moscow',
+        card_quality_settings: {
+          showInCardWork: form.card_quality_settings?.showInCardWork === true,
+          thresholds: {
+            ozon: Number(form.card_quality_settings?.thresholds?.ozon) || 70,
+            wb: Number(form.card_quality_settings?.thresholds?.wb) || 70,
+            ym: Number(form.card_quality_settings?.thresholds?.ym) || 70,
+          },
+        },
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -709,6 +721,80 @@ export function Settings() {
                   </Button>
                 </div>
               )}
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.card_quality_settings?.showInCardWork === true}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      card_quality_settings: {
+                        showInCardWork: e.target.checked,
+                        thresholds: {
+                          ozon: f.card_quality_settings?.thresholds?.ozon ?? 70,
+                          wb: f.card_quality_settings?.thresholds?.wb ?? 70,
+                          ym: f.card_quality_settings?.thresholds?.ym ?? 70,
+                        },
+                      },
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Показывать в работе над карточкой</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если включено — товары с оценкой карточки ниже порога попадают в раздел
+                    «Аналитика → Работа с карточками». Оценка Ozon и Яндекс.Маркета подтягивается с площадок
+                    (при обновлении карточки и ночью). Wildberries балл качества карточки через API не отдаёт.
+                  </span>
+                </span>
+              </label>
+              {form.card_quality_settings?.showInCardWork === true && (
+                <div style={{ marginLeft: 28, marginTop: 4 }}>
+                  <span className="text-muted small" style={{ display: 'block', marginBottom: 8 }}>
+                    Показывать карточки, если оценка ниже порога (0–100).
+                  </span>
+                  <div className="row g-2" style={{ maxWidth: 420 }}>
+                    {[
+                      { key: 'ozon', label: 'Ozon' },
+                      { key: 'ym', label: 'Яндекс.Маркет' },
+                      { key: 'wb', label: 'Wildberries', disabled: true },
+                    ].map((mp) => (
+                      <div className="col-4" key={mp.key}>
+                        <label className="text-muted small mb-1 d-block" htmlFor={`settings-card-quality-${mp.key}`}>
+                          {mp.label}
+                        </label>
+                        <input
+                          id={`settings-card-quality-${mp.key}`}
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="form-control form-control-sm"
+                          disabled={mp.disabled === true}
+                          title={mp.disabled ? 'Оценка карточки WB через API недоступна' : undefined}
+                          value={form.card_quality_settings?.thresholds?.[mp.key] ?? 70}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            const next = Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : 0;
+                            setForm((f) => ({
+                              ...f,
+                              card_quality_settings: {
+                                showInCardWork: f.card_quality_settings?.showInCardWork === true,
+                                thresholds: {
+                                  ozon: f.card_quality_settings?.thresholds?.ozon ?? 70,
+                                  wb: f.card_quality_settings?.thresholds?.wb ?? 70,
+                                  ym: f.card_quality_settings?.thresholds?.ym ?? 70,
+                                  [mp.key]: next,
+                                },
+                              },
+                            }));
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="settings-account-actions">
                 <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>
                   {saving ? 'Сохранение…' : 'Сохранить'}

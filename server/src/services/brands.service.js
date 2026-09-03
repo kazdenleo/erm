@@ -345,7 +345,10 @@ export function scheduleOzonMinPriceRecalcForBrand(brandId) {
       );
       for (const row of r.rows || []) {
         try {
-          await pricesService.recalculateAndSaveForProduct(row.id, { useCalculatorCache: true });
+          await pricesService.recalculateAndSaveForProduct(row.id, {
+            useCalculatorCache: true,
+            skipMinPricePush: true,
+          });
         } catch (e) {
           console.warn(`[Brands Service] Ozon min price recalc failed for product ${row.id}:`, e.message);
         }

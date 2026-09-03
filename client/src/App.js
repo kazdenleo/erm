@@ -62,6 +62,7 @@ import { Attributes } from './pages/Settings/Attributes';
 import { Certificates } from './pages/Settings/Certificates';
 import { Labels } from './pages/Settings/Labels';
 import { RichContentConstructor } from './pages/Settings/RichContentConstructor.jsx';
+import { VideoCoverConstructor } from './pages/Settings/VideoCoverConstructor.jsx';
 import { Organizations } from './pages/Organizations/Organizations';
 import { SettingsUsers } from './pages/Settings/Users/Users';
 import { Admin } from './pages/Admin/Admin';
@@ -108,6 +109,12 @@ function RedirectFboLegacy() {
 function RedirectSettingsRichContent() {
   const { search, hash } = useLocation();
   return <Navigate to={`/products/rich-content${search}${hash}`} replace />;
+}
+
+/** Редирект /products/video-cover → /settings/video-cover */
+function RedirectProductsVideoCover() {
+  const { search, hash } = useLocation();
+  return <Navigate to={`/settings/video-cover${search}${hash}`} replace />;
 }
 
 function App() {
@@ -161,6 +168,7 @@ function App() {
           <Route path="/products/enrichment" element={<ProtectedRoute><ProductEnrichmentRoute /></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
           <Route path="/products/rich-content" element={<ProtectedRoute><Layout><RichContentConstructor /></Layout></ProtectedRoute>} />
+          <Route path="/products/video-cover" element={<RedirectProductsVideoCover />} />
           <Route path="/products/new" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
           <Route path="/products/:productId" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
           <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
@@ -205,6 +213,7 @@ function App() {
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
           <Route path="/settings/certificates" element={<ProtectedRoute><Layout><Certificates /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
+          <Route path="/settings/video-cover" element={<ProtectedRoute><Layout><VideoCoverConstructor /></Layout></ProtectedRoute>} />
           <Route path="/settings/rich-content" element={<RedirectSettingsRichContent />} />
           <Route path="/settings/users" element={<ProtectedRoute><Layout><SettingsUsers /></Layout></ProtectedRoute>} />
           <Route path="/settings/roles" element={<Navigate to="/settings/users?tab=roles" replace />} />

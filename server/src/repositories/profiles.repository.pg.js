@@ -9,6 +9,7 @@ import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import { parseAiSettings } from '../utils/aiSettings.js';
 import { parsePricePushSettings } from '../utils/pricePushSettings.js';
+import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
 
 /**
  * Таблицы с profile_id (shared DB). Оценка размера аккаунта =
@@ -18,6 +19,7 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
   'brands',
   'category_label_templates',
   'category_rich_content_templates',
+  'category_video_cover_templates',
   'employee_tasks',
   'fbo_purchase_calc_sessions',
   'fbo_supplies',
@@ -58,6 +60,7 @@ const TABLE_LABELS_RU = Object.freeze({
   brands: 'Бренды',
   category_label_templates: 'Шаблоны этикеток категорий',
   category_rich_content_templates: 'Шаблоны Rich-контента категорий',
+  category_video_cover_templates: 'Шаблоны видеообложки Ozon',
   employee_tasks: 'Задачи сотрудников',
   fbo_purchase_calc_sessions: 'Расчёты закупок FBO',
   fbo_supplies: 'Поставки FBO',
@@ -564,6 +567,10 @@ class ProfilesRepositoryPG {
     if (updates.price_push_settings !== undefined || updates.pricePushSettings !== undefined) {
       const raw = updates.price_push_settings ?? updates.pricePushSettings;
       set('price_push_settings', JSON.stringify(parsePricePushSettings(raw)));
+    }
+    if (updates.card_quality_settings !== undefined || updates.cardQualitySettings !== undefined) {
+      const raw = updates.card_quality_settings ?? updates.cardQualitySettings;
+      set('card_quality_settings', JSON.stringify(parseCardQualitySettings(raw)));
     }
     if (
       updates.fbo_deduction_warehouse_id !== undefined ||

@@ -8,6 +8,7 @@ import {
   productDimAttrStoredFromMm,
   resolveMarketplaceDimensionsMm,
   resolveMarketplaceVolumeLiters,
+  resolveWbLogisticsDimensionsCm,
   wbProductDimAxis,
   WB_ITEM_DIM_CHARC,
 } from '../src/utils/marketplaceDimensions.js';
@@ -54,6 +55,40 @@ describe('resolveMarketplaceDimensionsMm / volume', () => {
     expect(dims.length).toBe(210);
     expect(dims.width).toBe(229);
     expect(dims.height).toBe(45);
+    // 21×23×5 см (22.9→23, 4.5→5), не мм-точный 2.162
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.415);
+  });
+
+  test('WB: volume uses Math.round per side to whole cm', () => {
+    const product = {
+      length: 204,
+      width: 149,
+      height: 86,
+      mp_field_links: { dimensions: ['wb'] },
+    };
+    // мм-точный: 2.614 л; WB: 20×15×9 = 2.7 л
+    expect(resolveMarketplaceVolumeLiters(product, 'wb')).toBe(2.7);
+    expect(resolveWbLogisticsDimensionsCm(product)).toMatchObject({
+      length: 20,
+      width: 15,
+      height: 9,
+      liters: 2.7,
+    });
+  });
+
+  test('WB: 5 mm rounds down (164→16), 5+ rounds up (165→17)', () => {
+    expect(
+      resolveMarketplaceVolumeLiters(
+        { length: 164, width: 100, height: 100, mp_field_links: { dimensions: ['wb'] } },
+        'wb'
+      )
+    ).toBe(1.6);
+    expect(
+      resolveMarketplaceVolumeLiters(
+        { length: 165, width: 100, height: 100, mp_field_links: { dimensions: ['wb'] } },
+        'wb'
+      )
+    ).toBe(1.7);
   });
 
   test('WB: linked ERP packaging preferred over empty pack attrs', () => {

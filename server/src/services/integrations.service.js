@@ -1553,7 +1553,7 @@ class IntegrationsService {
 
   /**
    * Тарифы возвратов WB (GET /api/v1/tariffs/return) — отдельно от box.
-   * Нужны для return_amount в мин. цене.
+   * Для мин. цены обратной логистики сейчас используем базовый тариф box (см. computeWbReturnAmount).
    */
   async getWildberriesReturnTariffs(date = null, opts = {}) {
     const scope = this._normalizeIntegrationScope(opts);
@@ -2788,11 +2788,11 @@ class IntegrationsService {
 
   /**
    * Категорийные характеристики карточки — POST /offer-cards (в offer-mappings их нет).
-   * @returns {Promise<object|null>} элемент offerCards
+   * @returns {Promise<object[]>}
    */
-  async _fetchYandexOfferCardHit(offerId, opts = {}) {
-    const oid = offerId != null ? String(offerId).trim() : '';
-    if (!oid) return null;
+  async fetchYandexOfferCardsByOfferIds(offerIds, opts = {}) {
+    const ids = [...new Set((Array.isArray(offerIds) ? offerIds : [offerIds]).map((x) => String(x || '').trim()).filter(Boolean))];
+    if (!ids.length) return [];
     const ctx = opts.apiKey && opts.businessId
       ? { apiKey: opts.apiKey, businessId: opts.businessId }
       : await this._resolveYandexBusinessApiContext(opts);
@@ -2808,30 +2808,40 @@ class IntegrationsService {
           'Content-Type': 'application/json',
           'Api-Key': ctx.apiKey
         },
-        body: JSON.stringify({ offerIds: [oid] }),
+        body: JSON.stringify({ offerIds: ids }),
         ...(agent ? { agent } : {})
       });
     } catch (e) {
       logger.warn('[YM] offer-cards network error:', formatYandexNetworkError(e));
-      return null;
+      return [];
     }
     const text = await response.text().catch(() => '');
     if (!response.ok) {
       logger.warn('[YM] offer-cards HTTP', response.status, text?.substring?.(0, 200));
-      return null;
+      return [];
     }
     let data = {};
     try {
       data = text ? JSON.parse(text) : {};
     } catch (_) {
-      return null;
+      return [];
     }
     const cards =
       data?.result?.offerCards ??
       data?.offerCards ??
       data?.result?.cards ??
       [];
-    const list = Array.isArray(cards) ? cards : [];
+    return Array.isArray(cards) ? cards : [];
+  }
+
+  /**
+   * Категорийные характеристики карточки — POST /offer-cards (в offer-mappings их нет).
+   * @returns {Promise<object|null>} элемент offerCards
+   */
+  async _fetchYandexOfferCardHit(offerId, opts = {}) {
+    const oid = offerId != null ? String(offerId).trim() : '';
+    if (!oid) return null;
+    const list = await this.fetchYandexOfferCardsByOfferIds([oid], opts);
     return list.find((c) => String(c?.offerId ?? '').trim() === oid) || list[0] || null;
   }
 
@@ -2995,7 +3005,7 @@ class IntegrationsService {
     const manufacturerCountries = manufacturerCountriesRaw
       .map((c) => String(c || '').trim())
       .filter(Boolean);
-    return {
+    const result = {
       offerId: resolvedOfferId,
       shopSku: shopSku != null ? String(shopSku).trim() : null,
       marketSku: mapping.marketSku != null ? String(mapping.marketSku) : null,
@@ -3029,8 +3039,18 @@ class IntegrationsService {
             : [],
       contentRating: offerCard?.contentRating ?? null,
       cardStatus: offerCard?.cardStatus ?? null,
+      contentRatingStatus: offerCard?.contentRatingStatus ?? null,
+      recommendations: Array.isArray(offerCard?.recommendations) ? offerCard.recommendations : [],
+      content_rating: null,
       raw: { mapping: hit, offerCard }
     };
+    try {
+      const { normalizeYmContentRating } = await import('./marketplaceCardQuality.service.js');
+      result.content_rating = normalizeYmContentRating(offerCard);
+    } catch (_) {
+      /* ignore */
+    }
+    return result;
   }
 
   _hasOzonCredentials(cfg) {
@@ -3661,6 +3681,14 @@ class IntegrationsService {
       attributesCount: Array.isArray(item.attributes) ? item.attributes.length : 0,
       fromV4: !!v4Item
     });
+    if (!params.skipContentRating) {
+      try {
+        const quality = (await import('./marketplaceCardQuality.service.js')).default;
+        item.content_rating = await quality.ratingFromOzonItem(item, ozonApiOpts);
+      } catch (e) {
+        logger.warn('[Integrations Service] Ozon content rating failed', e?.message || e);
+      }
+    }
     return item;
   }
 

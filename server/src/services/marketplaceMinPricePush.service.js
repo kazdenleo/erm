@@ -14,7 +14,7 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
-import { filtersFromPricePushSettings, parsePricePushSettings, resolvePushFloorForMarketplace } from '../utils/pricePushSettings.js';
+import { filtersFromPricePushSettings, parsePricePushSettings, resolvePushFloorForMarketplace, isProductInPricePushScope } from '../utils/pricePushSettings.js';
 import { SYSTEM_ATTR_KEYS } from '../utils/attributeFormula.js';
 import { refreshComputedAttributeValues } from './computedAttributes.service.js';
 
@@ -173,11 +173,20 @@ export function buildWbPriceUploadPayload({
     erpDiscount = Math.max(0, Math.min(99, Math.round(Number(discountPercent))));
   }
 
+  // Цена до скидки + %: после скидки должна быть ровно targetEff (мин. цена).
+  // Целое % скидки почти никогда не даёт exact match при фиксированном before —
+  // поэтому подбираем discount от «до скидки», а price до скидки чуть корректируем
+  // через wbPriceToMeetFloor, чтобы effective == floor.
   if (erpBefore != null && erpBefore > targetEff) {
     const discount =
       erpDiscount != null && erpDiscount > 0
         ? erpDiscount
         : Math.max(1, Math.min(99, Math.round((1 - targetEff / erpBefore) * 100)));
+    if (isSyncSellingPriceToMinEnabled()) {
+      const price = wbPriceToMeetFloor(targetEff, discount);
+      if (price == null) return null;
+      return { price, discount, targetEff };
+    }
     return { price: erpBefore, discount, targetEff };
   }
 
@@ -195,6 +204,24 @@ export function buildWbPriceUploadPayload({
   const price = wbPriceToMeetFloor(targetEff, d);
   if (price == null) return null;
   return { price, discount: d, targetEff };
+}
+
+/**
+ * YM offer price: value = после скидки; discountBase = до скидки (скидка 5–99%).
+ * @see https://yandex.ru/dev/market/partner-api/doc/ru/reference/business-assortment/updateBusinessPrices
+ */
+export function buildYmOfferPrice({ value, priceBeforeDiscount = null }) {
+  const v = floorRub(value);
+  if (v == null) return null;
+  const price = { value: v, currencyId: 'RUR' };
+  const before = floorRub(priceBeforeDiscount);
+  if (before != null && before > v) {
+    const discountPct = (1 - v / before) * 100;
+    if (discountPct >= 5 && discountPct <= 99) {
+      price.discountBase = before;
+    }
+  }
+  return price;
 }
 
 function isRateLimitStatus(status, text = '') {
@@ -329,17 +356,27 @@ async function loadProductPushContext(productId, pushSchemes = null) {
     }
   }
 
-  // Источник «цены до скидки» — атрибут карточки; применяется ко всем МП при пуше.
+  // Источник цен «до/после скидки» — атрибуты карточки (источник истины при пуше).
   const cardPrices = await loadCardPriceAttributes(pid);
   if (cardPrices.before != null) {
     for (const mp of Object.keys(floors)) {
       priceBeforeDiscount[mp] = cardPrices.before;
     }
   }
-  // Если нет selling в таблице МП — берём «после скидки» из карточки.
   if (cardPrices.after != null) {
     for (const mp of Object.keys(floors)) {
-      if (selling[mp] == null) selling[mp] = cardPrices.after;
+      selling[mp] = cardPrices.after;
+    }
+  }
+  // Часто price_before_discount заполнен только у Ozon в product_marketplace_prices —
+  // раздаём общий «до скидки» на WB/YM, иначе на них уходит только цена после скидки.
+  const beforeCandidates = Object.values(priceBeforeDiscount).filter(
+    (v) => v != null && Number.isFinite(Number(v)) && Number(v) > 0
+  );
+  if (beforeCandidates.length) {
+    const sharedBefore = Math.max(...beforeCandidates.map((v) => Number(v)));
+    for (const mp of Object.keys(floors)) {
+      if (priceBeforeDiscount[mp] == null) priceBeforeDiscount[mp] = sharedBefore;
     }
   }
 
@@ -445,6 +482,7 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const ozonApiOpts = { ozonOverride: { client_id: clientId, api_key: apiKey } };
   let mpMin = null;
   let mpPrice = null;
+  let mpOldPrice = null;
   try {
     const filter = ozonProductId
       ? { product_id: [ozonProductId] }
@@ -459,12 +497,9 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     const priceBlock = item?.price || item;
     mpMin = priceBlock?.min_price != null ? Number(priceBlock.min_price) : null;
     mpPrice = priceBlock?.price != null ? Number(priceBlock.price) : null;
+    mpOldPrice = priceBlock?.old_price != null ? Number(priceBlock.old_price) : null;
   } catch (e) {
     logger.warn('[MP MinPrice Push] Ozon read failed', { message: e?.message || String(e) });
-  }
-
-  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice })) {
-    return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
   const entry = buildOzonPriceImportEntry({
@@ -476,6 +511,12 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   });
   if (!entry) {
     return { marketplace: 'ozon', skipped: true, reason: 'invalid_entry' };
+  }
+  const oldPriceOk =
+    !entry.old_price ||
+    (Number.isFinite(mpOldPrice) && pricesRoughlyEqual(mpOldPrice, Number(entry.old_price)));
+  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice }) && oldPriceOk) {
+    return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
   try {
@@ -618,6 +659,7 @@ async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     selling: uploadPack.targetEff,
     newPrice: uploadPack.price,
     discount: uploadPack.discount,
+    before: uploadPack.discount > 0 ? uploadPack.price : null,
   };
 }
 
@@ -682,15 +724,23 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   if (currentPrice == null || !Number.isFinite(currentPrice)) {
     return { marketplace: 'ym', skipped: true, reason: 'unknown_current' };
   }
-  if (!needsYmFloorPush({ erpFloor: floor, currentPrice })) {
+
+  const priceObj = buildYmOfferPrice({
+    value: targetPrice,
+    priceBeforeDiscount: ctx.priceBeforeDiscount?.ym ?? null,
+  });
+  if (!priceObj) {
+    return { marketplace: 'ym', skipped: true, reason: 'invalid_floor' };
+  }
+  const needsBefore = priceObj.discountBase != null;
+  if (!needsYmFloorPush({ erpFloor: floor, currentPrice }) && !needsBefore) {
     return { marketplace: 'ym', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
-  const newValue = targetPrice;
   const agent = getYandexHttpsAgent();
   const offerPayload = useBusiness
-    ? { offerId, price: { value: newValue, currencyId: 'RUR' } }
-    : { id: offerId, price: { value: newValue, currencyId: 'RUR' } };
+    ? { offerId, price: priceObj }
+    : { id: offerId, price: priceObj };
   const { response, text } = await fetchWithRetry(
     `https://api.partner.market.yandex.ru${updatesPath}`,
     {
@@ -717,10 +767,18 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     offerId,
     floor,
     selling: targetPrice,
+    before: priceObj.discountBase ?? null,
     previous: currentPrice,
     via: useBusiness ? 'business' : 'campaign',
   });
-  return { marketplace: 'ym', ok: true, floor, selling: targetPrice, newValue };
+  return {
+    marketplace: 'ym',
+    ok: true,
+    floor,
+    selling: targetPrice,
+    newValue: priceObj.value,
+    before: priceObj.discountBase ?? null,
+  };
 }
 
 /**
@@ -732,9 +790,35 @@ export async function pushForProduct(productId) {
     return { skipped: true, reason: 'disabled' };
   }
   let profileIdForSettings = null;
-  const prodPeek = await query('SELECT profile_id FROM products WHERE id = $1 LIMIT 1', [Number(productId)]);
-  profileIdForSettings = prodPeek.rows?.[0]?.profile_id ?? null;
+  const prodPeek = await query(
+    'SELECT id, profile_id, user_category_id FROM products WHERE id = $1 LIMIT 1',
+    [Number(productId)]
+  );
+  const peek = prodPeek.rows?.[0];
+  profileIdForSettings = peek?.profile_id ?? null;
   const pushSchemes = await loadProfilePushSchemes(profileIdForSettings);
+
+  // Область из «Цены → Настройки»: schedule после пересчёта / push-one
+  // раньше игнорировали список товаров и пушили любой SKU с auto_push org.
+  if (Number.isFinite(Number(profileIdForSettings)) && Number(profileIdForSettings) > 0) {
+    try {
+      const res = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [
+        Number(profileIdForSettings),
+      ]);
+      if (!isProductInPricePushScope(peek, res.rows?.[0]?.price_push_settings)) {
+        return {
+          skipped: true,
+          reason: 'out_of_push_scope',
+          productId: Number(productId),
+        };
+      }
+    } catch (e) {
+      logger.warn('[MP MinPrice Push] push scope check failed', {
+        productId,
+        message: e?.message || String(e),
+      });
+    }
+  }
 
   let ctx = await loadProductPushContext(productId, pushSchemes);
   if (!ctx) return { skipped: true, reason: 'product_not_found' };
@@ -1070,6 +1154,9 @@ export default {
   needsOzonMinPricePush,
   needsWbFloorPush,
   needsYmFloorPush,
+  buildOzonPriceImportEntry,
+  buildWbPriceUploadPayload,
+  buildYmOfferPrice,
   schedulePushForProduct,
   pushForProduct,
   pushForProductIds,

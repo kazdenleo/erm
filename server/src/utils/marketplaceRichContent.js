@@ -14,6 +14,7 @@ const OZON_SKIP_ATTR_IDS = new Set([
   OZON_ANNOTATION_ATTR_ID,
   21837,
   21841,
+  21845,
 ]);
 
 const WB_SKIP_CHARC_IDS = new Set(['90849', '90745', '90846', '90652', '90673', '90630']);

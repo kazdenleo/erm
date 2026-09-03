@@ -84,3 +84,28 @@
   background: #f1f5f9;
   color: #475569;
 }
+
+.abc-sales-analytics__col-action {
+  white-space: nowrap;
+  width: 1%;
+  text-align: right;
+}
+
+.abc-sales-analytics__in-work {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.abc-sales-analytics__in-work:hover {
+  background: #dbeafe;
+}

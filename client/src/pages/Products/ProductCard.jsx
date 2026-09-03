@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../components/common/Button/Button';
 import { ProductForm } from '../../components/forms/ProductForm/ProductForm';
@@ -20,6 +20,7 @@ export function ProductCard() {
   const { productId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const isNew = !productId || productId === 'new';
   const formRef = useRef(null);
 
@@ -44,12 +45,14 @@ export function ProductCard() {
   }, [searchParams]);
 
   const leaveCard = useCallback(() => {
-    if (window.history.length > 1) {
-      navigate(-1);
+    const from = location.state?.from;
+    if (typeof from === 'string' && from.startsWith('/')) {
+      navigate(from);
       return;
     }
+    // Не navigate(-1): при прямом заходе / редиректах history часто «ломает» кнопку «Назад»
     navigate('/products');
-  }, [navigate]);
+  }, [navigate, location.state]);
 
   const handleBack = useCallback(() => {
     if (formRef.current?.requestClose) {

@@ -3,9 +3,11 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
+import { productHypothesesApi } from '../../../services/productHypotheses.api';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './AbcSalesAnalytics.css';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
@@ -65,6 +67,7 @@ const CLASS_FILTERS = [
 ];
 
 export function AbcSalesAnalytics() {
+  const navigate = useNavigate();
   const initial = useMemo(() => defaultAnalyticsRange(DEFAULT_ANALYTICS_PERIOD), []);
   const [periodPreset, setPeriodPreset] = useState(DEFAULT_ANALYTICS_PERIOD);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
@@ -76,22 +79,36 @@ export function AbcSalesAnalytics() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
+  /** productId -> hypothesisId для активных гипотез */
+  const [activeHypothesisByProduct, setActiveHypothesisByProduct] = useState(() => new Map());
   const { sort, toggleSort } = useTableSort(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await salesAnalyticsApi.getAbc({
-        dateFrom,
-        dateTo,
-        marketplace,
-        scheme,
-      });
+      const [res, hypRes] = await Promise.all([
+        salesAnalyticsApi.getAbc({
+          dateFrom,
+          dateTo,
+          marketplace,
+          scheme,
+        }),
+        productHypothesesApi.list({ status: 'active' }).catch(() => null),
+      ]);
       setData(res?.data ?? null);
+      const map = new Map();
+      for (const item of hypRes?.data?.items || []) {
+        const pid = Number(item.productId);
+        if (Number.isFinite(pid) && pid > 0 && !map.has(pid)) {
+          map.set(pid, Number(item.id) || 0);
+        }
+      }
+      setActiveHypothesisByProduct(map);
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить ABC-анализ');
       setData(null);
+      setActiveHypothesisByProduct(new Map());
     } finally {
       setLoading(false);
     }
@@ -112,6 +129,31 @@ export function AbcSalesAnalytics() {
   }, [classified.items, classFilter, sort]);
 
   const metricLabel = ABC_METRICS.find((m) => m.value === metric)?.label || 'Выручка';
+
+  const openHypothesis = useCallback(
+    (row) => {
+      const productId = Number(row.productId);
+      if (!Number.isFinite(productId) || productId < 1) return;
+      if (activeHypothesisByProduct.has(productId)) {
+        navigate('/analytics/hypotheses');
+        return;
+      }
+      navigate('/analytics/hypotheses', {
+        state: {
+          createFromAbc: {
+            productId,
+            productName: row.productName || '',
+            productSku: row.erpSku || row.sku || '',
+            marketplace,
+            scheme,
+            abcClass: row.abcClass || '',
+            metricLabel,
+          },
+        },
+      });
+    },
+    [navigate, marketplace, scheme, metricLabel, activeHypothesisByProduct]
+  );
 
   return (
     <div className="sales-analytics abc-sales-analytics">
@@ -246,24 +288,29 @@ export function AbcSalesAnalytics() {
               <SortableTh sortKey="cumulativeShare" sort={sort} onSort={toggleSort} className="sales-analytics__num">
                 Накопит.
               </SortableTh>
+              <th className="abc-sales-analytics__col-action">Гипотеза</th>
             </tr>
           </thead>
           <tbody>
             {!loading && data == null && (
               <tr>
-                <td colSpan={9} className="sales-analytics__empty">
+                <td colSpan={10} className="sales-analytics__empty">
                   Выберите параметры и нажмите «Показать».
                 </td>
               </tr>
             )}
             {!loading && data != null && items.length === 0 && (
               <tr>
-                <td colSpan={9} className="sales-analytics__empty">
+                <td colSpan={10} className="sales-analytics__empty">
                   Нет данных за выбранный период. Сначала загрузите отчёты FBO/FBS.
                 </td>
               </tr>
             )}
-            {items.map((row) => (
+            {items.map((row) => {
+              const productId = Number(row.productId) || 0;
+              const canHypothesis = productId > 0;
+              const alreadyInWork = canHypothesis && activeHypothesisByProduct.has(productId);
+              return (
               <tr key={`${row.productId || 'x'}-${row.sku}-${row.abcClass}`}>
                 <td>
                   <span className={`abc-sales-analytics__badge abc-sales-analytics__badge--${row.abcClass.toLowerCase()}`}>
@@ -278,8 +325,35 @@ export function AbcSalesAnalytics() {
                 <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
                 <td className="sales-analytics__num">{formatPct(row.share)}</td>
                 <td className="sales-analytics__num">{formatPct(row.cumulativeShare)}</td>
+                <td className="abc-sales-analytics__col-action">
+                  {alreadyInWork ? (
+                    <button
+                      type="button"
+                      className="abc-sales-analytics__in-work"
+                      title="Уже есть гипотеза в работе — открыть список"
+                      onClick={() => navigate('/analytics/hypotheses')}
+                    >
+                      В работе
+                    </button>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      disabled={!canHypothesis}
+                      title={
+                        canHypothesis
+                          ? 'Создать гипотезу по этому товару'
+                          : 'Товар не сопоставлен с карточкой ERP'
+                      }
+                      onClick={() => openHypothesis(row)}
+                    >
+                      В работу
+                    </Button>
+                  )}
+                </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

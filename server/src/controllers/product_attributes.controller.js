@@ -10,6 +10,7 @@ import { COMPUTED_ATTR_TYPE, isSystemPriceAttrKey, validateFormula } from '../ut
 import {
   EDITABLE_ATTR_TYPE,
   normalizeShowRelatedFields,
+  normalizeAiChatEnabled,
 } from '../utils/editableAttribute.js';
 import {
   isSystemCardAttrKey,
@@ -72,7 +73,7 @@ class ProductAttributesController {
 
   async create(req, res, next) {
     try {
-      const { name, type, dictionary_values, mp_links, formula, show_related_fields } = req.body;
+      const { name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled } = req.body;
       if (!name || !type) {
         return res.status(400).json({ ok: false, message: 'Название и тип атрибута обязательны' });
       }
@@ -89,11 +90,12 @@ class ProductAttributesController {
       const dictVal = type === 'dictionary' ? (Array.isArray(dictionary_values) ? dictionary_values : []) : [];
       const links = normalizeMpLinks(mp_links);
       const showRelated = normalizeShowRelatedFields(type, show_related_fields);
+      const aiChat = normalizeAiChatEnabled(type, ai_chat_enabled);
       const result = await query(
-        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links, formula, show_related_fields)
-         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7)
          RETURNING *`,
-        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links), formulaVal, showRelated]
+        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links), formulaVal, showRelated, aiChat]
       );
       return res.status(201).json({ ok: true, data: result.rows[0] });
     } catch (error) {
@@ -115,9 +117,9 @@ class ProductAttributesController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const { name, type, dictionary_values, mp_links, formula, show_related_fields } = req.body;
+      const { name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled } = req.body;
       const check = await query(
-        'SELECT id, system_key, type, show_related_fields FROM product_attributes WHERE id = $1',
+        'SELECT id, system_key, type, show_related_fields, ai_chat_enabled FROM product_attributes WHERE id = $1',
         [id]
       );
       if (check.rows.length === 0) {
@@ -185,6 +187,14 @@ class ProductAttributesController {
         );
         updates.push(`show_related_fields = $${idx++}`);
         params.push(showRelated);
+      }
+      if (ai_chat_enabled !== undefined || type !== undefined) {
+        const aiChat = normalizeAiChatEnabled(
+          nextType,
+          ai_chat_enabled !== undefined ? ai_chat_enabled : existing.ai_chat_enabled
+        );
+        updates.push(`ai_chat_enabled = $${idx++}`);
+        params.push(aiChat);
       }
       if (updates.length > 0) {
         updates.push(`updated_at = CURRENT_TIMESTAMP`);
