@@ -61,13 +61,16 @@ export function resolveWbLocalizationIndex(value) {
   return 1;
 }
 
-/** СПП WB 0–99.99%; пусто/некорректно → 0. Для не-WB всегда 0. */
-export function resolveWbSppPercent(marketplace, value) {
-  const mp = String(marketplace || '').toLowerCase();
-  if (mp !== 'wb' && mp !== 'wildberries') return 0;
+/** СПП 0–99.99%; пусто/некорректно → 0. */
+export function resolveSppPercent(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(n, 99.99);
+}
+
+/** @deprecated use resolveSppPercent */
+export function resolveWbSppPercent(_marketplace, value) {
+  return resolveSppPercent(value);
 }
 
 export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) {
@@ -108,7 +111,7 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  wbSppPercent = null
+  sppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -208,8 +211,8 @@ export function calculateMinPrice(
   const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent))) ? Number(calculator.ads_promotion_percent) / 100 : 0;
 
   const profile = resolveMinPriceTaxProfile(product, taxProfile);
-  const sppPercent = resolveWbSppPercent(marketplace, wbSppPercent);
-  const sellFactor = 1 - sppPercent / 100;
+  const sppPct = resolveSppPercent(sppPercent);
+  const sellFactor = 1 - sppPct / 100;
 
   const variableRate =
     marketplaceCommissionPercent +
@@ -396,7 +399,7 @@ export function liveMinPriceForProduct(product, marketplace, scheme, opts = {}) 
     wbGem,
     opts.taxProfile,
     scheme,
-    opts.wbSppPercent
+    opts.sppPercent ?? opts.wbSppPercent
   );
 }
 

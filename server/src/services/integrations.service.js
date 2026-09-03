@@ -815,6 +815,9 @@ class IntegrationsService {
       } else if (config.localization_index === '') {
         config.localization_index = null;
       }
+    }
+    // СПП по умолчанию — для всех МП (налоги от цены продажи после СПП)
+    if (type === 'ozon' || type === 'wildberries' || type === 'yandex') {
       if (config.spp_percent == null && config.sppPercent != null) {
         config.spp_percent = config.sppPercent;
       }

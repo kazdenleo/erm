@@ -3853,6 +3853,8 @@ class PricesService {
     let wbAcquiringPercent = null;
     let wbGemServicesPercent = null;
     let wbSppPercent = null;
+    let ozonSppPercent = null;
+    let ymSppPercent = null;
     try {
       const wb = await integrationsService.getMarketplaceConfig('wildberries', integrationScope);
       wbAcquiringPercent = wb?.acquiring_percent != null ? Number(wb.acquiring_percent) : null;
@@ -3872,8 +3874,22 @@ class PricesService {
         const n = Number(ozonCfg.acquiring_percent);
         if (Number.isFinite(n) && n >= 0) ozonAcquiringPercent = n;
       }
+      if (ozonCfg?.spp_percent != null && ozonCfg.spp_percent !== '') {
+        const n = Number(ozonCfg.spp_percent);
+        ozonSppPercent = Number.isFinite(n) && n >= 0 ? n : null;
+      }
     } catch (e) {
       logger.warn('[Prices Service] Ozon settings for recalc:', e.message);
+    }
+
+    try {
+      const ymCfg = await integrationsService.getMarketplaceConfig('yandex', integrationScope);
+      if (ymCfg?.spp_percent != null && ymCfg.spp_percent !== '') {
+        const n = Number(ymCfg.spp_percent);
+        ymSppPercent = Number.isFinite(n) && n >= 0 ? n : null;
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] YM settings for recalc:', e.message);
     }
 
     const mappings = await categoryMappingsRepo.findAll({ productId });
@@ -3933,8 +3949,8 @@ class PricesService {
             }
             const profit = resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
-            const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBS');
-            const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBO');
+            const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBS', ozonSppPercent);
+            const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBO', ozonSppPercent);
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ozon', priceFbs, calculator, { scheme: 'FBS' });
             }
@@ -4102,7 +4118,7 @@ class PricesService {
               meta: { productId, offerId: skuYm },
             });
           } else {
-            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, taxProfile, 'FBS');
+            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, taxProfile, 'FBS', ymSppPercent);
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, dataFbs.calculator, { scheme: 'FBS' });
             } else {
@@ -4120,7 +4136,7 @@ class PricesService {
           const ymFbyResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, ymFbyOpts);
           const dataFby = ymFbyResult?.data ?? ymFbyResult;
           if (dataFby?.found && dataFby?.calculator) {
-            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, taxProfile, 'FBO');
+            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, taxProfile, 'FBO', ymSppPercent);
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(
                 productId,

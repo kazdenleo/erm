@@ -19,9 +19,7 @@ function safeExpenseNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function resolveWbSppPercent(marketplace, value) {
-  const mp = String(marketplace || '').toLowerCase();
-  if (mp !== 'wb' && mp !== 'wildberries') return 0;
+function resolveSppPercent(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(n, 99.99);
@@ -29,7 +27,7 @@ function resolveWbSppPercent(marketplace, value) {
 
 /**
  * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
- * @param {number|null} [wbSppPercent] — СПП WB %, налоги от цены после СПП
+ * @param {number|null} [sppPercent] — СПП %, налоги от цены после СПП
  */
 export function calculateMinPrice(
   basePrice,
@@ -41,7 +39,7 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  wbSppPercent = null
+  sppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -177,8 +175,8 @@ export function calculateMinPrice(
       ? { tax_system: product.organization_tax_system, vat: product.organization_vat }
       : null)
   );
-  const sppPercent = resolveWbSppPercent(marketplace, wbSppPercent);
-  const sellFactor = 1 - sppPercent / 100;
+  const sppPct = resolveSppPercent(sppPercent);
+  const sellFactor = 1 - sppPct / 100;
   const variableRate =
     marketplaceCommissionPercent +
     acquiringPercent +

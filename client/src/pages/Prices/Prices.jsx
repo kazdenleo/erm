@@ -100,7 +100,9 @@ export function Prices() {
   const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
   const [wbLocalizationIndex, setWbLocalizationIndex] = useState(null); // ИЛ WB из настроек интеграции
-  const [wbSppPercent, setWbSppPercent] = useState(null); // СПП WB по умолчанию из настроек
+  const [wbSppPercent, setWbSppPercent] = useState(0);
+  const [ozonSppPercent, setOzonSppPercent] = useState(0);
+  const [ymSppPercent, setYmSppPercent] = useState(0);
   const [mpSettingsReady, setMpSettingsReady] = useState(false);
   const persistInFlightRef = useRef(false);
   const persistDoneRef = useRef(new Set());
@@ -473,6 +475,13 @@ export function Prices() {
         } else {
           setOzonAcquiringPercent(null);
         }
+        const ozonSpp = ozonConfig.spp_percent ?? ozonConfig.sppPercent;
+        if (ozonSpp !== undefined && ozonSpp !== null && ozonSpp !== '') {
+          const n = Number(ozonSpp);
+          setOzonSppPercent(!isNaN(n) && isFinite(n) && n >= 0 ? n : 0);
+        } else {
+          setOzonSppPercent(0);
+        }
         const ymConfig = ymRes?.data || ymRes || {};
         const earlyPp = ymConfig.early_shipment_discount_pp ?? ymConfig.earlyShipmentDiscountPp;
         if (earlyPp !== undefined && earlyPp !== null && earlyPp !== '') {
@@ -481,6 +490,13 @@ export function Prices() {
         } else {
           setYmEarlyShipmentDiscountPp(null);
         }
+        const ymSpp = ymConfig.spp_percent ?? ymConfig.sppPercent;
+        if (ymSpp !== undefined && ymSpp !== null && ymSpp !== '') {
+          const n = Number(ymSpp);
+          setYmSppPercent(!isNaN(n) && isFinite(n) && n >= 0 ? n : 0);
+        } else {
+          setYmSppPercent(0);
+        }
       } catch (err) {
         if (!cancelled) {
           console.error('[Prices] Error loading marketplace settings:', err);
@@ -488,6 +504,8 @@ export function Prices() {
           setWbGemServicesPercent(null);
           setWbLocalizationIndex(1);
           setWbSppPercent(0);
+          setOzonSppPercent(0);
+          setYmSppPercent(0);
           setOzonAcquiringPercent(null);
           setYmEarlyShipmentDiscountPp(null);
         }
@@ -525,8 +543,10 @@ export function Prices() {
     wbGemServicesPercent,
     wbLocalizationIndex,
     wbSppPercent,
+    ozonSppPercent,
+    ymSppPercent,
     ozonAcquiringPercent,
-  }), [wbAcquiringPercent, wbGemServicesPercent, wbLocalizationIndex, wbSppPercent, ozonAcquiringPercent]);
+  }), [wbAcquiringPercent, wbGemServicesPercent, wbLocalizationIndex, wbSppPercent, ozonSppPercent, ymSppPercent, ozonAcquiringPercent]);
 
   const liveMinsByProduct = useMemo(() => {
     const map = {};
@@ -535,16 +555,16 @@ export function Prices() {
       const key = String(product.id ?? product.sku ?? '');
       if (!key) continue;
       const taxProfile = taxProfileForProduct(organizations, product, orgId);
-      const opts = { ...liveMinOpts, taxProfile };
+      const optsBase = { ...liveMinOpts, taxProfile };
       map[key] = {
-        ozonFbs: liveMinPriceForProduct(product, 'ozon', 'FBS', opts),
-        ozonFbo: liveMinPriceForProduct(product, 'ozon', 'FBO', opts),
-        wbFbs: liveMinPriceForProduct(product, 'wb', 'FBS', opts),
-        wbFbo: liveMinPriceForProduct(product, 'wb', 'FBO', opts),
+        ozonFbs: liveMinPriceForProduct(product, 'ozon', 'FBS', { ...optsBase, sppPercent: ozonSppPercent }),
+        ozonFbo: liveMinPriceForProduct(product, 'ozon', 'FBO', { ...optsBase, sppPercent: ozonSppPercent }),
+        wbFbs: liveMinPriceForProduct(product, 'wb', 'FBS', { ...optsBase, sppPercent: wbSppPercent }),
+        wbFbo: liveMinPriceForProduct(product, 'wb', 'FBO', { ...optsBase, sppPercent: wbSppPercent }),
       };
     }
     return map;
-  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId]);
+  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId, ozonSppPercent, wbSppPercent]);
 
   // Сохраняем живой расчёт, если он разошёлся с БД — иначе «Отправить цены» уйдёт со старым значением.
   useEffect(() => {
@@ -1569,6 +1589,8 @@ export function Prices() {
         wbGemServicesPercent={wbGemServicesPercent}
         wbLocalizationIndex={wbLocalizationIndex}
         wbSppPercent={wbSppPercent}
+        ozonSppPercent={ozonSppPercent}
+        ymSppPercent={ymSppPercent}
         ymEarlyShipmentDiscountPp={ymEarlyShipmentDiscountPp}
         taxProfile={taxProfileForProduct(
           organizations,

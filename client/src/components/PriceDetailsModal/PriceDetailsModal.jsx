@@ -15,7 +15,7 @@ import {
 } from '../../utils/marketplaceMinProfit.js';
 import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
 import { resolveOzonLogisticsCostsForReturn, computeOzonReturnUnitAmount } from '../../utils/ozonReturnAmount.js';
-import { calculateMinPrice, resolveWbSppPercent } from '../../utils/calculateMinPrice.js';
+import { calculateMinPrice, resolveSppPercent } from '../../utils/calculateMinPrice.js';
 import './PriceDetailsModal.css';
 
 function toFiniteNumber(value) {
@@ -151,6 +151,8 @@ function PriceDetailsModalInner({
   wbGemServicesPercent = null,
   wbLocalizationIndex = null,
   wbSppPercent = null,
+  ozonSppPercent = null,
+  ymSppPercent = null,
   ozonAcquiringPercent = null,
   ymEarlyShipmentDiscountPp = null,
   taxProfile = null,
@@ -661,6 +663,14 @@ function PriceDetailsModalInner({
   }
 
   const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
+  const sppPercentForMp =
+    marketplace === 'wb'
+      ? wbSppPercent
+      : marketplace === 'ozon'
+        ? ozonSppPercent
+        : marketplace === 'ym'
+          ? ymSppPercent
+          : null;
   const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
   if (marketplace !== 'ym' && targetProfit != null && targetProfit >= 0) {
     let calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
@@ -682,7 +692,7 @@ function PriceDetailsModalInner({
       wbGemServicesPercent,
       profile,
       priceScheme,
-      wbSppPercent
+      sppPercentForMp
     );
     if (solved != null) calculatedPrice = solved;
   }
@@ -755,7 +765,7 @@ function PriceDetailsModalInner({
   const profit = calculatedPrice - totalExpenses;
   const profitPercent = calculatedPrice > 0 ? (profit / calculatedPrice) * 100 : 0;
 
-  const sppPercent = resolveWbSppPercent(marketplace, wbSppPercent);
+  const sppPercent = resolveSppPercent(sppPercentForMp);
   const sellingPriceAfterSpp = Math.round(calculatedPrice * (1 - sppPercent / 100) * 100) / 100;
 
   // Налоги от цены продажи после СПП (для не-WB sellingPrice = calculatedPrice)
@@ -1281,7 +1291,7 @@ function PriceDetailsModalInner({
               </PriceBreakdownValue>
             </div>
 
-            {marketplace === 'wb' && (
+            {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym') && (
               <>
                 <div className="price-breakdown-item">
                   <BreakdownLabel fromSettings>СПП ({sppPercent.toFixed(2)}%):</BreakdownLabel>
@@ -1307,7 +1317,7 @@ function PriceDetailsModalInner({
                 <BreakdownLabel fromSettings>НДС ({vatPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
-                  formula={`= ${sellingPriceAfterSpp.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽${marketplace === 'wb' ? ' (от цены продажи)' : ''}`}
+                  formula={`= ${sellingPriceAfterSpp.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽ (от цены продажи)`}
                 >
                   -{vatAmount.toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -1346,7 +1356,7 @@ function PriceDetailsModalInner({
                 )}
               </span>
               <div className="price-details-final-hint">
-                {marketplace === 'wb'
+                {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym')
                   ? `Цена для маркетплейса (до СПП). Цена продажи после СПП ${sppPercent.toFixed(2)}%: ${sellingPriceAfterSpp.toFixed(2)} ₽. Налоги считаются от цены продажи.`
                   : maxCalculatedPrice != null
                     ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
