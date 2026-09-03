@@ -10,6 +10,7 @@ import { profilesApi } from '../../services/profiles.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { OrganizationForm } from '../../components/forms/OrganizationForm/OrganizationForm';
+import { ordersApi } from '../../services/orders.api';
 import { formatTaxSystemLabel } from '../../utils/organizationTaxRates.js';
 import './Organizations.css';
 
@@ -19,12 +20,47 @@ export function Organizations() {
   const [profiles, setProfiles] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingOrg, setEditingOrg] = useState(null);
+  const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
+  const [ordersAutoSyncPauseLoaded, setOrdersAutoSyncPauseLoaded] = useState(false);
+  const [ordersAutoSyncPauseLoading, setOrdersAutoSyncPauseLoading] = useState(false);
+  const [ordersAutoSyncPauseError, setOrdersAutoSyncPauseError] = useState(null);
 
   useEffect(() => {
     if (isAdmin) {
       profilesApi.getAll().then((res) => setProfiles(res?.data ?? [])).catch(() => {});
     }
   }, [isAdmin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    ordersApi
+      .getOrdersFbsSyncPause()
+      .then((d) => {
+        if (!cancelled) setOrdersAutoSyncPaused(Boolean(d?.paused));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setOrdersAutoSyncPauseLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleOrdersAutoSyncPause = async (paused) => {
+    setOrdersAutoSyncPauseError(null);
+    setOrdersAutoSyncPauseLoading(true);
+    try {
+      await ordersApi.setOrdersFbsSyncPause(paused);
+      setOrdersAutoSyncPaused(paused);
+    } catch (err) {
+      setOrdersAutoSyncPauseError(
+        err.response?.data?.message || err.message || 'Не удалось переключить автообновление'
+      );
+    } finally {
+      setOrdersAutoSyncPauseLoading(false);
+    }
+  };
 
   const handleCreate = () => {
     setEditingOrg(null);
@@ -67,17 +103,47 @@ export function Organizations() {
     }
   };
 
-  if (loading) {
-    return <div className="loading">Загрузка организаций...</div>;
-  }
-  if (error) {
-    return <div className="error">Ошибка: {error}</div>;
-  }
+  const pauseButton = (
+    <Button
+      variant={ordersAutoSyncPaused ? 'primary' : 'secondary'}
+      size="small"
+      onClick={() => handleOrdersAutoSyncPause(!ordersAutoSyncPaused)}
+      disabled={ordersAutoSyncPauseLoading || !ordersAutoSyncPauseLoaded}
+      title="Остановить фоновую подгрузку заказов и статусов с Ozon, WB и Яндекс (удобно во время сборки)"
+    >
+      {ordersAutoSyncPauseLoading
+        ? '…'
+        : ordersAutoSyncPaused
+          ? 'Включить автообновление обратно'
+          : '⏸ Пауза автообновления'}
+    </Button>
+  );
 
   return (
     <div className="card">
-      <h1 className="title">Организации</h1>
-      <p className="subtitle">Организации, к которым привязаны товары, склады и приёмки</p>
+      <div className="organizations-page-header">
+        <div>
+          <h1 className="title">Организации</h1>
+          <p className="subtitle">Организации, к которым привязаны товары, склады и приёмки</p>
+        </div>
+        {pauseButton}
+      </div>
+      {ordersAutoSyncPaused && (
+        <div className="organizations-sync-paused-banner" role="status">
+          Автообновление заказов с маркетплейсов приостановлено: cron не меняет статусы, список заказов не
+          опрашивается по таймеру. Ручной импорт на странице «Заказы» работает.
+        </div>
+      )}
+      {ordersAutoSyncPauseError && (
+        <p className="error" style={{ marginBottom: 12 }}>{ordersAutoSyncPauseError}</p>
+      )}
+
+      {loading ? (
+        <div className="loading">Загрузка организаций...</div>
+      ) : error ? (
+        <div className="error">Ошибка: {error}</div>
+      ) : (
+        <>
 
       <div className="organizations-list" style={{ marginTop: '16px' }}>
         {organizations.length === 0 ? (
@@ -122,6 +188,8 @@ export function Organizations() {
       <div className="actions" style={{ marginTop: '16px' }}>
         <Button variant="primary" onClick={handleCreate}>Добавить организацию</Button>
       </div>
+        </>
+      )}
 
       <Modal
         isOpen={isModalOpen}

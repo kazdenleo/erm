@@ -514,8 +514,6 @@ export function Orders() {
   /** Пауза фоновой синхронизации с МП + таймер обновления списка на этой странице */
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
   const [ordersAutoSyncPauseLoaded, setOrdersAutoSyncPauseLoaded] = useState(false);
-  const [ordersAutoSyncPauseLoading, setOrdersAutoSyncPauseLoading] = useState(false);
-  const [ordersAutoSyncPauseError, setOrdersAutoSyncPauseError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
   const [listRefreshing, setListRefreshing] = useState(false);
@@ -1255,19 +1253,6 @@ export function Orders() {
       cancelled = true;
     };
   }, []);
-
-  const handleOrdersAutoSyncPause = async (paused) => {
-    setOrdersAutoSyncPauseError(null);
-    setOrdersAutoSyncPauseLoading(true);
-    try {
-      await ordersApi.setOrdersFbsSyncPause(paused);
-      setOrdersAutoSyncPaused(paused);
-    } catch (e) {
-      setOrdersAutoSyncPauseError(e.response?.data?.message || e.message || 'Не удалось переключить автообновление');
-    } finally {
-      setOrdersAutoSyncPauseLoading(false);
-    }
-  };
 
   // Фон на сервере подтягивает заказы (ORDERS_FBS_SYNC_CRON). На клиенте — только обновление списка,
   // без POST /sync-fbs (иначе пул БД забивается параллельно с cron и десятками GET при открытии страницы).
@@ -2494,23 +2479,9 @@ export function Orders() {
         >
           <strong>Автообновление заказов с маркетплейсов приостановлено.</strong> Статусы не меняются по расписанию сервера,
           список здесь тоже не опрашивается по таймеру. Кнопки «Обновить статусы» и «Импортировать заказы» ниже — ручная
-          синхронизация когда будете готовы.
-          <div style={{ marginTop: '10px' }}>
-            <Button
-              variant="primary"
-              size="small"
-              onClick={() => handleOrdersAutoSyncPause(false)}
-              disabled={ordersAutoSyncPauseLoading}
-            >
-              {ordersAutoSyncPauseLoading ? '…' : 'Включить автообновление обратно'}
-            </Button>
-          </div>
+          синхронизация. Включить снова:{' '}
+          <Link to="/organizations">Настройки → Организации</Link>.
         </div>
-      )}
-      {ordersAutoSyncPauseError && (
-        <p className="error" style={{ marginBottom: '12px' }}>
-          {ordersAutoSyncPauseError}
-        </p>
       )}
       <div className="orders-page-header">
         <div className="orders-page-header__main">
@@ -2520,17 +2491,6 @@ export function Orders() {
           </p>
         </div>
         <div className="orders-page-header__actions">
-          {!ordersAutoSyncPaused ? (
-            <Button
-              variant="secondary"
-              size="small"
-              onClick={() => handleOrdersAutoSyncPause(true)}
-              disabled={ordersAutoSyncPauseLoading || !ordersAutoSyncPauseLoaded}
-              title="Остановить фоновую подгрузку заказов и статусов с Ozon, WB и Яндекс (удобно во время сборки)"
-            >
-              {ordersAutoSyncPauseLoading ? '…' : '⏸ Пауза автообновления'}
-            </Button>
-          ) : null}
           <Button
             variant="primary"
             size="small"

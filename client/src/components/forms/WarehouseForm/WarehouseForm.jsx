@@ -13,6 +13,7 @@ import { searchProductsRemote } from '../../../utils/productSearch';
 import {
   buildYandexWarehouseMapping,
   formatYandexWarehouseMappingLabel,
+  parseYandexWarehouseMapping,
 } from '../../../utils/yandexWarehouseMapping';
 import {
   WEEKDAY_OPTIONS,
@@ -69,17 +70,14 @@ export function WarehouseForm({
   const [wbOffices, setWbOffices] = useState([]);
   const [loadingWbOffices, setLoadingWbOffices] = useState(false);
   const [wbOfficesError, setWbOfficesError] = useState(null);
-  const [wbOfficeToBind, setWbOfficeToBind] = useState('');
   const [ozonWarehouses, setOzonWarehouses] = useState([]);
   const [loadingOzonWarehouses, setLoadingOzonWarehouses] = useState(false);
   const [ozonWarehousesError, setOzonWarehousesError] = useState(null);
-  const [ozonWarehouseName, setOzonWarehouseName] = useState('');
   const [ymCampaigns, setYmCampaigns] = useState([]);
   const [ymWarehouses, setYmWarehouses] = useState([]);
   const [loadingYmCampaigns, setLoadingYmCampaigns] = useState(false);
   const [ymCampaignsError, setYmCampaignsError] = useState(null);
-  const [ymCampaignId, setYmCampaignId] = useState('');
-  const [ymWarehouseId, setYmWarehouseId] = useState('');
+  const [mappingEditor, setMappingEditor] = useState(null);
   const [mappingBusy, setMappingBusy] = useState(false);
   const [existingMappings, setExistingMappings] = useState([]);
   const [mappingsLoading, setMappingsLoading] = useState(false);
@@ -313,9 +311,7 @@ export function WarehouseForm({
         workDays: weekendDaysToWorkDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
       setExclusionCount(Number(warehouse.stockSyncExclusionCount) || 0);
-      setOzonWarehouseName('');
-      setYmCampaignId('');
-      setWbOfficeToBind('');
+      setMappingEditor(null);
       loadMappings(warehouse.id);
     } else {
       setFormData({
@@ -333,9 +329,7 @@ export function WarehouseForm({
         workDays: [...ALL_WEEKDAYS],
       });
       setExclusionCount(0);
-      setOzonWarehouseName('');
-      setYmCampaignId('');
-      setWbOfficeToBind('');
+      setMappingEditor(null);
       setExistingMappings([]);
       setMappingsError(null);
     }
@@ -376,43 +370,58 @@ export function WarehouseForm({
     }
   };
 
-  /** Сохранить выбранные в форме привязки Ozon / WB FBS / ЯМ (при нажатии «Сохранить»). */
-  const savePendingMarketplaceMappings = async (warehouseId) => {
-    const wid = warehouseId != null ? String(warehouseId) : '';
-    if (!wid || formData.type !== 'warehouse') return;
-
-    const pending = [
-      ['wb', wbOfficeToBind],
-      ['ozon', ozonWarehouseName],
-      [
-        'ym',
-        buildYandexWarehouseMapping({
-          campaignId: ymCampaignId,
-          warehouseId: ymWarehouseId,
-        }),
-      ],
-    ];
-
-    for (const [mp, value] of pending) {
-      const v = String(value || '').trim();
-      if (v) {
-        await upsertMarketplaceMapping(wid, mp, v);
-      }
+  const mappingEditorValue = (editor) => {
+    if (!editor) return '';
+    if (editor.marketplace === 'ym') {
+      return buildYandexWarehouseMapping({
+        campaignId: editor.ymCampaignId,
+        warehouseId: editor.ymWarehouseId,
+      });
     }
-    await loadMappings(wid);
+    return String(editor.marketplaceWarehouseId || '').trim();
   };
 
-  const bindMarketplaceWarehouse = async (marketplace, marketplaceWarehouseId) => {
-    if (!canManageMappings) return;
-    const mw = String(marketplaceWarehouseId || '').trim();
-    if (!mw) return;
+  const openEditMapping = (m) => {
+    const mp = normalizeMp(m.marketplace);
+    const raw = String(m.marketplace_warehouse_id ?? m.marketplaceWarehouseId ?? '');
+    const ym = mp === 'ym' ? parseYandexWarehouseMapping(raw) : { campaignId: '', warehouseId: '' };
+    setMappingEditor({
+      id: m.id,
+      marketplace: mp,
+      marketplaceWarehouseId: raw,
+      ymCampaignId: ym.campaignId || '',
+      ymWarehouseId: ym.warehouseId || '',
+    });
+  };
+
+  const openCreateMapping = (marketplace) => {
+    setMappingEditor({
+      id: null,
+      marketplace: normalizeMp(marketplace),
+      marketplaceWarehouseId: '',
+      ymCampaignId: '',
+      ymWarehouseId: '',
+    });
+  };
+
+  const saveMappingEditor = async () => {
+    if (!canManageMappings || !mappingEditor) return;
+    const mw = mappingEditorValue(mappingEditor);
+    if (!mw) {
+      alert(
+        mappingEditor.marketplace === 'ym'
+          ? 'Укажите campaignId и/или ID склада Яндекс.Маркет'
+          : 'Выберите склад маркетплейса'
+      );
+      return;
+    }
     setMappingBusy(true);
     try {
-      await upsertMarketplaceMapping(warehouse.id, marketplace, mw);
+      await upsertMarketplaceMapping(warehouse.id, mappingEditor.marketplace, mw);
+      setMappingEditor(null);
       await loadMappings(warehouse.id);
-      alert(`Привязка сохранена: ${marketplace.toUpperCase()} → "${mw}"`);
     } catch (e) {
-      alert('Ошибка привязки склада: ' + (e.response?.data?.message || e.message));
+      alert('Ошибка сохранения привязки: ' + (e.response?.data?.message || e.message));
     } finally {
       setMappingBusy(false);
     }
@@ -424,6 +433,7 @@ export function WarehouseForm({
     setMappingBusy(true);
     try {
       await warehouseMappingsApi.delete(id);
+      setMappingEditor(null);
       await loadMappings(warehouse.id);
     } catch (e) {
       alert('Ошибка удаления привязки: ' + (e.response?.data?.message || e.message));
@@ -431,6 +441,13 @@ export function WarehouseForm({
       setMappingBusy(false);
     }
   };
+
+  const boundMarketplaces = new Set(existingMappings.map((m) => normalizeMp(m.marketplace)));
+  const missingMarketplaces = [
+    { key: 'wb', label: 'WB' },
+    { key: 'ozon', label: 'Ozon' },
+    { key: 'ym', label: 'Яндекс.Маркет' },
+  ].filter((mp) => !boundMarketplaces.has(mp.key));
 
   useEffect(() => {
     console.log('[WarehouseForm] Suppliers:', suppliers);
@@ -476,13 +493,6 @@ export function WarehouseForm({
       else set.add(dayValue);
       return { ...prev, workDays: [...set].sort((a, b) => a - b) };
     });
-  };
-
-  const resolveSavedWarehouseId = (saved) => {
-    if (!saved) return warehouse?.id ?? null;
-    if (saved.id != null) return saved.id;
-    if (saved.data?.id != null) return saved.data.id;
-    return warehouse?.id ?? null;
   };
 
   const reloadExclusions = useCallback(async (warehouseId) => {
@@ -604,10 +614,6 @@ export function WarehouseForm({
     setMappingBusy(true);
     try {
       const saved = await onSubmit(payload);
-      const warehouseId = resolveSavedWarehouseId(saved);
-      if (warehouseId && formData.type === 'warehouse') {
-        await savePendingMarketplaceMappings(warehouseId);
-      }
       if (typeof onSaved === 'function') {
         await onSaved(saved);
       }
@@ -788,8 +794,8 @@ export function WarehouseForm({
         <div className="mt-3">
           <label className="form-label" htmlFor="wbWarehouseSelect">Wildberries: склад для расчёта логистики</label>
           <div className="text-muted small mb-2">
-            Склад из тарифов WB — только для расчёта логистики в ERP. Привязка заказов FBS к этому складу —
-            в блоке ниже.
+            Склад из тарифов WB — только для расчёта логистики в ERP. Привязка заказов FBS к фактическому
+            складу настраивается в таблице привязок ниже.
           </div>
           {loadingWbWarehouses ? (
             <div className="alert alert-secondary py-2">Загрузка складов Wildberries...</div>
@@ -820,298 +826,91 @@ export function WarehouseForm({
 
       {formData.type === 'warehouse' && (
         <div className="mt-3">
-          <label className="form-label" htmlFor="wbOfficeSelect">Wildberries: привязка склада (FBS)</label>
+          <label className="form-label">Привязки маркетплейсов</label>
           <div className="text-muted small mb-2">
-            Склад продавца WB из заказов FBS. Одна привязка на фактический склад — для резервирования и отгрузки.
+            Одна привязка на маркетплейс. Нажмите «Изменить», чтобы выбрать другой склад МП или удалить связь.
           </div>
           {!canManageMappings ? (
-            <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>
-          ) : loadingWbOffices ? (
-            <div className="alert alert-secondary py-2">Загрузка офисов WB…</div>
-          ) : wbOfficesError ? (
-            <div className="alert alert-warning py-2">Не удалось загрузить склады WB: {wbOfficesError}</div>
-          ) : wbOffices.length === 0 ? (
-            <div className="alert alert-warning py-2">
-              Склады WB не загружены. Проверьте интеграцию WB и доступ к Marketplace API.
+            <div className="alert alert-secondary py-2">
+              Сначала сохраните склад, затем можно добавить привязки маркетплейсов.
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <select
-                id="wbOfficeSelect"
-                className="form-select form-select-sm"
-                value={wbOfficeToBind}
-                onChange={(e) => setWbOfficeToBind(e.target.value)}
-              >
-                <option value="">-- Выберите склад WB (FBS) --</option>
-                {wbOffices.map((o) => (
-                  <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id ?? o.name)}>
-                    {String(o.name)}{o.address ? ` · ${o.address}` : ''}
-                  </option>
-                ))}
-              </select>
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={mappingBusy || !String(wbOfficeToBind || '').trim()}
-                onClick={() => bindMarketplaceWarehouse('wb', wbOfficeToBind)}
-              >
-                Привязать FBS
-              </Button>
-            </div>
-          )}
-          {canManageMappings && (wbOfficesError || wbOffices.length === 0) && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input
-                className="form-control form-control-sm"
-                style={{ maxWidth: 420 }}
-                value={wbOfficeToBind}
-                onChange={(e) => setWbOfficeToBind(e.target.value)}
-                placeholder="Введите offices[0] из заказа WB (например «Теплый стан»)"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={mappingBusy || !String(wbOfficeToBind || '').trim()}
-                onClick={() => bindMarketplaceWarehouse('wb', wbOfficeToBind)}
-              >
-                Привязать FBS
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {formData.type === 'warehouse' && (
-        <div className="mt-3">
-          <label className="form-label" htmlFor="ozonWarehouseSelect">Склад Ozon (для резервирования)</label>
-          <div className="text-muted small mb-2">
-            Выберите склад Ozon. После выбора нажмите «Привязать» — заказы Ozon будут резервировать остаток с этого фактического склада.
-          </div>
-          {!canManageMappings ? (
-            <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>
-          ) : loadingOzonWarehouses ? (
-            <div className="alert alert-secondary py-2">Загрузка складов Ozon…</div>
-          ) : ozonWarehousesError ? (
-            <div className="alert alert-warning py-2">
-              Не удалось загрузить склады Ozon: {ozonWarehousesError}
-            </div>
-          ) : ozonWarehouses.length === 0 ? (
-            <div className="alert alert-warning py-2">
-              Склады Ozon не загружены. Проверьте настройки интеграции Ozon (client_id/api_key).
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <select
-                id="ozonWarehouseSelect"
-                className="form-select form-select-sm"
-                value={ozonWarehouseName}
-                onChange={(e) => setOzonWarehouseName(e.target.value)}
-              >
-                <option value="">-- Выберите склад Ozon --</option>
-                {ozonWarehouses.map((w, i) => (
-                  <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id ?? w.name)}>
-                    {String(w.name)}
-                  </option>
-                ))}
-              </select>
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={mappingBusy || !ozonWarehouseName}
-                onClick={() => bindMarketplaceWarehouse('ozon', ozonWarehouseName)}
-                title="Создать привязку Ozon→этот склад"
-              >
-                Привязать
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {formData.type === 'warehouse' && (
-        <div className="mt-3">
-          <label className="form-label" htmlFor="ymCampaignSelect">Яндекс.Маркет (кампания + склад)</label>
-          <div className="text-muted small mb-2">
-            У Яндекса <code>campaignId</code> из API ≠ «ID магазина» в кабинете. «ID склада» из API совпадает с кабинетом.
-          </div>
-          {!canManageMappings ? (
-            <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>
-          ) : loadingYmCampaigns ? (
-            <div className="alert alert-secondary py-2">Загрузка данных Яндекс.Маркета…</div>
-          ) : ymCampaignsError ? (
-            <div className="alert alert-warning py-2">Не удалось загрузить кампании: {ymCampaignsError}</div>
-          ) : ymCampaigns.length === 0 ? (
-            <div className="alert alert-warning py-2">Кампании не найдены. Проверьте настройки интеграции Яндекс.Маркет (api_key).</div>
-          ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <select
-                id="ymCampaignSelect"
-                className="form-select form-select-sm"
-                value={ymCampaignId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setYmCampaignId(v);
-                  const linked = ymWarehouses.find((w) => String(w.campaignId) === String(v));
-                  if (linked?.id) setYmWarehouseId(linked.id);
-                }}
-              >
-                <option value="">-- campaignId (API) --</option>
-                {ymCampaigns.map((c) => (
-                  <option key={String(c.id)} value={String(c.id)}>
-                    {String(c.id)}{c.name ? ` · ${c.name}` : ''}
-                  </option>
-                ))}
-              </select>
-              {ymWarehouses.length > 0 ? (
-                <select
-                  className="form-select form-select-sm"
-                  value={ymWarehouseId}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setYmWarehouseId(v);
-                    const linked = ymWarehouses.find((w) => String(w.id) === String(v));
-                    if (linked?.campaignId) setYmCampaignId(linked.campaignId);
-                  }}
-                >
-                  <option value="">-- ID склада (= кабинет) --</option>
-                  {ymWarehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.id}{w.name ? ` · ${w.name}` : ''}
-                    </option>
-                  ))}
-                </select>
+            <>
+              {mappingsError && <div className="alert alert-warning py-2">{mappingsError}</div>}
+              {mappingsLoading ? (
+                <div className="alert alert-secondary py-2">Загрузка привязок…</div>
+              ) : existingMappings.length === 0 ? (
+                <div className="alert alert-secondary py-2">Привязок пока нет.</div>
               ) : (
-                <input
-                  className="form-control form-control-sm"
-                  style={{ maxWidth: 180 }}
-                  value={ymWarehouseId}
-                  onChange={(e) => setYmWarehouseId(e.target.value)}
-                  placeholder="ID склада, напр. 2384892"
-                />
+                <div className="table-responsive">
+                  <table className="table table-sm" style={{ fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>MP</th>
+                        <th>MP склад</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {existingMappings.map((m) => (
+                        <tr key={m.id}>
+                          <td>{m.id}</td>
+                          <td>{String(m.marketplace || '').toUpperCase()}</td>
+                          <td>
+                            {normalizeMp(m.marketplace) === 'ym'
+                              ? formatYandexWarehouseMappingLabel(
+                                  m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
+                                )
+                              : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="small"
+                              disabled={mappingBusy}
+                              onClick={() => openEditMapping(m)}
+                            >
+                              Изменить
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={
-                  mappingBusy ||
-                  (!String(ymCampaignId || '').trim() && !String(ymWarehouseId || '').trim())
-                }
-                onClick={() =>
-                  bindMarketplaceWarehouse(
-                    'ym',
-                    buildYandexWarehouseMapping({
-                      campaignId: ymCampaignId,
-                      warehouseId: ymWarehouseId,
-                    })
-                  )
-                }
-              >
-                Привязать
-              </Button>
-            </div>
-          )}
-
-          {canManageMappings && (loadingYmCampaigns || ymCampaignsError || ymCampaigns.length === 0) && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input
-                className="form-control form-control-sm"
-                style={{ maxWidth: 200 }}
-                value={ymCampaignId}
-                onChange={(e) => setYmCampaignId(e.target.value)}
-                placeholder="campaignId (число)"
-              />
-              <input
-                className="form-control form-control-sm"
-                style={{ maxWidth: 180 }}
-                value={ymWarehouseId}
-                onChange={(e) => setYmWarehouseId(e.target.value)}
-                placeholder="ID склада"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                size="small"
-                disabled={
-                  mappingBusy ||
-                  (!String(ymCampaignId || '').trim() && !String(ymWarehouseId || '').trim())
-                }
-                onClick={() =>
-                  bindMarketplaceWarehouse(
-                    'ym',
-                    buildYandexWarehouseMapping({
-                      campaignId: ymCampaignId,
-                      warehouseId: ymWarehouseId,
-                    })
-                  )
-                }
-              >
-                Привязать
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {formData.type === 'warehouse' && canManageMappings && (
-        <div className="mt-3">
-          <label className="form-label">Текущие привязки маркетплейсов</label>
-          <div className="text-muted small mb-2">
-            Выбранные Ozon / WB (FBS) / Яндекс сохраняются при нажатии «Сохранить» (кнопка «Привязать» не обязательна).
-          </div>
-          {mappingsError && <div className="alert alert-warning py-2">{mappingsError}</div>}
-          {mappingsLoading ? (
-            <div className="alert alert-secondary py-2">Загрузка привязок…</div>
-          ) : existingMappings.length === 0 ? (
-            <div className="alert alert-secondary py-2">Привязок пока нет.</div>
-          ) : (
-            <div className="table-responsive">
-              <table className="table table-sm" style={{ fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>MP</th>
-                    <th>MP склад</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {existingMappings.map((m) => (
-                    <tr key={m.id}>
-                      <td>{m.id}</td>
-                      <td>{String(m.marketplace || '').toUpperCase()}</td>
-                      <td>
-                        {normalizeMp(m.marketplace) === 'ym'
-                          ? formatYandexWarehouseMappingLabel(
-                              m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
-                            )
-                          : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="small"
-                          disabled={mappingBusy}
-                          onClick={() => deleteMapping(m.id)}
-                        >
-                          Удалить
-                        </Button>
-                      </td>
-                    </tr>
+              {missingMarketplaces.length > 0 && (
+                <div className="d-flex flex-wrap gap-2 align-items-center mt-2">
+                  <span className="text-muted small">Добавить:</span>
+                  {missingMarketplaces.map((mp) => (
+                    <Button
+                      key={mp.key}
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={mappingBusy}
+                      onClick={() => openCreateMapping(mp.key)}
+                    >
+                      {mp.label}
+                    </Button>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              )}
+              <div className="mt-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  disabled={mappingsLoading || mappingBusy}
+                  onClick={() => loadMappings(warehouse.id)}
+                >
+                  Обновить привязки
+                </Button>
+              </div>
+            </>
           )}
-          <div style={{ marginTop: 8 }}>
-            <Button type="button" variant="secondary" size="small" disabled={mappingsLoading || mappingBusy} onClick={() => loadMappings(warehouse.id)}>
-              Обновить привязки
-            </Button>
-          </div>
         </div>
       )}
 
@@ -1189,6 +988,230 @@ export function WarehouseForm({
           {mappingBusy ? 'Сохранение…' : 'Сохранить'}
         </Button>
       </div>
+
+      <Modal
+        isOpen={Boolean(mappingEditor)}
+        onClose={() => !mappingBusy && setMappingEditor(null)}
+        title={
+          mappingEditor?.id
+            ? `Изменить привязку ${String(mappingEditor.marketplace || '').toUpperCase()}`
+            : `Добавить привязку ${String(mappingEditor?.marketplace || '').toUpperCase()}`
+        }
+        size="medium"
+        usePortal
+      >
+        {mappingEditor ? (
+          <>
+            <p className="text-muted small">
+              Выберите склад маркетплейса для этого фактического склада
+              {mappingEditor.id ? ' или удалите связь.' : '.'}
+            </p>
+            {mappingEditor.marketplace === 'wb' && (
+              <>
+                {wbOfficesError ? (
+                  <div className="alert alert-warning py-2">Не удалось загрузить склады WB: {wbOfficesError}</div>
+                ) : null}
+                {loadingWbOffices ? (
+                  <div className="text-muted small mb-2">Загрузка складов WB…</div>
+                ) : null}
+                {wbOffices.length > 0 ? (
+                  <select
+                    className="form-select form-select-sm mb-2"
+                    value={mappingEditor.marketplaceWarehouseId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                      )
+                    }
+                  >
+                    <option value="">-- Выберите склад WB (FBS) --</option>
+                    {mappingEditor.marketplaceWarehouseId &&
+                    !wbOffices.some(
+                      (o) => String(o.bindValue ?? o.id ?? o.name) === String(mappingEditor.marketplaceWarehouseId)
+                    ) ? (
+                      <option value={mappingEditor.marketplaceWarehouseId}>
+                        {mappingEditor.marketplaceWarehouseId}
+                      </option>
+                    ) : null}
+                    {wbOffices.map((o) => (
+                      <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id ?? o.name)}>
+                        {String(o.name)}{o.address ? ` · ${o.address}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="form-control form-control-sm mb-2"
+                    value={mappingEditor.marketplaceWarehouseId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                      )
+                    }
+                    placeholder="Склад WB (FBS), например «Свой склад РФ»"
+                  />
+                )}
+              </>
+            )}
+            {mappingEditor.marketplace === 'ozon' && (
+              <>
+                {ozonWarehousesError ? (
+                  <div className="alert alert-warning py-2">Не удалось загрузить склады Ozon: {ozonWarehousesError}</div>
+                ) : null}
+                {loadingOzonWarehouses ? (
+                  <div className="text-muted small mb-2">Загрузка складов Ozon…</div>
+                ) : null}
+                {ozonWarehouses.length > 0 ? (
+                  <select
+                    className="form-select form-select-sm mb-2"
+                    value={mappingEditor.marketplaceWarehouseId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                      )
+                    }
+                  >
+                    <option value="">-- Выберите склад Ozon --</option>
+                    {mappingEditor.marketplaceWarehouseId &&
+                    !ozonWarehouses.some(
+                      (w) => String(w.bindValue ?? w.id ?? w.name) === String(mappingEditor.marketplaceWarehouseId)
+                    ) ? (
+                      <option value={mappingEditor.marketplaceWarehouseId}>
+                        {mappingEditor.marketplaceWarehouseId}
+                      </option>
+                    ) : null}
+                    {ozonWarehouses.map((w, i) => (
+                      <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id ?? w.name)}>
+                        {String(w.name)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="form-control form-control-sm mb-2"
+                    value={mappingEditor.marketplaceWarehouseId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                      )
+                    }
+                    placeholder="ID склада Ozon"
+                  />
+                )}
+              </>
+            )}
+            {mappingEditor.marketplace === 'ym' && (
+              <>
+                {ymCampaignsError ? (
+                  <div className="alert alert-warning py-2">Не удалось загрузить кампании: {ymCampaignsError}</div>
+                ) : null}
+                {loadingYmCampaigns ? (
+                  <div className="text-muted small mb-2">Загрузка данных Яндекс.Маркета…</div>
+                ) : null}
+                <div className="text-muted small mb-2">
+                  У Яндекса <code>campaignId</code> из API ≠ «ID магазина» в кабинете.
+                </div>
+                {ymCampaigns.length > 0 ? (
+                  <select
+                    className="form-select form-select-sm mb-2"
+                    value={mappingEditor.ymCampaignId}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const linked = ymWarehouses.find((w) => String(w.campaignId) === String(v));
+                      setMappingEditor((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              ymCampaignId: v,
+                              ymWarehouseId: linked?.id || prev.ymWarehouseId,
+                            }
+                          : prev
+                      );
+                    }}
+                  >
+                    <option value="">-- campaignId (API) --</option>
+                    {ymCampaigns.map((c) => (
+                      <option key={String(c.id)} value={String(c.id)}>
+                        {String(c.id)}{c.name ? ` · ${c.name}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="form-control form-control-sm mb-2"
+                    value={mappingEditor.ymCampaignId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, ymCampaignId: e.target.value } : prev
+                      )
+                    }
+                    placeholder="campaignId (число)"
+                  />
+                )}
+                {ymWarehouses.length > 0 ? (
+                  <select
+                    className="form-select form-select-sm mb-2"
+                    value={mappingEditor.ymWarehouseId}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const linked = ymWarehouses.find((w) => String(w.id) === String(v));
+                      setMappingEditor((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              ymWarehouseId: v,
+                              ymCampaignId: linked?.campaignId || prev.ymCampaignId,
+                            }
+                          : prev
+                      );
+                    }}
+                  >
+                    <option value="">-- ID склада (= кабинет) --</option>
+                    {ymWarehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.id}{w.name ? ` · ${w.name}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="form-control form-control-sm mb-2"
+                    value={mappingEditor.ymWarehouseId}
+                    onChange={(e) =>
+                      setMappingEditor((prev) =>
+                        prev ? { ...prev, ymWarehouseId: e.target.value } : prev
+                      )
+                    }
+                    placeholder="ID склада"
+                  />
+                )}
+              </>
+            )}
+            <div className="d-flex justify-content-between gap-2 mt-3">
+              {mappingEditor.id ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={mappingBusy}
+                  onClick={() => deleteMapping(mappingEditor.id)}
+                >
+                  Удалить
+                </Button>
+              ) : (
+                <span />
+              )}
+              <div className="d-flex gap-2">
+                <Button type="button" variant="secondary" disabled={mappingBusy} onClick={() => setMappingEditor(null)}>
+                  Отмена
+                </Button>
+                <Button type="button" variant="primary" disabled={mappingBusy} onClick={saveMappingEditor}>
+                  {mappingBusy ? 'Сохранение…' : 'Сохранить'}
+                </Button>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </Modal>
 
       <Modal
         isOpen={exclusionsOpen}
