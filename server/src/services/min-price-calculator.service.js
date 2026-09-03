@@ -226,11 +226,10 @@ export function calculateMinPrice(
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
       const sellingPrice = priceNum * sellFactor;
-      const taxBase = Math.max(0, sellingPrice - (basePriceNum + mpExpensesWithoutBase));
       const { netProfit } = computeTaxesAndNetProfit({
-        price: taxBase,
-        totalExpenses: 0,
-        taxProfile: profile,
+        price: sellingPrice,
+        totalExpenses: basePriceNum + mpExpensesWithoutBase,
+        taxProfile: { ...profile, incomeTaxOnRevenue: false },
       });
       return netProfit;
     };
@@ -239,11 +238,9 @@ export function calculateMinPrice(
     if (denominator <= 0) return null;
 
     const fixedTotal = basePriceNum + fixedExpenses;
-    const taxFactor = profile.incomeTaxOnRevenue
-      ? Math.max(0.01, 1 - vatR - incR)
-      : Math.max(0.01, (1 - vatR) * (incR < 1 ? 1 - incR : 1));
-    let seedDenom = sellFactor - variableRate;
-    let seedNumerator = fixedTotal + targetNet / taxFactor;
+    const taxKeep = Math.max(0.01, 1 - incR);
+    let seedDenom = sellFactor * (1 - vatR) - variableRate;
+    let seedNumerator = fixedTotal + targetNet / taxKeep;
     if (!(seedDenom > 0.01)) seedDenom = denominator;
 
     let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));

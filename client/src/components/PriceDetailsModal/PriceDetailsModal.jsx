@@ -762,21 +762,19 @@ function PriceDetailsModalInner({
 
   // Расчет прибыли
   const totalExpenses = commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses + basePrice;
-  const profit = calculatedPrice - totalExpenses;
-  const profitPercent = calculatedPrice > 0 ? (profit / calculatedPrice) * 100 : 0;
 
   const sppPercent = resolveSppPercent(sppPercentForMp);
   const sellingPriceAfterSpp = Math.round(calculatedPrice * (1 - sppPercent / 100) * 100) / 100;
-  // Налоги от (цена продажи после СПП − затраты)
-  const taxBaseAfterExpenses = Math.max(0, sellingPriceAfterSpp - totalExpenses);
+  // НДС с цены продажи после СПП; УСН = (цена продажи − все расходы − НДС) × ставка
   const taxBreakdown = computeTaxesAndNetProfit({
-    price: taxBaseAfterExpenses,
-    totalExpenses: 0,
-    taxProfile: profile,
+    price: sellingPriceAfterSpp,
+    totalExpenses,
+    taxProfile: { ...profile, incomeTaxOnRevenue: false },
   });
   const vatAmount = taxBreakdown.vat;
   const incomeTaxAmount = taxBreakdown.incomeTax;
   const netProfit = taxBreakdown.netProfit;
+  const usnBase = taxBreakdown.profitBeforeIncomeTax;
   const netProfitPercent = sellingPriceAfterSpp > 0 ? (netProfit / sellingPriceAfterSpp) * 100 : 0;
   
   // Отладочное логирование обратной логистики
@@ -795,22 +793,16 @@ function PriceDetailsModalInner({
   const vatPctLabel = profile.vatRate > 0 ? `${(profile.vatRate * 100).toFixed(0)}%` : '0%';
   const incomeTaxPctLabel =
     profile.incomeTaxRate > 0
-      ? profile.incomeTaxOnRevenue
-        ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки`
-        : `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`
+      ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}%`
       : 'не указан в организации';
   const incomeTaxPct = profile.incomeTaxRate > 0 ? `${(profile.incomeTaxRate * 100).toFixed(0)}%` : '0%';
-  const profitBeforeIncomeTax = taxBreakdown.profitBeforeIncomeTax;
   const incomeTaxFormulaHint = (() => {
     if (profile.incomeTaxRate <= 0) return null;
-    if (profile.incomeTaxOnRevenue) {
-      return `= ${taxBaseAfterExpenses.toFixed(2)} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (база: цена продажи − затраты)`;
+    const base = usnBase.toFixed(2);
+    if (usnBase <= 0) {
+      return `= ${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} − ${vatAmount.toFixed(2)} = ${base} × ${incomeTaxPct} = 0 ₽`;
     }
-    const base = profitBeforeIncomeTax.toFixed(2);
-    if (profitBeforeIncomeTax <= 0) {
-      return `= ${base} × ${incomeTaxPct} = 0 ₽ (прибыль до налога не положительная)`;
-    }
-    return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (база: цена продажи − затраты − НДС)`;
+    return `= (${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} − ${vatAmount.toFixed(2)}) × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽`;
   })();
 
   const extraOzonFixed =
@@ -823,10 +815,8 @@ function PriceDetailsModalInner({
     const variableRate =
       marketplaceCommissionPercent + acquiringPercent + brandPromotionPercent + adsPromotionPercent;
     const vatR = Number(profile.vatRate) || 0;
-    const incR = Number(profile.incomeTaxRate) || 0;
-    let seedDenom = profile.incomeTaxOnRevenue
-      ? 1 - variableRate - vatR - incR
-      : 1 - variableRate - vatR;
+    const sellFactor = 1 - sppPercent / 100;
+    let seedDenom = sellFactor * (1 - vatR) - variableRate;
     if (!(seedDenom > 0.01)) seedDenom = Math.max(0.15, 1 - variableRate);
     const estimated = Math.round(calculatedPrice + extraOzonFixed / seedDenom);
     if (estimated > calculatedPrice) maxCalculatedPrice = estimated;
@@ -1281,16 +1271,6 @@ function PriceDetailsModalInner({
         <div className="price-details-section">
           <h3 className="price-details-subtitle">📊 Прибыль</h3>
           <div className="price-breakdown">
-            <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Валовая прибыль:</span>
-              <PriceBreakdownValue
-                className="positive"
-                formula={`= ${calculatedPrice.toFixed(2)} - ${totalExpenses.toFixed(2)} = ${profit.toFixed(2)} ₽`}
-              >
-                {profit.toFixed(2)} ₽ ({profitPercent.toFixed(2)}%)
-              </PriceBreakdownValue>
-            </div>
-
             {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym') && (
               <>
                 <div className="price-breakdown-item">
@@ -1309,14 +1289,6 @@ function PriceDetailsModalInner({
                     {sellingPriceAfterSpp.toFixed(2)} ₽
                   </PriceBreakdownValue>
                 </div>
-                <div className="price-breakdown-item">
-                  <BreakdownLabel fromSettings>База для налогов:</BreakdownLabel>
-                  <PriceBreakdownValue
-                    formula={`= ${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} = ${taxBaseAfterExpenses.toFixed(2)} ₽ (цена продажи − затраты)`}
-                  >
-                    {taxBaseAfterExpenses.toFixed(2)} ₽
-                  </PriceBreakdownValue>
-                </div>
               </>
             )}
             
@@ -1325,7 +1297,7 @@ function PriceDetailsModalInner({
                 <BreakdownLabel fromSettings>НДС ({vatPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
-                  formula={`= ${taxBaseAfterExpenses.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽ (от цены продажи − затраты)`}
+                  formula={`= ${sellingPriceAfterSpp.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽ (с цены продажи после СПП)`}
                 >
                   -{vatAmount.toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -1334,7 +1306,7 @@ function PriceDetailsModalInner({
 
             {profile.incomeTaxRate > 0 && (
               <div className="price-breakdown-item">
-                <BreakdownLabel fromSettings>Налог ({incomeTaxPctLabel}):</BreakdownLabel>
+                <BreakdownLabel fromSettings>УСН ({incomeTaxPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue className="negative" formula={incomeTaxFormulaHint}>
                   -{incomeTaxAmount.toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -1365,7 +1337,7 @@ function PriceDetailsModalInner({
               </span>
               <div className="price-details-final-hint">
                 {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym')
-                  ? `Мин. цена для МП (до СПП). Цена продажи ${sellingPriceAfterSpp.toFixed(2)} ₽ (−${sppPercent.toFixed(2)}% СПП). Налоги от (цена продажи − затраты) = ${taxBaseAfterExpenses.toFixed(2)} ₽.`
+                  ? `Мин. цена для МП. Цена продажи ${sellingPriceAfterSpp.toFixed(2)} ₽ (−${sppPercent.toFixed(2)}% СПП). НДС с цены продажи; УСН = цена продажи − расходы − НДС.`
                   : maxCalculatedPrice != null
                     ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
                     : 'Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса'}
