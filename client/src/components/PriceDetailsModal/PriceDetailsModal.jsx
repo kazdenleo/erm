@@ -767,11 +767,11 @@ function PriceDetailsModalInner({
 
   const sppPercent = resolveSppPercent(sppPercentForMp);
   const sellingPriceAfterSpp = Math.round(calculatedPrice * (1 - sppPercent / 100) * 100) / 100;
-
-  // Налоги от цены продажи после СПП (для не-WB sellingPrice = calculatedPrice)
+  // Налоги от (цена продажи после СПП − затраты)
+  const taxBaseAfterExpenses = Math.max(0, sellingPriceAfterSpp - totalExpenses);
   const taxBreakdown = computeTaxesAndNetProfit({
-    price: sellingPriceAfterSpp,
-    totalExpenses,
+    price: taxBaseAfterExpenses,
+    totalExpenses: 0,
     taxProfile: profile,
   });
   const vatAmount = taxBreakdown.vat;
@@ -804,13 +804,13 @@ function PriceDetailsModalInner({
   const incomeTaxFormulaHint = (() => {
     if (profile.incomeTaxRate <= 0) return null;
     if (profile.incomeTaxOnRevenue) {
-      return `= ${sellingPriceAfterSpp.toFixed(2)} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (от цены продажи)`;
+      return `= ${taxBaseAfterExpenses.toFixed(2)} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (база: цена продажи − затраты)`;
     }
     const base = profitBeforeIncomeTax.toFixed(2);
     if (profitBeforeIncomeTax <= 0) {
       return `= ${base} × ${incomeTaxPct} = 0 ₽ (прибыль до налога не положительная)`;
     }
-    return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (прибыль до налога: цена продажи − расходы − НДС)`;
+    return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (база: цена продажи − затраты − НДС)`;
   })();
 
   const extraOzonFixed =
@@ -1296,7 +1296,7 @@ function PriceDetailsModalInner({
                 <div className="price-breakdown-item">
                   <BreakdownLabel fromSettings>СПП ({sppPercent.toFixed(2)}%):</BreakdownLabel>
                   <PriceBreakdownValue
-                    formula={`= мин. цена × (100% − ${sppPercent.toFixed(2)}%) → цена продажи (из настроек интеграции)`}
+                    formula={`= мин. цена × (100% − ${sppPercent.toFixed(2)}%) → цена продажи меньше мин. на СПП`}
                   >
                     −{sppPercent.toFixed(2)}%
                   </PriceBreakdownValue>
@@ -1309,6 +1309,14 @@ function PriceDetailsModalInner({
                     {sellingPriceAfterSpp.toFixed(2)} ₽
                   </PriceBreakdownValue>
                 </div>
+                <div className="price-breakdown-item">
+                  <BreakdownLabel fromSettings>База для налогов:</BreakdownLabel>
+                  <PriceBreakdownValue
+                    formula={`= ${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} = ${taxBaseAfterExpenses.toFixed(2)} ₽ (цена продажи − затраты)`}
+                  >
+                    {taxBaseAfterExpenses.toFixed(2)} ₽
+                  </PriceBreakdownValue>
+                </div>
               </>
             )}
             
@@ -1317,7 +1325,7 @@ function PriceDetailsModalInner({
                 <BreakdownLabel fromSettings>НДС ({vatPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
-                  formula={`= ${sellingPriceAfterSpp.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽ (от цены продажи)`}
+                  formula={`= ${taxBaseAfterExpenses.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽ (от цены продажи − затраты)`}
                 >
                   -{vatAmount.toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -1357,7 +1365,7 @@ function PriceDetailsModalInner({
               </span>
               <div className="price-details-final-hint">
                 {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym')
-                  ? `Цена для маркетплейса (до СПП). Цена продажи после СПП ${sppPercent.toFixed(2)}%: ${sellingPriceAfterSpp.toFixed(2)} ₽. Налоги считаются от цены продажи.`
+                  ? `Мин. цена для МП (до СПП). Цена продажи ${sellingPriceAfterSpp.toFixed(2)} ₽ (−${sppPercent.toFixed(2)}% СПП). Налоги от (цена продажи − затраты) = ${taxBaseAfterExpenses.toFixed(2)} ₽.`
                   : maxCalculatedPrice != null
                     ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
                     : 'Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса'}

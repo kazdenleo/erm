@@ -252,26 +252,25 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
-      // Налоги от цены продажи после СПП; комиссии МП — от мин. цены (до СПП).
-      const taxPrice = priceNum * sellFactor;
+      // Цена продажи = мин. × (1 − СПП); налоги от (цена продажи − затраты).
+      const sellingPrice = priceNum * sellFactor;
+      const taxBase = Math.max(0, sellingPrice - (basePriceNum + mpExpensesWithoutBase));
       const { netProfit } = computeTaxesAndNetProfit({
-        price: taxPrice,
-        totalExpenses: basePriceNum + mpExpensesWithoutBase,
+        price: taxBase,
+        totalExpenses: 0,
         taxProfile: profile,
       });
       return netProfit;
     };
 
     const fixedTotal = basePriceNum + fixedExpenses;
-    let seedDenom;
-    let seedNumerator;
-    if (profile.incomeTaxOnRevenue) {
-      seedDenom = sellFactor * (1 - vatR - incR) - variableRate;
-      seedNumerator = fixedTotal + targetNet;
-    } else {
-      seedDenom = sellFactor * (1 - vatR) - variableRate;
-      seedNumerator = fixedTotal + (incR < 1 ? targetNet / (1 - incR) : targetNet);
-    }
+    // taxBase ≈ P×(sellFactor − variableRate) − fixedTotal
+    // net ≈ taxBase × taxFactor
+    const taxFactor = profile.incomeTaxOnRevenue
+      ? Math.max(0.01, 1 - vatR - incR)
+      : Math.max(0.01, (1 - vatR) * (incR < 1 ? 1 - incR : 1));
+    let seedDenom = sellFactor - variableRate;
+    let seedNumerator = fixedTotal + targetNet / taxFactor;
     if (!(seedDenom > 0.01)) seedDenom = denominator;
 
     let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));
