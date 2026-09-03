@@ -100,7 +100,7 @@ export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) 
 
 /**
  * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
- * @param {number|null} [_sppPercent] — не участвует в мин. цене (СПП только в налогах детализации)
+ * @param {number|null} [sppPercent] — СПП %: только для базы НДС/УСН, не для комиссий
  */
 export function calculateMinPrice(
   basePrice,
@@ -112,7 +112,7 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  _sppPercent = null
+  sppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -212,6 +212,8 @@ export function calculateMinPrice(
   const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent))) ? Number(calculator.ads_promotion_percent) / 100 : 0;
 
   const profile = resolveMinPriceTaxProfile(product, taxProfile);
+  const sppPct = resolveSppPercent(sppPercent);
+  const sellFactor = 1 - sppPct / 100;
 
   const variableRate =
     marketplaceCommissionPercent +
@@ -251,21 +253,22 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
-      // Мин. цена без СПП. СПП влияет только на отображение налогов в детализации.
-      const { netProfit } = computeTaxesAndNetProfit({
-        price: priceNum,
-        totalExpenses: basePriceNum + mpExpensesWithoutBase,
+      // Комиссии от мин. цены; НДС/УСН — от цены после СПП; чистая = мин − расходы − налоги
+      const sellingPrice = priceNum * sellFactor;
+      const totalExpenses = basePriceNum + mpExpensesWithoutBase;
+      const { vat, incomeTax } = computeTaxesAndNetProfit({
+        price: sellingPrice,
+        totalExpenses,
         taxProfile: { ...profile, incomeTaxOnRevenue: false },
       });
-      return netProfit;
+      return priceNum - totalExpenses - vat - incomeTax;
     };
 
     const fixedTotal = basePriceNum + fixedExpenses;
-    // usnBase ≈ P×((1−vatR) − variableRate) − fixedTotal
-    // net ≈ usnBase × (1 − incR)
-    const taxKeep = Math.max(0.01, 1 - incR);
-    let seedDenom = (1 - vatR) - variableRate;
-    let seedNumerator = fixedTotal + targetNet / taxKeep;
+    // При мин. УСН 1%: net ≈ P×(1 − variableRate − sellFactor×(vatR+0.01)) − fixedTotal
+    const taxDrag = sellFactor * (vatR + 0.01);
+    let seedDenom = 1 - variableRate - taxDrag;
+    let seedNumerator = fixedTotal + targetNet;
     if (!(seedDenom > 0.01)) seedDenom = denominator;
 
     let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));
