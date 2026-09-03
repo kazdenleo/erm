@@ -100,6 +100,7 @@ export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) 
 
 /**
  * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
+ * @param {number|null} [_sppPercent] — не участвует в мин. цене (СПП только в налогах детализации)
  */
 export function calculateMinPrice(
   basePrice,
@@ -111,7 +112,7 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  sppPercent = null
+  _sppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -211,8 +212,6 @@ export function calculateMinPrice(
   const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent))) ? Number(calculator.ads_promotion_percent) / 100 : 0;
 
   const profile = resolveMinPriceTaxProfile(product, taxProfile);
-  const sppPct = resolveSppPercent(sppPercent);
-  const sellFactor = 1 - sppPct / 100;
 
   const variableRate =
     marketplaceCommissionPercent +
@@ -252,10 +251,9 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
-      // НДС с цены продажи после СПП; УСН = (цена продажи − расходы − НДС) × ставка
-      const sellingPrice = priceNum * sellFactor;
+      // Мин. цена без СПП. СПП влияет только на отображение налогов в детализации.
       const { netProfit } = computeTaxesAndNetProfit({
-        price: sellingPrice,
+        price: priceNum,
         totalExpenses: basePriceNum + mpExpensesWithoutBase,
         taxProfile: { ...profile, incomeTaxOnRevenue: false },
       });
@@ -263,10 +261,10 @@ export function calculateMinPrice(
     };
 
     const fixedTotal = basePriceNum + fixedExpenses;
-    // usnBase ≈ P×(sellFactor×(1−vatR) − variableRate) − fixedTotal
+    // usnBase ≈ P×((1−vatR) − variableRate) − fixedTotal
     // net ≈ usnBase × (1 − incR)
     const taxKeep = Math.max(0.01, 1 - incR);
-    let seedDenom = sellFactor * (1 - vatR) - variableRate;
+    let seedDenom = (1 - vatR) - variableRate;
     let seedNumerator = fixedTotal + targetNet / taxKeep;
     if (!(seedDenom > 0.01)) seedDenom = denominator;
 

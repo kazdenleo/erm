@@ -815,8 +815,7 @@ function PriceDetailsModalInner({
     const variableRate =
       marketplaceCommissionPercent + acquiringPercent + brandPromotionPercent + adsPromotionPercent;
     const vatR = Number(profile.vatRate) || 0;
-    const sellFactor = 1 - sppPercent / 100;
-    let seedDenom = sellFactor * (1 - vatR) - variableRate;
+    let seedDenom = (1 - vatR) - variableRate;
     if (!(seedDenom > 0.01)) seedDenom = Math.max(0.15, 1 - variableRate);
     const estimated = Math.round(calculatedPrice + extraOzonFixed / seedDenom);
     if (estimated > calculatedPrice) maxCalculatedPrice = estimated;
@@ -1337,7 +1336,7 @@ function PriceDetailsModalInner({
               </span>
               <div className="price-details-final-hint">
                 {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym')
-                  ? `Мин. цена для МП. Цена продажи ${sellingPriceAfterSpp.toFixed(2)} ₽ (−${sppPercent.toFixed(2)}% СПП). НДС с цены продажи; УСН = цена продажи − расходы − НДС.`
+                  ? `Мин. цена без СПП. НДС и УСН считаются с цены продажи после СПП (${sellingPriceAfterSpp.toFixed(2)} ₽).`
                   : maxCalculatedPrice != null
                     ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
                     : 'Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса'}

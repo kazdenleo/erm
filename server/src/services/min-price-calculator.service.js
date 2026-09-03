@@ -19,15 +19,9 @@ function safeExpenseNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function resolveSppPercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(n, 99.99);
-}
-
 /**
  * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
- * @param {number|null} [sppPercent] — СПП %, налоги от цены после СПП
+ * @param {number|null} [_sppPercent] — не участвует в мин. цене (СПП только в налогах детализации)
  */
 export function calculateMinPrice(
   basePrice,
@@ -39,7 +33,7 @@ export function calculateMinPrice(
   wbGemServicesPercent = null,
   taxProfile = null,
   scheme = null,
-  sppPercent = null
+  _sppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -175,8 +169,6 @@ export function calculateMinPrice(
       ? { tax_system: product.organization_tax_system, vat: product.organization_vat }
       : null)
   );
-  const sppPct = resolveSppPercent(sppPercent);
-  const sellFactor = 1 - sppPct / 100;
   const variableRate =
     marketplaceCommissionPercent +
     acquiringPercent +
@@ -225,9 +217,8 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
-      const sellingPrice = priceNum * sellFactor;
       const { netProfit } = computeTaxesAndNetProfit({
-        price: sellingPrice,
+        price: priceNum,
         totalExpenses: basePriceNum + mpExpensesWithoutBase,
         taxProfile: { ...profile, incomeTaxOnRevenue: false },
       });
@@ -239,7 +230,7 @@ export function calculateMinPrice(
 
     const fixedTotal = basePriceNum + fixedExpenses;
     const taxKeep = Math.max(0.01, 1 - incR);
-    let seedDenom = sellFactor * (1 - vatR) - variableRate;
+    let seedDenom = (1 - vatR) - variableRate;
     let seedNumerator = fixedTotal + targetNet / taxKeep;
     if (!(seedDenom > 0.01)) seedDenom = denominator;
 
