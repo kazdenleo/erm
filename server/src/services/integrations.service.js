@@ -815,6 +815,15 @@ class IntegrationsService {
       } else if (config.localization_index === '') {
         config.localization_index = null;
       }
+      if (config.spp_percent == null && config.sppPercent != null) {
+        config.spp_percent = config.sppPercent;
+      }
+      if (config.spp_percent != null && config.spp_percent !== '') {
+        const n = Number(config.spp_percent);
+        config.spp_percent = Number.isFinite(n) && n >= 0 && n < 100 ? n : null;
+      } else if (config.spp_percent === '') {
+        config.spp_percent = null;
+      }
     }
     if (type === 'yandex') {
       if (config.api_key == null || String(config.api_key).trim() === '') {

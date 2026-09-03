@@ -100,6 +100,7 @@ export function Prices() {
   const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
   const [wbLocalizationIndex, setWbLocalizationIndex] = useState(null); // ИЛ WB из настроек интеграции
+  const [wbSppPercent, setWbSppPercent] = useState(null); // СПП WB по умолчанию из настроек
   const [mpSettingsReady, setMpSettingsReady] = useState(false);
   const persistInFlightRef = useRef(false);
   const persistDoneRef = useRef(new Set());
@@ -457,6 +458,13 @@ export function Prices() {
           // Пусто в настройках = ИЛ 1 (явно, чтобы формула и live-расчёт всегда брали значение)
           setWbLocalizationIndex(1);
         }
+        const sppPercent = wbConfig.spp_percent ?? wbConfig.sppPercent;
+        if (sppPercent !== undefined && sppPercent !== null && sppPercent !== '') {
+          const n = Number(sppPercent);
+          setWbSppPercent(!isNaN(n) && isFinite(n) && n >= 0 ? n : 0);
+        } else {
+          setWbSppPercent(0);
+        }
         const ozonConfig = ozonRes?.data || ozonRes || {};
         const ozonAcq = ozonConfig.acquiring_percent;
         if (ozonAcq !== undefined && ozonAcq !== null && ozonAcq !== '') {
@@ -479,6 +487,7 @@ export function Prices() {
           setWbAcquiringPercent(null);
           setWbGemServicesPercent(null);
           setWbLocalizationIndex(1);
+          setWbSppPercent(0);
           setOzonAcquiringPercent(null);
           setYmEarlyShipmentDiscountPp(null);
         }
@@ -515,8 +524,9 @@ export function Prices() {
     wbAcquiringPercent,
     wbGemServicesPercent,
     wbLocalizationIndex,
+    wbSppPercent,
     ozonAcquiringPercent,
-  }), [wbAcquiringPercent, wbGemServicesPercent, wbLocalizationIndex, ozonAcquiringPercent]);
+  }), [wbAcquiringPercent, wbGemServicesPercent, wbLocalizationIndex, wbSppPercent, ozonAcquiringPercent]);
 
   const liveMinsByProduct = useMemo(() => {
     const map = {};
@@ -1558,6 +1568,7 @@ export function Prices() {
         ozonAcquiringPercent={ozonAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
         wbLocalizationIndex={wbLocalizationIndex}
+        wbSppPercent={wbSppPercent}
         ymEarlyShipmentDiscountPp={ymEarlyShipmentDiscountPp}
         taxProfile={taxProfileForProduct(
           organizations,

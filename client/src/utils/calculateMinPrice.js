@@ -61,6 +61,15 @@ export function resolveWbLocalizationIndex(value) {
   return 1;
 }
 
+/** СПП WB 0–99.99%; пусто/некорректно → 0. Для не-WB всегда 0. */
+export function resolveWbSppPercent(marketplace, value) {
+  const mp = String(marketplace || '').toLowerCase();
+  if (mp !== 'wb' && mp !== 'wildberries') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, 99.99);
+}
+
 export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) {
   const scheme = String(priceScheme || '').toUpperCase() === 'FBS' ? 'fbs' : 'fbo';
   const base =
@@ -98,7 +107,8 @@ export function calculateMinPrice(
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
   taxProfile = null,
-  scheme = null
+  scheme = null,
+  wbSppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -198,6 +208,8 @@ export function calculateMinPrice(
   const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent))) ? Number(calculator.ads_promotion_percent) / 100 : 0;
 
   const profile = resolveMinPriceTaxProfile(product, taxProfile);
+  const sppPercent = resolveWbSppPercent(marketplace, wbSppPercent);
+  const sellFactor = 1 - sppPercent / 100;
 
   const variableRate =
     marketplaceCommissionPercent +
@@ -237,8 +249,10 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
+      // Налоги от цены продажи после СПП; комиссии МП — от мин. цены (до СПП).
+      const taxPrice = priceNum * sellFactor;
       const { netProfit } = computeTaxesAndNetProfit({
-        price: priceNum,
+        price: taxPrice,
         totalExpenses: basePriceNum + mpExpensesWithoutBase,
         taxProfile: profile,
       });
@@ -249,10 +263,10 @@ export function calculateMinPrice(
     let seedDenom;
     let seedNumerator;
     if (profile.incomeTaxOnRevenue) {
-      seedDenom = 1 - variableRate - vatR - incR;
+      seedDenom = sellFactor * (1 - vatR - incR) - variableRate;
       seedNumerator = fixedTotal + targetNet;
     } else {
-      seedDenom = 1 - variableRate - vatR;
+      seedDenom = sellFactor * (1 - vatR) - variableRate;
       seedNumerator = fixedTotal + (incR < 1 ? targetNet / (1 - incR) : targetNet);
     }
     if (!(seedDenom > 0.01)) seedDenom = denominator;
@@ -381,7 +395,8 @@ export function liveMinPriceForProduct(product, marketplace, scheme, opts = {}) 
     wbAcq,
     wbGem,
     opts.taxProfile,
-    scheme
+    scheme,
+    opts.wbSppPercent
   );
 }
 

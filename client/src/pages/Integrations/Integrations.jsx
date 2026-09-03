@@ -914,6 +914,22 @@ function MarketplacesTab({
               Множитель логистики WB в мин. цене: (база + литр × доп.) × ИЛ. Пусто = 1. Из API тарифов не приходит — задаётся вручную.
             </small>
           </div>
+          <div className="field">
+            <label className="label">СПП по умолчанию, %</label>
+            <input
+              type="number"
+              className="input"
+              value={formData.spp_percent ?? ''}
+              onChange={(e) => handleChange('spp_percent', e.target.value)}
+              placeholder="0"
+              min="0"
+              max="99.99"
+              step="0.01"
+            />
+            <small style={{color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block'}}>
+              Скидка WB (СПП) для расчёта: цена продажи = мин. цена × (100% − СПП). НДС и налог считаются от цены продажи. Пусто = 0. Через API продавца текущий СПП не приходит.
+            </small>
+          </div>
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button

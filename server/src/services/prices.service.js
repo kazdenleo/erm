@@ -3852,10 +3852,15 @@ class PricesService {
 
     let wbAcquiringPercent = null;
     let wbGemServicesPercent = null;
+    let wbSppPercent = null;
     try {
       const wb = await integrationsService.getMarketplaceConfig('wildberries', integrationScope);
       wbAcquiringPercent = wb?.acquiring_percent != null ? Number(wb.acquiring_percent) : null;
       wbGemServicesPercent = wb?.gem_services_percent != null ? Number(wb.gem_services_percent) : null;
+      if (wb?.spp_percent != null && wb.spp_percent !== '') {
+        const n = Number(wb.spp_percent);
+        wbSppPercent = Number.isFinite(n) && n >= 0 ? n : null;
+      }
     } catch (e) {
       logger.warn('[Prices Service] WB settings for recalc:', e.message);
     }
@@ -3989,10 +3994,10 @@ class PricesService {
             const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
-              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO', wbSppPercent
             );
             const priceFbs = calculateMinPrice(
-              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS', wbSppPercent
             );
             console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs} return=${wbCalc?.commissions?.FBO?.return_amount}`);
             if (priceFbo != null) {
@@ -4038,10 +4043,10 @@ class PricesService {
             const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
-              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO', wbSppPercent
             );
             const priceFbs = calculateMinPrice(
-              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS'
+              basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBS', wbSppPercent
             );
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, wbCalc, { scheme: 'FBO' });

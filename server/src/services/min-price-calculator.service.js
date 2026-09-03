@@ -19,8 +19,17 @@ function safeExpenseNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function resolveWbSppPercent(marketplace, value) {
+  const mp = String(marketplace || '').toLowerCase();
+  if (mp !== 'wb' && mp !== 'wildberries') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, 99.99);
+}
+
 /**
  * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
+ * @param {number|null} [wbSppPercent] — СПП WB %, налоги от цены после СПП
  */
 export function calculateMinPrice(
   basePrice,
@@ -31,7 +40,8 @@ export function calculateMinPrice(
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
   taxProfile = null,
-  scheme = null
+  scheme = null,
+  wbSppPercent = null
 ) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -167,6 +177,18 @@ export function calculateMinPrice(
       ? { tax_system: product.organization_tax_system, vat: product.organization_vat }
       : null)
   );
+  const sppPercent = resolveWbSppPercent(marketplace, wbSppPercent);
+  const sellFactor = 1 - sppPercent / 100;
+  const variableRate =
+    marketplaceCommissionPercent +
+    acquiringPercent +
+    brandPromotionPercent +
+    adsPromotionPercent +
+    gemServicesPercent +
+    (marketplace === 'ym' ? ymDeliveryPercent : 0);
+  const vatR = Number(profile.vatRate) || 0;
+  const incR = Number(profile.incomeTaxRate) || 0;
+  const targetNet = Number(minProfitNum);
 
   const baseFixedExpenses =
     safeExpenseNum(processingCost) +
@@ -205,39 +227,45 @@ export function calculateMinPrice(
         priceNum * brandPromotionPercent +
         priceNum * adsPromotionPercent +
         priceNum * gemServicesPercent;
+      const taxPrice = priceNum * sellFactor;
       const { netProfit } = computeTaxesAndNetProfit({
-        price: priceNum,
+        price: taxPrice,
         totalExpenses: basePriceNum + mpExpensesWithoutBase,
         taxProfile: profile,
       });
       return netProfit;
     };
 
-    const denominator =
-      1 -
-      marketplaceCommissionPercent -
-      acquiringPercent -
-      brandPromotionPercent -
-      adsPromotionPercent -
-      gemServicesPercent -
-      (marketplace === 'ym' ? ymDeliveryPercent : 0);
+    const denominator = 1 - variableRate;
     if (denominator <= 0) return null;
 
-    let recommendedPrice = Math.round((basePriceNum + fixedExpenses + Number(minProfitNum)) / denominator);
+    const fixedTotal = basePriceNum + fixedExpenses;
+    let seedDenom;
+    let seedNumerator;
+    if (profile.incomeTaxOnRevenue) {
+      seedDenom = sellFactor * (1 - vatR - incR) - variableRate;
+      seedNumerator = fixedTotal + targetNet;
+    } else {
+      seedDenom = sellFactor * (1 - vatR) - variableRate;
+      seedNumerator = fixedTotal + (incR < 1 ? targetNet / (1 - incR) : targetNet);
+    }
+    if (!(seedDenom > 0.01)) seedDenom = denominator;
+
+    let recommendedPrice = Math.max(1, Math.round(seedNumerator / seedDenom));
     let netProfit = calculateNetProfit(recommendedPrice);
     const maxIterations = 5000;
     let iterations = 0;
-    while (netProfit < Number(minProfitNum) && iterations < maxIterations) {
+    while (netProfit < targetNet && iterations < maxIterations) {
       recommendedPrice += 1;
       netProfit = calculateNetProfit(recommendedPrice);
       iterations++;
-      if (recommendedPrice > basePriceNum * 20) break;
+      if (recommendedPrice > basePriceNum * 20 + 1000) break;
     }
 
     let finalPrice = recommendedPrice;
-    while (calculateNetProfit(finalPrice) < Number(minProfitNum)) {
+    while (calculateNetProfit(finalPrice) < targetNet) {
       finalPrice += 1;
-      if (finalPrice > basePriceNum * 20) break;
+      if (finalPrice > basePriceNum * 20 + 1000) break;
     }
     return finalPrice > 0 ? Math.round(finalPrice) : null;
   };
