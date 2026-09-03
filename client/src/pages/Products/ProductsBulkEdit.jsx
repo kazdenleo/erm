@@ -9855,9 +9855,6 @@ export function ProductsBulkEdit() {
           В таблице есть несохранённые изменения. Сохранить их перед продолжением?
         </p>
         <div className="d-flex flex-wrap gap-2 justify-content-end">
-          <Button type="button" variant="secondary" size="small" onClick={closeLeavePrompt} disabled={saving}>
-            Остаться
-          </Button>
           <Button type="button" variant="secondary" size="small" onClick={handleLeaveDiscard} disabled={saving}>
             Не сохранять
           </Button>
