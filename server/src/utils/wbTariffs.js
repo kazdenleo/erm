@@ -1,5 +1,10 @@
 /**
  * Разбор ответа WB GET /api/v1/tariffs/box и /api/v1/tariffs/return (разные обёртки response/data).
+ *
+ * Логистика мин. цены (док. WB):
+ *   (база_1л + литр × доп.литры) × коэф_склада × индекс_локализации
+ * В /tariffs/box поля boxDelivery* уже приходят с учётом коэф. склада — повторно не умножаем.
+ * Индекс локализации в этом API нет → по умолчанию 1.
  */
 
 export function extractWbWarehouseList(boxTariffsData) {
@@ -71,14 +76,21 @@ export function parseWbTariffAmount(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** Коэффициент склада WB из CoefExpr (%). «-» и пусто → 100%. */
+/** Коэффициент склада WB из CoefExpr (%). «-» и пусто → 100%. Справочно (в мин. цене не умножаем). */
 export function parseWbWarehouseCoefPercent(coefExpr) {
   const n = parseWbTariffAmount(coefExpr, NaN);
   if (Number.isFinite(n) && n > 0) return n;
   return 100;
 }
 
-/** Применить коэффициент склада к сумме тарифа (база или литр). */
+/** ИЛ из настроек интеграции WB; пусто/некорректно → 1. */
+export function resolveWbLocalizationIndex(value) {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 1;
+}
+
+/** @deprecated Тарифы box уже с коэфом; не использовать в расчёте мин. цены. */
 export function applyWbWarehouseCoef(amount, coefPercent = 100) {
   const a = Number(amount) || 0;
   if (!(a > 0)) return 0;
@@ -87,7 +99,8 @@ export function applyWbWarehouseCoef(amount, coefPercent = 100) {
 }
 
 /**
- * Сырые тарифы логистики WB по схеме из строки склада /tariffs/box.
+ * Тарифы логистики WB по схеме из /tariffs/box.
+ * base/liter — как в API (уже с коэф. склада).
  * @returns {{ rawBase: number, rawLiter: number, coef: number, source: string }|null}
  */
 export function pickWbSchemeTariff(boxTariffRow, scheme = 'fbo') {
@@ -111,40 +124,18 @@ export function pickWbSchemeTariff(boxTariffRow, scheme = 'fbo') {
   return null;
 }
 
-/** @deprecated use pickWbSchemeTariff */
+/**
+ * База + литр для обратной доставки: тариф по объёму из box (без доп. коэфа / ИЛ).
+ * FBO → иначе marketplace.
+ */
 export function pickWbReverseDeliveryBaseLiter(boxTariffRow) {
-  const fbo = pickWbSchemeTariff(boxTariffRow, 'fbo');
-  if (fbo) {
-    return {
-      base: applyWbWarehouseCoef(fbo.rawBase, fbo.coef),
-      liter: applyWbWarehouseCoef(fbo.rawLiter, fbo.coef),
-      coef: fbo.coef,
-      rawBase: fbo.rawBase,
-      rawLiter: fbo.rawLiter,
-      source: fbo.source,
-    };
-  }
-  const fbs = pickWbSchemeTariff(boxTariffRow, 'fbs');
-  if (fbs) {
-    return {
-      base: applyWbWarehouseCoef(fbs.rawBase, fbs.coef),
-      liter: applyWbWarehouseCoef(fbs.rawLiter, fbs.coef),
-      coef: fbs.coef,
-      rawBase: fbs.rawBase,
-      rawLiter: fbs.rawLiter,
-      source: fbs.source,
-    };
-  }
-  return null;
-}
-
-function effectiveWbTariffFromScheme(boxTariffRow, scheme) {
-  const picked = pickWbSchemeTariff(boxTariffRow, scheme);
+  let picked = pickWbSchemeTariff(boxTariffRow, 'fbo');
+  if (!picked) picked = pickWbSchemeTariff(boxTariffRow, 'fbs');
   if (!picked) return null;
   return {
-    base: applyWbWarehouseCoef(picked.rawBase, picked.coef),
-    liter: applyWbWarehouseCoef(picked.rawLiter, picked.coef),
-    coef: picked.coef,
+    base: picked.rawBase,
+    liter: picked.rawLiter,
+    coef: 100,
     rawBase: picked.rawBase,
     rawLiter: picked.rawLiter,
     source: picked.source,
@@ -164,11 +155,23 @@ export function computeWbVolumeBaseTariff(base, liter, volumeLiters = 0) {
 }
 
 /**
- * Прямая логистика WB: (база × коэф) + (литр × коэф) × ceil(V−1).
+ * Прямая логистика WB для мин. цены:
+ * (база + литр × доп.) × индекс_локализации.
+ * Коэф. склада не умножаем — уже заложен в boxDelivery* из API.
+ * @param {number} [localizationIndex=1] — ИЛ; в /tariffs/box нет, по умолчанию 1
  */
-export function computeWbLogisticsCost(boxTariffRow, volumeLiters = 0, scheme = 'fbo') {
-  const eff = effectiveWbTariffFromScheme(boxTariffRow, scheme);
-  if (!eff) {
+export function computeWbLogisticsCost(
+  boxTariffRow,
+  volumeLiters = 0,
+  scheme = 'fbo',
+  localizationIndex = 1
+) {
+  const requested = String(scheme).toLowerCase() === 'fbs' ? 'fbs' : 'fbo';
+  let picked = pickWbSchemeTariff(boxTariffRow, requested);
+  if (!picked && requested === 'fbo') {
+    picked = pickWbSchemeTariff(boxTariffRow, 'fbs');
+  }
+  if (!picked) {
     return {
       cost: 0,
       base: 0,
@@ -176,31 +179,47 @@ export function computeWbLogisticsCost(boxTariffRow, volumeLiters = 0, scheme = 
       coef: 100,
       rawBase: 0,
       rawLiter: 0,
+      localizationIndex: 1,
       source: null,
     };
   }
+  const il = Number(localizationIndex);
+  const loc = Number.isFinite(il) && il > 0 ? il : 1;
+  const base = picked.rawBase;
+  const liter = picked.rawLiter;
+  const volumeCost = computeWbVolumeBaseTariff(base, liter, volumeLiters);
   return {
-    ...eff,
-    cost: computeWbVolumeBaseTariff(eff.base, eff.liter, volumeLiters),
+    base,
+    liter,
+    coef: picked.coef,
+    rawBase: picked.rawBase,
+    rawLiter: picked.rawLiter,
+    localizationIndex: loc,
+    source: picked.source,
+    cost: Math.round(volumeCost * loc * 100) / 100,
   };
 }
 
 /**
- * Обратная доставка WB для мин. цены (отказ/невыкуп): тариф box × коэф склада по объёму.
+ * Обратная доставка WB для мин. цены (отказ/невыкуп):
+ * только базовый тариф box по объёму — без коэффициента склада и без ИЛ.
  */
 export function computeWbReturnAmount(boxTariffRow, volumeLiters = 0, fallback = null, preferredScheme = null) {
   const schemes = preferredScheme
     ? [String(preferredScheme).toLowerCase() === 'fbs' ? 'fbs' : 'fbo']
     : ['fbo', 'fbs'];
   for (const scheme of schemes) {
-    const eff = effectiveWbTariffFromScheme(boxTariffRow, scheme);
-    if (eff) {
-      return computeWbVolumeBaseTariff(eff.base, eff.liter, volumeLiters);
+    let picked = pickWbSchemeTariff(boxTariffRow, scheme);
+    if (!picked && scheme === 'fbo') {
+      picked = pickWbSchemeTariff(boxTariffRow, 'fbs');
+    }
+    if (picked) {
+      return computeWbVolumeBaseTariff(picked.rawBase, picked.rawLiter, volumeLiters);
     }
   }
   const fb = fallback && typeof fallback === 'object' ? fallback : null;
-  const base = Number(fb?.base);
-  const liter = Number(fb?.liter);
+  const base = Number(fb?.rawBase ?? fb?.base);
+  const liter = Number(fb?.rawLiter ?? fb?.liter);
   if (Number.isFinite(base) && base > 0) {
     return computeWbVolumeBaseTariff(base, Number.isFinite(liter) ? liter : 0, volumeLiters);
   }

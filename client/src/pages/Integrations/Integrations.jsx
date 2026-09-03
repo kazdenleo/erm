@@ -899,6 +899,21 @@ function MarketplacesTab({
               Процент услуг Джем вычисляется от суммы товара и добавляется к расчету минимальной цены (например, 1.5)
             </small>
           </div>
+          <div className="field">
+            <label className="label">Индекс локализации</label>
+            <input
+              type="number"
+              className="input"
+              value={formData.localization_index ?? ''}
+              onChange={(e) => handleChange('localization_index', e.target.value)}
+              placeholder="1"
+              min="0.01"
+              step="0.01"
+            />
+            <small style={{color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block'}}>
+              Множитель логистики WB в мин. цене: (база + литр × доп.) × ИЛ. Пусто = 1. Из API тарифов не приходит — задаётся вручную.
+            </small>
+          </div>
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button

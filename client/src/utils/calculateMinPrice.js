@@ -55,6 +55,12 @@ function finiteOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+export function resolveWbLocalizationIndex(value) {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 1;
+}
+
 export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) {
   const scheme = String(priceScheme || '').toUpperCase() === 'FBS' ? 'fbs' : 'fbo';
   const base =
@@ -67,12 +73,15 @@ export function wbLogisticsCostFromCalculator(calculator, product, priceScheme) 
   const precomputed =
     finiteOrNull(calculator?.[`logistics_cost_${scheme}`]) ??
     finiteOrNull(calculator?.logistics_cost);
+  const localizationIndex = resolveWbLocalizationIndex(calculator?.logistics_localization_index);
   const volume = resolveEffectiveVolumeLiters(calculator, product, 'wb') || 0;
   if (base != null) {
-    if (volume > 1) return base + liter * Math.ceil(volume - 1);
-    if (volume > 0) return base;
-    if (precomputed != null && precomputed > 0) return precomputed;
-    return base;
+    let volumeCost;
+    if (volume > 1) volumeCost = base + liter * Math.ceil(volume - 1);
+    else if (volume > 0) volumeCost = base;
+    else if (precomputed != null && precomputed > 0) return precomputed;
+    else volumeCost = base;
+    return Math.round(volumeCost * localizationIndex * 100) / 100;
   }
   return precomputed || 0;
 }
@@ -343,6 +352,12 @@ export function liveMinPriceForProduct(product, marketplace, scheme, opts = {}) 
     if (opts.ozonAcquiringPercent != null && opts.ozonAcquiringPercent !== '') {
       calculator = { ...calculator, acquiring: Number(opts.ozonAcquiringPercent) || 0 };
     }
+  }
+  if (mp === 'wb' && opts.wbLocalizationIndex != null && opts.wbLocalizationIndex !== '') {
+    calculator = {
+      ...calculator,
+      logistics_localization_index: resolveWbLocalizationIndex(opts.wbLocalizationIndex),
+    };
   }
 
   const cost = Number(product?.cost ?? product?.price ?? product?.base_price ?? 0) || 0;

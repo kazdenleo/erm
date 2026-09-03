@@ -52,6 +52,28 @@ function PriceBreakdownValue({ children, formula, className = '', style, extra =
   );
 }
 
+/**
+ * Название строки расходов. ! — значение из настроек / карточки (не из API МП).
+ * @param {{ children: React.ReactNode, fromSettings?: boolean, title?: string, className?: string }} props
+ */
+function BreakdownLabel({ children, fromSettings = false, title, className = '' }) {
+  const tip =
+    title ||
+    (fromSettings
+      ? 'Значение из настроек или карточки товара (не из API маркетплейса)'
+      : undefined);
+  return (
+    <span className={`price-breakdown-label${className ? ` ${className}` : ''}`} title={tip}>
+      {children}
+      {fromSettings ? (
+        <span className="price-breakdown-manual-mark" title={tip} aria-label="Не из API">
+          !
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 class PriceDetailsModalErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -127,6 +149,7 @@ function PriceDetailsModalInner({
   priceScheme = null,
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
+  wbLocalizationIndex = null,
   ozonAcquiringPercent = null,
   ymEarlyShipmentDiscountPp = null,
   taxProfile = null,
@@ -182,15 +205,19 @@ function PriceDetailsModalInner({
 
           <div className="price-details-section">
             <h3 className="price-details-subtitle">Расчёт для частного клиента</h3>
+            <div className="price-breakdown-source-legend">
+              <span className="price-breakdown-manual-mark">!</span>
+              {' '}— значение из настроек или карточки товара (не из API маркетплейса)
+            </div>
             <div className="price-breakdown">
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Себестоимость</span>
+                <BreakdownLabel fromSettings>Себестоимость</BreakdownLabel>
                 <span className="price-breakdown-value">
                   {(parts?.cost ?? 0).toFixed(2)} ₽
                 </span>
               </div>
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Доп. расходы</span>
+                <BreakdownLabel fromSettings>Доп. расходы</BreakdownLabel>
                 <span className="price-breakdown-value">
                   {(parts?.additionalExpenses ?? 0).toFixed(2)} ₽
                 </span>
@@ -202,7 +229,7 @@ function PriceDetailsModalInner({
                 </span>
               </div>
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Целевая чистая прибыль (наценка)</span>
+                <BreakdownLabel fromSettings>Целевая чистая прибыль (наценка)</BreakdownLabel>
                 <PriceBreakdownValue formula="после налогов · из карточки товара">
                   {(parts?.minMarkup ?? 0).toFixed(2)} ₽
                 </PriceBreakdownValue>
@@ -215,7 +242,7 @@ function PriceDetailsModalInner({
             <div className="price-breakdown">
               {profile.vatRate > 0 && (
                 <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">НДС ({vatPctLabel})</span>
+                  <BreakdownLabel fromSettings>НДС ({vatPctLabel})</BreakdownLabel>
                   <PriceBreakdownValue
                     className="negative"
                     formula={`= ${total.toFixed(2)} × ${vatPctLabel}`}
@@ -226,7 +253,7 @@ function PriceDetailsModalInner({
               )}
               {profile.incomeTaxRate > 0 && (
                 <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">Налог ({incomeTaxPctLabel})</span>
+                  <BreakdownLabel fromSettings>Налог ({incomeTaxPctLabel})</BreakdownLabel>
                   <PriceBreakdownValue className="negative" formula={incomeTaxFormulaHint}>
                     −{incomeTaxAmount.toFixed(2)} ₽
                   </PriceBreakdownValue>
@@ -456,17 +483,31 @@ function PriceDetailsModalInner({
     ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_base);
   const wbLogisticsRawLiter = toFiniteNumber(resolvedCalculatorData[`logistics_raw_liter_${wbSchemeKey}`])
     ?? toFiniteNumber(resolvedCalculatorData.logistics_raw_liter);
+  const wbLocalizationFromSettings = wbLocalizationIndex != null && wbLocalizationIndex !== '';
+  let wbLogisticsLocalizationIndex = 1;
+  if (wbLocalizationFromSettings) {
+    const n = Number(wbLocalizationIndex);
+    wbLogisticsLocalizationIndex = Number.isFinite(n) && n > 0 ? n : 1;
+  } else {
+    const n = Number(resolvedCalculatorData.logistics_localization_index);
+    wbLogisticsLocalizationIndex = Number.isFinite(n) && n > 0 ? n : 1;
+  }
   if (marketplace === 'wb' && wbLogisticsBase != null) {
     const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
     const liter = wbLogisticsLiter ?? 0;
+    let volumeCost;
     if (volume > 1) {
-      logisticsCost = wbLogisticsBase + liter * Math.ceil(volume - 1);
+      volumeCost = wbLogisticsBase + liter * Math.ceil(volume - 1);
     } else if (volume > 0) {
-      logisticsCost = wbLogisticsBase;
+      volumeCost = wbLogisticsBase;
     } else {
       logisticsCost = wbLogisticsPrecomputed != null && wbLogisticsPrecomputed > 0
         ? wbLogisticsPrecomputed
         : wbLogisticsBase;
+      volumeCost = null;
+    }
+    if (volumeCost != null) {
+      logisticsCost = Math.round(volumeCost * wbLogisticsLocalizationIndex * 100) / 100;
     }
   } else if (marketplace === 'ozon') {
     const ozonRaw = resolvedCalculatorData.fullCommissions || resolvedCalculatorData.rawCommissions || {};
@@ -627,9 +668,15 @@ function PriceDetailsModalInner({
   const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
   const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
   if (marketplace !== 'ym' && targetProfit != null && targetProfit >= 0) {
-    const calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
+    let calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
       ? { ...resolvedCalculatorData, acquiring: Number(ozonAcquiringPercent) || 0 }
       : resolvedCalculatorData;
+    if (marketplace === 'wb') {
+      calcForSolve = {
+        ...calcForSolve,
+        logistics_localization_index: wbLogisticsLocalizationIndex,
+      };
+    }
     const solved = calculateMinPrice(
       basePrice,
       calcForSolve,
@@ -802,6 +849,15 @@ function PriceDetailsModalInner({
         : `${headerVolume.toFixed(2)} л`
       : 'нет габаритов';
 
+  const acquiringFromSettings =
+    (marketplace === 'wb' && wbAcquiringPercent != null && wbAcquiringPercent !== undefined) ||
+    (marketplace === 'ozon' && ozonAcquiringPercent != null && ozonAcquiringPercent !== undefined);
+  const brandFromSettings =
+    marketplace === 'ozon' && resolvedCalculatorData.brand_promotion_source !== 'api';
+  const adsFromSettings =
+    marketplace === 'ozon' && resolvedCalculatorData.ads_promotion_source !== 'ads';
+  const ymPaymentFromSettings = !!resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.fromSettings;
+
   return (
     <Modal
       isOpen={isOpen}
@@ -824,9 +880,13 @@ function PriceDetailsModalInner({
         )}
         <div className="price-details-section">
           <h3 className="price-details-subtitle">💵 Расходы и расчёт цены</h3>
+          <div className="price-breakdown-source-legend">
+            <span className="price-breakdown-manual-mark">!</span>
+            {' '}— значение из настроек или карточки товара (не из API маркетплейса)
+          </div>
           <div className="price-breakdown">
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Себестоимость:</span>
+              <BreakdownLabel fromSettings>Себестоимость:</BreakdownLabel>
               <PriceBreakdownValue
                 formula={
                   costBase > 0
@@ -845,7 +905,7 @@ function PriceDetailsModalInner({
             </div>
 
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Дополнительные расходы:</span>
+              <BreakdownLabel fromSettings>Дополнительные расходы:</BreakdownLabel>
               <PriceBreakdownValue
                 formula={
                   additionalExpenses > 0
@@ -858,7 +918,7 @@ function PriceDetailsModalInner({
             </div>
 
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">База (себестоимость + доп.):</span>
+              <BreakdownLabel fromSettings>База (себестоимость + доп.):</BreakdownLabel>
               <PriceBreakdownValue
                 formula={
                   basePrice > 0
@@ -898,7 +958,7 @@ function PriceDetailsModalInner({
             )}
             
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">
+              <BreakdownLabel fromSettings={marketplace === 'wb' && (wbLocalizationFromSettings || wbLogisticsLocalizationIndex !== 1)}>
                 Логистика
                 {productVolume > 0
                   ? wbCmDims && wbCmDims.length > 0
@@ -906,7 +966,7 @@ function PriceDetailsModalInner({
                     : ` (${productVolume.toFixed(2)} л)`
                   : ''}
                 :
-              </span>
+              </BreakdownLabel>
               <PriceBreakdownValue
                 formula={
                   marketplace === 'wb' && wbLogisticsBase != null
@@ -915,24 +975,25 @@ function PriceDetailsModalInner({
                         const base = wbLogisticsBase;
                         const liter = wbLogisticsLiter ?? 0;
                         const coef = wbLogisticsCoef;
-                        const rawBase = wbLogisticsRawBase;
-                        const rawLiter = wbLogisticsRawLiter;
+                        const il = wbLogisticsLocalizationIndex;
                         const schemeLabel = wantFbo ? 'FBO boxDelivery' : 'FBS marketplace';
                         if (!(base > 0) && !(liter > 0)) {
                           return `= 0 ₽ (${schemeLabel}: в тарифах склада нет базовой ставки)`;
                         }
                         const coefNote =
-                          coef != null && coef !== 100 && rawBase > 0
-                            ? ` (${rawBase.toFixed(2)} × ${coef}% = ${base.toFixed(2)}`
-                              + (rawLiter > 0 ? `; ${rawLiter.toFixed(2)} × ${coef}% = ${liter.toFixed(2)} л)` : ')')
+                          coef != null && coef !== 100
+                            ? `; коэф склада ${coef}% уже в тарифе API`
                             : '';
+                        const ilNote = `; × ИЛ ${il}${wbLocalizationFromSettings || il !== 1 ? ' (настройки интеграции)' : ''}`;
                         if (!volume || volume <= 1) {
-                          return `= ${base.toFixed(2)} ₽ (базовый тариф за 1-й литр, ${schemeLabel}${coefNote})`;
+                          const withIl = Math.round(base * il * 100) / 100;
+                          return `= ${base.toFixed(2)} × ИЛ ${il} = ${withIl.toFixed(2)} ₽ (базовый тариф за 1-й литр, ${schemeLabel}${coefNote}${ilNote})`;
                         }
                         const additionalLiters = Math.ceil(volume - 1);
                         const additionalCost = liter * additionalLiters;
-                        const recalculatedLogisticsCost = base + additionalCost;
-                        return `= ${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л = ${recalculatedLogisticsCost.toFixed(2)} ₽ (${schemeLabel}${coefNote})`;
+                        const volumeCost = base + additionalCost;
+                        const withIl = Math.round(volumeCost * il * 100) / 100;
+                        return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ИЛ ${il} = ${withIl.toFixed(2)} ₽ (${schemeLabel}${coefNote}${ilNote})`;
                       })()
                     : marketplace === 'ozon'
                       ? logisticsCostMax != null
@@ -988,7 +1049,7 @@ function PriceDetailsModalInner({
                         ozonReturnMeta.logisticsMin > 0
                           ? `= (${ozonReturnMeta.logisticsMin.toFixed(0)} + ${ozonReturnMeta.logisticsMax.toFixed(0)}) / 2 × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
                           : marketplace === 'wb'
-                            ? `= ${returnAmount.toFixed(2)} ₽ (базовый тариф по объёму) × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
+                            ? `= ${returnAmount.toFixed(2)} ₽ (базовый тариф по объёму, без коэф. склада) × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
                             : `= ${returnAmount.toFixed(2)} × ${(returnRate * 100).toFixed(1)}% невыкупа = ${returnCost.toFixed(2)} ₽`
                       }
                     >
@@ -1036,9 +1097,9 @@ function PriceDetailsModalInner({
 
             {marketplace === 'ym' && earlyShipmentDiscountPp > 0 && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">
+                <BreakdownLabel fromSettings>
                   Скидка за раннюю отгрузку (−{earlyShipmentDiscountPp} п.п.):
-                </span>
+                </BreakdownLabel>
                 <PriceBreakdownValue
                   className="positive"
                   formula={`= ${calculatedPrice.toFixed(2)} × ${earlyShipmentDiscountPp.toFixed(2)}% = ${earlyShipmentDiscountAmount.toFixed(2)} ₽ (комиссия ${commissionDisplayPercent}% → ${commissionNetPercent}%)`}
@@ -1064,7 +1125,9 @@ function PriceDetailsModalInner({
                   </PriceBreakdownValue>
                 </div>
                 <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">Перевод платежа покупателя:</span>
+                  <BreakdownLabel fromSettings={ymPaymentFromSettings}>
+                    Перевод платежа покупателя:
+                  </BreakdownLabel>
                   <PriceBreakdownValue
                     className="negative"
                     formula={
@@ -1080,9 +1143,9 @@ function PriceDetailsModalInner({
             )}
             {marketplace !== 'ym' && (acquiringAmount > 0 || (marketplace === 'wb' && (acquiring > 0 || wbAcquiringPercent != null)) || (marketplace === 'ozon' && resolvedCalculatorData.acquiring != null)) && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">
+                <BreakdownLabel fromSettings={acquiringFromSettings}>
                   Эквайринг ({acquiring != null ? Number(acquiring).toFixed(2) : 0}%):
-                </span>
+                </BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
                   formula={
@@ -1097,9 +1160,9 @@ function PriceDetailsModalInner({
             
             {(gemServicesAmount > 0 || (marketplace === 'wb' && wbGemServicesPercent !== null && wbGemServicesPercent !== undefined)) && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">
+                <BreakdownLabel fromSettings>
                   Услуги Джем ({wbGemServicesPercent || 0}%):
-                </span>
+                </BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
                   formula={
@@ -1114,7 +1177,7 @@ function PriceDetailsModalInner({
             
             {marketplace === 'ozon' && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">
+                <BreakdownLabel fromSettings={brandFromSettings}>
                   Продвижение бренда ({(brandPromotionPercent * 100).toFixed(2)}%)
                   {resolvedCalculatorData.brand_promotion_source === 'brand'
                     ? ' — из настроек бренда'
@@ -1122,7 +1185,7 @@ function PriceDetailsModalInner({
                       ? ' — из API Ozon'
                       : ''}
                   :
-                </span>
+                </BreakdownLabel>
                 <PriceBreakdownValue
                   className={brandPromotionAmount > 0 ? 'negative' : ''}
                   formula={
@@ -1138,7 +1201,7 @@ function PriceDetailsModalInner({
 
             {marketplace === 'ozon' && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">
+                <BreakdownLabel fromSettings={adsFromSettings}>
                   Реклама / ДРР ({(adsPromotionPercent * 100).toFixed(2)}%)
                   {resolvedCalculatorData.ads_promotion_source === 'config'
                     ? ' — из настроек интеграции'
@@ -1146,7 +1209,7 @@ function PriceDetailsModalInner({
                       ? ' — Performance API'
                       : ''}
                   :
-                </span>
+                </BreakdownLabel>
                 <PriceBreakdownValue
                   className={adsPromotionAmount > 0 ? 'negative' : ''}
                   formula={
@@ -1188,7 +1251,7 @@ function PriceDetailsModalInner({
             </div>
             
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Минимальная чистая прибыль:</span>
+              <BreakdownLabel fromSettings>Минимальная чистая прибыль:</BreakdownLabel>
               {(() => {
                 const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
                 if (targetProfit == null) {
@@ -1231,7 +1294,7 @@ function PriceDetailsModalInner({
             
             {profile.vatRate > 0 && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">НДС ({vatPctLabel}):</span>
+                <BreakdownLabel fromSettings>НДС ({vatPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue
                   className="negative"
                   formula={`= ${calculatedPrice.toFixed(2)} × ${vatPctLabel} = ${vatAmount.toFixed(2)} ₽`}
@@ -1243,7 +1306,7 @@ function PriceDetailsModalInner({
 
             {profile.incomeTaxRate > 0 && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
+                <BreakdownLabel fromSettings>Налог ({incomeTaxPctLabel}):</BreakdownLabel>
                 <PriceBreakdownValue className="negative" formula={incomeTaxFormulaHint}>
                   -{incomeTaxAmount.toFixed(2)} ₽
                 </PriceBreakdownValue>

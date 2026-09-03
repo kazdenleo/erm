@@ -97,15 +97,36 @@ export function calculateMinPrice(
 
   let logisticsCost = 0;
   if (marketplace === 'wb') {
-    if (calculator.logistics_base != null && calculator.logistics_liter != null) {
+    const schemeKey = priceScheme === 'FBS' ? 'fbs' : 'fbo';
+    const baseRaw = calculator[`logistics_base_${schemeKey}`] ?? calculator.logistics_base;
+    const literRaw = calculator[`logistics_liter_${schemeKey}`] ?? calculator.logistics_liter;
+    const precomputedRaw = calculator[`logistics_cost_${schemeKey}`] ?? calculator.logistics_cost;
+    const base = baseRaw != null && baseRaw !== '' && Number.isFinite(Number(baseRaw)) ? Number(baseRaw) : null;
+    const liter = literRaw != null && literRaw !== '' && Number.isFinite(Number(literRaw)) ? Number(literRaw) : 0;
+    const precomputed =
+      precomputedRaw != null && precomputedRaw !== '' && Number.isFinite(Number(precomputedRaw))
+        ? Number(precomputedRaw)
+        : null;
+    let il = Number(calculator.logistics_localization_index);
+    if (!(Number.isFinite(il) && il > 0)) il = 1;
+    if (base != null) {
       const volume = resolveEffectiveVolumeLiters(calculator, product, marketplace) || 0;
-      if (volume && volume > 1) {
-        logisticsCost = Number(calculator.logistics_base) + Number(calculator.logistics_liter) * Math.ceil(volume - 1);
+      let volumeCost;
+      if (volume > 1) {
+        volumeCost = base + liter * Math.ceil(volume - 1);
+      } else if (volume > 0) {
+        volumeCost = base;
+      } else if (precomputed != null && precomputed > 0) {
+        logisticsCost = precomputed;
+        volumeCost = null;
       } else {
-        logisticsCost = Number(calculator.logistics_base);
+        volumeCost = base;
+      }
+      if (volumeCost != null) {
+        logisticsCost = Math.round(volumeCost * il * 100) / 100;
       }
     } else {
-      logisticsCost = (calculator.logistics_cost != null && calculator.logistics_cost !== '') ? Number(calculator.logistics_cost) : 0;
+      logisticsCost = precomputed != null ? precomputed : 0;
     }
   } else if (marketplace === 'ozon' && priceScheme === 'FBO') {
     // FBO: логистика склада Ozon — из FBO direct_flow, иначе 0 (доставка покупателю уже в commission.delivery_amount)

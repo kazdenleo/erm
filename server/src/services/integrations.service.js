@@ -794,6 +794,27 @@ class IntegrationsService {
           config.api_key = config.apiKey;
         }
       }
+      if (config.acquiring_percent != null && config.acquiring_percent !== '') {
+        const n = Number(config.acquiring_percent);
+        config.acquiring_percent = Number.isFinite(n) ? n : null;
+      } else if (config.acquiring_percent === '') {
+        config.acquiring_percent = null;
+      }
+      if (config.gem_services_percent != null && config.gem_services_percent !== '') {
+        const n = Number(config.gem_services_percent);
+        config.gem_services_percent = Number.isFinite(n) ? n : null;
+      } else if (config.gem_services_percent === '') {
+        config.gem_services_percent = null;
+      }
+      if (config.localization_index == null && config.localizationIndex != null) {
+        config.localization_index = config.localizationIndex;
+      }
+      if (config.localization_index != null && config.localization_index !== '') {
+        const n = Number(config.localization_index);
+        config.localization_index = Number.isFinite(n) && n > 0 ? n : null;
+      } else if (config.localization_index === '') {
+        config.localization_index = null;
+      }
     }
     if (type === 'yandex') {
       if (config.api_key == null || String(config.api_key).trim() === '') {

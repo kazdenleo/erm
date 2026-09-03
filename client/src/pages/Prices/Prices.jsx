@@ -99,10 +99,12 @@ export function Prices() {
   const [wbAcquiringPercent, setWbAcquiringPercent] = useState(null); // Процент эквайринга для WB из настроек
   const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
+  const [wbLocalizationIndex, setWbLocalizationIndex] = useState(null); // ИЛ WB из настроек интеграции
   const [mpSettingsReady, setMpSettingsReady] = useState(false);
   const persistInFlightRef = useRef(false);
   const persistDoneRef = useRef(new Set());
-  const [ymEarlyShipmentDiscountPp, setYmEarlyShipmentDiscountPp] = useState(null);  const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
+  const [ymEarlyShipmentDiscountPp, setYmEarlyShipmentDiscountPp] = useState(null);
+  const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
   const [recalcAllMessage, setRecalcAllMessage] = useState(null); // Сообщение после запуска фонового пересчёта
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
@@ -447,6 +449,13 @@ export function Prices() {
         } else {
           setWbGemServicesPercent(null);
         }
+        const localizationIndex = wbConfig.localization_index ?? wbConfig.localizationIndex;
+        if (localizationIndex !== undefined && localizationIndex !== null && localizationIndex !== '') {
+          const n = Number(localizationIndex);
+          setWbLocalizationIndex(!isNaN(n) && isFinite(n) && n > 0 ? n : null);
+        } else {
+          setWbLocalizationIndex(null);
+        }
         const ozonConfig = ozonRes?.data || ozonRes || {};
         const ozonAcq = ozonConfig.acquiring_percent;
         if (ozonAcq !== undefined && ozonAcq !== null && ozonAcq !== '') {
@@ -468,6 +477,7 @@ export function Prices() {
           console.error('[Prices] Error loading marketplace settings:', err);
           setWbAcquiringPercent(null);
           setWbGemServicesPercent(null);
+          setWbLocalizationIndex(null);
           setOzonAcquiringPercent(null);
           setYmEarlyShipmentDiscountPp(null);
         }
@@ -503,8 +513,9 @@ export function Prices() {
   const liveMinOpts = useMemo(() => ({
     wbAcquiringPercent,
     wbGemServicesPercent,
+    wbLocalizationIndex,
     ozonAcquiringPercent,
-  }), [wbAcquiringPercent, wbGemServicesPercent, ozonAcquiringPercent]);
+  }), [wbAcquiringPercent, wbGemServicesPercent, wbLocalizationIndex, ozonAcquiringPercent]);
 
   const liveMinsByProduct = useMemo(() => {
     const map = {};
@@ -1537,11 +1548,15 @@ export function Prices() {
           if (priceModal.marketplace === 'ozon') {
             enriched = enrichOzonCalculatorFromProduct(enriched, priceModal.product);
           }
+          if (priceModal.marketplace === 'wb' && wbLocalizationIndex != null) {
+            enriched = { ...enriched, logistics_localization_index: wbLocalizationIndex };
+          }
           return enriched;
         })()}
         wbAcquiringPercent={wbAcquiringPercent}
         ozonAcquiringPercent={ozonAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
+        wbLocalizationIndex={wbLocalizationIndex}
         ymEarlyShipmentDiscountPp={ymEarlyShipmentDiscountPp}
         taxProfile={taxProfileForProduct(
           organizations,

@@ -29,6 +29,7 @@ import {
   computeWbReturnAmount,
   computeWbLogisticsCost,
   parseWbTariffAmount,
+  resolveWbLocalizationIndex,
 } from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
 import {
@@ -1677,39 +1678,86 @@ class PricesService {
     return applyOzonAdsPromotion(calculator, drr, source);
   }
 
+  async _resolveWbBoxTariffRow(integrationScope = {}, calculator = null) {
+    try {
+      const boxData = await integrationsService.ensureWildberriesTariffs(integrationScope || {});
+      const list = extractWbWarehouseList(boxData);
+      if (!list.length) return calculator?.boxTariffs || null;
+
+      let mappedId = null;
+      const scopeProfileId = integrationScope?.profileId ?? integrationScope?.profile_id ?? null;
+      if (scopeProfileId) {
+        const mainWh = await query(
+          `SELECT w.id, w.wb_warehouse_name, wm.marketplace_warehouse_id
+           FROM warehouses w
+           INNER JOIN warehouse_mappings wm
+             ON wm.warehouse_id = w.id AND LOWER(TRIM(wm.marketplace)) = 'wb'
+           WHERE w.main_warehouse_id IS NULL AND w.type = 'warehouse' AND w.profile_id = $1
+           ORDER BY w.id ASC LIMIT 1`,
+          [scopeProfileId]
+        );
+        mappedId =
+          mainWh.rows[0]?.marketplace_warehouse_id ||
+          mainWh.rows[0]?.wb_warehouse_name ||
+          null;
+      }
+
+      if (mappedId) {
+        const found = findWbTariffWarehouse(list, mappedId);
+        if (found) return found;
+      }
+
+      return (
+        list.find((w) => parseWbTariffAmount(w?.boxDeliveryMarketplaceBase) > 0) ||
+        list.find((w) => parseWbTariffAmount(w?.boxDeliveryBase) > 0) ||
+        list[0] ||
+        calculator?.boxTariffs ||
+        null
+      );
+    } catch (e) {
+      logger.warn('[Prices Service] WB box tariff row resolve failed:', e?.message || e);
+      return calculator?.boxTariffs || null;
+    }
+  }
+
   async _enrichWbCalculatorReturnAmount(calculator, volumeLiters = 0, integrationScope = null) {
     if (!calculator || typeof calculator !== 'object') return calculator;
 
-    let boxRow = calculator.boxTariffs;
-    if (!boxRow || typeof boxRow !== 'object') {
-      try {
-        const boxData = await integrationsService.ensureWildberriesTariffs(integrationScope || {});
-        const list = extractWbWarehouseList(boxData);
-        boxRow =
-          list.find((w) => parseWbTariffAmount(w?.boxDeliveryBase) > 0) ||
-          list.find((w) => parseWbTariffAmount(w?.boxDeliveryMarketplaceBase) > 0) ||
-          list[0] ||
-          null;
-      } catch (e) {
-        logger.warn('[Prices Service] WB box tariffs enrich failed:', e?.message || e);
-      }
+    const boxRow = await this._resolveWbBoxTariffRow(integrationScope, calculator);
+
+    let localizationIndex = resolveWbLocalizationIndex(calculator.logistics_localization_index);
+    try {
+      const wbCfg = await integrationsService.getMarketplaceConfig('wildberries', integrationScope || {});
+      localizationIndex = resolveWbLocalizationIndex(wbCfg?.localization_index);
+    } catch {
+      /* keep calculator / default */
     }
 
     const vol = Number(volumeLiters) || Number(calculator.volume_weight) || 0;
-    const fboLog = computeWbLogisticsCost(boxRow, vol, 'fbo');
-    const fbsLog = computeWbLogisticsCost(boxRow, vol, 'fbs');
+    const fboLog = computeWbLogisticsCost(boxRow, vol, 'fbo', localizationIndex);
+    const fbsLog = computeWbLogisticsCost(boxRow, vol, 'fbs', localizationIndex);
 
+    // Fallback для return_amount — сырые тарифы без коэф. склада
     const fallbackBase =
-      fbsLog.base > 0
-        ? { base: fbsLog.base, liter: fbsLog.liter }
-        : fboLog.base > 0
-          ? { base: fboLog.base, liter: fboLog.liter }
-          : Number(calculator.logistics_base_fbs) > 0
-            ? { base: Number(calculator.logistics_base_fbs), liter: Number(calculator.logistics_liter_fbs) || 0 }
-            : Number(calculator.logistics_base_fbo) > 0
-              ? { base: Number(calculator.logistics_base_fbo), liter: Number(calculator.logistics_liter_fbo) || 0 }
-              : Number(calculator.logistics_base) > 0
-                ? { base: Number(calculator.logistics_base), liter: Number(calculator.logistics_liter) || 0 }
+      fbsLog.rawBase > 0
+        ? { rawBase: fbsLog.rawBase, rawLiter: fbsLog.rawLiter }
+        : fboLog.rawBase > 0
+          ? { rawBase: fboLog.rawBase, rawLiter: fboLog.rawLiter }
+          : Number(calculator.logistics_raw_base_fbs) > 0
+            ? {
+                rawBase: Number(calculator.logistics_raw_base_fbs),
+                rawLiter: Number(calculator.logistics_raw_liter_fbs) || 0,
+              }
+            : Number(calculator.logistics_raw_base_fbo) > 0
+              ? {
+                  rawBase: Number(calculator.logistics_raw_base_fbo),
+                  rawLiter: Number(calculator.logistics_raw_liter_fbo) || 0,
+                }
+              : Number(calculator.logistics_raw_base) > 0
+                ? {
+                    rawBase: Number(calculator.logistics_raw_base),
+                    rawLiter: Number(calculator.logistics_raw_liter) || 0,
+                  }
                 : null;
 
     const returnFbo = computeWbReturnAmount(boxRow, vol, fallbackBase, 'fbo');
@@ -1719,6 +1767,7 @@ class PricesService {
     const next = {
       ...calculator,
       boxTariffs: boxRow || calculator.boxTariffs,
+      logistics_localization_index: localizationIndex,
       logistics_cost: fboLog.cost,
       logistics_base: fboLog.base,
       logistics_liter: fboLog.liter,
@@ -2595,10 +2644,11 @@ class PricesService {
         console.error(`[Prices Service] Error stack:`, dbError.stack);
       }
       
-      // FBO: boxDelivery* × коэф склада. FBS: boxDeliveryMarketplace* × коэф склада.
+      // FBO/FBS: (база + литр × доп.) × ИЛ. База/литр из API уже с коэф. склада; ИЛ — из настроек интеграции.
+      const localizationIndex = resolveWbLocalizationIndex(wbConfig?.localization_index);
       const box = selectedBoxTariffs || {};
-      const fboLog = computeWbLogisticsCost(box, productVolume, 'fbo');
-      const fbsLog = computeWbLogisticsCost(box, productVolume, 'fbs');
+      const fboLog = computeWbLogisticsCost(box, productVolume, 'fbo', localizationIndex);
+      const fbsLog = computeWbLogisticsCost(box, productVolume, 'fbs', localizationIndex);
       const logisticsCostFbo = fboLog.cost;
       const logisticsCostFbs = fbsLog.cost;
       const fboBase = fboLog.base;
@@ -2614,7 +2664,7 @@ class PricesService {
 
       if (selectedBoxTariffs && productVolume && productVolume > 0) {
         console.log(
-          `[Prices Service] Calculated WB logistics: FBO=${logisticsCostFbo}₽ (coef ${fboLog.coef}%) FBS=${logisticsCostFbs}₽ (coef ${fbsLog.coef}%) (volume: ${productVolume}L, extraLiters: ${extraLiters})`
+          `[Prices Service] Calculated WB logistics: FBO=${logisticsCostFbo}₽ FBS=${logisticsCostFbs}₽ IL=${localizationIndex} (volume: ${productVolume}L, extraLiters: ${extraLiters})`
         );
       } else {
         console.warn(`[Prices Service] Cannot calculate logistics from volume, using FBO base: ${logisticsCost}₽`);
@@ -2789,6 +2839,7 @@ class PricesService {
         boxTariffs: selectedBoxTariffs,
         returnTariffs: selectedReturnTariffs,
         categoryCommission: categoryCommission,
+        logistics_localization_index: localizationIndex,
         logistics_cost: logisticsCost,
         logistics_base: logisticsBase,
         logistics_liter: logisticsLiter,
@@ -3348,6 +3399,22 @@ class PricesService {
     }
     if (calc.logistics_liter_fbs != null && Number.isFinite(Number(calc.logistics_liter_fbs))) {
       out.logistics_liter_fbs = Number(calc.logistics_liter_fbs);
+    }
+    for (const key of [
+      'logistics_coef',
+      'logistics_coef_fbo',
+      'logistics_coef_fbs',
+      'logistics_raw_base',
+      'logistics_raw_liter',
+      'logistics_raw_base_fbo',
+      'logistics_raw_liter_fbo',
+      'logistics_raw_base_fbs',
+      'logistics_raw_liter_fbs',
+      'logistics_localization_index',
+    ]) {
+      if (calc[key] != null && Number.isFinite(Number(calc[key]))) {
+        out[key] = Number(calc[key]);
+      }
     }
     if (calc.logistics_cost_fbo_max != null && Number.isFinite(Number(calc.logistics_cost_fbo_max))) {
       out.logistics_cost_fbo_max = Number(calc.logistics_cost_fbo_max);
