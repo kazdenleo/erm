@@ -71,6 +71,9 @@ export function vatAmountFromGrossPrice(price, vatRate) {
   return vatAmountFromPrice(price, vatRate);
 }
 
+/** Минимальный налог УСН (доходы − расходы): 1% от выручки. */
+export const USN_MIN_TAX_RATE_ON_REVENUE = 0.01;
+
 export function computeTaxesAndNetProfit({ price, totalExpenses, taxProfile }) {
   const profile = taxProfile || resolveOrganizationTaxProfile(null);
   const priceNum = Number(price) || 0;
@@ -78,15 +81,24 @@ export function computeTaxesAndNetProfit({ price, totalExpenses, taxProfile }) {
   const vat = vatAmountFromPrice(priceNum, profile.vatRate);
   const profitBeforeIncomeTax = priceNum - expenses - vat;
   let incomeTax = 0;
+  let incomeTaxIsMinimum = false;
   if (profile.incomeTaxRate > 0) {
     if (profile.incomeTaxOnRevenue) {
       incomeTax = Math.max(0, priceNum * profile.incomeTaxRate);
     } else {
-      incomeTax = Math.max(0, profitBeforeIncomeTax * profile.incomeTaxRate);
+      const fromProfit = Math.max(0, profitBeforeIncomeTax * profile.incomeTaxRate);
+      // УСН «доходы − расходы»: не ниже 1% от выручки
+      if (profile.taxSystemCode === 'USN_INCOME_OUTCOME' && priceNum > 0) {
+        const minTax = priceNum * USN_MIN_TAX_RATE_ON_REVENUE;
+        incomeTax = Math.max(fromProfit, minTax);
+        incomeTaxIsMinimum = incomeTax > fromProfit + 1e-9;
+      } else {
+        incomeTax = fromProfit;
+      }
     }
   }
   const netProfit = profitBeforeIncomeTax - incomeTax;
-  return { vat, incomeTax, netProfit, profitBeforeIncomeTax };
+  return { vat, incomeTax, netProfit, profitBeforeIncomeTax, incomeTaxIsMinimum };
 }
 
 export function formatTaxSystemLabel(taxSystem) {

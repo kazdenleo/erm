@@ -765,7 +765,7 @@ function PriceDetailsModalInner({
 
   const sppPercent = resolveSppPercent(sppPercentForMp);
   const sellingPriceAfterSpp = Math.round(calculatedPrice * (1 - sppPercent / 100) * 100) / 100;
-  // НДС с цены продажи после СПП; УСН = (цена продажи − все расходы − НДС) × ставка
+  // НДС/УСН — с цены продажи после СПП; чистая прибыль — от мин. цены минус расходы и эти налоги
   const taxBreakdown = computeTaxesAndNetProfit({
     price: sellingPriceAfterSpp,
     totalExpenses,
@@ -773,9 +773,10 @@ function PriceDetailsModalInner({
   });
   const vatAmount = taxBreakdown.vat;
   const incomeTaxAmount = taxBreakdown.incomeTax;
-  const netProfit = taxBreakdown.netProfit;
   const usnBase = taxBreakdown.profitBeforeIncomeTax;
-  const netProfitPercent = sellingPriceAfterSpp > 0 ? (netProfit / sellingPriceAfterSpp) * 100 : 0;
+  const incomeTaxIsMinimum = Boolean(taxBreakdown.incomeTaxIsMinimum);
+  const netProfit = calculatedPrice - totalExpenses - vatAmount - incomeTaxAmount;
+  const netProfitPercent = calculatedPrice > 0 ? (netProfit / calculatedPrice) * 100 : 0;
   
   // Отладочное логирование обратной логистики
   console.log(`[PriceDetailsModal] Final reverse logistics calculation:`, {
@@ -798,11 +799,15 @@ function PriceDetailsModalInner({
   const incomeTaxPct = profile.incomeTaxRate > 0 ? `${(profile.incomeTaxRate * 100).toFixed(0)}%` : '0%';
   const incomeTaxFormulaHint = (() => {
     if (profile.incomeTaxRate <= 0) return null;
-    const base = usnBase.toFixed(2);
-    if (usnBase <= 0) {
-      return `= ${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} − ${vatAmount.toFixed(2)} = ${base} × ${incomeTaxPct} = 0 ₽`;
+    const fromProfit = Math.max(0, usnBase) * (Number(profile.incomeTaxRate) || 0);
+    const minTax = sellingPriceAfterSpp * 0.01;
+    if (incomeTaxIsMinimum) {
+      return `= max((${sellingPriceAfterSpp.toFixed(2)} − расходы − НДС) × ${incomeTaxPct}, ${sellingPriceAfterSpp.toFixed(2)} × 1%) = ${incomeTaxAmount.toFixed(2)} ₽ (мин. налог 1%)`;
     }
-    return `= (${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} − ${vatAmount.toFixed(2)}) × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽`;
+    if (usnBase <= 0) {
+      return `= база ${usnBase.toFixed(2)} × ${incomeTaxPct} → 0; мин. 1% = ${minTax.toFixed(2)} ₽ → ${incomeTaxAmount.toFixed(2)} ₽`;
+    }
+    return `= (${sellingPriceAfterSpp.toFixed(2)} − ${totalExpenses.toFixed(2)} − ${vatAmount.toFixed(2)}) × ${incomeTaxPct} = ${fromProfit.toFixed(2)} ₽`;
   })();
 
   const extraOzonFixed =
@@ -1336,7 +1341,7 @@ function PriceDetailsModalInner({
               </span>
               <div className="price-details-final-hint">
                 {(marketplace === 'wb' || marketplace === 'ozon' || marketplace === 'ym')
-                  ? `Мин. цена без СПП. НДС и УСН считаются с цены продажи после СПП (${sellingPriceAfterSpp.toFixed(2)} ₽).`
+                  ? `Мин. цена без СПП. НДС и УСН — с цены после СПП; УСН 15% не ниже 1% от выручки. Чистая прибыль = мин. цена − расходы − налоги.`
                   : maxCalculatedPrice != null
                     ? 'В расчёт берётся минимальный тариф Ozon. Серым — оценка при максимальном тарифе из API.'
                     : 'Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса'}
