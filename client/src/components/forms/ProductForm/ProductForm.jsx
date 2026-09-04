@@ -160,6 +160,7 @@ import {
   isMpFieldLinked,
   isMpDimGroupLinked,
   isMpOfferFieldAttrId,
+  isOzonAttrDuplicatingDedicatedField,
   isWbCharcDuplicatingDedicatedField,
   isWbCountryCharcName,
   isYmPackOfferParam,
@@ -3086,7 +3087,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     () =>
       ozonFormAttributes.filter((attr) => {
         if (isOzonRichContentAttrId(attr?.id)) return false;
-        if (isOzonPlainDescriptionAttr(attr)) return false;
+        if (isOzonAttrDuplicatingDedicatedField(attr)) return false;
         return true;
       }),
     [ozonFormAttributes]

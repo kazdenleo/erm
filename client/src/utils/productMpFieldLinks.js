@@ -4,8 +4,9 @@
  * Ozon: мм / г; WB: см / кг (weightBrutto); YM: см / кг.
  */
 
-import { classifyMarketplaceDimAttrName, ozonPackDimAxis, isOzonCategoryProductSizeAttr } from './marketplaceDimensions.js';
+import { classifyMarketplaceDimAttrName, ozonPackDimAxis, ozonProductDimAxis, isOzonCategoryProductSizeAttr } from './marketplaceDimensions.js';
 import { isOzonPlainDescriptionAttr } from './ozonCardTextAttrs.js';
+import { isOzonManufacturerArticleAttr, isOzonSellerCodeAttr } from './ozonManufacturerArticle.js';
 import { isOzonRichContentAttrId } from '../constants/marketplaceRichContent.js';
 
 export const MP_FIELD_LINK_KEYS = [
@@ -1163,6 +1164,29 @@ export function isWbCharcDuplicatingDedicatedField(name) {
   if (n === 'бренд' || n === 'brand') return true;
   if (n.includes('бренд продавца') || n.includes('торговая марк')) return true;
   if (n.includes('артикул продавца') || n === 'vendorcode' || n === 'vendor code') return true;
+  return false;
+}
+
+/**
+ * Характеристики Ozon, которые уже редактируются отдельными полями вкладки
+ * (артикул продавца / производителя, габариты и вес товара и упаковки).
+ */
+export function isOzonAttrDuplicatingDedicatedField(attr) {
+  if (!attr) return false;
+  if (isMpOfferFieldAttrId(attr.id ?? attr.attribute_id)) return true;
+  if (isOzonSellerCodeAttr(attr)) return true;
+  if (isOzonManufacturerArticleAttr(attr)) return true;
+  if (isOzonPlainDescriptionAttr(attr)) return true;
+  if (ozonPackDimAxis(attr)) return true;
+  if (ozonProductDimAxis(attr)) return true;
+  const kind = classifyMarketplaceDimAttrName(attr.name ?? attr.attribute_name);
+  if (kind === 'pack' || kind === 'product') return true;
+  const n = String(attr.name || attr.attribute_name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ');
+  if (n.includes('артикул продавца') || n.includes('offer_id') || n === 'offer id') return true;
   return false;
 }
 
