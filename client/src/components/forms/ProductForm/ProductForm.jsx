@@ -10,13 +10,20 @@ import { ImageLightbox } from '../../common/ImageLightbox/ImageLightbox';
 import { productAttributesApi } from '../../../services/productAttributes.api';
 import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
-import { canRestoreImageAspect3x4 } from '../../../utils/productImage.js';
+import {
+  canRestoreImageAspect3x4,
+  assignImagePrimaryForMarketplaces,
+  claimablePrimaryMarketplaces,
+  imageHasAnyExplicitPrimaryFor,
+  imageIsPrimaryForMarketplace,
+  patchImageMarketplaces,
+} from '../../../utils/productImage.js';
 import { ProductImageAspectFrame } from '../../../hooks/useProductImageAspect3x4.js';
 import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
-import { ProductMarketplaceLinkSection, manufacturerArticleValue } from './ProductMarketplaceLinkSection.jsx';
+import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
@@ -213,6 +220,7 @@ import {
   findOzonPlainDescriptionAttrs,
   isOzonAnnotationAttr,
   isOzonNameAttr,
+  isOzonPlainDescriptionAttr,
   ozonAnnotationToFormText,
   ozonAttrPlainText,
   ozonDictArrowId,
@@ -753,7 +761,7 @@ function dataTransferHasFiles(dt) {
 }
 
 /** Переключатель маркетплейса на превью (иконка поверх фото). */
-function ProductImageMpToggle({ active, title, color, textColor = '#fff', children, onToggle }) {
+function ProductImageMpToggle({ active, title, color, textColor = '#fff', isPrimary = false, children, onToggle }) {
   return (
     <button
       type="button"
@@ -768,10 +776,15 @@ function ProductImageMpToggle({ active, title, color, textColor = '#fff', childr
         onToggle();
       }}
       style={{
+        position: 'relative',
         width: 22,
         height: 22,
         borderRadius: '6px',
-        border: active ? '1px solid rgba(255,255,255,0.9)' : '1px solid rgba(255,255,255,0.25)',
+        border: active
+          ? isPrimary
+            ? '1px solid #fbbf24'
+            : '1px solid rgba(255,255,255,0.9)'
+          : '1px solid rgba(255,255,255,0.25)',
         cursor: 'pointer',
         fontSize: '7px',
         fontWeight: 800,
@@ -785,9 +798,35 @@ function ProductImageMpToggle({ active, title, color, textColor = '#fff', childr
         justifyContent: 'center',
         padding: 0,
         flexShrink: 0,
+        boxShadow: isPrimary && active ? '0 0 0 1px rgba(251, 191, 36, 0.55)' : undefined,
       }}
     >
       {children}
+      {isPrimary && active ? (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            top: -5,
+            right: -5,
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          }}
+        >
+          <svg width="8" height="8" viewBox="0 0 24 24">
+            <path
+              fill="#fbbf24"
+              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+            />
+          </svg>
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -3090,6 +3129,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return true;
       }),
     [ozonFormAttributes]
+  );
+  const ozonPrimaryFormAttrs = useMemo(
+    () => visibleOzonFormAttrs.filter((attr) => isOzonNameAttr(attr) || isOzonAnnotationAttr(attr)),
+    [visibleOzonFormAttrs]
+  );
+  const ozonRestFormAttrs = useMemo(
+    () => visibleOzonFormAttrs.filter((attr) => !isOzonNameAttr(attr) && !isOzonAnnotationAttr(attr)),
+    [visibleOzonFormAttrs]
   );
 
   const syncOzonManufacturerArticleAttrs = useCallback((value) => {
@@ -6084,11 +6131,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   const updateImageMarketplaces = useCallback(async (imageId, patch) => {
     if (!currentProduct?.id) return;
-    const next = (productImages || []).map((img) => {
-      const id = String(img?.id ?? img?.filename ?? '');
-      if (id !== String(imageId)) return img;
-      return { ...img, marketplaces: { ...(img.marketplaces || {}), ...(patch || {}) } };
-    });
+    const next = patchImageMarketplaces(productImages || [], imageId, patch);
+    const withPrimary = next.map((img, i) => ({ ...img, primary: i === 0 }));
+    setProductImages(withPrimary);
+    try {
+      await productsApi.updateImages(currentProduct.id, withPrimary);
+    } catch (_) {}
+  }, [currentProduct?.id, productImages]);
+
+  const claimImagePrimaryForFreeMarketplaces = useCallback(async (imageId) => {
+    if (!currentProduct?.id) return;
+    const claimable = claimablePrimaryMarketplaces(productImages || [], imageId);
+    if (!claimable.length) return;
+    const next = assignImagePrimaryForMarketplaces(productImages || [], imageId, claimable);
     const withPrimary = next.map((img, i) => ({ ...img, primary: i === 0 }));
     setProductImages(withPrimary);
     try {
@@ -7490,69 +7545,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'main' && (
         <>
-        <div className="product-form-main">
-        <div className="product-form-main__core">
+        <div className="product-form-block">
         <h4 className="product-form-block__title">Главные атрибуты</h4>
         <div className="row g-2">
-        <div className="col-md-6">
-          <MpFieldLabel
-            htmlFor="sku"
-            fieldKey="sku"
-            {...mainFieldMpLabelProps('sku')}
-            required
-            diffs={mainCardFieldMpDiffs.sku}
-          >
-            Артикул продавца
-          </MpFieldLabel>
-          {(() => {
-            const selectedOrg = formData.organizationId ? organizations.find(o => String(o.id) === String(formData.organizationId)) : null;
-            const skuPrefix = selectedOrg?.article_prefix || '';
-            return (
-              <>
-                <input
-                  id="sku"
-                  type="text"
-                  className={limitClassName(
-                    'form-control form-control-sm product-form-short',
-                    formControlLimitHit(limitsByMp, formData, 'sku', fieldLimitExtras)
-                  )}
-                  placeholder={skuPrefix ? `${skuPrefix}001` : 'SKU-001'}
-                  value={formData.sku}
-                  onChange={(e) => handleChange('sku', e.target.value)}
-                  required
-                />
-                {skuPrefix && (
-                  <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-                    Префикс: <strong>{skuPrefix}</strong>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-          {errors.sku && <div className="error">{errors.sku}</div>}
-        </div>
-        <div className="col-md-6">
-          <label className="form-label" htmlFor="main-manufacturer-article">
-            Артикул производителя
-          </label>
-          <input
-            id="main-manufacturer-article"
-            type="text"
-            className="form-control form-control-sm product-form-short"
-            autoComplete="off"
-            placeholder="Партномер / OEM"
-            value={manufacturerArticleValue(
-              formData,
-              categoryAttributes,
-              mpAttrLabelMaps,
-              categoryDedicatedCharcLinks
-            )}
-            onChange={(e) => handleOzonManufacturerArticleChange(e.target.value)}
-          />
-        </div>
-      </div>
-
-        <div className="mt-2">
+        <div className="col-md-9">
           <MpFieldLabel
             htmlFor="name"
             fieldKey="name"
@@ -7581,6 +7577,45 @@ export const ProductForm = React.forwardRef(function ProductForm({
           ) : null;
         })()}
         {errors.name && <div className="error">{errors.name}</div>}
+      </div>
+
+        <div className="col-md-3">
+          <MpFieldLabel
+            htmlFor="sku"
+            fieldKey="sku"
+            {...mainFieldMpLabelProps('sku')}
+            required
+            diffs={mainCardFieldMpDiffs.sku}
+          >
+            Артикул (SKU)
+          </MpFieldLabel>
+          {(() => {
+            const selectedOrg = formData.organizationId ? organizations.find(o => String(o.id) === String(formData.organizationId)) : null;
+            const skuPrefix = selectedOrg?.article_prefix || '';
+            return (
+              <>
+                <input
+                  id="sku"
+                  type="text"
+                  className={limitClassName(
+                    'form-control form-control-sm product-form-short',
+                    formControlLimitHit(limitsByMp, formData, 'sku', fieldLimitExtras)
+                  )}
+                  placeholder={skuPrefix ? `${skuPrefix}001` : 'SKU-001'}
+                  value={formData.sku}
+                  onChange={(e) => handleChange('sku', e.target.value)}
+                  required
+                />
+                {skuPrefix && (
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+                    Префикс: <strong>{skuPrefix}</strong>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+          {errors.sku && <div className="error">{errors.sku}</div>}
+        </div>
       </div>
 
       <div className="mt-2">
@@ -7626,16 +7661,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
         </div>
       </div>
-        </div>
 
-      {/* Изображения — габариты упаковки в блоке «Главные атрибуты» */}
-      <div className="product-form-main__images" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
+      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
           🖼️ Изображения товара
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px' }}>
-          Карточки перетаскивайте для порядка (первое — главное). Файлы с компьютера — в пунктирную область или на карточку; одна или несколько.
-          Под каждым фото — кнопка <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>. Нажмите на фото, чтобы увеличить.
+          Карточки перетаскивайте для порядка (первое — главное в ERP). Файлы с компьютера — в пунктирную область или на карточку.
+          Бейджи Oz / WB / Я — на каких МП использовать фото. Главная на маркетплейсе своя: если у МП ещё нет главной,
+          нажмите ★ на нужном фото. Под фото — <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>.
         </div>
         {!currentProduct?.id ? (
           <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Сначала сохраните товар, затем можно загружать изображения.</div>
@@ -7705,9 +7740,31 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   const id = String(img?.id ?? img?.filename ?? '');
                   const url = img?.url || '';
                   const mp = img?.marketplaces || {};
-                  const isMain = index === 0;
+                  const isGlobalMain = index === 0;
+                  const isMpPrimary =
+                    imageIsPrimaryForMarketplace(productImages, id, 'ozon') ||
+                    imageIsPrimaryForMarketplace(productImages, id, 'wb') ||
+                    imageIsPrimaryForMarketplace(productImages, id, 'ym');
+                  const showStar = isGlobalMain || isMpPrimary || imageHasAnyExplicitPrimaryFor(img);
+                  const claimable = claimablePrimaryMarketplaces(productImages, id);
+                  const canClaimPrimary = !isGlobalMain && claimable.length > 0;
                   const aspectBusy = imageAspectLoadingId === id;
                   const canRestore = canRestoreImageAspect3x4(img);
+                  const starTitle = isGlobalMain
+                    ? 'Главное фото в ERP (первое в порядке)'
+                    : showStar
+                      ? `Главная на: ${[
+                          imageIsPrimaryForMarketplace(productImages, id, 'ozon') ? 'Ozon' : null,
+                          imageIsPrimaryForMarketplace(productImages, id, 'wb') ? 'WB' : null,
+                          imageIsPrimaryForMarketplace(productImages, id, 'ym') ? 'Я.Маркет' : null,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}`
+                      : canClaimPrimary
+                        ? `Сделать главной для: ${claimable
+                            .map((k) => (k === 'ym' ? 'Я.Маркет' : k === 'wb' ? 'WB' : 'Ozon'))
+                            .join(', ')}`
+                        : 'У всех включённых МП уже есть главная — сначала снимите бейдж с другого фото';
                   return (
                     <div
                       key={id}
@@ -7837,7 +7894,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               pointerEvents: 'none',
                             }}
                           >
-                            {isMain ? (
+                            {isGlobalMain ? (
                               <span
                                 title="Главное фото"
                                 aria-label="Главное фото"
@@ -7940,8 +7997,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
         )}
       </div>
 
-      <div className="product-form-main__meta">
-      <h4 className="product-form-block__title" style={{ marginTop: '12px' }}>Основные атрибуты</h4>
       {kitsEnabled ? (
       <div className="row g-2 mt-1 align-items-end product-form-meta">
             <div className="col-6 col-md-3 col-xl-2">
@@ -8214,9 +8269,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
       </div>
 
-      <div className="product-form-main__dims">
-      <div className="product-form-dims" style={{ marginTop: '10px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
-        <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text)' }}>
+      <div className="product-form-block product-form-dims">
+        <h4 className="product-form-block__title">
           Габариты
         </h4>
 
@@ -8461,12 +8515,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
         </div>
       </div>
-      </div>
 
       {visibleCategoryAttributes.length > 0 && (
-        <div className="product-form-main__attrs" style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
-          <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
-            Атрибуты категории
+        <div className="product-form-block">
+          <h4 className="product-form-block__title">
+            Остальные атрибуты
           </h4>
           <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
             Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в категории. Значки OZ / WB / ЯМ включают подстановку значения с «Основного» на маркетплейс.
@@ -8853,7 +8906,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           {Object.values(errors)[0]}
         </div>
       )}
-        </div>
         </>
       )}
 
@@ -8979,6 +9031,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             mpFieldLinks={formData.mp_field_links}
             onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
+          <div className="product-form-block">
+            <h4 className="product-form-block__title">Главные атрибуты</h4>
           <ProductMarketplaceLinkSection
             marketplace="ozon"
             formData={formData}
@@ -8990,6 +9044,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             organizationId={formData.organizationId}
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
+            hideHeading
             onManufacturerArticleChange={handleOzonManufacturerArticleChange}
             sellerSkuCategoryLinked={ozonOfferFieldCategoryLinked(
               '__ozon_offer_id__',
@@ -9007,9 +9062,97 @@ export const ProductForm = React.forwardRef(function ProductForm({
             attrLabelMaps={mpAttrLabelMaps}
             dedicatedLinks={categoryDedicatedCharcLinks}
           />
-          <div className="card mt-3 border-secondary">
-            <div className="card-header" title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На Ozon уходит в мм / г. Упаковка — поля карточки Ozon.`}>Габариты упаковки (Ozon)</div>
-            <div className="card-body">
+            {ozonPrimaryFormAttrs.length > 0 ? (
+              <div className="row g-3 mt-1">
+                {ozonPrimaryFormAttrs.map((attr) => {
+                  const key = String(attr.id);
+                  const linkedMirror =
+                    isOzonNameAttr(attr) && isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')
+                      ? String(formData.name || formData.mp_ozon_name || '')
+                      : isOzonAnnotationAttr(attr) &&
+                          isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')
+                        ? String(formData.description || formData.mp_ozon_description || '')
+                        : null;
+                  const rawValue =
+                    linkedMirror != null
+                      ? linkedMirror
+                      : ozonAttributeValues[key] !== undefined && ozonAttributeValues[key] !== null
+                        ? ozonAttributeValues[key]
+                        : '';
+                  const isAnnotation = isOzonAnnotationAttr(attr);
+                  const items = limitItemsForControl(
+                    limitsByMp,
+                    formData,
+                    `ozon-attr:${attr.id}`,
+                    fieldLimitExtras
+                  );
+                  const textValue = isAnnotation ? ozonAnnotationToFormText(rawValue) : stripOzonDictIdSuffix(rawValue);
+                  return (
+                    <div key={attr.id} className="col-12">
+                      <label className="form-label" htmlFor={`ozon-attr-${attr.id}`}>
+                        {attr.name}
+                        {attr.is_required && <span style={{ color: '#ef4444' }}> *</span>}
+                        <MpAttrFromMainIcon
+                          show={ozonAttrShowsCategoryLinkIcon(
+                            attr,
+                            categoryAttributes,
+                            mpAttrLabelMaps,
+                            categoryDedicatedCharcLinks
+                          )}
+                          linked={ozonAttrFromMainLinked(
+                            formData,
+                            attr,
+                            categoryAttributes,
+                            mpAttrLabelMaps,
+                            categoryDedicatedCharcLinks
+                          )}
+                        />
+                        <FieldInfoHint text={attr.description} />
+                      </label>
+                      {isAnnotation ? (
+                        <>
+                          <textarea
+                            id={`ozon-attr-${attr.id}`}
+                            className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, textValue)}
+                            rows="4"
+                            value={textValue}
+                            placeholder={attr.name}
+                            onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
+                          />
+                          {items.length ? (
+                            <MarketplaceFieldLimitHint items={items} />
+                          ) : (
+                            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
+                              Символов: {textValue.length}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <input
+                            id={`ozon-attr-${attr.id}`}
+                            type="text"
+                            className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, rawValue)}
+                            value={stripOzonDictIdSuffix(rawValue)}
+                            placeholder={attr.is_required ? `${attr.name} *` : attr.name}
+                            onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
+                          />
+                          {items.length ? <MarketplaceFieldLimitHint items={items} /> : null}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <div className="product-form-block product-form-dims">
+            <h4
+              className="product-form-block__title"
+              title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На Ozon уходит в мм / г. Упаковка — поля карточки Ozon.`}
+            >
+              Габариты
+            </h4>
               <MpSkuCountryDimsEditor
                 mp="ozon"
                 formData={formData}
@@ -9021,7 +9164,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 lengthUnit={lengthUnit}
                 weightUnit={weightUnit}
               />
-            </div>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'ozon' ? (
             <div
@@ -9180,9 +9322,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
             );
           })()}
           {formData.categoryId && (
-            <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(255, 107, 0, 0.06)', borderRadius: '8px', border: '1px solid rgba(255, 107, 0, 0.25)' }}>
-              <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
-                Атрибуты Ozon (характеристики для выгрузки)
+            <div className="product-form-block">
+              <h4 className="product-form-block__title">
+                Остальные атрибуты
               </h4>
               {categoryDetailsLoading ? (
                 <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка данных категории…</p>
@@ -9198,17 +9340,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       Тип товара на карточке Ozon отличается от сопоставления категории ERP — показаны характеристики с Ozon (включая пустые поля вроде формы и диаметра).
                     </div>
                   )}
-                  {ozonAttributesError && visibleOzonFormAttrs.length === 0 ? (
+                  {ozonAttributesError && ozonRestFormAttrs.length === 0 && ozonPrimaryFormAttrs.length === 0 ? (
                     <div className="alert alert-danger py-2 mb-0" style={{ fontSize: '12px' }}>
                       {ozonAttributesError}
                     </div>
-                  ) : (ozonAttributesLoading || ozonLiveSchemaLoading) && visibleOzonFormAttrs.length === 0 ? (
+                  ) : (ozonAttributesLoading || ozonLiveSchemaLoading) && ozonRestFormAttrs.length === 0 && ozonPrimaryFormAttrs.length === 0 ? (
                     <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка характеристик...</p>
-                  ) : visibleOzonFormAttrs.length === 0 ? (
-                    <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет атрибутов для этой категории Ozon (или сопоставление не заполнено).</p>
+                  ) : ozonRestFormAttrs.length === 0 ? (
+                    <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Нет дополнительных атрибутов для этой категории Ozon (или сопоставление не заполнено).</p>
                   ) : (
                 <div className="row g-3">
-                  {visibleOzonFormAttrs
+                  {ozonRestFormAttrs
                     .map((attr) => {
                     const key = String(attr.id);
                     const isOfferField = isMpOfferFieldAttrId(key);
@@ -9533,6 +9675,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             mpFieldLinks={formData.mp_field_links}
             onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
+          <div className="product-form-block">
+            <h4 className="product-form-block__title">Главные атрибуты</h4>
           <ProductMarketplaceLinkSection
             marketplace="wb"
             formData={formData}
@@ -9544,6 +9688,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             organizationId={formData.organizationId}
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
+            hideHeading
             vendorCodeClassName={mpFieldClass('form-control form-control-sm', 'mp_wb_vendor_code')}
             sellerSkuCategoryLinked={wbVendorCodeCategoryLinked(
               categoryAttributes,
@@ -9573,10 +9718,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {wbSyncSuccess}
             </div>
           )}
-          <div className="card mt-3 border-secondary">
-            <div className="card-header" title="Поля только для WB. Артикул продавца — в блоке «Связь с маркетплейсом». Связь с «Основным» синхронизирует значения.">Текст карточки Wildberries</div>
-            <div className="card-body">
-              {wbFetchedProduct && (
+          {wbFetchedProduct && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '12px' }}>
                   {wbFetchedProduct.vendorCode && (
                     <span><span style={{ color: 'var(--muted)' }}>Артикул продавца:</span> {String(wbFetchedProduct.vendorCode)}</span>
@@ -9666,12 +9808,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   label="сырой ответ API WB"
                 />
               )}
-            </div>
           </div>
 
-          <div className="card mt-3 border-secondary">
-            <div className="card-header" title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На WB уходит в см и кг (weightBrutto).`}>Габариты упаковки (Wildberries)</div>
-            <div className="card-body">
+          <div className="product-form-block product-form-dims">
+            <h4
+              className="product-form-block__title"
+              title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На WB уходит в см и кг (weightBrutto).`}
+            >
+              Габариты
+            </h4>
               <MpSkuCountryDimsEditor
                 mp="wb"
                 formData={formData}
@@ -9682,12 +9827,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 lengthUnit={lengthUnit}
                 weightUnit={weightUnit}
               />
-            </div>
           </div>
 
-          <div className="card mt-3">
-            <div className="card-header">Атрибуты WB</div>
-            <div className="card-body">
+          <div className="product-form-block">
+            <h4 className="product-form-block__title">Остальные атрибуты</h4>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
               ) : !formData.categoryId ? (
@@ -9848,7 +9991,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   )}
                 </>
               )}
-            </div>
           </div>
 
         </div>
@@ -9923,6 +10065,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             mpFieldLinks={formData.mp_field_links}
             onMpFieldLinkToggle={handleMpFieldLinkToggle}
           />
+          <div className="product-form-block">
+            <h4 className="product-form-block__title">Главные атрибуты</h4>
           <ProductMarketplaceLinkSection
             marketplace="ym"
             formData={formData}
@@ -9934,6 +10078,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             organizationId={formData.organizationId}
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
+            hideHeading
             categoryAttributes={categoryAttributes}
             attrLabelMaps={mpAttrLabelMaps}
           />
@@ -9947,154 +10092,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {ymSyncSuccess}
             </div>
           )}
-
-          <div className="card mb-3 border-secondary">
-            <div className="card-header" title={`Упаковка в интерфейсе — ${lengthLbl} / ${weightLbl} (на Я.Маркет уходит в см/кг). Вес — только «вес товара в упаковке».`}>Габариты упаковки (Яндекс.Маркет)</div>
-            <div className="card-body">
-              <div className="row g-2 mb-2">
-                <div className="col-md-4">
-                  <label className="form-label" htmlFor="ym-tab-country">
-                    Страна производства
-                    <MpFromMainLinkIcon linked={isMpFieldLinked(formData.mp_field_links, 'country', 'ym')} />
-                  </label>
-                  <input
-                    id="ym-tab-country"
-                    type="text"
-                    className="form-control form-control-sm product-form-short"
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'country', 'ym')
-                        ? formData.country_of_origin
-                        : getYmDraftCountry(formData)
-                    }
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (isMpFieldLinked(formData.mp_field_links, 'country', 'ym')) {
-                        handleChange('country_of_origin', v);
-                      } else {
-                        setFormData((prev) => withYmDraftCountry(prev, v));
-                      }
-                    }}
-                    placeholder="Например, Китай"
-                    list="ym-country-of-origin-list"
-                  />
-                  <datalist id="ym-country-of-origin-list">
-                    {COUNTRY_OPTIONS.map((country) => (
-                      <option key={country} value={country} />
-                    ))}
-                  </datalist>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  marginBottom: 6,
-                  display: 'flex',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '2px 4px',
-                }}
-              >
-                <span>Габариты упаковки</span>
-              </div>
-              <YmPackagingDimensionFields
-                formData={formData}
-                onChange={handleYmPackagingDimChange}
-                onProductDimChange={handleYmProductDimChange}
-                idPrefix="ym-pack"
-                lengthUnit={lengthUnit}
-                weightUnit={weightUnit}
-              />
-            </div>
-          </div>
-
-          {ymFetchedProduct && (
-            <div className="card mb-3 border-warning">
-              <div className="card-header">Данные с Яндекс.Маркета</div>
-              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
-                {(ymFetchedProduct.offerId || ymFetchedProduct.shopSku) ? (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Артикул продавца:</span>
-                    {ymFetchedProduct.offerId || ymFetchedProduct.shopSku}
-                  </div>
-                ) : null}
-                {ymFetchedProduct.marketSku ? (
-                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketSku:</span>{ymFetchedProduct.marketSku}</div>
-                ) : null}
-                {ymFetchedProduct.marketCategoryId != null ? (
-                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketCategoryId:</span>{String(ymFetchedProduct.marketCategoryId)}</div>
-                ) : null}
-                {ymFetchedProduct.vendor ? (
-                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>vendor:</span>{ymFetchedProduct.vendor}</div>
-                ) : null}
-                {ymFetchedProduct.name ? (
-                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Название:</span>{ymFetchedProduct.name}</div>
-                ) : null}
-                {ymFetchedProduct.description ? (
-                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Описание:</span>{ymFetchedProduct.description}</div>
-                ) : null}
-                {Array.isArray(ymFetchedProduct.manufacturerCountries) && ymFetchedProduct.manufacturerCountries.length > 0 ? (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Страна (из YM):</span>
-                    {ymFetchedProduct.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean).join(', ')}
-                  </div>
-                ) : null}
-                {Array.isArray(ymFetchedProduct.barcodes) && ymFetchedProduct.barcodes.length > 0 ? (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>barcodes:</span>
-                    {ymFetchedProduct.barcodes.map((b) => String(b || '').trim()).filter(Boolean).join(', ')}
-                  </div>
-                ) : null}
-                {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
-                  <div>
-                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 4 }}>
-                      Характеристики карточки ({ymFetchedProduct.parameterValues.length} шт., ниже — полный JSON)
-                    </div>
-                    <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 160, overflow: 'auto' }}>
-                      {ymFetchedProduct.parameterValues.map((pv, i) => {
-                        const pid = pv?.parameterId ?? pv?.id ?? '—';
-                        const pname = pv?.parameterName ?? pv?.name ?? null;
-                        const val = pv?.value ?? pv?.valueId ?? pv?.optionId ?? '—';
-                        return (
-                          <li key={`${pid}-${i}`}>
-                            <span style={{ color: 'var(--muted)' }}>
-                              {pname ? `${pname} (#${pid})` : `#${pid}`}:
-                            </span>{' '}
-                            {String(val)}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
-                    Категорийные характеристики не пришли (parameterValues пуст). Смотрите raw.offerCard / raw.mapping в JSON ниже.
-                  </div>
-                )}
-                <MpApiResponseDump
-                  data={ymFetchedProduct}
-                  open={ymShowAllFields}
-                  onToggle={() => setYmShowAllFields((v) => !v)}
-                  label="сырой ответ API YM (включая raw.mapping и raw.offerCard)"
-                />
-              </div>
-            </div>
-          )}
-          {(pushCardError || pushCardMessage) && activeTab === 'ym' ? (
-            <div
-              className={`alert py-2 mb-2 ${
-                pushCardError ? 'alert-danger' : pushCardIsWarning ? 'alert-warning' : 'alert-success'
-              }`}
-              style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}
-            >
-              {pushCardError || pushCardMessage}
-            </div>
-          ) : null}
-
-          <div className="card mt-3 border-secondary">
-            <div className="card-header" title="Отдельно от «Основного». Связь синхронизирует с Основным; «Сохранить и отправить» выгружает поля вкладки в кабинет.">Название и описание для Яндекс.Маркета</div>
-            <div className="card-body">
               <div className="row g-3">
                 <div className="col-12">
                   <label className="form-label" htmlFor="ym-tab-name">
@@ -10229,12 +10226,162 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   </div>
                 )}
               </div>
-            </div>
           </div>
 
-          <div className="card mt-3">
-            <div className="card-header" title="Параметры категории. Обязательные сверху. Габариты и вес упаковки — поля оффера, не этого списка.">Характеристики Яндекс.Маркета (по категории)</div>
-            <div className="card-body">
+          <div className="product-form-block product-form-dims">
+            <h4
+              className="product-form-block__title"
+              title={`Упаковка в интерфейсе — ${lengthLbl} / ${weightLbl} (на Я.Маркет уходит в см/кг). Вес — только «вес товара в упаковке».`}
+            >
+              Габариты
+            </h4>
+              <div className="row g-2 mb-2">
+                <div className="col-md-4">
+                  <label className="form-label" htmlFor="ym-tab-country">
+                    Страна производства
+                    <MpFromMainLinkIcon linked={isMpFieldLinked(formData.mp_field_links, 'country', 'ym')} />
+                  </label>
+                  <input
+                    id="ym-tab-country"
+                    type="text"
+                    className="form-control form-control-sm product-form-short"
+                    value={
+                      isMpFieldLinked(formData.mp_field_links, 'country', 'ym')
+                        ? formData.country_of_origin
+                        : getYmDraftCountry(formData)
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (isMpFieldLinked(formData.mp_field_links, 'country', 'ym')) {
+                        handleChange('country_of_origin', v);
+                      } else {
+                        setFormData((prev) => withYmDraftCountry(prev, v));
+                      }
+                    }}
+                    placeholder="Например, Китай"
+                    list="ym-country-of-origin-list"
+                  />
+                  <datalist id="ym-country-of-origin-list">
+                    {COUNTRY_OPTIONS.map((country) => (
+                      <option key={country} value={country} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '2px 4px',
+                }}
+              >
+                <span>Габариты упаковки</span>
+              </div>
+              <YmPackagingDimensionFields
+                formData={formData}
+                onChange={handleYmPackagingDimChange}
+                onProductDimChange={handleYmProductDimChange}
+                idPrefix="ym-pack"
+                lengthUnit={lengthUnit}
+                weightUnit={weightUnit}
+              />
+          </div>
+
+          {ymFetchedProduct && (
+            <div className="card mb-3 border-warning">
+              <div className="card-header">Данные с Яндекс.Маркета</div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                {(ymFetchedProduct.offerId || ymFetchedProduct.shopSku) ? (
+                  <div>
+                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Артикул продавца:</span>
+                    {ymFetchedProduct.offerId || ymFetchedProduct.shopSku}
+                  </div>
+                ) : null}
+                {ymFetchedProduct.marketSku ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketSku:</span>{ymFetchedProduct.marketSku}</div>
+                ) : null}
+                {ymFetchedProduct.marketCategoryId != null ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketCategoryId:</span>{String(ymFetchedProduct.marketCategoryId)}</div>
+                ) : null}
+                {ymFetchedProduct.vendor ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>vendor:</span>{ymFetchedProduct.vendor}</div>
+                ) : null}
+                {ymFetchedProduct.name ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Название:</span>{ymFetchedProduct.name}</div>
+                ) : null}
+                {ymFetchedProduct.description ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Описание:</span>{ymFetchedProduct.description}</div>
+                ) : null}
+                {Array.isArray(ymFetchedProduct.manufacturerCountries) && ymFetchedProduct.manufacturerCountries.length > 0 ? (
+                  <div>
+                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Страна (из YM):</span>
+                    {ymFetchedProduct.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean).join(', ')}
+                  </div>
+                ) : null}
+                {Array.isArray(ymFetchedProduct.barcodes) && ymFetchedProduct.barcodes.length > 0 ? (
+                  <div>
+                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>barcodes:</span>
+                    {ymFetchedProduct.barcodes.map((b) => String(b || '').trim()).filter(Boolean).join(', ')}
+                  </div>
+                ) : null}
+                {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 4 }}>
+                      Характеристики карточки ({ymFetchedProduct.parameterValues.length} шт., ниже — полный JSON)
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 160, overflow: 'auto' }}>
+                      {ymFetchedProduct.parameterValues.map((pv, i) => {
+                        const pid = pv?.parameterId ?? pv?.id ?? '—';
+                        const pname = pv?.parameterName ?? pv?.name ?? null;
+                        const val = pv?.value ?? pv?.valueId ?? pv?.optionId ?? '—';
+                        return (
+                          <li key={`${pid}-${i}`}>
+                            <span style={{ color: 'var(--muted)' }}>
+                              {pname ? `${pname} (#${pid})` : `#${pid}`}:
+                            </span>{' '}
+                            {String(val)}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                    Категорийные характеристики не пришли (parameterValues пуст). Смотрите raw.offerCard / raw.mapping в JSON ниже.
+                  </div>
+                )}
+                <MpApiResponseDump
+                  data={ymFetchedProduct}
+                  open={ymShowAllFields}
+                  onToggle={() => setYmShowAllFields((v) => !v)}
+                  label="сырой ответ API YM (включая raw.mapping и raw.offerCard)"
+                />
+              </div>
+            </div>
+          )}
+          {(pushCardError || pushCardMessage) && activeTab === 'ym' ? (
+            <div
+              className={`alert py-2 mb-2 ${
+                pushCardError ? 'alert-danger' : pushCardIsWarning ? 'alert-warning' : 'alert-success'
+              }`}
+              style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}
+            >
+              {pushCardError || pushCardMessage}
+            </div>
+          ) : null}
+
+          <div className="product-form-block">
+            <h4
+              className="product-form-block__title"
+              title="Параметры категории. Обязательные сверху. Габариты и вес упаковки — поля оффера, не этого списка."
+            >
+              Остальные атрибуты
+            </h4>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
               ) : !formData.categoryId ? (
@@ -10500,7 +10647,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               )}
                 </>
               )}
-            </div>
           </div>
 
         </div>

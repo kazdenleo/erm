@@ -56,7 +56,7 @@ function sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps
   return '';
 }
 
-export function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks) {
+function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks) {
   const dedicatedSku =
     dedicatedMainFieldForMpTarget(
       dedicatedLinks,
@@ -98,6 +98,7 @@ export function ProductMarketplaceLinkSection({
   categoryAttributes = [],
   attrLabelMaps = {},
   dedicatedLinks = null,
+  hideHeading = false,
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -221,10 +222,12 @@ export function ProductMarketplaceLinkSection({
       style={panelStyle}
       data-section={`product-marketplace-links-${marketplace}`}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: hideHeading ? 'flex-end' : 'space-between', gap: '8px', marginBottom: '4px' }}>
+        {hideHeading ? null : (
         <h5 style={{ fontSize: '13px', fontWeight: 600, margin: 0, color: 'var(--text)' }}>
-          Главные атрибуты
+          Связь с маркетплейсом
         </h5>
+        )}
         <Button
           type="button"
           variant="secondary"
