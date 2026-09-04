@@ -541,23 +541,8 @@ function FieldInfoHint({ text }) {
     .trim();
   if (!hint) return null;
   return (
-    <span
-      className="field-info-hint"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-    >
-      <span className="field-info-hint__icon" tabIndex={0} aria-label="Подсказка">
-        i
-      </span>
-      <span className="field-info-hint__popup" role="tooltip">
-        {hint}
-      </span>
+    <span className="field-info-hint" role="tooltip">
+      {hint}
     </span>
   );
 }
@@ -2225,13 +2210,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         ? Object.fromEntries(
             Object.entries(currentProduct.ozon_attributes).map(([k, v]) => {
               if (v === undefined || v === null) return [String(k), ''];
-              let stored;
-              if (Array.isArray(v) || (v && typeof v === 'object')) {
-                stored = ozonStoredAttrToFormValue(v);
-              } else {
-                const s = String(v).trim();
-                stored = s === '[object Object]' ? '' : s;
-              }
+              let stored = ozonStoredAttrToFormValue(v);
               if (String(k) === String(OZON_ANNOTATION_ATTR_ID) || isOzonAnnotationAttr({ id: k })) {
                 stored = ozonAnnotationToFormText(stored);
               }

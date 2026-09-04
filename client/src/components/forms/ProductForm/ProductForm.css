@@ -266,34 +266,12 @@
   overflow: visible;
 }
 
-.field-info-hint {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  margin-left: 4px;
-  vertical-align: middle;
-  flex-shrink: 0;
-}
-
-.field-info-hint__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 1px solid #64748b;
-  background: #e2e8f0;
-  color: #334155;
-  font-size: 10px;
-  font-weight: 700;
-  font-style: italic;
-  font-family: Georgia, 'Times New Roman', serif;
-  line-height: 1;
+.product-form-marketplace-panel label.form-label:has(.field-info-hint),
+.product-form-marketplace-panel .form-check-label:has(.field-info-hint) {
   cursor: help;
 }
 
-.field-info-hint__popup {
+.field-info-hint {
   display: none;
   position: absolute;
   left: 0;
@@ -304,7 +282,6 @@
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 400;
-  font-style: normal;
   line-height: 1.4;
   color: #f8fafc;
   background: #111827;
@@ -314,19 +291,17 @@
   pointer-events: none;
 }
 
-.field-info-hint__popup::before {
+.field-info-hint::before {
   content: '';
   position: absolute;
-  left: 5px;
+  left: 12px;
   bottom: 100%;
   border: 5px solid transparent;
   border-bottom-color: #111827;
 }
 
-.product-form-marketplace-panel label.form-label:hover .field-info-hint__popup,
-.product-form-marketplace-panel .form-check-label:hover .field-info-hint__popup,
-.field-info-hint:hover .field-info-hint__popup,
-.field-info-hint:focus-within .field-info-hint__popup {
+.product-form-marketplace-panel label.form-label:hover .field-info-hint,
+.product-form-marketplace-panel .form-check-label:hover .field-info-hint {
   display: block;
 }
 

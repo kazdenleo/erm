@@ -1,5 +1,7 @@
 /** Ozon: артикул производителя (партномер), не offer_id продавца и не отдельное поле OEM. */
 
+import { stripOzonZeroDictArrow } from './ozonCardTextAttrs.js';
+
 export const OZON_PARTNUMBER_ATTR_ID = 7236;
 export const OZON_SELLER_CODE_ATTR_ID = 9024;
 export const OZON_ALTERNATIVE_ARTICLES_ATTR_ID = 11031;
@@ -99,9 +101,10 @@ function ozonCardValuePart(v) {
     textRaw && !(dictId && textRaw === dictId && /^\d+$/.test(textRaw)) ? textRaw : '';
   if (text) {
     const arrow = text.indexOf('->');
-    return arrow > 0 ? text.slice(0, arrow).trim() : text;
+    const cut = arrow > 0 ? text.slice(0, arrow).trim() : text;
+    return stripOzonZeroDictArrow(cut);
   }
-  return dictId;
+  return dictId && dictId !== '0' ? dictId : '';
 }
 
 /** Все значения коллекции Ozon для поля формы (OEM и т.п.), через «; ». */
@@ -123,8 +126,9 @@ export function ozonCardAttrToFormText(a, opts = {}) {
             ? String(v0.id).trim()
             : '';
       const text = ozonCardValuePart(v0);
-      if (preferText) return text || dictId;
-      return dictId || text;
+      const realDict = dictId && dictId !== '0' ? dictId : '';
+      if (preferText) return text || realDict;
+      return realDict || text;
     }
   }
   if (a.value != null && typeof a.value === 'object') {

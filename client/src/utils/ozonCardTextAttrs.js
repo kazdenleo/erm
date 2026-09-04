@@ -86,12 +86,26 @@ function isPlainObject(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** «текст->0»: Ozon отдал значение без id словаря — в форме и при сохранении оставляем текст. */
+export function stripOzonZeroDictArrow(s) {
+  return String(s ?? '')
+    .replace(/->0(?=\s*(;|$))/g, '')
+    .replace(/\s*;\s*;/g, ';')
+    .replace(/^\s*;\s*|\s*;\s*$/g, '')
+    .trim();
+}
+
+function isOzonRealDictId(id) {
+  const t = String(id ?? '').trim();
+  return t !== '' && t !== '0' && /^\d+$/.test(t);
+}
+
 /** Текст характеристики Ozon из строки, `{value}`, `{values:[{value}]}`. */
 export function ozonAttrPlainText(raw) {
   if (raw == null) return '';
   if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
     const s = String(raw).trim();
-    return s === '[object Object]' ? '' : s;
+    return s === '[object Object]' ? '' : stripOzonZeroDictArrow(s);
   }
   if (Array.isArray(raw)) {
     return raw.map(ozonAttrPlainText).filter(Boolean).join('; ');
@@ -100,11 +114,11 @@ export function ozonAttrPlainText(raw) {
     if (Array.isArray(raw.values) && raw.values.length) {
       return raw.values.map(ozonAttrPlainText).filter(Boolean).join('; ');
     }
-    const nested = raw.value ?? raw.dictionary_value_id ?? raw.id ?? raw.name ?? raw.text;
+    const nested = raw.value ?? (isOzonRealDictId(raw.dictionary_value_id) ? raw.dictionary_value_id : null) ?? raw.id ?? raw.name ?? raw.text;
     if (nested && typeof nested === 'object') return ozonAttrPlainText(nested);
     return ozonAttrPlainText(nested);
   }
-  return String(raw).trim();
+  return stripOzonZeroDictArrow(String(raw).trim());
 }
 
 /**
@@ -115,7 +129,7 @@ export function ozonStoredAttrToFormValue(raw) {
   if (raw == null) return '';
   if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
     const s = String(raw).trim();
-    return s === '[object Object]' ? '' : s;
+    return s === '[object Object]' ? '' : stripOzonZeroDictArrow(s);
   }
   if (Array.isArray(raw)) {
     return raw.map(ozonStoredAttrToFormValue).filter(Boolean).join('; ');
@@ -125,12 +139,12 @@ export function ozonStoredAttrToFormValue(raw) {
       return raw.values.map(ozonStoredAttrToFormValue).filter(Boolean).join('; ');
     }
     const dict = raw.dictionary_value_id ?? (raw.id != null && raw.value == null ? raw.id : null);
-    if (dict != null && String(dict).trim() !== '') return String(dict).trim();
+    if (isOzonRealDictId(dict)) return String(dict).trim();
     if (raw.value != null && typeof raw.value === 'object') return ozonStoredAttrToFormValue(raw.value);
-    if (raw.value != null) return String(raw.value).trim();
+    if (raw.value != null) return stripOzonZeroDictArrow(String(raw.value).trim());
     return ozonAttrPlainText(raw);
   }
-  return String(raw).trim();
+  return stripOzonZeroDictArrow(String(raw).trim());
 }
 
 /** Первый непустой текст по списку атрибутов схемы и запасным ключам. */

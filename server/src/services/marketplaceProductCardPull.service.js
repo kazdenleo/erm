@@ -250,7 +250,7 @@ function ozonAttrValueToStored(a) {
           else if (dictId) parts.push(String(dictId));
           continue;
         }
-        if (text && dictId && dictId !== text && !text.includes('->')) {
+        if (text && dictId && dictId !== '0' && dictId !== text && !text.includes('->')) {
           return `${text}->${dictId}`;
         }
         if (text) return text;

@@ -663,11 +663,11 @@ export function resolveOzonAttributesDictionaryLabels(
         v.value != null && String(v.value).trim() !== ''
           ? String(v.value).trim()
           : '';
-      if (did && text && text !== did && !/^\d+$/.test(text)) {
+      if (did && did !== '0' && text && text !== did && !/^\d+$/.test(text)) {
         out[k] = `${text}->${did}`;
         continue;
       }
-      if (did) {
+      if (did && did !== '0') {
         const label = hasIdMap ? idToLabelByAttrId.get(String(k))?.get(did) : '';
         out[k] = label ? `${label}->${did}` : did;
         continue;
@@ -682,11 +682,15 @@ export function resolveOzonAttributesDictionaryLabels(
     let s = String(out[k]).trim();
     if (!s) continue;
     const split = splitOzonDictStored(s);
-    if (split.label && split.id && /^\d+$/.test(split.id)) {
+    if (split.label && split.id === '0') {
+      out[k] = split.label;
+      continue;
+    }
+    if (split.label && split.id && split.id !== '0' && /^\d+$/.test(split.id)) {
       out[k] = `${split.label}->${split.id}`;
       continue;
     }
-    if (/^\d+$/.test(s)) {
+    if (/^\d+$/.test(s) && s !== '0') {
       const label = hasIdMap ? idToLabelByAttrId.get(String(k))?.get(s) : '';
       if (label) out[k] = `${label}->${s}`;
       continue;
@@ -699,7 +703,7 @@ export function resolveOzonAttributesDictionaryLabels(
       continue;
     }
     const id = inner.get(importNormLabel(label));
-    if (id != null && id !== '') out[k] = `${label}->${id}`;
+    if (id != null && id !== '' && id !== '0') out[k] = `${label}->${id}`;
     else out[k] = label;
   }
   return out;
