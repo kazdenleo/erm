@@ -32,6 +32,44 @@ function formatFetchedAt(iso) {
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function compactScore(rating, marketplace) {
+  if (marketplace === 'wb' || rating?.unavailable) return { text: 'нет API', tone: 'muted' };
+  const score = Number(rating?.score);
+  if (!Number.isFinite(score)) return { text: 'нет данных', tone: 'muted' };
+  const max = Number.isFinite(Number(rating?.max)) ? Number(rating.max) : 100;
+  return { text: `${Math.round(score)}/${max}`, tone: scoreTone(score), pct: Math.max(0, Math.min(100, (score / max) * 100)) };
+}
+
+/** Компактные оценки OZ / WB / YM на вкладке «Основное». */
+export function ProductMainQualityBlock({ ratings = {} }) {
+  const rows = [
+    { mp: 'ozon', label: 'Ozon', rating: ratings.ozon },
+    { mp: 'wb', label: 'WB', rating: ratings.wb },
+    { mp: 'ym', label: 'Я.Маркет', rating: ratings.ym },
+  ];
+  return (
+    <div className="product-main-quality">
+      {rows.map((row) => {
+        const s = compactScore(row.rating, row.mp);
+        return (
+          <div key={row.mp} className="product-main-quality__row">
+            <span className={`mp-badge ${row.mp}`}>{row.mp === 'ozon' ? 'OZ' : row.mp === 'wb' ? 'WB' : 'ЯМ'}</span>
+            <span className="product-main-quality__name">{row.label}</span>
+            <span className={`product-main-quality__score product-main-quality__score--${s.tone}`}>{s.text}</span>
+            {s.pct != null ? (
+              <span className="product-main-quality__bar" aria-hidden>
+                <span style={{ width: `${s.pct}%` }} />
+              </span>
+            ) : (
+              <span className="product-main-quality__bar product-main-quality__bar--empty" aria-hidden />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function MarketplaceCardQualityPanel({ marketplace, rating }) {
   const mp = String(marketplace || '').toLowerCase();
   const unavailable = rating?.unavailable === true || mp === 'wb';

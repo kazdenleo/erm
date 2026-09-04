@@ -555,13 +555,10 @@ function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWh
           fontVariantNumeric: 'tabular-nums',
           color: label ? 'var(--text)' : 'var(--muted)',
         }}
-        title={hint || undefined}
+        title={hint || 'Объём'}
       >
         {label || '—'}
       </div>
-      {hint ? (
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{hint}</div>
-      ) : null}
     </div>
   );
 }
@@ -1547,17 +1544,6 @@ function MpSkuCountryDimsEditor({
             <MpFromMainLinkIcon linked />
           ) : null}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-          {linkedProductDims
-            ? code === 'ym'
-              ? `Синхрон с «Основным» (${L}). У Маркета нет отдельного веса товара — только вес в упаковке выше.`
-              : `Синхрон с «Основным» (${L} / ${Wt}).`
-            : code === 'wb'
-              ? `Свои размеры для WB (${L} / ${Wt}; в кабинете хранятся в см).`
-              : code === 'ym'
-                ? `Свои размеры для Яндекс.Маркета (${L}). Вес — только в упаковке.`
-                : `Свои размеры для Ozon (${L} / ${Wt}).`}
-        </div>
         {showProductDimEditor ? (
           <div className="row g-2">
             {productDimFields.map((f) => (
@@ -1575,6 +1561,7 @@ function MpSkuCountryDimsEditor({
                   min="0"
                   step={f.key === 'weight' ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
                   value={productDimDisp(f.key)}
+                  placeholder={f.label}
                   onChange={(e) => emitProductDim(f.key, e.target.value)}
                 />
               </div>
@@ -1677,16 +1664,7 @@ function MpSkuCountryDimsEditor({
         </div>
         {ozonDimsLocked ? (
           <div style={{ fontSize: 11, color: '#d97706', marginBottom: 8 }}>{OZON_DIMS_LOCK_TITLE}</div>
-        ) : code === 'wb' ? (
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            В интерфейсе — {L} / {Wt}. На WB уходит в см и кг (weightBrutto). Если габариты упаковки меньше
-            фактических — возможен штраф.
-          </div>
-        ) : (
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-            В интерфейсе — {L} / {Wt}. На Ozon уходит в мм / г.
-          </div>
-        )}
+        ) : null}
         <div className="row g-2">
           {packDimFields.map((f) => (
             <div className="col-auto product-form-num-col" key={f.key}>
@@ -1701,6 +1679,7 @@ function MpSkuCountryDimsEditor({
                 min="0"
                 step={f.key === 'weight' ? weightInputStep(weightUnit) : lengthInputStep(lengthUnit)}
                 value={dimDisp(f.key)}
+                placeholder={f.label}
                 onChange={(e) => emitDim(f.key, e.target.value)}
                 title={ozonDimsLocked ? OZON_DIMS_LOCK_TITLE : undefined}
               />
@@ -8832,59 +8811,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      <div className="row g-3 mt-2">
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="cost">
-          Себестоимость
-        </label>
-        <input
-          id="cost"
-          type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-          step="0.01"
-          min="0"
-          placeholder="0.00"
-          value={formData.cost}
-          onChange={(e) => handleChange('cost', e.target.value)}
-          disabled={formData.product_type === 'kit'}
-          readOnly={formData.product_type === 'kit'}
-          title={
-            formData.product_type === 'kit'
-              ? 'Для комплекта считается по комплектующим'
-              : undefined
-          }
-        />
-        <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            {formData.product_type === 'kit'
-              ? 'Считается автоматически по комплектующим — вручную не сохраняется.'
-              : 'Сохраняется вручную. Цена поставщиков подставляется только если поле пустое.'}
-        </div>
-        {errors.cost && <div className="error">{errors.cost}</div>}
-      </div>
-
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="additionalExpenses">
-            Дополнительные расходы
-          </label>
-          <input
-            id="additionalExpenses"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder="0.00"
-            value={formData.additionalExpenses}
-            onChange={(e) => handleChange('additionalExpenses', e.target.value)}
-          />
-          <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Упаковка, логистика и т.п. (не себестоимость)
-          </div>
-          {errors.additionalExpenses && <div className="error">{errors.additionalExpenses}</div>}
-        </div>
-      </div>
-
       {Object.keys(errors).length > 0 && (
         <div className="error" style={{marginTop: '12px'}}>
           {Object.values(errors)[0]}
@@ -8939,15 +8865,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <Button
               type="button"
               variant="secondary"
-              onClick={() => handleGenerateRichContent('ozon')}
-              disabled={!currentProduct?.id || !!richContentLoading}
-              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей этой вкладки'}
-            >
-              {richContentLoading === 'ozon' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
               onClick={handleGenerateVideoCover}
               disabled={!currentProduct?.id || videoCoverLoading}
               title={
@@ -8958,13 +8875,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             >
               {videoCoverLoading ? 'Слайды…' : 'Сгенерировать видеообложку'}
             </Button>
-            <a
-              className="btn btn-outline-secondary btn-sm"
-              href={`/settings/content/video-cover?productId=${encodeURIComponent(currentProduct?.id || '')}&categoryId=${encodeURIComponent(formData.categoryId || '')}`}
-              title="Шаблон слайдов и эффект перехода (Настройки)"
-            >
-              Шаблон обложки
-            </a>
             <Button
               type="button"
               variant="primary"
@@ -8974,9 +8884,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             >
               {pushCardLoading === 'ozon' ? 'Ожидание ответа Ozon…' : 'Сохранить и отправить на Ozon'}
             </Button>
-            <span className="text-muted small">
-              «Обновить с Ozon» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — выгрузка в кабинет.
-            </span>
           </div>
           {videoCoverError ? <div className="alert alert-danger py-2">{videoCoverError}</div> : null}
           {videoCoverMessage ? <div className="alert alert-success py-2">{videoCoverMessage}</div> : null}
@@ -9018,10 +8925,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </div>
               </div>
             ) : (
-              <p className="text-muted small mb-0" style={{ maxWidth: 280 }}>
-                Превью по текущему шаблону и фото с бейджем Ozon. Нажмите «Сгенерировать
-                видеообложку», чтобы зафиксировать слайды для отправки.
-              </p>
+              <p className="text-muted small mb-0">Нет слайдов</p>
             )}
           </div>
           <MarketplaceRichContentPanel
@@ -9066,13 +8970,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             dedicatedLinks={categoryDedicatedCharcLinks}
           />
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты упаковки (Ozon)</div>
+            <div className="card-header" title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На Ozon уходит в мм / г. Упаковка — поля карточки Ozon.`}>Габариты упаковки (Ozon)</div>
             <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На Ozon уходит в мм / г.
-                Упаковка — поля карточки Ozon (не характеристика «товар с упаковкой»: такой у Ozon нет).
-                Размеры самого товара без упаковки — ниже; в списке характеристик — только если категория их отдаёт.
-              </p>
               <MpSkuCountryDimsEditor
                 mp="ozon"
                 formData={formData}
@@ -9247,9 +9146,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
                 Атрибуты Ozon (характеристики для выгрузки)
               </h4>
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 10 }}>
-                Артикул продавца (offer_id) и артикул производителя (партномер) — сверху списка; те же поля в блоке «Связь с маркетплейсом».
-              </p>
               {categoryDetailsLoading ? (
                 <p style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка данных категории…</p>
               ) : (
@@ -9391,7 +9287,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       const checked = rawValue === 'true' || rawValue === true;
                       return (
                         <div key={attr.id} className={colClass}>
-                          <div className="form-check">
+                          <div className="form-check" title={[attr.name, attr.description].filter(Boolean).join(' — ')}>
           <input
                               className="form-check-input"
                               id={`ozon-attr-${attr.id}`}
@@ -9419,9 +9315,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               />
                             </label>
         </div>
-                          {attr.description && (
-                            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>{attr.description}</div>
-                          )}
                         </div>
                       );
                     }
@@ -9460,11 +9353,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           if (!isAnnotation) {
                             return (
                               <>
-          <input
+                              <input
                                 id={`ozon-attr-${attr.id}`}
                                 type={attr.type === 'number' ? 'number' : 'text'}
                                 className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, rawValue)}
                                 value={rawValue}
+                                placeholder={attr.is_required ? `${attr.name} *` : attr.name}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />
                                 {items.length ? (
@@ -9479,8 +9373,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               <textarea
                                 id={`ozon-attr-${attr.id}`}
                                 className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, textValue)}
-                                rows="10"
+                                rows="4"
                                 value={textValue}
+                                placeholder={attr.name}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />
                               {items.length ? (
@@ -9562,15 +9457,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
-              variant="secondary"
-              onClick={() => handleGenerateRichContent('wb')}
-              disabled={!currentProduct?.id || !!richContentLoading}
-              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
-            >
-              {richContentLoading === 'wb' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
-            </Button>
-            <Button
-              type="button"
               variant="primary"
               onClick={() => handlePushCard('wb')}
               disabled={
@@ -9590,9 +9476,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             >
               {pushCardLoading === 'wb' ? 'Отправка…' : 'Сохранить и отправить на WB'}
             </Button>
-            <span className="text-muted small">
-              «Обновить с WB» — поля карточки. «Загрузка изображений» — только фото. «Сохранить и отправить» — создать карточку, если её нет, или обновить существующую.
-            </span>
           </div>
           <MarketplaceRichContentPanel
             marketplace="wb"
@@ -9648,12 +9531,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           )}
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Текст карточки Wildberries</div>
+            <div className="card-header" title="Поля только для WB. Артикул продавца — в блоке «Связь с маркетплейсом». Связь с «Основным» синхронизирует значения.">Текст карточки Wildberries</div>
             <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Поля только для WB — всегда можно править. Артикул продавца — в блоке «Связь с маркетплейсом» выше.
-                Связь с «Основным» синхронизирует значения; отправка — кнопка выше.
-              </p>
               {wbFetchedProduct && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '12px' }}>
                   {(wbFetchedProduct.nmId ?? wbFetchedProduct.nmID) != null && (
@@ -9680,6 +9559,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_name')}
                     value={formData.mp_wb_name}
+                    placeholder="Название (WB)"
                     onChange={(e) =>
                       handleMpCardFieldChange('mp_wb_name', 'name', 'name', 'wb', e.target.value)
                     }
@@ -9750,12 +9630,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
 
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Габариты упаковки (Wildberries)</div>
+            <div className="card-header" title={`Габариты в интерфейсе — ${lengthLbl} / ${weightLbl}. На WB уходит в см и кг (weightBrutto).`}>Габариты упаковки (Wildberries)</div>
             <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Габариты в интерфейсе — {lengthLbl} / {weightLbl}. На WB уходит в см и кг (weightBrutto).
-                Ниже — упаковка и товар (в кабинете — см); те же поля есть в характеристиках, если предмет их отдаёт.
-              </p>
               <MpSkuCountryDimsEditor
                 mp="wb"
                 formData={formData}
@@ -9855,6 +9731,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 type="text"
                                 className={mpAttrClass('form-control form-control-sm', 'wb', key, valueStr)}
                                 value={valueStr}
+                                placeholder={required ? `${name} *` : name}
                                 onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, a)}
                               />
                             )}
@@ -9905,6 +9782,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               type="text"
                               className={mpAttrClass('form-control form-control-sm', 'wb', key, display)}
                               value={display}
+                              placeholder={name}
                               onChange={(e) => handleWbCategoryAttrChange(key, e.target.value, c)}
                             />
                             <ControlFieldLimitHint
@@ -9928,9 +9806,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   )}
                 </>
               )}
-              <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Сохраняются как <code>wb_attributes</code>. Название, описание, бренд и страна — в блоках выше. Длина, ширина и высота товара — здесь, связь с «Основным».
-              </div>
             </div>
           </div>
 
@@ -9978,15 +9853,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
-              variant="secondary"
-              onClick={() => handleGenerateRichContent('ym')}
-              disabled={!currentProduct?.id || !!richContentLoading}
-              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать описание из полей этой вкладки'}
-            >
-              {richContentLoading === 'ym' || richContentLoading === 'all' ? 'Генерация…' : 'Сгенерировать Rich-контент'}
-            </Button>
-            <Button
-              type="button"
               variant="primary"
               onClick={() => handlePushCard('ym')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ym?.trim()}
@@ -10001,9 +9867,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             >
               {pushCardLoading === 'all' ? 'Отправка…' : 'Сохранить и отправить на все МП'}
             </Button>
-            <span className="text-muted small">
-              Подтянуть данные/изображения с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).
-            </span>
             </div>
           <MarketplaceRichContentPanel
             marketplace="ym"
@@ -10044,12 +9907,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )}
 
           <div className="card mb-3 border-secondary">
-            <div className="card-header">Габариты упаковки (Яндекс.Маркет)</div>
+            <div className="card-header" title={`Упаковка в интерфейсе — ${lengthLbl} / ${weightLbl} (на Я.Маркет уходит в см/кг). Вес — только «вес товара в упаковке».`}>Габариты упаковки (Яндекс.Маркет)</div>
             <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Упаковка в интерфейсе — {lengthLbl} / {weightLbl} (на Я.Маркет уходит в см/кг).
-                Вес в Маркете — только «вес товара в упаковке» (поле оффера). Отдельного «веса товара» без упаковки нет.
-              </p>
               <div className="row g-2 mb-2">
                 <div className="col-md-4">
                   <label className="form-label" htmlFor="ym-tab-country">
@@ -10192,12 +10051,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           ) : null}
 
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Название и описание для Яндекс.Маркета</div>
+            <div className="card-header" title="Отдельно от «Основного». Связь синхронизирует с Основным; «Сохранить и отправить» выгружает поля вкладки в кабинет.">Название и описание для Яндекс.Маркета</div>
             <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Отдельно от «Основного» — всегда можно править. Связь синхронизирует с Основным;
-                «Сохранить и отправить» выгружает поля вкладки YM в кабинет.
-              </p>
               <div className="row g-3">
                 <div className="col-12">
                   <label className="form-label" htmlFor="ym-tab-name">
@@ -10211,6 +10066,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ym_name')}
                     value={formData.mp_ym_name}
+                    placeholder="Название (Яндекс)"
                     onChange={(e) =>
                       handleMpCardFieldChange('mp_ym_name', 'name', 'name', 'ym', e.target.value)
                     }
@@ -10300,7 +10156,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     onChange={(e) =>
                       setFormData((prev) => withMpDraftPatch(prev, 'ym', { manufacturer: e.target.value }))
                     }
-                    placeholder="Если в категории Маркета есть «Изготовитель» — значение уйдёт в характеристику"
+                    placeholder="Изготовитель"
                   />
                 </div>
                 <div className="col-md-4">
@@ -10335,16 +10191,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
 
           <div className="card mt-3">
-            <div className="card-header">Характеристики Яндекс.Маркета (по категории)</div>
+            <div className="card-header" title="Параметры категории. Обязательные сверху. Габариты и вес упаковки — поля оффера, не этого списка.">Характеристики Яндекс.Маркета (по категории)</div>
             <div className="card-body">
-              <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 10 }}>
-                Параметры категории ({ymFormAttributes.length}
-                {ymCategoryAttributes.length > 0 && ymCategoryAttributes.length !== ymFormAttributes.length
-                  ? `, схема категории: ${ymCategoryAttributes.length}`
-                  : ''}
-                ), включая пустые. Обязательные сверху. Габариты и вес упаковки — поля оффера Маркета (не характеристики категории); их можно заполнить здесь и в блоке выше, они уходят в карточку при создании и обновлении.
-                «Бренд», «Штрихкод», «Изготовитель» и «Страна производства» — поля оффера, их сопоставление в категории, не в этом списке.
-              </div>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
               ) : !formData.categoryId ? (
@@ -10493,6 +10341,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
                             {ymSyncHint}
                             <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: '4px' }}>(ENUM)</span>
+                            {a.description ? (
+                              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>
+                                {a.description}
+                              </span>
+                            ) : null}
                           </label>
                           <select
                             id={`ym-attr-${key}`}
@@ -10510,7 +10363,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               <option key={String(o.id)} value={String(o.id)}>{o.label}</option>
                             ))}
                           </select>
-                          {a.description ? <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>{a.description}</div> : null}
                           <ControlFieldLimitHint
                             limitsByMp={limitsByMp}
                             formData={formData}
@@ -10563,6 +10415,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             type="number"
                             className={mpAttrClass('form-control form-control-sm', 'ym', key, valueStr)}
                             value={valueStr}
+                            placeholder={required ? `${name} *` : name}
                             onChange={(e) => setVal(e.target.value)}
                             step="any"
                           />
@@ -10590,9 +10443,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           type="text"
                           className={mpAttrClass('form-control form-control-sm', 'ym', key, valueStr)}
                           value={valueStr}
+                          placeholder={required ? `${name} *` : name}
+                          title={a.description || undefined}
                           onChange={(e) => setVal(e.target.value)}
                         />
-                        {a.description ? <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>{a.description}</div> : null}
                         <ControlFieldLimitHint
                           limitsByMp={limitsByMp}
                           formData={formData}
@@ -10606,9 +10460,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               )}
                 </>
               )}
-              <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Габариты упаковки сохраняются в <code>ym_draft.weightDimensions</code> и уходят в оффер Маркета. Остальные значения — в <code>ym_attributes</code> (id параметра → значение; для ENUM — id варианта из справочника Маркета).
-              </div>
             </div>
           </div>
 
@@ -10694,17 +10545,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             >
               {labelPrinting ? 'Печать…' : 'Печать стикера'}
-            </Button>
-          ) : null}
-          {['ozon', 'wb', 'ym'].includes(activeTab) ? (
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={!currentProduct?.id || !!richContentLoading}
-              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Собрать Rich-контент из полей вкладки'}
-              onClick={() => handleGenerateRichContent(activeTab)}
-            >
-              {richContentLoading ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
           ) : null}
           {aiEnabled ? (

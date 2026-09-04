@@ -218,8 +218,106 @@
   padding: 0.7rem 0.75rem;
 }
 
+.product-form-blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+  align-items: start;
+}
+
+.product-form-block {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--bs-body-bg, #fff);
+}
+
+.product-form-block__title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--text, #111827);
+}
+
+.product-form-block--images .product-form-image-card {
+  width: 112px;
+  padding: 6px;
+}
+
+.product-form-block--images .product-form-image-card button[style] {
+  font-size: 11px;
+}
+
 .product-form-marketplace-panel .row.g-3 {
-  --bs-gutter-x: 0.65rem;
-  --bs-gutter-y: 0.4rem;
+  --bs-gutter-x: 0.55rem;
+  --bs-gutter-y: 0.3rem;
+}
+
+.product-form-marketplace-panel .row.g-2 {
+  --bs-gutter-x: 0.45rem;
+  --bs-gutter-y: 0.25rem;
+}
+
+/* Подписи полей МП — всплывают при наведении, не занимают высоту */
+.product-form-marketplace-panel .row > [class*='col'],
+.product-form-marketplace-panel .product-form-num-col {
+  position: relative;
+}
+
+.product-form-marketplace-panel label.form-label {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+  z-index: 50;
+  width: max-content;
+  max-width: min(22rem, 78vw);
+  margin: 0;
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #f8fafc;
+  background: #111827;
+  border-radius: 6px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: normal;
+}
+
+.product-form-marketplace-panel label.form-label::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  bottom: 100%;
+  top: auto;
+  border: 5px solid transparent;
+  border-bottom-color: #111827;
+}
+
+.product-form-marketplace-panel .row > [class*='col']:hover > label.form-label,
+.product-form-marketplace-panel .row > [class*='col']:focus-within > label.form-label,
+.product-form-marketplace-panel .product-form-num-col:hover > label.form-label,
+.product-form-marketplace-panel .product-form-num-col:focus-within > label.form-label {
+  opacity: 1;
+  visibility: visible;
+}
+
+.product-form-marketplace-panel label.form-label span {
+  color: #e2e8f0;
+}
+
+.product-form-marketplace-panel .mp-from-main-link {
+  filter: none;
+}
+
+.product-form-marketplace-panel .help-text,
+.product-form-marketplace-panel .card-body > p {
+  font-size: 11px;
+  margin-bottom: 6px;
 }
 

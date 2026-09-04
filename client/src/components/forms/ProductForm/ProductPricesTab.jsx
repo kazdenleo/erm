@@ -141,6 +141,57 @@ export function ProductPricesTab({
     <>
       <div className="row g-3">
         <div className="col-12">
+          <h3 className="h6 mb-0">Себестоимость</h3>
+        </div>
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="cost">Себестоимость</label>
+          <input
+            id="cost"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="0.00"
+            value={formData.cost}
+            onChange={(e) => handleChange('cost', e.target.value)}
+            disabled={formData.product_type === 'kit'}
+            readOnly={formData.product_type === 'kit'}
+            title={
+              formData.product_type === 'kit'
+                ? 'Для комплекта считается по комплектующим'
+                : undefined
+            }
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            {formData.product_type === 'kit'
+              ? 'Считается автоматически по комплектующим — вручную не сохраняется.'
+              : 'Сохраняется вручную. Цена поставщиков подставляется только если поле пустое.'}
+          </div>
+          {errors.cost && <div className="error">{errors.cost}</div>}
+        </div>
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="additionalExpenses">Дополнительные расходы</label>
+          <input
+            id="additionalExpenses"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="0.00"
+            value={formData.additionalExpenses}
+            onChange={(e) => handleChange('additionalExpenses', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Упаковка, логистика и т.п. (не себестоимость)
+          </div>
+          {errors.additionalExpenses && <div className="error">{errors.additionalExpenses}</div>}
+        </div>
+      </div>
+
+      <div className="row g-3 mt-2">
+        <div className="col-12">
           <h3 className="h6 mb-0">Цены карточки</h3>
           <p className="text-muted small mb-0">
             Рассчитываемые поля «до скидки» и «после скидки». При отправке на маркетплейсы обе

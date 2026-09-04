@@ -253,8 +253,7 @@ export function ProductMarketplaceLinkSection({
         </Button>
       </div>
       <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', lineHeight: 1.45 }}>
-        Артикул продавца на площадке. Иконка справа ищет карточку в кабинете организации по этому
-        артикулу или по артикулу на вкладке «Основное» (<code>{skuTrim || '—'}</code>).
+        Иконка справа ищет карточку в кабинете по артикулу продавца или по артикулу на «Основном».
       </p>
       {linkError && <div className="text-danger small mb-2">{linkError}</div>}
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}
@@ -275,7 +274,7 @@ export function ProductMarketplaceLinkSection({
             type="text"
             className={inputClass}
             maxLength={maxLen}
-            placeholder="Артикул продавца на площадке"
+            placeholder="Артикул продавца"
             autoComplete="off"
             value={sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps)}
             onChange={(e) => handleSellerSkuChange(e.target.value)}
@@ -331,13 +330,10 @@ export function ProductMarketplaceLinkSection({
               className="form-control form-control-sm"
               autoComplete="off"
               placeholder="Партномер / OEM"
+              title="Артикул производителя. Не путать с артикулом продавца (offer_id)."
               value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks)}
               onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
             />
-            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.35, color: 'var(--muted)' }}>
-              Не путать с артикулом продавца (offer_id). Если в категории есть «Партномер» или «Артикул»,
-              значение уйдёт туда при сохранении.
-            </div>
           </div>
         ) : null}
       </div>
