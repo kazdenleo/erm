@@ -293,7 +293,11 @@ function ModuleStyleFields({ style, onChange }) {
   );
 }
 
-export function RichContentConstructor({ embeddedProductId = '', onModulesChange } = {}) {
+export function RichContentConstructor({
+  embeddedProductId = '',
+  onModulesChange,
+  hidePageHeader = false,
+} = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const productIdParam = String(embeddedProductId || searchParams.get('productId') || '').trim();
   const editingProduct = Boolean(productIdParam);
@@ -716,7 +720,7 @@ export function RichContentConstructor({ embeddedProductId = '', onModulesChange
   if (loading && !embeddedProductId) {
     return (
       <div className="settings-page card settings-labels">
-        <h1 className="title">Rich-контент</h1>
+        {hidePageHeader ? null : <h1 className="title">Rich-контент</h1>}
         <p className="label-constructor-loading">Загрузка…</p>
       </div>
     );
@@ -730,7 +734,9 @@ export function RichContentConstructor({ embeddedProductId = '', onModulesChange
         </p>
       ) : (
         <>
-          <h1 className="title">{editingProduct ? 'Rich-контент товара' : 'Rich-контент'}</h1>
+          {hidePageHeader ? null : (
+            <h1 className="title">{editingProduct ? 'Rich-контент товара' : 'Rich-контент'}</h1>
+          )}
           <p className="subtitle">
             {editingProduct
               ? 'Свой шаблон только для этого товара. Остальные товары категории используют шаблон категории.'

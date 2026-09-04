@@ -63,6 +63,7 @@ import { Certificates } from './pages/Settings/Certificates';
 import { Labels } from './pages/Settings/Labels';
 import { RichContentConstructor } from './pages/Settings/RichContentConstructor.jsx';
 import { VideoCoverConstructor } from './pages/Settings/VideoCoverConstructor.jsx';
+import { ContentSettingsLayout } from './pages/Settings/ContentSettings.jsx';
 import { Organizations } from './pages/Organizations/Organizations';
 import { SettingsUsers } from './pages/Settings/Users/Users';
 import { Admin } from './pages/Admin/Admin';
@@ -105,16 +106,16 @@ function RedirectFboLegacy() {
   return <Navigate to={`/stock-levels/fbo-supplies${rest}${search}${hash}`} replace />;
 }
 
-/** Редирект со старых URL /settings/rich-content → /products/rich-content */
-function RedirectSettingsRichContent() {
+/** Редирект /products/rich-content и /settings/rich-content → /settings/content/rich-content */
+function RedirectRichContent() {
   const { search, hash } = useLocation();
-  return <Navigate to={`/products/rich-content${search}${hash}`} replace />;
+  return <Navigate to={`/settings/content/rich-content${search}${hash}`} replace />;
 }
 
-/** Редирект /products/video-cover → /settings/video-cover */
-function RedirectProductsVideoCover() {
+/** Редирект /products/video-cover и /settings/video-cover → /settings/content/video-cover */
+function RedirectVideoCover() {
   const { search, hash } = useLocation();
-  return <Navigate to={`/settings/video-cover${search}${hash}`} replace />;
+  return <Navigate to={`/settings/content/video-cover${search}${hash}`} replace />;
 }
 
 function App() {
@@ -167,8 +168,8 @@ function App() {
           <Route path="/support" element={<ProtectedRoute><Layout><Support /></Layout></ProtectedRoute>} />
           <Route path="/products/enrichment" element={<ProtectedRoute><ProductEnrichmentRoute /></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
-          <Route path="/products/rich-content" element={<ProtectedRoute><Layout><RichContentConstructor /></Layout></ProtectedRoute>} />
-          <Route path="/products/video-cover" element={<RedirectProductsVideoCover />} />
+          <Route path="/products/rich-content" element={<RedirectRichContent />} />
+          <Route path="/products/video-cover" element={<RedirectVideoCover />} />
           <Route path="/products/new" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
           <Route path="/products/:productId" element={<ProtectedRoute><Layout><ProductCard /></Layout></ProtectedRoute>} />
           <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
@@ -213,8 +214,22 @@ function App() {
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
           <Route path="/settings/certificates" element={<ProtectedRoute><Layout><Certificates /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
-          <Route path="/settings/video-cover" element={<ProtectedRoute><Layout><VideoCoverConstructor /></Layout></ProtectedRoute>} />
-          <Route path="/settings/rich-content" element={<RedirectSettingsRichContent />} />
+          <Route
+            path="/settings/content"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <ContentSettingsLayout />
+                </Layout>
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<Navigate to="rich-content" replace />} />
+            <Route path="rich-content" element={<RichContentConstructor hidePageHeader />} />
+            <Route path="video-cover" element={<VideoCoverConstructor hidePageHeader />} />
+          </Route>
+          <Route path="/settings/video-cover" element={<RedirectVideoCover />} />
+          <Route path="/settings/rich-content" element={<RedirectRichContent />} />
           <Route path="/settings/users" element={<ProtectedRoute><Layout><SettingsUsers /></Layout></ProtectedRoute>} />
           <Route path="/settings/roles" element={<Navigate to="/settings/users?tab=roles" replace />} />
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />

@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Button } from '../common/Button/Button';
 import { aiApi } from '../../services/ai.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { instructionAllowsOverwrite, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
+import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   AI_DESCRIPTION_CONTEXT_FIELDS,
   AI_DESCRIPTION_CONTEXT_KEYS,
@@ -34,8 +34,7 @@ export function ProductDescriptionAiChat({
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
-  const [config, setConfig] = useState(null);
-  const [configLoading, setConfigLoading] = useState(true);
+  const { enabled: aiReady, loading: configLoading } = useAiEnabled();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [outputFields, setOutputFields] = useState(() => [...AI_DESCRIPTION_OUTPUT_KEYS]);
@@ -47,30 +46,11 @@ export function ProductDescriptionAiChat({
   const listRef = useRef(null);
 
   useEffect(() => {
-    let cancelled = false;
-    setConfigLoading(true);
-    aiApi
-      .getConfig()
-      .then((data) => {
-        if (!cancelled) setConfig(data);
-      })
-      .catch(() => {
-        if (!cancelled) setConfig({ configured: false });
-      })
-      .finally(() => {
-        if (!cancelled) setConfigLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, sending]);
 
-  const ready = !!(config?.configured && config?.enabled) && !disabled;
+  const ready = aiReady && !disabled;
 
   const send = async (text) => {
     const instruction = String(text || '').trim();
@@ -159,6 +139,8 @@ export function ProductDescriptionAiChat({
     ? (lastResult.items || []).some((it) => it?.changes?.length)
     : !!(lastResult?.data?.changes?.length);
 
+  if (configLoading || !ready) return null;
+
   return (
     <div
       className={`product-desc-ai-chat${compact ? ' product-desc-ai-chat--compact' : ''}${className ? ` ${className}` : ''}`}
@@ -170,15 +152,7 @@ export function ProductDescriptionAiChat({
         ) : null}
       </div>
 
-      {configLoading ? (
-        <p className="product-desc-ai-chat__hint">Проверяю GigaChat…</p>
-      ) : !ready ? (
-        <p className="product-desc-ai-chat__hint">
-          Подключите GigaChat в{' '}
-          <Link to="/integrations?tab=other&id=gigachat">Интеграции → GigaChat</Link>.
-        </p>
-      ) : (
-        <>
+      <>
           <div className="product-desc-ai-chat__sections">
             <p className="product-desc-ai-chat__section-title">Заполнить поля</p>
             <div className="product-desc-ai-chat__checks">

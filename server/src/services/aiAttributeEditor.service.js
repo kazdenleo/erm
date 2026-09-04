@@ -68,7 +68,7 @@ function buildProperties(outputFields) {
       properties.vehicles_json = {
         type: 'string',
         description:
-          'JSON-массив автомobileй [{mark,model,modification}] текстом марки/модели/модификации. Только если просили заполнить таблицу авто.',
+          'JSON-массив автомобилей [{mark,model,modification}] текстом марки/модели/модификации. Только если просили заполнить таблицу авто.',
       };
       continue;
     }

@@ -78,8 +78,7 @@ export function Prices() {
   const [filterLinkedMp, setFilterLinkedMp] = useState(() => new Set());
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [listSearch, setListSearch] = useState('');
-  const listSearchDebounceRef = useRef(null);
+  const listSearch = '';
   const loadListRef = useRef(() => {});
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -249,16 +248,6 @@ export function Prices() {
     loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
 
-  const handleListSearchChange = (e) => {
-    const v = e.target.value;
-    setListSearch(v);
-    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    listSearchDebounceRef.current = setTimeout(() => {
-      setCurrentPage(1);
-      loadListRef.current({ search: v, page: 1 });
-    }, 400);
-  };
-
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
     setCurrentPage(1);
@@ -314,12 +303,6 @@ export function Prices() {
   };
 
   const showNoneCategoryOption = showUncategorizedCategoryOption === true;
-
-  useEffect(() => {
-    return () => {
-      if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    };
-  }, []);
 
   useEffect(() => {
     if (!kitsEnabled && filterProductType) {
@@ -843,12 +826,6 @@ export function Prices() {
       <div className="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
         <div>
           <h1 className="title mb-1">💰 Цены</h1>
-          <p className="subtitle mb-0">
-            Управление ценами товаров на маркетплейсах ·{' '}
-            <Link to="/prices/strategies" style={{ color: 'var(--primary)' }}>Стратегии ценообразования</Link>
-            {' · '}
-            <Link to="/prices/history" style={{ color: 'var(--primary)' }}>История изменения цен</Link>
-          </p>
         </div>
         <Button
           type="button"
@@ -891,22 +868,6 @@ export function Prices() {
         <div className="card-body p-0">
           <div className="products-list-toolbar">
             <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
-              <div className="flex-grow-1" style={{ minWidth: 200, maxWidth: 480 }}>
-                <label className="text-muted small mb-1 d-block" htmlFor="prices-list-search">
-                  Поиск по списку
-                </label>
-                <input
-                  id="prices-list-search"
-                  type="search"
-                  className="form-control form-control-sm products-list-search-input"
-                  placeholder="Название, артикул, штрихкод…"
-                  value={listSearch}
-                  onChange={handleListSearchChange}
-                  autoComplete="off"
-                  aria-label="Поиск по названию, артикулу или штрихкоду"
-                  aria-busy={listRefreshing}
-                />
-              </div>
               <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                 <span
                   className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}
@@ -1102,11 +1063,6 @@ export function Prices() {
         </div>
       </div>
 
-      <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)'}}>
-        <p style={{margin: 0, color: 'var(--muted)', fontSize: '14px'}}>
-          💡 <strong>Подсказка:</strong> Наведите курсор на цену товара в таблице ниже, чтобы увидеть подробную информацию о товаре.
-        </p>
-      </div>
       {totalProducts > 0 && !products.some(p => (p.storedMinPriceOzon ?? p.stored_min_price_ozon) != null || (p.storedMinPriceWb ?? p.stored_min_price_wb) != null || (p.storedMinPriceYm ?? p.stored_min_price_ym) != null) && (
         <div style={{marginBottom: '16px', padding: '12px 16px', background: 'rgba(251, 191, 36, 0.12)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.35)', color: '#d97706', fontSize: '14px'}}>
           📊 <strong>Сохранённые цены не загружены.</strong> Нажмите «Пересчитать все минимальные цены» ниже — после завершения обновите страницу, и цены будут отображаться при каждом обновлении.

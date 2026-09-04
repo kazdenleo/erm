@@ -51,7 +51,7 @@
 }
 
 .orders-page .orders-list {
-  margin-top: 18px;
+  margin: 0;
   position: relative;
 }
 
@@ -66,9 +66,15 @@
 }
 
 .orders-page .orders-list-pager {
-  margin-top: 4px;
-  margin-bottom: 16px;
-  padding: 8px 2px;
+  padding: 0 2px;
+}
+
+.orders-page .orders-list-pager--top {
+  margin: 0 0 8px;
+}
+
+.orders-page .orders-list-pager--bottom {
+  margin: 10px 0 0;
 }
 
 .order-detail-row-link {

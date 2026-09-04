@@ -1370,7 +1370,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
             </p>
             <div className="d-flex flex-wrap gap-2">
               <Link
-                to={`/products/rich-content?categoryId=${encodeURIComponent(category.id)}`}
+                to={`/settings/content/rich-content?categoryId=${encodeURIComponent(category.id)}`}
                 className="btn btn-secondary btn-sm"
               >
                 Шаблон этой категории
@@ -1393,11 +1393,11 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
               или отдельно для этой категории.
             </p>
             <div className="d-flex flex-wrap gap-2">
-              <Link to="/settings/video-cover" className="btn btn-secondary btn-sm">
+              <Link to="/settings/content/video-cover" className="btn btn-secondary btn-sm">
                 Все товары
               </Link>
               <Link
-                to={`/settings/video-cover?categoryId=${encodeURIComponent(category.id)}`}
+                to={`/settings/content/video-cover?categoryId=${encodeURIComponent(category.id)}`}
                 className="btn btn-secondary btn-sm"
               >
                 Шаблон категории

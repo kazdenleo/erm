@@ -36,7 +36,23 @@ describe('WB reverse delivery (return_amount)', () => {
     expect(computeWbReturnAmount(row, 2.5)).toBe(70);
   });
 
-  test('applies warehouse coefficient to tariff before volume calc', () => {
+  test('FBO falls back to marketplace tariff when FBO base empty', () => {
+    const row = {
+      boxDeliveryBase: '-',
+      boxDeliveryLiter: '-',
+      boxDeliveryMarketplaceBase: '78,2',
+      boxDeliveryMarketplaceLiter: '23,8',
+      boxDeliveryMarketplaceCoefExpr: '170',
+    };
+    const fbo = computeWbLogisticsCost(row, 1, 'fbo');
+    const fbs = computeWbLogisticsCost(row, 1, 'fbs');
+    expect(fbo.cost).toBe(fbs.cost);
+    expect(fbo.coef).toBe(170); // справочно из API
+    expect(fbo.base).toBe(78.2); // без повторного × коэф
+    expect(fbo.source).toBe('boxDeliveryMarketplace');
+  });
+
+  test('forward logistics does not re-apply warehouse coef; IL defaults to 1', () => {
     const row = {
       boxDeliveryBase: '-',
       boxDeliveryLiter: '-',
@@ -47,9 +63,25 @@ describe('WB reverse delivery (return_amount)', () => {
     const log = computeWbLogisticsCost(row, 2.1, 'fbs');
     expect(log.coef).toBe(170);
     expect(log.rawBase).toBe(78.2);
-    expect(log.base).toBe(applyWbWarehouseCoef(78.2, 170));
-    expect(log.cost).toBe(computeWbVolumeBaseTariff(log.base, log.liter, 2.1));
-    expect(computeWbReturnAmount(row, 2.1, null, 'fbs')).toBe(log.cost);
+    expect(log.base).toBe(78.2);
+    expect(log.liter).toBe(23.8);
+    expect(log.localizationIndex).toBe(1);
+    // ceil(2.1−1)=2 → 78.2 + 23.8×2 = 125.8
+    expect(log.cost).toBe(125.8);
+    expect(log.cost).toBe(computeWbVolumeBaseTariff(78.2, 23.8, 2.1));
+    expect(computeWbReturnAmount(row, 2.1, null, 'fbs')).toBe(125.8);
+  });
+
+  test('localization index multiplies volume tariff when set', () => {
+    const row = {
+      boxDeliveryMarketplaceBase: '46',
+      boxDeliveryMarketplaceLiter: '14',
+      boxDeliveryMarketplaceCoefExpr: '100',
+    };
+    const log = computeWbLogisticsCost(row, 1.8, 'fbs', 1.2);
+    // ceil(0.8)=1 → (46+14)×1.2 = 72
+    expect(log.cost).toBe(72);
+    expect(log.localizationIndex).toBe(1.2);
   });
 
   test('coef "-" defaults to 100%', () => {

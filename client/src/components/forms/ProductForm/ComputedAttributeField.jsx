@@ -42,7 +42,7 @@ export function ComputedAttributeField({
                   ? `Формула: ${formula}`
                   : undefined
           }
-          style={{ flex: '1 1 120px', minWidth: 0 }}
+          style={{ flex: '0 0 auto', width: '7.75rem', maxWidth: '100%', minWidth: 0 }}
         />
         {changedByTool && !disabled ? (
           <span

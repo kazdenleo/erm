@@ -24,6 +24,7 @@ import {
   validateFormula,
 } from '../../utils/attributeFormula.js';
 import { isEditableAttrType } from '../../utils/editableAttribute.js';
+import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   isSystemCardAttr,
   isSystemMainFieldAttr,
@@ -304,6 +305,7 @@ function CategoryMpLinksPanel({ attributeId }) {
 }
 
 function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
+  const { enabled: aiIntegrationEnabled } = useAiEnabled();
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
   const [formula, setFormula] = useState(attribute?.formula || '');
@@ -465,7 +467,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
           </p>
         </div>
       )}
-      {isEditableAttrType(type) && (
+      {isEditableAttrType(type) && aiIntegrationEnabled ? (
         <div className="form-group">
           <label className="form-check-label d-flex align-items-center gap-2">
             <input
@@ -481,7 +483,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
             и может заполнить это поле и связанные характеристики МП. Результат применяется кнопкой «Вставить».
           </p>
         </div>
-      )}
+      ) : null}
       {type === 'dictionary' && !isMainField && (
         <div className="form-group">
           <label>Значения словаря</label>

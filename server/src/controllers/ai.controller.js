@@ -41,3 +41,8 @@ export async function proposeProductCardsBulk(req, res) {
   const data = await aiProductCardService.proposeBulk(profileIdFromReq(req), req.body || {});
   return res.json({ ok: true, data });
 }
+
+export async function proposeAttributeEditor(req, res) {
+  const data = await aiAttributeEditorService.propose(profileIdFromReq(req), req.body || {});
+  return res.json({ ok: true, data });
+}

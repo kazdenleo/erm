@@ -52,6 +52,12 @@ import {
 } from '../utils/marketplaceDescriptionHtml.js';
 import { collapseOzonNonCollectionAttrValues, ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
 import {
+  buildOzonComplexAttributesApiPayload,
+  findOzonVehicleGroups,
+  normalizeOzonComplexAttributes,
+  ozonVehicleAttrIds,
+} from '../utils/ozonComplexAttributes.js';
+import {
   isTnVedAttributeName,
   leadingTnVedDigits,
   matchOzonTnVedDictEntry,
@@ -212,6 +218,14 @@ function buildOzonAttributesArray(ozonAttrs, schemaList) {
     out.push({ complex_id: 0, id, values });
   }
   return collapseOzonNonCollectionAttrValues(out);
+}
+
+function mergeOzonComplexAttributeBlocks(...blocks) {
+  const out = [];
+  for (const list of blocks) {
+    if (Array.isArray(list) && list.length) out.push(...list);
+  }
+  return out.length ? out : null;
 }
 
 /** Видеообложка Ozon: complex_id 100002, attribute 21845. */
@@ -1192,8 +1206,16 @@ async function pushOzonCard(product, categoryMm, ctx) {
     logger.warn('[CardPush] Ozon category attributes (schema) failed', e?.message || e);
   }
 
+  const vehicleGroups = findOzonVehicleGroups(ozonSchema, []);
+  const vehicleIds = ozonVehicleAttrIds(product.ozon_complex_attributes, vehicleGroups);
+  const rawOzonAttrs = parseJsonObject(product.ozon_attributes);
+  const ozonAttrsSansVehicles = { ...rawOzonAttrs };
+  for (const id of vehicleIds) {
+    delete ozonAttrsSansVehicles[String(id)];
+    delete ozonAttrsSansVehicles[id];
+  }
   const ozonAttrsForPush = applyOzonCategoryProductSizeAttrs(
-    product.ozon_attributes,
+    ozonAttrsSansVehicles,
     resolveProductDimensionsMmForPush(product, 'ozon'),
     ozonSchema
   );
@@ -1208,8 +1230,13 @@ async function pushOzonCard(product, categoryMm, ctx) {
     ozonAttrsForPush,
     product.video_cover_slides
   );
-  if (videoCoverComplex) {
-    item.complex_attributes = videoCoverComplex;
+  const vehicleComplex = buildOzonComplexAttributesApiPayload(
+    normalizeOzonComplexAttributes(product.ozon_complex_attributes),
+    vehicleGroups
+  );
+  const mergedComplex = mergeOzonComplexAttributeBlocks(videoCoverComplex, vehicleComplex);
+  if (mergedComplex) {
+    item.complex_attributes = mergedComplex;
   }
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);

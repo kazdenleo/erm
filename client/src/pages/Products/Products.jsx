@@ -251,8 +251,7 @@ export function Products() {
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   /** Поиск по названию / артикулу / штрихкоду (сервер, debounce) */
-  const [listSearch, setListSearch] = useState('');
-  const listSearchDebounceRef = useRef(null);
+  const listSearch = '';
   const loadListRef = useRef(() => {});
   const listBootstrappedRef = useRef(false);
   const [importExcelLoading, setImportExcelLoading] = useState(false);
@@ -473,22 +472,6 @@ export function Products() {
     setFilterUnlinkedMp(nextUnlinked);
     loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
-
-  const handleListSearchChange = (e) => {
-    const v = e.target.value;
-    setListSearch(v);
-    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    listSearchDebounceRef.current = setTimeout(() => {
-      setCurrentPage(1);
-      loadListRef.current({ search: v, page: 1 });
-    }, 400);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    };
-  }, []);
 
   useEffect(() => {
     if (!kitsEnabled && filterProductType) {
@@ -1134,15 +1117,6 @@ export function Products() {
               Массовое редактирование
             </Button>
             <Button
-              className="btn-shadow me-2"
-              variant="secondary"
-              size="small"
-              onClick={() => navigate('/products/rich-content')}
-              title="Конструктор Rich-контента карточек"
-            >
-              Rich-контент
-            </Button>
-            <Button
               className="btn-shadow"
               variant="secondary"
               size="small"
@@ -1197,22 +1171,6 @@ export function Products() {
         <div className="card-body p-0">
           <div className="products-list-toolbar">
             <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
-              <div className="flex-grow-1" style={{ minWidth: 200, maxWidth: 480 }}>
-                <label className="text-muted small mb-1 d-block" htmlFor="products-list-search">
-                  Поиск по списку
-                </label>
-                <input
-                  id="products-list-search"
-                  type="search"
-                  className="form-control form-control-sm products-list-search-input"
-                  placeholder="Название, артикул, штрихкод…"
-                  value={listSearch}
-                  onChange={handleListSearchChange}
-                  autoComplete="off"
-                  aria-label="Поиск по названию, артикулу или штрихкоду"
-                  aria-busy={listRefreshing}
-                />
-              </div>
               <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                 <span
                   className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}
@@ -1509,12 +1467,7 @@ export function Products() {
                         {kitsEnabled ? <th>Тип</th> : null}
                         <th>Название</th>
                         <th>Артикул</th>
-                        <th>
-                          Себестоимость / Остаток
-                          <div className="text-muted fw-normal" style={{ fontSize: 10 }}>
-                            сумма по складам
-                          </div>
-                        </th>
+                        <th>Себестоимость / Остаток</th>
                         <th>Габариты</th>
                         <th className="text-end">Действия</th>
                       </tr>
@@ -1764,16 +1717,6 @@ export function Products() {
                             aria-label="Печать этикетки"
                           >
                             🏷️
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="small"
-                            onClick={() => navigate(`/products/rich-content?productId=${encodeURIComponent(product.id)}`)}
-                            title="Rich-контент этого товара"
-                            className="btn-icon btn-icon-only"
-                            aria-label="Rich-контент"
-                          >
-                            🖼️
                           </Button>
                           <Button 
                             variant="secondary" 

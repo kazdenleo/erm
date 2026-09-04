@@ -2139,9 +2139,7 @@ export function Orders() {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
     return (
       <div
-        className={`orders-list-pager d-flex justify-content-between align-items-center flex-wrap gap-2 ${
-          placement === 'top' ? 'mb-0' : 'mt-0'
-        }`}
+        className={`orders-list-pager orders-list-pager--${placement} d-flex justify-content-between align-items-center flex-wrap gap-2`}
       >
         <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
           <span>
@@ -3385,7 +3383,6 @@ export function Orders() {
               ) : (
                 <span aria-hidden>{mp.icon}</span>
               )}
-              <span className="erp-filter-btn__label">{mp.name}</span>
               <span className="erp-filter-btn__count">{countsByMarketplace[mp.code] ?? 0}</span>
             </button>
           ))}

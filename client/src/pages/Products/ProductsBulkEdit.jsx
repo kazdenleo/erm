@@ -16,6 +16,7 @@ import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useBrands } from '../../hooks/useBrands';
+import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   getPrimaryProductImageUrl,
   parseProductImages,
@@ -5435,6 +5436,7 @@ export function ProductsBulkEdit() {
   const [saveProgress, setSaveProgress] = useState(null);
   const [saveMessage, setSaveMessage] = useState(null);
   const [aiDraftOpen, setAiDraftOpen] = useState(false);
+  const { enabled: aiEnabled } = useAiEnabled();
   const [pushMpLoading, setPushMpLoading] = useState(null);
   const [videoCoverBulkLoading, setVideoCoverBulkLoading] = useState(false);
   const [pushMpMessage, setPushMpMessage] = useState(null);
@@ -8851,7 +8853,7 @@ export function ProductsBulkEdit() {
                       {videoCoverBulkLoading ? 'Обложки…' : 'Видеообложка'}
                     </Button>
                     <Link
-                      to="/settings/video-cover"
+                      to="/settings/content/video-cover"
                       className="btn btn-outline-secondary btn-sm"
                       title="Настроить шаблон в Настройках"
                     >
@@ -8903,20 +8905,22 @@ export function ProductsBulkEdit() {
                     >
                       {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
                     </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="small"
-                      disabled={!!pushMpLoading || !!pullMpLoading || aiBulkItems.length === 0}
-                      title={
-                        aiBulkItems.length === 0
-                          ? 'Отметьте сохранённые товары галочками'
-                          : 'GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните'
-                      }
-                      onClick={() => setAiDraftOpen(true)}
-                    >
-                      Черновик ИИ{aiBulkItems.length > 0 ? ` (${Math.min(aiBulkItems.length, MAX_BULK_AI_CARDS)})` : ''}
-                    </Button>
+                    {aiEnabled ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="small"
+                        disabled={!!pushMpLoading || !!pullMpLoading || aiBulkItems.length === 0}
+                        title={
+                          aiBulkItems.length === 0
+                            ? 'Отметьте сохранённые товары галочками'
+                            : 'GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните'
+                        }
+                        onClick={() => setAiDraftOpen(true)}
+                      >
+                        Черновик ИИ{aiBulkItems.length > 0 ? ` (${Math.min(aiBulkItems.length, MAX_BULK_AI_CARDS)})` : ''}
+                      </Button>
+                    ) : null}
                   </div>
                   {pushMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>

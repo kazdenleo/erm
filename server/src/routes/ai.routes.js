@@ -14,6 +14,7 @@ router.post('/chat', wrapAsync(controller.chat));
 router.post('/product-card/propose', wrapAsync(controller.proposeProductCard));
 router.post('/product-card/propose-bulk', wrapAsync(controller.proposeProductCardsBulk));
 router.post('/attribute-editor/propose', wrapAsync(controller.proposeAttributeEditor));
+router.post('/attribute-editor/propose', wrapAsync(controller.proposeAttributeEditor));
 
 export default router;
 

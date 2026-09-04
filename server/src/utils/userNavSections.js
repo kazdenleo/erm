@@ -65,7 +65,7 @@ export const NAV_SECTION_LABELS = {
   settings_attributes: 'Настройки — атрибуты',
   settings_certificates: 'Настройки — сертификаты',
   settings_labels: 'Настройки — этикетки',
-  settings_video_cover: 'Настройки — видеообложка',
+  settings_video_cover: 'Настройки — контент',
   settings_users: 'Настройки — пользователи',
   settings_roles: 'Настройки — роли',
   organizations: 'Организации',
@@ -333,7 +333,13 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/settings/video-cover') || path.startsWith('/products/video-cover')) {
     return 'settings_video_cover';
   }
-  if (path.startsWith('/settings/rich-content') || path.startsWith('/products/rich-content')) return 'products';
+  if (
+    path.startsWith('/settings/content') ||
+    path.startsWith('/settings/rich-content') ||
+    path.startsWith('/products/rich-content')
+  ) {
+    return 'settings_video_cover';
+  }
   if (path.startsWith('/settings')) return 'settings_general';
   if (path.startsWith('/organizations')) return 'organizations';
   if (path.startsWith('/warehouses')) return 'warehouses';

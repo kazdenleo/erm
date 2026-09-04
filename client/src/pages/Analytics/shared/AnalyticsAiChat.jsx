@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Button } from '../../../components/common/Button/Button';
 import { aiApi } from '../../../services/ai.api';
 import { getApiErrorMessage } from '../../../utils/apiErrorMessage.js';
+import { useAiEnabled } from '../../../hooks/useAiEnabled.js';
 import './AnalyticsAiChat.css';
 
 const EXAMPLES = [
@@ -12,8 +12,7 @@ const EXAMPLES = [
 ];
 
 export function AnalyticsAiChat({ dateFrom, dateTo, marketplace, source = 'fbs' }) {
-  const [config, setConfig] = useState(null);
-  const [configLoading, setConfigLoading] = useState(true);
+  const { enabled: ready, loading: configLoading } = useAiEnabled();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -21,29 +20,9 @@ export function AnalyticsAiChat({ dateFrom, dateTo, marketplace, source = 'fbs' 
   const listRef = useRef(null);
 
   useEffect(() => {
-    let cancelled = false;
-    aiApi
-      .getConfig()
-      .then((data) => {
-        if (!cancelled) setConfig(data);
-      })
-      .catch(() => {
-        if (!cancelled) setConfig({ configured: false });
-      })
-      .finally(() => {
-        if (!cancelled) setConfigLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, sending]);
-
-  const ready = !!(config?.configured && config?.enabled);
 
   const send = async (text) => {
     const content = String(text || '').trim();
@@ -67,6 +46,8 @@ export function AnalyticsAiChat({ dateFrom, dateTo, marketplace, source = 'fbs' 
     }
   };
 
+  if (configLoading || !ready) return null;
+
   return (
     <div className="analytics-ai-chat">
       <div className="analytics-ai-chat__head">
@@ -77,56 +58,45 @@ export function AnalyticsAiChat({ dateFrom, dateTo, marketplace, source = 'fbs' 
         </span>
       </div>
 
-      {configLoading ? (
-        <p className="analytics-ai-chat__hint">Проверяю подключение…</p>
-      ) : !ready ? (
-        <p className="analytics-ai-chat__hint">
-          Чтобы задавать вопросы по цифрам этой страницы, подключите GigaChat в{' '}
-          <Link to="/integrations?tab=other&id=gigachat">Интеграции → Остальное → GigaChat</Link>.
-        </p>
-      ) : (
-        <>
-          <div className="analytics-ai-chat__messages" ref={listRef}>
-            {messages.length === 0 && (
-              <div className="analytics-ai-chat__examples">
-                {EXAMPLES.map((q) => (
-                  <button key={q} type="button" onClick={() => send(q)} disabled={sending}>
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
-            {messages.map((msg, idx) => (
-              <div
-                key={`${msg.role}-${idx}`}
-                className={`analytics-ai-chat__msg analytics-ai-chat__msg--${msg.role}`}
-              >
-                {msg.content}
-              </div>
+      <div className="analytics-ai-chat__messages" ref={listRef}>
+        {messages.length === 0 && (
+          <div className="analytics-ai-chat__examples">
+            {EXAMPLES.map((q) => (
+              <button key={q} type="button" onClick={() => send(q)} disabled={sending}>
+                {q}
+              </button>
             ))}
-            {sending && <div className="analytics-ai-chat__msg analytics-ai-chat__msg--assistant">Смотрю данные…</div>}
           </div>
-          {error && <div className="analytics-ai-chat__error">{error}</div>}
-          <form
-            className="analytics-ai-chat__form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send(input);
-            }}
+        )}
+        {messages.map((msg, idx) => (
+          <div
+            key={`${msg.role}-${idx}`}
+            className={`analytics-ai-chat__msg analytics-ai-chat__msg--${msg.role}`}
           >
-            <input
-              className="analytics-ai-chat__input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Спросите про продажи, удержания или прибыль…"
-              disabled={sending}
-            />
-            <Button type="submit" variant="primary" size="small" disabled={sending || !input.trim()}>
-              Спросить
-            </Button>
-          </form>
-        </>
-      )}
+            {msg.content}
+          </div>
+        ))}
+        {sending && <div className="analytics-ai-chat__msg analytics-ai-chat__msg--assistant">Смотрю данные…</div>}
+      </div>
+      {error && <div className="analytics-ai-chat__error">{error}</div>}
+      <form
+        className="analytics-ai-chat__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+      >
+        <input
+          className="analytics-ai-chat__input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Спросите про продажи, удержания или прибыль…"
+          disabled={sending}
+        />
+        <Button type="submit" variant="primary" size="small" disabled={sending || !input.trim()}>
+          Спросить
+        </Button>
+      </form>
     </div>
   );
 }

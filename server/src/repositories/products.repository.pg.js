@@ -3083,6 +3083,18 @@ class ProductsRepositoryPG {
       product.kit_components = product.product_type === 'kit' && productData.kit_components && Array.isArray(productData.kit_components)
         ? productData.kit_components.map(c => ({ productId: c.productId ?? c.component_product_id, quantity: c.quantity || 1 }))
         : [];
+      if (productData.ozon_complex_attributes !== undefined) {
+        await query(
+          'UPDATE products SET ozon_complex_attributes = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [
+            productData.ozon_complex_attributes && typeof productData.ozon_complex_attributes === 'object'
+              ? JSON.stringify(productData.ozon_complex_attributes)
+              : null,
+            product.id,
+          ]
+        );
+        product.ozon_complex_attributes = productData.ozon_complex_attributes ?? null;
+      }
       if (productData.ozon_attributes != null && typeof productData.ozon_attributes === 'object') {
         await client.query(
           'UPDATE products SET ozon_attributes = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -3212,7 +3224,8 @@ class ProductsRepositoryPG {
         'block_stock_ozon', 'block_stock_wb', 'block_stock_ym',
         'ozon_attributes', 'wb_attributes', 'ym_attributes',
         'ozon_draft', 'wb_draft', 'ym_draft',
-        'images', 'rich_content_modules', 'video_cover_template', 'video_cover_slides'
+        'images', 'rich_content_modules', 'video_cover_template', 'video_cover_slides',
+        'ozon_complex_attributes'
       ];
       const updateFields = [];
       const params = [];
@@ -3276,7 +3289,8 @@ class ProductsRepositoryPG {
           field === 'ozon_attributes' || field === 'wb_attributes' || field === 'ym_attributes' ||
           field === 'ozon_draft' || field === 'wb_draft' || field === 'ym_draft' ||
           field === 'images' || field === 'mp_field_links' || field === 'rich_content_modules' ||
-          field === 'video_cover_template' || field === 'video_cover_slides'
+          field === 'video_cover_template' || field === 'video_cover_slides' ||
+          field === 'ozon_complex_attributes'
         ) {
           updateFields.push(`${field} = $${paramIndex++}::jsonb`);
           if (field === 'rich_content_modules') {

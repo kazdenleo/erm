@@ -411,28 +411,36 @@ async function pushOrdersToWildberriesSupply(ship, orderIds, { organizationId = 
     await addOrdersToWBSupplyBatch(wbConfig, supplyId, unique);
     return { ok: true, supplyId, added: unique.length };
   } catch (e) {
-    if (e?.statusCode === 409) {
-      return {
-        ok: false,
-        supplyId,
-        statusCode: 409,
-        message: e.message,
-        failedOrderIds: e.failedOrderIds,
-      };
-    }
     if (e.message && e.message.includes('404') && supplyId) {
       logger.warn(`[Shipments WB] Supply ${supplyId} not found, creating new`);
-      const apiName = buildWbSupplyApiName({
-        customName: ship.name,
-        shipmentDate: ship.createdAt || ship.shipmentDate || ship.closedAt,
-      });
-      const newSupplyId = await createWBSupply(wbConfig, { name: apiName });
-      ship.externalId = newSupplyId;
-      ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
-      await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, unique);
-      return { ok: true, supplyId: newSupplyId, added: unique.length, recreatedSupply: true };
+      try {
+        const apiName = buildWbSupplyApiName({
+          customName: ship.name,
+          shipmentDate: ship.createdAt || ship.shipmentDate || ship.closedAt,
+        });
+        const newSupplyId = await createWBSupply(wbConfig, { name: apiName });
+        ship.externalId = newSupplyId;
+        ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
+        await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, unique);
+        return { ok: true, supplyId: newSupplyId, added: unique.length, recreatedSupply: true };
+      } catch (e2) {
+        logger.warn('[Shipments WB] recreate supply failed', { message: e2?.message || String(e2) });
+        return {
+          ok: false,
+          supplyId: ship.externalId || supplyId,
+          statusCode: e2?.statusCode || e?.statusCode || 502,
+          message: e2?.message || e?.message || 'Не удалось добавить заказы в поставку WB',
+          failedOrderIds: e2?.failedOrderIds || e?.failedOrderIds,
+        };
+      }
     }
-    throw e;
+    return {
+      ok: false,
+      supplyId,
+      statusCode: e?.statusCode || 502,
+      message: e?.message || 'Не удалось добавить заказы в поставку WB',
+      failedOrderIds: e?.failedOrderIds,
+    };
   }
 }
 
@@ -678,6 +686,18 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
   return normalizeShipment(local);
 }
 
+/** Не подхватываем «забытые» открытые сборки (месяцами) — WB в такую GI уже не принимает заказы. */
+const OPEN_SHIPMENT_REUSE_DAYS = 14;
+
+function isOpenShipmentReusable(s) {
+  if (!s || s.closed === true || s.stickerArchiveOnly === true) return false;
+  const raw = s.createdAt ?? s.date ?? null;
+  if (raw == null || String(raw).trim() === '') return false;
+  const t = new Date(raw).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t < OPEN_SHIPMENT_REUSE_DAYS * 24 * 60 * 60 * 1000;
+}
+
 /**
  * Получить текущую открытую поставку по маркетплейсу или создать новую.
  * Используется при «Отправить на сборку»: все заказы до закрытия идут в одну поставку.
@@ -701,6 +721,7 @@ async function getOrCreateOpenShipment(
   const open = shipments.find(s => {
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== code || s.closed === true) return false;
+    if (!isOpenShipmentReusable(s)) return false;
     if (!shipmentVisibleForScope(s, profileId, org)) return false;
     if (code === 'manual') {
       const shipWh = Number(s.warehouseId ?? s.warehouse_id);
@@ -1376,7 +1397,21 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   if (code === 'wildberries') {
     const toSync = uniqueRequested;
     if (toSync.length > 0) {
-      const push = await pushOrdersToWildberriesSupply(ship, toSync, { organizationId });
+      let push;
+      try {
+        push = await pushOrdersToWildberriesSupply(ship, toSync, { organizationId });
+      } catch (e) {
+        logger.warn('[Shipments WB] push threw, keeping orders in local shipment', {
+          shipmentId: ship.id,
+          message: e?.message || String(e),
+        });
+        push = {
+          ok: false,
+          statusCode: e?.statusCode || 502,
+          message: e?.message || 'Не удалось добавить заказы в поставку WB',
+          failedOrderIds: e?.failedOrderIds,
+        };
+      }
       if (push.ok) {
         ship.localWbOnly = false;
         delete ship.wbLastSyncError;

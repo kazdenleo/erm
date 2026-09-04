@@ -140,3 +140,86 @@
   box-shadow: inset 0 0 0 2px rgba(220, 38, 38, 0.85);
 }
 
+/* Плотная карточка: короткие значения не растягиваются на всю ширину */
+.product-form .form-label,
+.product-form label.form-label,
+.product-form .label {
+  margin-bottom: 0.15rem;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.product-form .nav-tabs {
+  margin-bottom: 0.5rem !important;
+}
+
+.product-form .row.g-3 {
+  --bs-gutter-x: 0.65rem;
+  --bs-gutter-y: 0.4rem;
+}
+
+.product-form .form-control,
+.product-form .form-select {
+  padding: 0.22rem 0.5rem;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.product-form input[type='number'] {
+  max-width: 7.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.product-form input[type='date'] {
+  max-width: 11rem;
+}
+
+.product-form-barcode {
+  max-width: 18rem;
+}
+
+.product-form-num-col {
+  flex: 0 0 auto !important;
+  width: 8.25rem;
+  max-width: 100%;
+}
+
+.product-form-num-col .form-control,
+.product-form-num-col [role='status'].form-control {
+  max-width: 100%;
+}
+
+.product-form-short {
+  max-width: 16rem;
+}
+
+.product-form-meta > [class*='col-'] {
+  max-width: 22rem;
+}
+
+.product-form-dims {
+  padding: 8px 10px !important;
+}
+
+.product-form-dims .form-label {
+  white-space: nowrap;
+}
+
+.product-form textarea.form-control {
+  max-width: 100%;
+}
+
+.product-form .card-header {
+  padding: 0.45rem 0.7rem;
+  font-size: 13px;
+}
+
+.product-form .card-body {
+  padding: 0.7rem 0.75rem;
+}
+
+.product-form-marketplace-panel .row.g-3 {
+  --bs-gutter-x: 0.65rem;
+  --bs-gutter-y: 0.4rem;
+}
+

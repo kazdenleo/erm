@@ -9,6 +9,11 @@ import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { isOzonFreeTextMpAttr, isOzonManufacturerArticleAttr } from '../utils/ozonManufacturerArticle.js';
 import {
+  parseOzonComplexFromCard,
+  findOzonVehicleGroups,
+  countVehicleRows,
+} from '../utils/ozonComplexAttributes.js';
+import {
   cmToMm,
   DEDICATED_PACK_DIM_KEYS,
   isMpFieldLinked,
@@ -479,6 +484,17 @@ function mapOzonCardToUpdates(product, data) {
   const mergedAttrs = mergeOzonAttrsFromCard(attrs, prevAttrs);
   if (Object.keys(mergedAttrs).length > 0) {
     updates.ozon_attributes = mergedAttrs;
+  }
+
+  try {
+    const schemaForVehicles = Array.isArray(attrs) ? attrs : [];
+    const groups = findOzonVehicleGroups(schemaForVehicles, []);
+    const parsed = parseOzonComplexFromCard(data.complex_attributes, attrs, groups);
+    if (countVehicleRows(parsed) > 0) {
+      updates.ozon_complex_attributes = parsed;
+    }
+  } catch {
+    /* schema без complex_id — пропускаем */
   }
 
   enrichOzonUpdatesFromAttributes(updates, product, attrs);

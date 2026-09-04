@@ -189,6 +189,12 @@
   margin-right: 4px;
 }
 
+.assembly-filters .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .assembly-empty {
   padding: 32px 16px;
   text-align: center;

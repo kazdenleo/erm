@@ -52,8 +52,9 @@ async function addOrdersToOpenShipmentsForMarketplace(code, list, { profileId, o
         });
         continue;
       }
-      if (e?.statusCode === 409) {
-        const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
+      // WB 409/429/502: заказ уже записан в локальную поставку — не откатываем «На сборку».
+      const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
+      if (e?.shipment || e?.statusCode === 409 || e?.statusCode === 429 || e?.statusCode === 502) {
         warnings.push({
           marketplace: code,
           shipmentId: shipment.id,

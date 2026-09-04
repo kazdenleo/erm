@@ -57,9 +57,9 @@ const LABEL_STATUS_POLL_MS = 45000;
 const LABEL_STATUS_POLL_INTERVAL_MS = 400;
 
 const marketplaceLabels = [
-  { code: 'ozon', name: 'Ozon', icon: '🟠' },
-  { code: 'wildberries', name: 'Wildberries', icon: '🟣' },
-  { code: 'yandex', name: 'Яндекс.Маркет', icon: '🔴' }
+  { code: 'ozon', name: 'Ozon', icon: '🟠', badgeClass: 'ozon', shortLabel: 'OZ' },
+  { code: 'wildberries', name: 'Wildberries', icon: '🟣', badgeClass: 'wb', shortLabel: 'WB' },
+  { code: 'yandex', name: 'Яндекс.Маркет', icon: '🔴', badgeClass: 'ym', shortLabel: 'YM' },
 ];
 
 /**
@@ -1083,12 +1083,6 @@ export function Assembly() {
         </p>
       )}
       <h1 className="title">🔧 Сборка заказов</h1>
-      <p className="subtitle">
-        Заказы, отправленные на сборку ({assemblyTableGroups.length}). У каждого заказа в таблице — кнопка «Собрать»
-        без сканера: статус «Собран» и печать этикетки. При активном фильтре маркетплейса сканер собирает только
-        заказы этого МП; без фильтра — любой. После последнего штрихкода этикетка печатается автоматически;
-        кнопка «Завершить сборку» — запасной вариант.
-      </p>
 
       <div className="assembly-scan-block">
         <div className="assembly-scan-form">
@@ -1235,24 +1229,25 @@ export function Assembly() {
       </div>
 
       <div className="assembly-toolbar">
-        <div className="assembly-filters">
-          <span className="assembly-filter-label">Маркетплейс:</span>
-          <Button
-            variant={marketplaceFilter === 'all' ? 'primary' : 'secondary'}
-            size="small"
+        <div className="erp-filter-row" role="group" aria-label="Фильтр по маркетплейсу" style={{ marginBottom: 0 }}>
+          <button
+            type="button"
+            className={`erp-filter-btn${marketplaceFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
             onClick={() => setMarketplaceFilter('all')}
           >
             Все
-          </Button>
+          </button>
           {marketplaceLabels.map(mp => (
-            <Button
+            <button
               key={mp.code}
-              variant={marketplaceFilter === mp.code ? 'primary' : 'secondary'}
-              size="small"
+              type="button"
+              className={`erp-filter-btn${marketplaceFilter === mp.code ? ' erp-filter-btn--active' : ''}`}
               onClick={() => setMarketplaceFilter(mp.code)}
+              title={mp.name}
+              aria-label={mp.name}
             >
-              {mp.icon} {mp.name}
-            </Button>
+              <span className={`mp-badge ${mp.badgeClass}`}>{mp.shortLabel}</span>
+            </button>
           ))}
         </div>
         <div className="assembly-sort">

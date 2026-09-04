@@ -99,7 +99,7 @@ export function MarketplaceRichContentPanel({
           {categoryId ? (
             <>
               {' '}
-              <Link to={`/products/rich-content?categoryId=${encodeURIComponent(categoryId)}`}>
+              <Link to={`/settings/content/rich-content?categoryId=${encodeURIComponent(categoryId)}`}>
                 Шаблон категории
               </Link>
             </>
@@ -107,7 +107,7 @@ export function MarketplaceRichContentPanel({
           {productId ? (
             <>
               {' · '}
-              <Link to={`/products/rich-content?productId=${encodeURIComponent(productId)}`}>
+              <Link to={`/settings/content/rich-content?productId=${encodeURIComponent(productId)}`}>
                 Шаблон этого товара
               </Link>
             </>

@@ -34,7 +34,7 @@ function productLabel(p) {
   return name || sku || `Товар #${p.id}`;
 }
 
-export function VideoCoverConstructor() {
+export function VideoCoverConstructor({ hidePageHeader = false } = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [categories, setCategories] = useState([]);
   const [selectedId, setSelectedId] = useState(() => searchParams.get('categoryId') || SHARED_ID);
@@ -300,17 +300,23 @@ export function VideoCoverConstructor() {
 
   return (
     <div className="label-constructor-page">
-      <PageTitle
-        iconClass="pe-7s-film"
-        iconBgClass="bg-happy-itmeo"
-        title="Видеообложка Ozon"
-        subtitle="Шаблон для всех товаров или отдельно по категории. Генерация слайдов — в карточке товара."
-        actions={
-          <Link to="/settings" className="btn btn-secondary btn-sm btn-shadow">
-            ← К настройкам
-          </Link>
-        }
-      />
+      {hidePageHeader ? (
+        <p className="subtitle" style={{ marginTop: 0, marginBottom: '1rem' }}>
+          Шаблон для всех товаров или отдельно по категории. Генерация слайдов — в карточке товара.
+        </p>
+      ) : (
+        <PageTitle
+          iconClass="pe-7s-film"
+          iconBgClass="bg-happy-itmeo"
+          title="Видеообложка Ozon"
+          subtitle="Шаблон для всех товаров или отдельно по категории. Генерация слайдов — в карточке товара."
+          actions={
+            <Link to="/settings" className="btn btn-secondary btn-sm btn-shadow">
+              ← К настройкам
+            </Link>
+          }
+        />
+      )}
 
       <div className="card p-3 mb-3">
         <div className="row g-2 align-items-end">

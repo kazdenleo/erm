@@ -154,6 +154,14 @@ export const createProductSchema = z.object({
       ])
     )
     .optional(),
+  ozon_complex_attributes: z
+    .object({
+      version: z.number().optional(),
+      groups: z.array(z.any()).optional(),
+    })
+    .passthrough()
+    .nullable()
+    .optional(),
   // Как ozon: допускаем объекты (иначе bulk PUT с габаритами товара падает целиком)
   wb_attributes: z
     .record(

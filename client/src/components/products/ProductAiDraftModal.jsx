@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Modal } from '../common/Modal/Modal';
 import { Button } from '../common/Button/Button';
 import { aiApi } from '../../services/ai.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
+import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   AI_CARD_FIELDS,
   AI_CARD_FIELD_KEYS,
@@ -71,8 +71,7 @@ export function ProductAiDraftModal({
   onApplyBulk,
 }) {
   const isBulk = mode === 'bulk';
-  const [config, setConfig] = useState(null);
-  const [configLoading, setConfigLoading] = useState(true);
+  const { enabled: ready, loading: configLoading } = useAiEnabled();
   const [instruction, setInstruction] = useState('');
   const [fields, setFields] = useState(() => [...AI_CARD_FIELD_KEYS]);
   const [fillEmptyOnly, setFillEmptyOnly] = useState(true);
@@ -85,30 +84,17 @@ export function ProductAiDraftModal({
 
   useEffect(() => {
     if (!isOpen) return undefined;
-    let cancelled = false;
-    setConfigLoading(true);
     setError(null);
     setResult(null);
     setInstruction('');
     setFields([...AI_CARD_FIELD_KEYS]);
     setFillEmptyOnly(true);
-    aiApi
-      .getConfig()
-      .then((data) => {
-        if (!cancelled) setConfig(data);
-      })
-      .catch(() => {
-        if (!cancelled) setConfig({ configured: false });
-      })
-      .finally(() => {
-        if (!cancelled) setConfigLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    return undefined;
   }, [isOpen]);
 
-  const ready = !!(config?.configured && config?.enabled);
+  useEffect(() => {
+    if (isOpen && !configLoading && !ready) onClose?.();
+  }, [isOpen, configLoading, ready, onClose]);
 
   const toggleField = (key) => {
     setFields((prev) => {
@@ -185,14 +171,7 @@ export function ProductAiDraftModal({
           В ERP и на маркетплейсы ничего не уходит, пока вы не нажмёте «Сохранить».
         </p>
 
-        {configLoading ? (
-          <p className="product-ai-draft__hint">Проверяю подключение GigaChat…</p>
-        ) : !ready ? (
-          <p className="product-ai-draft__hint">
-            Подключите GigaChat в{' '}
-            <Link to="/integrations?tab=other&id=gigachat">Интеграции → Остальное → GigaChat</Link>.
-          </p>
-        ) : (
+        {configLoading || !ready ? null : (
           <>
             {isBulk ? (
               <p className="product-ai-draft__meta">

@@ -1,0 +1,26 @@
+.ozon-vehicle-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ozon-vehicle-editor__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.ozon-vehicle-editor__row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+}
+
+@media (max-width: 768px) {
+  .ozon-vehicle-editor__row {
+    grid-template-columns: 1fr;
+  }
+}

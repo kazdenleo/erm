@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { invalidateAiEnabled } from '../../hooks/useAiEnabled.js';
 import { Button } from '../../components/common/Button/Button';
 import { useAuth } from '../../context/AuthContext';
 import { aiApi } from '../../services/ai.api';
@@ -76,6 +77,7 @@ export function GigaChatTab({ onConfigChange }) {
       setCredentialsSet(!!data?.credentialsSet);
       setCredentials('');
       setNotice('Настройки сохранены.');
+      invalidateAiEnabled();
       onConfigChange?.();
     } catch (err) {
       setError(getApiErrorMessage(err, 'Не удалось сохранить настройки'));
@@ -94,6 +96,7 @@ export function GigaChatTab({ onConfigChange }) {
         const data = await aiApi.saveConfig({ scope, model, apiBase, enabled, credentials: cred });
         setCredentialsSet(!!data?.credentialsSet);
         setCredentials('');
+        invalidateAiEnabled();
         onConfigChange?.();
       }
       const data = await aiApi.test();

@@ -30,7 +30,13 @@ import {
   isSystemPriceAttr,
   SYSTEM_ATTR_KEYS,
 } from '../../../utils/attributeFormula.js';
-import { isEditableAttrType } from '../../../utils/editableAttribute.js';
+import { isEditableAttrType, attrAiChatEnabled } from '../../../utils/editableAttribute.js';
+import { EditableAttributeEditorModal } from '../../common/EditableAttributeEditorModal/EditableAttributeEditorModal.jsx';
+import { useAiEnabled } from '../../../hooks/useAiEnabled.js';
+import {
+  findOzonVehicleGroups,
+  normalizeOzonComplexAttributes,
+} from '../../../utils/ozonComplexAttributes.js';
 import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
 import {
@@ -532,7 +538,7 @@ function richContentGenerateTargets(links, clickedMp) {
 function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWholeCm = false, hint = null }) {
   const label = formatVolumeLitersLabel(length, width, height, unit, { roundUpToWholeCm });
   return (
-    <div className="col-6 col-md-3">
+    <div className="col-auto product-form-num-col">
       <label className="form-label" htmlFor={id}>
         Объём
       </label>
@@ -1244,7 +1250,7 @@ function YmPackagingDimensionFields({
       {dimFields.map((f) => {
         const id = `${idPrefix}-${f.key}`;
         return (
-          <div className="col-12 col-md-6 col-lg-4" key={f.key}>
+          <div className="col-auto product-form-num-col" key={f.key}>
             <label className="form-label" htmlFor={id}>
               {f.label}
               <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>({L})</span>
@@ -1262,7 +1268,7 @@ function YmPackagingDimensionFields({
           </div>
         );
       })}
-      <div className="col-12 col-md-6 col-lg-4">
+      <div className="col-auto product-form-num-col">
         <label className="form-label" htmlFor={`${idPrefix}-weight`}>
           Вес с упаковкой
           <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>({W})</span>
@@ -1302,7 +1308,7 @@ function YmPackagingDimensionFields({
           {productDimFields.map((f) => {
             const id = `${idPrefix}-product-${f.key}`;
             return (
-              <div className="col-12 col-md-6 col-lg-4" key={id}>
+              <div className="col-auto product-form-num-col" key={id}>
                 <label className="form-label" htmlFor={id}>
                   {f.label}
                   <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: 4 }}>
@@ -1499,7 +1505,7 @@ function MpSkuCountryDimsEditor({
     <div data-testid={`mp-meta-dims-${code}`}>
       {code !== 'ozon' ? (
       <div className="row g-3">
-      <div className="col-md-4">
+        <div className="col-md-4">
         <label className="form-label" htmlFor={`${code}-tab-country`}>
           Страна
           <MpFromMainLinkIcon linked={linkedCountry} />
@@ -1507,7 +1513,7 @@ function MpSkuCountryDimsEditor({
         <input
           id={`${code}-tab-country`}
           type="text"
-          className="form-control form-control-sm"
+          className="form-control form-control-sm product-form-short"
           value={countryValue}
           onChange={(e) => onCountryChange(e.target.value)}
           list={`${code}-country-list`}
@@ -1555,7 +1561,7 @@ function MpSkuCountryDimsEditor({
         {showProductDimEditor ? (
           <div className="row g-2">
             {productDimFields.map((f) => (
-              <div className="col-6 col-md-3" key={f.key}>
+              <div className="col-auto product-form-num-col" key={f.key}>
                 <label className="form-label" htmlFor={`${code}-product-dim-${f.key}`}>
                   {f.label}
                   {linkedProductDims ? (
@@ -1586,7 +1592,7 @@ function MpSkuCountryDimsEditor({
               </div>
             ) : null}
             {ozonYmProductFields.map((f) => (
-              <div className="col-6 col-md-3" key={`attr-${f.key}`}>
+              <div className="col-auto product-form-num-col" key={`attr-${f.key}`}>
                 <label className="form-label" htmlFor={`${code}-product-attr-${f.key}`}>
                   {f.label}
                 </label>
@@ -1607,7 +1613,7 @@ function MpSkuCountryDimsEditor({
               const label = `${baseLabel} (${L})`;
               const val = lengthCmToDisplay(itemAttrValues?.[f.key], lengthUnit);
               return (
-                <div className="col-6 col-md-3" key={f.key}>
+                <div className="col-auto product-form-num-col" key={f.key}>
                   <label className="form-label" htmlFor={`wb-item-attr-${f.key}`}>
                     {label}
                   </label>
@@ -1683,7 +1689,7 @@ function MpSkuCountryDimsEditor({
         )}
         <div className="row g-2">
           {packDimFields.map((f) => (
-            <div className="col-6 col-md-3" key={f.key}>
+            <div className="col-auto product-form-num-col" key={f.key}>
               <label className="form-label" htmlFor={`${code}-dim-${f.key}`}>
                 {f.label}
                 <OzonDimsLockMark locked={ozonDimsLocked} />
@@ -1790,6 +1796,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ozonAttributes, setOzonAttributes] = useState([]);
   const [ozonAttributesLoading, setOzonAttributesLoading] = useState(false);
   const [ozonAttributeValues, setOzonAttributeValues] = useState({});
+  const [ozonComplexAttributes, setOzonComplexAttributes] = useState(() =>
+    normalizeOzonComplexAttributes(null)
+  );
+  const [editableAttrModal, setEditableAttrModal] = useState(null);
   const [ozonDictValues, setOzonDictValues] = useState({});
   const ozonDictQueueRef = useRef(null);
   const applyErpAttrValueToLinkedMpRef = useRef(null);
@@ -1868,6 +1878,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [productImages, setProductImages] = useState([]);
   const [imageLightboxIndex, setImageLightboxIndex] = useState(null);
   const [aiDraftOpen, setAiDraftOpen] = useState(false);
+  const { enabled: aiEnabled } = useAiEnabled();
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
   const [imageAspectLoadingId, setImageAspectLoadingId] = useState('');
   const [imageError, setImageError] = useState('');
@@ -2222,6 +2233,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
           )
         : {};
       setOzonAttributeValues(ozonAttrs);
+      setOzonComplexAttributes(
+        normalizeOzonComplexAttributes(currentProduct.ozon_complex_attributes)
+      );
       const wbAttrs = currentProduct.wb_attributes && typeof currentProduct.wb_attributes === 'object'
         ? Object.fromEntries(
             Object.entries(currentProduct.wb_attributes).map(([k, v]) => [
@@ -3073,6 +3087,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }),
     [ozonSchemaAttributes, ozonAttributeValues, ozonFetchedProduct, ozonLiveFetchedAttributes]
   );
+
+  const ozonVehicleGroupsForEditable = useMemo(() => {
+    if (!editableAttrModal) return [];
+    const links = normalizeAttrMpLinks(editableAttrModal.mp_links);
+    return findOzonVehicleGroups(ozonFormAttributes, links.ozon);
+  }, [editableAttrModal, ozonFormAttributes]);
 
   const visibleOzonFormAttrs = useMemo(
     () =>
@@ -7090,6 +7110,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         ? attributeValuesToolPayload
         : undefined,
       ozon_attributes: ozonAttributesPayload,
+      ozon_complex_attributes: ozonComplexAttributes,
       wb_attributes: wbAttributesPayload,
       ym_attributes: (() => {
         const dupIds = new Set(
@@ -7481,8 +7502,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'main' && (
         <>
-      <div className="row g-3">
-        <div className="col-md-8">
+        <div className="row g-2">
+        <div className="col-md-9">
           <MpFieldLabel
             htmlFor="name"
             fieldKey="name"
@@ -7513,7 +7534,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         {errors.name && <div className="error">{errors.name}</div>}
       </div>
 
-        <div className="col-md-4">
+        <div className="col-md-3">
           <MpFieldLabel
             htmlFor="sku"
             fieldKey="sku"
@@ -7532,7 +7553,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   id="sku"
                   type="text"
                   className={limitClassName(
-                    'form-control form-control-sm',
+                    'form-control form-control-sm product-form-short',
                     formControlLimitHit(limitsByMp, formData, 'sku', fieldLimitExtras)
                   )}
                   placeholder={skuPrefix ? `${skuPrefix}001` : 'SKU-001'}
@@ -7552,7 +7573,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      <div className="mt-3">
+      <div className="mt-2">
         <MpFieldLabel
           htmlFor="description"
           fieldKey="description"
@@ -7567,7 +7588,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             'form-control form-control-sm',
             formControlLimitHit(limitsByMp, formData, 'description', fieldLimitExtras)
           )}
-          rows="6"
+          rows="3"
           placeholder="Краткое описание"
           value={formData.description}
           onChange={(e) => handleChange('description', e.target.value)}
@@ -7597,7 +7618,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
 
       {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
-      <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
           🖼️ Изображения товара
         </h3>
@@ -7909,8 +7930,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
 
       {kitsEnabled ? (
-      <div className="row g-3 mt-1 align-items-end">
-            <div className="col-12 col-md-3">
+      <div className="row g-2 mt-1 align-items-end product-form-meta">
+            <div className="col-6 col-md-3 col-xl-2">
               <label className="form-label" htmlFor="productType">
                 Тип товара
               </label>
@@ -7924,11 +7945,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <option value="kit">Комплект</option>
               </select>
             </div>
-            <div className="col-12 col-md-auto">
+            <div className="col-auto">
               {formData.product_type === 'kit' ? (
                 <Button
                   type="button"
                   variant="secondary"
+                  size="small"
                   onClick={() => {
                     setFormData((prev) => {
                       if (prev.product_type !== 'kit') return prev;
@@ -8058,8 +8080,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </Modal>
 
-      <div className="row g-3 mt-1">
-        <div className="col-md-6">
+      <div className="row g-2 mt-1 product-form-meta">
+        <div className="col-md-4">
           <label className="form-label" htmlFor="productCategory">
             Категория <span style={{color: '#ef4444'}}>*</span>
           </label>
@@ -8080,7 +8102,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           {errors.categoryId && <div className="error">{errors.categoryId}</div>}
         </div>
 
-        <div className="col-md-6">
+        <div className="col-md-4">
           <label className="form-label" htmlFor="productOrganization">Организация</label>
           <select
             id="productOrganization"
@@ -8098,7 +8120,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
 
         {supplierBindingEnabled ? (
-          <div className="col-md-6">
+          <div className="col-md-4">
             <label className="form-label" htmlFor="productSupplier">Поставщик</label>
             <select
               id="productSupplier"
@@ -8119,7 +8141,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
         ) : null}
 
-        <div className="col-md-6">
+        <div className="col-md-4">
           <MpFieldLabel
             htmlFor="brand"
             fieldKey="brand"
@@ -8151,7 +8173,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               extras={fieldLimitExtras}
             />
           </div>
-        <div className="col-md-6">
+        <div className="col-md-4">
           <MpFieldLabel
             htmlFor="country_of_origin"
             fieldKey="country"
@@ -8163,25 +8185,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <input
             id="country_of_origin"
             type="text"
-            className="form-control form-control-sm"
+            className="form-control form-control-sm product-form-short"
             value={formData.country_of_origin}
             onChange={(e) => handleChange('country_of_origin', e.target.value)}
             placeholder="Начните вводить страну"
             list="country-of-origin-list"
+            title="Можно выбрать из словаря или ввести вручную"
           />
           <datalist id="country-of-origin-list">
             {COUNTRY_OPTIONS.map((country) => (
               <option key={country} value={country} />
             ))}
           </datalist>
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Можно выбрать из словаря или ввести вручную.
-          </div>
         </div>
       </div>
 
-      <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
-        <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
+      <div className="product-form-dims" style={{ marginTop: '10px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
+        <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text)' }}>
           Габариты
         </h4>
 
@@ -8204,13 +8224,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
             size={18}
           />
         </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          Размеры самого товара без упаковки ({lengthLbl} / {weightLbl}). Значки OZ / WB / ЯМ включают подстановку с «Основного» на маркетплейс.
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
+          Без упаковки, {lengthLbl} / {weightLbl}. OZ / WB / ЯМ — подстановка с «Основного».
         </div>
-        <div className="row g-3 mb-3">
-          <div className="col-6 col-md-3">
+        <div className="row g-2 mb-2">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="product_length">
-              Длина товара ({lengthLbl})
+            Длина ({lengthLbl})
             </label>
             <input
               id="product_length"
@@ -8225,9 +8245,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             />
           </div>
-          <div className="col-6 col-md-3">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="product_width">
-              Ширина товара ({lengthLbl})
+            Ширина ({lengthLbl})
             </label>
             <input
               id="product_width"
@@ -8242,9 +8262,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             />
           </div>
-          <div className="col-6 col-md-3">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="product_height">
-              Высота товара ({lengthLbl})
+            Высота ({lengthLbl})
             </label>
             <input
               id="product_height"
@@ -8259,9 +8279,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             />
           </div>
-          <div className="col-6 col-md-3">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="product_weight">
-              Вес товара ({weightLbl})
+            Вес ({weightLbl})
             </label>
             <input
               id="product_weight"
@@ -8309,15 +8329,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
         {isOzonPackagingDimensionsLocked(formData) ? (
           <div style={{ fontSize: 11, color: '#d97706', marginBottom: 10 }}>{OZON_DIMS_LOCK_TITLE}</div>
         ) : (
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-            В интерфейсе — {lengthLbl} / {weightLbl}. В базе — мм и г. Значки OZ/WB/ЯМ включают подстановку на вкладку МП.
-            На маркетплейсы уходит в единицах кабинета МП.
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
+            {lengthLbl} / {weightLbl}. OZ/WB/ЯМ — подстановка на вкладку МП.
           </div>
         )}
-        <div className="row g-3 mb-3">
-          <div className="col-6 col-md-2">
+        <div className="row g-2 mb-2">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="length">
-              Длина упаковки ({lengthLbl})
+              Длина ({lengthLbl})
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -8337,9 +8356,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
             />
           </div>
-          <div className="col-6 col-md-2">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="width">
-              Ширина упаковки ({lengthLbl})
+              Ширина ({lengthLbl})
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -8359,9 +8378,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
             />
           </div>
-          <div className="col-6 col-md-2">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="height">
-              Высота упаковки ({lengthLbl})
+              Высота ({lengthLbl})
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -8381,9 +8400,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
             />
           </div>
-          <div className="col-6 col-md-3">
+          <div className="col-auto product-form-num-col">
             <label className="form-label" htmlFor="weight">
-              Вес с упаковкой ({weightLbl})
+              Вес ({weightLbl})
               <OzonDimsLockMark locked={isOzonPackagingDimensionsLocked(formData)} />
             </label>
             <input
@@ -8403,7 +8422,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
             />
           </div>
-          <div className="col-6 col-md-3">
+          <div className="col-auto product-form-num-col">
             <div className="form-label">Объём (л)</div>
             <div
               role="status"
@@ -8588,7 +8607,27 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   }
                 >
                   <ErpAttrFieldHeading {...headingProps} htmlFor={`attr-${attr.id}`} />
-                  {isEditableAttrType(attr.type) ||
+                  {isEditableAttrType(attr.type) ? (
+                    <div className="d-flex flex-column gap-2">
+                      <textarea
+                        id={`attr-${attr.id}`}
+                        className={erpInputClass('form-control form-control-sm')}
+                        rows={4}
+                        value={rawValue}
+                        readOnly
+                        onClick={() => setEditableAttrModal(attr)}
+                        onFocus={() => setEditableAttrModal(attr)}
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="small"
+                        onClick={() => setEditableAttrModal(attr)}
+                      >
+                        Редактировать{aiEnabled && attrAiChatEnabled(attr) ? ' · ИИ' : ''}
+                      </Button>
+                    </div>
+                  ) : isEditableAttrType(attr.type) ||
                   /аналог|применимост/i.test(String(attr.name || '')) ||
                   String(rawValue).includes('\n') ? (
                     <textarea
@@ -8649,9 +8688,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
             Общий — запасной для расчёта мин. цены, если по МП ещё нет статистики («нет данных»).
             Ozon / WB / Я.Маркет обновляются раз в сутки из API (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
           </div>
-          <div className="row g-2 mt-2">
-            <div className="col-md-4">
-              <label className="form-label" htmlFor="buyout_rate_ozon" style={{fontSize: '12px'}}>Ozon, %</label>
+          <div className="row g-2 mt-1">
+            <div className="col-auto product-form-num-col">
+              <label className="form-label" htmlFor="buyout_rate_ozon">Ozon, %</label>
               <input
                 id="buyout_rate_ozon"
                 type="number"
@@ -8661,8 +8700,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 placeholder="нет данных"
               />
             </div>
-            <div className="col-md-4">
-              <label className="form-label" htmlFor="buyout_rate_wb" style={{fontSize: '12px'}}>WB, %</label>
+            <div className="col-auto product-form-num-col">
+              <label className="form-label" htmlFor="buyout_rate_wb">WB, %</label>
               <input
                 id="buyout_rate_wb"
                 type="number"
@@ -8672,8 +8711,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 placeholder="нет данных"
               />
             </div>
-            <div className="col-md-4">
-              <label className="form-label" htmlFor="buyout_rate_ym" style={{fontSize: '12px'}}>Я.Маркет, %</label>
+            <div className="col-auto product-form-num-col">
+              <label className="form-label" htmlFor="buyout_rate_ym">Я.Маркет, %</label>
               <input
                 id="buyout_rate_ym"
                 type="number"
@@ -8719,7 +8758,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             const generating = barcodeGeneratingIndex === index;
             return (
             <div key={index} style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
-              <div style={{ flex: 1, position: 'relative' }}>
+              <div className="product-form-barcode" style={{ position: 'relative', width: '18rem', maxWidth: '100%' }}>
                 <input
                   type="text"
                   className="form-control form-control-sm"
@@ -8734,7 +8773,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   }}
                   autoComplete="off"
                   spellCheck={false}
-                  style={{ width: '100%' }}
                 />
                 {!code ? (
                   <button
@@ -8922,7 +8960,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <a
               className="btn btn-outline-secondary btn-sm"
-              href={`/settings/video-cover?productId=${encodeURIComponent(currentProduct?.id || '')}&categoryId=${encodeURIComponent(formData.categoryId || '')}`}
+              href={`/settings/content/video-cover?productId=${encodeURIComponent(currentProduct?.id || '')}&categoryId=${encodeURIComponent(formData.categoryId || '')}`}
               title="Шаблон слайдов и эффект перехода (Настройки)"
             >
               Шаблон обложки
@@ -9630,7 +9668,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </div>
               )}
               <div className="row g-3">
-                <div className="col-md-6">
+                <div className="col-md-8">
                   <label className="form-label" htmlFor="wb-tab-name-wb">
                     Название (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'wb') ? (
@@ -9650,7 +9688,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     items={limitItemsForControl(limitsByMp, formData, 'mp_wb_name', fieldLimitExtras)}
                   />
                 </div>
-                <div className="col-md-6">
+                <div className="col-md-4">
                   <label className="form-label" htmlFor="wb-tab-brand-wb">
                     Бренд (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'wb') ? (
@@ -9682,7 +9720,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <textarea
                     id="wb-tab-description"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_description')}
-                    rows={5}
+                    rows={3}
                     value={formData.mp_wb_description}
                     onChange={(e) =>
                       handleMpCardFieldChange(
@@ -10012,8 +10050,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 Упаковка в интерфейсе — {lengthLbl} / {weightLbl} (на Я.Маркет уходит в см/кг).
                 Вес в Маркете — только «вес товара в упаковке» (поле оффера). Отдельного «веса товара» без упаковки нет.
               </p>
-              <div className="row g-3 mb-3">
-                <div className="col-12 col-md-6">
+              <div className="row g-2 mb-2">
+                <div className="col-md-4">
                   <label className="form-label" htmlFor="ym-tab-country">
                     Страна производства
                     <MpFromMainLinkIcon linked={isMpFieldLinked(formData.mp_field_links, 'country', 'ym')} />
@@ -10021,7 +10059,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <input
                     id="ym-tab-country"
                     type="text"
-                    className="form-control form-control-sm"
+                    className="form-control form-control-sm product-form-short"
                     value={
                       isMpFieldLinked(formData.mp_field_links, 'country', 'ym')
                         ? formData.country_of_origin
@@ -10191,7 +10229,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <textarea
                     id="ym-tab-description"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ym_description')}
-                    rows={5}
+                    rows={3}
                     value={formData.mp_ym_description}
                     onChange={(e) =>
                       handleMpCardFieldChange(
@@ -10220,7 +10258,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     );
                   })()}
                 </div>
-                <div className="col-12 col-md-6">
+                <div className="col-md-4">
                   <label className="form-label" htmlFor="ym-tab-vendor">
                     Бренд (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'ym') ? (
@@ -10230,7 +10268,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <input
                     id="ym-tab-vendor"
                     type="text"
-                    className="form-control form-control-sm"
+                    className="form-control form-control-sm product-form-short"
                     value={
                       isMpFieldLinked(formData.mp_field_links, 'brand', 'ym')
                         ? String(formData.brand || '')
@@ -10250,7 +10288,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     placeholder="vendor в карточке Маркета"
                   />
                 </div>
-                <div className="col-12 col-md-6">
+                <div className="col-md-4">
                   <label className="form-label" htmlFor="ym-tab-manufacturer">
                     Изготовитель (Яндекс)
                   </label>
@@ -10265,7 +10303,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     placeholder="Если в категории Маркета есть «Изготовитель» — значение уйдёт в характеристику"
                   />
                 </div>
-                <div className="col-12 col-md-6">
+                <div className="col-md-4">
                   <label className="form-label" htmlFor="ym-tab-vendor-code">
                     Артикул производителя (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') ? (
@@ -10275,7 +10313,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <input
                     id="ym-tab-vendor-code"
                     type="text"
-                    className="form-control form-control-sm"
+                    className="form-control form-control-sm product-form-short"
                     value={String(getMpDraft(formData, 'ym').vendorCode || '')}
                     onChange={(e) =>
                       setFormData((prev) => withMpDraftPatch(prev, 'ym', { vendorCode: e.target.value }))
@@ -10669,14 +10707,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {richContentLoading ? 'Генерация…' : 'Сгенерировать Rich-контент'}
             </Button>
           ) : null}
-          <Button
-            type="button"
-            variant="secondary"
-            title="GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните"
-            onClick={() => setAiDraftOpen(true)}
-          >
-            Черновик ИИ
-          </Button>
+          {aiEnabled ? (
+            <Button
+              type="button"
+              variant="secondary"
+              title="GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните"
+              onClick={() => setAiDraftOpen(true)}
+            >
+              Черновик ИИ
+            </Button>
+          ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">
             Сохранить
           </Button>
@@ -10705,6 +10745,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
           })
         }
         onApply={applyAiDraft}
+      />
+      <EditableAttributeEditorModal
+        isOpen={!!editableAttrModal}
+        onClose={() => setEditableAttrModal(null)}
+        attr={editableAttrModal}
+        value={
+          editableAttrModal
+            ? String(formData.attributeValues?.[String(editableAttrModal.id)] ?? '')
+            : ''
+        }
+        productId={currentProduct?.id || product?.id || null}
+        showAiChat={aiEnabled}
+        vehicleGroups={ozonVehicleGroupsForEditable}
+        ozonComplex={ozonComplexAttributes}
+        getContext={() =>
+          snapshotAiCardDraft(formData, {
+            categoryName: selectedCategoryForCert?.name || '',
+          })
+        }
+        onApply={({ value: nextVal, ozonComplex: nextComplex }) => {
+          if (editableAttrModal) handleAttributeChange(editableAttrModal.id, nextVal);
+          if (nextComplex) setOzonComplexAttributes(normalizeOzonComplexAttributes(nextComplex));
+        }}
       />
     </>
   );
