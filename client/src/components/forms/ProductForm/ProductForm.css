@@ -260,59 +260,74 @@
   --bs-gutter-y: 0.25rem;
 }
 
-/* Подписи полей МП — всплывают при наведении, не занимают высоту */
-.product-form-marketplace-panel .row > [class*='col'],
-.product-form-marketplace-panel .product-form-num-col {
+.product-form-marketplace-panel label.form-label,
+.product-form-marketplace-panel .form-check-label {
   position: relative;
+  overflow: visible;
 }
 
-.product-form-marketplace-panel label.form-label {
+.field-info-hint {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.field-info-hint__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid #64748b;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  line-height: 1;
+  cursor: help;
+}
+
+.field-info-hint__popup {
+  display: none;
   position: absolute;
   left: 0;
   top: calc(100% + 6px);
-  bottom: auto;
-  z-index: 50;
+  z-index: 1200;
   width: max-content;
   max-width: min(22rem, 78vw);
-  margin: 0;
-  padding: 6px 9px;
+  padding: 8px 10px;
   font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.4;
   color: #f8fafc;
   background: #111827;
   border-radius: 6px;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.28);
-  opacity: 0;
-  visibility: hidden;
+  white-space: pre-wrap;
   pointer-events: none;
-  white-space: normal;
 }
 
-.product-form-marketplace-panel label.form-label::after {
+.field-info-hint__popup::before {
   content: '';
   position: absolute;
-  left: 12px;
+  left: 5px;
   bottom: 100%;
-  top: auto;
   border: 5px solid transparent;
   border-bottom-color: #111827;
 }
 
-.product-form-marketplace-panel .row > [class*='col']:hover > label.form-label,
-.product-form-marketplace-panel .row > [class*='col']:focus-within > label.form-label,
-.product-form-marketplace-panel .product-form-num-col:hover > label.form-label,
-.product-form-marketplace-panel .product-form-num-col:focus-within > label.form-label {
-  opacity: 1;
-  visibility: visible;
-}
-
-.product-form-marketplace-panel label.form-label span {
-  color: #e2e8f0;
-}
-
-.product-form-marketplace-panel .mp-from-main-link {
-  filter: none;
+.product-form-marketplace-panel label.form-label:hover .field-info-hint__popup,
+.product-form-marketplace-panel .form-check-label:hover .field-info-hint__popup,
+.field-info-hint:hover .field-info-hint__popup,
+.field-info-hint:focus-within .field-info-hint__popup {
+  display: block;
 }
 
 .product-form-marketplace-panel .help-text,

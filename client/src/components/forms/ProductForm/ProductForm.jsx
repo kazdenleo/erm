@@ -534,6 +534,34 @@ function richContentGenerateTargets(links, clickedMp) {
   return { list, genMp };
 }
 
+function FieldInfoHint({ text }) {
+  const hint = String(text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!hint) return null;
+  return (
+    <span
+      className="field-info-hint"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <span className="field-info-hint__icon" tabIndex={0} aria-label="Подсказка">
+        i
+      </span>
+      <span className="field-info-hint__popup" role="tooltip">
+        {hint}
+      </span>
+    </span>
+  );
+}
+
 /** Readonly «Объём» рядом с габаритами (мм или см). */
 function DimVolumeReadonly({ length, width, height, unit = 'mm', id, roundUpToWholeCm = false, hint = null }) {
   const label = formatVolumeLitersLabel(length, width, height, unit, { roundUpToWholeCm });
@@ -9252,10 +9280,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 categoryDedicatedCharcLinks
                               )}
                             />
-                            {attr.description && (
-                              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
-                            )}
-          </label>
+                            <FieldInfoHint text={attr.description} />
+                          </label>
                           <select
                             id={`ozon-attr-${attr.id}`}
                             className={mpAttrClass('form-select form-select-sm', 'ozon', attr.id, rawValue)}
@@ -9287,7 +9313,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       const checked = rawValue === 'true' || rawValue === true;
                       return (
                         <div key={attr.id} className={colClass}>
-                          <div className="form-check" title={[attr.name, attr.description].filter(Boolean).join(' — ')}>
+                          <div className="form-check">
           <input
                               className="form-check-input"
                               id={`ozon-attr-${attr.id}`}
@@ -9313,8 +9339,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                   categoryDedicatedCharcLinks
                                 )}
                               />
+                              <FieldInfoHint text={attr.description} />
                             </label>
-        </div>
+                          </div>
                         </div>
                       );
                     }
@@ -9338,9 +9365,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                               categoryDedicatedCharcLinks
                             )}
                           />
-                          {attr.description && (
-                            <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>{attr.description}</span>
-                          )}
+                          <FieldInfoHint text={attr.description} />
                         </label>
                         {(() => {
                           const isAnnotation = isOzonAnnotationAttr(attr);
@@ -9707,6 +9732,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                   categoryDedicatedCharcLinks
                                 )}
                               />
+                              <FieldInfoHint text={a.description || a.charcDescription} />
                             </label>
                             {dictOpts ? (
                               <select
@@ -9776,6 +9802,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                   categoryDedicatedCharcLinks
                                 )}
                               />
+                              <FieldInfoHint text={c.description || c.charcDescription} />
                             </label>
                             <input
                               id={`wb-attr-${key}`}
@@ -10341,11 +10368,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
                             {ymSyncHint}
                             <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: '4px' }}>(ENUM)</span>
-                            {a.description ? (
-                              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '2px' }}>
-                                {a.description}
-                              </span>
-                            ) : null}
+                            <FieldInfoHint text={a.description} />
                           </label>
                           <select
                             id={`ym-attr-${key}`}
@@ -10388,6 +10411,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             {name}
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
                             {ymSyncHint}
+                            <FieldInfoHint text={a.description} />
                           </label>
                           <select
                             id={`ym-attr-${key}`}
@@ -10409,6 +10433,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             {name}
                             {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
                             {ymSyncHint}
+                            <FieldInfoHint text={a.description} />
                           </label>
                           <input
                             id={`ym-attr-${key}`}
@@ -10437,6 +10462,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           {a.ym_parameter_type ? (
                             <span style={{ fontSize: '10px', color: 'var(--muted)', marginLeft: '4px' }}>({a.ym_parameter_type})</span>
                           ) : null}
+                          <FieldInfoHint text={a.description} />
                         </label>
                         <input
                           id={`ym-attr-${key}`}
@@ -10444,7 +10470,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           className={mpAttrClass('form-control form-control-sm', 'ym', key, valueStr)}
                           value={valueStr}
                           placeholder={required ? `${name} *` : name}
-                          title={a.description || undefined}
                           onChange={(e) => setVal(e.target.value)}
                         />
                         <ControlFieldLimitHint
