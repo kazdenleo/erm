@@ -226,7 +226,7 @@ function receiptDocumentTypeNeedsSupplier(documentType) {
 
 function receiptDocumentTypeShowsCost(documentType) {
   const dt = String(documentType || 'receipt').toLowerCase();
-  return dt !== 'return' && dt !== 'writeoff' && dt !== 'transfer';
+  return dt !== 'writeoff' && dt !== 'transfer';
 }
 
 function formatDocumentWarehouseCell(r) {
@@ -406,10 +406,11 @@ export function WarehouseOperations({
       /* ignore */
     }
   }, []);
-  // Возврат поставщику: организация, поставщик и список { productId, sku, name, quantity }
+  // Возврат поставщику: организация, поставщик и список { productId, sku, name, quantity, cost }
   const [returnOrganizationId, setReturnOrganizationId] = useState('');
   const [returnSupplierId, setReturnSupplierId] = useState('');
   const [returnList, setReturnList] = useState([]);
+  const [addReturnModalOpen, setAddReturnModalOpen] = useState(false);
   const returnScanDebounceRef = useRef(null);
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
@@ -637,12 +638,12 @@ export function WarehouseOperations({
 
   useEffect(() => {
     if (mode === MODE_WRITEOFF) writeoffScanInputRef.current?.focus();
-    if (mode === MODE_RETURN_SUPPLIER) returnScanInputRef.current?.focus();
+    if (mode === MODE_RETURN_SUPPLIER && addReturnModalOpen) returnScanInputRef.current?.focus();
     if (mode === MODE_RETURN_CUSTOMER && customerReturnsInnerTab === 'pickup') {
       customerReturnScanInputRef.current?.focus();
     }
     if (mode === MODE_TRANSFER) transferScanInputRef.current?.focus();
-  }, [mode, customerReturnsInnerTab]);
+  }, [mode, customerReturnsInnerTab, addReturnModalOpen]);
 
   useEffect(() => {
     if (mode !== MODE_RETURN_CUSTOMER) return undefined;
@@ -2336,6 +2337,9 @@ export function WarehouseOperations({
     const qty = Math.min(Math.max(1, parseInt(add, 10) || 1), maxQty);
     if (qty < 1) return;
     const id = product.id;
+    const pc = product?.cost;
+    const defaultCost =
+      pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : '';
     setReturnList((prev) => {
       const existing = prev.find((item) => String(item.productId) === String(id));
       if (existing) {
@@ -2355,6 +2359,7 @@ export function WarehouseOperations({
           name: product.name || 'Без названия',
           quantity: qty,
           warehouseMaxQty: maxQty,
+          cost: defaultCost,
         },
       ];
     });
@@ -2509,6 +2514,36 @@ export function WarehouseOperations({
     );
   };
 
+  const updateReturnCost = (index, value) => {
+    setReturnList((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, cost: value } : item))
+    );
+  };
+
+  const returnListTotals = useMemo(() => {
+    let units = 0;
+    let sumRub = 0;
+    for (const item of returnList) {
+      const q = Math.max(0, Number(item.quantity) || 0);
+      units += q;
+      const cost = item.cost != null && item.cost !== '' ? Number(item.cost) : null;
+      if (cost != null && Number.isFinite(cost)) sumRub += q * cost;
+    }
+    return { units, sumRub };
+  }, [returnList]);
+
+  const openAddReturnModal = useCallback(() => {
+    setLookupError(null);
+    setOpMessage(null);
+    setAddReturnModalOpen(true);
+    window.setTimeout(() => returnScanInputRef.current?.focus(), 50);
+  }, []);
+
+  const closeAddReturnModal = useCallback(() => {
+    if (opLoading) return;
+    setAddReturnModalOpen(false);
+  }, [opLoading]);
+
   const applyReturnToSupplier = async () => {
     if (returnList.length === 0) {
       setOpMessage('Список пуст');
@@ -2542,7 +2577,17 @@ export function WarehouseOperations({
         const maxQty = await warehouseQtyForProduct(product, returnWarehouseId);
         if (maxQty < 1) continue;
         const qty = Math.min(Math.max(1, parseInt(l.quantity, 10) || 1), maxQty);
-        lines.push({ productId: pid, quantity: qty });
+        const costParsed =
+          l.cost !== '' && l.cost != null
+            ? parseFloat(String(l.cost).replace(',', '.'))
+            : null;
+        lines.push({
+          productId: pid,
+          quantity: qty,
+          ...(costParsed != null && Number.isFinite(costParsed) && costParsed >= 0
+            ? { cost: costParsed }
+            : {}),
+        });
       }
       if (lines.length === 0) {
         setOpMessage(
@@ -2562,6 +2607,7 @@ export function WarehouseOperations({
       setOpMessage(receiptNumber ? `Возвратная накладная ${receiptNumber} оформлена` : 'Возврат оформлен');
       playEventSound(SOUND_EVENTS.success);
       setReturnList([]);
+      setAddReturnModalOpen(false);
       onRefresh?.();
       loadReceiptsList(MODE_RETURN_SUPPLIER);
     } catch (e) {
@@ -3754,183 +3800,22 @@ export function WarehouseOperations({
 
       {mode === MODE_RETURN_SUPPLIER && (
         <div className="warehouse-ops-panel return-supplier-panel">
-          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Остаток проверяется по выбранному складу, а не по общему количеству в каталоге. Документы сохраняются в списке ниже.</p>
-          <div className="warehouse-ops-return-org-supplier">
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
-                Организация (от имени которой возврат) <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
-                value={returnOrganizationId}
-                onChange={e => setReturnOrganizationId(e.target.value)}
-                className="warehouse-ops-select"
-              >
-                <option value="">— Выберите организацию —</option>
-                {(organizationOptions || []).map(org => (
-                  <option key={org.id} value={org.id}>{org.name}</option>
-                ))}
-              </select>
+          <div className="warehouse-ops-receipts-list-header">
+            <div>
+              <p className="warehouse-ops-hint">
+                Возвратные накладные поставщику (ВН). Оформление — в окне документа: укажите себестоимость по строкам и сумму.
+                Остаток списывается с выбранного склада.
+              </p>
             </div>
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
-                Склад списания <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
-                value={returnWarehouseId}
-                onChange={(e) => setReturnWarehouseId(e.target.value)}
-                className="warehouse-ops-select"
-                disabled={!returnOrganizationId}
-              >
-                <option value="">
-                  {returnOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
-                </option>
-                {returnWarehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
-                Поставщик <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
-                value={returnSupplierId}
-                onChange={e => setReturnSupplierId(e.target.value)}
-                className="warehouse-ops-select"
-              >
-                <option value="">— Выберите поставщика —</option>
-                {(suppliers || []).map(s => (
-                  <option key={s.id} value={s.id}>{s.name || s.code || s.id}</option>
-                ))}
-              </select>
-            </div>
+            <Button onClick={openAddReturnModal}>Оформить возврат</Button>
           </div>
-          <p className="warehouse-ops-hint">
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.
-          </p>
-          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-            <div className="warehouse-ops-scan-form-input-wrap">
-              <FastScanInput
-                inputRef={returnScanInputRef}
-                onScan={handleReturnScan}
-                onManualQuery={handleReturnManualQuery}
-                debounceMs={200}
-                manualDebounceMs={400}
-                  placeholder="Штрихкод, артикул или название"
-                  disabled={!returnWarehouseId}
-                onBlur={() => {
-                  setTimeout(() => {
-                    if (suggestContext === 'return_scan') closeSuggest();
-                  }, 150);
-                }}
-              />
-              {suggestOpen && suggestContext === 'return_scan' && (
-                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
-                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
-                  <div className="warehouse-ops-suggest-list">
-                    {(suggestList || []).map((p) => (
-                      <button
-                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
-                        type="button"
-                        className="warehouse-ops-suggest-item"
-                        onMouseDown={(ev) => {
-                          ev.preventDefault();
-                          returnSuppressScanRef.current = true;
-                          clearScanField(returnScanInputRef.current);
-                          window.setTimeout(() => {
-                            returnSuppressScanRef.current = false;
-                          }, 500);
-                          const fn = suggestOnPickRef.current;
-                          closeSuggest();
-                          if (typeof fn === 'function') fn(p);
-                        }}
-                      >
-                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
-                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
-                      </button>
-                    ))}
-              </div>
+          {opMessage && !addReturnModalOpen ? (
+            <div className="warehouse-ops-msg success" style={{ marginBottom: 12 }}>
+              {opMessage}
             </div>
-          )}
-            </div>
-          </form>
-
-          {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
-          {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
-
-          <div className="warehouse-ops-receipt-list-section">
-            <h4 className="warehouse-ops-receipt-list-title">Список товаров для возврата</h4>
-            {returnList.length === 0 ? (
-              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или найдите по артикулу / названию.</p>
-            ) : (
-              <>
-                <div className="warehouse-ops-receipt-list-wrap">
-                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
-                    <thead>
-                      <tr>
-                        <th>Артикул</th>
-                        <th>Товар</th>
-                        <th>Кол-во</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {returnList.map((item, index) => {
-                        const maxQty = Math.max(1, Number(item.warehouseMaxQty) || 1);
-                        return (
-                          <tr key={`${item.productId}-${index}`}>
-                            <td className="sku-cell">{item.sku}</td>
-                            <td className="name-cell">{item.name}</td>
-                            <td>
-                              <input
-                                type="number"
-                                min={1}
-                                max={maxQty}
-                                value={item.quantity}
-                                onChange={e => updateReturnQuantity(index, e.target.value)}
-                                className="warehouse-ops-qty-input small"
-                              />
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                className="warehouse-ops-remove-btn"
-                                onClick={() => removeFromReturnList(index)}
-                                title="Удалить из списка"
-                              >
-                                ✕
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="warehouse-ops-receipt-list-actions">
-                  <Button
-                    onClick={applyReturnToSupplier}
-                    disabled={
-                      opLoading ||
-                      !returnSupplierId ||
-                      !returnOrganizationId ||
-                      !returnWarehouseId
-                    }
-                  >
-                    {opLoading ? 'Оформление…' : 'Оформить возврат'}
-                  </Button>
-                  <Button variant="secondary" onClick={clearReturnList} disabled={opLoading}>
-                    Очистить список
-                  </Button>
-                </div>
-              </>
-            )}
-          </div>
-
+          ) : null}
           {renderWarehouseDocumentsList({
-            title: 'Оформленные возвраты поставщику',
+            title: '',
             emptyText: 'Нет возвратных накладных.',
             showSupplier: true
           })}
@@ -4900,22 +4785,56 @@ export function WarehouseOperations({
                       <th>Артикул</th>
                       <th>Товар</th>
                       <th>Кол-во</th>
-                      {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? <th>Себестоимость, ₽</th> : null}
+                      {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
+                        <th>Себестоимость, ₽</th>
+                      ) : null}
+                      {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
+                        <th>Сумма, ₽</th>
+                      ) : null}
                     </tr>
                   </thead>
                   <tbody>
-                    {receiptDetail.lines.map(line => (
-                      <tr key={line.id}>
-                        <td className="sku-cell">{line.product_sku || '—'}</td>
-                        <td className="name-cell">{line.product_name || '—'}</td>
-                        <td>{line.quantity}</td>
-                        {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
-                          <td>{line.cost != null ? Number(line.cost) : '—'}</td>
-                        ) : null}
-                      </tr>
-                    ))}
+                    {receiptDetail.lines.map((line) => {
+                      const qty = Number(line.quantity) || 0;
+                      const unit =
+                        line.cost != null && line.cost !== '' && Number.isFinite(Number(line.cost))
+                          ? Number(line.cost)
+                          : null;
+                      const lineSum = unit != null ? unit * qty : null;
+                      return (
+                        <tr key={line.id}>
+                          <td className="sku-cell">{line.product_sku || '—'}</td>
+                          <td className="name-cell">{line.product_name || '—'}</td>
+                          <td>{line.quantity}</td>
+                          {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
+                            <td>{line.cost != null ? Number(line.cost) : '—'}</td>
+                          ) : null}
+                          {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
+                            <td className="num-cell">{lineSum != null ? formatRub(lineSum) : '—'}</td>
+                          ) : null}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
+                {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
+                  <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
+                    Итого:{' '}
+                    {(receiptDetail.lines || []).reduce((s, l) => s + (Number(l.quantity) || 0), 0)} шт
+                    {(() => {
+                      let sum = 0;
+                      let has = false;
+                      for (const l of receiptDetail.lines || []) {
+                        const c = l.cost != null && l.cost !== '' ? Number(l.cost) : null;
+                        if (c != null && Number.isFinite(c)) {
+                          has = true;
+                          sum += c * (Number(l.quantity) || 0);
+                        }
+                      }
+                      return has ? ` · ${formatRub(sum)}` : '';
+                    })()}
+                  </p>
+                ) : null}
               </div>
             ) : (
               <p className="warehouse-ops-receipt-list-empty">Нет строк.</p>
@@ -5614,6 +5533,231 @@ export function WarehouseOperations({
                     {opLoading ? 'Оформление…' : 'Оформить поступление'}
                   </Button>
                   <Button variant="secondary" onClick={clearReceiptList} disabled={opLoading}>
+                    Очистить список
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={addReturnModalOpen}
+        onClose={closeAddReturnModal}
+        title="Возврат поставщику"
+        size="xl"
+        closeOnBackdropClick={!opLoading}
+        closeOnEscape={!opLoading}
+      >
+        <div className="warehouse-ops-panel return-supplier-panel" style={{ marginBottom: 0 }}>
+          <div className="warehouse-ops-receipt-modal-settings">
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Организация (от имени которой возврат) <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={returnOrganizationId}
+                onChange={(e) => setReturnOrganizationId(e.target.value)}
+                className="warehouse-ops-select"
+                disabled={opLoading}
+              >
+                <option value="">— Выберите организацию —</option>
+                {(organizationOptions || []).map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад списания <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={returnWarehouseId}
+                onChange={(e) => setReturnWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+                disabled={!returnOrganizationId || opLoading}
+              >
+                <option value="">
+                  {returnOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
+                </option>
+                {returnWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Поставщик <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={returnSupplierId}
+                onChange={(e) => setReturnSupplierId(e.target.value)}
+                className="warehouse-ops-select"
+                disabled={opLoading}
+              >
+                <option value="">— Выберите поставщика —</option>
+                {(suppliers || []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name || s.code || s.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="warehouse-ops-hint">
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Укажите себестоимость в таблице —
+            сумма по строкам считается автоматически.
+          </p>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
+              <FastScanInput
+                inputRef={returnScanInputRef}
+                onScan={handleReturnScan}
+                onManualQuery={handleReturnManualQuery}
+                debounceMs={200}
+                manualDebounceMs={400}
+                placeholder="Штрихкод, артикул или название"
+                disabled={!returnWarehouseId || opLoading}
+                onBlur={() => {
+                  setTimeout(() => {
+                    if (suggestContext === 'return_scan') closeSuggest();
+                  }, 150);
+                }}
+              />
+              {suggestOpen && suggestContext === 'return_scan' && (
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {(suggestList || []).map((p) => (
+                      <button
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          returnSuppressScanRef.current = true;
+                          clearScanField(returnScanInputRef.current);
+                          window.setTimeout(() => {
+                            returnSuppressScanRef.current = false;
+                          }, 500);
+                          const fn = suggestOnPickRef.current;
+                          closeSuggest();
+                          if (typeof fn === 'function') fn(p);
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </form>
+
+          {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
+          {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
+
+          <div className="warehouse-ops-receipt-list-section">
+            <h4 className="warehouse-ops-receipt-list-title">Позиции возврата</h4>
+            {returnList.length === 0 ? (
+              <p className="warehouse-ops-receipt-list-empty">
+                Список пуст. Сканируйте товары или найдите по артикулу / названию.
+              </p>
+            ) : (
+              <>
+                <div className="warehouse-ops-receipt-list-wrap">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
+                    <thead>
+                      <tr>
+                        <th>Артикул</th>
+                        <th>Товар</th>
+                        <th>Кол-во</th>
+                        <th>Себестоимость, ₽</th>
+                        <th>Сумма, ₽</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {returnList.map((item, index) => {
+                        const maxQty = Math.max(1, Number(item.warehouseMaxQty) || 1);
+                        const unitCost =
+                          item.cost != null && item.cost !== '' ? Number(item.cost) : null;
+                        const lineSum =
+                          unitCost != null && Number.isFinite(unitCost)
+                            ? unitCost * (Number(item.quantity) || 0)
+                            : null;
+                        return (
+                          <tr key={`${item.productId}-${index}`}>
+                            <td className="sku-cell">{item.sku}</td>
+                            <td className="name-cell">{item.name}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min={1}
+                                max={maxQty}
+                                value={item.quantity}
+                                onChange={(e) => updateReturnQuantity(index, e.target.value)}
+                                className="warehouse-ops-qty-input small"
+                                disabled={opLoading}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                placeholder="—"
+                                value={item.cost ?? ''}
+                                onChange={(e) => updateReturnCost(index, e.target.value)}
+                                className="warehouse-ops-cost-input"
+                                disabled={opLoading}
+                              />
+                            </td>
+                            <td className="num-cell">{lineSum != null ? formatRub(lineSum) : '—'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="warehouse-ops-remove-btn"
+                                onClick={() => removeFromReturnList(index)}
+                                title="Удалить из списка"
+                                disabled={opLoading}
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="warehouse-ops-receipt-cost-hint">
+                  Себестоимость записывается в документ возврата и участвует в сумме. Карточка товара не меняется.
+                </p>
+                <div className="warehouse-ops-receipt-list-actions" style={{ alignItems: 'center', gap: 12 }}>
+                  <div className="warehouse-ops-hint" style={{ margin: 0, flex: 1 }}>
+                    Итого: {returnListTotals.units} шт
+                    {returnListTotals.sumRub > 0 ? ` · ${formatRub(returnListTotals.sumRub)}` : ''}
+                  </div>
+                  <Button
+                    onClick={applyReturnToSupplier}
+                    disabled={
+                      opLoading ||
+                      !returnSupplierId ||
+                      !returnOrganizationId ||
+                      !returnWarehouseId ||
+                      returnList.length === 0
+                    }
+                  >
+                    {opLoading ? 'Оформление…' : 'Оформить возврат'}
+                  </Button>
+                  <Button variant="secondary" onClick={clearReturnList} disabled={opLoading}>
                     Очистить список
                   </Button>
                 </div>

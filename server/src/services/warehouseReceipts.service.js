@@ -151,15 +151,14 @@ class WarehouseReceiptsService {
         const cost =
           newRow?.cost != null && newRow.cost !== ''
             ? await this._resolveLineCost(productId, newRow.cost)
-            : !isReturnToSupplier
-              ? await this._resolveLineCost(productId, null)
-              : null;
+            : await this._resolveLineCost(productId, null);
         await this.receiptsRepo.addLine({
           receiptId,
           productId,
           quantity: newQty,
-          cost: cost != null && cost >= 0 && !isReturnToSupplier ? cost : null,
+          cost: cost != null && cost >= 0 ? cost : null,
         });
+        // Возврат поставщику: себестоимость только в документе, карточку не трогаем
         if (cost != null && !Number.isNaN(cost) && cost >= 0 && !isReturnToSupplier) {
           await this.productsRepository.update(productId, { cost });
         }
@@ -573,7 +572,8 @@ class WarehouseReceiptsService {
    * @param {number|null} params.organizationId - от какой организации возврат
    * @param {number|null} params.supplierId - какому поставщику
    * @param {number|string|null} params.warehouseId — обязательный склад списания
-   * @param {Array<{productId: number, quantity: number}>} params.lines
+   * @param {Array<{productId: number, quantity: number, cost?: number|null}>} params.lines
+   * Себестоимость пишется в строки документа (для суммы ВН), карточку товара не меняем.
    */
   async createReturn({ organizationId = null, supplierId = null, warehouseId = null, lines = [] }) {
     if (!lines.length) {
@@ -639,12 +639,13 @@ class WarehouseReceiptsService {
     for (const [, row] of byProduct) {
       const { productId, quantity } = row;
       const isKit = await isKitProductId(productId);
+      const cost = await this._resolveLineCost(productId, row.cost);
 
       await this.receiptsRepo.addLine({
         receiptId: receipt.id,
         productId,
         quantity,
-        cost: null,
+        cost: cost != null && cost >= 0 ? cost : null,
       });
 
       const extraMeta = {
@@ -1220,9 +1221,7 @@ class WarehouseReceiptsService {
       const cost =
         row.cost != null && row.cost !== ''
           ? await this._resolveLineCost(productId, row.cost)
-          : !isReturnToSupplier
-            ? await this._resolveLineCost(productId, null)
-            : null;
+          : await this._resolveLineCost(productId, null);
       const isKit = await isKitProductId(productId);
 
       if (isReturnToSupplier) {
@@ -1250,7 +1249,7 @@ class WarehouseReceiptsService {
         receiptId,
         productId,
         quantity,
-        cost: cost != null && cost >= 0 && !isReturnToSupplier ? cost : null,
+        cost: cost != null && cost >= 0 ? cost : null,
       });
 
       if (isReturnToSupplier) {
