@@ -16,7 +16,7 @@ import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
-import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
+import { ProductMarketplaceLinkSection, manufacturerArticleValue } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
@@ -213,7 +213,6 @@ import {
   findOzonPlainDescriptionAttrs,
   isOzonAnnotationAttr,
   isOzonNameAttr,
-  isOzonPlainDescriptionAttr,
   ozonAnnotationToFormText,
   ozonAttrPlainText,
   ozonDictArrowId,
@@ -7491,39 +7490,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'main' && (
         <>
+        <div className="product-form-main">
+        <div className="product-form-main__core">
+        <h4 className="product-form-block__title">Главные атрибуты</h4>
         <div className="row g-2">
-        <div className="col-md-9">
-          <MpFieldLabel
-            htmlFor="name"
-            fieldKey="name"
-            {...mainFieldMpLabelProps('name')}
-            required
-            diffs={mainCardFieldMpDiffs.name}
-          >
-            Название
-          </MpFieldLabel>
-        <input
-          id="name"
-          type="text"
-            className={limitClassName(
-              'form-control form-control-sm',
-              formControlLimitHit(limitsByMp, formData, 'name', fieldLimitExtras)
-            )}
-          placeholder="Напр. Ручка гелевая"
-          value={formData.name}
-          onChange={(e) => handleChange('name', e.target.value)}
-          required
-        />
-        {(() => {
-          const items = limitItemsForControl(limitsByMp, formData, 'name', fieldLimitExtras);
-          return items.length ? (
-            <MarketplaceFieldLimitHint items={items} />
-          ) : null;
-        })()}
-        {errors.name && <div className="error">{errors.name}</div>}
-      </div>
-
-        <div className="col-md-3">
+        <div className="col-md-6">
           <MpFieldLabel
             htmlFor="sku"
             fieldKey="sku"
@@ -7531,7 +7502,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             required
             diffs={mainCardFieldMpDiffs.sku}
           >
-            Артикул (SKU)
+            Артикул продавца
           </MpFieldLabel>
           {(() => {
             const selectedOrg = formData.organizationId ? organizations.find(o => String(o.id) === String(formData.organizationId)) : null;
@@ -7560,6 +7531,56 @@ export const ProductForm = React.forwardRef(function ProductForm({
           })()}
           {errors.sku && <div className="error">{errors.sku}</div>}
         </div>
+        <div className="col-md-6">
+          <label className="form-label" htmlFor="main-manufacturer-article">
+            Артикул производителя
+          </label>
+          <input
+            id="main-manufacturer-article"
+            type="text"
+            className="form-control form-control-sm product-form-short"
+            autoComplete="off"
+            placeholder="Партномер / OEM"
+            value={manufacturerArticleValue(
+              formData,
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
+            onChange={(e) => handleOzonManufacturerArticleChange(e.target.value)}
+          />
+        </div>
+      </div>
+
+        <div className="mt-2">
+          <MpFieldLabel
+            htmlFor="name"
+            fieldKey="name"
+            {...mainFieldMpLabelProps('name')}
+            required
+            diffs={mainCardFieldMpDiffs.name}
+          >
+            Название
+          </MpFieldLabel>
+        <input
+          id="name"
+          type="text"
+            className={limitClassName(
+              'form-control form-control-sm',
+              formControlLimitHit(limitsByMp, formData, 'name', fieldLimitExtras)
+            )}
+          placeholder="Напр. Ручка гелевая"
+          value={formData.name}
+          onChange={(e) => handleChange('name', e.target.value)}
+          required
+        />
+        {(() => {
+          const items = limitItemsForControl(limitsByMp, formData, 'name', fieldLimitExtras);
+          return items.length ? (
+            <MarketplaceFieldLimitHint items={items} />
+          ) : null;
+        })()}
+        {errors.name && <div className="error">{errors.name}</div>}
       </div>
 
       <div className="mt-2">
@@ -7605,9 +7626,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
         </div>
       </div>
+        </div>
 
-      {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
-      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      {/* Изображения — габариты упаковки в блоке «Главные атрибуты» */}
+      <div className="product-form-main__images" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
           🖼️ Изображения товара
         </h3>
@@ -7918,6 +7940,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         )}
       </div>
 
+      <div className="product-form-main__meta">
+      <h4 className="product-form-block__title" style={{ marginTop: '12px' }}>Основные атрибуты</h4>
       {kitsEnabled ? (
       <div className="row g-2 mt-1 align-items-end product-form-meta">
             <div className="col-6 col-md-3 col-xl-2">
@@ -8188,7 +8212,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </datalist>
         </div>
       </div>
+      </div>
 
+      <div className="product-form-main__dims">
       <div className="product-form-dims" style={{ marginTop: '10px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
         <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text)' }}>
           Габариты
@@ -8435,9 +8461,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           </div>
         </div>
       </div>
+      </div>
 
       {visibleCategoryAttributes.length > 0 && (
-        <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
+        <div className="product-form-main__attrs" style={{ marginTop: '12px', padding: '12px', background: 'rgba(59, 130, 246, 0.06)', borderRadius: '8px', border: '1px solid var(--border, #e5e7eb)' }}>
           <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px', color: 'var(--text)' }}>
             Атрибуты категории
           </h4>
@@ -8826,6 +8853,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           {Object.values(errors)[0]}
         </div>
       )}
+        </div>
         </>
       )}
 
@@ -9411,9 +9439,16 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'wb' && (
         <div className="product-form-marketplace-panel">
-          <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             <span className="mp-badge wb">WB</span>
             Данные для Wildberries
+            {(() => {
+              const nmId = String(
+                formData.sku_wb || wbFetchedProduct?.nmId || wbFetchedProduct?.nmID || ''
+              ).trim();
+              if (!nmId) return null;
+              return <span className="product-form-mp-id">nmId {nmId}</span>;
+            })()}
           </h4>
           <MarketplaceCardQualityPanel marketplace="wb" rating={mpContentRatings.wb} />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
@@ -9543,9 +9578,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-body">
               {wbFetchedProduct && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '12px' }}>
-                  {(wbFetchedProduct.nmId ?? wbFetchedProduct.nmID) != null && (
-                    <span><span style={{ color: 'var(--muted)' }}>ID WB:</span> {wbFetchedProduct.nmId ?? wbFetchedProduct.nmID}</span>
-                  )}
                   {wbFetchedProduct.vendorCode && (
                     <span><span style={{ color: 'var(--muted)' }}>Артикул продавца:</span> {String(wbFetchedProduct.vendorCode)}</span>
                   )}
