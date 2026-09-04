@@ -551,13 +551,6 @@ export function Products() {
 
   const openProductIdParam = searchParams.get('open');
   const openProductTabParam = searchParams.get('tab');
-  const searchFromUrl = searchParams.get('search');
-
-  useEffect(() => {
-    if (searchFromUrl == null) return;
-    const v = String(searchFromUrl).trim();
-    if (v) setListSearch(v);
-  }, [searchFromUrl]);
 
   useEffect(() => {
     if (!openProductIdParam) return;
