@@ -177,10 +177,14 @@ export function productImageUrlsForVideoCoverPreview(images, marketplace = 'ozon
     if (v === false || v === 0 || v === '0' || v === 'false') return false;
     return true;
   });
+  const primaryForIdx = filtered.findIndex(
+    (img) => img?.primaryFor && typeof img.primaryFor === 'object' && img.primaryFor[mp] === true
+  );
   const primaryIdx = filtered.findIndex((img) => img.primary === true);
+  const preferredIdx = primaryForIdx >= 0 ? primaryForIdx : primaryIdx;
   const ordered =
-    primaryIdx > 0
-      ? [filtered[primaryIdx], ...filtered.filter((_, i) => i !== primaryIdx)]
+    preferredIdx > 0
+      ? [filtered[preferredIdx], ...filtered.filter((_, i) => i !== preferredIdx)]
       : filtered;
   const out = [];
   const seen = new Set();

@@ -1,6 +1,9 @@
 /**
- * Изображения товара из JSON (поле images): первая картинка в списке = основная для превью.
+ * Изображения товара из JSON (поле images): первая картинка в списке = основная для превью ERP.
+ * Главная на МП — отдельно: `primaryFor: { ozon?, wb?, ym? }` (не больше одной на маркетплейс).
  */
+
+export const PRODUCT_IMAGE_MP_KEYS = ['ozon', 'wb', 'ym'];
 
 export function parseProductImages(images) {
   if (!images) return [];
@@ -129,4 +132,134 @@ export function imagesAspectFingerprint(images) {
       ].join(':')
     )
     .join('|');
+}
+
+function mpFlagOn(flags, mp) {
+  if (!flags || typeof flags !== 'object') return true;
+  const v = flags[mp];
+  return !(v === false || v === 0 || v === '0' || v === 'false');
+}
+
+/** Бейдж МП включён (нет объекта marketplaces → все включены). */
+export function imageHasMarketplace(img, marketplace) {
+  const mp = String(marketplace || '').toLowerCase();
+  if (!PRODUCT_IMAGE_MP_KEYS.includes(mp)) return false;
+  if (!img || typeof img !== 'object') return false;
+  return mpFlagOn(img.marketplaces, mp);
+}
+
+export function imageIsExplicitPrimaryForMp(img, marketplace) {
+  const mp = String(marketplace || '').toLowerCase();
+  if (!img || typeof img !== 'object') return false;
+  const pf = img.primaryFor;
+  return !!(pf && typeof pf === 'object' && pf[mp] === true);
+}
+
+/**
+ * У МП уже есть главная: явный primaryFor, иначе глобальная primary (первая) с этим бейджем.
+ * Если глобальная без этого МП — главной ещё нет (можно назначить ★ на другом фото).
+ */
+export function marketplaceHasPrimaryImage(images, marketplace) {
+  const mp = String(marketplace || '').toLowerCase();
+  const list = Array.isArray(images) ? images : [];
+  if (list.some((img) => imageHasMarketplace(img, mp) && imageIsExplicitPrimaryForMp(img, mp))) {
+    return true;
+  }
+  const globalPrimary = list.find((img) => img?.primary === true) || list[0];
+  return !!(globalPrimary && imageHasMarketplace(globalPrimary, mp));
+}
+
+/** Картинка — главная для МП (явная, глобальная с бейджем, иначе первая с бейджем). */
+export function imageIsPrimaryForMarketplace(images, imageId, marketplace) {
+  const mp = String(marketplace || '').toLowerCase();
+  const list = Array.isArray(images) ? images : [];
+  const id = String(imageId ?? '');
+  const img = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!img || !imageHasMarketplace(img, mp)) return false;
+
+  const withMp = list.filter((x) => imageHasMarketplace(x, mp));
+  const explicit = withMp.find((x) => imageIsExplicitPrimaryForMp(x, mp));
+  if (explicit) {
+    return String(explicit?.id ?? explicit?.filename ?? '') === id;
+  }
+  const globalPrimary = list.find((x) => x?.primary === true) || list[0];
+  if (globalPrimary && imageHasMarketplace(globalPrimary, mp)) {
+    return String(globalPrimary?.id ?? globalPrimary?.filename ?? '') === id;
+  }
+  const first = withMp[0];
+  return String(first?.id ?? first?.filename ?? '') === id;
+}
+
+/** МП этого фото, у которых ещё нет главной на карточке (можно забрать ★). */
+export function claimablePrimaryMarketplaces(images, imageId) {
+  const list = Array.isArray(images) ? images : [];
+  const id = String(imageId ?? '');
+  const img = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!img) return [];
+  return PRODUCT_IMAGE_MP_KEYS.filter(
+    (mp) => imageHasMarketplace(img, mp) && !marketplaceHasPrimaryImage(list, mp)
+  );
+}
+
+/**
+ * Сделать фото главным для указанных МП (или для всех «свободных»).
+ * Не двигает порядок массива / ERP-primary.
+ */
+export function assignImagePrimaryForMarketplaces(images, imageId, marketplaces = null) {
+  const list = (Array.isArray(images) ? images : []).map((img) => ({
+    ...img,
+    marketplaces: img?.marketplaces && typeof img.marketplaces === 'object' ? { ...img.marketplaces } : img?.marketplaces,
+    primaryFor:
+      img?.primaryFor && typeof img.primaryFor === 'object' ? { ...img.primaryFor } : undefined,
+  }));
+  const id = String(imageId ?? '');
+  const target = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!target) return Array.isArray(images) ? images : [];
+
+  const mps =
+    Array.isArray(marketplaces) && marketplaces.length
+      ? marketplaces.map((m) => String(m).toLowerCase()).filter((m) => PRODUCT_IMAGE_MP_KEYS.includes(m))
+      : claimablePrimaryMarketplaces(list, id);
+  if (!mps.length) return Array.isArray(images) ? images : [];
+
+  for (const mp of mps) {
+    if (!imageHasMarketplace(target, mp)) continue;
+    if (marketplaceHasPrimaryImage(list, mp) && !imageIsExplicitPrimaryForMp(target, mp)) continue;
+    for (const img of list) {
+      if (!img.primaryFor) continue;
+      if (img.primaryFor[mp]) {
+        const next = { ...img.primaryFor };
+        delete next[mp];
+        img.primaryFor = Object.keys(next).length ? next : undefined;
+      }
+    }
+    target.primaryFor = { ...(target.primaryFor || {}), [mp]: true };
+  }
+  return list;
+}
+
+/** При выключении бейджа МП сбрасываем primaryFor для него. */
+export function patchImageMarketplaces(images, imageId, patch) {
+  const list = (Array.isArray(images) ? images : []).map((img) => {
+    const id = String(img?.id ?? img?.filename ?? '');
+    if (id !== String(imageId)) return img;
+    const marketplaces = { ...(img.marketplaces || {}), ...(patch || {}) };
+    let primaryFor =
+      img.primaryFor && typeof img.primaryFor === 'object' ? { ...img.primaryFor } : undefined;
+    if (primaryFor) {
+      for (const mp of PRODUCT_IMAGE_MP_KEYS) {
+        if (patch && Object.prototype.hasOwnProperty.call(patch, mp) && patch[mp] === false) {
+          delete primaryFor[mp];
+        }
+      }
+      if (!Object.keys(primaryFor).length) primaryFor = undefined;
+    }
+    return { ...img, marketplaces, primaryFor };
+  });
+  return list;
+}
+
+export function imageHasAnyExplicitPrimaryFor(img) {
+  if (!img?.primaryFor || typeof img.primaryFor !== 'object') return false;
+  return PRODUCT_IMAGE_MP_KEYS.some((mp) => img.primaryFor[mp] === true);
 }
