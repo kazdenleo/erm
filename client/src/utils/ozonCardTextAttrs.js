@@ -86,6 +86,15 @@ function isPlainObject(v) {
   return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** «текст->971871363»: id справочника Ozon — в поле показываем только текст. */
+export function stripOzonDictIdSuffix(s) {
+  return String(s ?? '')
+    .replace(/->\d+(?=\s*(;|$))/g, '')
+    .replace(/\s*;\s*;/g, ';')
+    .replace(/^\s*;\s*|\s*;\s*$/g, '')
+    .trim();
+}
+
 /** «текст->0»: Ozon отдал значение без id словаря — в форме и при сохранении оставляем текст. */
 export function stripOzonZeroDictArrow(s) {
   return String(s ?? '')
@@ -93,6 +102,13 @@ export function stripOzonZeroDictArrow(s) {
     .replace(/\s*;\s*;/g, ';')
     .replace(/^\s*;\s*|\s*;\s*$/g, '')
     .trim();
+}
+
+export function ozonDictArrowId(s) {
+  const t = String(s ?? '').trim();
+  const m = t.match(/->(\d+)\s*$/);
+  if (m && m[1] !== '0') return m[1];
+  return '';
 }
 
 function isOzonRealDictId(id) {

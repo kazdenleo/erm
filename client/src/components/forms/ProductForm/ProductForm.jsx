@@ -215,8 +215,10 @@ import {
   isOzonPlainDescriptionAttr,
   ozonAnnotationToFormText,
   ozonAttrPlainText,
+  ozonDictArrowId,
   ozonStoredAttrToFormValue,
   pickOzonCardText,
+  stripOzonDictIdSuffix,
   OZON_ANNOTATION_ATTR_ID,
 } from '../../../utils/ozonCardTextAttrs.js';
 import {
@@ -801,7 +803,7 @@ function normOzonAttrLabel(s) {
 function ozonDictEntryText(o) {
   if (!o || typeof o !== 'object') return '';
   const raw = o.value ?? o.info ?? o.title ?? o.name ?? o.label ?? '';
-  return String(raw).trim();
+  return stripOzonDictIdSuffix(String(raw).trim());
 }
 
 function ozonAttrHasDictionary(attr) {
@@ -9228,12 +9230,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     const hasDict = !isOfferField && ozonAttrHasDictionary(attr);
                     const options = ozonDictValues[attr.id];
                     const matchedOpt = Array.isArray(options) ? findOzonDictEntryForStored(rawValue, options) : null;
+                    const storedId = ozonDictArrowId(rawValue);
                     const selectValue = matchedOpt
                       ? String(matchedOpt.id)
-                      : /^\d+$/.test(String(rawValue || '').trim())
+                      : storedId || (/^\d+$/.test(String(rawValue || '').trim())
                         ? String(rawValue).trim()
-                        : '';
-                    const fallbackLabel = String(rawValue || '').trim();
+                        : '');
+                    const fallbackLabel = stripOzonDictIdSuffix(String(rawValue || '').trim());
                     const needsTextFallback =
                       fallbackLabel !== '' &&
                       !matchedOpt &&
@@ -9361,7 +9364,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                                 id={`ozon-attr-${attr.id}`}
                                 type={attr.type === 'number' ? 'number' : 'text'}
                                 className={mpAttrClass('form-control form-control-sm', 'ozon', attr.id, rawValue)}
-                                value={rawValue}
+                                value={stripOzonDictIdSuffix(rawValue)}
                                 placeholder={attr.is_required ? `${attr.name} *` : attr.name}
                                 onChange={(e) => handleOzonAttributeChange(attr.id, e.target.value)}
                               />
