@@ -47,3 +47,59 @@
 .card-work__severity-high td:first-child {
   box-shadow: inset 3px 0 0 #dc2626;
 }
+
+.card-work__duplicates {
+  margin-top: 28px;
+}
+
+.card-work__section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.card-work__section-lead {
+  color: #64748b;
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
+.card-work__dup-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card-work__dup-group {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  padding: 12px 14px 4px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.card-work__dup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card-work__dup-value {
+  font-size: 15px;
+}
+
+.card-work__dup-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.card-work__reason--duplicate {
+  background: #fce7f3;
+  color: #9d174d;
+}
+
+.card-work__dup-table {
+  margin: 0 0 8px;
+}

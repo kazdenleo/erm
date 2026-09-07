@@ -142,6 +142,147 @@ function finalizeItems(map, reasonFilter) {
   return items;
 }
 
+const IDENT_KIND_LABEL = {
+  sku: 'Артикул ERP',
+  seller_sku: 'Артикул продавца',
+  barcode: 'Штрихкод',
+};
+
+function identRoleLabel(kind, marketplace) {
+  if (kind === 'sku') return 'Артикул ERP';
+  if (kind === 'barcode') return 'Штрихкод';
+  const mp = mpLabel(marketplace);
+  return marketplace ? `Артикул продавца ${mp}` : 'Артикул продавца';
+}
+
+/**
+ * Товары с совпадающими идентификаторами: артикул ERP, артикул продавца, штрихкод.
+ * Совпадение — одинаковая нормализованная строка (trim + lower) у двух и более карточек.
+ */
+async function listIdentifierDuplicates({ profileId } = {}) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) {
+    return { groups: [], productCount: 0 };
+  }
+  let rows = [];
+  try {
+    const res = await query(
+      `WITH active AS (
+          SELECT p.id, p.sku, p.name, p.mp_wb_vendor_code
+            FROM products p
+           WHERE p.profile_id = $1
+             AND COALESCE(p.is_archived, false) = false
+        ),
+        idents AS (
+          SELECT a.id AS product_id, a.sku AS erp_sku, a.name,
+                 'sku'::text AS kind, NULL::text AS marketplace,
+                 LOWER(TRIM(a.sku)) AS norm, TRIM(a.sku) AS display
+            FROM active a
+           WHERE TRIM(COALESCE(a.sku, '')) <> ''
+          UNION ALL
+          SELECT a.id, a.sku, a.name,
+                 'seller_sku', ps.marketplace,
+                 LOWER(TRIM(ps.sku::text)), TRIM(ps.sku::text)
+            FROM active a
+            JOIN product_skus ps ON ps.product_id = a.id
+           WHERE TRIM(COALESCE(ps.sku::text, '')) <> ''
+          UNION ALL
+          SELECT a.id, a.sku, a.name,
+                 'seller_sku', 'wb',
+                 LOWER(TRIM(a.mp_wb_vendor_code)), TRIM(a.mp_wb_vendor_code)
+            FROM active a
+           WHERE TRIM(COALESCE(a.mp_wb_vendor_code, '')) <> ''
+             AND NOT EXISTS (
+               SELECT 1 FROM product_skus ps
+                WHERE ps.product_id = a.id
+                  AND ps.marketplace = 'wb'
+                  AND LOWER(TRIM(ps.sku::text)) = LOWER(TRIM(a.mp_wb_vendor_code))
+             )
+          UNION ALL
+          SELECT a.id, a.sku, a.name,
+                 'barcode', NULL,
+                 LOWER(TRIM(b.barcode)), TRIM(b.barcode)
+            FROM active a
+            JOIN barcodes b ON b.product_id = a.id
+           WHERE TRIM(COALESCE(b.barcode, '')) <> ''
+        ),
+        collisions AS (
+          SELECT norm, COUNT(DISTINCT product_id) AS product_count, MIN(display) AS display
+            FROM idents
+           GROUP BY norm
+          HAVING COUNT(DISTINCT product_id) > 1
+        )
+        SELECT i.kind, i.marketplace, c.display, i.norm,
+               i.product_id, i.erp_sku, i.name
+          FROM idents i
+          JOIN collisions c ON c.norm = i.norm
+         ORDER BY c.product_count DESC, i.norm, i.erp_sku NULLS LAST, i.product_id`,
+      [pid]
+    );
+    rows = res.rows || [];
+  } catch (e) {
+    return { groups: [], productCount: 0 };
+  }
+
+  const byNorm = new Map();
+  for (const row of rows) {
+    const norm = String(row.norm || '');
+    if (!norm) continue;
+    let group = byNorm.get(norm);
+    if (!group) {
+      group = {
+        key: norm,
+        value: String(row.display || row.erp_sku || norm),
+        products: new Map(),
+      };
+      byNorm.set(norm, group);
+    }
+    const productId = Number(row.product_id) || 0;
+    if (productId < 1) continue;
+    let prod = group.products.get(productId);
+    if (!prod) {
+      prod = {
+        productId,
+        sku: row.erp_sku || '',
+        productName: row.name || '',
+        roles: [],
+      };
+      group.products.set(productId, prod);
+    }
+    const role = identRoleLabel(row.kind, row.marketplace);
+    if (!prod.roles.includes(role)) prod.roles.push(role);
+  }
+
+  const groups = [...byNorm.values()]
+    .map((g) => {
+      const products = [...g.products.values()].sort((a, b) =>
+        String(a.sku || '').localeCompare(String(b.sku || ''), 'ru')
+      );
+      const kinds = new Set();
+      for (const p of products) {
+        for (const role of p.roles) {
+          if (role.startsWith('Штрихкод')) kinds.add('barcode');
+          else if (role.startsWith('Артикул продавца')) kinds.add('seller_sku');
+          else kinds.add('sku');
+        }
+      }
+      return {
+        value: g.value,
+        kinds: [...kinds],
+        kindLabels: [...kinds].map((k) => IDENT_KIND_LABEL[k] || k),
+        products,
+      };
+    })
+    .filter((g) => g.products.length > 1)
+    .sort((a, b) => b.products.length - a.products.length || String(a.value).localeCompare(String(b.value), 'ru'));
+
+  const productIds = new Set();
+  for (const g of groups) {
+    for (const p of g.products) productIds.add(p.productId);
+  }
+  return { groups, productCount: productIds.size };
+}
+
 async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = {}) {
   const pid = Number(profileId);
   if (!Number.isFinite(pid) || pid < 1) return [];
@@ -321,6 +462,7 @@ class MarketplaceCardWorkService {
     }
 
     const items = finalizeItems(byKey, reasonFilter);
+    const duplicates = await listIdentifierDuplicates({ profileId });
 
     return {
       period: turnoverData.period,
@@ -337,8 +479,11 @@ class MarketplaceCardWorkService {
         stockoutCount: items.filter((i) => i.reasonCodes.includes('stockout')).length,
         lowContentRatingCount: items.filter((i) => i.reasonCodes.includes('low_content_rating')).length,
         dimMismatchCount: items.filter((i) => i.reasonCodes.includes('dim_mismatch')).length,
+        duplicateGroupsCount: duplicates.groups.length,
+        duplicateProductsCount: duplicates.productCount,
       },
       items,
+      duplicates,
     };
   }
 }

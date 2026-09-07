@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
+import { productCardPath } from '../../../utils/productCardPath.js';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
@@ -108,7 +109,7 @@ export function CardWork() {
         iconClass="pe-7s-note2"
         iconBgClass="bg-mean-fruit"
         title="Работа с карточками"
-        subtitle="Карточки, с которыми нужно провести работу: оборачиваемость, остаток, качество и размеры"
+        subtitle="Карточки, с которыми нужно провести работу: оборачиваемость, остаток, качество, размеры и дубли артикулов / штрихкодов"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -186,6 +187,12 @@ export function CardWork() {
           <div className="product-dynamics__summary-card">
             <div className="product-dynamics__summary-card-label">Размеры</div>
             <div className="product-dynamics__summary-card-value">{formatQty(summary.dimMismatchCount)}</div>
+          </div>
+          <div className="product-dynamics__summary-card">
+            <div className="product-dynamics__summary-card-label">Дубли артикулов / ШК</div>
+            <div className="product-dynamics__summary-card-value">
+              {formatQty(summary.duplicateGroupsCount)}
+            </div>
           </div>
         </div>
       )}
@@ -273,6 +280,63 @@ export function CardWork() {
         </table>
       </div>
 
+      {data ? (
+        <section className="card-work__duplicates" aria-labelledby="card-work-duplicates-title">
+          <h2 id="card-work-duplicates-title" className="card-work__section-title">
+            Одинаковые артикулы, артикулы продавца и штрихкоды
+          </h2>
+          <p className="card-work__section-lead">
+            Группы карточек, у которых совпадает артикул ERP, артикул продавца на маркетплейсе или штрихкод
+            (без учёта регистра и пробелов по краям). Период продаж на этот список не влияет.
+          </p>
+          {!(data.duplicates?.groups || []).length ? (
+            <p className="sales-analytics__empty">Совпадений идентификаторов не найдено.</p>
+          ) : (
+            <div className="card-work__dup-groups">
+              {(data.duplicates.groups || []).map((group) => (
+                <div key={group.value} className="card-work__dup-group">
+                  <div className="card-work__dup-head">
+                    <strong className="card-work__dup-value">{group.value}</strong>
+                    {(group.kindLabels || []).map((lab) => (
+                      <span key={lab} className="card-work__reason card-work__reason--duplicate">
+                        {lab}
+                      </span>
+                    ))}
+                    <span className="card-work__dup-count">{group.products?.length || 0} шт.</span>
+                  </div>
+                  <table className="sales-analytics__table card-work__dup-table">
+                    <thead>
+                      <tr>
+                        <th>Артикул ERP</th>
+                        <th>Карточка</th>
+                        <th>Где совпало</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(group.products || []).map((p) => (
+                        <tr key={`${group.value}-${p.productId}`}>
+                          <td>
+                            <Link className="card-work__link" to={productCardPath(p.productId)}>
+                              {p.sku || '—'}
+                            </Link>
+                          </td>
+                          <td>
+                            <Link className="card-work__link" to={productCardPath(p.productId)}>
+                              {p.productName || '—'}
+                            </Link>
+                          </td>
+                          <td>{(p.roles || []).join(', ') || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
+
       <p className="sales-analytics__hint">
         Каждая строка — один маркетплейс: продажи и остаток не суммируются между Ozon / WB / Яндекс.
         Низкая оборачиваемость — запас больше 45 дней или продаж нет при остатке на МП.
@@ -280,7 +344,9 @@ export function CardWork() {
         Качество — контент-рейтинг Ozon или Яндекс.Маркета ниже порога из настроек аккаунта
         (включается тумблером «Показывать в работе над карточкой»). Оценки обновляются при синхронизации карточки
         и ночью. Размеры — габариты упаковки на маркетплейсе не совпадают с вкладкой «Основное» (пустые значения
-        не считаются расхождением; для WB и Яндекс.Маркета сравнение в сантиметрах). Клик по артикулу открывает карточку товара.
+        не считаются расхождением; для WB и Яндекс.Маркета сравнение в сантиметрах).
+        Дубли — несколько карточек с одним и тем же артикулом, артикулом продавца или штрихкодом.
+        Клик по артикулу открывает карточку товара.
       </p>
     </div>
   );
