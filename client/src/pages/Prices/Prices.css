@@ -4,6 +4,19 @@
   -webkit-overflow-scrolling: touch;
 }
 
+.prices-table .product-sku-cell {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.prices-table .product-sku {
+  color: inherit;
+  font-size: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Бейджи МП — src/styles/mp-badges.css */
 
 .prices-row-action-btn {

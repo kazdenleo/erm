@@ -1267,27 +1267,10 @@ export function Prices() {
 
                   return (
                     <tr key={product.id}>
-                      <td style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
-                        {product?.id ? (
-                          <button
-                            type="button"
-                            onClick={(e) => openProductCardFromClick(product.id, e)}
-                            title="Открыть карточку товара"
-                            style={{
-                              padding: 0,
-                              border: 'none',
-                              background: 'none',
-                              color: 'inherit',
-                              textDecoration: 'underline',
-                              cursor: 'pointer',
-                              font: 'inherit',
-                            }}
-                          >
-                            {product.sku || '—'}
-                          </button>
-                        ) : (
-                          product.sku || '—'
-                        )}
+                      <td className="product-sku-cell" style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
+                        <span className="product-sku" title="Выделите, чтобы скопировать">
+                          {product.sku || '—'}
+                        </span>
                       </td>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center', verticalAlign: 'middle' }}>
                         <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center' }}>
