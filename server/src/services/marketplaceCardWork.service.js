@@ -145,19 +145,171 @@ function finalizeItems(map, reasonFilter) {
 const IDENT_KIND_LABEL = {
   sku: 'Артикул ERP',
   seller_sku: 'Артикул продавца',
+  manufacturer_sku: 'Артикул производителя',
   barcode: 'Штрихкод',
 };
 
 function identRoleLabel(kind, marketplace) {
   if (kind === 'sku') return 'Артикул ERP';
   if (kind === 'barcode') return 'Штрихкод';
+  if (kind === 'manufacturer_sku') {
+    const mp = mpLabel(marketplace);
+    return marketplace ? `Артикул производителя ${mp}` : 'Артикул производителя';
+  }
   const mp = mpLabel(marketplace);
   return marketplace ? `Артикул продавца ${mp}` : 'Артикул продавца';
 }
 
+function identNorm(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+function identDisplay(s) {
+  const t = String(s || '').trim();
+  return t || '';
+}
+
+function sharedScalar(products, getter) {
+  if (!products.length) return null;
+  const displays = products.map((p) => identDisplay(getter(p)));
+  if (displays.some((v) => !v)) return null;
+  const norms = displays.map(identNorm);
+  if (new Set(norms).size !== 1) return null;
+  return displays[0];
+}
+
+async function enrichDuplicateGroups(groups) {
+  const ids = [...new Set(groups.flatMap((g) => (g.products || []).map((p) => Number(p.productId)).filter((n) => n > 0)))];
+  if (!ids.length) return groups;
+
+  let infoRows = [];
+  let skuRows = [];
+  let bcRows = [];
+  try {
+    const [infoRes, skuRes, bcRes] = await Promise.all([
+      query(
+        `SELECT p.id, p.sku, p.name, p.mp_wb_vendor_code, p.ozon_draft, p.ym_draft, b.name AS brand_name
+           FROM products p
+           LEFT JOIN brands b ON b.id = p.brand_id
+          WHERE p.id = ANY($1::bigint[])`,
+        [ids]
+      ),
+      query(
+        `SELECT product_id, marketplace, sku
+           FROM product_skus
+          WHERE product_id = ANY($1::bigint[])`,
+        [ids]
+      ),
+      query(
+        `SELECT product_id, barcode
+           FROM barcodes
+          WHERE product_id = ANY($1::bigint[])
+          ORDER BY id`,
+        [ids]
+      ),
+    ]);
+    infoRows = infoRes.rows || [];
+    skuRows = skuRes.rows || [];
+    bcRows = bcRes.rows || [];
+  } catch {
+    return groups;
+  }
+
+  const byId = new Map();
+  for (const row of infoRows) {
+    const ozonDraft = row.ozon_draft && typeof row.ozon_draft === 'object' ? row.ozon_draft : {};
+    const ymDraft = row.ym_draft && typeof row.ym_draft === 'object' ? row.ym_draft : {};
+    byId.set(Number(row.id), {
+      sku: identDisplay(row.sku),
+      productName: identDisplay(row.name),
+      brand: identDisplay(row.brand_name),
+      skuOzon: '',
+      skuWb: identDisplay(row.mp_wb_vendor_code),
+      skuYm: '',
+      manufacturerOzon: identDisplay(ozonDraft.vendorCode),
+      manufacturerYm: identDisplay(ymDraft.vendorCode),
+      barcodes: [],
+    });
+  }
+  for (const row of skuRows) {
+    const rec = byId.get(Number(row.product_id));
+    if (!rec) continue;
+    const mp = String(row.marketplace || '').toLowerCase();
+    const sku = identDisplay(row.sku);
+    if (!sku) continue;
+    if (mp === 'ozon') rec.skuOzon = sku;
+    else if (mp === 'wb') rec.skuWb = sku;
+    else if (mp === 'ym') rec.skuYm = sku;
+  }
+  for (const row of bcRows) {
+    const rec = byId.get(Number(row.product_id));
+    if (!rec) continue;
+    const bc = identDisplay(row.barcode);
+    if (bc && !rec.barcodes.includes(bc)) rec.barcodes.push(bc);
+  }
+
+  return groups.map((g) => {
+    const products = (g.products || []).map((p) => {
+      const extra = byId.get(Number(p.productId)) || {};
+      return {
+        ...p,
+        sku: extra.sku || p.sku || '',
+        productName: extra.productName || p.productName || '',
+        brand: extra.brand || '',
+        skuOzon: extra.skuOzon || '',
+        skuWb: extra.skuWb || '',
+        skuYm: extra.skuYm || '',
+        manufacturerOzon: extra.manufacturerOzon || '',
+        manufacturerYm: extra.manufacturerYm || '',
+        barcodes: extra.barcodes || [],
+      };
+    });
+
+    const same = [];
+    const pushSame = (label, value) => {
+      if (!value) return;
+      if (same.some((s) => s.label === label && identNorm(s.value) === identNorm(value))) return;
+      same.push({ label, value });
+    };
+    pushSame('Артикул ERP', sharedScalar(products, (p) => p.sku));
+    pushSame('Название', sharedScalar(products, (p) => p.productName));
+    pushSame('Бренд', sharedScalar(products, (p) => p.brand));
+    pushSame('Артикул продавца Ozon', sharedScalar(products, (p) => p.skuOzon));
+    pushSame('Артикул продавца WB', sharedScalar(products, (p) => p.skuWb));
+    pushSame('Артикул продавца Я.Маркет', sharedScalar(products, (p) => p.skuYm));
+    pushSame('Артикул производителя Ozon', sharedScalar(products, (p) => p.manufacturerOzon));
+    pushSame('Артикул производителя Я.Маркет', sharedScalar(products, (p) => p.manufacturerYm));
+
+    const bcCount = new Map();
+    for (const p of products) {
+      const seen = new Set();
+      for (const bc of p.barcodes || []) {
+        const n = identNorm(bc);
+        if (!n || seen.has(n)) continue;
+        seen.add(n);
+        const prev = bcCount.get(n) || { value: bc, count: 0 };
+        prev.count += 1;
+        bcCount.set(n, prev);
+      }
+    }
+    const sharedBarcodes = [...bcCount.values()]
+      .filter((x) => x.count >= 2)
+      .map((x) => x.value);
+    if (sharedBarcodes.length) {
+      pushSame('Штрихкод', sharedBarcodes.join(', '));
+    }
+
+    const trigger = identNorm(g.value);
+    const sameFields = same.filter((s) => identNorm(s.value) !== trigger);
+
+    return { ...g, products, sameFields };
+  });
+}
+
 /**
- * Товары с совпадающими идентификаторами: артикул ERP, артикул продавца, штрихкод.
- * Совпадение — одинаковая нормализованная строка (trim + lower) у двух и более карточек.
+ * Товары с совпадающими идентификаторами одного типа:
+ * артикул ERP ↔ ERP, артикул продавца ↔ продавца, артикул производителя ↔ производителя, ШК ↔ ШК.
+ * Разные типы между собой не склеиваем (ERP DTSM3001 ≠ артикул продавца DTSM3001).
  */
 async function listIdentifierDuplicates({ profileId } = {}) {
   const pid = Number(profileId);
@@ -168,7 +320,7 @@ async function listIdentifierDuplicates({ profileId } = {}) {
   try {
     const res = await query(
       `WITH active AS (
-          SELECT p.id, p.sku, p.name, p.mp_wb_vendor_code
+          SELECT p.id, p.sku, p.name, p.mp_wb_vendor_code, p.ozon_draft, p.ym_draft
             FROM products p
            WHERE p.profile_id = $1
              AND COALESCE(p.is_archived, false) = false
@@ -200,6 +352,20 @@ async function listIdentifierDuplicates({ profileId } = {}) {
              )
           UNION ALL
           SELECT a.id, a.sku, a.name,
+                 'manufacturer_sku', 'ozon',
+                 LOWER(TRIM(a.ozon_draft->>'vendorCode')),
+                 TRIM(a.ozon_draft->>'vendorCode')
+            FROM active a
+           WHERE TRIM(COALESCE(a.ozon_draft->>'vendorCode', '')) <> ''
+          UNION ALL
+          SELECT a.id, a.sku, a.name,
+                 'manufacturer_sku', 'ym',
+                 LOWER(TRIM(a.ym_draft->>'vendorCode')),
+                 TRIM(a.ym_draft->>'vendorCode')
+            FROM active a
+           WHERE TRIM(COALESCE(a.ym_draft->>'vendorCode', '')) <> ''
+          UNION ALL
+          SELECT a.id, a.sku, a.name,
                  'barcode', NULL,
                  LOWER(TRIM(b.barcode)), TRIM(b.barcode)
             FROM active a
@@ -207,16 +373,16 @@ async function listIdentifierDuplicates({ profileId } = {}) {
            WHERE TRIM(COALESCE(b.barcode, '')) <> ''
         ),
         collisions AS (
-          SELECT norm, COUNT(DISTINCT product_id) AS product_count, MIN(display) AS display
+          SELECT kind, norm, COUNT(DISTINCT product_id) AS product_count, MIN(display) AS display
             FROM idents
-           GROUP BY norm
+           GROUP BY kind, norm
           HAVING COUNT(DISTINCT product_id) > 1
         )
         SELECT i.kind, i.marketplace, c.display, i.norm,
                i.product_id, i.erp_sku, i.name
           FROM idents i
-          JOIN collisions c ON c.norm = i.norm
-         ORDER BY c.product_count DESC, i.norm, i.erp_sku NULLS LAST, i.product_id`,
+          JOIN collisions c ON c.kind = i.kind AND c.norm = i.norm
+         ORDER BY c.product_count DESC, i.kind, i.norm, i.erp_sku NULLS LAST, i.product_id`,
       [pid]
     );
     rows = res.rows || [];
@@ -224,18 +390,21 @@ async function listIdentifierDuplicates({ profileId } = {}) {
     return { groups: [], productCount: 0 };
   }
 
-  const byNorm = new Map();
+  const byKey = new Map();
   for (const row of rows) {
+    const kind = String(row.kind || '');
     const norm = String(row.norm || '');
-    if (!norm) continue;
-    let group = byNorm.get(norm);
+    if (!kind || !norm) continue;
+    const key = `${kind}|${norm}`;
+    let group = byKey.get(key);
     if (!group) {
       group = {
-        key: norm,
+        key,
+        kind,
         value: String(row.display || row.erp_sku || norm),
         products: new Map(),
       };
-      byNorm.set(norm, group);
+      byKey.set(key, group);
     }
     const productId = Number(row.product_id) || 0;
     if (productId < 1) continue;
@@ -253,34 +422,32 @@ async function listIdentifierDuplicates({ profileId } = {}) {
     if (!prod.roles.includes(role)) prod.roles.push(role);
   }
 
-  const groups = [...byNorm.values()]
+  const groups = [...byKey.values()]
     .map((g) => {
       const products = [...g.products.values()].sort((a, b) =>
         String(a.sku || '').localeCompare(String(b.sku || ''), 'ru')
       );
-      const kinds = new Set();
-      for (const p of products) {
-        for (const role of p.roles) {
-          if (role.startsWith('Штрихкод')) kinds.add('barcode');
-          else if (role.startsWith('Артикул продавца')) kinds.add('seller_sku');
-          else kinds.add('sku');
-        }
-      }
       return {
         value: g.value,
-        kinds: [...kinds],
-        kindLabels: [...kinds].map((k) => IDENT_KIND_LABEL[k] || k),
+        kinds: [g.kind],
+        kindLabels: [IDENT_KIND_LABEL[g.kind] || g.kind],
         products,
       };
     })
     .filter((g) => g.products.length > 1)
-    .sort((a, b) => b.products.length - a.products.length || String(a.value).localeCompare(String(b.value), 'ru'));
+    .sort(
+      (a, b) =>
+        b.products.length - a.products.length ||
+        String(a.kindLabels[0] || '').localeCompare(String(b.kindLabels[0] || ''), 'ru') ||
+        String(a.value).localeCompare(String(b.value), 'ru')
+    );
 
+  const enriched = await enrichDuplicateGroups(groups);
   const productIds = new Set();
-  for (const g of groups) {
+  for (const g of enriched) {
     for (const p of g.products) productIds.add(p.productId);
   }
-  return { groups, productCount: productIds.size };
+  return { groups: enriched, productCount: productIds.size };
 }
 
 async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = {}) {

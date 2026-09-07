@@ -251,7 +251,8 @@ export function Products() {
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   /** Поиск по названию / артикулу / штрихкоду (сервер, debounce) */
-  const listSearch = '';
+  const [listSearch, setListSearch] = useState('');
+  const listSearchDebounceRef = useRef(null);
   const loadListRef = useRef(() => {});
   const listBootstrappedRef = useRef(false);
   const [importExcelLoading, setImportExcelLoading] = useState(false);
@@ -435,6 +436,7 @@ export function Products() {
     setFilterArchiveMode('');
     setFilterUnlinkedMp(new Set());
     setFilterLinkedMp(new Set());
+    setListSearch('');
     loadList({
       organizationId: '',
       brandId: '',
@@ -444,9 +446,26 @@ export function Products() {
       archiveMode: '',
       unlinkedMp: [],
       linkedMp: [],
+      search: '',
       page: 1,
     });
   };
+
+  const handleListSearchChange = (e) => {
+    const v = e.target.value;
+    setListSearch(v);
+    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    listSearchDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      loadListRef.current({ search: v, page: 1 });
+    }, 400);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    };
+  }, []);
 
   const toggleUnlinkedMpFilter = (mpCode) => {
     setCurrentPage(1);
@@ -1164,6 +1183,19 @@ export function Products() {
         <div className="card-body p-0">
           <div className="products-list-toolbar">
             <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
+              <div className="products-list-toolbar-search">
+                <input
+                  id="products-list-search"
+                  type="search"
+                  className="form-control form-control-sm products-list-search-input"
+                  placeholder="Название, артикул, штрихкод…"
+                  value={listSearch}
+                  onChange={handleListSearchChange}
+                  autoComplete="off"
+                  aria-label="Поиск по названию, артикулу или штрихкоду"
+                  aria-busy={loading}
+                />
+              </div>
               <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                 <span
                   className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}

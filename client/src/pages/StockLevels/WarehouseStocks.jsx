@@ -922,6 +922,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     const dbInc = movementNum(head, 'incoming_after');
     const dbRes = movementNum(head, 'reserved_after');
     const dbBal = movementNum(head, 'balance_after');
+    const warehouseScoped =
+      warehouseFilterId != null && String(warehouseFilterId).trim() !== '';
 
     // Резерв не меняет «в пути» — не показываем ложный +Δ из incoming_after снимка.
     if (prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
@@ -940,13 +942,29 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         return meta.kit_component_reserve === true || meta.kit_reserve_scope;
       });
 
-    if (dbRes != null) {
-      out.res = dbRes;
-    } else if (useKitUnits && prevLineBelow?.res != null) {
-      const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
       const isUnreserve =
         item.kind === 'unreserveGroup' ||
         (item.kind === 'single' && movementTypeLower(item.m) === 'unreserve');
+
+    // При фильтре склада нельзя брать глобальный reserved_after: между видимыми
+    // строками бывают скрытые FBO/резервы других складов → ложный большой +Δ.
+    if (warehouseScoped && prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+      if (useKitUnits) {
+        const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
+        out.res = isUnreserve
+          ? Math.max(0, Number(prevLineBelow.res) - kitUnits)
+          : Number(prevLineBelow.res) + kitUnits;
+      } else if (Number.isFinite(sumQc)) {
+        out.res = isUnreserve || sumQc > 0
+          ? Math.max(0, Number(prevLineBelow.res) - Math.abs(sumQc))
+          : Number(prevLineBelow.res) + Math.abs(sumQc);
+      } else if (dbRes != null) {
+        out.res = dbRes;
+      }
+    } else if (dbRes != null && !warehouseScoped) {
+      out.res = dbRes;
+    } else if (useKitUnits && prevLineBelow?.res != null) {
+      const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
       out.res = isUnreserve
         ? Math.max(0, prevLineBelow.res - kitUnits)
         : prevLineBelow.res + kitUnits;
@@ -954,7 +972,9 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       out.res =
         sumQc > 0
           ? Math.max(0, prevLineBelow.res - sumQc)
-          : Math.max(0, prevLineBelow.res + sumQc);
+          : Math.max(0, prevLineBelow.res + Math.abs(sumQc));
+    } else if (dbRes != null) {
+      out.res = dbRes;
     }
 
     // Резерв не меняет наличие на складе — в колонке «Наличие» держим снимок как у строки ниже.
@@ -971,17 +991,44 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
 
   if (item.kind === 'outboundGroup') {
     const head = item.movements[0];
+    const shipHead =
+      item.movements.find((x) => movementTypeLower(x) === 'shipment') || head;
     const dbInc = movementNum(head, 'incoming_after');
     const dbRes = movementNum(head, 'reserved_after');
-    const dbBal = movementNum(head, 'balance_after');
+    const dbBal = movementNum(shipHead, 'balance_after');
+    const whBal = warehouseBalanceFromMovement(shipHead, warehouseFilterId);
     // Отгрузка не меняет «в пути» — не показываем ложный +Δ из снимка incoming_after.
     if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
       out.inc = prevLineBelow.inc;
     } else if (dbInc != null) {
       out.inc = dbInc;
     }
-    if (dbRes != null) out.res = dbRes;
-    if (dbBal != null) out.bal = dbBal;
+    // Резерв: при отгрузке снимается; если нет снимка — отталкиваемся от строки ниже.
+    if (dbRes != null && !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')) {
+      out.res = dbRes;
+    } else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+      const unreserveSum = item.movements
+        .filter((x) => movementTypeLower(x) === 'unreserve')
+        .reduce((s, x) => s + Math.max(0, Number(x.quantity_change) || 0), 0);
+      out.res = Math.max(0, Number(prevLineBelow.res) - unreserveSum);
+    } else if (dbRes != null) {
+      out.res = dbRes;
+    }
+    // Наличие: при фильтре склада — warehouse_balance_after, не products.quantity (все склады).
+    if (whBal != null) {
+      out.bal = whBal;
+    } else if (
+      warehouseFilterId != null &&
+      String(warehouseFilterId).trim() !== '' &&
+      prevLineBelow?.bal != null
+    ) {
+      const shipQty = item.movements
+        .filter((x) => movementTypeLower(x) === 'shipment')
+        .reduce((s, x) => s + Math.abs(Number(x.quantity_change) || 0), 0);
+      out.bal = Math.max(0, Number(prevLineBelow.bal) - shipQty);
+    } else if (dbBal != null) {
+      out.bal = dbBal;
+    }
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
     if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
     if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
@@ -1164,12 +1211,21 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       return out;
     }
     const purchaseReceiptMeta = t === 'receipt' ? parseMovementMeta(m) : null;
+    const isWarehouseReceiptDoc =
+      t === 'receipt' &&
+      (purchaseReceiptMeta?.receipt_id != null ||
+        purchaseReceiptMeta?.receiptId != null ||
+        purchaseReceiptMeta?.purchase_receipt_id != null ||
+        purchaseReceiptMeta?.purchaseReceiptId != null ||
+        /поступлен/i.test(reason) ||
+        /при[её]мк/i.test(reason));
     if (
       t === 'receipt' &&
       (/при[её]мка(?:\s+№\s*\d+)?\s+по\s+закупке/i.test(reason) ||
         ((purchaseReceiptMeta?.purchase_receipt_id != null ||
           purchaseReceiptMeta?.purchaseReceiptId != null) &&
-          /закупк/i.test(reason)))
+          /закупк/i.test(reason)) ||
+        isWarehouseReceiptDoc)
     ) {
       const moveQty = Math.max(0, Number(m.quantity_change) || 0);
       const dbInc = movementNum(m, 'incoming_after');
@@ -1389,18 +1445,8 @@ function buildHistoryDisplaySnapshots(
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
     enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId);
   }
-  const net =
-    currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
-      ? Math.max(0, Math.floor(Number(currentNetReserved)))
-      : null;
-  if (net != null && enriched[0]) {
-    const topItem = displayRows[0];
-    const topType =
-      topItem?.kind === 'single' && topItem.m ? movementTypeLower(topItem.m) : null;
-    if (topType !== 'inventory') {
-      enriched[0].res = net;
-    }
-  }
+  // Не подменяем резерв верхней строки «живым» net: иначе поступление/отгрузка
+  // получают чужой Δ резерва (после скрытых FBO-пересчётов и т.п.).
 
   return enriched;
 }
@@ -3324,6 +3370,39 @@ export function WarehouseStocks() {
               Не удалось обновить остатки: {productsError}
             </div>
           ) : null}
+          <div className="actions stock-levels-toolbar">
+            <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
+              Обновить склад
+            </Button>
+            {supplierSyncEnabled ? (
+              <Button
+                variant="primary"
+                onClick={handleRefreshWarehouseAndSupplierStocks}
+                disabled={supplierStocksRefreshing || mpStockSyncing || productsLoading}
+                style={{ marginLeft: 8 }}
+              >
+                {supplierStocksRefreshing ? 'Обновление поставщиков…' : 'Обновить остатки поставщиков'}
+              </Button>
+            ) : null}
+            <Button
+              variant="secondary"
+              onClick={handleMpPushButtonClick}
+              disabled={supplierStocksRefreshing}
+              style={{ marginLeft: 8 }}
+              title={
+                mpLinkedWarehouse
+                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
+                  : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
+              }
+            >
+              {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
+            </Button>
+          </div>
+          {mpPushBlockReason ? (
+            <p className="text-warning small mb-2" role="status">
+              {mpPushBlockReason}
+            </p>
+          ) : null}
           <div className="stock-levels-filters">
             <label className="stock-levels-filter-label">
               <span>Склад:</span>
@@ -3599,7 +3678,7 @@ export function WarehouseStocks() {
                         busyKey={mpBlockBusyKey}
                         onToggle={toggleMpStockBlock}
                       />
-                    </td>
+                      </td>
                   </tr>
                 ))}
               </tbody>
@@ -3611,23 +3690,7 @@ export function WarehouseStocks() {
             <div className="alert alert-danger py-2 mt-2" role="alert">
               {mpBlockError}
             </div>
-          ) : null}
-
-          <p className="stock-levels-history-hint">
-            Нажмите на строку — история остатков; на число в колонке «Резерв» — заказы с резервом и снятие резерва.
-            В колонке «Остатки МП» горящий бейдж — остатки уходят на FBS маркетплейса; потухший — на FBS уходит 0.
-            {allowManualStockEdit ? (
-              <>
-                {' '}
-                В колонке «Наличие» задайте количество и нажмите ✓ — нужен выбранный склад в фильтре и включённая настройка в аккаунте.
-              </>
-            ) : (
-              <>
-                {' '}
-                Ручное изменение «Наличия» отключено — включите в настройках аккаунта.
-              </>
-            )}
-          </p>
+            ) : null}
 
           {mpStockPushBanner ? (
             <div className="alert alert-info py-2 mt-3" role="status">
@@ -3727,40 +3790,6 @@ export function WarehouseStocks() {
                 </div>
               ) : null}
             </div>
-          ) : null}
-
-          <div className="actions" style={{ marginTop: '16px' }}>
-            <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
-              Обновить склад
-            </Button>
-            {supplierSyncEnabled ? (
-              <Button
-                variant="primary"
-                onClick={handleRefreshWarehouseAndSupplierStocks}
-                disabled={supplierStocksRefreshing || mpStockSyncing || productsLoading}
-                style={{ marginLeft: 8 }}
-              >
-                {supplierStocksRefreshing ? 'Обновление поставщиков…' : 'Обновить остатки поставщиков'}
-              </Button>
-            ) : null}
-            <Button
-              variant="secondary"
-              onClick={handleMpPushButtonClick}
-              disabled={supplierStocksRefreshing}
-              style={{ marginLeft: 8 }}
-              title={
-                mpLinkedWarehouse
-                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
-                  : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
-              }
-            >
-              {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
-            </Button>
-          </div>
-          {mpPushBlockReason ? (
-            <p className="text-warning small mt-2 mb-0" role="status">
-              {mpPushBlockReason}
-            </p>
           ) : null}
         </>
       )}

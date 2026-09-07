@@ -4,12 +4,10 @@
 
 import { warehouseOpFromSearch } from './warehouseTabs.js';
 
-/** @type {Record<string, { title: string, subtitle: string }>} */
+/** @type {Record<string, { title: string, subtitle?: string }>} */
 export const STOCK_SECTION_HEADERS = {
   table: {
     title: '📦 Остатки',
-    subtitle:
-      'Складской учёт: остатки, приёмка, перемещение между складами организации, списание и инвентаризация. Поиск — по штрихкоду, артикулу или названию.',
   },
   purchases: {
     title: '🧾 Закупка',

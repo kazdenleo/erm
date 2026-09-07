@@ -105,6 +105,39 @@
   color: #9d174d;
 }
 
+.card-work__dup-same {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.card-work__reason--same {
+  background: #ecfdf5;
+  color: #047857;
+}
+
 .card-work__dup-table {
   margin: 0 0 8px;
+}
+
+.card-work__dup-match {
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.card-work__dup-bc {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  font-size: 12px;
+}
+
+.card-work__dup-bc--match {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+  font-weight: 600;
 }

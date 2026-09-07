@@ -599,7 +599,7 @@ export function WarehouseOperations({
     (forMode = mode) => {
       const documentType = RECEIPT_DOCUMENT_TYPE_BY_MODE[forMode];
       if (!documentType) return;
-    setReceiptsLoading(true);
+      setReceiptsLoading(true);
       const params = { limit: 200, documentType };
       if (forMode === MODE_WRITEOFF) {
         if (writeoffFilterOrgId) params.organizationId = writeoffFilterOrgId;
@@ -611,14 +611,14 @@ export function WarehouseOperations({
       }
       receiptsApi
         .getList(params)
-      .then(({ list }) => {
-        setReceiptsList(Array.isArray(list) ? list : []);
-      })
+        .then(({ list }) => {
+          setReceiptsList(Array.isArray(list) ? list : []);
+        })
         .catch((err) => {
-        console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
-        setReceiptsList([]);
-      })
-      .finally(() => setReceiptsLoading(false));
+          console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
+          setReceiptsList([]);
+        })
+        .finally(() => setReceiptsLoading(false));
     },
     [mode, writeoffFilterOrgId, writeoffFilterWhId, transferFilterOrgId, transferFilterWhId]
   );
@@ -1851,7 +1851,7 @@ export function WarehouseOperations({
   const handleReceiptScan = useCallback(
     (code) => {
       if (receiptSuppressScanRef.current) return;
-    setLookupError(null);
+      setLookupError(null);
       lookupByBarcodeOrSkuThenReceiptOne(code);
       scanInputRef.current?.focus();
     },
@@ -1874,7 +1874,7 @@ export function WarehouseOperations({
       openSuggest('receipt_modal_scan', 'Выберите товар', matches, async (p) => {
         if (!p) return;
         receiptSuppressScanRef.current = true;
-        clearScanField(scanInputRef.current);
+      clearScanField(scanInputRef.current);
         try {
           if (!receiptWarehouseId) {
             setLookupError('Сначала выберите склад приёмки');
@@ -2120,7 +2120,7 @@ export function WarehouseOperations({
         playEventSound(SOUND_EVENTS.scan_error);
       } finally {
         setBoxAddBusy(false);
-      scanInputRef.current?.focus();
+        scanInputRef.current?.focus();
       }
     },
     [
@@ -2403,7 +2403,7 @@ export function WarehouseOperations({
   const handleReturnScan = useCallback(
     (code) => {
       if (returnSuppressScanRef.current) return;
-    setLookupError(null);
+      setLookupError(null);
       lookupByBarcodeOrSkuThenReturnOne(code);
       returnScanInputRef.current?.focus();
     },
@@ -2477,8 +2477,8 @@ export function WarehouseOperations({
       const matches = await resolveTransferMatches(qq);
       if (matches.length === 0) {
         if (suggestContext === 'transfer_scan') closeSuggest();
-      return;
-    }
+        return;
+      }
       openSuggest('transfer_scan', 'Выберите товар', matches, async (p) => {
         if (!p) return;
         const added = await addTransferItemFromProduct(p);
@@ -2676,7 +2676,7 @@ export function WarehouseOperations({
   const handleCustomerReturnScan = useCallback(
     (code) => {
       if (customerReturnSuppressScanRef.current) return;
-    setLookupError(null);
+      setLookupError(null);
       lookupByBarcodeOrSkuThenCustomerReturnOne(code);
       customerReturnScanInputRef.current?.focus();
     },
@@ -2738,8 +2738,8 @@ export function WarehouseOperations({
       const scanCode = String(row?.barcode || row?.sku || '').trim();
       if (!scanCode) {
         setOpMessage('У возврата нет штрихкода или SKU для поиска товара');
-        return;
-      }
+      return;
+    }
       if (!customerReturnWarehouseId) {
         setOpMessage('Сначала выберите склад приёмки возврата');
         return;
@@ -3142,12 +3142,12 @@ export function WarehouseOperations({
   const handleInventoryScan = useCallback(
     (code) => {
       if (inventorySuppressScanRef.current) return;
-    if (!inventorySessionWarehouseId) {
-      setLookupError('Сначала выберите склад инвентаризации');
-      setOpMessage(null);
-      playEventSound(SOUND_EVENTS.scan_error);
-      return;
-    }
+      if (!inventorySessionWarehouseId) {
+        setLookupError('Сначала выберите склад инвентаризации');
+        setOpMessage(null);
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
       setLookupError(null);
       lookupByBarcodeOrSkuThenInventoryNewOne(code);
     },
@@ -3168,8 +3168,8 @@ export function WarehouseOperations({
         await scanInventoryLive(String(product.id));
         setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       } else {
-    await addOneToInventoryNewRow(product);
-    setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+        await addOneToInventoryNewRow(product);
+        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
       setLookupError(null);
     inventoryNewScanInputRef.current?.focus();
@@ -3652,22 +3652,22 @@ export function WarehouseOperations({
                         <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
                     </button>
                   ))}
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
+          )}
+        </div>
             <div className="warehouse-ops-scan-form-notice" aria-live="polite">
               {lookupError ? (
                 <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--error">
                   {lookupError}
-              </div>
+            </div>
               ) : opMessage ? (
                 <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--success">
                   {opMessage}
-                </div>
+            </div>
               ) : null}
             </div>
-          </form>
+              </form>
 
           <div className="warehouse-ops-receipt-list-section">
             <h4 className="warehouse-ops-receipt-list-title">Список товаров для списания</h4>
@@ -3700,9 +3700,9 @@ export function WarehouseOperations({
                             <td className="sku-cell">{item.sku}</td>
                             <td className="name-cell">{item.name}</td>
                             <td>
-                <input
-                  type="number"
-                  min={1}
+                              <input
+                                type="number"
+                                min={1}
                                 max={maxQty}
                                 value={item.quantity}
                                 onChange={(e) => updateWriteoffQuantity(index, e.target.value)}
@@ -3746,11 +3746,11 @@ export function WarehouseOperations({
                   </Button>
                   <Button variant="secondary" onClick={clearWriteoffList} disabled={opLoading}>
                     Очистить список
-                </Button>
-              </div>
+                  </Button>
+                </div>
               </>
-          )}
-        </div>
+            )}
+          </div>
 
           {renderWarehouseDocumentsList({
             title: 'Оформленные списания',
@@ -3861,9 +3861,9 @@ export function WarehouseOperations({
                 className="warehouse-ops-panel return-customer-panel"
               >
               <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
-              <p className="warehouse-ops-hint">
+          <p className="warehouse-ops-hint">
                 Сначала выберите организацию и склад приёмки, затем добавьте товары: скан (1 шт) или ввод артикула / названия. Количество укажите в таблице ниже.
-              </p>
+          </p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
@@ -3904,13 +3904,13 @@ export function WarehouseOperations({
           <p className="warehouse-ops-hint">
             Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
           </p>
-          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
-              <FastScanInput
-                inputRef={customerReturnScanInputRef}
-                onScan={handleCustomerReturnScan}
+                <FastScanInput
+                  inputRef={customerReturnScanInputRef}
+                  onScan={handleCustomerReturnScan}
                 onManualQuery={handleCustomerReturnManualQuery}
-                debounceMs={200}
+                  debounceMs={200}
                 manualDebounceMs={400}
                   placeholder="Штрихкод, артикул или название"
                   disabled={!customerReturnWarehouseId}
@@ -4288,11 +4288,11 @@ export function WarehouseOperations({
 
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <div className="warehouse-ops-scan-form-input-wrap">
-                  <FastScanInput
-                    inputRef={inventoryNewScanInputRef}
-                    onScan={handleInventoryScan}
+                <FastScanInput
+                  inputRef={inventoryNewScanInputRef}
+                  onScan={handleInventoryScan}
                     onManualQuery={handleInventoryManualQuery}
-                    debounceMs={160}
+                  debounceMs={160}
                     manualDebounceMs={400}
                     placeholder="Штрихкод, артикул или название"
                   disabled={!inventorySessionWarehouseId}
@@ -4802,17 +4802,17 @@ export function WarehouseOperations({
                           : null;
                       const lineSum = unit != null ? unit * qty : null;
                       return (
-                        <tr key={line.id}>
-                          <td className="sku-cell">{line.product_sku || '—'}</td>
-                          <td className="name-cell">{line.product_name || '—'}</td>
-                          <td>{line.quantity}</td>
+                      <tr key={line.id}>
+                        <td className="sku-cell">{line.product_sku || '—'}</td>
+                        <td className="name-cell">{line.product_name || '—'}</td>
+                        <td>{line.quantity}</td>
                           {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
-                            <td>{line.cost != null ? Number(line.cost) : '—'}</td>
+                          <td>{line.cost != null ? Number(line.cost) : '—'}</td>
                           ) : null}
                           {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
                             <td className="num-cell">{lineSum != null ? formatRub(lineSum) : '—'}</td>
                           ) : null}
-                        </tr>
+                      </tr>
                       );
                     })}
                   </tbody>
@@ -5391,13 +5391,13 @@ export function WarehouseOperations({
           <p className="warehouse-ops-hint">
             Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки укажите количество в колонке «Коробкой» в таблице — оно прибавится к уже принятому (через 2 с).
           </p>
-          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
-              <FastScanInput
-                inputRef={scanInputRef}
-                onScan={handleReceiptScan}
+                <FastScanInput
+                  inputRef={scanInputRef}
+                  onScan={handleReceiptScan}
                 onManualQuery={handleReceiptManualQuery}
-                debounceMs={160}
+                  debounceMs={160}
                 manualDebounceMs={400}
                   placeholder="Штрихкод, артикул или название"
                   disabled={!receiptWarehouseId}
@@ -5465,7 +5465,7 @@ export function WarehouseOperations({
                           <td className="sku-cell">{item.sku}</td>
                           <td className="name-cell">{item.name}</td>
                           <td>
-                            <input
+              <input
                               type="number"
                               min={1}
                               value={item.quantity}
@@ -5474,28 +5474,28 @@ export function WarehouseOperations({
                             />
                           </td>
                           <td>
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
+              <input
+                type="number"
+                min={1}
+                step={1}
                               className="warehouse-ops-qty-input small"
                               style={{ width: 90 }}
-                              placeholder="Кол-во"
+                placeholder="Кол-во"
                               value={item._boxQtyInput ?? ''}
                               disabled={boxAddBusy}
-                              onChange={(e) => {
+                onChange={(e) => {
                                 const v = e.target.value;
                                 updateReceiptRowBoxInput(index, v);
                                 scheduleReceiptRowBoxQtyApply(item.productId, v);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') e.preventDefault();
-                              }}
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
                             />
                           </td>
                           <td>
-                            <input
-                              type="number"
+                <input
+                  type="number"
                               min={0}
                               step={0.01}
                               placeholder="—"
@@ -5521,7 +5521,7 @@ export function WarehouseOperations({
                 </div>
                 <p className="warehouse-ops-receipt-cost-hint">Если указана себестоимость, она будет сохранена в карточке товара.</p>
                 <div className="warehouse-ops-receipt-list-actions">
-                  <Button
+                <Button
                     onClick={applyReceiptList}
                     disabled={opLoading || isReceiptSessionGuest}
                     title={
@@ -5534,8 +5534,8 @@ export function WarehouseOperations({
                   </Button>
                   <Button variant="secondary" onClick={clearReceiptList} disabled={opLoading}>
                     Очистить список
-                  </Button>
-                </div>
+                </Button>
+              </div>
               </>
             )}
           </div>
@@ -5552,14 +5552,14 @@ export function WarehouseOperations({
       >
         <div className="warehouse-ops-panel return-supplier-panel" style={{ marginBottom: 0 }}>
           <div className="warehouse-ops-receipt-modal-settings">
-            <div className="warehouse-ops-receipt-supplier-row">
+                <div className="warehouse-ops-receipt-supplier-row">
               <label>
                 Организация (от имени которой возврат) <span className="warehouse-ops-required-star">*</span>
               </label>
-              <select
+                  <select
                 value={returnOrganizationId}
                 onChange={(e) => setReturnOrganizationId(e.target.value)}
-                className="warehouse-ops-select"
+                    className="warehouse-ops-select"
                 disabled={opLoading}
               >
                 <option value="">— Выберите организацию —</option>
@@ -5567,9 +5567,9 @@ export function WarehouseOperations({
                   <option key={org.id} value={org.id}>
                     {org.name}
                   </option>
-                ))}
-              </select>
-            </div>
+                    ))}
+                  </select>
+                </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
                 Склад списания <span className="warehouse-ops-required-star">*</span>
@@ -5693,45 +5693,45 @@ export function WarehouseOperations({
                             ? unitCost * (Number(item.quantity) || 0)
                             : null;
                         return (
-                          <tr key={`${item.productId}-${index}`}>
-                            <td className="sku-cell">{item.sku}</td>
-                            <td className="name-cell">{item.name}</td>
-                            <td>
-                              <input
-                                type="number"
-                                min={1}
+                        <tr key={`${item.productId}-${index}`}>
+                          <td className="sku-cell">{item.sku}</td>
+                          <td className="name-cell">{item.name}</td>
+                          <td>
+                            <input
+                              type="number"
+                              min={1}
                                 max={maxQty}
-                                value={item.quantity}
+                              value={item.quantity}
                                 onChange={(e) => updateReturnQuantity(index, e.target.value)}
-                                className="warehouse-ops-qty-input small"
+                              className="warehouse-ops-qty-input small"
                                 disabled={opLoading}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min={0}
-                                step={0.01}
-                                placeholder="—"
-                                value={item.cost ?? ''}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min={0}
+                              step={0.01}
+                              placeholder="—"
+                              value={item.cost ?? ''}
                                 onChange={(e) => updateReturnCost(index, e.target.value)}
-                                className="warehouse-ops-cost-input"
+                              className="warehouse-ops-cost-input"
                                 disabled={opLoading}
-                              />
-                            </td>
+                            />
+                          </td>
                             <td className="num-cell">{lineSum != null ? formatRub(lineSum) : '—'}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="warehouse-ops-remove-btn"
+                          <td>
+                            <button
+                              type="button"
+                              className="warehouse-ops-remove-btn"
                                 onClick={() => removeFromReturnList(index)}
-                                title="Удалить из списка"
+                              title="Удалить из списка"
                                 disabled={opLoading}
-                              >
-                                ✕
-                              </button>
-                            </td>
-                          </tr>
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
                         );
                       })}
                     </tbody>

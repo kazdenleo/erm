@@ -52,6 +52,28 @@ function formatQty(n) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number(n));
 }
 
+function cellMatches(value, group) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return false;
+  if (v === String(group?.value || '').trim().toLowerCase()) return true;
+  return (group?.sameFields || []).some((s) => {
+    const sv = String(s.value || '').trim().toLowerCase();
+    if (!sv) return false;
+    if (sv === v) return true;
+    return sv.split(',').map((x) => x.trim().toLowerCase()).includes(v);
+  });
+}
+
+function DupCell({ value, group }) {
+  const text = value || '—';
+  const match = value && cellMatches(value, group);
+  return (
+    <td className={match ? 'card-work__dup-match' : undefined} title={match ? 'Совпадает с другими карточками группы' : undefined}>
+      {text}
+    </td>
+  );
+}
+
 function uniqueByCode(reasons) {
   const out = [];
   const seen = new Set();
@@ -303,8 +325,9 @@ export function CardWork() {
             Дубли артикулов, артикулов продавца и штрихкодов
           </h2>
           <p className="card-work__section-lead">
-            Карточки, у которых совпадает артикул ERP, артикул продавца на маркетплейсе или штрихкод
-            (без учёта регистра и пробелов по краям). Период продаж на этот список не влияет.
+            Сравниваем только однотипные поля: артикул ERP с ERP, артикул продавца с артикулом продавца,
+            артикул производителя с артикулом производителя, штрихкод со штрихкодом (без учёта регистра и
+            пробелов по краям). Разные типы между собой не смешиваем. Период продаж на этот список не влияет.
           </p>
           {data == null && !loading ? (
             <p className="sales-analytics__empty">Нажмите «Показать», чтобы загрузить дубли.</p>
@@ -313,7 +336,7 @@ export function CardWork() {
           ) : (
             <div className="card-work__dup-groups">
               {duplicateGroups.map((group) => (
-                <div key={group.value} className="card-work__dup-group">
+                <div key={`${(group.kinds || []).join('-')}-${group.value}`} className="card-work__dup-group">
                   <div className="card-work__dup-head">
                     <strong className="card-work__dup-value">{group.value}</strong>
                     {(group.kindLabels || []).map((lab) => (
@@ -323,28 +346,59 @@ export function CardWork() {
                     ))}
                     <span className="card-work__dup-count">{group.products?.length || 0} шт.</span>
                   </div>
+                  {(group.sameFields || []).length ? (
+                    <p className="card-work__dup-same">
+                      Ещё одинаково:{' '}
+                      {(group.sameFields || []).map((s) => (
+                        <span key={`${s.label}:${s.value}`} className="card-work__reason card-work__reason--same">
+                          {s.label}: {s.value}
+                        </span>
+                      ))}
+                    </p>
+                  ) : null}
                   <table className="sales-analytics__table card-work__dup-table">
                     <thead>
                       <tr>
                         <th>Артикул ERP</th>
                         <th>Карточка</th>
                         <th>Где совпало</th>
+                        <th>Бренд</th>
+                        <th>Ozon</th>
+                        <th>WB</th>
+                        <th>Я.Маркет</th>
+                        <th>Штрихкоды</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(group.products || []).map((p) => (
                         <tr key={`${group.value}-${p.productId}`}>
-                          <td>
+                          <td className={cellMatches(p.sku, group) ? 'card-work__dup-match' : undefined}>
                             <Link className="card-work__link" to={productCardPath(p.productId)}>
                               {p.sku || '—'}
                             </Link>
                           </td>
-                          <td>
+                          <td className={cellMatches(p.productName, group) ? 'card-work__dup-match' : undefined}>
                             <Link className="card-work__link" to={productCardPath(p.productId)}>
                               {p.productName || '—'}
                             </Link>
                           </td>
                           <td>{(p.roles || []).join(', ') || '—'}</td>
+                          <DupCell value={p.brand} group={group} />
+                          <DupCell value={p.skuOzon} group={group} />
+                          <DupCell value={p.skuWb} group={group} />
+                          <DupCell value={p.skuYm} group={group} />
+                          <td>
+                            {(p.barcodes || []).length
+                              ? (p.barcodes || []).map((bc) => (
+                                  <span
+                                    key={bc}
+                                    className={cellMatches(bc, group) ? 'card-work__dup-bc card-work__dup-bc--match' : 'card-work__dup-bc'}
+                                  >
+                                    {bc}
+                                  </span>
+                                ))
+                              : '—'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -364,7 +418,8 @@ export function CardWork() {
         (включается тумблером «Показывать в работе над карточкой»). Оценки обновляются при синхронизации карточки
         и ночью. Размеры — габариты упаковки на маркетплейсе не совпадают с вкладкой «Основное» (пустые значения
         не считаются расхождением; для WB и Яндекс.Маркета сравнение в сантиметрах).
-        Дубли — несколько карточек с одним и тем же артикулом, артикулом продавца или штрихкодом.
+        Дубли — несколько карточек с одинаковым полем одного типа (ERP↔ERP, артикул продавца↔продавца,
+        артикул производителя↔производителя, ШК↔ШК). Разные типы не склеиваем.
         Клик по артикулу открывает карточку товара.
       </p>
     </div>

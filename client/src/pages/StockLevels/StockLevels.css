@@ -14,6 +14,13 @@
   scrollbar-width: thin;
 }
 
+.stock-levels-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0 0 16px;
+}
+
 .stock-levels-filters-toggles {
   display: inline-flex;
   align-items: center;
@@ -428,13 +435,6 @@
 
 .stock-levels-row-clickable:hover {
   background: rgba(255, 255, 255, 0.06);
-}
-
-.stock-levels-history-hint {
-  font-size: 13px;
-  color: var(--muted);
-  margin-top: 8px;
-  margin-bottom: 0;
 }
 
 .stock-levels-history-empty {
