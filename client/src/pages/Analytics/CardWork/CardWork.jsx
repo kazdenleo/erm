@@ -34,6 +34,7 @@ const REASON_FILTERS = [
   { value: 'stockout', label: 'Нет остатка' },
   { value: 'low_content_rating', label: 'Качество' },
   { value: 'dim_mismatch', label: 'Размеры' },
+  { value: 'duplicate', label: 'Дубли' },
 ];
 
 const SORT_GETTERS = {
@@ -97,11 +98,14 @@ export function CardWork() {
 
   const items = useMemo(() => {
     const list = Array.isArray(data?.items) ? data.items : [];
+    if (reason === 'duplicate') return [];
     const filtered =
       reason === 'all' ? list : list.filter((i) => (i.reasonCodes || []).includes(reason));
     return sortRows(filtered, sort, SORT_GETTERS);
   }, [data, reason, sort]);
   const summary = data?.summary || {};
+  const duplicateGroups = data?.duplicates?.groups || [];
+  const showDuplicates = reason === 'duplicate';
 
   return (
     <div className="sales-analytics card-work">
@@ -188,15 +192,27 @@ export function CardWork() {
             <div className="product-dynamics__summary-card-label">Размеры</div>
             <div className="product-dynamics__summary-card-value">{formatQty(summary.dimMismatchCount)}</div>
           </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Дубли артикулов / ШК</div>
+          <div
+            className={`product-dynamics__summary-card${reason === 'duplicate' ? ' is-active' : ''}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => setReason('duplicate')}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setReason('duplicate');
+              }
+            }}
+          >
+            <div className="product-dynamics__summary-card-label">Дубли</div>
             <div className="product-dynamics__summary-card-value">
-              {formatQty(summary.duplicateGroupsCount)}
+              {formatQty(summary.duplicateProductsCount ?? summary.duplicateGroupsCount)}
             </div>
           </div>
         </div>
       )}
 
+      {!showDuplicates ? (
       <div className="sales-analytics__table-wrap" style={{ marginTop: 16 }}>
         <table className="sales-analytics__table">
           <thead>
@@ -279,21 +295,24 @@ export function CardWork() {
           </tbody>
         </table>
       </div>
+      ) : null}
 
-      {data ? (
+      {showDuplicates ? (
         <section className="card-work__duplicates" aria-labelledby="card-work-duplicates-title">
           <h2 id="card-work-duplicates-title" className="card-work__section-title">
-            Одинаковые артикулы, артикулы продавца и штрихкоды
+            Дубли артикулов, артикулов продавца и штрихкодов
           </h2>
           <p className="card-work__section-lead">
-            Группы карточек, у которых совпадает артикул ERP, артикул продавца на маркетплейсе или штрихкод
+            Карточки, у которых совпадает артикул ERP, артикул продавца на маркетплейсе или штрихкод
             (без учёта регистра и пробелов по краям). Период продаж на этот список не влияет.
           </p>
-          {!(data.duplicates?.groups || []).length ? (
+          {data == null && !loading ? (
+            <p className="sales-analytics__empty">Нажмите «Показать», чтобы загрузить дубли.</p>
+          ) : !duplicateGroups.length ? (
             <p className="sales-analytics__empty">Совпадений идентификаторов не найдено.</p>
           ) : (
             <div className="card-work__dup-groups">
-              {(data.duplicates.groups || []).map((group) => (
+              {duplicateGroups.map((group) => (
                 <div key={group.value} className="card-work__dup-group">
                   <div className="card-work__dup-head">
                     <strong className="card-work__dup-value">{group.value}</strong>

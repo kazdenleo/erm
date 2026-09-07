@@ -44,12 +44,17 @@
   text-decoration: underline;
 }
 
-.card-work__severity-high td:first-child {
-  box-shadow: inset 3px 0 0 #dc2626;
+.card-work .product-dynamics__summary-card.is-active {
+  border-color: #db2777;
+  background: #fdf2f8;
+}
+
+.card-work .product-dynamics__summary-card[role='button'] {
+  cursor: pointer;
 }
 
 .card-work__duplicates {
-  margin-top: 28px;
+  margin-top: 16px;
 }
 
 .card-work__section-title {
