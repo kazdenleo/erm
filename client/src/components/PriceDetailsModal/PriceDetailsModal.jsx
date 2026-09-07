@@ -424,6 +424,20 @@ function PriceDetailsModalInner({
   // Преобразуем все значения в числа для безопасных вычислений
   // ВАЖНО: База расходов должна совпадать с расчётом на странице цен:
   // себестоимость (cost/price/base_price) + дополнительные расходы (additionalExpenses).
+  const kitComponents = Array.isArray(product.kit_components) ? product.kit_components : [];
+  const kitCostHint =
+    String(product.product_type || '').toLowerCase() === 'kit' && kitComponents.length
+      ? kitComponents
+          .map((c) => {
+            const sku = c.component_sku || c.sku || `#${c.productId}`;
+            const qty = Number(c.quantity) || 1;
+            const unit = c.cost != null && Number.isFinite(Number(c.cost)) ? Number(c.cost) : null;
+            return unit != null
+              ? `${sku} × ${qty} = ${(unit * qty).toFixed(2)} ₽`
+              : `${sku} × ${qty} — нет себестоимости`;
+          })
+          .join('; ')
+      : null;
   const costBase = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
   const additionalExpenses = Number(product.additionalExpenses ?? product.additional_expenses ?? 0) || 0;
   const basePrice = costBase + additionalExpenses;
@@ -862,17 +876,18 @@ function PriceDetailsModalInner({
       onClose={onClose}
       title={`💰 Расчёт минимальной цены · ${marketplaceName}${titleScheme}`}
       size="large"
+      scrollable
     >
       <div className="price-details">
-        <div className="price-details-header" style={{ marginBottom: '16px', padding: '12px 16px', background: 'rgba(255,255,255,0.06)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', fontSize: '14px' }}>
+        <div className="price-details-header">
           <span><strong>Артикул:</strong> {product.sku || '—'}</span>
-          <span style={{ marginLeft: '16px' }}><strong>Название:</strong> {product.name || 'Без названия'}</span>
-          <span style={{ marginLeft: '16px' }}><strong>Объём:</strong>{' '}
+          <span><strong>Название:</strong> {product.name || 'Без названия'}</span>
+          <span><strong>Объём:</strong>{' '}
             {volumeLabel}
           </span>
         </div>
         {isEstimatedTariffs && (
-          <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(251, 191, 36, 0.15)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#d97706', fontSize: '13px' }}>
+          <div style={{ marginBottom: '8px', padding: '8px 10px', background: 'rgba(251, 191, 36, 0.15)', borderRadius: '6px', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#d97706', fontSize: '12px' }}>
             ⚠️ Ориентировочный расчёт: тарифы Wildberries не загружены. Обновите тарифы в настройках интеграции (кнопка «Тарифы») для точного расчёта логистики и комиссий.
           </div>
         )}
@@ -888,7 +903,9 @@ function PriceDetailsModalInner({
               <PriceBreakdownValue
                 formula={
                   costBase > 0
-                    ? `= ${costBase.toFixed(2)} ₽ ${
+                    ? kitCostHint
+                      ? `= ${costBase.toFixed(2)} ₽ (комплект: ${kitCostHint})`
+                      : `= ${costBase.toFixed(2)} ₽ ${
                         product.cost != null && product.cost !== '' && !isNaN(Number(product.cost)) && Number(product.cost) > 0
                           ? '(из карточки товара, себестоимость)'
                           : product.price != null && product.price !== '' && !isNaN(Number(product.price)) && Number(product.price) > 0

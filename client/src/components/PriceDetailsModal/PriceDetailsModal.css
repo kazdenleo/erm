@@ -1,19 +1,32 @@
 .price-details {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 8px;
+}
+
+.price-details-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .price-details-section {
-  padding: 16px;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.02);
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .price-details-subtitle {
-  margin: 0 0 16px 0;
-  font-size: 16px;
+  margin: 0 0 6px 0;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -21,23 +34,23 @@
 .price-details-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 6px 12px;
 }
 
 .price-details-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .price-details-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   font-weight: 500;
 }
 
 .price-details-value {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text);
   font-weight: 500;
 }
@@ -45,35 +58,38 @@
 .price-breakdown {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 2px;
 }
 
 .price-breakdown-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px;
+  padding: 3px 8px;
   background: rgba(255, 255, 255, 0.02);
-  border-radius: 6px;
+  border-radius: 4px;
   border-left: 3px solid transparent;
+  min-height: 0;
+  line-height: 1.3;
 }
 
 .price-breakdown-item.price-breakdown-subtotal {
   border-left-color: rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.04);
   font-weight: 600;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .price-breakdown-item.price-breakdown-total {
   border-left-color: #10b981;
   background: rgba(16, 185, 129, 0.1);
   font-weight: 700;
-  margin-top: 8px;
+  margin-top: 4px;
+  padding: 5px 8px;
 }
 
 .price-breakdown-label {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text);
   flex: 1;
 }
@@ -88,8 +104,8 @@
 }
 
 .price-breakdown-source-legend {
-  margin: -8px 0 12px 0;
-  font-size: 12px;
+  margin: 0 0 6px 0;
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -99,7 +115,7 @@
 }
 
 .price-breakdown-value {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -118,30 +134,31 @@
 }
 
 .price-breakdown-value.large {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 .price-details-final {
   background: rgba(59, 130, 246, 0.1);
   border: 2px solid rgba(59, 130, 246, 0.3);
-  padding: 20px;
+  padding: 10px 12px;
 }
 
 .price-details-final-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
 }
 
 .price-details-final-label {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
 
 .price-details-final-value {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
   color: #3b82f6;
 }
@@ -149,16 +166,17 @@
 .price-details-final-amounts {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .price-details-final-hint {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: 2px;
   font-style: italic;
   font-weight: 400;
+  line-height: 1.3;
 }
 
 .price-range-max {
@@ -169,28 +187,28 @@
 }
 
 .price-details-final-amounts .price-range-max {
-  font-size: 20px;
+  font-size: 16px;
 }
 
 .price-discount-helper {
-  margin-top: 16px;
-  padding-top: 16px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .price-discount-helper-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .price-discount-helper-label {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
   flex: 1 1 140px;
@@ -203,13 +221,13 @@
 }
 
 .price-discount-helper-input {
-  width: 140px;
-  padding: 8px 10px;
+  width: 120px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: rgba(0, 0, 0, 0.25);
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -237,15 +255,10 @@
   .price-details-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .price-details-final-row {
     flex-direction: column;
     align-items: flex-start;
-    gap: 8px;
-  }
-
-  .price-discount-helper-input {
-    width: 120px;
+    gap: 6px;
   }
 }
-
