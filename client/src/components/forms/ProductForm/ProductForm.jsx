@@ -7611,6 +7611,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     Префикс: <strong>{skuPrefix}</strong>
                   </div>
                 )}
+                {(isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon')
+                  || isMpFieldLinked(formData.mp_field_links, 'sku', 'wb')
+                  || isMpFieldLinked(formData.mp_field_links, 'sku', 'ym')) && (
+                  <div style={{ fontSize: '11px', color: '#9a3412', marginTop: '4px', lineHeight: 1.4 }}>
+                    Связан с артикулом продавца на МП. Сначала смените артикул в кабинете маркетплейса, затем здесь — иначе при отправке создастся дубль карточки.
+                  </div>
+                )}
               </>
             );
           })()}

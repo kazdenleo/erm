@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
-import { getMpDraft, isMpFieldLinked } from '../../../utils/productMpFieldLinks.js';
+import { getMpDraft, isMpFieldLinked, MP_IDENTITY_LINK_META } from '../../../utils/productMpFieldLinks.js';
 import { MP_CATEGORY_LINK_ICON_TITLE, dedicatedMainFieldForMpTarget, resolveLinkedErpAttrMirror } from '../../../utils/productAttributeMpLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
@@ -215,6 +215,7 @@ export function ProductMarketplaceLinkSection({
       : marketplace === 'wb' && wbNmId
         ? { label: 'nmId', value: wbNmId }
         : null;
+  const identityMeta = MP_IDENTITY_LINK_META[marketplace] || null;
 
   return (
     <div
@@ -261,49 +262,63 @@ export function ProductMarketplaceLinkSection({
       {linkError && <div className="text-danger small mb-2">{linkError}</div>}
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}
 
-      <div className="row g-3">
-        <div className="col-12 col-md-8">
-          <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>
-              Артикул продавца
-            </span>
-            <MpFromMainLinkIcon linked={skuLinked} />
-            {sellerSkuCategoryLinked ? (
-              <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
-            ) : null}
-          </label>
-          <input
-            id={inputId}
-            type="text"
-            className={inputClass}
-            maxLength={maxLen}
-            placeholder="Артикул продавца"
-            autoComplete="off"
-            value={sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps)}
-            onChange={(e) => handleSellerSkuChange(e.target.value)}
-            onBlur={
-              marketplace === 'wb' && !skuLinked
-                ? (e) => handleSellerSkuChange(e.target.value)
-                : undefined
-            }
-          />
-          {sellerSkuError && <div className="text-danger small mt-1">{sellerSkuError}</div>}
-          {marketplaceIdHint && marketplace !== 'wb' ? (
-            <div
-              style={{
-                marginTop: 4,
-                fontSize: 11,
-                lineHeight: 1.35,
-                color: 'var(--muted)',
-                userSelect: 'text',
-              }}
-              title="Идентификатор карточки в кабинете, только для просмотра"
-            >
-              {marketplaceIdHint.label}: {marketplaceIdHint.value}
-            </div>
+      <div className="mp-identity-fields">
+        <div className="mp-identity-fields__title">
+          Ключевые поля связи
+          {identityMeta ? (
+            <span className="mp-identity-fields__tech">{identityMeta.tech}</span>
           ) : null}
         </div>
-        {marketplace === 'ozon' ? (
+        <div className="row g-3">
+          <div className="col-12">
+            <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+              <span>
+                Артикул продавца
+              </span>
+              <span className="mp-identity-fields__badge" title={identityMeta?.warn || ''}>
+                ключ карточки
+              </span>
+              <MpFromMainLinkIcon linked={skuLinked} />
+              {sellerSkuCategoryLinked ? (
+                <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
+              ) : null}
+            </label>
+            <input
+              id={inputId}
+              type="text"
+              className={inputClass}
+              maxLength={maxLen}
+              placeholder="Артикул продавца"
+              autoComplete="off"
+              title={identityMeta?.warn || ''}
+              value={sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps)}
+              onChange={(e) => handleSellerSkuChange(e.target.value)}
+              onBlur={
+                marketplace === 'wb' && !skuLinked
+                  ? (e) => handleSellerSkuChange(e.target.value)
+                  : undefined
+              }
+            />
+            {sellerSkuError && <div className="text-danger small mt-1">{sellerSkuError}</div>}
+            {identityMeta ? (
+              <div className="mp-identity-fields__warn">
+                При изменении, если артикул не найдётся на {identityMeta.cabinet}, создастся дубль карточки.
+                Сначала смените артикул на маркетплейсе, затем здесь.
+              </div>
+            ) : null}
+            {marketplaceIdHint ? (
+              <div
+                className="mp-identity-fields__id"
+                title="Идентификатор карточки в кабинете, только для просмотра"
+              >
+                {marketplaceIdHint.label}: {marketplaceIdHint.value}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      {marketplace === 'ozon' ? (
+        <div className="row g-3 mt-1">
           <div className="col-12 col-md-8">
             <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
               Артикул производителя
@@ -317,13 +332,16 @@ export function ProductMarketplaceLinkSection({
               className="form-control form-control-sm"
               autoComplete="off"
               placeholder="Партномер / OEM"
-              title="Артикул производителя. Не путать с артикулом продавца (offer_id)."
+              title="Не ключ связи с Ozon. Смена не создаёт новую карточку."
               value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks)}
               onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
             />
+            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.4, color: 'var(--muted)' }}>
+              Партномер / OEM — не ключ карточки, смена не создаёт дубль на Ozon.
+            </div>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

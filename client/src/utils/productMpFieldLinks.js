@@ -400,10 +400,10 @@ function mpSlotIsLinked(slot) {
 }
 
 function parseFieldMpList(v, supported) {
-  if (Array.isArray(v)) {
+    if (Array.isArray(v)) {
     return v
-      .map((x) => String(x || '').toLowerCase())
-      .filter((m) => supported.includes(m));
+        .map((x) => String(x || '').toLowerCase())
+        .filter((m) => supported.includes(m));
   }
   if (v && typeof v === 'object') {
     return supported.filter((m) => mpSlotIsLinked(v[m]));
@@ -594,19 +594,39 @@ export function isYmParamDuplicatingDedicatedField(name) {
  */
 export const MP_OFFER_FIELD_ATTRS = {
   ozon: [
-    { id: '__ozon_offer_id__', name: 'Артикул продавца', description: 'offer_id карточки в кабинете Ozon' },
-    { id: '__ozon_vendor_code__', name: 'Артикул производителя', description: 'Партномер / OEM; уходит в характеристику категории, если она есть' },
+    {
+      id: '__ozon_offer_id__',
+      name: 'Артикул продавца',
+      identity: true,
+      description:
+        'Ключ карточки Ozon (offer_id). Сначала смените артикул в кабинете Ozon, затем здесь. Если при отправке артикула в кабинете нет — создастся дубль.',
+    },
+    { id: '__ozon_vendor_code__', name: 'Артикул производителя', description: 'Партномер / OEM; не ключ связи, смена не создаёт новую карточку.' },
     { id: '__ozon_pack_length__', name: 'Длина упаковки', skipIfIds: ['9802'] },
     { id: '__ozon_pack_width__', name: 'Ширина упаковки', skipIfIds: ['6605', '9799'] },
     { id: '__ozon_pack_height__', name: 'Высота упаковки', skipIfIds: ['6606', '6859'] },
     { id: '__ozon_pack_weight__', name: 'Вес с упаковкой', skipIfIds: ['4497', '4383'] },
   ],
-  wb: [{ id: '__wb_vendor_code__', name: 'Артикул продавца' }],
+  wb: [
+    {
+      id: '__wb_vendor_code__',
+      name: 'Артикул продавца',
+      identity: true,
+      description:
+        'Ключ карточки WB (vendorCode). Сначала смените артикул в кабинете Wildberries, затем здесь. Если при отправке артикула в кабинете нет — может создаться дубль.',
+    },
+  ],
   ym: [
     { id: '__ym_name__', name: 'Название' },
     { id: '__ym_description__', name: 'Описание' },
-    { id: '__ym_shop_sku__', name: 'Артикул продавца' },
-    { id: '__ym_vendor_code__', name: 'Артикул производителя' },
+    {
+      id: '__ym_shop_sku__',
+      name: 'Артикул продавца',
+      identity: true,
+      description:
+        'Ключ карточки Яндекс.Маркет (shopSku / offerId). Сначала смените артикул в кабинете Маркета, затем здесь. Если при отправке артикула в кабинете нет — создастся дубль.',
+    },
+    { id: '__ym_vendor_code__', name: 'Артикул производителя', description: 'Партномер / OEM; не ключ связи, смена не создаёт новую карточку.' },
     { id: '__ym_vendor__', name: 'Бренд' },
     { id: '__ym_barcodes__', name: 'Штрихкод' },
     { id: '__ym_manufacturer__', name: 'Изготовитель' },
@@ -619,6 +639,28 @@ export const MP_OFFER_FIELD_ATTRS = {
 };
 
 export const YM_OFFER_FIELD_ATTRS = MP_OFFER_FIELD_ATTRS.ym;
+
+/** Ключи, по которым ERP находит карточку в кабинете. Смена без смены в кабинете создаёт дубль. */
+export const MP_IDENTITY_LINK_META = {
+  ozon: {
+    tech: 'offer_id',
+    cabinet: 'Ozon',
+    warn:
+      'Сначала смените артикул в кабинете Ozon, затем сохраните здесь. Если при отправке такого артикула в кабинете нет — создастся дубль карточки.',
+  },
+  wb: {
+    tech: 'vendorCode',
+    cabinet: 'Wildberries',
+    warn:
+      'Сначала смените артикул в кабинете Wildberries, затем сохраните здесь. Если при отправке такого артикула в кабинете нет — может создаться дубль карточки.',
+  },
+  ym: {
+    tech: 'shopSku',
+    cabinet: 'Яндекс.Маркет',
+    warn:
+      'Сначала смените артикул в кабинете Яндекс.Маркета, затем сохраните здесь. Если при отправке такого артикула в кабинете нет — создастся дубль карточки.',
+  },
+};
 
 function mpOfferFieldTarget(id) {
   switch (String(id || '')) {
@@ -1432,17 +1474,17 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
       const patch = { [axis]: dims[axis] };
       if (isMpFieldLinked(normalized, axis, 'ozon')) patchPack('ozon', patch);
       if (isMpFieldLinked(normalized, axis, 'wb')) patchPack('wb', patch);
+  }
+  if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
+    const wd = erpDimsToYmWeightDimensions(prev);
+    if (wd) {
+      const prevDraft =
+        prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+          ? prev.ym_draft
+          : {};
+      next.ym_draft = { ...prevDraft, weightDimensions: wd };
     }
-    if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
-      const wd = erpDimsToYmWeightDimensions(prev);
-      if (wd) {
-        const prevDraft =
-          prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
-            ? prev.ym_draft
-            : {};
-        next.ym_draft = { ...prevDraft, weightDimensions: wd };
-      }
-    }
+  }
   }
   if (want('product_dimensions') || DEDICATED_PRODUCT_DIM_KEYS.some((k) => want(k))) {
     const productDims = {
@@ -1473,16 +1515,16 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
   if (want('country')) {
     const c = String(prev.country_of_origin || '').trim();
     if (isMpFieldLinked(normalized, 'country', 'ym')) {
-      const prevDraft =
-        next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
-          ? next.ym_draft
-          : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
-            ? prev.ym_draft
-            : {};
-      next.ym_draft = {
-        ...prevDraft,
-        manufacturerCountries: c ? [c] : [],
-      };
+    const prevDraft =
+      next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+        ? next.ym_draft
+        : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+          ? prev.ym_draft
+          : {};
+    next.ym_draft = {
+      ...prevDraft,
+      manufacturerCountries: c ? [c] : [],
+    };
     }
     if (isMpFieldLinked(normalized, 'country', 'wb')) {
       const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);

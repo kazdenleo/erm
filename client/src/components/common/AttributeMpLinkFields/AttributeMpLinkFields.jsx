@@ -17,7 +17,9 @@ const MP_META = {
 };
 
 function optionLabel(attr, getName) {
-  return String((getName ? getName(attr) : attr?.name) || '').trim() || 'Без названия';
+  const base = String((getName ? getName(attr) : attr?.name) || '').trim() || 'Без названия';
+  if (attr?.identity) return `${base} · ключ карточки (смена без кабинета = дубль)`;
+  return base;
 }
 
 function sortAttrsByName(list, getName) {

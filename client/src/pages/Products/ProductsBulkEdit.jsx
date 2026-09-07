@@ -1764,7 +1764,7 @@ const COLUMNS = [
   { key: 'buyout_rate', label: 'Выкуп %', input: 'number', minW: 72 },
   { key: 'country_of_origin', label: 'Страна', title: 'Основное · Страна производителя. Тумблеры OZ/WB/ЯМ связывают страну с МП', input: 'text', minW: 80, linkFieldKey: 'country', showLinkToggles: true },
   /* ——— Ozon ——— */
-  { key: 'sku_ozon', label: 'offer_id', title: 'Ozon · offer_id', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
+  { key: 'sku_ozon', label: 'offer_id', title: 'Ключ связи Ozon (offer_id). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — создастся дубль.', input: 'text', minW: 90, mpBucket: 'ozon', linkFieldKey: 'sku' },
   { key: 'ozon_product_id', label: 'product_id', title: 'Ozon · product_id', input: 'text', minW: 90, mpBucket: 'ozon' },
   /* Длина/ширина/высота товара Ozon — характеристики, не отдельные колонки */
   { key: 'ozon_product_weight', label: 'Вес тов.', title: 'Ozon · Вес товара', input: 'number', minW: 88, mpBucket: 'ozon', dimKind: 'weight', linkFieldKey: 'product_weight' },
@@ -1777,7 +1777,7 @@ const COLUMNS = [
   { key: 'mp_wb_name', label: 'Название', title: 'Wildberries · Название', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'name' },
   { key: 'mp_wb_description', label: 'Описание', title: 'Wildberries · Описание', input: 'textarea', minW: 140, mpBucket: 'wb', linkFieldKey: 'description' },
   { key: 'sku_wb', label: 'nmId', title: 'Wildberries · nmId', input: 'text', minW: 80, mpBucket: 'wb' },
-  { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Wildberries · Артикул продавца', input: 'text', minW: 100, mpBucket: 'wb', linkFieldKey: 'sku' },
+  { key: 'mp_wb_vendor_code', label: 'Арт. прод.', title: 'Ключ связи WB (vendorCode). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — может создаться дубль.', input: 'text', minW: 100, mpBucket: 'wb', linkFieldKey: 'sku' },
   /* Длина/ширина/высота товара WB — характеристики, не отдельные колонки */
   { key: 'wb_product_weight', label: 'Вес тов.', title: 'Wildberries · Вес товара', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'weight', linkFieldKey: 'product_weight' },
   { key: 'wb_pack_length', label: 'Длина уп.', title: 'Wildberries · Длина упаковки', input: 'number', minW: 88, mpBucket: 'wb', dimKind: 'length', linkFieldKey: 'length' },
@@ -1789,7 +1789,7 @@ const COLUMNS = [
   /* ——— Яндекс.Маркет ——— */
   { key: 'mp_ym_name', label: 'Название', title: 'Яндекс.Маркет · Название', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'name' },
   { key: 'mp_ym_description', label: 'Описание', title: 'Яндекс.Маркет · Описание', input: 'textarea', minW: 140, mpBucket: 'ym', linkFieldKey: 'description' },
-  { key: 'sku_ym', label: 'offerId', title: 'Яндекс.Маркет · offerId (артикул продавца)', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
+  { key: 'sku_ym', label: 'offerId', title: 'Ключ связи Яндекс.Маркет (shopSku / offerId). Сначала смените артикул в кабинете, затем здесь. Если артикула нет — создастся дубль.', input: 'text', minW: 90, mpBucket: 'ym', linkFieldKey: 'sku' },
   { key: 'ym_vendor_code', label: 'Арт. произв.', title: 'Яндекс.Маркет · Артикул производителя (vendorCode)', input: 'text', minW: 110, mpBucket: 'ym' },
   { key: 'ym_pack_length', label: 'Длина уп.', title: 'Яндекс.Маркет · Длина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'length' },
   { key: 'ym_pack_width', label: 'Ширина уп.', title: 'Яндекс.Маркет · Ширина упаковки', input: 'number', minW: 88, mpBucket: 'ym', dimKind: 'length', linkFieldKey: 'width' },
