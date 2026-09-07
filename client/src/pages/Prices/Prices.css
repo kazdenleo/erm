@@ -155,19 +155,6 @@
   width: 100%;
 }
 
-.mp-price-volume {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--muted);
-  line-height: 1.15;
-  white-space: nowrap;
-}
-
-.mp-price-volume-missing {
-  color: #b45309;
-  font-weight: 600;
-}
-
 .mp-price-stack {
   position: relative;
   display: inline-flex;
@@ -189,10 +176,10 @@
 .mp-price-input {
   width: 68px;
   height: 22px;
-  padding: 0 4px;
+  padding: 0 6px;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text);
   font-size: 11px;
   font-weight: 600;
@@ -201,6 +188,14 @@
   text-align: center;
   margin: 0 auto;
   display: block;
+  appearance: none;
+  -moz-appearance: textfield;
+}
+
+.mp-price-input::-webkit-outer-spin-button,
+.mp-price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .mp-price-input-pct {

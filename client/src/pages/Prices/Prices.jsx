@@ -29,7 +29,7 @@ import {
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled, isProfilePrivateOrdersEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
-import { enrichCalculatorVolumeFromProduct, resolveProductVolumeLiters } from '../../utils/productVolume.js';
+import { enrichCalculatorVolumeFromProduct } from '../../utils/productVolume.js';
 import { taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { getApiSessionContext } from '../../services/apiSession.js';
 import { privateClientMinPrice } from '../../utils/marketplaceMinProfit.js';
@@ -1295,11 +1295,6 @@ export function Prices() {
                             product.name || 'Без названия'
                           )}
                         </div>
-                        {resolveProductVolumeLiters(product) != null && (
-                          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px', textAlign: 'center' }}>
-                            Объем: {resolveProductVolumeLiters(product).toFixed(2)} л
-                          </div>
-                        )}
                         {strategyLocked ? (
                           <div
                             style={{ fontSize: '10px', color: '#d97706', marginTop: '2px', textAlign: 'center' }}

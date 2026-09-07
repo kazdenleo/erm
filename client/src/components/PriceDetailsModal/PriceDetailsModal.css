@@ -89,29 +89,22 @@
 }
 
 .price-breakdown-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
   font-size: 13px;
   color: var(--text);
   flex: 1;
 }
 
-.price-breakdown-manual-mark {
-  display: inline-block;
-  margin-left: 3px;
-  font-weight: 800;
+.price-breakdown-manual-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
   color: #f59e0b;
   cursor: help;
-  line-height: 1;
-}
-
-.price-breakdown-source-legend {
-  margin: 0 0 6px 0;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.price-breakdown-source-legend .price-breakdown-manual-mark {
-  margin-left: 0;
-  margin-right: 2px;
+  line-height: 0;
 }
 
 .price-breakdown-value {

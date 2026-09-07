@@ -8,7 +8,7 @@ import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
-import { resolveWbLogisticsDimensionsCm } from '../../utils/marketplaceDimensions.js';
+import { extractGeneralDimensionsMm, resolveWbLogisticsDimensionsCm } from '../../utils/marketplaceDimensions.js';
 import {
   privateClientPriceParts,
   resolveMarketplaceMinProfit,
@@ -52,8 +52,34 @@ function PriceBreakdownValue({ children, formula, className = '', style, extra =
   );
 }
 
+function formatPackagingDimsCm(dimsMm) {
+  if (!dimsMm) return null;
+  const length = Number(dimsMm.length);
+  const width = Number(dimsMm.width);
+  const height = Number(dimsMm.height);
+  if (!(length > 0 && width > 0 && height > 0)) return null;
+  const toCm = (mm) => {
+    const cm = mm / 10;
+    if (Number.isInteger(cm)) return String(cm);
+    return String(Math.round(cm * 10) / 10);
+  };
+  return `${toCm(length)}×${toCm(width)}×${toCm(height)} см`;
+}
+
+function FromSettingsIcon({ title }) {
+  return (
+    <span className="price-breakdown-manual-icon" title={title} aria-label="Не из API маркетплейса">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M8 4.35v5.1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="8" cy="11.55" r="0.95" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}
+
 /**
- * Название строки расходов. ! — значение из настроек / карточки (не из API МП).
+ * Название строки расходов. Иконка — значение из настроек / карточки (не из API МП).
  * @param {{ children: React.ReactNode, fromSettings?: boolean, title?: string, className?: string }} props
  */
 function BreakdownLabel({ children, fromSettings = false, title, className = '' }) {
@@ -65,11 +91,7 @@ function BreakdownLabel({ children, fromSettings = false, title, className = '' 
   return (
     <span className={`price-breakdown-label${className ? ` ${className}` : ''}`} title={tip}>
       {children}
-      {fromSettings ? (
-        <span className="price-breakdown-manual-mark" title={tip} aria-label="Не из API">
-          !
-        </span>
-      ) : null}
+      {fromSettings ? <FromSettingsIcon title={tip} /> : null}
     </span>
   );
 }
@@ -208,10 +230,6 @@ function PriceDetailsModalInner({
 
           <div className="price-details-section">
             <h3 className="price-details-subtitle">Расчёт для частного клиента</h3>
-            <div className="price-breakdown-source-legend">
-              <span className="price-breakdown-manual-mark">!</span>
-              {' '}— значение из настроек или карточки товара (не из API маркетплейса)
-            </div>
             <div className="price-breakdown">
               <div className="price-breakdown-item">
                 <BreakdownLabel fromSettings>Себестоимость</BreakdownLabel>
@@ -854,12 +872,8 @@ function PriceDetailsModalInner({
             }
           : null)
       : null;
-  const volumeLabel =
-    headerVolume > 0
-      ? wbCmDims && wbCmDims.length > 0
-        ? `${headerVolume.toFixed(2)} л (${wbCmDims.length}×${wbCmDims.width}×${wbCmDims.height} см)`
-        : `${headerVolume.toFixed(2)} л`
-      : 'нет габаритов';
+  const volumeLabel = headerVolume > 0 ? `${headerVolume.toFixed(2)} л` : 'нет габаритов';
+  const packagingLabel = formatPackagingDimsCm(extractGeneralDimensionsMm(product)) || 'нет размеров';
 
   const acquiringFromSettings =
     (marketplace === 'wb' && wbAcquiringPercent != null && wbAcquiringPercent !== undefined) ||
@@ -885,6 +899,9 @@ function PriceDetailsModalInner({
           <span><strong>Объём:</strong>{' '}
             {volumeLabel}
           </span>
+          <span><strong>Упаковка:</strong>{' '}
+            {packagingLabel}
+          </span>
         </div>
         {isEstimatedTariffs && (
           <div style={{ marginBottom: '8px', padding: '8px 10px', background: 'rgba(251, 191, 36, 0.15)', borderRadius: '6px', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#d97706', fontSize: '12px' }}>
@@ -893,10 +910,6 @@ function PriceDetailsModalInner({
         )}
         <div className="price-details-section">
           <h3 className="price-details-subtitle">💵 Расходы и расчёт цены</h3>
-          <div className="price-breakdown-source-legend">
-            <span className="price-breakdown-manual-mark">!</span>
-            {' '}— значение из настроек или карточки товара (не из API маркетплейса)
-          </div>
           <div className="price-breakdown">
             <div className="price-breakdown-item">
               <BreakdownLabel fromSettings>Себестоимость:</BreakdownLabel>

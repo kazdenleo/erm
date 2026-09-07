@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { resolveMarketplaceVolumeLiters } from '../../utils/productVolume.js';
 import {
   formatMoneyInput,
   parseMoneyInput,
@@ -174,38 +173,7 @@ export function MarketplacePriceCells({
     return null;
   };
 
-  const volumeLiters = resolveMarketplaceVolumeLiters(product, marketplace);
-  const mpNorm = String(marketplace || '').toLowerCase();
-  const volumeMissing = volumeLiters == null || !(Number(volumeLiters) > 0);
-  const volumeLabel = !volumeMissing
-    ? `${Number(volumeLiters).toFixed(2)} л`
-    : 'нет габаритов';
-  const volumeMissingTitle =
-    mpNorm === 'ozon'
-      ? 'Нет габаритов упаковки: вкладка Ozon / атрибуты / ozon_draft / упаковка на Основном'
-      : mpNorm === 'wb' || mpNorm === 'wildberries'
-        ? 'Нет габаритов упаковки WB (атрибуты 90849/90745/90846, wb_draft или упаковка на Основном)'
-        : mpNorm === 'ym' || mpNorm === 'yandex'
-          ? 'Нет габаритов упаковки Яндекс.Маркет (ym_draft или упаковка на Основном)'
-          : 'Нет габаритов маркетплейса';
-
-  const renderVolumeHint = (show) => {
-    if (!show || !volumeLabel) return null;
-    return (
-      <div
-        className={`mp-price-volume${volumeMissing ? ' mp-price-volume-missing' : ''}`}
-        title={
-          volumeMissing
-            ? volumeMissingTitle
-            : `Объём для расчёта мин. цены (${marketplace})`
-        }
-      >
-        {volumeLabel}
-      </div>
-    );
-  };
-
-  const renderMinBtn = (value, onOpen, label, { showVolume = false } = {}) => {
+  const renderMinBtn = (value, onOpen, label) => {
     if (isLoading) return <span className="mp-price-muted">...</span>;
     const canOpen = typeof onOpen === 'function';
     const title = label ? `Детали расчёта мин. цены ${label}` : 'Детали расчёта минимальной цены';
@@ -234,17 +202,12 @@ export function MarketplacePriceCells({
         ) : (
           <span className={value != null ? '' : 'mp-price-muted'}>{inner}</span>
         )}
-        {renderVolumeHint(showVolume)}
       </div>
     );
   };
 
   const empty = renderEmpty();
   const showInputs = !isLoading && (min != null || hasSku);
-  // Объём один на МП — показываем в первой колонке мин. (FBS, иначе FBO, иначе единственная)
-  const volumeInFbs = showFbs;
-  const volumeInFbo = showFbo && !showFbs;
-  const volumeInSingle = !showFbs && !showFbo;
 
   return (
     <>
@@ -253,8 +216,7 @@ export function MarketplacePriceCells({
           {renderMinBtn(
             bothSchemes || showFbs ? fbsMin ?? (showFbo ? null : primaryMin) : primaryMin,
             onOpenMinDetailsFbs || onOpenMinDetails,
-            bothSchemes ? 'FBS' : showFbs && !showFbo ? 'FBS' : null,
-            { showVolume: volumeInFbs }
+            bothSchemes ? 'FBS' : showFbs && !showFbo ? 'FBS' : null
           )}
         </td>
       )}
@@ -263,14 +225,13 @@ export function MarketplacePriceCells({
           {renderMinBtn(
             bothSchemes || showFbo ? fboMin ?? (showFbs ? null : primaryMin) : primaryMin,
             onOpenMinDetailsFbo || onOpenMinDetails,
-            bothSchemes ? 'FBO' : 'FBO',
-            { showVolume: volumeInFbo }
+            bothSchemes ? 'FBO' : 'FBO'
           )}
         </td>
       )}
       {!showFbs && !showFbo && (
         <td className="mp-col mp-col-min" style={{ background: bg }}>
-          {empty || renderMinBtn(primaryMin, onOpenMinDetails, null, { showVolume: volumeInSingle })}
+          {empty || renderMinBtn(primaryMin, onOpenMinDetails)}
         </td>
       )}
 
@@ -280,14 +241,13 @@ export function MarketplacePriceCells({
             <span className="mp-price-muted">...</span>
           ) : (
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              step="0.01"
-              min="0"
+              autoComplete="off"
               className="mp-price-input"
               value={maxStr}
               disabled={disabled || saving}
-              placeholder="макс."
+              placeholder=""
               title="Максимальная цена продажи"
               onChange={(e) => onMaxChange(e.target.value)}
             />
@@ -302,10 +262,9 @@ export function MarketplacePriceCells({
           ) : (
             <div className="mp-price-stack">
               <input
-                type="number"
+                type="text"
                 inputMode="decimal"
-                step="0.01"
-                min="0"
+                autoComplete="off"
                 className="mp-price-input"
                 value={actualStr}
                 disabled={disabled || strategyLocked || saving}
@@ -333,10 +292,9 @@ export function MarketplacePriceCells({
           ) : (
             <div className="mp-price-discount-pair">
               <input
-                type="number"
+                type="text"
                 inputMode="decimal"
-                step="0.01"
-                min="0"
+                autoComplete="off"
                 className="mp-price-input"
                 value={beforeStr}
                 disabled={disabled || saving}
@@ -345,10 +303,9 @@ export function MarketplacePriceCells({
                 onChange={(e) => onBeforeChange(e.target.value)}
               />
               <input
-                type="number"
+                type="text"
                 inputMode="decimal"
-                step="0.01"
-                max="99.99"
+                autoComplete="off"
                 className="mp-price-input mp-price-input-pct"
                 value={pctStr}
                 disabled={disabled || saving}
