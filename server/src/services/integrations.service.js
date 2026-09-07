@@ -638,9 +638,10 @@ class IntegrationsService {
            LEFT JOIN user_categories uc ON uc.id = cuc.user_category_id
            WHERE c.valid_to IS NOT NULL
              AND c.valid_to <= (CURRENT_DATE + ($1::int * INTERVAL '1 day'))
+             AND ($2::bigint IS NULL OR c.profile_id = $2::bigint)
            GROUP BY c.id, c.certificate_number, c.valid_to, c.valid_from, b.name
            ORDER BY c.valid_to ASC`,
-          [warnDays]
+          [warnDays, profileId]
         );
         for (const row of r.rows || []) {
           const dt = row.valid_to ? String(row.valid_to).slice(0, 10) : null;
@@ -673,6 +674,10 @@ class IntegrationsService {
         const today = new Date();
         const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         for (const c of arr) {
+          if (profileId != null && profileId !== '') {
+            const certPid = c?.profile_id ?? c?.profileId;
+            if (Number(certPid) !== Number(profileId)) continue;
+          }
           const dt = c?.valid_to ? String(c.valid_to).slice(0, 10) : null;
           if (!dt) continue;
           const d = new Date(`${dt}T00:00:00`);

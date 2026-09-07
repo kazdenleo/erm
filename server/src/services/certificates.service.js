@@ -5,21 +5,30 @@
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
 
+function httpError(message, statusCode) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
 class CertificatesService {
   constructor() {
     this.repo = repositoryFactory.getCertificatesRepository();
+  }
+
+  _profileOpts(profileId) {
+    if (profileId == null || profileId === '') return {};
+    return { profileId };
   }
 
   async getAll(options = {}) {
     return await this.repo.findAll(options);
   }
 
-  async getById(id) {
-    const item = await this.repo.findById(id);
+  async getById(id, options = {}) {
+    const item = await this.repo.findById(id, this._profileOpts(options.profileId ?? options.profile_id));
     if (!item) {
-      const err = new Error('Сертификат не найден');
-      err.statusCode = 404;
-      throw err;
+      throw httpError('Сертификат не найден', 404);
     }
     return item;
   }
@@ -27,16 +36,12 @@ class CertificatesService {
   _normalizePayload(data = {}) {
     const certificate_number = String(data.certificate_number ?? data.certificateNumber ?? '').trim();
     if (!certificate_number) {
-      const err = new Error('Номер сертификата обязателен');
-      err.statusCode = 400;
-      throw err;
+      throw httpError('Номер сертификата обязателен', 400);
     }
 
     const brand_id = data.brand_id ?? data.brandId ?? null;
     if (brand_id == null || brand_id === '') {
-      const err = new Error('Бренд обязателен');
-      err.statusCode = 400;
-      throw err;
+      throw httpError('Бренд обязателен', 400);
     }
 
     const user_category_id = data.user_category_id ?? data.userCategoryId ?? null;
@@ -47,9 +52,7 @@ class CertificatesService {
       .map((x) => Number(x))
       .filter((n) => Number.isFinite(n) && n > 0);
     if (normalizedCategoryIds.length === 0) {
-      const err = new Error('Нужна хотя бы одна категория (бренд и категория указываются только вместе)');
-      err.statusCode = 400;
-      throw err;
+      throw httpError('Нужна хотя бы одна категория (бренд и категория указываются только вместе)', 400);
     }
 
     const document_type = data.document_type ?? data.documentType ?? 'certificate';
@@ -69,19 +72,60 @@ class CertificatesService {
     };
   }
 
-  async create(data) {
+  async _assertTenantBindings(profileId, brandId, categoryIds) {
+    if (profileId == null || profileId === '') return;
+    if (!repositoryFactory.isUsingPostgreSQL()) return;
+
+    if (brandId != null && brandId !== '') {
+      const r = await query(
+        `SELECT 1
+         FROM brands b
+         WHERE b.id = $1
+           AND (
+             b.profile_id = $2::bigint
+             OR EXISTS (
+               SELECT 1 FROM products p
+               WHERE p.brand_id = b.id AND p.profile_id = $2::bigint
+             )
+           )
+         LIMIT 1`,
+        [brandId, profileId]
+      );
+      if (!r.rows.length) {
+        throw httpError('Бренд не найден в этом аккаунте', 403);
+      }
+    }
+
+    const ids = (Array.isArray(categoryIds) ? categoryIds : [])
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length) {
+      const r = await query(
+        `SELECT COUNT(*)::int AS n
+         FROM user_categories
+         WHERE id = ANY($1::bigint[]) AND profile_id = $2::bigint`,
+        [ids, profileId]
+      );
+      if (Number(r.rows[0]?.n || 0) !== ids.length) {
+        throw httpError('Категория не найдена в этом аккаунте', 403);
+      }
+    }
+  }
+
+  async create(data, options = {}) {
+    const profileId = options.profileId ?? options.profile_id ?? null;
     const payload = this._normalizePayload(data);
-    const created = await this.repo.create(payload);
-    await this._syncMarketplaceFieldsFromCertificate(created);
+    await this._assertTenantBindings(profileId, payload.brand_id, payload.user_category_ids);
+    const created = await this.repo.create({ ...payload, profile_id: profileId });
+    await this._syncMarketplaceFieldsFromCertificate(created, profileId);
     return created;
   }
 
-  async update(id, data) {
-    const existing = await this.repo.findById(id);
+  async update(id, data, options = {}) {
+    const profileId = options.profileId ?? options.profile_id ?? null;
+    const existing = await this.repo.findById(id, this._profileOpts(profileId));
     if (!existing) {
-      const err = new Error('Сертификат не найден');
-      err.statusCode = 404;
-      throw err;
+      throw httpError('Сертификат не найден', 404);
     }
 
     // allow partial update; but if certificate_number provided, validate it
@@ -89,9 +133,7 @@ class CertificatesService {
     if (data.hasOwnProperty('certificate_number') || data.hasOwnProperty('certificateNumber')) {
       const n = String(data.certificate_number ?? data.certificateNumber ?? '').trim();
       if (!n) {
-        const err = new Error('Номер сертификата обязателен');
-        err.statusCode = 400;
-        throw err;
+        throw httpError('Номер сертификата обязателен', 400);
       }
       updates.certificate_number = n;
     }
@@ -119,11 +161,15 @@ class CertificatesService {
       updates.hasOwnProperty('user_category_id') ||
       updates.hasOwnProperty('user_category_ids');
 
+    let nextBrandId = existing.brand_id ?? null;
+    let nextCategoryIds = Array.isArray(existing.user_category_ids)
+      ? existing.user_category_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+      : (existing.user_category_id != null ? [Number(existing.user_category_id)] : []);
+
     if (touchingBinding) {
-      const nextBrandId = updates.hasOwnProperty('brand_id')
+      nextBrandId = updates.hasOwnProperty('brand_id')
         ? updates.brand_id
         : (existing.brand_id ?? null);
-      let nextCategoryIds;
       if (updates.hasOwnProperty('user_category_ids')) {
         const raw = Array.isArray(updates.user_category_ids) ? updates.user_category_ids : [];
         nextCategoryIds = raw.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
@@ -134,35 +180,31 @@ class CertificatesService {
           ? [Number(updates.user_category_id)].filter((n) => Number.isFinite(n) && n > 0)
           : [];
         updates.user_category_ids = nextCategoryIds;
-      } else {
-        nextCategoryIds = Array.isArray(existing.user_category_ids)
-          ? existing.user_category_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
-          : (existing.user_category_id != null ? [Number(existing.user_category_id)] : []);
       }
 
       if (nextBrandId == null || nextBrandId === '') {
-        const err = new Error('Бренд обязателен');
-        err.statusCode = 400;
-        throw err;
+        throw httpError('Бренд обязателен', 400);
       }
       if (!nextCategoryIds.length) {
-        const err = new Error('Нужна хотя бы одна категория (бренд и категория указываются только вместе)');
-        err.statusCode = 400;
-        throw err;
+        throw httpError('Нужна хотя бы одна категория (бренд и категория указываются только вместе)', 400);
       }
     }
 
-    const updated = await this.repo.update(id, updates);
-    await this._syncMarketplaceFieldsFromCertificate(updated);
+    await this._assertTenantBindings(profileId, nextBrandId, nextCategoryIds);
+
+    const updated = await this.repo.update(id, updates, this._profileOpts(profileId));
+    if (!updated) {
+      throw httpError('Сертификат не найден', 404);
+    }
+    await this._syncMarketplaceFieldsFromCertificate(updated, profileId);
     return updated;
   }
 
-  async delete(id) {
-    const ok = await this.repo.delete(id);
+  async delete(id, options = {}) {
+    const profileId = options.profileId ?? options.profile_id ?? null;
+    const ok = await this.repo.delete(id, this._profileOpts(profileId));
     if (!ok) {
-      const err = new Error('Сертификат не найден');
-      err.statusCode = 404;
-      throw err;
+      throw httpError('Сертификат не найден', 404);
     }
     return true;
   }
@@ -172,7 +214,7 @@ class CertificatesService {
    * Логика: записываем ровно значения из этого сертификата.
    * (Если появятся несколько сертификатов на бренд/категорию — позже можно будет выбрать активный/последний.)
    */
-  async _syncMarketplaceFieldsFromCertificate(cert) {
+  async _syncMarketplaceFieldsFromCertificate(cert, profileId = null) {
     if (!cert) return;
     if (!repositoryFactory.isUsingPostgreSQL()) return; // for file storage: оставим как есть
 
@@ -180,6 +222,7 @@ class CertificatesService {
     const from = cert.valid_from || null;
     const to = cert.valid_to || null;
     const docType = cert.document_type || 'certificate';
+    const pid = cert.profile_id ?? cert.profileId ?? profileId ?? null;
 
     // Набор полей для проброса в зависимости от типа документа
     const fieldsByType = {
@@ -204,8 +247,9 @@ class CertificatesService {
     try {
       if (cert.brand_id) {
         await query(
-          `UPDATE brands SET ${map.number} = $1, ${map.from} = $2, ${map.to} = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
-          [number, from, to, cert.brand_id]
+          `UPDATE brands SET ${map.number} = $1, ${map.from} = $2, ${map.to} = $3, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $4 AND ($5::bigint IS NULL OR profile_id = $5::bigint)`,
+          [number, from, to, cert.brand_id, pid]
         );
       }
       // Важно: сертификат может относиться к нескольким категориям (M2M)
@@ -215,8 +259,9 @@ class CertificatesService {
 
       for (const cid of categoryIds) {
         await query(
-          `UPDATE user_categories SET ${map.number} = $1, ${map.from} = $2, ${map.to} = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
-          [number, from, to, cid]
+          `UPDATE user_categories SET ${map.number} = $1, ${map.from} = $2, ${map.to} = $3, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $4 AND ($5::bigint IS NULL OR profile_id = $5::bigint)`,
+          [number, from, to, cid, pid]
         );
       }
     } catch (_) {
@@ -226,4 +271,3 @@ class CertificatesService {
 }
 
 export default new CertificatesService();
-

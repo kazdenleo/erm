@@ -9,6 +9,7 @@ export const certificatesApi = {
     const params = {};
     if (opts.brandId != null && opts.brandId !== '') params.brandId = opts.brandId;
     if (opts.userCategoryId != null && opts.userCategoryId !== '') params.userCategoryId = opts.userCategoryId;
+    if (opts.includeExpired === false) params.includeExpired = false;
     const res = await api.get('/certificates', { params: Object.keys(params).length ? params : undefined });
     return res.data;
   },
