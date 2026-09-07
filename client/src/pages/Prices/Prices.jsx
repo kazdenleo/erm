@@ -78,7 +78,8 @@ export function Prices() {
   const [filterLinkedMp, setFilterLinkedMp] = useState(() => new Set());
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const listSearch = '';
+  const [listSearch, setListSearch] = useState('');
+  const listSearchDebounceRef = useRef(null);
   const loadListRef = useRef(() => {});
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -212,6 +213,7 @@ export function Prices() {
     setFilterArchiveMode('');
     setFilterUnlinkedMp(new Set());
     setFilterLinkedMp(new Set());
+    setListSearch('');
     loadList({
       organizationId: '',
       brandId: '',
@@ -220,12 +222,29 @@ export function Prices() {
       archiveMode: '',
       unlinkedMp: [],
       linkedMp: [],
+      search: '',
       page: 1,
     });
   };
 
+  const handleListSearchChange = (e) => {
+    const v = e.target.value;
+    setListSearch(v);
+    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    listSearchDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      loadListRef.current({ search: v, page: 1 });
+    }, 400);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    };
+  }, []);
+
   const toggleUnlinkedMpFilter = (mpCode) => {
-    setCurrentPage(1);
+      setCurrentPage(1);
     const nextUnlinked = new Set(filterUnlinkedMp);
     if (nextUnlinked.has(mpCode)) nextUnlinked.delete(mpCode);
     else nextUnlinked.add(mpCode);
@@ -425,16 +444,16 @@ export function Prices() {
         if (acquiringPercent !== undefined && acquiringPercent !== null && acquiringPercent !== '') {
           const percentValue = Number(acquiringPercent);
           setWbAcquiringPercent(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
-        } else {
-          setWbAcquiringPercent(null);
-        }
+          } else {
+            setWbAcquiringPercent(null);
+          }
         const gemServicesPercent = wbConfig.gem_services_percent;
         if (gemServicesPercent !== undefined && gemServicesPercent !== null && gemServicesPercent !== '') {
           const percentValue = Number(gemServicesPercent);
           setWbGemServicesPercent(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
-        } else {
-          setWbGemServicesPercent(null);
-        }
+          } else {
+            setWbGemServicesPercent(null);
+          }
         const localizationIndex = wbConfig.localization_index ?? wbConfig.localizationIndex;
         if (localizationIndex !== undefined && localizationIndex !== null && localizationIndex !== '') {
           const n = Number(localizationIndex);
@@ -769,17 +788,17 @@ export function Prices() {
       const msg =
         'Ошибка: ни у одной организации не включена отправка цен на маркетплейсы.';
       setRecalcAllMessage(msg);
-      setTimeout(() => setRecalcAllMessage(null), 10000);
+          setTimeout(() => setRecalcAllMessage(null), 10000);
       throw new Error(msg);
-    }
+        }
 
     if (!opts.skipConfirm) {
       const scopeHint = buildScopeSummaryText(savedPayload || pushSettingsSummary);
-      const ok = window.confirm(
+        const ok = window.confirm(
         `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${scopeHint}.\nОрганизации: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
-      );
-      if (!ok) return;
-    }
+        );
+        if (!ok) return;
+      }
 
     setPushAllLoading(true);
     setRecalcAllMessage(null);
@@ -868,6 +887,18 @@ export function Prices() {
         <div className="card-body p-0">
           <div className="products-list-toolbar">
             <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
+              <div className="products-list-toolbar-search">
+                <input
+                  id="prices-list-search"
+                  type="search"
+                  className="form-control form-control-sm products-list-search-input"
+                  placeholder="Название, артикул, штрихкод…"
+                  value={listSearch}
+                  onChange={handleListSearchChange}
+                  autoComplete="off"
+                  aria-label="Поиск по названию, артикулу или штрихкоду"
+                />
+              </div>
               <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
                 <span
                   className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}
@@ -1140,7 +1171,7 @@ export function Prices() {
                     </th>
                   )}
                   {!showFbsPrices && !showFboPrices && (
-                    <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>макс.</th>
                   {showFbsPrices && (
@@ -1154,7 +1185,7 @@ export function Prices() {
                     </th>
                   )}
                   {!showFbsPrices && !showFboPrices && (
-                    <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>макс.</th>
                   {showFbsPrices && (
@@ -1168,7 +1199,7 @@ export function Prices() {
                     </th>
                   )}
                   {!showFbsPrices && !showFboPrices && (
-                    <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>макс.</th>
                 </tr>
