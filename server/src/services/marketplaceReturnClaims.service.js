@@ -42,6 +42,21 @@ const WB_ACTION_LABELS = {
   rejectcustom: 'Отклонить со своим комментарием',
 };
 
+const WB_STATUS_LABELS = {
+  0: 'На рассмотрении',
+  1: 'Отказ',
+  2: 'Одобрено',
+};
+
+const WB_STATUS_EX_LABELS = {
+  0: 'На рассмотрении',
+  1: 'Товар у покупателя (отклонено)',
+  2: 'Сдача на WB / утиль',
+  5: 'Товар у покупателя (одобрено)',
+  8: 'Возврат в реализацию после проверки WB',
+  10: 'Возвращается продавцу',
+};
+
 const YM_DECISION_LABELS = {
   FAST_REFUND_MONEY: 'Быстрый возврат денег (без возврата товара)',
   REFUND_MONEY: 'Вернуть деньги за товар',
@@ -199,7 +214,7 @@ function mapYmDecisions(availableDecisions) {
 
 /* ───────────────────────── Wildberries ───────────────────────── */
 
-function mapWbClaim(claim, profileId) {
+function mapWbClaim(claim, profileId, scopeMeta = {}) {
   if (!claim || typeof claim !== 'object') return null;
   const id = claim.id ?? claim.claim_id;
   if (id == null || String(id).trim() === '') return null;
@@ -210,12 +225,20 @@ function mapWbClaim(claim, profileId) {
   const videos = Array.isArray(claim.video_paths)
     ? claim.video_paths.map(absUrl).filter(Boolean)
     : [];
+  const statusNum = claim.status != null ? Number(claim.status) : null;
+  const statusExNum = claim.status_ex != null ? Number(claim.status_ex) : null;
+  const awaitingDecision =
+    statusNum === 0 || (actions.length > 0 && statusNum !== 1 && statusNum !== 2);
+  const statusLabel =
+    (statusNum != null && WB_STATUS_LABELS[statusNum]) ||
+    (statusExNum != null && WB_STATUS_EX_LABELS[statusExNum]) ||
+    (claim.status_ex != null ? String(claim.status_ex) : claim.status != null ? String(claim.status) : null);
   return {
     profile_id: profileId,
     marketplace: 'wildberries',
     external_id: String(id),
-    status: claim.status_ex != null ? String(claim.status_ex) : claim.status != null ? String(claim.status) : null,
-    needs_decision: actions.length > 0,
+    status: statusLabel,
+    needs_decision: awaitingDecision,
     buyer_comment: claim.user_comment ?? claim.userComment ?? null,
     seller_comment: claim.wb_comment ?? claim.wbComment ?? null,
     reason: claim.origin_id_info ?? null,
@@ -233,15 +256,62 @@ function mapWbClaim(claim, profileId) {
       claimType: claim.claim_type ?? null,
       statusEx: claim.status_ex ?? null,
       status: claim.status ?? null,
+      statusLabel,
+      statusExLabel: statusExNum != null ? WB_STATUS_EX_LABELS[statusExNum] || null : null,
       videos,
       orderDt: claim.order_dt ?? claim.orderDt ?? null,
       deliveryDt: claim.delivery_dt ?? null,
       srid: claim.srid ?? null,
+      nmId: claim.nm_id ?? null,
+      organizationId: scopeMeta.organizationId ?? null,
     },
     raw_payload: claim,
     source_created_at: claim.dt ? new Date(claim.dt) : null,
     source_updated_at: claim.dt_update ? new Date(claim.dt_update) : null,
   };
+}
+
+async function listWbClaimScopes(profileId) {
+  const result = await query(
+    `SELECT o.id AS organization_id, mc.config
+     FROM marketplace_cabinets mc
+     INNER JOIN organizations o ON o.id = mc.organization_id
+     WHERE o.profile_id = $1
+       AND LOWER(mc.marketplace_type::text) IN ('wildberries', 'wb')
+       AND COALESCE(mc.is_active, true) = true
+     ORDER BY o.id, mc.id`,
+    [profileId]
+  );
+  const out = [];
+  const seen = new Set();
+  for (const row of result.rows || []) {
+    let parsed = row.config;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        parsed = null;
+      }
+    }
+    const rawKey = parsed?.api_key ?? parsed?.apiKey ?? parsed?.token;
+    const apiKey = integrationsService._normalizeWbToken(rawKey);
+    if (!apiKey) continue;
+    const dedupe = String(apiKey).slice(0, 24);
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    out.push({
+      apiKey,
+      organizationId: row.organization_id,
+    });
+  }
+  if (out.length === 0) {
+    const cfg = await getClaimsMarketplaceConfig('wildberries', profileId);
+    const apiKey = integrationsService._normalizeWbToken(cfg?.api_key ?? cfg?.apiKey);
+    if (apiKey) {
+      out.push({ apiKey, organizationId: null });
+    }
+  }
+  return out;
 }
 
 async function fetchWbClaimsPage(apiKey, params) {
@@ -278,9 +348,8 @@ async function fetchWbClaimsPage(apiKey, params) {
 }
 
 async function syncWildberries(profileId) {
-  const config = await getClaimsMarketplaceConfig('wildberries', profileId);
-  const apiKey = integrationsService._normalizeWbToken(config?.api_key ?? config?.apiKey);
-  if (!apiKey) {
+  const scopes = await listWbClaimScopes(profileId);
+  if (!scopes.length) {
     const err = new Error('Wildberries: не настроен API-ключ (категория «Возвраты покупателей»).');
     err.statusCode = 400;
     throw err;
@@ -288,26 +357,85 @@ async function syncWildberries(profileId) {
 
   let imported = 0;
   const externalIds = [];
-  let offset = 0;
   const limit = 200;
-  for (let page = 0; page < 50; page++) {
-    const { claims, total } = await fetchWbClaimsPage(apiKey, { isArchive: false, limit, offset });
-    for (const claim of claims) {
-      const mapped = mapWbClaim(claim, profileId);
-      if (!mapped) continue;
-      await marketplaceReturnClaimsRepo.upsertRow(mapped);
-      imported += 1;
-      externalIds.push(mapped.external_id);
+
+  for (const scope of scopes) {
+    let offset = 0;
+    for (let page = 0; page < 50; page++) {
+      let claims = [];
+      let total = 0;
+      try {
+        const pageData = await fetchWbClaimsPage(scope.apiKey, { isArchive: false, limit, offset });
+        claims = pageData.claims;
+        total = pageData.total;
+      } catch (e) {
+        logger.warn('[ReturnClaims] WB claims failed', {
+          organizationId: scope.organizationId,
+          error: e?.message,
+        });
+        break;
+      }
+      for (const claim of claims) {
+        const mapped = mapWbClaim(claim, profileId, { organizationId: scope.organizationId });
+        if (!mapped) continue;
+        await marketplaceReturnClaimsRepo.upsertRow(mapped);
+        imported += 1;
+        externalIds.push(mapped.external_id);
+      }
+      offset += claims.length;
+      if (claims.length === 0 || offset >= total) break;
     }
-    offset += claims.length;
-    if (claims.length === 0 || offset >= total) break;
   }
   return { imported, externalIds };
 }
 
+async function resolveWbApiKeyForRow(profileId, row) {
+  const scopes = await listWbClaimScopes(profileId);
+  if (!scopes.length) return null;
+  const preferredOrg =
+    row?.meta?.organizationId != null
+      ? String(row.meta.organizationId)
+      : row?.organization_id != null
+        ? String(row.organization_id)
+        : null;
+  if (preferredOrg) {
+    const hit = scopes.find((s) => s.organizationId != null && String(s.organizationId) === preferredOrg);
+    if (hit?.apiKey) return hit.apiKey;
+  }
+  return scopes[0]?.apiKey || null;
+}
+
+async function fetchWbClaimByIdAcrossScopes(profileId, externalId) {
+  const scopes = await listWbClaimScopes(profileId);
+  for (const scope of scopes) {
+    for (const isArchive of [false, true]) {
+      try {
+        const { claims } = await fetchWbClaimsPage(scope.apiKey, {
+          isArchive,
+          id: externalId,
+          limit: 1,
+          offset: 0,
+        });
+        if (claims[0]) {
+          return {
+            claim: claims[0],
+            organizationId: scope.organizationId,
+          };
+        }
+      } catch (e) {
+        logger.warn('[ReturnClaims] WB claim get failed', {
+          organizationId: scope.organizationId,
+          isArchive,
+          error: e?.message,
+        });
+      }
+    }
+  }
+  return null;
+}
+
 async function submitAnswerWildberries(profileId, row, body) {
-  const config = await getClaimsMarketplaceConfig('wildberries', profileId);
-  const apiKey = integrationsService._normalizeWbToken(config?.api_key ?? config?.apiKey);
+  const apiKey = await resolveWbApiKeyForRow(profileId, row);
   if (!apiKey) {
     const err = new Error('Wildberries: не настроен API-ключ.');
     err.statusCode = 400;
@@ -1112,28 +1240,9 @@ export async function getMarketplaceReturnClaimsStats(profileId, query = {}) {
 async function refreshClaimFromMarketplace(profileId, row) {
   const mp = String(row.marketplace || '').toLowerCase();
   if (mp === 'wildberries') {
-    const config = await getClaimsMarketplaceConfig('wildberries', profileId);
-    const apiKey = integrationsService._normalizeWbToken(config?.api_key ?? config?.apiKey);
-    if (!apiKey) return null;
-    const { claims } = await fetchWbClaimsPage(apiKey, {
-      isArchive: false,
-      id: row.external_id,
-      limit: 1,
-      offset: 0,
-    });
-    const claim = claims[0];
-    if (!claim) {
-      // возможно уже в архиве
-      const arch = await fetchWbClaimsPage(apiKey, {
-        isArchive: true,
-        id: row.external_id,
-        limit: 1,
-        offset: 0,
-      });
-      if (!arch.claims[0]) return null;
-      return mapWbClaim(arch.claims[0], profileId);
-    }
-    return mapWbClaim(claim, profileId);
+    const found = await fetchWbClaimByIdAcrossScopes(profileId, row.external_id);
+    if (!found?.claim) return null;
+    return mapWbClaim(found.claim, profileId, { organizationId: found.organizationId });
   }
   if (mp === 'ozon') {
     const ozonOverride = await resolveOzonOverrideForRow(profileId, row);

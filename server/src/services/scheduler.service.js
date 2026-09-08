@@ -27,6 +27,7 @@ import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { syncMarketplaceQuestions } from './marketplaceQuestions.service.js';
+import { syncMarketplaceReturnClaims } from './marketplaceReturnClaims.service.js';
 import productCompetitorsService from './productCompetitors.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
@@ -100,6 +101,19 @@ function getQuestionsSyncCronExpression() {
   return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
 }
 
+/** Фоновая синхронизация заявок на возврат (Ozon/WB/Яндекс). Выкл: RETURN_CLAIMS_SYNC_ENABLED=0 */
+function isReturnClaimsSyncEnabled() {
+  const v = process.env.RETURN_CLAIMS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 10 минут; RETURN_CLAIMS_SYNC_CRON */
+function getReturnClaimsSyncCronExpression() {
+  const c = process.env.RETURN_CLAIMS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+}
+
 async function getSchedulerProfiles() {
   let profiles = [{ id: null }];
   try {
@@ -168,6 +182,47 @@ async function runReviewsSyncForAllProfiles({ force = false } = {}) {
         source: 'scheduler',
         title: 'Сбой синхронизации отзывов',
         message: `Reviews sync failed (profile=${profileId}): ${error?.message || String(error)}`,
+      });
+    }
+  }
+}
+
+async function runReturnClaimsSyncForAllProfiles() {
+  let profiles = [{ id: null }];
+  try {
+    profiles = await getSchedulerProfiles();
+  } catch (e) {
+    logger.warn('[Scheduler] Return claims sync: could not load profiles:', e?.message || e);
+    return;
+  }
+  for (const p of profiles) {
+    const profileId = p?.id ?? null;
+    if (!profileId) continue;
+    try {
+      const out = await syncMarketplaceReturnClaims(profileId, { only: 'all' });
+      const results = Array.isArray(out?.results) ? out.results : [];
+      const imported = results.reduce((s, r) => s + (Number(r?.imported) || 0), 0);
+      logger.info('[Scheduler] Return claims sync done', {
+        profileId,
+        imported,
+        results: results.map((r) => ({
+          marketplace: r.marketplace,
+          ok: r.ok,
+          imported: r.imported,
+          error: r.error || undefined,
+        })),
+      });
+    } catch (error) {
+      logger.warn('[Scheduler] Return claims sync failed', {
+        profileId,
+        message: error?.message || String(error),
+      });
+      await addRuntimeNotification({
+        type: 'job_failed',
+        severity: 'warn',
+        source: 'scheduler',
+        title: 'Сбой синхронизации заявок на возврат',
+        message: `Return claims sync failed (profile=${profileId}): ${error?.message || String(error)}`,
       });
     }
   }
@@ -888,6 +943,24 @@ class SchedulerService {
         logger.info('[Scheduler] Reviews background sync disabled (REVIEWS_SYNC_ENABLED)');
       }
 
+      let returnClaimsSyncJob = null;
+      const returnClaimsCron = getReturnClaimsSyncCronExpression();
+      if (isReturnClaimsSyncEnabled()) {
+        returnClaimsSyncJob = cron.schedule(
+          returnClaimsCron,
+          async () => {
+            logger.info('[Scheduler] Return claims sync (cron)...');
+            await runReturnClaimsSyncForAllProfiles();
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow',
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Return claims background sync disabled (RETURN_CLAIMS_SYNC_ENABLED)');
+      }
+
       let competitorsSyncJob = null;
       const competitorsCron = getCompetitorsSyncCronExpression();
       if (isCompetitorsSyncEnabled()) {
@@ -1363,6 +1436,16 @@ class SchedulerService {
         });
       }
 
+      if (returnClaimsSyncJob) {
+        this.jobs.push({
+          name: 'return-claims-sync',
+          job: returnClaimsSyncJob,
+          schedule: returnClaimsCron,
+          description:
+            'Синхронизация заявок на возврат (Ozon, WB, Яндекс). Интервал: RETURN_CLAIMS_SYNC_CRON, по умолчанию */10 * * * *',
+        });
+      }
+
       if (competitorsSyncJob) {
         this.jobs.push({
           name: 'competitors-sync',
@@ -1458,6 +1541,9 @@ class SchedulerService {
       if (reviewsSyncJob) {
         reviewsSyncJob.start();
       }
+      if (returnClaimsSyncJob) {
+        returnClaimsSyncJob.start();
+      }
       if (competitorsSyncJob) {
         competitorsSyncJob.start();
       }
@@ -1484,6 +1570,19 @@ class SchedulerService {
       }
       profileNightlyDispatchJob.start();
       this.isRunning = true;
+
+      if (isReturnClaimsSyncEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred return claims sync (~45s after startup)...');
+              await runReturnClaimsSyncForAllProfiles();
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred return claims sync:', e?.message || e);
+            }
+          })();
+        }, 45 * 1000);
+      }
 
       if (isOrdersFbsSyncEnabled()) {
         setTimeout(() => {
