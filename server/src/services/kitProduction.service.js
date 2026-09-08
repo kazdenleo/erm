@@ -36,6 +36,26 @@ export async function applyKitAssemblyMovements({
 
   const compQtyMap = await buildKitAssemblyDeductionPlan(kitId, kits, { warehouseId });
 
+  const kitRow = await loadKitProductRow(kitId);
+  const kitSku = kitRow?.sku != null ? String(kitRow.sku).trim() : '';
+  const kitName = kitRow?.name != null ? String(kitRow.name).trim() : '';
+  const kitLabel = kitSku
+    ? `${kitSku}${kitName ? ` «${kitName}»` : ''}`
+    : kitName
+      ? `«${kitName}»`
+      : `комплект #${kitId}`;
+  let whLabel = `Склад #${warehouseId}`;
+  try {
+    const whR = await query(
+      `SELECT COALESCE(NULLIF(TRIM(address), ''), 'Склад #' || id::text) AS label
+       FROM warehouses WHERE id = $1`,
+      [warehouseId]
+    );
+    if (whR.rows?.[0]?.label) whLabel = String(whR.rows[0].label).trim();
+  } catch {
+    /* ignore */
+  }
+
   for (const [compId, compQty] of compQtyMap) {
     const metrics = await computeAvailableQuantity(compId, {
       warehouseId,
@@ -43,10 +63,25 @@ export async function applyKitAssemblyMovements({
     });
     const onHand = Math.max(0, Number(metrics.onHand) || 0);
     if (onHand < compQty) {
+      let compLabel = `товар #${compId}`;
+      try {
+        const cr = await query(`SELECT sku, name FROM products WHERE id = $1`, [compId]);
+        const row = cr.rows?.[0];
+        if (row) {
+          const sku = row.sku != null ? String(row.sku).trim() : '';
+          const name = row.name != null ? String(row.name).trim() : '';
+          if (sku && name) compLabel = `${sku} «${name}»`;
+          else if (sku) compLabel = sku;
+          else if (name) compLabel = `«${name}»`;
+        }
+      } catch {
+        /* ignore */
+      }
       const err = new Error(
-        `Недостаточно комплектующих: product #${compId}, нужно ${compQty}, на складе ${onHand}`
+        `Недостаточно комплектующих для сборки ${kitLabel}: ${compLabel}, склад «${whLabel}»: есть ${onHand}, нужно ${compQty}`
       );
       err.statusCode = 409;
+      err.code = 'INSUFFICIENT_KIT_COMPONENTS';
       throw err;
     }
   }

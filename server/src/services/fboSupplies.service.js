@@ -327,6 +327,8 @@ class FboSuppliesService {
     let skippedLines = 0;
     const errors = [];
     const productIds = new Set(releasedProductIds.map((id) => Number(id)).filter((n) => n > 0));
+    const { isKitProductId, readKitPhysicalOnHandFromDb } = await import('./kitStock.service.js');
+    const { applyKitAssemblyMovements } = await import('./kitProduction.service.js');
 
     for (const it of items) {
       const pid = Number(it.productId);
@@ -349,6 +351,34 @@ class FboSuppliesService {
           skippedLines += 1;
           continue;
         }
+
+        // Комплект: на складе часто 0 целых SKU, а наличие на комплектующих (0 (104)).
+        // Перед списанием дособираем недостающие целые из состава.
+        if (await isKitProductId(pid)) {
+          const wholeOnHand = Math.max(
+            0,
+            Number(await readKitPhysicalOnHandFromDb(pid, null, { warehouseId: whId })) || 0
+          );
+          const needAssemble = Math.max(0, toShip - wholeOnHand);
+          if (needAssemble > 0) {
+            const assembled = await applyKitAssemblyMovements({
+              kitProductId: pid,
+              quantity: needAssemble,
+              warehouseId: whId,
+              reason: `FBO поставка №${supply.id}: сборка комплекта перед отгрузкой (${supply.externalShipmentNumber})`,
+              metaExtra: {
+                ...metaBase,
+                fbo_supply_item_id: String(it.id),
+                fbo_kit_preassemble: true,
+              },
+            });
+            for (const compId of Object.keys(assembled?.componentsDeducted || {})) {
+              const n = Number(compId);
+              if (Number.isFinite(n) && n > 0) productIds.add(n);
+            }
+          }
+        }
+
         await stockMovementsService.applyChange(pid, {
           delta: -toShip,
           type: 'shipment',
