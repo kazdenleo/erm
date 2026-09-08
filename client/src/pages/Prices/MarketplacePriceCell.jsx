@@ -244,7 +244,7 @@ export function MarketplacePriceCells({
               type="text"
               inputMode="decimal"
               autoComplete="off"
-              className="mp-price-input"
+              className="mp-price-input mp-price-input-max"
               value={maxStr}
               disabled={disabled || saving}
               placeholder=""
