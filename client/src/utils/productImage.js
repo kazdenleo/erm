@@ -216,15 +216,16 @@ export function assignImagePrimaryForMarketplaces(images, imageId, marketplaces 
   const target = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
   if (!target) return Array.isArray(images) ? images : [];
 
-  const mps =
-    Array.isArray(marketplaces) && marketplaces.length
-      ? marketplaces.map((m) => String(m).toLowerCase()).filter((m) => PRODUCT_IMAGE_MP_KEYS.includes(m))
-      : claimablePrimaryMarketplaces(list, id);
+  const explicitMps = Array.isArray(marketplaces) && marketplaces.length > 0;
+  const mps = explicitMps
+    ? marketplaces.map((m) => String(m).toLowerCase()).filter((m) => PRODUCT_IMAGE_MP_KEYS.includes(m))
+    : claimablePrimaryMarketplaces(list, id);
   if (!mps.length) return Array.isArray(images) ? images : [];
 
   for (const mp of mps) {
     if (!imageHasMarketplace(target, mp)) continue;
-    if (marketplaceHasPrimaryImage(list, mp) && !imageIsExplicitPrimaryForMp(target, mp)) continue;
+    // Без явного списка МП — только «свободные». С списком — переназначаем главную.
+    if (!explicitMps && marketplaceHasPrimaryImage(list, mp) && !imageIsExplicitPrimaryForMp(target, mp)) continue;
     for (const img of list) {
       if (!img.primaryFor) continue;
       if (img.primaryFor[mp]) {

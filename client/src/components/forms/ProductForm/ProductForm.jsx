@@ -13,8 +13,6 @@ import { productsApi } from '../../../services/products.api';
 import {
   canRestoreImageAspect3x4,
   assignImagePrimaryForMarketplaces,
-  claimablePrimaryMarketplaces,
-  imageHasAnyExplicitPrimaryFor,
   imageIsPrimaryForMarketplace,
   patchImageMarketplaces,
 } from '../../../utils/productImage.js';
@@ -23,7 +21,7 @@ import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
-import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
+import { ProductMarketplaceLinkSection, OzonManufacturerArticleField } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
@@ -45,11 +43,6 @@ import {
   normalizeOzonComplexAttributes,
 } from '../../../utils/ozonComplexAttributes.js';
 import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
-import { MarketplaceRichContentPanel } from './MarketplaceRichContentPanel.jsx';
-import {
-  VideoCoverPreview,
-  productImageUrlsForVideoCoverPreview,
-} from '../../common/VideoCoverPreview/VideoCoverPreview.jsx';
 import { categoryVideoCoverTemplatesApi } from '../../../services/categoryVideoCoverTemplates.api.js';
 import { normalizeVideoCoverSettings } from '../../../utils/videoCoverTemplate.js';
 import { MarketplaceCardQualityPanel } from './MarketplaceCardQualityPanel.jsx';
@@ -170,6 +163,7 @@ import {
   isOzonAttrDuplicatingDedicatedField,
   isWbCharcDuplicatingDedicatedField,
   isWbCountryCharcName,
+  isYmPackOfferFieldId,
   isYmPackOfferParam,
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
@@ -3503,7 +3497,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       (a) =>
         !['__ym_name__', '__ym_description__', '__ym_shop_sku__', '__ym_vendor_code__', '__ym_vendor__', '__ym_barcodes__', '__ym_manufacturer__', '__ym_country__'].includes(
           String(a?.id || '')
-        )
+        ) && !isYmPackOfferFieldId(a?.id)
     );
     const byId = new Map(schema.map((a) => [String(a.id), a]));
     const fetchedNames = new Map();
@@ -3518,8 +3512,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
     for (const [key, raw] of Object.entries(ymAttributeValues || {})) {
       if (byId.has(key)) continue;
       if (raw === undefined || raw === null || String(raw).trim() === '') continue;
+      if (isYmPackOfferFieldId(key)) continue;
       const nameHint = fetchedNames.get(key);
-      if (nameHint && isYmParamDuplicatingDedicatedField(nameHint)) continue;
+      if (nameHint && (isYmParamDuplicatingDedicatedField(nameHint) || isYmPackOfferParam(nameHint))) continue;
       byId.set(key, {
         id: key,
         name: nameHint || `Параметр ${key}`,
@@ -6139,11 +6134,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
     } catch (_) {}
   }, [currentProduct?.id, productImages]);
 
-  const claimImagePrimaryForFreeMarketplaces = useCallback(async (imageId) => {
-    if (!currentProduct?.id) return;
-    const claimable = claimablePrimaryMarketplaces(productImages || [], imageId);
-    if (!claimable.length) return;
-    const next = assignImagePrimaryForMarketplaces(productImages || [], imageId, claimable);
+  const setImagePrimaryForMarketplace = useCallback(async (imageId, marketplace) => {
+    if (!currentProduct?.id || !marketplace) return;
+    const next = assignImagePrimaryForMarketplaces(productImages || [], imageId, [marketplace]);
     const withPrimary = next.map((img, i) => ({ ...img, primary: i === 0 }));
     setProductImages(withPrimary);
     try {
@@ -7676,8 +7669,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px' }}>
           Карточки перетаскивайте для порядка (первое — главное в ERP). Файлы с компьютера — в пунктирную область или на карточку.
-          Бейджи Oz / WB / Я — на каких МП использовать фото. Главная на маркетплейсе своя: если у МП ещё нет главной,
-          нажмите ★ на нужном фото. Под фото — <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>.
+          Бейджи Oz / WB / Я — на каких МП использовать фото. Под фото кнопки <strong>★Oz / ★WB / ★Я</strong> — главное изображение
+          на этой площадке (можно разные). Под фото — <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>.
         </div>
         {!currentProduct?.id ? (
           <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Сначала сохраните товар, затем можно загружать изображения.</div>
@@ -7748,30 +7741,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   const url = img?.url || '';
                   const mp = img?.marketplaces || {};
                   const isGlobalMain = index === 0;
-                  const isMpPrimary =
-                    imageIsPrimaryForMarketplace(productImages, id, 'ozon') ||
-                    imageIsPrimaryForMarketplace(productImages, id, 'wb') ||
-                    imageIsPrimaryForMarketplace(productImages, id, 'ym');
-                  const showStar = isGlobalMain || isMpPrimary || imageHasAnyExplicitPrimaryFor(img);
-                  const claimable = claimablePrimaryMarketplaces(productImages, id);
-                  const canClaimPrimary = !isGlobalMain && claimable.length > 0;
+                  const ozonOn = mp.ozon !== false;
+                  const wbOn = mp.wb !== false;
+                  const ymOn = mp.ym !== false;
+                  const ozonPrimary = imageIsPrimaryForMarketplace(productImages, id, 'ozon');
+                  const wbPrimary = imageIsPrimaryForMarketplace(productImages, id, 'wb');
+                  const ymPrimary = imageIsPrimaryForMarketplace(productImages, id, 'ym');
                   const aspectBusy = imageAspectLoadingId === id;
                   const canRestore = canRestoreImageAspect3x4(img);
-                  const starTitle = isGlobalMain
-                    ? 'Главное фото в ERP (первое в порядке)'
-                    : showStar
-                      ? `Главная на: ${[
-                          imageIsPrimaryForMarketplace(productImages, id, 'ozon') ? 'Ozon' : null,
-                          imageIsPrimaryForMarketplace(productImages, id, 'wb') ? 'WB' : null,
-                          imageIsPrimaryForMarketplace(productImages, id, 'ym') ? 'Я.Маркет' : null,
-                        ]
-                          .filter(Boolean)
-                          .join(', ')}`
-                      : canClaimPrimary
-                        ? `Сделать главной для: ${claimable
-                            .map((k) => (k === 'ym' ? 'Я.Маркет' : k === 'wb' ? 'WB' : 'Ozon'))
-                            .join(', ')}`
-                        : 'У всех включённых МП уже есть главная — сначала снимите бейдж с другого фото';
                   return (
                     <div
                       key={id}
@@ -7936,33 +7913,80 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             }}
                           >
                             <ProductImageMpToggle
-                              active={mp.ozon !== false}
-                              title="Использовать на Ozon"
+                              active={ozonOn}
+                              isPrimary={ozonPrimary}
+                              title={ozonPrimary ? 'Использовать на Ozon (главное на Ozon)' : 'Использовать на Ozon'}
                               color="#005bff"
-                              onToggle={() => updateImageMarketplaces(id, { ozon: !(mp.ozon !== false) })}
+                              onToggle={() => updateImageMarketplaces(id, { ozon: !ozonOn })}
                             >
                               Oz
                             </ProductImageMpToggle>
                             <ProductImageMpToggle
-                              active={mp.wb !== false}
-                              title="Использовать на Wildberries"
+                              active={wbOn}
+                              isPrimary={wbPrimary}
+                              title={wbPrimary ? 'Использовать на Wildberries (главное на WB)' : 'Использовать на Wildberries'}
                               color="#cb11ab"
-                              onToggle={() => updateImageMarketplaces(id, { wb: !(mp.wb !== false) })}
+                              onToggle={() => updateImageMarketplaces(id, { wb: !wbOn })}
                             >
                               WB
                             </ProductImageMpToggle>
                             <ProductImageMpToggle
-                              active={mp.ym !== false}
-                              title="Использовать на Яндекс.Маркет"
+                              active={ymOn}
+                              isPrimary={ymPrimary}
+                              title={ymPrimary ? 'Использовать на Яндекс.Маркет (главное на Я.Маркете)' : 'Использовать на Яндекс.Маркет'}
                               color="#fc0"
                               textColor="#111"
-                              onToggle={() => updateImageMarketplaces(id, { ym: !(mp.ym !== false) })}
+                              onToggle={() => updateImageMarketplaces(id, { ym: !ymOn })}
                             >
                               Я
                             </ProductImageMpToggle>
                           </div>
                         </div>
                       </ProductImageAspectFrame>
+                      <div className="product-form-image-mp-primary">
+                        <span className="product-form-image-mp-primary-label">Главная</span>
+                        <div className="product-form-image-mp-primary-btns">
+                          <button
+                            type="button"
+                            className={`product-form-image-mp-primary-btn${ozonPrimary ? ' is-primary' : ''}`}
+                            disabled={!ozonOn || aspectBusy || imageUploadLoading}
+                            title={ozonOn ? (ozonPrimary ? 'Уже главное на Ozon' : 'Сделать главным на Ozon') : 'Сначала включите бейдж Oz'}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (ozonOn && !ozonPrimary) setImagePrimaryForMarketplace(id, 'ozon');
+                            }}
+                          >
+                            ★Oz
+                          </button>
+                          <button
+                            type="button"
+                            className={`product-form-image-mp-primary-btn${wbPrimary ? ' is-primary' : ''}`}
+                            disabled={!wbOn || aspectBusy || imageUploadLoading}
+                            title={wbOn ? (wbPrimary ? 'Уже главное на WB' : 'Сделать главным на Wildberries') : 'Сначала включите бейдж WB'}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (wbOn && !wbPrimary) setImagePrimaryForMarketplace(id, 'wb');
+                            }}
+                          >
+                            ★WB
+                          </button>
+                          <button
+                            type="button"
+                            className={`product-form-image-mp-primary-btn${ymPrimary ? ' is-primary' : ''}`}
+                            disabled={!ymOn || aspectBusy || imageUploadLoading}
+                            title={ymOn ? (ymPrimary ? 'Уже главное на Я.Маркете' : 'Сделать главным на Яндекс.Маркете') : 'Сначала включите бейдж Я'}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (ymOn && !ymPrimary) setImagePrimaryForMarketplace(id, 'ym');
+                            }}
+                          >
+                            ★Я
+                          </button>
+                        </div>
+                      </div>
                       <button
                         type="button"
                         disabled={aspectBusy || imageUploadLoading}
@@ -8918,14 +8942,33 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'ozon' && (
         <div className="product-form-marketplace-panel">
-          <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span className="mp-badge ozon">OZ</span>
-            Данные для Ozon
-          </h4>
+          <div className="mp-quality-identity-row">
           <MarketplaceCardQualityPanel
             marketplace="ozon"
             rating={ozonFetchedProduct?.content_rating || mpContentRatings.ozon}
           />
+          <ProductMarketplaceLinkSection
+            marketplace="ozon"
+            layout="side"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            onSkuChange={handleMpSkuMetaChange}
+            onLinkToggle={handleMpFieldLinkToggle}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+            sellerSkuCategoryLinked={ozonOfferFieldCategoryLinked(
+              '__ozon_offer_id__',
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
+          />
+          </div>
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -8961,19 +9004,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </Button>
             <Button
               type="button"
-              variant="secondary"
-              onClick={handleGenerateVideoCover}
-              disabled={!currentProduct?.id || videoCoverLoading}
-              title={
-                !currentProduct?.id
-                  ? 'Сначала сохраните товар'
-                  : 'Слайды из фото по шаблону товара / категории / всех товаров'
-              }
-            >
-              {videoCoverLoading ? 'Слайды…' : 'Сгенерировать видеообложку'}
-            </Button>
-            <Button
-              type="button"
               variant="primary"
               onClick={() => handlePushCard('ozon')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
@@ -8982,93 +9012,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'ozon' ? 'Ожидание ответа Ozon…' : 'Сохранить и отправить на Ozon'}
             </Button>
           </div>
-          {videoCoverError ? <div className="alert alert-danger py-2">{videoCoverError}</div> : null}
-          {videoCoverMessage ? <div className="alert alert-success py-2">{videoCoverMessage}</div> : null}
-          <div className="mb-3 d-flex flex-wrap align-items-start gap-3">
-            <VideoCoverPreview
-              settings={
-                videoCoverSlides?.settings ||
-                videoCoverTemplateSettings ||
-                currentProduct?.video_cover_template ||
-                undefined
-              }
-              imageUrls={
-                Array.isArray(videoCoverSlides?.slides) && videoCoverSlides.slides.length
-                  ? videoCoverSlides.slides.map((s) => s.publicUrl || s.url).filter(Boolean)
-                  : productImageUrlsForVideoCoverPreview(productImages)
-              }
-              size="md"
-            />
-            {videoCoverSlides?.slides?.length ? (
-              <div>
-                <div className="text-muted small mb-1">
-                  Сгенерированные кадры ({videoCoverSlides.slides.length})
-                </div>
-                <div className="d-flex flex-wrap gap-2">
-                  {videoCoverSlides.slides.map((s) => (
-                    <img
-                      key={s.index ?? s.url}
-                      src={s.publicUrl || s.url}
-                      alt=""
-                      style={{
-                        width: 56,
-                        height: 74,
-                        objectFit: 'cover',
-                        borderRadius: 6,
-                        border: '1px solid #e5e7eb',
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className="text-muted small mb-0">Нет слайдов</p>
-            )}
-          </div>
-          <MarketplaceRichContentPanel
-            marketplace="ozon"
-            loading={!!richContentLoading}
-            error={activeTab === 'ozon' ? richContentError : ''}
-            result={richContentResult}
-            onGenerate={() => handleGenerateRichContent('ozon')}
-            disabled={!currentProduct?.id || !!richContentLoading}
-            categoryId={formData.categoryId}
-            productId={currentProduct?.id}
-            onModulesDraftChange={setRichContentModulesDraft}
-            mpFieldLinks={formData.mp_field_links}
-            onMpFieldLinkToggle={handleMpFieldLinkToggle}
-          />
           <div className="product-form-block">
             <h4 className="product-form-block__title">Главные атрибуты</h4>
-          <ProductMarketplaceLinkSection
-            marketplace="ozon"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            onSkuChange={handleMpSkuMetaChange}
-            onLinkToggle={handleMpFieldLinkToggle}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-            hideHeading
-            onManufacturerArticleChange={handleOzonManufacturerArticleChange}
-            sellerSkuCategoryLinked={ozonOfferFieldCategoryLinked(
-              '__ozon_offer_id__',
-              categoryAttributes,
-              mpAttrLabelMaps,
-              categoryDedicatedCharcLinks
-            )}
-            manufacturerArticleCategoryLinked={ozonOfferFieldCategoryLinked(
-              '__ozon_vendor_code__',
-              categoryAttributes,
-              mpAttrLabelMaps,
-              categoryDedicatedCharcLinks
-            )}
-            categoryAttributes={categoryAttributes}
-            attrLabelMaps={mpAttrLabelMaps}
-            dedicatedLinks={categoryDedicatedCharcLinks}
-          />
+            <div className="row g-3 mb-2">
+              <OzonManufacturerArticleField
+                formData={formData}
+                categoryAttributes={categoryAttributes}
+                attrLabelMaps={mpAttrLabelMaps}
+                dedicatedLinks={categoryDedicatedCharcLinks}
+                manufacturerArticleCategoryLinked={ozonOfferFieldCategoryLinked(
+                  '__ozon_vendor_code__',
+                  categoryAttributes,
+                  mpAttrLabelMaps,
+                  categoryDedicatedCharcLinks
+                )}
+                onChange={handleOzonManufacturerArticleChange}
+              />
+            </div>
             {ozonPrimaryFormAttrs.length > 0 ? (
               <div className="row g-3 mt-1">
                 {ozonPrimaryFormAttrs.map((attr) => {
@@ -9588,18 +9548,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'wb' && (
         <div className="product-form-marketplace-panel">
-          <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span className="mp-badge wb">WB</span>
-            Данные для Wildberries
-            {(() => {
-              const nmId = String(
-                formData.sku_wb || wbFetchedProduct?.nmId || wbFetchedProduct?.nmID || ''
-              ).trim();
-              if (!nmId) return null;
-              return <span className="product-form-mp-id">nmId {nmId}</span>;
-            })()}
-          </h4>
+          <div className="mp-quality-identity-row">
           <MarketplaceCardQualityPanel marketplace="wb" rating={mpContentRatings.wb} />
+          <ProductMarketplaceLinkSection
+            marketplace="wb"
+            layout="side"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            onSkuChange={handleMpSkuMetaChange}
+            onLinkToggle={handleMpFieldLinkToggle}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+            vendorCodeClassName={mpFieldClass('form-control form-control-sm', 'mp_wb_vendor_code')}
+            sellerSkuCategoryLinked={wbVendorCodeCategoryLinked(
+              categoryAttributes,
+              mpAttrLabelMaps,
+              categoryDedicatedCharcLinks
+            )}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
+          />
+          </div>
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -9669,42 +9641,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'wb' ? 'Отправка…' : 'Сохранить и отправить на WB'}
             </Button>
           </div>
-          <MarketplaceRichContentPanel
-            marketplace="wb"
-            loading={!!richContentLoading}
-            error={activeTab === 'wb' ? richContentError : ''}
-            result={richContentResult}
-            onGenerate={() => handleGenerateRichContent('wb')}
-            disabled={!currentProduct?.id || !!richContentLoading}
-            categoryId={formData.categoryId}
-            productId={currentProduct?.id}
-            onModulesDraftChange={setRichContentModulesDraft}
-            mpFieldLinks={formData.mp_field_links}
-            onMpFieldLinkToggle={handleMpFieldLinkToggle}
-          />
           <div className="product-form-block">
             <h4 className="product-form-block__title">Главные атрибуты</h4>
-          <ProductMarketplaceLinkSection
-            marketplace="wb"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            onSkuChange={handleMpSkuMetaChange}
-            onLinkToggle={handleMpFieldLinkToggle}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-            hideHeading
-            vendorCodeClassName={mpFieldClass('form-control form-control-sm', 'mp_wb_vendor_code')}
-            sellerSkuCategoryLinked={wbVendorCodeCategoryLinked(
-              categoryAttributes,
-              mpAttrLabelMaps,
-              categoryDedicatedCharcLinks
-            )}
-            categoryAttributes={categoryAttributes}
-            attrLabelMaps={mpAttrLabelMaps}
-          />
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
             <div
               className={`alert py-2 mb-2 ${
@@ -10005,14 +9943,27 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'ym' && (
         <div className="product-form-marketplace-panel">
-          <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span className="mp-badge ym">YM</span>
-            Данные для Яндекс.Маркет
-          </h4>
+          <div className="mp-quality-identity-row">
           <MarketplaceCardQualityPanel
             marketplace="ym"
             rating={ymFetchedProduct?.content_rating || mpContentRatings.ym}
           />
+          <ProductMarketplaceLinkSection
+            marketplace="ym"
+            layout="side"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            onSkuChange={handleMpSkuMetaChange}
+            onLinkToggle={handleMpFieldLinkToggle}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+            categoryAttributes={categoryAttributes}
+            attrLabelMaps={mpAttrLabelMaps}
+          />
+          </div>
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -10059,36 +10010,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
               {pushCardLoading === 'all' ? 'Отправка…' : 'Сохранить и отправить на все МП'}
             </Button>
             </div>
-          <MarketplaceRichContentPanel
-            marketplace="ym"
-            loading={!!richContentLoading}
-            error={activeTab === 'ym' ? richContentError : ''}
-            result={richContentResult}
-            onGenerate={() => handleGenerateRichContent('ym')}
-            disabled={!currentProduct?.id || !!richContentLoading}
-            categoryId={formData.categoryId}
-            productId={currentProduct?.id}
-            onModulesDraftChange={setRichContentModulesDraft}
-            mpFieldLinks={formData.mp_field_links}
-            onMpFieldLinkToggle={handleMpFieldLinkToggle}
-          />
           <div className="product-form-block">
             <h4 className="product-form-block__title">Главные атрибуты</h4>
-          <ProductMarketplaceLinkSection
-            marketplace="ym"
-            formData={formData}
-            errors={errors}
-            handleChange={handleChange}
-            onSkuChange={handleMpSkuMetaChange}
-            onLinkToggle={handleMpFieldLinkToggle}
-            productId={currentProduct?.id}
-            organizationId={formData.organizationId}
-            erpSku={formData.sku}
-            onLinked={handleMarketplaceLinked}
-            hideHeading
-            categoryAttributes={categoryAttributes}
-            attrLabelMaps={mpAttrLabelMaps}
-          />
           {ymSyncError && (
             <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
               {ymSyncError}
@@ -10738,16 +10661,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }}
             >
               {labelPrinting ? 'Печать…' : 'Печать стикера'}
-            </Button>
-          ) : null}
-          {aiEnabled ? (
-            <Button
-              type="button"
-              variant="secondary"
-              title="GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните"
-              onClick={() => setAiDraftOpen(true)}
-            >
-              Черновик ИИ
             </Button>
           ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">

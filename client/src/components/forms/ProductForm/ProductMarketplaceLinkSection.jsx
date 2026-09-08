@@ -80,6 +80,39 @@ function manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, d
   return String(getMpDraft(formData, 'ozon').vendorCode || '');
 }
 
+export function OzonManufacturerArticleField({
+  formData,
+  categoryAttributes = [],
+  attrLabelMaps = {},
+  dedicatedLinks = null,
+  manufacturerArticleCategoryLinked = false,
+  onChange,
+}) {
+  return (
+    <div className="col-12 col-md-6">
+      <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+        Артикул производителя
+        {manufacturerArticleCategoryLinked ? (
+          <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
+        ) : null}
+      </label>
+      <input
+        id="mp-link-ozon-manufacturer-sku"
+        type="text"
+        className="form-control form-control-sm"
+        autoComplete="off"
+        placeholder="Партномер / OEM"
+        title="Не ключ связи с Ozon. Смена не создаёт новую карточку."
+        value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks)}
+        onChange={(e) => onChange?.(e.target.value)}
+      />
+      <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.4, color: 'var(--muted)' }}>
+        Партномер / OEM — не ключ карточки, смена не создаёт дубль на Ozon.
+      </div>
+    </div>
+  );
+}
+
 export function ProductMarketplaceLinkSection({
   marketplace,
   formData,
@@ -92,13 +125,10 @@ export function ProductMarketplaceLinkSection({
   erpSku,
   onLinked,
   vendorCodeClassName,
-  onManufacturerArticleChange,
   sellerSkuCategoryLinked = false,
-  manufacturerArticleCategoryLinked = false,
   categoryAttributes = [],
   attrLabelMaps = {},
-  dedicatedLinks = null,
-  hideHeading = false,
+  layout = 'panel',
 }) {
   const panelStyle = MP_LINK_PANEL_STYLE[marketplace] || MP_LINK_PANEL_STYLE.ozon;
   const [linking, setLinking] = useState(false);
@@ -112,13 +142,16 @@ export function ProductMarketplaceLinkSection({
   const wbVendorTrim = sanitizeWbVendorCode(formData?.mp_wb_vendor_code || '');
   const ozonOfferTrim = String(formData?.sku_ozon || '').trim();
   const ymOfferTrim = String(formData?.sku_ym || '').trim();
+  const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
+  const wbNmTrim = String(formData?.sku_wb || '').trim();
+  const ymPidTrim = String(formData?.ym_market_sku || formData?.ym_product_id || '').trim();
   const hasLinkIdentifiers =
     marketplace === 'wb'
-      ? !!(wbVendorTrim || skuTrim)
+      ? !!(wbVendorTrim || skuTrim || wbNmTrim)
       : marketplace === 'ozon'
-        ? !!(ozonOfferTrim || skuTrim)
+        ? !!(ozonOfferTrim || skuTrim || ozonPidTrim)
         : marketplace === 'ym'
-          ? !!(ymOfferTrim || skuTrim)
+          ? !!(ymOfferTrim || skuTrim || ymPidTrim)
           : !!skuTrim;
   const canLink = !!productId && !!orgTrim && hasLinkIdentifiers && !linking;
 
@@ -127,7 +160,7 @@ export function ProductMarketplaceLinkSection({
     : !orgTrim
       ? 'Выберите организацию'
       : !hasLinkIdentifiers
-        ? 'Укажите артикул продавца или артикул на «Основном»'
+        ? 'Укажите артикул продавца, ID карточки или артикул на «Основном»'
         : '';
 
   const handleSellerSkuChange = (raw) => {
@@ -157,13 +190,11 @@ export function ProductMarketplaceLinkSection({
       const hints = {};
       if (marketplace === 'wb') {
         if (wbVendorTrim) hints.mp_wb_vendor_code = wbVendorTrim;
-        const wbNmTrim = String(formData?.sku_wb || '').trim();
         if (wbNmTrim) hints.sku_wb = wbNmTrim;
         const ozonOffer = String(formData?.sku_ozon || '').trim();
         if (ozonOffer) hints.sku_ozon = ozonOffer;
       } else if (marketplace === 'ozon') {
         if (ozonOfferTrim) hints.sku_ozon = ozonOfferTrim;
-        const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
         if (ozonPidTrim) hints.ozon_product_id = ozonPidTrim;
       } else if (marketplace === 'ym' && ymOfferTrim) {
         hints.sku_ym = ymOfferTrim;
@@ -206,29 +237,52 @@ export function ProductMarketplaceLinkSection({
     marketplace === 'wb' && vendorCodeClassName
       ? vendorCodeClassName
       : 'form-control form-control-sm';
-  const ozonProductId = String(formData?.ozon_product_id || '').trim();
-  const wbNmId = String(formData?.sku_wb || '').trim();
-  const marketplaceIdHint = !linked
-    ? null
-    : marketplace === 'ozon' && ozonProductId
-      ? { label: 'product_id', value: ozonProductId }
-      : marketplace === 'wb' && wbNmId
-        ? { label: 'nmId', value: wbNmId }
-        : null;
+  const marketplaceIdField =
+    marketplace === 'ozon'
+      ? {
+          key: 'ozon_product_id',
+          label: 'product_id',
+          value: String(formData?.ozon_product_id || ''),
+          placeholder: '3440269853',
+          maxLength: MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS,
+          title: 'Числовой id карточки Ozon. Ночной импорт и пуш цен идут по нему, не по артикулу.',
+          error: errors.ozon_product_id,
+        }
+      : marketplace === 'wb'
+        ? {
+            key: 'sku_wb',
+            label: 'nmId',
+            value: String(formData?.sku_wb || ''),
+            placeholder: '123456789',
+            maxLength: MP_LINK_MAX.WB_NMID,
+            title: 'nmId карточки Wildberries. Связь с кабинетом идёт по нему.',
+            error: errors.sku_wb,
+          }
+        : {
+            key: 'ym_market_sku',
+            label: 'product_id',
+            value: String(formData?.ym_market_sku || formData?.ym_product_id || ''),
+            placeholder: 'ID карточки',
+            maxLength: 19,
+            title: 'Числовой id оффера Яндекс.Маркета, если известен.',
+            error: errors.ym_market_sku,
+          };
   const identityMeta = MP_IDENTITY_LINK_META[marketplace] || null;
+  const sideByQuality = layout === 'side';
 
   return (
     <div
-      className="mb-3 p-3 rounded"
-      style={panelStyle}
+      className={sideByQuality ? 'product-marketplace-identity' : 'mb-3 p-3 rounded'}
+      style={sideByQuality ? undefined : panelStyle}
       data-section={`product-marketplace-links-${marketplace}`}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: hideHeading ? 'flex-end' : 'space-between', gap: '8px', marginBottom: '4px' }}>
-        {hideHeading ? null : (
-        <h5 style={{ fontSize: '13px', fontWeight: 600, margin: 0, color: 'var(--text)' }}>
-          Связь с маркетплейсом
-        </h5>
-        )}
+      <div className="product-marketplace-identity__head">
+        <div className="mp-identity-fields__title">
+          Артикул для связи
+          {identityMeta ? (
+            <span className="mp-identity-fields__tech">{identityMeta.tech}</span>
+          ) : null}
+        </div>
         <Button
           type="button"
           variant="secondary"
@@ -256,21 +310,23 @@ export function ProductMarketplaceLinkSection({
           />
         </Button>
       </div>
-      <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', lineHeight: 1.45 }}>
-        Иконка справа ищет карточку в кабинете по артикулу продавца или по артикулу на «Основном».
+      <p className="product-marketplace-identity__hint">
+        Артикул продавца и ID карточки — это связь с кабинетом. Иконка ищет карточку по ним.
       </p>
       {linkError && <div className="text-danger small mb-2">{linkError}</div>}
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}
 
-      <div className="mp-identity-fields">
+      <div className={sideByQuality ? undefined : 'mp-identity-fields'}>
+        {sideByQuality ? null : (
         <div className="mp-identity-fields__title">
           Ключевые поля связи
           {identityMeta ? (
             <span className="mp-identity-fields__tech">{identityMeta.tech}</span>
           ) : null}
         </div>
+        )}
         <div className="row g-3">
-          <div className="col-12">
+          <div className="col-12 col-md-6">
             <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
               <span>
                 Артикул продавца
@@ -306,42 +362,36 @@ export function ProductMarketplaceLinkSection({
                 Сначала смените артикул на маркетплейсе, затем здесь.
               </div>
             ) : null}
-            {marketplaceIdHint ? (
-              <div
-                className="mp-identity-fields__id"
-                title="Идентификатор карточки в кабинете, только для просмотра"
-              >
-                {marketplaceIdHint.label}: {marketplaceIdHint.value}
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor={`mp-link-${marketplace}-card-id`}>
+              ID карточки
+              <span className="mp-identity-fields__badge" title={marketplaceIdField.title}>
+                {marketplaceIdField.label}
+              </span>
+            </label>
+            <input
+              id={`mp-link-${marketplace}-card-id`}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              className="form-control form-control-sm"
+              maxLength={marketplaceIdField.maxLength}
+              placeholder={marketplaceIdField.placeholder}
+              title={marketplaceIdField.title}
+              value={marketplaceIdField.value}
+              onChange={(e) => handleChange(marketplaceIdField.key, e.target.value)}
+            />
+            {marketplaceIdField.error ? (
+              <div className="text-danger small mt-1">{marketplaceIdField.error}</div>
+            ) : (
+              <div className="mp-identity-fields__id">
+                Связь с кабинетом. Один id у двух товаров — одна карточка МП.
               </div>
-            ) : null}
+            )}
           </div>
         </div>
       </div>
-      {marketplace === 'ozon' ? (
-        <div className="row g-3 mt-1">
-          <div className="col-12 col-md-8">
-            <label className="form-label" htmlFor="mp-link-ozon-manufacturer-sku" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-              Артикул производителя
-              {manufacturerArticleCategoryLinked ? (
-                <MpFromMainLinkIcon linked={false} title={MP_CATEGORY_LINK_ICON_TITLE} />
-              ) : null}
-            </label>
-            <input
-              id="mp-link-ozon-manufacturer-sku"
-              type="text"
-              className="form-control form-control-sm"
-              autoComplete="off"
-              placeholder="Партномер / OEM"
-              title="Не ключ связи с Ozon. Смена не создаёт новую карточку."
-              value={manufacturerArticleValue(formData, categoryAttributes, attrLabelMaps, dedicatedLinks)}
-              onChange={(e) => onManufacturerArticleChange?.(e.target.value)}
-            />
-            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.4, color: 'var(--muted)' }}>
-              Партномер / OEM — не ключ карточки, смена не создаёт дубль на Ozon.
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

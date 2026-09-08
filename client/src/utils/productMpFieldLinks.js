@@ -585,6 +585,8 @@ export function isYmParamDuplicatingDedicatedField(name) {
   if (n === 'изготовитель' || n === 'производитель' || n === 'manufacturer') return true;
   if (n.includes('артикул производител') || n === 'vendorcode' || n === 'vendor code') return true;
   if (isYmProductWeightOnlyParam(n)) return true;
+  if (isYmPackOfferParam(n)) return true;
+  if (classifyMarketplaceDimAttrName(n) === 'pack') return true;
   return false;
 }
 
@@ -639,6 +641,17 @@ export const MP_OFFER_FIELD_ATTRS = {
 };
 
 export const YM_OFFER_FIELD_ATTRS = MP_OFFER_FIELD_ATTRS.ym;
+
+const YM_PACK_OFFER_FIELD_IDS = new Set([
+  '__ym_pack_length__',
+  '__ym_pack_width__',
+  '__ym_pack_height__',
+  '__ym_pack_weight__',
+]);
+
+export function isYmPackOfferFieldId(id) {
+  return YM_PACK_OFFER_FIELD_IDS.has(String(id || ''));
+}
 
 /** Ключи, по которым ERP находит карточку в кабинете. Смена без смены в кабинете создаёт дубль. */
 export const MP_IDENTITY_LINK_META = {
@@ -1163,7 +1176,11 @@ export function readMpSellerSku(formData, mp) {
 export function filterYmCategoryAttributesForForm(attrs) {
   if (!Array.isArray(attrs)) return [];
   return attrs.filter(
-    (a) => !isYmParamDuplicatingDedicatedField(a?.name) && !isYmProductWeightOnlyParam(a?.name)
+    (a) =>
+      !isYmPackOfferFieldId(a?.id) &&
+      !isYmParamDuplicatingDedicatedField(a?.name) &&
+      !isYmProductWeightOnlyParam(a?.name) &&
+      !isYmPackOfferParam(a?.name)
   );
 }
 
@@ -1206,6 +1223,8 @@ export function isWbCharcDuplicatingDedicatedField(name) {
   if (n === 'бренд' || n === 'brand') return true;
   if (n.includes('бренд продавца') || n.includes('торговая марк')) return true;
   if (n.includes('артикул продавца') || n === 'vendorcode' || n === 'vendor code') return true;
+  const dimKind = classifyMarketplaceDimAttrName(n);
+  if (dimKind === 'pack' || dimKind === 'product') return true;
   return false;
 }
 

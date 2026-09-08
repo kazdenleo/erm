@@ -74,18 +74,10 @@ export function MarketplaceRichContentPanel({
         <div className="d-flex gap-2 flex-wrap">
           <Button
             type="button"
-            variant="secondary"
-            onClick={onGenerate}
-            disabled={disabled || loading}
-          >
-            {loading ? 'Генерация…' : 'Сгенерировать из карточки'}
-          </Button>
-          <Button
-            type="button"
             variant="primary"
             onClick={handleOpenPage}
             disabled={!ready}
-            title={ready ? 'Открыть сверстанную страницу в новой вкладке' : 'Сначала сгенерируйте контент'}
+            title={ready ? 'Открыть сверстанную страницу в новой вкладке' : 'Сначала сгенерируйте контент в Настройки → Контент'}
           >
             Открыть страницу
           </Button>
