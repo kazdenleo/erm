@@ -17,6 +17,60 @@ import {
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
+function formatProductLabelForStockError(product, productId) {
+  const sku = product?.sku != null ? String(product.sku).trim() : '';
+  const name = product?.name != null ? String(product.name).trim() : '';
+  if (sku && name) return `${sku} «${name}»`;
+  if (sku) return sku;
+  if (name) return `«${name}»`;
+  const id = product?.id ?? productId;
+  return id != null ? `товар #${id}` : 'товар';
+}
+
+async function resolveWarehouseLabelForStockError(warehouseId) {
+  const wid = Number(warehouseId);
+  if (!Number.isFinite(wid) || wid < 1) return 'склад';
+  try {
+    const r = await query(
+      `SELECT COALESCE(NULLIF(TRIM(address), ''), 'Склад #' || id::text) AS label
+       FROM warehouses WHERE id = $1`,
+      [wid]
+    );
+    const label = r.rows?.[0]?.label != null ? String(r.rows[0].label).trim() : '';
+    return label || `Склад #${wid}`;
+  } catch {
+    return `Склад #${wid}`;
+  }
+}
+
+async function buildInsufficientWarehouseStockError({
+  product,
+  productId,
+  warehouseId,
+  currentWh,
+  needQty,
+}) {
+  const productLabel = formatProductLabelForStockError(product, productId);
+  const whLabel = await resolveWarehouseLabelForStockError(warehouseId);
+  const have = Math.max(0, Number(currentWh) || 0);
+  const need = Math.abs(Number(needQty) || 0);
+  const error = new Error(
+    `Недостаточно наличия: ${productLabel}, склад «${whLabel}»: есть ${have}, нужно списать ${need}`
+  );
+  error.statusCode = 409;
+  error.code = 'INSUFFICIENT_WAREHOUSE_STOCK';
+  error.details = {
+    productId: Number(product?.id ?? productId) || null,
+    sku: product?.sku ?? null,
+    productName: product?.name ?? null,
+    warehouseId: Number(warehouseId) || null,
+    warehouseName: whLabel,
+    available: have,
+    required: need,
+  };
+  return error;
+}
+
 const STOCK_LOCK_MAX_CONCURRENT = (() => {
   const n = Number(process.env.PRODUCT_STOCK_LOCK_MAX);
   if (Number.isFinite(n) && n >= 1) return Math.min(16, Math.floor(n));
@@ -316,12 +370,13 @@ class StockMovementsService {
       metaObj.deleted === true;
 
     if (newWhRaw < 0 && !allowNegativeClamp) {
-      const error = new Error(
-        `Недостаточно наличия на складе #${warehouseId}: есть ${currentWh}, ` +
-          `изменение ${safeDelta > 0 ? '+' : ''}${safeDelta}`
-      );
-      error.statusCode = 409;
-      throw error;
+      throw await buildInsufficientWarehouseStockError({
+        product,
+        productId: idNum,
+        warehouseId,
+        currentWh,
+        needQty: Math.abs(safeDelta),
+      });
     }
     const newWh = Math.max(0, newWhRaw);
 
@@ -3126,11 +3181,13 @@ class StockMovementsService {
       }
 
       if (currentWh < shipQty) {
-        const err = new Error(
-          `Недостаточно наличия на складе для отгрузки: на складе ${currentWh}, к отгрузке ${shipQty}`
-        );
-        err.statusCode = 409;
-        throw err;
+        throw await buildInsufficientWarehouseStockError({
+          product,
+          productId: idNum,
+          warehouseId,
+          currentWh,
+          needQty: shipQty,
+        });
       }
 
       const metaOut = { ...metaObj, warehouse_id: warehouseId };

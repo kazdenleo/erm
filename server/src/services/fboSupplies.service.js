@@ -358,13 +358,22 @@ class FboSuppliesService {
         deductedLines += 1;
         productIds.add(pid);
       } catch (e) {
-        errors.push({ productId: pid, itemId: it.id, message: e?.message || String(e) });
+        errors.push({
+          productId: pid,
+          itemId: it.id,
+          message: e?.message || String(e),
+          statusCode: e?.statusCode,
+          code: e?.code,
+          details: e?.details,
+        });
       }
     }
 
     if (deductedLines === 0 && errors.length) {
-      const err = new Error(errors[0].message || 'Не удалось списать остатки');
-      err.statusCode = 400;
+      const first = errors[0];
+      const err = new Error(first.message || 'Не удалось списать остатки');
+      err.statusCode = first.statusCode || 400;
+      err.code = first.code;
       err.details = errors;
       throw err;
     }

@@ -299,8 +299,8 @@ class FboSuppliesController {
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
-      if (e.statusCode === 400 || e.statusCode === 404) {
-        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
       }
       next(e);
     }
@@ -313,8 +313,8 @@ class FboSuppliesController {
       const data = await fboSuppliesService.advanceStatus(id, { profileId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
-      if (e.statusCode === 400 || e.statusCode === 404) {
-        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
       }
       if (/PostgreSQL pool is not initialized/i.test(String(e?.message || ''))) {
         return res.status(503).json({
