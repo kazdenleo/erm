@@ -1356,9 +1356,9 @@ class FboSupplyReserveService {
     itemIds,
     { profileId, skipMarketplaceSync = false } = {}
   ) {
-    if (!repositoryFactory.isUsingPostgreSQL()) return;
+    if (!repositoryFactory.isUsingPostgreSQL()) return { productIds: [] };
     const ids = [...new Set((itemIds || []).map((id) => String(id)).filter(Boolean))];
-    if (!ids.length) return;
+    if (!ids.length) return { productIds: [] };
 
     const netsR = await query(
       `SELECT meta->>'fbo_supply_item_id' AS supply_item_id,
@@ -1416,10 +1416,11 @@ class FboSupplyReserveService {
         /* ignore */
       }
     }
+    return { productIds: [...affectedProducts] };
   }
 
   async releaseReservesForSupply(supplyId, { profileId, skipMarketplaceSync = false } = {}) {
-    if (!repositoryFactory.isUsingPostgreSQL()) return;
+    if (!repositoryFactory.isUsingPostgreSQL()) return { productIds: [] };
     const pid = normalizeProfileId(profileId);
     const itemsR = await query(
       `SELECT si.id
@@ -1431,7 +1432,7 @@ class FboSupplyReserveService {
       [supplyId, pid]
     );
     const itemIds = (itemsR.rows || []).map((row) => String(row.id));
-    await this.releaseReservesForSupplyItemIds(supplyId, itemIds, {
+    return this.releaseReservesForSupplyItemIds(supplyId, itemIds, {
       profileId,
       skipMarketplaceSync,
     });

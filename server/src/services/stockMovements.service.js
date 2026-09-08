@@ -366,7 +366,17 @@ class StockMovementsService {
       profileId: profId
     });
 
-    if (type !== 'reserve' && type !== 'unreserve') {
+    const skipMpSync =
+      metaObj.skip_marketplace_sync === true ||
+      metaObj.skip_marketplace_sync === 'true' ||
+      metaObj.fbo_bulk_rebalance === true ||
+      metaObj.fbo_bulk_shipment === true;
+    const skipSideEffects =
+      skipMpSync ||
+      metaObj.skip_stock_side_effects === true ||
+      metaObj.skip_stock_side_effects === 'true';
+
+    if (type !== 'reserve' && type !== 'unreserve' && !skipSideEffects) {
       try {
         const { default: ordersService } = await import('./orders.service.js');
         await ordersService.trimExcessReservesForProduct(idNum, {
@@ -402,11 +412,13 @@ class StockMovementsService {
 
     // Резерв/снятие резерва меняет «доступно к продаже» на МП — отправляем обновлённый остаток.
     const orgId = product.organization_id ?? product.organizationId ?? null;
-    scheduleStockMovementMarketplaceSync(idNum, {
-      source: `stock_movement:${type}`,
-      warehouseId,
-      organizationId: orgId
-    });
+    if (!skipMpSync) {
+      scheduleStockMovementMarketplaceSync(idNum, {
+        source: `stock_movement:${type}`,
+        warehouseId,
+        organizationId: orgId
+      });
+    }
 
     return {
       productId: idNum,

@@ -41,6 +41,59 @@ function normalizeMarketplace(mp) {
   return 'ozon';
 }
 
+/** После отгрузки/терминала: push на МП и пересчёт резервов — в фоне, не блокируя HTTP. */
+function schedulePostTerminalStockSideEffects(productIds, { profileId, warehouseId } = {}) {
+  const ids = [
+    ...new Set(
+      (productIds || [])
+        .map((id) => Number(id))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (!ids.length) return;
+  setImmediate(() => {
+    (async () => {
+      try {
+        const { syncMarketplaceStocksForProductIds } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        await syncMarketplaceStocksForProductIds(ids, {
+          source: 'fbo_supply_terminal',
+          warehouseId: warehouseId ?? null,
+        });
+      } catch (e) {
+        console.warn('[FboSupplies] deferred MP sync:', e?.message || e);
+      }
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        for (const pid of ids) {
+          await ordersService
+            .trimExcessReservesForProduct(pid, {
+              reason: 'FBO terminal status',
+              meta: { from_fbo_terminal: true },
+            })
+            .catch(() => {});
+          await ordersService.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('[FboSupplies] deferred order reserves:', e?.message || e);
+      }
+      try {
+        const { default: fboReserve } = await import('./fboSupplyReserve.service.js');
+        for (const pid of ids) {
+          await fboReserve
+            .onSupplyStockEvent(pid, warehouseId ?? null, { profileId })
+            .catch(() => {});
+        }
+      } catch (e) {
+        console.warn('[FboSupplies] deferred FBO rebalance:', e?.message || e);
+      }
+    })().catch((e) => {
+      console.warn('[FboSupplies] deferred terminal side effects:', e?.message || e);
+    });
+  });
+}
+
 function mapSupplyRow(row) {
   if (!row) return null;
   return {
@@ -212,24 +265,40 @@ class FboSuppliesService {
    */
   async applyStockDeductionIfNeeded(supplyId, { profileId } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
-      return { applied: false, reason: 'no_postgresql' };
+      return { applied: false, reason: 'no_postgresql', productIds: [], reservesReleased: false };
     }
-    const supply = await this.getById(supplyId, { profileId });
+    const supply = await this.getById(supplyId, {
+      profileId,
+      skipReserveEnrichment: true,
+      skipPackingEval: true,
+      skipTerminalReserveRelease: true,
+    });
     if (supply.status !== 'shipped') {
-      return { applied: false, reason: 'not_shipped' };
+      return { applied: false, reason: 'not_shipped', productIds: [], reservesReleased: false };
     }
     this._maybeChestnyZnakFboDoc(supply).catch((e) => {
       console.warn('[FboSupplies] chestny znak fbo_transfer:', e?.message || e);
     });
     if (!supply.deductStock) {
-      return { applied: false, reason: 'deduct_disabled' };
+      return { applied: false, reason: 'deduct_disabled', productIds: [], reservesReleased: false };
     }
     // Резерв снимаем всегда при отгрузке — даже если остаток уже списан ранее.
     // Иначе willDeduct → already_deducted пропускал release, и резерв «залипал».
-    await fboSupplyReserveService.releaseReservesForSupply(supplyId, { profileId });
+    // skipMarketplaceSync: push на МП — один раз после всех строк (см. update).
+    const releaseResult = await fboSupplyReserveService.releaseReservesForSupply(supplyId, {
+      profileId,
+      skipMarketplaceSync: true,
+    });
+    const releasedProductIds = releaseResult?.productIds || [];
 
     if (await this._alreadyDeductedStock(supplyId)) {
-      return { applied: false, reason: 'already_deducted', stockDeductedAt: supply.stockDeductedAt };
+      return {
+        applied: false,
+        reason: 'already_deducted',
+        stockDeductedAt: supply.stockDeductedAt,
+        productIds: releasedProductIds,
+        reservesReleased: true,
+      };
     }
     if (!supply.deductionWarehouseId) {
       const err = new Error('Укажите склад списания остатков перед отгрузкой');
@@ -250,11 +319,14 @@ class FboSuppliesService {
       marketplace: supply.marketplace,
       external_shipment_number: supply.externalShipmentNumber,
       warehouse_id: whId,
+      skip_marketplace_sync: true,
+      fbo_bulk_shipment: true,
     };
 
     let deductedLines = 0;
     let skippedLines = 0;
     const errors = [];
+    const productIds = new Set(releasedProductIds.map((id) => Number(id)).filter((n) => n > 0));
 
     for (const it of items) {
       const pid = Number(it.productId);
@@ -284,6 +356,7 @@ class FboSuppliesService {
           meta: { ...metaBase, fbo_supply_item_id: String(it.id) },
         });
         deductedLines += 1;
+        productIds.add(pid);
       } catch (e) {
         errors.push({ productId: pid, itemId: it.id, message: e?.message || String(e) });
       }
@@ -307,6 +380,8 @@ class FboSuppliesService {
       skippedLines,
       errors: errors.length ? errors : undefined,
       stockDeductedAt: new Date().toISOString(),
+      productIds: [...productIds],
+      reservesReleased: true,
     };
   }
 
@@ -397,7 +472,7 @@ class FboSuppliesService {
     return fboSupplyReserveService.enrichSuppliesListWithReserveTotals(rows, { profileId: pid });
   }
 
-  async getById(id, { profileId, skipReserveEnrichment = false, skipPackingEval = false } = {}) {
+  async getById(id, { profileId, skipReserveEnrichment = false, skipPackingEval = false, skipTerminalReserveRelease = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const r = await query(
       `${SUPPLY_SELECT} WHERE s.id = $1 AND ($2::bigint IS NULL OR s.profile_id = $2)`,
@@ -410,10 +485,16 @@ class FboSuppliesService {
     }
     const supply = mapSupplyRow(r.rows[0]);
     // Самолечение: терминал / deduct_stock=off — резерв не должен висеть.
-    if (FBO_RESERVE_TERMINAL_STATUSES.has(supply.status) || !supply.deductStock) {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
-        console.warn('[FboSupplies] release on getById:', e?.message || e);
-      });
+    // Без push на МП по каждой строке (иначе открытие/смена статуса «Отгружен» зависает).
+    if (
+      !skipTerminalReserveRelease &&
+      (FBO_RESERVE_TERMINAL_STATUSES.has(supply.status) || !supply.deductStock)
+    ) {
+      await fboSupplyReserveService
+        .releaseReservesForSupply(id, { profileId: pid, skipMarketplaceSync: true })
+        .catch((e) => {
+          console.warn('[FboSupplies] release on getById:', e?.message || e);
+        });
     }
     const itemsR = await query(
       `SELECT i.*, p.name AS product_name, p.user_category_id AS product_category_id,
@@ -684,17 +765,40 @@ class FboSuppliesService {
     const canLightReturn = (statusOnly || lightReturn) && !willDeduct;
     if (canLightReturn) {
       result = { ...existing, status: newStatus };
+    } else if (willDeduct && (statusOnly || lightReturn)) {
+      // Полный getById до списания не нужен — applyStockDeduction загрузит строки сам.
+      result = { ...existing, status: newStatus };
     } else {
       result = await this.getById(id, {
         profileId: pid,
         skipReserveEnrichment: statusOnly,
+        skipTerminalReserveRelease: willDeduct || FBO_RESERVE_TERMINAL_STATUSES.has(newStatus),
       });
     }
+
+    let stockResult = null;
+    const affectedProductIds = new Set();
     if (willDeduct) {
       try {
-        const stockResult = await this.applyStockDeductionIfNeeded(id, { profileId: pid });
-        result = await this.getById(id, { profileId: pid });
-        result.stockDeduction = stockResult;
+        stockResult = await this.applyStockDeductionIfNeeded(id, { profileId: pid });
+        for (const pidNum of stockResult?.productIds || []) {
+          const n = Number(pidNum);
+          if (Number.isFinite(n) && n > 0) affectedProductIds.add(n);
+        }
+        if (statusOnly || lightReturn) {
+          result = {
+            ...existing,
+            status: newStatus,
+            stockDeductedAt: stockResult?.stockDeductedAt ?? existing.stockDeductedAt,
+            stockDeduction: stockResult,
+          };
+        } else {
+          result = await this.getById(id, {
+            profileId: pid,
+            skipTerminalReserveRelease: true,
+          });
+          result.stockDeduction = stockResult;
+        }
       } catch (e) {
         await query(
           `UPDATE fbo_supplies SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
@@ -711,11 +815,29 @@ class FboSuppliesService {
     }
 
     // Терминальные статусы: всегда снимаем резерв (идемпотентно).
-    // Раньше при willDeduct + already_deducted ветка release не выполнялась.
+    // После willDeduct release уже выполнен — не дублируем.
+    // skipMarketplaceSync: push на МП пакетом в фоне (иначе статус «Отгружен» ждёт API МП построчно).
     if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
-        console.warn('[FboSupplies] release on terminal:', e?.message || e);
-      });
+      if (!(stockResult?.reservesReleased === true)) {
+        try {
+          const rel = await fboSupplyReserveService.releaseReservesForSupply(id, {
+            profileId: pid,
+            skipMarketplaceSync: true,
+          });
+          for (const pidNum of rel?.productIds || []) {
+            const n = Number(pidNum);
+            if (Number.isFinite(n) && n > 0) affectedProductIds.add(n);
+          }
+        } catch (e) {
+          console.warn('[FboSupplies] release on terminal:', e?.message || e);
+        }
+      }
+      if (affectedProductIds.size > 0) {
+        schedulePostTerminalStockSideEffects([...affectedProductIds], {
+          profileId: pid,
+          warehouseId: result.deductionWarehouseId ?? existing.deductionWarehouseId ?? null,
+        });
+      }
     } else if (result.deductStock) {
       const runRebalance = () =>
         fboSupplyReserveService
@@ -729,9 +851,11 @@ class FboSuppliesService {
         await runRebalance();
       }
     } else {
-      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch((e) => {
-        console.warn('[FboSupplies] release (deduct off):', e?.message || e);
-      });
+      await fboSupplyReserveService
+        .releaseReservesForSupply(id, { profileId: pid, skipMarketplaceSync: true })
+        .catch((e) => {
+          console.warn('[FboSupplies] release (deduct off):', e?.message || e);
+        });
     }
 
     if (
