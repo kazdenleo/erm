@@ -12,9 +12,13 @@ import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
 import {
   canRestoreImageAspect3x4,
-  assignImagePrimaryForMarketplaces,
-  imageIsPrimaryForMarketplace,
+  canStarImage,
+  imageEnabledMpKeys,
+  imageHasAnyExplicitPrimaryFor,
+  marketplaceHasExplicitPrimaryOnOther,
   patchImageMarketplaces,
+  PRODUCT_IMAGE_MP_KEYS,
+  toggleImageStar,
 } from '../../../utils/productImage.js';
 import { ProductImageAspectFrame } from '../../../hooks/useProductImageAspect3x4.js';
 import { getApiSessionContext } from '../../../services/apiSession.js';
@@ -755,7 +759,7 @@ function dataTransferHasFiles(dt) {
 }
 
 /** Переключатель маркетплейса на превью (иконка поверх фото). */
-function ProductImageMpToggle({ active, title, color, textColor = '#fff', isPrimary = false, children, onToggle }) {
+function ProductImageMpToggle({ active, title, color, textColor = '#fff', children, onToggle }) {
   return (
     <button
       type="button"
@@ -770,15 +774,10 @@ function ProductImageMpToggle({ active, title, color, textColor = '#fff', isPrim
         onToggle();
       }}
       style={{
-        position: 'relative',
         width: 22,
         height: 22,
         borderRadius: '6px',
-        border: active
-          ? isPrimary
-            ? '1px solid #fbbf24'
-            : '1px solid rgba(255,255,255,0.9)'
-          : '1px solid rgba(255,255,255,0.25)',
+        border: active ? '1px solid rgba(255,255,255,0.9)' : '1px solid rgba(255,255,255,0.25)',
         cursor: 'pointer',
         fontSize: '7px',
         fontWeight: 800,
@@ -792,35 +791,9 @@ function ProductImageMpToggle({ active, title, color, textColor = '#fff', isPrim
         justifyContent: 'center',
         padding: 0,
         flexShrink: 0,
-        boxShadow: isPrimary && active ? '0 0 0 1px rgba(251, 191, 36, 0.55)' : undefined,
       }}
     >
       {children}
-      {isPrimary && active ? (
-        <span
-          aria-hidden="true"
-          style={{
-            position: 'absolute',
-            top: -5,
-            right: -5,
-            width: 12,
-            height: 12,
-            borderRadius: '50%',
-            background: 'rgba(0,0,0,0.75)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
-          }}
-        >
-          <svg width="8" height="8" viewBox="0 0 24 24">
-            <path
-              fill="#fbbf24"
-              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-            />
-          </svg>
-        </span>
-      ) : null}
     </button>
   );
 }
@@ -6134,9 +6107,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
     } catch (_) {}
   }, [currentProduct?.id, productImages]);
 
-  const setImagePrimaryForMarketplace = useCallback(async (imageId, marketplace) => {
-    if (!currentProduct?.id || !marketplace) return;
-    const next = assignImagePrimaryForMarketplaces(productImages || [], imageId, [marketplace]);
+  const toggleImageMarketplaceStar = useCallback(async (imageId) => {
+    if (!currentProduct?.id) return;
+    const next = toggleImageStar(productImages || [], imageId);
     const withPrimary = next.map((img, i) => ({ ...img, primary: i === 0 }));
     setProductImages(withPrimary);
     try {
@@ -7669,8 +7642,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px' }}>
           Карточки перетаскивайте для порядка (первое — главное в ERP). Файлы с компьютера — в пунктирную область или на карточку.
-          Бейджи Oz / WB / Я — на каких МП использовать фото. Под фото кнопки <strong>★Oz / ★WB / ★Я</strong> — главное изображение
-          на этой площадке (можно разные). Под фото — <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>.
+          ★ — главное фото на включённых рядом площадках; на каждом МП звезда только у одного кадра.
+          Бейджи Oz / WB / Я — где использовать фото. Под фото — <strong>Сделать 3:4</strong>; после неё можно <strong>Вернуть оригинал</strong>.
         </div>
         {!currentProduct?.id ? (
           <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Сначала сохраните товар, затем можно загружать изображения.</div>
@@ -7740,14 +7713,28 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   const id = String(img?.id ?? img?.filename ?? '');
                   const url = img?.url || '';
                   const mp = img?.marketplaces || {};
-                  const isGlobalMain = index === 0;
                   const ozonOn = mp.ozon !== false;
                   const wbOn = mp.wb !== false;
                   const ymOn = mp.ym !== false;
-                  const ozonPrimary = imageIsPrimaryForMarketplace(productImages, id, 'ozon');
-                  const wbPrimary = imageIsPrimaryForMarketplace(productImages, id, 'wb');
-                  const ymPrimary = imageIsPrimaryForMarketplace(productImages, id, 'ym');
+                  const isStarred = imageHasAnyExplicitPrimaryFor(img);
+                  const canStar = canStarImage(productImages, id);
+                  const starredMpLabels = PRODUCT_IMAGE_MP_KEYS.filter((k) => img?.primaryFor?.[k] === true).map((k) =>
+                    k === 'ym' ? 'Я.Маркет' : k === 'wb' ? 'WB' : 'Ozon'
+                  );
+                  const blockedStarLabels = imageEnabledMpKeys(img)
+                    .filter((k) => marketplaceHasExplicitPrimaryOnOther(productImages, k, id))
+                    .map((k) => (k === 'ym' ? 'Я.Маркет' : k === 'wb' ? 'WB' : 'Ozon'));
+                  const starTitle = isStarred
+                    ? `Главное на: ${starredMpLabels.join(', ') || 'включённых площадках'}. Нажмите, чтобы снять ★`
+                    : canStar
+                      ? `Сделать главным на: ${imageEnabledMpKeys(img)
+                          .map((k) => (k === 'ym' ? 'Я.Маркет' : k === 'wb' ? 'WB' : 'Ozon'))
+                          .join(', ')}`
+                      : blockedStarLabels.length
+                        ? `На ${blockedStarLabels.join(', ')} ★ уже стоит на другом фото`
+                        : 'Включите хотя бы одну площадку Oz / WB / Я';
                   const aspectBusy = imageAspectLoadingId === id;
+                  const canToggleStar = !aspectBusy && !imageUploadLoading && (isStarred || canStar);
                   const canRestore = canRestoreImageAspect3x4(img);
                   return (
                     <div
@@ -7874,35 +7861,32 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             style={{
                               display: 'flex',
                               alignItems: 'center',
-                              minWidth: 24,
-                              pointerEvents: 'none',
+                              pointerEvents: 'auto',
                             }}
                           >
-                            {isGlobalMain ? (
-                              <span
-                                title="Главное фото"
-                                aria-label="Главное фото"
-                                style={{
-                                  width: 28,
-                                  height: 28,
-                                  borderRadius: '50%',
-                                  background: 'rgba(0,0,0,0.45)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
-                                }}
-                              >
-                                <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-                                  <path
-                                    fill="#fbbf24"
-                                    d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-                                  />
-                                </svg>
-                              </span>
-                            ) : (
-                              <span style={{ width: 28, height: 28 }} aria-hidden="true" />
-                            )}
+                            <button
+                              type="button"
+                              className={`product-form-image-star${isStarred ? ' is-on' : ''}`}
+                              title={starTitle}
+                              aria-label={starTitle}
+                              aria-pressed={isStarred}
+                              disabled={!canToggleStar}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (canToggleStar) toggleImageMarketplaceStar(id);
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                  fill={isStarred ? '#fbbf24' : 'rgba(255,255,255,0.22)'}
+                                  stroke={isStarred ? '#fbbf24' : 'rgba(255,255,255,0.75)'}
+                                  strokeWidth="1.8"
+                                  d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                                />
+                              </svg>
+                            </button>
                           </div>
                           <div
                             style={{
@@ -7914,8 +7898,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           >
                             <ProductImageMpToggle
                               active={ozonOn}
-                              isPrimary={ozonPrimary}
-                              title={ozonPrimary ? 'Использовать на Ozon (главное на Ozon)' : 'Использовать на Ozon'}
+                              title="Использовать на Ozon"
                               color="#005bff"
                               onToggle={() => updateImageMarketplaces(id, { ozon: !ozonOn })}
                             >
@@ -7923,8 +7906,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             </ProductImageMpToggle>
                             <ProductImageMpToggle
                               active={wbOn}
-                              isPrimary={wbPrimary}
-                              title={wbPrimary ? 'Использовать на Wildberries (главное на WB)' : 'Использовать на Wildberries'}
+                              title="Использовать на Wildberries"
                               color="#cb11ab"
                               onToggle={() => updateImageMarketplaces(id, { wb: !wbOn })}
                             >
@@ -7932,8 +7914,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                             </ProductImageMpToggle>
                             <ProductImageMpToggle
                               active={ymOn}
-                              isPrimary={ymPrimary}
-                              title={ymPrimary ? 'Использовать на Яндекс.Маркет (главное на Я.Маркете)' : 'Использовать на Яндекс.Маркет'}
+                              title="Использовать на Яндекс.Маркет"
                               color="#fc0"
                               textColor="#111"
                               onToggle={() => updateImageMarketplaces(id, { ym: !ymOn })}
@@ -7943,50 +7924,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                           </div>
                         </div>
                       </ProductImageAspectFrame>
-                      <div className="product-form-image-mp-primary">
-                        <span className="product-form-image-mp-primary-label">Главная</span>
-                        <div className="product-form-image-mp-primary-btns">
-                          <button
-                            type="button"
-                            className={`product-form-image-mp-primary-btn${ozonPrimary ? ' is-primary' : ''}`}
-                            disabled={!ozonOn || aspectBusy || imageUploadLoading}
-                            title={ozonOn ? (ozonPrimary ? 'Уже главное на Ozon' : 'Сделать главным на Ozon') : 'Сначала включите бейдж Oz'}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (ozonOn && !ozonPrimary) setImagePrimaryForMarketplace(id, 'ozon');
-                            }}
-                          >
-                            ★Oz
-                          </button>
-                          <button
-                            type="button"
-                            className={`product-form-image-mp-primary-btn${wbPrimary ? ' is-primary' : ''}`}
-                            disabled={!wbOn || aspectBusy || imageUploadLoading}
-                            title={wbOn ? (wbPrimary ? 'Уже главное на WB' : 'Сделать главным на Wildberries') : 'Сначала включите бейдж WB'}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (wbOn && !wbPrimary) setImagePrimaryForMarketplace(id, 'wb');
-                            }}
-                          >
-                            ★WB
-                          </button>
-                          <button
-                            type="button"
-                            className={`product-form-image-mp-primary-btn${ymPrimary ? ' is-primary' : ''}`}
-                            disabled={!ymOn || aspectBusy || imageUploadLoading}
-                            title={ymOn ? (ymPrimary ? 'Уже главное на Я.Маркете' : 'Сделать главным на Яндекс.Маркете') : 'Сначала включите бейдж Я'}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (ymOn && !ymPrimary) setImagePrimaryForMarketplace(id, 'ym');
-                            }}
-                          >
-                            ★Я
-                          </button>
-                        </div>
-                      </div>
                       <button
                         type="button"
                         disabled={aspectBusy || imageUploadLoading}

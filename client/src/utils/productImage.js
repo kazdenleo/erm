@@ -224,8 +224,7 @@ export function assignImagePrimaryForMarketplaces(images, imageId, marketplaces 
 
   for (const mp of mps) {
     if (!imageHasMarketplace(target, mp)) continue;
-    // Без явного списка МП — только «свободные». С списком — переназначаем главную.
-    if (!explicitMps && marketplaceHasPrimaryImage(list, mp) && !imageIsExplicitPrimaryForMp(target, mp)) continue;
+    if (marketplaceHasExplicitPrimaryOnOther(list, mp, id)) continue;
     for (const img of list) {
       if (!img.primaryFor) continue;
       if (img.primaryFor[mp]) {
@@ -241,15 +240,26 @@ export function assignImagePrimaryForMarketplaces(images, imageId, marketplaces 
 
 /** При выключении бейджа МП сбрасываем primaryFor для него. */
 export function patchImageMarketplaces(images, imageId, patch) {
+  const rawPatch = patch && typeof patch === 'object' ? { ...patch } : {};
+  const current = (Array.isArray(images) ? images : []).find(
+    (img) => String(img?.id ?? img?.filename ?? '') === String(imageId)
+  );
+  if (current && imageHasAnyExplicitPrimaryFor(current)) {
+    for (const mp of PRODUCT_IMAGE_MP_KEYS) {
+      if (rawPatch[mp] === true && marketplaceHasExplicitPrimaryOnOther(images, mp, imageId)) {
+        delete rawPatch[mp];
+      }
+    }
+  }
   const list = (Array.isArray(images) ? images : []).map((img) => {
     const id = String(img?.id ?? img?.filename ?? '');
     if (id !== String(imageId)) return img;
-    const marketplaces = { ...(img.marketplaces || {}), ...(patch || {}) };
+    const marketplaces = { ...(img.marketplaces || {}), ...rawPatch };
     let primaryFor =
       img.primaryFor && typeof img.primaryFor === 'object' ? { ...img.primaryFor } : undefined;
     if (primaryFor) {
       for (const mp of PRODUCT_IMAGE_MP_KEYS) {
-        if (patch && Object.prototype.hasOwnProperty.call(patch, mp) && patch[mp] === false) {
+        if (Object.prototype.hasOwnProperty.call(rawPatch, mp) && rawPatch[mp] === false) {
           delete primaryFor[mp];
         }
       }
@@ -257,10 +267,90 @@ export function patchImageMarketplaces(images, imageId, patch) {
     }
     return { ...img, marketplaces, primaryFor };
   });
+  const target = list.find((img) => String(img?.id ?? img?.filename ?? '') === String(imageId));
+  if (target && imageHasAnyExplicitPrimaryFor(target) && Object.keys(rawPatch).length) {
+    for (const mp of PRODUCT_IMAGE_MP_KEYS) {
+      if (rawPatch[mp] !== true) continue;
+      if (!imageHasMarketplace(target, mp)) continue;
+      if (marketplaceHasExplicitPrimaryOnOther(list, mp, imageId)) continue;
+      const idx = list.findIndex((img) => String(img?.id ?? img?.filename ?? '') === String(imageId));
+      if (idx < 0) break;
+      list[idx] = {
+        ...list[idx],
+        primaryFor: { ...(list[idx].primaryFor || {}), [mp]: true },
+      };
+    }
+  }
   return list;
 }
 
 export function imageHasAnyExplicitPrimaryFor(img) {
   if (!img?.primaryFor || typeof img.primaryFor !== 'object') return false;
   return PRODUCT_IMAGE_MP_KEYS.some((mp) => img.primaryFor[mp] === true);
+}
+
+/** У другой картинки уже стоит ★ вместе с этим МП. */
+export function marketplaceHasExplicitPrimaryOnOther(images, marketplace, exceptImageId) {
+  const mp = String(marketplace || '').toLowerCase();
+  const except = String(exceptImageId ?? '');
+  return (Array.isArray(images) ? images : []).some((img) => {
+    const id = String(img?.id ?? img?.filename ?? '');
+    if (id === except) return false;
+    return imageHasMarketplace(img, mp) && imageIsExplicitPrimaryForMp(img, mp);
+  });
+}
+
+/** МП этого фото, для которых ещё нет ★ на другом кадре. */
+export function claimableStarMarketplaces(images, imageId) {
+  const list = Array.isArray(images) ? images : [];
+  const id = String(imageId ?? '');
+  const img = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!img) return [];
+  return PRODUCT_IMAGE_MP_KEYS.filter(
+    (mp) => imageHasMarketplace(img, mp) && !marketplaceHasExplicitPrimaryOnOther(list, mp, id)
+  );
+}
+
+export function imageEnabledMpKeys(img) {
+  return PRODUCT_IMAGE_MP_KEYS.filter((mp) => imageHasMarketplace(img, mp));
+}
+
+/** Можно поставить ★: все включённые МП ещё без чужой звезды. */
+export function canStarImage(images, imageId) {
+  const list = Array.isArray(images) ? images : [];
+  const id = String(imageId ?? '');
+  const img = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!img) return false;
+  const enabled = imageEnabledMpKeys(img);
+  if (!enabled.length) return false;
+  return enabled.every((mp) => !marketplaceHasExplicitPrimaryOnOther(list, mp, id));
+}
+
+export function clearImagePrimaryFor(images, imageId) {
+  const id = String(imageId ?? '');
+  return (Array.isArray(images) ? images : []).map((img) => {
+    if (String(img?.id ?? img?.filename ?? '') !== id) return img;
+    if (!img?.primaryFor) return img;
+    const next = { ...img };
+    delete next.primaryFor;
+    return next;
+  });
+}
+
+/**
+ * Одна ★ на фото: включить — занять все свободные МП этого кадра;
+ * выключить — снять главную со всех МП этого кадра. Чужую ★ не перехватывает.
+ */
+export function toggleImageStar(images, imageId) {
+  const list = Array.isArray(images) ? images : [];
+  const id = String(imageId ?? '');
+  const img = list.find((x) => String(x?.id ?? x?.filename ?? '') === id);
+  if (!img) return list;
+  if (imageHasAnyExplicitPrimaryFor(img)) {
+    return clearImagePrimaryFor(list, id);
+  }
+  if (!canStarImage(list, id)) return list;
+  const mps = imageEnabledMpKeys(img);
+  if (!mps.length) return list;
+  return assignImagePrimaryForMarketplaces(list, id, mps);
 }
