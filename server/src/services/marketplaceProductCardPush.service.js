@@ -1291,7 +1291,12 @@ async function pushOzonCard(product, categoryMm, ctx) {
     ozonInfoBefore = await fetchOzonProductInfoItem(offerId, item.product_id ?? null, apiOpts);
     ozonExisted = !!(ozonInfoBefore && (ozonInfoBefore.id || ozonInfoBefore.offer_id));
     const priceFields = extractOzonPriceFields(ozonInfoBefore);
-    applyErpPricesToOzonImportItem(item, erpPrices, priceFields);
+    if (ozonExisted) {
+      // Обновление: не перезаписываем цены кабинета ERP-значениями.
+      Object.assign(item, priceFields);
+    } else {
+      applyErpPricesToOzonImportItem(item, erpPrices, priceFields);
+    }
     if (ozonInfoBefore?.id != null && item.product_id == null) {
       const idNum = Number(ozonInfoBefore.id);
       if (Number.isFinite(idNum) && idNum > 0) item.product_id = idNum;
@@ -1321,7 +1326,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
       error: e?.message || String(e),
     });
   }
-  if (item.price == null) {
+  if (!ozonExisted && item.price == null) {
     applyErpPricesToOzonImportItem(item, erpPrices, {});
   }
   if (!ozonExisted && sellingFromErpPrices(erpPrices) == null && item.price == null) {
@@ -1553,11 +1558,11 @@ async function pushOzonCard(product, categoryMm, ctx) {
       };
     }
 
-    // Цены: /v3/product/import их не применяет. Шлём import/prices ДО сбора ошибок кабинета,
-    // иначе has_price=false / price_is_negative помечают пуш как fail и цены так и не уходят.
+    // Цены на обновлении не трогаем — ими занимается раздел «Цены».
+    // Для новой карточки /v3/product/import цену не применяет, нужен import/prices.
     const ozonPidForPrice = Number(item.product_id ?? ozonInfoBefore?.id ?? 0);
-    let priceRes = { skipped: true, reason: 'no_attr_price' };
-    if (sellingFromErpPrices(erpPrices) != null) {
+    let priceRes = { skipped: true, reason: ozonExisted ? 'content_only' : 'no_attr_price' };
+    if (!ozonExisted && sellingFromErpPrices(erpPrices) != null) {
       priceRes = await pushOzonPricesFromErp(offerId, ozonPidForPrice, erpPrices, apiOpts);
     }
 
@@ -2286,7 +2291,7 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
 
     const erpPrices = await loadErpCardPrices(product.id, 'wb');
     let priceNote = '';
-    if (nmId) {
+    if (creating && nmId) {
       try {
         const priceRes = await pushWbPricesFromErp(nmId, erpPrices, ctx);
         priceNote = pricePushNote(priceRes);
@@ -2507,12 +2512,6 @@ async function pushYandexCard(product, categoryMm, ctx) {
   }
 
   const erpPrices = await loadErpCardPrices(product.id, 'ym');
-  const ymBasicPrice = ymPriceObject(erpPrices);
-  if (ymBasicPrice) {
-    offer.basicPrice = ymBasicPrice;
-    logger.info('[YM push] basicPrice from ERP', { offerId, ...ymBasicPrice });
-  }
-
   let existingYm = null;
   try {
     existingYm = await integrationsService.getYandexOfferByOfferId(offerId, {
@@ -2523,6 +2522,11 @@ async function pushYandexCard(product, categoryMm, ctx) {
     logger.warn('[YM push] lookup before update:', e?.message || e);
   }
   const creating = !existingYm;
+  const ymBasicPrice = creating ? ymPriceObject(erpPrices) : null;
+  if (ymBasicPrice) {
+    offer.basicPrice = ymBasicPrice;
+    logger.info('[YM push] basicPrice from ERP', { offerId, ...ymBasicPrice });
+  }
 
   if (creating) {
     const missing = [];
@@ -2590,21 +2594,23 @@ async function pushYandexCard(product, categoryMm, ctx) {
       };
     }
     let priceNote = '';
-    if (ymBasicPrice) {
-      const bits = [`цена ${ymBasicPrice.value}`];
-      if (ymBasicPrice.discountBase) bits.push(`до скидки ${ymBasicPrice.discountBase}`);
-      priceNote = ` Цены из атрибутов ERP: ${bits.join(', ')}.`;
-    } else {
-      priceNote =
-        ' Цены ERP не найдены — задайте «Цену после скидки» или «Цену до скидки» в карточке товара.';
-    }
-    try {
-      const priceRes = await pushYmPricesFromErp(offerId, erpPrices, ctx);
-      if (priceRes?.ok === false && priceRes.error) {
-        priceNote += ` ${priceRes.error}`;
+    if (creating) {
+      if (ymBasicPrice) {
+        const bits = [`цена ${ymBasicPrice.value}`];
+        if (ymBasicPrice.discountBase) bits.push(`до скидки ${ymBasicPrice.discountBase}`);
+        priceNote = ` Цены из атрибутов ERP: ${bits.join(', ')}.`;
+      } else {
+        priceNote =
+          ' Цены ERP не найдены — задайте «Цену после скидки» или «Цену до скидки» в карточке товара.';
       }
-    } catch (e) {
-      priceNote += ` Цены (витрина): ${e?.message || String(e)}`;
+      try {
+        const priceRes = await pushYmPricesFromErp(offerId, erpPrices, ctx);
+        if (priceRes?.ok === false && priceRes.error) {
+          priceNote += ` ${priceRes.error}`;
+        }
+      } catch (e) {
+        priceNote += ` Цены (витрина): ${e?.message || String(e)}`;
+      }
     }
 
     let barcodeSent = barcodeCodes[0] || undefined;
