@@ -14,6 +14,7 @@ router.get('/abc', wrapAsync(controller.getAbcAnalysis));
 router.get('/product-dynamics', wrapAsync(controller.getProductDynamics));
 router.get('/turnover', wrapAsync(controller.getTurnover));
 router.get('/card-work', wrapAsync(controller.getCardWork));
+router.get('/card-work/duplicates', wrapAsync(controller.getCardWorkDuplicates));
 router.get('/hypotheses', wrapAsync(hypothesesController.list));
 router.post('/hypotheses', wrapAsync(hypothesesController.create));
 router.patch('/hypotheses/:id', wrapAsync(hypothesesController.update));

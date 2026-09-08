@@ -271,9 +271,8 @@ async function enrichDuplicateGroups(groups) {
       if (same.some((s) => s.label === label && identNorm(s.value) === identNorm(value))) return;
       same.push({ label, value });
     };
+    // Только идентификаторы; бренд и название не сверяем.
     pushSame('Артикул ERP', sharedScalar(products, (p) => p.sku));
-    pushSame('Название', sharedScalar(products, (p) => p.productName));
-    pushSame('Бренд', sharedScalar(products, (p) => p.brand));
     pushSame('Артикул продавца Ozon', sharedScalar(products, (p) => p.skuOzon));
     pushSame('Артикул продавца WB', sharedScalar(products, (p) => p.skuWb));
     pushSame('Артикул продавца Я.Маркет', sharedScalar(products, (p) => p.skuYm));
@@ -292,17 +291,20 @@ async function enrichDuplicateGroups(groups) {
         bcCount.set(n, prev);
       }
     }
-    const sharedBarcodes = [...bcCount.values()]
-      .filter((x) => x.count >= 2)
-      .map((x) => x.value);
-    if (sharedBarcodes.length) {
-      pushSame('Штрихкод', sharedBarcodes.join(', '));
+    for (const x of bcCount.values()) {
+      if (x.count >= 2) pushSame('Штрихкод', x.value);
     }
 
+    // Отдельно по каждому типу: что именно одинаково у карточек группы.
+    const matchedFields = [...same];
     const trigger = identNorm(g.value);
-    const sameFields = same.filter((s) => identNorm(s.value) !== trigger);
+    const kindLab = (g.kindLabels && g.kindLabels[0]) || '';
+    const triggerCovered = matchedFields.some((f) => identNorm(f.value) === trigger);
+    if (!triggerCovered && g.value) {
+      matchedFields.unshift({ label: kindLab || 'Совпадение', value: g.value });
+    }
 
-    return { ...g, products, sameFields };
+    return { ...g, products, matchedFields };
   });
 }
 
@@ -495,6 +497,11 @@ async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = 
 }
 
 class MarketplaceCardWorkService {
+  /** Дубли идентификаторов — без отчёта продаж и периода. */
+  async getDuplicates({ profileId } = {}) {
+    return listIdentifierDuplicates({ profileId });
+  }
+
   async getQueue({
     profileId,
     dateFrom = null,
@@ -629,7 +636,6 @@ class MarketplaceCardWorkService {
     }
 
     const items = finalizeItems(byKey, reasonFilter);
-    const duplicates = await listIdentifierDuplicates({ profileId });
 
     return {
       period: turnoverData.period,
@@ -646,11 +652,8 @@ class MarketplaceCardWorkService {
         stockoutCount: items.filter((i) => i.reasonCodes.includes('stockout')).length,
         lowContentRatingCount: items.filter((i) => i.reasonCodes.includes('low_content_rating')).length,
         dimMismatchCount: items.filter((i) => i.reasonCodes.includes('dim_mismatch')).length,
-        duplicateGroupsCount: duplicates.groups.length,
-        duplicateProductsCount: duplicates.productCount,
       },
       items,
-      duplicates,
     };
   }
 }

@@ -404,6 +404,11 @@
   user-select: text;
 }
 
+.mp-identity-fields .form-label .mp-identity-fields__badge,
+.product-marketplace-identity .form-label .mp-identity-fields__badge {
+  margin-left: 6px;
+}
+
 .product-form-block__title {
   font-size: 13px;
   font-weight: 600;

@@ -1492,13 +1492,19 @@ class ProductsService {
         updates.sku_wb = nmRaw;
       }
       if (updates.marketplace_skus.ozon) {
-        const explicit = updates.marketplace_ozon_product_id;
+        const ozonPidTouched = Object.prototype.hasOwnProperty.call(
+          updates,
+          'marketplace_ozon_product_id'
+        );
+        const explicit = ozonPidTouched ? updates.marketplace_ozon_product_id : undefined;
         if (
           explicit != null &&
           explicit !== '' &&
           Number.isFinite(Number(explicit))
         ) {
           updates.marketplace_ozon_product_id = Number(explicit);
+        } else if (ozonPidTouched) {
+          updates.marketplace_ozon_product_id = null;
         } else {
           try {
             const ozonProductId = await pricesService.getOzonProductIdByOfferId(updates.marketplace_skus.ozon);

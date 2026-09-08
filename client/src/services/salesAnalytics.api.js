@@ -92,4 +92,9 @@ export const salesAnalyticsApi = {
     const r = await api.get(`/sales-analytics/card-work${qs ? `?${qs}` : ''}`);
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  getCardWorkDuplicates: async () => {
+    const r = await api.get('/sales-analytics/card-work/duplicates');
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
 };

@@ -1,8 +1,9 @@
 /**
  * Очередь карточек, с которыми нужно провести работу.
+ * Данные из уже загруженных отчётов (ночь / вручную) — показываем сразу при открытии.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
@@ -11,6 +12,7 @@ import { productCardPath } from '../../../utils/productCardPath.js';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
+import { DuplicateFixModal } from './DuplicateFixModal';
 import '../SalesAnalytics/SalesAnalytics.css';
 import '../ProductDynamics/ProductDynamics.css';
 import './CardWork.css';
@@ -52,28 +54,6 @@ function formatQty(n) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number(n));
 }
 
-function cellMatches(value, group) {
-  const v = String(value || '').trim().toLowerCase();
-  if (!v) return false;
-  if (v === String(group?.value || '').trim().toLowerCase()) return true;
-  return (group?.sameFields || []).some((s) => {
-    const sv = String(s.value || '').trim().toLowerCase();
-    if (!sv) return false;
-    if (sv === v) return true;
-    return sv.split(',').map((x) => x.trim().toLowerCase()).includes(v);
-  });
-}
-
-function DupCell({ value, group }) {
-  const text = value || '—';
-  const match = value && cellMatches(value, group);
-  return (
-    <td className={match ? 'card-work__dup-match' : undefined} title={match ? 'Совпадает с другими карточками группы' : undefined}>
-      {text}
-    </td>
-  );
-}
-
 function uniqueByCode(reasons) {
   const out = [];
   const seen = new Set();
@@ -94,12 +74,16 @@ export function CardWork() {
   const [marketplace, setMarketplace] = useState('all');
   const [scheme, setScheme] = useState('all');
   const [reason, setReason] = useState('all');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [dupLoading, setDupLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [dupError, setDupError] = useState(null);
   const [data, setData] = useState(null);
+  const [duplicates, setDuplicates] = useState(null);
+  const [fixTarget, setFixTarget] = useState(null);
   const { sort, toggleSort } = useTableSort('severity', 'asc');
 
-  const load = useCallback(async () => {
+  const loadQueue = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -118,6 +102,32 @@ export function CardWork() {
     }
   }, [dateFrom, dateTo, marketplace, scheme]);
 
+  const loadDuplicates = useCallback(async () => {
+    setDupLoading(true);
+    setDupError(null);
+    try {
+      const res = await salesAnalyticsApi.getCardWorkDuplicates();
+      setDuplicates(res?.data ?? null);
+    } catch (e) {
+      setDupError(e?.response?.data?.message || e?.message || 'Не удалось загрузить дубли');
+      setDuplicates(null);
+    } finally {
+      setDupLoading(false);
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    await Promise.all([loadQueue(), loadDuplicates()]);
+  }, [loadQueue, loadDuplicates]);
+
+  useEffect(() => {
+    loadQueue();
+  }, [loadQueue]);
+
+  useEffect(() => {
+    loadDuplicates();
+  }, [loadDuplicates]);
+
   const items = useMemo(() => {
     const list = Array.isArray(data?.items) ? data.items : [];
     if (reason === 'duplicate') return [];
@@ -126,8 +136,9 @@ export function CardWork() {
     return sortRows(filtered, sort, SORT_GETTERS);
   }, [data, reason, sort]);
   const summary = data?.summary || {};
-  const duplicateGroups = data?.duplicates?.groups || [];
+  const duplicateGroups = duplicates?.groups || [];
   const showDuplicates = reason === 'duplicate';
+  const anyLoading = loading || dupLoading;
 
   return (
     <div className="sales-analytics card-work">
@@ -135,7 +146,7 @@ export function CardWork() {
         iconClass="pe-7s-note2"
         iconBgClass="bg-mean-fruit"
         title="Работа с карточками"
-        subtitle="Карточки, с которыми нужно провести работу: оборачиваемость, остаток, качество, размеры и дубли артикулов / штрихкодов"
+        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить данные"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -167,9 +178,12 @@ export function CardWork() {
             ))}
           </select>
         </label>
-        <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
+        <Button variant="primary" size="small" onClick={load} disabled={anyLoading}>
+          {anyLoading ? 'Загрузка…' : 'Загрузить'}
         </Button>
+        {loading && data != null ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
       </div>
 
       <div className="product-dynamics__controls-row">
@@ -189,134 +203,145 @@ export function CardWork() {
       </div>
 
       {error && <div className="sales-analytics__error">{error}</div>}
+      {dupError && showDuplicates ? <div className="sales-analytics__error">{dupError}</div> : null}
 
-      {data && (
-        <div className="product-dynamics__summary-cards">
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Карточек к работе</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.cardsCount)}</div>
-          </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Низкая оборачиваемость</div>
-            <div className="product-dynamics__summary-card-value">
-              {formatQty(summary.lowTurnoverCount ?? summary.overstockCount)}
-            </div>
-          </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Нет остатка</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.stockoutCount)}</div>
-          </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Качество</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.lowContentRatingCount)}</div>
-          </div>
-          <div className="product-dynamics__summary-card">
-            <div className="product-dynamics__summary-card-label">Размеры</div>
-            <div className="product-dynamics__summary-card-value">{formatQty(summary.dimMismatchCount)}</div>
-          </div>
-          <div
-            className={`product-dynamics__summary-card${reason === 'duplicate' ? ' is-active' : ''}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => setReason('duplicate')}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setReason('duplicate');
-              }
-            }}
-          >
-            <div className="product-dynamics__summary-card-label">Дубли</div>
-            <div className="product-dynamics__summary-card-value">
-              {formatQty(summary.duplicateProductsCount ?? summary.duplicateGroupsCount)}
-            </div>
+      <div className="product-dynamics__summary-cards">
+        <div className="product-dynamics__summary-card">
+          <div className="product-dynamics__summary-card-label">Карточек к работе</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.cardsCount)}
           </div>
         </div>
-      )}
+        <div className="product-dynamics__summary-card">
+          <div className="product-dynamics__summary-card-label">Низкая оборачиваемость</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null
+              ? '…'
+              : formatQty(summary.lowTurnoverCount ?? summary.overstockCount)}
+          </div>
+        </div>
+        <div className="product-dynamics__summary-card">
+          <div className="product-dynamics__summary-card-label">Нет остатка</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.stockoutCount)}
+          </div>
+        </div>
+        <div className="product-dynamics__summary-card">
+          <div className="product-dynamics__summary-card-label">Качество</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.lowContentRatingCount)}
+          </div>
+        </div>
+        <div className="product-dynamics__summary-card">
+          <div className="product-dynamics__summary-card-label">Размеры</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.dimMismatchCount)}
+          </div>
+        </div>
+        <div
+          className={`product-dynamics__summary-card${reason === 'duplicate' ? ' is-active' : ''}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => setReason('duplicate')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setReason('duplicate');
+            }
+          }}
+        >
+          <div className="product-dynamics__summary-card-label">Дубли</div>
+          <div className="product-dynamics__summary-card-value">
+            {dupLoading && duplicates == null
+              ? '…'
+              : formatQty(duplicates?.productCount ?? duplicateGroups.length)}
+          </div>
+        </div>
+      </div>
 
       {!showDuplicates ? (
-      <div className="sales-analytics__table-wrap" style={{ marginTop: 16 }}>
-        <table className="sales-analytics__table">
-          <thead>
-            <tr>
-              <SortableTh sortKey="article" sort={sort} onSort={toggleSort}>
-                Артикул
-              </SortableTh>
-              <SortableTh sortKey="productName" sort={sort} onSort={toggleSort}>
-                Карточка
-              </SortableTh>
-              <SortableTh sortKey="marketplace" sort={sort} onSort={toggleSort}>
-                Маркетплейс
-              </SortableTh>
-              <SortableTh sortKey="primary" sort={sort} onSort={toggleSort}>
-                Что сделать
-              </SortableTh>
-              <SortableTh sortKey="soldQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Продано, шт
-              </SortableTh>
-              <SortableTh sortKey="stockQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Остаток на МП
-              </SortableTh>
-            </tr>
-          </thead>
-          <tbody>
-            {!loading && data != null && items.length === 0 && (
+        <div className="sales-analytics__table-wrap" style={{ marginTop: 16 }}>
+          <table className="sales-analytics__table">
+            <thead>
               <tr>
-                <td colSpan={6} className="sales-analytics__empty">
-                  Нет карточек, требующих работы, по выбранным фильтрам.
-                </td>
+                <SortableTh sortKey="article" sort={sort} onSort={toggleSort}>
+                  Артикул
+                </SortableTh>
+                <SortableTh sortKey="productName" sort={sort} onSort={toggleSort}>
+                  Карточка
+                </SortableTh>
+                <SortableTh sortKey="marketplace" sort={sort} onSort={toggleSort}>
+                  Маркетплейс
+                </SortableTh>
+                <SortableTh sortKey="primary" sort={sort} onSort={toggleSort}>
+                  Что сделать
+                </SortableTh>
+                <SortableTh sortKey="soldQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                  Продано, шт
+                </SortableTh>
+                <SortableTh sortKey="stockQty" sort={sort} onSort={toggleSort} className="sales-analytics__num">
+                  Остаток на МП
+                </SortableTh>
               </tr>
-            )}
-            {data == null && !loading && (
-              <tr>
-                <td colSpan={6} className="sales-analytics__empty">
-                  Выберите период и нажмите «Показать».
-                </td>
-              </tr>
-            )}
-            {items.map((row) => (
-              <tr
-                key={`${row.productId || 'x'}-${row.sku}-${row.marketplace || 'mp'}`}
-                className={row.severity === 'high' ? 'card-work__severity-high' : undefined}
-              >
-                <td>
-                  {row.productId ? (
-                    <Link className="card-work__link" to={`/products/${row.productId}`}>
-                      {row.erpSku || row.sku || '—'}
-                    </Link>
-                  ) : (
-                    <strong>{row.erpSku || row.sku || '—'}</strong>
-                  )}
-                </td>
-                <td>
-                  {row.productId ? (
-                    <Link className="card-work__link" to={`/products/${row.productId}`}>
-                      {row.productName || '—'}
-                    </Link>
-                  ) : (
-                    row.productName || '—'
-                  )}
-                </td>
-                <td>{row.marketplaceLabel || row.marketplace || '—'}</td>
-                <td>
-                  {uniqueByCode(row.reasons).map((r) => (
-                    <span key={r.code} className={`card-work__reason card-work__reason--${r.code}`}>
-                      {r.label}
-                    </span>
-                  ))}
-                  {uniqueByCode(row.reasons).map((r) => (
-                    <p key={`${r.code}-h`} className="card-work__hint">
-                      {r.hint}
-                    </p>
-                  ))}
-                </td>
-                <td className="sales-analytics__num">{formatQty(row.soldQty)}</td>
-                <td className="sales-analytics__num">{formatQty(row.stockQty)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {!loading && data != null && items.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="sales-analytics__empty">
+                    Нет карточек, требующих работы, по выбранным фильтрам.
+                  </td>
+                </tr>
+              )}
+              {loading && data == null && (
+                <tr>
+                  <td colSpan={6} className="sales-analytics__empty">
+                    Загрузка…
+                  </td>
+                </tr>
+              )}
+              {items.map((row) => (
+                <tr
+                  key={`${row.productId || 'x'}-${row.sku}-${row.marketplace || 'mp'}`}
+                  className={row.severity === 'high' ? 'card-work__severity-high' : undefined}
+                >
+                  <td>
+                    {row.productId ? (
+                      <Link className="card-work__link" to={`/products/${row.productId}`}>
+                        {row.erpSku || row.sku || '—'}
+                      </Link>
+                    ) : (
+                      <strong>{row.erpSku || row.sku || '—'}</strong>
+                    )}
+                  </td>
+                  <td>
+                    {row.productId ? (
+                      <Link className="card-work__link" to={`/products/${row.productId}`}>
+                        {row.productName || '—'}
+                      </Link>
+                    ) : (
+                      row.productName || '—'
+                    )}
+                  </td>
+                  <td>{row.marketplaceLabel || row.marketplace || '—'}</td>
+                  <td>
+                    {uniqueByCode(row.reasons).map((r) => (
+                      <span key={r.code} className={`card-work__reason card-work__reason--${r.code}`}>
+                        {r.label}
+                      </span>
+                    ))}
+                    {uniqueByCode(row.reasons).map((r) => (
+                      <p key={`${r.code}-h`} className="card-work__hint">
+                        {r.hint}
+                      </p>
+                    ))}
+                  </td>
+                  <td className="sales-analytics__num">{formatQty(row.soldQty)}</td>
+                  <td className="sales-analytics__num">{formatQty(row.stockQty)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
 
       {showDuplicates ? (
@@ -325,12 +350,13 @@ export function CardWork() {
             Дубли артикулов, артикулов продавца и штрихкодов
           </h2>
           <p className="card-work__section-lead">
-            Сравниваем только однотипные поля: артикул ERP с ERP, артикул продавца с артикулом продавца,
-            артикул производителя с артикулом производителя, штрихкод со штрихкодом (без учёта регистра и
-            пробелов по краям). Разные типы между собой не смешиваем. Период продаж на этот список не влияет.
+            Сравниваем только однотипные идентификаторы: артикул ERP с ERP, артикул продавца с артикулом
+            продавца, артикул производителя с артикулом производителя, штрихкод со штрихкодом. Бренд и
+            название не сверяем. Совпавшие поля перечисляем один раз на группу — отдельно артикул продавца,
+            производителя, штрихкод и т.д. Период продаж на этот список не влияет.
           </p>
-          {data == null && !loading ? (
-            <p className="sales-analytics__empty">Нажмите «Показать», чтобы загрузить дубли.</p>
+          {dupLoading && duplicates == null ? (
+            <p className="sales-analytics__empty">Загрузка дублей…</p>
           ) : !duplicateGroups.length ? (
             <p className="sales-analytics__empty">Совпадений идентификаторов не найдено.</p>
           ) : (
@@ -346,59 +372,66 @@ export function CardWork() {
                     ))}
                     <span className="card-work__dup-count">{group.products?.length || 0} шт.</span>
                   </div>
-                  {(group.sameFields || []).length ? (
-                    <p className="card-work__dup-same">
-                      Ещё одинаково:{' '}
-                      {(group.sameFields || []).map((s) => (
-                        <span key={`${s.label}:${s.value}`} className="card-work__reason card-work__reason--same">
-                          {s.label}: {s.value}
-                        </span>
-                      ))}
-                    </p>
-                  ) : null}
                   <table className="sales-analytics__table card-work__dup-table">
                     <thead>
                       <tr>
                         <th>Артикул ERP</th>
                         <th>Карточка</th>
                         <th>Где совпало</th>
-                        <th>Бренд</th>
-                        <th>Ozon</th>
-                        <th>WB</th>
-                        <th>Я.Маркет</th>
-                        <th>Штрихкоды</th>
+                        <th className="card-work__dup-actions-col" />
                       </tr>
                     </thead>
                     <tbody>
-                      {(group.products || []).map((p) => (
+                      {(group.products || []).map((p, idx) => (
                         <tr key={`${group.value}-${p.productId}`}>
-                          <td className={cellMatches(p.sku, group) ? 'card-work__dup-match' : undefined}>
+                          <td>
                             <Link className="card-work__link" to={productCardPath(p.productId)}>
                               {p.sku || '—'}
                             </Link>
                           </td>
-                          <td className={cellMatches(p.productName, group) ? 'card-work__dup-match' : undefined}>
+                          <td>
                             <Link className="card-work__link" to={productCardPath(p.productId)}>
                               {p.productName || '—'}
                             </Link>
                           </td>
-                          <td>{(p.roles || []).join(', ') || '—'}</td>
-                          <DupCell value={p.brand} group={group} />
-                          <DupCell value={p.skuOzon} group={group} />
-                          <DupCell value={p.skuWb} group={group} />
-                          <DupCell value={p.skuYm} group={group} />
-                          <td>
-                            {(p.barcodes || []).length
-                              ? (p.barcodes || []).map((bc) => (
-                                  <span
-                                    key={bc}
-                                    className={cellMatches(bc, group) ? 'card-work__dup-bc card-work__dup-bc--match' : 'card-work__dup-bc'}
-                                  >
-                                    {bc}
-                                  </span>
-                                ))
-                              : '—'}
-                          </td>
+                          {idx === 0 ? (
+                            <td
+                              className="card-work__dup-match-cell"
+                              rowSpan={Math.max(group.products?.length || 1, 1)}
+                            >
+                              {(group.matchedFields || []).length ? (
+                                <div className="card-work__dup-same card-work__dup-same--cell">
+                                  {(group.matchedFields || []).map((f) => (
+                                    <span
+                                      key={`${f.label}:${f.value}`}
+                                      className="card-work__reason card-work__reason--same"
+                                    >
+                                      {f.label}: {f.value}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="card-work__dup-match-fallback">
+                                  {(group.kindLabels || []).join(', ') || '—'}
+                                  {group.value ? `: ${group.value}` : ''}
+                                </span>
+                              )}
+                            </td>
+                          ) : null}
+                          {idx === 0 ? (
+                            <td
+                              className="card-work__dup-actions-col"
+                              rowSpan={Math.max(group.products?.length || 1, 1)}
+                            >
+                              <Button
+                                variant="secondary"
+                                size="small"
+                                onClick={() => setFixTarget(group)}
+                              >
+                                Исправить
+                              </Button>
+                            </td>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>
@@ -410,6 +443,13 @@ export function CardWork() {
         </section>
       ) : null}
 
+      <DuplicateFixModal
+        isOpen={!!fixTarget}
+        group={fixTarget}
+        onClose={() => setFixTarget(null)}
+        onSaved={loadDuplicates}
+      />
+
       <p className="sales-analytics__hint">
         Каждая строка — один маркетплейс: продажи и остаток не суммируются между Ozon / WB / Яндекс.
         Низкая оборачиваемость — запас больше 45 дней или продаж нет при остатке на МП.
@@ -419,8 +459,9 @@ export function CardWork() {
         и ночью. Размеры — габариты упаковки на маркетплейсе не совпадают с вкладкой «Основное» (пустые значения
         не считаются расхождением; для WB и Яндекс.Маркета сравнение в сантиметрах).
         Дубли — несколько карточек с одинаковым полем одного типа (ERP↔ERP, артикул продавца↔продавца,
-        артикул производителя↔производителя, ШК↔ШК). Разные типы не склеиваем.
-        Клик по артикулу открывает карточку товара.
+        артикул производителя↔производителя, ШК↔ШК). Разные типы не склеиваем. Список дублей не зависит от периода.
+        «Исправить» у группы открывает одну форму по совпавшим полям всех карточек. Клик по артикулу открывает
+        карточку товара.
       </p>
     </div>
   );

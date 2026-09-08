@@ -96,3 +96,9 @@ export async function getCardWork(req, res) {
   });
   return res.json({ ok: true, data });
 }
+
+export async function getCardWorkDuplicates(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const data = await marketplaceCardWorkService.getDuplicates({ profileId });
+  return res.json({ ok: true, data });
+}
