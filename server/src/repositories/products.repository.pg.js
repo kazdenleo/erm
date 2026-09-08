@@ -965,7 +965,100 @@ function buildFindAllFilters(options = {}) {
   return { whereSql, params, paramIndex };
 }
 
+function parseStoredCost(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return !Number.isNaN(n) ? n : null;
+}
+
+function resolveCatalogCost(costFromDb, costFromSuppliers, { isKit = false, allowSupplierCost = true } = {}) {
+  if (costFromDb != null) return costFromDb;
+  if (!isKit && allowSupplierCost && costFromSuppliers != null && !Number.isNaN(Number(costFromSuppliers))) {
+    return Number(costFromSuppliers);
+  }
+  return null;
+}
+
 class ProductsRepositoryPG {
+  /**
+   * Цена поставщика может подставляться в себестоимость только если у аккаунта включена интеграция.
+   */
+  async _allowSupplierCostByProduct(products, options = {}) {
+    if (options.supplierSyncEnabled === false) {
+      return () => false;
+    }
+    if (options.supplierSyncEnabled === true) {
+      return () => true;
+    }
+    const ids = [
+      ...new Set(
+        (products || [])
+          .map((p) => p.profile_id ?? p.profileId)
+          .filter((id) => id != null && id !== '')
+          .map((id) => String(id))
+      ),
+    ];
+    const allowed = new Map();
+    if (ids.length) {
+      const { isProfileSupplierSyncEnabled } = await import('../utils/profileSupplierSync.js');
+      const res = await query(
+        `SELECT id, supplier_sync_enabled FROM profiles WHERE id = ANY($1::bigint[])`,
+        [ids.map((id) => Number(id)).filter((n) => Number.isFinite(n))]
+      );
+      for (const row of res.rows || []) {
+        allowed.set(String(row.id), isProfileSupplierSyncEnabled(row));
+      }
+    }
+    return (product) => {
+      const pid = product?.profile_id ?? product?.profileId;
+      if (pid == null || pid === '') return true;
+      return allowed.get(String(pid)) !== false;
+    };
+  }
+  /**
+   * Себестоимость 1 шт комплектующего — только карточка (products.cost), без прайса поставщиков.
+   */
+  _unitCostFromKitRow(row) {
+    const card = parseFloat(row.card_cost);
+    if (Number.isFinite(card) && card > 0) return card;
+    return null;
+  }
+
+  _sumKitCostFromRows(rows) {
+    if (!rows || rows.length === 0) return null;
+    const parts = rows.map((row) => ({
+      qty: Math.max(0, parseInt(row.quantity, 10) || 0),
+      unit: this._unitCostFromKitRow(row),
+    }));
+    const known = parts.map((p) => p.unit).filter((u) => u != null);
+    // Нет цены у комплектующего (часто пара L/R) — берём известную из состава, не 0.
+    const fallback = known.length ? Math.max(...known) : null;
+    let total = 0;
+    let any = false;
+    for (const p of parts) {
+      const unit = p.unit != null ? p.unit : fallback;
+      if (unit == null || !(p.qty > 0)) continue;
+      total += unit * p.qty;
+      any = true;
+    }
+    if (!any) return null;
+    return Math.round(total * 100) / 100;
+  }
+
+  async _loadKitComponentCostRows(runQuery, kitProductId) {
+    const id = typeof kitProductId === 'string' ? parseInt(kitProductId, 10) : Number(kitProductId);
+    if (!id || isNaN(id)) return [];
+    const res = await runQuery(
+      `SELECT kc.component_product_id, kc.quantity,
+              p.cost::numeric AS card_cost
+       FROM kit_components kc
+       JOIN products p ON p.id = kc.component_product_id
+       WHERE kc.kit_product_id = $1`,
+      [id]
+    );
+    return res.rows || [];
+  }
+
   /**
    * Рассчитать себестоимость комплекта как сумму (себестоимость комплектующего × количество).
    * @param {object} client - клиент транзакции
@@ -973,44 +1066,16 @@ class ProductsRepositoryPG {
    * @returns {number|null} - сумма или null если нет комплектующих
    */
   async _computeKitCost(client, kitProductId) {
-    const id = typeof kitProductId === 'string' ? parseInt(kitProductId, 10) : Number(kitProductId);
-    if (!id || isNaN(id)) return null;
-    const res = await client.query(
-      `SELECT kc.component_product_id, kc.quantity, COALESCE(p.cost, 0)::numeric as cost
-       FROM kit_components kc
-       JOIN products p ON p.id = kc.component_product_id
-       WHERE kc.kit_product_id = $1`,
-      [id]
-    );
-    if (!res.rows || res.rows.length === 0) return null;
-    const total = res.rows.reduce((sum, row) => {
-      const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
-      const cost = parseFloat(row.cost) || 0;
-      return sum + cost * qty;
-    }, 0);
-    return Math.round(total * 100) / 100;
+    const rows = await this._loadKitComponentCostRows((sql, params) => client.query(sql, params), kitProductId);
+    return this._sumKitCostFromRows(rows);
   }
 
   /**
    * То же что _computeKitCost, но через query() — для вызова вне транзакции (например после updateCostFromSupplierStocks).
    */
   async _computeKitCostWithQuery(kitProductId) {
-    const id = typeof kitProductId === 'string' ? parseInt(kitProductId, 10) : Number(kitProductId);
-    if (!id || isNaN(id)) return null;
-    const res = await query(
-      `SELECT kc.component_product_id, kc.quantity, COALESCE(p.cost, 0)::numeric as cost
-       FROM kit_components kc
-       JOIN products p ON p.id = kc.component_product_id
-       WHERE kc.kit_product_id = $1`,
-      [id]
-    );
-    if (!res.rows || res.rows.length === 0) return null;
-    const total = res.rows.reduce((sum, row) => {
-      const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
-      const cost = parseFloat(row.cost) || 0;
-      return sum + cost * qty;
-    }, 0);
-    return Math.round(total * 100) / 100;
+    const rows = await this._loadKitComponentCostRows(query, kitProductId);
+    return this._sumKitCostFromRows(rows);
   }
 
   /**
@@ -1677,6 +1742,8 @@ class ProductsRepositoryPG {
         };
       });
 
+      const allowSupplierCost = await this._allowSupplierCostByProduct(products, options);
+
       products.forEach(product => {
         const skus = skusByProduct[String(product.id)] || {};
         product.sku_ozon = skus.ozon ?? null;
@@ -1702,7 +1769,7 @@ class ProductsRepositoryPG {
         }
         // Гарантируем наличие поля cost из БД (на случай если колонка добавлена позже или пришла как строка)
         if (product.cost === undefined) product.cost = null;
-        const costFromDb = product.cost != null && !isNaN(Number(product.cost)) ? Number(product.cost) : null;
+        const costFromDb = parseStoredCost(product.cost);
 
         // Добавляем остатки и себестоимость
         // product.quantity = остаток на нашем складе (из БД). supplierStockTotal = сумма остатков у поставщиков.
@@ -1721,14 +1788,10 @@ class ProductsRepositoryPG {
           product.supplier_min_cost = costFromSuppliers;
           product.avg_cost = stockData.avgCost;
           product.max_cost = stockData.maxCost;
-          // Канон — products.cost (ручное сохранение). Цена поставщика только как fallback, без записи в БД.
-          if (costFromDb !== null) {
-            product.cost = costFromDb;
-          } else if (!isKit && costFromSuppliers !== null) {
-            product.cost = costFromSuppliers;
-          } else {
-            product.cost = null;
-          }
+          product.cost = resolveCatalogCost(costFromDb, costFromSuppliers, {
+            isKit,
+            allowSupplierCost: allowSupplierCost(product),
+          });
         } else {
           product.supplierStockTotal = 0;
           product.cost = costFromDb;
@@ -1936,7 +1999,7 @@ class ProductsRepositoryPG {
         try {
           const kitRes = await query(
             `SELECT kc.kit_product_id, kc.component_product_id, kc.quantity,
-                    p.sku AS component_sku, p.name AS component_name
+                    p.sku AS component_sku, p.name AS component_name, p.cost AS component_cost
              FROM kit_components kc
              LEFT JOIN products p ON p.id = kc.component_product_id
              WHERE kc.kit_product_id = ANY($1::bigint[])`,
@@ -1952,6 +2015,7 @@ class ProductsRepositoryPG {
               quantity: r.quantity,
               component_sku: r.component_sku,
               product_name: r.component_name,
+              cost: r.component_cost != null ? Number(r.component_cost) : null,
             });
           }
           for (const p of products) {
@@ -2158,8 +2222,9 @@ class ProductsRepositoryPG {
     );
     
     if (product.cost === undefined) product.cost = null;
-    const costFromDb = product.cost != null && !isNaN(Number(product.cost)) ? Number(product.cost) : null;
+    const costFromDb = parseStoredCost(product.cost);
     const isKit = product.product_type === 'kit';
+    const allowSupplierCostFn = await this._allowSupplierCostByProduct([product]);
 
     if (stocksResult.rows.length > 0) {
       const stockData = stocksResult.rows[0];
@@ -2170,14 +2235,10 @@ class ProductsRepositoryPG {
       product.supplier_min_cost = costFromSuppliers;
       product.avg_cost = stockData.avg_cost != null ? parseFloat(stockData.avg_cost) : null;
       product.max_cost = stockData.max_cost != null ? parseFloat(stockData.max_cost) : null;
-      // Не перезаписываем ручную себестоимость ценой поставщика при чтении карточки.
-      if (costFromDb !== null) {
-        product.cost = costFromDb;
-      } else if (!isKit && costFromSuppliers !== null) {
-        product.cost = costFromSuppliers;
-      } else {
-        product.cost = null;
-      }
+      product.cost = resolveCatalogCost(costFromDb, costFromSuppliers, {
+        isKit,
+        allowSupplierCost: allowSupplierCostFn(product),
+      });
     } else {
       product.cost = costFromDb;
     }
@@ -2771,7 +2832,7 @@ class ProductsRepositoryPG {
     if (product.product_type === 'kit') {
       try {
         const kitResult = await query(
-          `SELECT kc.component_product_id, kc.quantity, p.sku as component_sku, p.name as component_name
+          `SELECT kc.component_product_id, kc.quantity, p.sku as component_sku, p.name as component_name, p.cost as component_cost
            FROM kit_components kc
            LEFT JOIN products p ON p.id = kc.component_product_id
            WHERE kc.kit_product_id = $1`,
@@ -2781,7 +2842,8 @@ class ProductsRepositoryPG {
           productId: r.component_product_id,
           quantity: r.quantity,
           component_sku: r.component_sku,
-          product_name: r.component_name
+          product_name: r.component_name,
+          cost: r.component_cost != null ? Number(r.component_cost) : null,
         }));
       } catch (err) {
         if (err.message && !err.message.includes('kit_components')) {
@@ -3600,7 +3662,10 @@ class ProductsRepositoryPG {
    */
   async updateCostFromSupplierStocks(productId) {
     const numId = typeof productId === 'string' ? parseInt(productId, 10) : productId;
-    const productRow = await query('SELECT product_type, cost FROM products WHERE id = $1', [numId]);
+    const productRow = await query(
+      'SELECT product_type, cost, profile_id FROM products WHERE id = $1',
+      [numId]
+    );
     if (productRow.rows.length > 0 && productRow.rows[0].product_type === 'kit') {
       return null; // себестоимость комплекта считается по комплектующим
     }
@@ -3611,6 +3676,10 @@ class ProductsRepositoryPG {
         : null;
     if (existingCost != null) {
       return existingCost;
+    }
+    const allowSupplierCost = await this._allowSupplierCostByProduct(productRow.rows || []);
+    if (!allowSupplierCost(productRow.rows[0] || {})) {
+      return null;
     }
     // Сначала проверяем, есть ли вообще записи в supplier_stocks для этого товара
     const checkResult = await query(
