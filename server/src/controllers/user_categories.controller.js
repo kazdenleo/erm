@@ -9,6 +9,7 @@ import integrationsService from '../services/integrations.service.js';
 import categoryMarketplaceCommissionsService from '../services/categoryMarketplaceCommissions.service.js';
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { productAttributeListFilter } from '../utils/productAttributeTenant.js';
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
 import { normalizeCategoryDedicatedCharcLinks, serializeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
@@ -36,6 +37,20 @@ function normalizeSkipMarketplaceStockSync(body) {
   }
   const v = body.skip_marketplace_stock_sync ?? body.skipMarketplaceStockSync;
   return v === true || v === 'true' || v === 1 || v === '1';
+}
+
+async function filterUsableAttributeIds(ids, profileId) {
+  const nums = (Array.isArray(ids) ? ids : [])
+    .map((aid) => (typeof aid === 'number' ? aid : parseInt(aid, 10)))
+    .filter((n) => n && !Number.isNaN(n));
+  if (!nums.length) return [];
+  const filter = productAttributeListFilter(profileId, 2);
+  const r = await query(
+    `SELECT id FROM product_attributes WHERE id = ANY($1::bigint[]) AND ${filter.sql}`,
+    [nums, ...filter.params]
+  );
+  const ok = new Set((r.rows || []).map((row) => Number(row.id)));
+  return nums.filter((id) => ok.has(id));
 }
 
 function readTnVedCodeFromBody(body) {
@@ -393,15 +408,12 @@ class UserCategoriesController {
       );
       
       const category = result.rows[0];
-      const ids = Array.isArray(attribute_ids) ? attribute_ids : [];
+      const ids = await filterUsableAttributeIds(attribute_ids, tid);
       const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
       const savedIds = [];
-      for (const aid of ids) {
-        const numId = typeof aid === 'number' ? aid : parseInt(aid, 10);
-        if (numId && !isNaN(numId)) {
-          await upsertCategoryAttributeLinks(category.id, numId, incomingLinks[String(numId)] || {});
-          savedIds.push(numId);
-        }
+      for (const numId of ids) {
+        await upsertCategoryAttributeLinks(category.id, numId, incomingLinks[String(numId)] || {});
+        savedIds.push(numId);
       }
       category.attribute_ids = savedIds;
       category.attribute_mp_links = incomingLinks;
@@ -523,15 +535,12 @@ class UserCategoriesController {
         );
         const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
         await query('DELETE FROM category_attributes WHERE user_category_id = $1', [id]);
-        const ids = Array.isArray(attribute_ids) ? attribute_ids : [];
-        for (const aid of ids) {
-          const numId = typeof aid === 'number' ? aid : parseInt(aid, 10);
-          if (numId && !isNaN(numId)) {
-            const links = Object.prototype.hasOwnProperty.call(incomingLinks, String(numId))
-              ? incomingLinks[String(numId)]
-              : (prev.get(String(numId)) || {});
-            await upsertCategoryAttributeLinks(id, numId, links);
-          }
+        const ids = await filterUsableAttributeIds(attribute_ids, tid);
+        for (const numId of ids) {
+          const links = Object.prototype.hasOwnProperty.call(incomingLinks, String(numId))
+            ? incomingLinks[String(numId)]
+            : (prev.get(String(numId)) || {});
+          await upsertCategoryAttributeLinks(id, numId, links);
         }
       } else if (attribute_mp_links !== undefined) {
         const incomingLinks = normalizeAttributeMpLinksMap(attribute_mp_links);
@@ -587,8 +596,8 @@ class UserCategoriesController {
       if (!numAttrId || Number.isNaN(numAttrId)) {
         return res.status(400).json({ ok: false, message: 'Некорректный атрибут' });
       }
-      const attrCheck = await query('SELECT id FROM product_attributes WHERE id = $1', [numAttrId]);
-      if (attrCheck.rows.length === 0) {
+      const allowed = await filterUsableAttributeIds([numAttrId], tid);
+      if (!allowed.length) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
       }
       const body = req.body && typeof req.body === 'object' ? req.body : {};

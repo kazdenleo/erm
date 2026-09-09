@@ -16,6 +16,10 @@ import {
   isSystemCardAttrKey,
   isSystemMainFieldAttrKey,
 } from '../utils/systemMainFieldAttributes.js';
+import {
+  isSystemProductAttribute,
+  productAttributeListFilter,
+} from '../utils/productAttributeTenant.js';
 
 const VALID_TYPES = [
   'text',
@@ -40,14 +44,14 @@ class ProductAttributesController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(200).json({ ok: true, data: [] });
       }
-      // Таблица product_attributes — общий справочник (без profile_id). Разделение по аккаунтам — в
-      // product_attribute_values через products.profile_id. Старый фильтр «только уже используемые у
-      // этого профиля» скрывал только что созданные атрибуты до привязки к категории/товару.
+      const filter = productAttributeListFilter(tid);
       const result = await query(
         `SELECT * FROM product_attributes
+         WHERE ${filter.sql}
          ORDER BY
            CASE WHEN system_key IS NULL OR btrim(system_key) = '' THEN 1 ELSE 0 END,
-           name`
+           name`,
+        filter.params
       );
       return res.status(200).json({ ok: true, data: result.rows || [] });
     } catch (error) {
@@ -57,10 +61,15 @@ class ProductAttributesController {
 
   async getById(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
+      }
       const { id } = req.params;
+      const filter = productAttributeListFilter(tid, 2);
       const result = await query(
-        'SELECT * FROM product_attributes WHERE id = $1',
-        [id]
+        `SELECT * FROM product_attributes WHERE id = $1 AND ${filter.sql}`,
+        [id, ...filter.params]
       );
       if (result.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
@@ -73,6 +82,10 @@ class ProductAttributesController {
 
   async create(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled } = req.body;
       if (!name || !type) {
         return res.status(400).json({ ok: false, message: 'Название и тип атрибута обязательны' });
@@ -92,10 +105,10 @@ class ProductAttributesController {
       const showRelated = normalizeShowRelatedFields(type, show_related_fields);
       const aiChat = normalizeAiChatEnabled(type, ai_chat_enabled);
       const result = await query(
-        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled)
-         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7)
+        `INSERT INTO product_attributes (name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled, profile_id)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8)
          RETURNING *`,
-        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links), formulaVal, showRelated, aiChat]
+        [name.trim(), type, JSON.stringify(dictVal), JSON.stringify(links), formulaVal, showRelated, aiChat, tid]
       );
       return res.status(201).json({ ok: true, data: result.rows[0] });
     } catch (error) {
@@ -116,11 +129,17 @@ class ProductAttributesController {
 
   async update(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { id } = req.params;
       const { name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled } = req.body;
+      const filter = productAttributeListFilter(tid, 2);
       const check = await query(
-        'SELECT id, system_key, type, show_related_fields, ai_chat_enabled FROM product_attributes WHERE id = $1',
-        [id]
+        `SELECT id, system_key, type, show_related_fields, ai_chat_enabled, profile_id
+         FROM product_attributes WHERE id = $1 AND ${filter.sql}`,
+        [id, ...filter.params]
       );
       if (check.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
@@ -213,16 +232,27 @@ class ProductAttributesController {
 
   async delete(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { id } = req.params;
-      const check = await query('SELECT id, system_key FROM product_attributes WHERE id = $1', [id]);
+      const filter = productAttributeListFilter(tid, 2);
+      const check = await query(
+        `SELECT id, system_key, profile_id FROM product_attributes WHERE id = $1 AND ${filter.sql}`,
+        [id, ...filter.params]
+      );
       if (check.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
       }
-      if (isSystemCardAttrKey(check.rows[0].system_key)) {
+      if (isSystemCardAttrKey(check.rows[0].system_key) || isSystemProductAttribute(check.rows[0])) {
         return res.status(400).json({
           ok: false,
           message: 'Системный атрибут карточки нельзя удалить',
         });
+      }
+      if (tid != null && Number(check.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
       }
       const result = await query(
         'DELETE FROM product_attributes WHERE id = $1 RETURNING id',
