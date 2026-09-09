@@ -30,6 +30,7 @@ import {
   hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
+import { FboSupplyCollect } from './FboSupplyCollect.jsx';
 import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
@@ -1088,6 +1089,14 @@ export function FboSupplyDetail() {
         <button
           type="button"
           role="tab"
+          className={`fbo-detail-tab${activeTab === 'collect' ? ' active' : ''}`}
+          onClick={() => setActiveTab('collect')}
+        >
+          Этикетки
+        </button>
+        <button
+          type="button"
+          role="tab"
           className={`fbo-detail-tab${activeTab === 'packing' ? ' active' : ''}`}
           onClick={() => setActiveTab('packing')}
         >
@@ -1096,6 +1105,7 @@ export function FboSupplyDetail() {
         </button>
       </div>
 
+      {activeTab !== 'collect' ? (
       <div className="fbo-supply-item-search">
         <input
           type="search"
@@ -1120,6 +1130,29 @@ export function FboSupplyDetail() {
           </span>
         ) : null}
       </div>
+      ) : (
+      <div className="fbo-supply-item-search">
+        <input
+          type="search"
+          className="form-control form-control-sm fbo-supply-item-search__input"
+          value={itemSearchQuery}
+          onChange={(e) => setItemSearchQuery(e.target.value)}
+          placeholder="Фильтр списка этикеток: название, артикул или штрихкод"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Поиск в списке сбора этикеток"
+        />
+      </div>
+      )}
+
+      {activeTab === 'collect' ? (
+        <FboSupplyCollect
+          supplyId={id}
+          marketplace={supply?.marketplace}
+          itemSearchQuery={itemSearchQuery}
+          printHelperUrl={printHelperUrl}
+        />
+      ) : null}
 
       {activeTab === 'packing' ? (
         <FboSupplyPacking

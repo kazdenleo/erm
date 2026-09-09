@@ -155,6 +155,8 @@ function mapItemRow(row) {
     fboSupplyId: row.fbo_supply_id,
     productId: row.product_id,
     quantity: row.quantity,
+    collectedQuantity:
+      row.collected_quantity != null ? Number(row.collected_quantity) : row.collectedQuantity ?? 0,
     marketplaceQuantity: row.mp_quantity != null ? Number(row.mp_quantity) : null,
     reservedQuantity:
       row.reserved_quantity != null ? Number(row.reserved_quantity) : row.reservedQuantity ?? undefined,

@@ -80,6 +80,11 @@ router.get(
   wrapAsync(fboSuppliesController.downloadPackingExcel.bind(fboSuppliesController))
 );
 router.get('/:id/packing', wrapAsync(fboSuppliesController.getPacking.bind(fboSuppliesController)));
+router.get('/:id/collect', wrapAsync(fboSuppliesController.getCollect.bind(fboSuppliesController)));
+router.post(
+  '/:id/collect/scan',
+  wrapAsync(fboSuppliesController.collectScan.bind(fboSuppliesController))
+);
 router.post(
   '/:id/packing/ozon-cargoes/create',
   wrapAsync(fboSuppliesController.createOzonCargoUnits.bind(fboSuppliesController))

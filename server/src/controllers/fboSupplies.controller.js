@@ -9,6 +9,7 @@ import fboSuppliesService from '../services/fboSupplies.service.js';
 import fboSuppliesImportService from '../services/fboSuppliesImport.service.js';
 import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
 import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
+import fboSuppliesCollectService from '../services/fboSuppliesCollect.service.js';
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
@@ -657,6 +658,50 @@ class FboSuppliesController {
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async getCollect(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesCollectService.getCollectState(id, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 404 || e.statusCode === 503) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async collectScan(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const userId = req.user?.id ?? req.user?.userId ?? null;
+      const userName =
+        req.user?.name ||
+        [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ').trim() ||
+        req.user?.email ||
+        null;
+      const { barcode, allowOverage } = req.body || {};
+      const data = await fboSuppliesCollectService.scan(
+        id,
+        { barcode, allowOverage: allowOverage === true },
+        { profileId, userId, userName }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+          ...(e.details && typeof e.details === 'object' ? e.details : {}),
+        });
       }
       next(e);
     }

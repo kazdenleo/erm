@@ -287,6 +287,19 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  getCollect: async (id) => {
+    const response = await api.get(`/fbo-supplies/${id}/collect`);
+    return response.data?.data ?? response.data;
+  },
+
+  collectScan: async (id, { barcode, allowOverage } = {}) => {
+    const response = await api.post(`/fbo-supplies/${id}/collect/scan`, {
+      barcode,
+      ...(allowOverage === true ? { allowOverage: true } : {}),
+    });
+    return response.data?.data ?? response.data;
+  },
+
   syncOzonPlacementZones: async (id) => {
     const response = await api.post(`/fbo-supplies/${id}/sync-ozon-placement-zones`);
     return response.data?.data ?? response.data;
