@@ -5499,7 +5499,7 @@ export function ProductsBulkEdit() {
   const [filtersOpen, setFiltersOpen] = useState(() => initialBulkFilters?.filtersOpen === true);
   /** null — до первой загрузки; при выборке с «Товаров» учитываются только выбранные id */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
-  const [appliedSelectedIds] = useState(() =>
+  const [appliedSelectedIds, setAppliedSelectedIds] = useState(() =>
     Array.isArray(location.state?.selectedIds)
       ? [...new Set(location.state.selectedIds.map((x) => str(x)).filter(Boolean))]
       : []
@@ -6213,20 +6213,6 @@ export function ProductsBulkEdit() {
     return () => document.removeEventListener('click', onDocClick, true);
   }, [navigate, requestLeaveGuard]);
 
-  const handleCategoryScopeChange = (e) => {
-    const v = e.target.value;
-    if (v === CATEGORY_SCOPE_UNSET) return;
-    requestLeaveGuard(() => {
-      // смена категории — сбрасываем таблицу до новой загрузки
-      setRows([]);
-      setOriginals({});
-      setMpAttrColumnDefs([]);
-      setTotalProducts(0);
-      clearDirty();
-      applyCategoryScope(v);
-    });
-  };
-
   const clearListFilters = () => {
     setFilterOrganizationId('');
     setFilterBrandId('');
@@ -6286,7 +6272,13 @@ export function ProductsBulkEdit() {
         cacheBust: true,
       };
 
-      const selectedIds = [...new Set((appliedSelectedIds || []).map((x) => str(x)).filter(Boolean))];
+      const selectedIds = [
+        ...new Set(
+          (partial.selectedIds !== undefined ? partial.selectedIds : appliedSelectedIds || [])
+            .map((x) => str(x))
+            .filter(Boolean)
+        ),
+      ];
 
       let list = [];
       let total = 0;
@@ -6519,6 +6511,23 @@ export function ProductsBulkEdit() {
     clearChangedForPush,
     clearDirty,
   ]);
+  const loadProductsRef = useRef(loadProducts);
+  loadProductsRef.current = loadProducts;
+
+  const handleCategoryScopeChange = (e) => {
+    const v = e.target.value;
+    if (v === CATEGORY_SCOPE_UNSET) return;
+    requestLeaveGuard(() => {
+      setAppliedSelectedIds((prev) => (prev.length ? [] : prev));
+      clearDirty();
+      applyCategoryScope(v);
+      void loadProductsRef.current({
+        categoryId: v === CATEGORY_SCOPE_ALL ? CATEGORY_SCOPE_ALL : v,
+        page: 1,
+        selectedIds: [],
+      });
+    });
+  };
 
   const allocNewBulkRowId = useCallback(() => {
     newBulkRowSeqRef.current += 1;
@@ -7524,7 +7533,7 @@ export function ProductsBulkEdit() {
         )
       );
 
-      if (createResults.length > 0 || updateResults.length > 0) {
+      if (!opts?.skipTableRefresh && (createResults.length > 0 || updateResults.length > 0)) {
         setOriginals((o) => {
           const next = { ...o };
           for (const res of createResults) {
@@ -7601,9 +7610,9 @@ export function ProductsBulkEdit() {
   };
 
   const handleLeaveSaveAndContinue = async () => {
-    const result = await handleSave({ suppressPushOffer: true });
+    const result = await handleSave({ suppressPushOffer: true, skipTableRefresh: true });
+    if (result?.cancelled) return;
     if (result?.errorCount > 0) {
-      // остаёмся на странице — показать ошибки
       pendingLeaveActionRef.current = null;
       setLeavePromptOpen(false);
       return;
