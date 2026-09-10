@@ -136,6 +136,8 @@ export async function runBirthdayNotificationsForAllProfiles() {
 
       for (const recipientId of recipientSet) {
         if (!Number.isFinite(recipientId) || recipientId <= 0) continue;
+        // О своём ДР уведомление не шлём
+        if (recipientId === empId) continue;
         const id = notificationId(profileId, empId, year, recipientId);
         if (have.has(id)) {
           skippedExisting += 1;
