@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
@@ -32,6 +32,10 @@ import './Settings.css';
 
 export function Settings() {
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const settingsTab = String(searchParams.get('tab') || '').trim();
+  const showNotificationsTab =
+    settingsTab === 'notifications' || location.hash === '#notifications';
   const { isProfileAdmin, isTenantAccountAdmin, isAccountAdmin, profileId, refreshUser } = useAuth();
   const canEditAccount =
     profileId != null && (isProfileAdmin || isTenantAccountAdmin || isAccountAdmin);
@@ -92,12 +96,12 @@ export function Settings() {
   }, [loadAccount]);
 
   useEffect(() => {
-    if (location.hash !== '#notifications') return undefined;
+    if (!showNotificationsTab) return undefined;
     const t = window.setTimeout(() => {
       document.getElementById('notifications')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 80);
     return () => window.clearTimeout(t);
-  }, [location.hash, canEditAccount, loading]);
+  }, [showNotificationsTab, canEditAccount, loading]);
 
   useEffect(() => {
     if (canEditAccount) {
@@ -273,7 +277,7 @@ export function Settings() {
       <h1 className="title">Настройки</h1>
       <p className="subtitle">Общие настройки системы.</p>
 
-      {isTenantAccountAdmin && (
+      {!showNotificationsTab && isTenantAccountAdmin && (
         <section className="settings-account-section" style={{ marginBottom: 18 }}>
           <h2 className="h5">Пользователи и роли</h2>
           <p className="text-muted small mb-3">
@@ -364,11 +368,25 @@ export function Settings() {
                   </div>
                 );
               })}
+              <div className="settings-account-actions" style={{ marginTop: 8 }}>
+                <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>
+                  {saving ? 'Сохранение…' : 'Сохранить'}
+                </Button>
+              </div>
             </div>
           )}
         </section>
+      ) : showNotificationsTab ? (
+        <section id="notifications" className="settings-account-section" style={{ marginBottom: 18 }}>
+          <h2 className="h5">Уведомления</h2>
+          <p className="text-muted small mb-0">
+            Настраивать получателей уведомлений может только администратор аккаунта. Свои уведомления
+            смотрите в колокольчике → «Уведомления».
+          </p>
+        </section>
       ) : null}
 
+      {!showNotificationsTab ? (
       <section className="settings-account-section" style={{ marginBottom: 18 }}>
         <h2 className="h5">Звуки</h2>
         <p className="text-muted small mb-3">
@@ -505,8 +523,9 @@ export function Settings() {
           );
         })}
       </section>
+      ) : null}
 
-      {canEditAccount && (
+      {canEditAccount && !showNotificationsTab && (
         <section className="settings-account-section">
           <h2 className="h5">Аккаунт</h2>
           <p className="text-muted small mb-3">

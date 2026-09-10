@@ -141,7 +141,13 @@ const menuItems = [
     iconClass: 'pe-7s-config',
     children: [
       { path: '/settings', label: 'Общие', iconClass: 'pe-7s-note', sectionKey: 'settings_general' },
-      { path: '/settings#notifications', label: 'Уведомления', iconClass: 'pe-7s-bell', sectionKey: 'settings_general' },
+      {
+        path: '/settings?tab=notifications',
+        label: 'Уведомления',
+        iconClass: 'pe-7s-bell',
+        sectionKey: 'settings_general',
+        settingsTab: 'notifications',
+      },
       { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket', sectionKey: 'settings_attributes' },
       { path: '/settings/certificates', label: 'Сертификаты', iconClass: 'pe-7s-portfolio', sectionKey: 'settings_certificates' },
       { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels' },
@@ -317,7 +323,7 @@ export function Sidebar({ onNavigate }) {
     if (location.pathname === '/tasks') loadTasksStats();
   }, [location.pathname, loadTasksStats]);
 
-  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; без ложного highlight родителя вроде /prices на /prices/strategies) */
+  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; ?tab= у /settings; без ложного highlight родителя вроде /prices на /prices/strategies) */
   const childMatchesLocation = useCallback((sub, loc, siblings = []) => {
     const pathname = loc.pathname;
     const sp = new URLSearchParams(loc.search || '');
@@ -325,15 +331,27 @@ export function Sidebar({ onNavigate }) {
       const op = warehouseOpFromSearch(sp);
       return pathname === '/stock-levels/warehouse' && op === sub.warehouseOp;
     }
-    const base = String(sub.path || '').split('?')[0];
+    if (sub.settingsTab) {
+      return pathname === '/settings' && sp.get('tab') === String(sub.settingsTab);
+    }
+    const rawPath = String(sub.path || '');
+    const base = rawPath.split('#')[0].split('?')[0];
     if (!base) return false;
+    // «Общие» настройки — только без tab=notifications
+    if (base === '/settings' && pathname === '/settings') {
+      const hasSettingsTabSibling = siblings.some((other) => other?.settingsTab);
+      if (hasSettingsTabSibling) {
+        return !sp.get('tab');
+      }
+    }
     if (pathname === base) return true;
     if (!pathname.startsWith(`${base}/`)) return false;
     // Если есть более длинный sibling, который тоже подходит — активен он, не короткий родитель.
     const hasMoreSpecificSibling = siblings.some((other) => {
       if (other === sub) return false;
       if (other.warehouseOp != null) return false;
-      const otherBase = String(other.path || '').split('?')[0];
+      if (other.settingsTab) return false;
+      const otherBase = String(other.path || '').split('#')[0].split('?')[0];
       if (!otherBase || otherBase.length <= base.length) return false;
       return pathname === otherBase || pathname.startsWith(`${otherBase}/`);
     });
@@ -472,7 +490,7 @@ export function Sidebar({ onNavigate }) {
                       const returnsBadgeText =
                         returnsBadgeTotal > 99 ? '99+' : String(returnsBadgeTotal);
                       return (
-                        <li key={sub.warehouseOp ?? sub.path}>
+                        <li key={sub.warehouseOp ?? sub.settingsTab ?? sub.path}>
                           <Link
                             to={sub.path}
                             className={subActive ? 'mm-active' : ''}
