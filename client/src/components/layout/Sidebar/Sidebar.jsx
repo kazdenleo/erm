@@ -100,12 +100,6 @@ const analyticsChildren = [
     requiresFbo: true,
   },
   {
-    path: '/analytics/card-work',
-    label: 'Работа с карточками',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-  },
-  {
     path: '/analytics/hypotheses',
     label: 'Гипотезы',
     iconClass: 'pe-7s-angle-right',
@@ -121,6 +115,7 @@ const menuItems = [
     iconClass: 'pe-7s-graph2',
     children: analyticsChildren,
   },
+  { path: '/card-work', label: 'Работа с карточками', iconClass: 'pe-7s-note2', sectionKey: 'card_work' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
@@ -135,6 +130,7 @@ const menuItems = [
   },
   { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices', children: [
     { path: '/prices', label: 'Минимальные цены', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+    { path: '/prices/settings', label: 'Настройки', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/strategies', label: 'Стратегии', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/history', label: 'История изменения цен', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/promotions', label: 'Акции', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },

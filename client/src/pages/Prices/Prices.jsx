@@ -18,9 +18,6 @@ import { Button } from '../../components/common/Button/Button';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
-import { PriceHistorySidePanel } from './PriceHistorySidePanel.jsx';
-import { PricesSettingsModal } from './PricesSettingsModal.jsx';
-import { buildScopeSummaryText } from './PricesPushSettingsPanel.jsx';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -66,7 +63,7 @@ export function Prices() {
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
-  const { organizations, updateOrganization } = useOrganizations();
+  const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
   const { openProductCardFromClick } = useProductCardModal();
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
@@ -114,10 +111,7 @@ export function Prices() {
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
-  const [historyProductId, setHistoryProductId] = useState(null);
-  const [historyProductLabel, setHistoryProductLabel] = useState('');
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
@@ -138,14 +132,7 @@ export function Prices() {
     return () => {
       cancelled = true;
     };
-  }, [settingsOpen]);
-
-  const getEnabledPushOrgs = (settings) => {
-    const list = settings?.organizations || organizations;
-    return list.filter(
-      (o) => o.autoPushMarketplacePrices === true || o.auto_push_marketplace_prices === true
-    );
-  };
+  }, []);
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -778,69 +765,6 @@ export function Prices() {
     }
   };
 
-  /** Ручная отправка по сохранённым настройкам (из панели «Настройки»). */
-  const handlePushNow = async (savedPayload, opts = {}) => {
-    const summarySettings = {
-      ...(pushSettingsSummary || {}),
-      ...(savedPayload || {}),
-      organizations:
-        opts.organizations ||
-        pushSettingsSummary?.organizations ||
-        organizations.map((o) => ({
-          id: o.id,
-          name: o.name,
-          autoPushMarketplacePrices: o.auto_push_marketplace_prices === true,
-        })),
-    };
-    const enabledOrgs = getEnabledPushOrgs(summarySettings);
-    if (!enabledOrgs.length) {
-      const msg =
-        'Ошибка: ни у одной организации не включена отправка цен на маркетплейсы.';
-      setRecalcAllMessage(msg);
-          setTimeout(() => setRecalcAllMessage(null), 10000);
-      throw new Error(msg);
-        }
-
-    if (!opts.skipConfirm) {
-      const scopeHint = buildScopeSummaryText(savedPayload || pushSettingsSummary);
-        const ok = window.confirm(
-        `Отправить сохранённые минимальные цены на маркетплейсы?\n\nОбласть: ${scopeHint}.\nОрганизации: ${enabledOrgs.map((o) => o.name).join(', ')}.\n\nОперация выполняется в фоне.`
-        );
-        if (!ok) return;
-      }
-
-    setPushAllLoading(true);
-    setRecalcAllMessage(null);
-    try {
-      const res = await pricesApi.pushAll({ useSavedSettings: true });
-      setRecalcAllMessage(res?.message || 'Отправка цен на маркетплейсы запущена в фоне.');
-      setTimeout(() => setRecalcAllMessage(null), 15000);
-    } catch (err) {
-      console.error('[Prices] push failed:', err);
-      const msg = 'Ошибка: ' + (err.response?.data?.message || err.message);
-      setRecalcAllMessage(msg);
-      setTimeout(() => setRecalcAllMessage(null), 10000);
-      throw err;
-    } finally {
-      setPushAllLoading(false);
-    }
-  };
-
-  const handleOrgPushToggle = async (orgId, data) => {
-    await updateOrganization(orgId, data);
-    setPushSettingsSummary((prev) => {
-      if (!prev?.organizations) return prev;
-      return {
-        ...prev,
-        organizations: prev.organizations.map((o) =>
-          String(o.id) === String(orgId)
-            ? { ...o, autoPushMarketplacePrices: data.auto_push_marketplace_prices === true }
-            : o
-        ),
-      };
-    });
-  };
-
   if (loading && products.length === 0) {
     return <div className="loading">Загрузка цен...</div>;
   }
@@ -855,37 +779,10 @@ export function Prices() {
         <div>
           <h1 className="title mb-1">💰 Цены</h1>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="small"
-          className="btn-shadow"
-          onClick={() => setSettingsOpen(true)}
-        >
+        <Link to="/prices/settings" className="btn btn-secondary btn-sm btn-shadow">
           Настройки
-        </Button>
+        </Link>
       </div>
-
-      <PricesSettingsModal
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        categories={categories}
-        showUncategorizedCategoryOption={showNoneCategoryOption}
-        showFbsOption={showFbsPrices}
-        showFboOption={showFboPrices}
-        organizations={organizations}
-        onOrganizationsChange={handleOrgPushToggle}
-        onSaved={(payload) =>
-          setPushSettingsSummary((prev) => ({
-            ...(prev || {}),
-            ...payload,
-            organizations: prev?.organizations,
-          }))
-        }
-        onPushNow={handlePushNow}
-        pushLoading={pushAllLoading}
-        pushFeedback={recalcAllMessage}
-      />
 
       <div className="main-card mb-3 card">
         <div className="card-body p-0">
@@ -1104,8 +1001,7 @@ export function Prices() {
         </div>
       )}
 
-      <div className="prices-split" style={{marginTop: '20px', width: '100%'}}>
-        <div className="prices-split__calc">
+      <div style={{marginTop: '20px', width: '100%'}}>
         {totalProducts === 0 && !listRefreshing ? (
           <div className="empty-state">
             <p>Нет товаров для отображения</p>
@@ -1271,23 +1167,7 @@ export function Prices() {
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
 
                   return (
-                    <tr
-                      key={product.id}
-                      className={historyProductId === product.id ? 'prices-row-selected' : ''}
-                      onClick={(e) => {
-                        if (e.target.closest('a, button, input, select, textarea')) return;
-                        if (historyProductId === product.id) {
-                          setHistoryProductId(null);
-                          setHistoryProductLabel('');
-                          return;
-                        }
-                        setHistoryProductId(product.id);
-                        setHistoryProductLabel(
-                          [product.sku, product.name].filter(Boolean).join(' — ')
-                        );
-                      }}
-                      title="Показать историю изменения цен справа"
-                    >
+                    <tr key={product.id}>
                       <td className="product-sku-cell" style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         <span className="product-sku" title="Выделите, чтобы скопировать">
                           {product.sku || '—'}
@@ -1526,15 +1406,6 @@ export function Prices() {
             {renderPricesListPager('bottom')}
           </div>
         )}
-        </div>
-        <PriceHistorySidePanel
-          productId={historyProductId}
-          productLabel={historyProductLabel}
-          onClearProduct={() => {
-            setHistoryProductId(null);
-            setHistoryProductLabel('');
-          }}
-        />
       </div>
 
       <div className="actions" style={{marginTop: '16px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center'}}>

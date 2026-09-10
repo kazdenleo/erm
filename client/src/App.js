@@ -57,6 +57,7 @@ import { Prices } from './pages/Prices/Prices';
 import { PricingStrategies } from './pages/Prices/PricingStrategies';
 import { PricePromotions } from './pages/Prices/PricePromotions';
 import { PriceHistory } from './pages/Prices/PriceHistory';
+import { PricesSettings } from './pages/Prices/PricesSettings';
 import { Settings } from './pages/Settings/Settings';
 import { Attributes } from './pages/Settings/Attributes';
 import { Certificates } from './pages/Settings/Certificates';
@@ -136,6 +137,16 @@ function App() {
             }
           />
           <Route path="/" element={<ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>} />
+          <Route
+            path="/card-work"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <CardWork />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
           <Route path="/analytics" element={<ProtectedRoute><Layout><AnalyticsLayout /></Layout></ProtectedRoute>}>
             <Route index element={<Navigate to="/analytics/sales" replace />} />
             <Route path="sales" element={<SalesAnalytics />} />
@@ -144,7 +155,7 @@ function App() {
             <Route path="abc" element={<AbcSalesAnalytics />} />
             <Route path="dynamics" element={<ProductDynamics />} />
             <Route path="turnover" element={<ProductTurnover />} />
-            <Route path="card-work" element={<CardWork />} />
+            <Route path="card-work" element={<Navigate to="/card-work" replace />} />
             <Route path="hypotheses" element={<Hypotheses />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
@@ -205,6 +216,7 @@ function App() {
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/tasks" element={<ProtectedRoute><Layout><Tasks /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
+          <Route path="/prices/settings" element={<ProtectedRoute><Layout><PricesSettings /></Layout></ProtectedRoute>} />
           <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
           <Route path="/prices/promotions" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
           <Route path="/prices/history" element={<ProtectedRoute><Layout><PriceHistory /></Layout></ProtectedRoute>} />
