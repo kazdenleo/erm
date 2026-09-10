@@ -605,8 +605,8 @@ export function FboSupplyDetail() {
     if (
       !window.confirm(
         mpKey === 'ozon'
-          ? `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом. Грузоместа в Ozon должны быть пустыми (без состава).`
-          : `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом.`
+          ? `Отправить упаковку по грузоместам в ${mpLabel}? Упаковка должна совпадать с планом. Грузоместа в Ozon должны быть пустыми (без состава).`
+          : `Отправить упаковку по грузоместам в ${mpLabel}? Упаковка должна совпадать с планом.`
       )
     ) {
       return;
@@ -959,7 +959,7 @@ export function FboSupplyDetail() {
                 : packingHasDiscrepancy
                   ? 'Сначала устраните расхождения между планом и сборкой'
                   : !(packing?.cargoUnits?.length > 0)
-                    ? 'Сначала создайте грузоместа на вкладке «Сборка»'
+                    ? 'Сначала создайте грузоместа на вкладке «Упаковка»'
                     : ozonSubmitBlocked
                   ? 'Состав уже заполнен в Ozon — используйте Excel, а не отправку из ERM'
                   : mpKey === 'ozon' && supply.status === 'ready_for_supply'
@@ -1092,7 +1092,7 @@ export function FboSupplyDetail() {
           className={`fbo-detail-tab${activeTab === 'collect' ? ' active' : ''}`}
           onClick={() => setActiveTab('collect')}
         >
-          Этикетки
+          Сборка
         </button>
         <button
           type="button"
@@ -1100,7 +1100,7 @@ export function FboSupplyDetail() {
           className={`fbo-detail-tab${activeTab === 'packing' ? ' active' : ''}`}
           onClick={() => setActiveTab('packing')}
         >
-          Сборка
+          Упаковка
           {packing?.cargoUnits?.length ? ` (${packing.cargoUnits.length})` : ''}
         </button>
       </div>

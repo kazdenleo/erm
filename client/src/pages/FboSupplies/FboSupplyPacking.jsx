@@ -1,5 +1,5 @@
 /**
- * Вкладка «Сборка» поставки FBO: грузоместа и сканирование.
+ * Вкладка «Упаковка» поставки FBO: грузоместа и сканирование.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';

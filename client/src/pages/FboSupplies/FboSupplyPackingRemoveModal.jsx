@@ -63,7 +63,7 @@ export function FboSupplyPackingRemoveModal({
         </p>
       ) : (
         <p className="alert alert-warning py-2 small mb-3">
-          Сначала отсканируйте коробку на вкладке «Сборка».
+          Сначала отсканируйте коробку на вкладке «Упаковка».
         </p>
       )}
       <BarcodeScanField

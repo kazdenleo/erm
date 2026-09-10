@@ -473,11 +473,19 @@
   margin-top: 2px;
 }
 
+.fbo-collect-panel code {
+  color: #0f172a;
+  font-size: inherit;
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+}
+
 .fbo-collect-kit-comps {
   margin: 0;
-  padding-left: 16px;
-  font-size: 12px;
-  list-style: disc;
+  padding-left: 0;
+  font-size: inherit;
+  list-style: none;
 }
 
 .fbo-collect-kit-comps li {
