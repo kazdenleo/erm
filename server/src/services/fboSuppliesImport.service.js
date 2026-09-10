@@ -3318,18 +3318,16 @@ class FboSuppliesImportService {
 
     if (productIdsToRebalance.size) {
       const uniqueProductIds = [...productIdsToRebalance];
-      const pid = profileId;
-      setImmediate(() => {
-        (async () => {
-          for (const productId of uniqueProductIds) {
-            await fboSupplyReserveService
-              .rebalanceReservesForProduct(productId, { profileId: pid, skipMarketplaceSync: true })
-              .catch((e) => {
-                console.warn('[FboImport] background reserve rebalance:', e?.message || e);
-              });
-          }
-        })().catch(() => {});
-      });
+      for (const productId of uniqueProductIds) {
+        await fboSupplyReserveService
+          .rebalanceReservesForProduct(productId, {
+            profileId,
+            skipMarketplaceSync: true,
+          })
+          .catch((e) => {
+            console.warn('[FboImport] reserve rebalance:', e?.message || e);
+          });
+      }
     }
 
     return result;

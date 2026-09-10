@@ -787,8 +787,81 @@ async function takeFromStockPools(stockPools, productId, warehouseIds, need) {
 
 class FboSupplyReserveService {
   /**
-   * Покрытие строк FBO: с наличия (FIFO по ready_at на складе списания) и с пути (incoming).
-   * Если в журнале уже есть резерв по строке — берём факт; иначе симулируем распределение пула.
+   * Если по активной очереди FBO ещё нет движений reserve в журнале, а на складе списания
+   * есть свободный остаток — прогнать rebalance, чтобы «нал» совпадал с колонкой «Резерв».
+   */
+  async materializeMissingHardReserves(productIds, { profileId, skipMarketplaceSync = true } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return;
+    const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+    if (!uniquePids.length) return;
+
+    const profileDeductionWh = await getProfileFboDeductionWarehouseId(profileId);
+    const [queuesByProduct, kitFlags] = await Promise.all([
+      findFboReserveQueuesByProducts(uniquePids, profileId),
+      batchIsKitProductIds(uniquePids),
+    ]);
+
+    for (const productId of uniquePids) {
+      const queue = queuesByProduct.get(productId) || [];
+      if (!queue.length) continue;
+
+      const isKit = kitFlags.get(productId) === true;
+      let hardTotal = 0;
+      if (isKit) {
+        const kitReserved = await batchGetReservedKitUnitsForFboItems(
+          queue.map((row) => ({
+            kitProductId: productId,
+            fboSupplyItemId: row.supply_item_id,
+            lineQty: row.quantity,
+          }))
+        );
+        for (const v of kitReserved.values()) hardTotal += Number(v) || 0;
+      } else {
+        const nets = await getNetReservedForFboItemsBatch([productId]);
+        for (const row of queue) {
+          hardTotal += Number(nets.get(String(row.supply_item_id))) || 0;
+        }
+      }
+      if (hardTotal > 0) continue;
+
+      const whIds = [
+        ...new Set(
+          queue
+            .map((row) =>
+              resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id)
+            )
+            .filter((wh) => wh != null)
+        ),
+      ];
+      if (!whIds.length) continue;
+
+      let free = 0;
+      if (isKit) {
+        const bd = await computeKitReservableBreakdownForWarehouseIds(productId, whIds);
+        free = Number(bd.total) || 0;
+      } else {
+        const [onHandByProductWh, reservedByProductWh] = await Promise.all([
+          batchGetWarehouseOnHand([productId], whIds),
+          batchGetNetReservedOnWarehouses([productId], whIds),
+        ]);
+        const onHandByWh = onHandByProductWh.get(productId) || new Map();
+        const reservedByWh = reservedByProductWh.get(productId) || new Map();
+        for (const wh of whIds) {
+          free += Math.max(0, (onHandByWh.get(wh) || 0) - (reservedByWh.get(wh) || 0));
+        }
+      }
+      if (free <= 0) continue;
+
+      await this.rebalanceReservesForProduct(productId, {
+        profileId,
+        skipMarketplaceSync,
+      }).catch((err) => logFboReserveFailure(`materialize product ${productId}`, err));
+    }
+  }
+
+  /**
+   * Покрытие строк FBO: только факт из журнала reserve/unreserve (+ «путь» из incoming).
+   * Виртуальную симуляцию без записи в склад не используем — иначе «нал» есть, а «Резерв» = 0.
    * @returns {Map<string, { reservedFromStock: number, reservedFromIncoming: number }>}
    */
   async _computeReserveBreakdownByItem(productIds, { profileId } = {}) {
@@ -796,7 +869,6 @@ class FboSupplyReserveService {
     const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
     if (!uniquePids.length) return breakdown;
 
-    const profileDeductionWh = await getProfileFboDeductionWarehouseId(profileId);
     const [queuesByProduct, netReservedByItem, incomingByProduct, kitFlags] = await Promise.all([
       findFboReserveQueuesByProducts(uniquePids, profileId),
       getNetReservedForFboItemsBatch(uniquePids),
@@ -804,31 +876,7 @@ class FboSupplyReserveService {
       batchIsKitProductIds(uniquePids),
     ]);
 
-    const warehouseIdsSet = new Set();
-    if (profileDeductionWh != null) warehouseIdsSet.add(profileDeductionWh);
-    for (const queue of queuesByProduct.values()) {
-      for (const row of queue) {
-        const wh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
-        if (wh != null) warehouseIdsSet.add(wh);
-      }
-    }
-    const allWhIds = [...warehouseIdsSet];
-
     const kitIds = uniquePids.filter((id) => kitFlags.get(id) === true);
-    const kitComponentsMap = await batchGetKitComponentsMap(kitIds);
-    const stockProductIds = new Set(uniquePids);
-    for (const comps of kitComponentsMap.values()) {
-      for (const c of comps) {
-        const cid = Number(c.component_product_id);
-        if (Number.isFinite(cid) && cid > 0) stockProductIds.add(cid);
-      }
-    }
-
-    const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
-      batchGetWarehouseOnHand([...stockProductIds], allWhIds),
-      batchGetNetReservedOnWarehouses([...stockProductIds], allWhIds),
-    ]);
-
     const kitQueueEntries = [];
     for (const productId of kitIds) {
       for (const row of queuesByProduct.get(productId) || []) {
@@ -844,49 +892,15 @@ class FboSupplyReserveService {
     for (const productId of uniquePids) {
       const queue = queuesByProduct.get(productId) || [];
       let incomingPool = incomingByProduct.get(productId) || 0;
-      const stockPools = new Map();
-      const onHandByWh = onHandByProductWh.get(productId) || new Map();
-      const reservedByWh = reservedOnWhByProductWh.get(productId) || new Map();
       const isKit = kitFlags.get(productId) === true;
-      /** Один симулятор на товар: пулы уменьшаются по FIFO, без N+1 SQL на каждую строку. */
-      let kitSim = null;
-      let kitSimWhKey = null;
 
       for (const row of queue) {
         const itemId = String(row.supply_item_id);
         const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
-        const rowWh = resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id);
-        const rowWhList = rowWh != null ? [rowWh] : [];
 
-        let reservedFromStock = 0;
-        if (isKit) {
-          reservedFromStock = kitReservedByItem.get(itemId) || 0;
-          if (reservedFromStock <= 0 && rowWhList.length > 0) {
-            const whKey = rowWhList.join(',');
-            if (!kitSim || kitSimWhKey !== whKey) {
-              kitSim = buildKitStockPoolsFromMaps(
-                productId,
-                kitComponentsMap.get(productId) || [],
-                rowWhList,
-                onHandByProductWh,
-                reservedOnWhByProductWh
-              );
-              kitSimWhKey = whKey;
-            }
-            reservedFromStock = simulateKitReserveFromPools(kitSim, qty);
-          }
-        } else {
-          reservedFromStock = netReservedByItem.get(itemId) || 0;
-          if (reservedFromStock <= 0 && rowWhList.length > 0) {
-            reservedFromStock = takeFromStockPoolsMaps(
-              stockPools,
-              onHandByWh,
-              reservedByWh,
-              rowWhList,
-              qty
-            );
-          }
-        }
+        const reservedFromStock = isKit
+          ? kitReservedByItem.get(itemId) || 0
+          : netReservedByItem.get(itemId) || 0;
 
         const gap = Math.max(0, qty - reservedFromStock);
         const reservedFromIncoming = Math.min(gap, incomingPool);
@@ -910,6 +924,12 @@ class FboSupplyReserveService {
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
+    if (reserveEnabled === true && productIds.length) {
+      await this.materializeMissingHardReserves(productIds, {
+        profileId,
+        skipMarketplaceSync: true,
+      });
+    }
     const breakdown =
       reserveEnabled === true
         ? await this._computeReserveBreakdownByItem(productIds, { profileId })
@@ -1059,6 +1079,10 @@ class FboSupplyReserveService {
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
+    await this.materializeMissingHardReserves(productIds, {
+      profileId,
+      skipMarketplaceSync: true,
+    });
 
     const breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
 
