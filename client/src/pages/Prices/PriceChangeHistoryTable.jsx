@@ -127,36 +127,48 @@ export function PriceChangeHistoryTable({
                     {formatHistoryDelta(row.sellingPriceBefore, row.sellingPriceAfter)}
                   </td>
                   <td className="reason">
-                    {row.source === 'min_recalc' && grounds.length ? (
-                      <>
-                        {row.sourceLabel ? (
-                          <div className="price-history-reason-title">
-                            <span className="price-history-source">{row.sourceLabel}</span>
-                          </div>
-                        ) : null}
-                        <ul className="price-history-grounds">
-                          {grounds.map((line, idx) => (
-                            <li key={`${idx}-${line}`}>{line}</li>
-                          ))}
-                        </ul>
-                      </>
-                    ) : (
-                      <>
-                        <div className="price-history-reason-title">
-                          {displayReason(row.reason)}
-                          {row.sourceLabel ? (
-                            <span className="price-history-source">{row.sourceLabel}</span>
+                    {(() => {
+                      const reasonText = displayReason(row.reason);
+                      const extraGrounds = grounds.filter(
+                        (line) => String(line || '').trim() !== reasonText
+                      );
+                      const genericRecalc =
+                        /^пересчёт минимальной цены$/i.test(reasonText) ||
+                        /^пересчёт минимума(:.*)?$/i.test(reasonText);
+                      const showTitle = Boolean(reasonText && reasonText !== '—' && !genericRecalc);
+                      const showList = extraGrounds.length > 0;
+                      const badge = row.sourceLabel ? (
+                        <span className="price-history-source">{row.sourceLabel}</span>
+                      ) : null;
+                      return (
+                        <>
+                          {showTitle ? (
+                            <div className="price-history-reason-title">
+                              {reasonText}
+                              {badge}
+                            </div>
                           ) : null}
-                        </div>
-                        {grounds.length ? (
-                          <ul className="price-history-grounds">
-                            {grounds.map((line, idx) => (
-                              <li key={`${idx}-${line}`}>{line}</li>
-                            ))}
-                          </ul>
-                        ) : null}
-                      </>
-                    )}
+                          {showList ? (
+                            <>
+                              {!showTitle && badge ? (
+                                <div className="price-history-reason-title">{badge}</div>
+                              ) : null}
+                              <ul className="price-history-grounds">
+                                {extraGrounds.map((line, idx) => (
+                                  <li key={`${idx}-${line}`}>{line}</li>
+                                ))}
+                              </ul>
+                            </>
+                          ) : null}
+                          {!showTitle && !showList ? (
+                            <div className="price-history-reason-title">
+                              {reasonText || '—'}
+                              {badge}
+                            </div>
+                          ) : null}
+                        </>
+                      );
+                    })()}
                   </td>
                 </tr>
               );
