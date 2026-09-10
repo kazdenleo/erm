@@ -1,11 +1,16 @@
 /**
- * Сбор этикеток FBO: скан товара/комплектующей → +1 к collected, печать этикетки строки поставки.
- * Несколько пользователей могут работать по одной поставке (атомарный счётчик + журнал).
+ * Сбор этикеток FBO: скан → прогресс; печать этикетки строки поставки
+ * только для обычного товара, SKU комплекта целиком или когда собраны все комплектующие.
  */
 
-import { query } from '../config/database.js';
+import { query, getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import {
+  isKitProductId,
+  getKitComponents,
+  aggregateKitComponents,
+} from './kitStock.service.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -23,10 +28,72 @@ function normalizeUserId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function mapItemCollectRow(row) {
+function parseProgress(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const id = Number(k);
+    const n = Math.max(0, parseInt(v, 10) || 0);
+    if (Number.isFinite(id) && id > 0 && n > 0) out[String(id)] = n;
+  }
+  return out;
+}
+
+function kitsCompletableFromProgress(progress, aggregatedComponents) {
+  if (!aggregatedComponents?.length) return 0;
+  let min = Infinity;
+  for (const c of aggregatedComponents) {
+    const need = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const got = Math.max(0, parseInt(progress[String(c.component_product_id)], 10) || 0);
+    min = Math.min(min, Math.floor(got / need));
+  }
+  return Number.isFinite(min) && min > 0 ? min : 0;
+}
+
+function subtractKitsFromProgress(progress, aggregatedComponents, kits) {
+  const next = { ...progress };
+  const n = Math.max(0, Math.floor(Number(kits) || 0));
+  if (n <= 0) return next;
+  for (const c of aggregatedComponents || []) {
+    const cid = String(c.component_product_id);
+    const need = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const got = Math.max(0, parseInt(next[cid], 10) || 0);
+    const left = Math.max(0, got - need * n);
+    if (left > 0) next[cid] = left;
+    else delete next[cid];
+  }
+  return next;
+}
+
+function kitProgressSummary(progress, aggregatedComponents) {
+  if (!aggregatedComponents?.length) return null;
+  let scannedPieces = 0;
+  let needPieces = 0;
+  const lines = [];
+  for (const c of aggregatedComponents) {
+    const need = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const got = Math.max(0, parseInt(progress[String(c.component_product_id)], 10) || 0);
+    needPieces += need;
+    scannedPieces += Math.min(got, need);
+    lines.push({
+      componentProductId: Number(c.component_product_id),
+      need,
+      got: Math.min(got, need),
+    });
+  }
+  return {
+    scannedPieces,
+    needPieces,
+    lines,
+    completeUnitsReady: kitsCompletableFromProgress(progress, aggregatedComponents),
+  };
+}
+
+function mapItemCollectRow(row, kitMeta = null) {
   const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
   const collected = Math.max(0, parseInt(row.collected_quantity, 10) || 0);
-  return {
+  const progress = parseProgress(row.collect_component_progress);
+  const base = {
     id: Number(row.id),
     fboSupplyId: Number(row.fbo_supply_id),
     productId: row.product_id != null ? Number(row.product_id) : null,
@@ -40,7 +107,13 @@ function mapItemCollectRow(row) {
     remaining: Math.max(0, planned - collected),
     complete: planned > 0 && collected >= planned,
     over: collected > planned,
+    isKit: kitMeta?.isKit === true,
+    kitProgress: null,
   };
+  if (kitMeta?.isKit && kitMeta.components?.length) {
+    base.kitProgress = kitProgressSummary(progress, kitMeta.components);
+  }
+  return base;
 }
 
 async function assertSupplyAccess(supplyId, profileId) {
@@ -62,7 +135,7 @@ async function assertSupplyAccess(supplyId, profileId) {
 
 const ITEM_SELECT = `
   i.id, i.fbo_supply_id, i.product_id, i.quantity, i.collected_quantity,
-  i.sku, i.barcode, i.name,
+  i.collect_component_progress, i.sku, i.barcode, i.name,
   p.sku AS product_sku, p.name AS product_name,
   (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
 `;
@@ -123,7 +196,6 @@ async function findSupplyItemDirect(supplyId, barcode, profileId) {
   return null;
 }
 
-/** Скан комплектующей → строка поставки с комплектом, в состав которого входит товар. */
 async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
@@ -181,6 +253,55 @@ async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
   return null;
 }
 
+async function loadKitMetaMap(productIds) {
+  const map = new Map();
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((n) => n > 0))];
+  await Promise.all(
+    ids.map(async (pid) => {
+      const isKit = await isKitProductId(pid);
+      if (!isKit) {
+        map.set(pid, { isKit: false, components: [] });
+        return;
+      }
+      const components = aggregateKitComponents(await getKitComponents(pid));
+      map.set(pid, { isKit: true, components });
+    })
+  );
+  return map;
+}
+
+async function insertScanLog({
+  supplyId,
+  itemId,
+  productId,
+  scannedProductId,
+  barcode,
+  userId,
+  userName,
+  client = null,
+}) {
+  const run = client?.query ? client.query.bind(client) : query;
+  const uid = normalizeUserId(userId);
+  const uname =
+    userName != null && String(userName).trim() !== ''
+      ? String(userName).trim().slice(0, 200)
+      : null;
+  await run(
+    `INSERT INTO fbo_supply_item_scans
+       (fbo_supply_id, fbo_supply_item_id, product_id, scanned_product_id, barcode, user_id, user_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      supplyId,
+      itemId,
+      productId,
+      scannedProductId != null ? Number(scannedProductId) : null,
+      String(barcode || '').slice(0, 256),
+      uid,
+      uname,
+    ]
+  );
+}
+
 class FboSuppliesCollectService {
   async getCollectState(supplyId, { profileId } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -204,7 +325,12 @@ class FboSuppliesCollectService {
          i.id ASC`,
       [supplyId]
     );
-    const items = (itemsR.rows || []).map(mapItemCollectRow);
+    const rows = itemsR.rows || [];
+    const kitMeta = await loadKitMetaMap(rows.map((r) => r.product_id));
+    const items = rows.map((row) => {
+      const pid = row.product_id != null ? Number(row.product_id) : null;
+      return mapItemCollectRow(row, pid != null ? kitMeta.get(pid) : null);
+    });
 
     const recentR = await query(
       `SELECT s.id, s.fbo_supply_item_id, s.product_id, s.scanned_product_id, s.barcode,
@@ -288,6 +414,7 @@ class FboSuppliesCollectService {
     }
 
     const itemId = Number(resolved.item.id);
+    const kitProductId = resolved.item.product_id != null ? Number(resolved.item.product_id) : null;
     const planned = Math.max(0, parseInt(resolved.item.quantity, 10) || 0);
     const collectedBefore = Math.max(0, parseInt(resolved.item.collected_quantity, 10) || 0);
 
@@ -299,7 +426,7 @@ class FboSuppliesCollectService {
       err.code = 'COLLECT_OVERAGE';
       err.details = {
         supplyItemId: itemId,
-        productId: resolved.item.product_id != null ? Number(resolved.item.product_id) : null,
+        productId: kitProductId,
         planned,
         collected: collectedBefore,
         sku: resolved.item.sku || resolved.item.product_sku || null,
@@ -308,52 +435,175 @@ class FboSuppliesCollectService {
       throw err;
     }
 
-    const upd = await query(
-      `UPDATE fbo_supply_items
-       SET collected_quantity = collected_quantity + 1,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND fbo_supply_id = $2
-       RETURNING id, fbo_supply_id, product_id, quantity, collected_quantity, sku, barcode, name`,
-      [itemId, supplyId]
-    );
-    const updated = upd.rows?.[0];
-    if (!updated) {
-      const err = new Error('Не удалось обновить счётчик сбора');
-      err.statusCode = 500;
-      throw err;
-    }
+    const isKit = kitProductId != null ? await isKitProductId(kitProductId) : false;
+    const components = isKit
+      ? aggregateKitComponents(await getKitComponents(kitProductId))
+      : [];
+    const isComponentScan = resolved.match === 'kit_component' && isKit && components.length > 0;
+    const isWholeKitScan =
+      isKit &&
+      components.length > 0 &&
+      (resolved.match === 'direct' || resolved.match === 'product') &&
+      Number(resolved.scannedProductId) === kitProductId;
 
-    const uid = normalizeUserId(userId);
-    const uname =
-      userName != null && String(userName).trim() !== ''
-        ? String(userName).trim().slice(0, 200)
-        : null;
+    let unitsCompleted = 0;
+    let updatedRow = null;
+    let progressAfter = parseProgress(resolved.item.collect_component_progress);
+    let action = 'collected';
+    let message = null;
 
-    await query(
-      `INSERT INTO fbo_supply_item_scans
-         (fbo_supply_id, fbo_supply_item_id, product_id, scanned_product_id, barcode, user_id, user_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT id, fbo_supply_id, product_id, quantity, collected_quantity,
+                collect_component_progress, sku, barcode, name
+         FROM fbo_supply_items
+         WHERE id = $1 AND fbo_supply_id = $2
+         FOR UPDATE`,
+        [itemId, supplyId]
+      );
+      const lockedRow = locked.rows?.[0];
+      if (!lockedRow) {
+        const err = new Error('Строка поставки не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const plannedLocked = Math.max(0, parseInt(lockedRow.quantity, 10) || 0);
+      let collectedLocked = Math.max(0, parseInt(lockedRow.collected_quantity, 10) || 0);
+      let progress = parseProgress(lockedRow.collect_component_progress);
+
+      if (!allowOverage && collectedLocked >= plannedLocked) {
+        const err = new Error(
+          `Позиция уже собрана полностью (${collectedLocked} из ${plannedLocked}). Больше не нужно добавлять этот товар в поставку.`
+        );
+        err.statusCode = 409;
+        err.code = 'COLLECT_OVERAGE';
+        err.details = {
+          supplyItemId: itemId,
+          productId: kitProductId,
+          planned: plannedLocked,
+          collected: collectedLocked,
+          sku: lockedRow.sku || resolved.item.product_sku || null,
+          name: lockedRow.name || resolved.item.product_name || null,
+        };
+        throw err;
+      }
+
+      if (isComponentScan) {
+        const compId = Number(resolved.scannedProductId);
+        const perKit =
+          components.find((c) => Number(c.component_product_id) === compId)?.quantity || 1;
+        const key = String(compId);
+        const beforeCompletable = kitsCompletableFromProgress(progress, components);
+        progress[key] = (progress[key] || 0) + 1;
+        const afterCompletable = kitsCompletableFromProgress(progress, components);
+        unitsCompleted = Math.max(0, afterCompletable - beforeCompletable);
+
+        if (unitsCompleted > 0) {
+          const room = allowOverage
+            ? unitsCompleted
+            : Math.min(unitsCompleted, Math.max(0, plannedLocked - collectedLocked));
+          if (room <= 0 && !allowOverage) {
+            progress[key] = Math.max(0, (progress[key] || 0) - 1);
+            if (progress[key] === 0) delete progress[key];
+            const err = new Error(
+              `Позиция уже собрана полностью (${collectedLocked} из ${plannedLocked}). Больше не нужно добавлять этот товар в поставку.`
+            );
+            err.statusCode = 409;
+            err.code = 'COLLECT_OVERAGE';
+            throw err;
+          }
+          const applyUnits = allowOverage ? unitsCompleted : room;
+          progress = subtractKitsFromProgress(progress, components, applyUnits);
+          collectedLocked += applyUnits;
+          unitsCompleted = applyUnits;
+          action = 'collected';
+          message =
+            applyUnits === 1
+              ? `Комплект собран — этикетка на печать (${collectedLocked} из ${plannedLocked})`
+              : `Собрано комплектов: ${applyUnits} — этикетки на печать (${collectedLocked} из ${plannedLocked})`;
+        } else {
+          action = 'kit_progress';
+          const summary = kitProgressSummary(progress, components);
+          message = `Комплектующая принята${
+            resolved.scannedComponentSku ? ` (${resolved.scannedComponentSku})` : ''
+          }: ${summary.scannedPieces} из ${summary.needPieces} для следующего комплекта. Этикетка пока не печатается.`;
+        }
+      } else if (isWholeKitScan || !isKit || components.length === 0) {
+        // Обычный товар или скан SKU комплекта целиком → сразу +1 и печать
+        unitsCompleted = 1;
+        collectedLocked += 1;
+        if (isWholeKitScan) {
+          // Целый комплект: сбрасываем незавершённый прогресс комплектующих текущего «слота»
+          progress = {};
+        }
+        action = 'collected';
+        message = isWholeKitScan
+          ? `Отсканирован комплект целиком (${collectedLocked} из ${plannedLocked})`
+          : `Собрано ${collectedLocked} из ${plannedLocked}`;
+      } else {
+        // Комплект без состава в БД — как обычный товар
+        unitsCompleted = 1;
+        collectedLocked += 1;
+        action = 'collected';
+        message = `Собрано ${collectedLocked} из ${plannedLocked}`;
+      }
+
+      const upd = await client.query(
+        `UPDATE fbo_supply_items
+         SET collected_quantity = $3,
+             collect_component_progress = $4::jsonb,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND fbo_supply_id = $2
+         RETURNING id, fbo_supply_id, product_id, quantity, collected_quantity,
+                   collect_component_progress, sku, barcode, name`,
+        [itemId, supplyId, collectedLocked, JSON.stringify(progress)]
+      );
+      updatedRow = upd.rows?.[0];
+      progressAfter = progress;
+
+      await insertScanLog({
         supplyId,
         itemId,
-        updated.product_id,
-        resolved.scannedProductId != null ? Number(resolved.scannedProductId) : null,
-        code.slice(0, 256),
-        uid,
-        uname,
-      ]
-    );
+        productId: updatedRow.product_id,
+        scannedProductId: resolved.scannedProductId,
+        barcode: code,
+        userId,
+        userName,
+        client,
+      });
+
+      await client.query('COMMIT');
+    } catch (e) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+      throw e;
+    } finally {
+      client.release();
+    }
 
     const state = await this.getCollectState(supplyId, { profileId });
-    const item = state.items.find((it) => it.id === itemId) || mapItemCollectRow({
-      ...updated,
-      product_sku: resolved.item.product_sku,
-      product_name: resolved.item.product_name,
-      product_image: resolved.item.product_image,
-    });
+    const item =
+      state.items.find((it) => it.id === itemId) ||
+      mapItemCollectRow(
+        {
+          ...updatedRow,
+          product_sku: resolved.item.product_sku,
+          product_name: resolved.item.product_name,
+          product_image: resolved.item.product_image,
+        },
+        { isKit, components }
+      );
 
-    const printProductId = updated.product_id != null ? Number(updated.product_id) : null;
-    if (!printProductId) {
+    const printProductId = updatedRow?.product_id != null ? Number(updatedRow.product_id) : null;
+    const shouldPrint = action === 'collected' && unitsCompleted > 0 && printProductId;
+
+    if (action === 'collected' && !printProductId) {
       const err = new Error('У позиции поставки нет привязанного товара — этикетку напечатать нельзя');
       err.statusCode = 400;
       err.code = 'NO_PRODUCT_FOR_LABEL';
@@ -361,22 +611,27 @@ class FboSuppliesCollectService {
     }
 
     return {
-      action: 'collected',
+      action,
       match: resolved.match,
       scannedComponentSku: resolved.scannedComponentSku || null,
+      unitsCompleted,
+      kitProgress: isKit ? kitProgressSummary(progressAfter, components) : null,
       overage: item.collected > item.planned,
       warning:
         item.collected > item.planned
           ? `Собрано больше плана: ${item.collected} из ${item.planned}`
-          : item.collected === item.planned
+          : item.collected === item.planned && action === 'collected'
             ? `Позиция собрана полностью (${item.collected} из ${item.planned})`
-            : null,
-      print: {
-        productId: printProductId,
-        copies: 1,
-        marketplace: supply.marketplace || null,
-        title: item.sku || item.name || `#${printProductId}`,
-      },
+            : message,
+      message,
+      print: shouldPrint
+        ? {
+            productId: printProductId,
+            copies: Math.max(1, unitsCompleted),
+            marketplace: supply.marketplace || null,
+            title: item.sku || item.name || `#${printProductId}`,
+          }
+        : null,
       item,
       state,
     };

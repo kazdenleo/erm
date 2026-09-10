@@ -89,20 +89,20 @@ export function FboSupplyCollect({
       const collected = data?.item?.collected;
       const planned = data?.item?.planned;
       const sku = data?.item?.sku || data?.print?.title || '';
-      const via =
-        data?.match === 'kit_component'
-          ? ` (по комплектующей${data.scannedComponentSku ? ` ${data.scannedComponentSku}` : ''})`
-          : '';
-      setLastMsg(
-        data?.warning ||
-          `Собрано ${collected} из ${planned}: ${sku}${via}`
-      );
-      if (data?.warning || data?.item?.complete) {
-        playEventSound(SOUND_EVENTS.scan_ok);
-      } else {
-        playEventSound(SOUND_EVENTS.scan_ok);
+      const kitProg = data?.kitProgress;
+      let msg = data?.message || data?.warning || null;
+      if (!msg) {
+        if (data?.action === 'kit_progress' && kitProg) {
+          msg = `Комплект ${sku}: комплектующие ${kitProg.scannedPieces}/${kitProg.needPieces} — этикетка после полного набора`;
+        } else {
+          msg = `Собрано ${collected} из ${planned}: ${sku}`;
+        }
       }
-      await runPrint(data?.print);
+      setLastMsg(msg);
+      playEventSound(SOUND_EVENTS.scan_ok);
+      if (data?.print?.productId) {
+        await runPrint(data.print);
+      }
     },
     [runPrint]
   );
@@ -154,7 +154,8 @@ export function FboSupplyCollect({
   return (
     <div className="fbo-collect-panel">
       <p className="fbo-packing-hint">
-        Сканируйте товар из поставки или комплектующую комплекта — напечатается этикетка позиции поставки.
+        Сканируйте товар из поставки или комплектующие комплекта. Этикетка печатается для обычного
+        товара сразу; для комплекта — только после скана всего SKU комплекта или всех комплектующих.
         Несколько сотрудников могут работать одновременно; прогресс общий.
       </p>
 
@@ -228,6 +229,11 @@ export function FboSupplyCollect({
                       <span className={`fbo-packed-cell fbo-packed-cell--${cls}`}>
                         {it.collected} / {it.planned}
                       </span>
+                      {it.isKit && it.kitProgress && it.kitProgress.needPieces > 0 && !it.complete ? (
+                        <div className="fbo-collect-kit-progress muted-hint">
+                          к комплекту: {it.kitProgress.scannedPieces}/{it.kitProgress.needPieces}
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 );

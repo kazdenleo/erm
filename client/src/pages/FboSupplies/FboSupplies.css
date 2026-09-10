@@ -468,6 +468,11 @@
   max-width: 420px;
 }
 
+.fbo-collect-kit-progress {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .fbo-collect-recent {
   margin-top: 16px;
 }
