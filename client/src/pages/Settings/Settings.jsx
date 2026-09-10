@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useLocation, useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
@@ -280,23 +280,6 @@ export function Settings() {
           ? 'Кому показывать системные уведомления в колокольчике.'
           : 'Общие настройки системы.'}
       </p>
-
-      {!showNotificationsTab && isTenantAccountAdmin && (
-        <section className="settings-account-section" style={{ marginBottom: 18 }}>
-          <h2 className="h5">Пользователи и роли</h2>
-          <p className="text-muted small mb-3">
-            Добавление пользователей аккаунта и настройка видимых разделов для ролей (сборщик, редактор и др.).
-          </p>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <Link to="/settings/users" className="btn btn-primary">
-              Пользователи
-            </Link>
-            <Link to="/settings/users?tab=roles" className="btn btn-outline-secondary">
-              Настройка ролей
-            </Link>
-          </div>
-        </section>
-      )}
 
       {showNotificationsTab && canEditAccount ? (
         <section id="notifications" className="settings-account-section" style={{ marginBottom: 18 }}>
