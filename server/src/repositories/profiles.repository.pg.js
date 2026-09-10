@@ -10,6 +10,7 @@ import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import { parseAiSettings } from '../utils/aiSettings.js';
 import { parsePricePushSettings } from '../utils/pricePushSettings.js';
 import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
+import { parseNotificationSettings } from '../utils/notificationSettings.js';
 
 /**
  * Таблицы с profile_id (shared DB). Оценка размера аккаунта =
@@ -571,6 +572,10 @@ class ProfilesRepositoryPG {
     if (updates.card_quality_settings !== undefined || updates.cardQualitySettings !== undefined) {
       const raw = updates.card_quality_settings ?? updates.cardQualitySettings;
       set('card_quality_settings', JSON.stringify(parseCardQualitySettings(raw)));
+    }
+    if (updates.notification_settings !== undefined || updates.notificationSettings !== undefined) {
+      const raw = updates.notification_settings ?? updates.notificationSettings;
+      set('notification_settings', JSON.stringify(parseNotificationSettings(raw)));
     }
     if (
       updates.fbo_deduction_warehouse_id !== undefined ||

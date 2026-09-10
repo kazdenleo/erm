@@ -439,6 +439,18 @@ function isMarketplaceCardPullDailyEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+/** Уведомления о ДР сотрудников. По умолчанию 09:00 МСК. */
+function getBirthdayNotificationsCron() {
+  const c = process.env.BIRTHDAY_NOTIFICATIONS_CRON;
+  return c && String(c).trim() ? String(c).trim() : '0 9 * * *';
+}
+
+function isBirthdayNotificationsEnabled() {
+  const v = process.env.BIRTHDAY_NOTIFICATIONS_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
 function reportsDailyDateRangeYmd(daysBack = 7) {
   const to = new Date();
   const from = new Date(to);
@@ -1221,6 +1233,41 @@ class SchedulerService {
         logger.info('[Scheduler] Auto procurement disabled (AUTO_PROCUREMENT_ENABLED)');
       }
 
+      let birthdayNotificationsJob = null;
+      const birthdayNotificationsCron = getBirthdayNotificationsCron();
+      if (isBirthdayNotificationsEnabled()) {
+        birthdayNotificationsJob = cron.schedule(
+          birthdayNotificationsCron,
+          async () => {
+            await runSchedulerDbJob('birthday-notifications', async () => {
+              logger.info('[Scheduler] Birthday notifications check...');
+              try {
+                const { runBirthdayNotificationsForAllProfiles } = await import(
+                  './birthdayNotifications.service.js'
+                );
+                const out = await runBirthdayNotificationsForAllProfiles();
+                logger.info('[Scheduler] Birthday notifications done', out);
+              } catch (error) {
+                logger.error('[Scheduler] Birthday notifications failed:', error);
+                await addRuntimeNotification({
+                  type: 'job_failed',
+                  severity: 'error',
+                  source: 'scheduler',
+                  title: 'Сбой проверки дней рождения',
+                  message: `birthdayNotifications failed: ${error?.message || String(error)}`,
+                });
+              }
+            });
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow',
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Birthday notifications disabled (BIRTHDAY_NOTIFICATIONS_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -1526,6 +1573,16 @@ class SchedulerService {
         });
       }
 
+      if (birthdayNotificationsJob) {
+        this.jobs.push({
+          name: 'birthday-notifications',
+          job: birthdayNotificationsJob,
+          schedule: birthdayNotificationsCron,
+          description:
+            'Уведомления о ДР сотрудников за 10 дней. BIRTHDAY_NOTIFICATIONS_CRON, по умолчанию 0 9 * * * (МСК)',
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -1567,6 +1624,9 @@ class SchedulerService {
       }
       if (autoProcurementJob) {
         autoProcurementJob.start();
+      }
+      if (birthdayNotificationsJob) {
+        birthdayNotificationsJob.start();
       }
       profileNightlyDispatchJob.start();
       this.isRunning = true;

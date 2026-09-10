@@ -126,3 +126,37 @@ export async function clearRuntimeNotifications(options = {}) {
     return { ok: false, error: e?.message || String(e) };
   }
 }
+
+/**
+ * Удалить runtime-уведомления по id.
+ * С profileId — только своего аккаунта (и без profile_id).
+ */
+export async function removeRuntimeNotificationsByIds(ids, options = {}) {
+  try {
+    const idSet = new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+    );
+    if (!idSet.size) return { ok: true, removed: 0 };
+
+    const profileId = options.profileId ?? options.profile_id ?? null;
+    const current = (await readData(STORAGE_KEY)) || [];
+    const arr = Array.isArray(current) ? current : [];
+    let removed = 0;
+    const kept = arr.filter((n) => {
+      const nid = String(n?.id || '').trim();
+      if (!nid || !idSet.has(nid)) return true;
+      if (profileId != null && profileId !== '') {
+        const np = notificationProfileId(n);
+        if (np != null && Number(np) !== Number(profileId)) return true;
+      }
+      removed += 1;
+      return false;
+    });
+    if (removed > 0) await writeData(STORAGE_KEY, kept);
+    return { ok: true, removed };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e), removed: 0 };
+  }
+}

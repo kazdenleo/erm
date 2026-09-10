@@ -8,6 +8,11 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
+import {
+  NOTIFICATION_CHANNEL_MODES,
+  NOTIFICATION_CHANNELS,
+  notificationSettingsPayload,
+} from '../../utils/notificationSettings.js';
 import { PROFILE_TIMEZONE_OPTIONS } from '../../constants/profileTimezones.js';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
@@ -19,6 +24,10 @@ import {
   playEventSound,
   readAudioFileAsDataUrl,
 } from '../../utils/soundSettings';
+import { usersApi } from '../../services/users.api.js';
+import { shortUserName } from '../../utils/userName.js';
+import { AccessMultiSelect } from './Users/AccessMultiSelect.jsx';
+import './Users/Users.css';
 import './Settings.css';
 
 export function Settings() {
@@ -57,7 +66,10 @@ export function Settings() {
       showInCardWork: false,
       thresholds: { ozon: 70, wb: 70, ym: 70 },
     },
+    notification_settings: notificationSettingsPayload(null),
   });
+  const [accountUsers, setAccountUsers] = useState([]);
+  const [accountUsersLoading, setAccountUsersLoading] = useState(false);
 
   const loadAccount = useCallback(async () => {
     if (!canEditAccount) return;
@@ -84,7 +96,54 @@ export function Settings() {
     }
   }, [canEditAccount, loadWarehouses]);
 
+  useEffect(() => {
+    if (!canEditAccount) {
+      setAccountUsers([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setAccountUsersLoading(true);
+    usersApi
+      .getInviteCandidates()
+      .then((res) => {
+        if (cancelled) return;
+        const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        setAccountUsers(list.filter(Boolean));
+      })
+      .catch(() => {
+        if (!cancelled) setAccountUsers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setAccountUsersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canEditAccount]);
+
   const ownWarehouses = warehouses.filter((w) => w.type === 'warehouse');
+  const notificationUserOptions = accountUsers.map((u) => ({
+    id: Number(u.id),
+    label: shortUserName(u) || String(u.email || u.phone || u.id),
+  }));
+
+  const setNotificationChannel = (channelKey, patch) => {
+    setForm((f) => {
+      const prevChannels = f.notification_settings?.channels || {};
+      const prev = prevChannels[channelKey] || { mode: 'all', userIds: [] };
+      const nextCfg = { ...prev, ...patch };
+      if (nextCfg.mode !== 'users') nextCfg.userIds = [];
+      return {
+        ...f,
+        notification_settings: {
+          channels: {
+            ...prevChannels,
+            [channelKey]: nextCfg,
+          },
+        },
+      };
+    });
+  };
 
   const saveAccount = async () => {
     const name = form.name.trim();
@@ -133,6 +192,7 @@ export function Settings() {
             ym: Number(form.card_quality_settings?.thresholds?.ym) || 70,
           },
         },
+        notification_settings: notificationSettingsPayload(form.notification_settings),
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -220,6 +280,85 @@ export function Settings() {
           </div>
         </section>
       )}
+
+      {canEditAccount ? (
+        <section className="settings-account-section" style={{ marginBottom: 18 }}>
+          <h2 className="h5">Уведомления</h2>
+          <p className="text-muted small mb-3">
+            Кому показывать уведомления в колокольчике. Приглашения в сессии (инвентаризация, приёмка)
+            всегда приходят только приглашённому. Настройки сохраняются вместе с аккаунтом (кнопка
+            «Сохранить» ниже).
+          </p>
+          {error && <p className="text-danger">{error}</p>}
+          {loading ? (
+            <p className="text-muted small mb-0">Загрузка…</p>
+          ) : (
+            <div className="settings-account-form">
+              {accountUsersLoading ? (
+                <p className="text-muted small mb-3">Загрузка списка пользователей…</p>
+              ) : null}
+              {NOTIFICATION_CHANNELS.map((ch) => {
+                const cfg = form.notification_settings?.channels?.[ch.key] || {
+                  mode: ch.defaultMode,
+                  userIds: [],
+                };
+                const mode = cfg.mode || ch.defaultMode;
+                return (
+                  <div
+                    key={ch.key}
+                    style={{
+                      marginBottom: 16,
+                      paddingBottom: 14,
+                      borderBottom: '1px solid var(--bs-border-color, #e5e7eb)',
+                    }}
+                  >
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>{ch.title}</strong>
+                      <span
+                        className="text-muted small"
+                        style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}
+                      >
+                        {ch.hint}
+                      </span>
+                    </div>
+                    <label className="settings-account-label" style={{ marginBottom: 8 }}>
+                      Кому показывать
+                      <select
+                        className="login-input"
+                        value={mode}
+                        onChange={(e) =>
+                          setNotificationChannel(ch.key, {
+                            mode: e.target.value,
+                            userIds: e.target.value === 'users' ? cfg.userIds || [] : [],
+                          })
+                        }
+                        disabled={accountUsersLoading}
+                      >
+                        {NOTIFICATION_CHANNEL_MODES.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {mode === 'users' && !accountUsersLoading ? (
+                      <AccessMultiSelect
+                        label="Пользователи"
+                        emptyLabel="Никого не выбрано — уведомления не показываются"
+                        options={notificationUserOptions}
+                        value={cfg.userIds || []}
+                        onChange={(nextIds) =>
+                          setNotificationChannel(ch.key, { mode: 'users', userIds: nextIds })
+                        }
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ) : null}
 
       <section className="settings-account-section" style={{ marginBottom: 18 }}>
         <h2 className="h5">Звуки</h2>
@@ -743,7 +882,7 @@ export function Settings() {
                   <strong>Показывать в работе над карточкой</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Если включено — товары с оценкой карточки ниже порога попадают в раздел
-                    «Аналитика → Работа с карточками». Оценка Ozon и Яндекс.Маркета подтягивается с площадок
+                    «Работа с карточками» в меню. Оценка Ozon и Яндекс.Маркета подтягивается с площадок
                     (при обновлении карточки и ночью). Wildberries балл качества карточки через API не отдаёт.
                   </span>
                 </span>

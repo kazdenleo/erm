@@ -12,6 +12,7 @@ import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
+import { parseNotificationSettings } from '../utils/notificationSettings.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
   formStateToNavSections,
@@ -131,6 +132,11 @@ function pickAccountOwnerProfilePayload(body) {
   }
   if (b.card_quality_settings !== undefined || b.cardQualitySettings !== undefined) {
     out.card_quality_settings = parseCardQualitySettings(b.card_quality_settings ?? b.cardQualitySettings);
+  }
+  if (b.notification_settings !== undefined || b.notificationSettings !== undefined) {
+    out.notification_settings = parseNotificationSettings(
+      b.notification_settings ?? b.notificationSettings
+    );
   }
   if (b.fbo_deduction_warehouse_id !== undefined || b.fboDeductionWarehouseId !== undefined) {
     const raw = b.fbo_deduction_warehouse_id ?? b.fboDeductionWarehouseId;

@@ -1,3 +1,5 @@
+import { parseClientNotificationSettings } from './notificationSettings.js';
+
 /** Булевы флаги профиля из API (PostgreSQL / JSON могут отдавать разные типы). */
 export function isProfileBoolFlag(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -52,6 +54,9 @@ export function accountSettingsFromProfile(profile) {
     timezone: String(profile.timezone ?? profile.timeZone ?? 'Europe/Moscow').trim() || 'Europe/Moscow',
     card_quality_settings: parseClientCardQualitySettings(
       profile.card_quality_settings ?? profile.cardQualitySettings
+    ),
+    notification_settings: parseClientNotificationSettings(
+      profile.notification_settings ?? profile.notificationSettings
     ),
   };
 }

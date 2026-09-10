@@ -77,6 +77,17 @@ export const integrationsApi = {
   },
 
   /**
+   * Отметить уведомления просмотренными (удаляются из списка / скрываются).
+   * @param {string[]} ids
+   */
+  dismissNotifications: async (ids = []) => {
+    const response = await api.post('/integrations/notifications/dismiss', {
+      ids: Array.isArray(ids) ? ids : [],
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  /**
    * Балансы на маркетплейсах (дашборд).
    * @returns {Promise<{ no_profile?: boolean, ozon?: object, wildberries?: object, yandex?: object }>}
    */

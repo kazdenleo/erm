@@ -56,6 +56,7 @@ router.get('/marketplaces/yandex/brands', wrapAsync(integrationsController.getMa
 // Проверка токенов маркетплейсов + уведомления
 router.get('/marketplaces/:type/token-status', wrapAsync(integrationsController.getMarketplaceTokenStatus));
 router.get('/notifications', wrapAsync(integrationsController.getNotifications));
+router.post('/notifications/dismiss', wrapAsync(integrationsController.dismissNotifications));
 router.post('/runtime-notifications/clear', wrapAsync(integrationsController.clearRuntimeNotifications));
 
 // Тарифы и комиссии Wildberries

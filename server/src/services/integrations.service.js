@@ -33,6 +33,10 @@ import {
 } from '../utils/marketplaceBrandDirectory.js';
 import { toPublicChestnyZnakConfig } from '../utils/chestnyZnak.js';
 import { toPublicAiSettings } from '../utils/aiSettings.js';
+import {
+  isNotificationVisibleToUser,
+  parseNotificationSettings,
+} from '../utils/notificationSettings.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -736,16 +740,54 @@ class IntegrationsService {
       }
     } catch (_) {}
 
+    // Фильтр по настройкам каналов аккаунта (кому какие типы показывать)
+    let notificationSettings = parseNotificationSettings(null);
+    try {
+      if (
+        repositoryFactory.isUsingPostgreSQL() &&
+        profileId != null &&
+        profileId !== ''
+      ) {
+        const nsRes = await query(
+          `SELECT notification_settings FROM profiles WHERE id = $1 LIMIT 1`,
+          [profileId]
+        );
+        notificationSettings = parseNotificationSettings(
+          nsRes.rows?.[0]?.notification_settings
+        );
+      }
+    } catch (_) {}
+
+    const filtered = out.filter((n) =>
+      isNotificationVisibleToUser(notificationSettings, n?.type, userId)
+    );
+
+    let dismissed = new Set();
+    try {
+      if (userId != null && !Number.isNaN(userId)) {
+        const { getDismissedNotificationIds } = await import(
+          '../utils/dismissedNotifications.js'
+        );
+        dismissed = await getDismissedNotificationIds(userId);
+      }
+    } catch (_) {}
+
+    const visible = filtered.filter((n) => {
+      const id = String(n?.id || '').trim();
+      if (!id) return true;
+      return !dismissed.has(id);
+    });
+
     // сортировка: error выше warn
     const prio = { error: 0, warn: 1, info: 2 };
-    out.sort((a, b) => {
+    visible.sort((a, b) => {
       const sa = (prio[a.severity] ?? 9) - (prio[b.severity] ?? 9);
       if (sa !== 0) return sa;
       const ta = Date.parse(a.created_at || a.checked_at || a.expires_at || '') || 0;
       const tb = Date.parse(b.created_at || b.checked_at || b.expires_at || '') || 0;
       return tb - ta;
     });
-    return out;
+    return visible;
   }
 
   /**

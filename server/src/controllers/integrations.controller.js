@@ -8,7 +8,8 @@ import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import logger from '../utils/logger.js';
-import { clearRuntimeNotifications } from '../utils/runtime-notifications.js';
+import { clearRuntimeNotifications, removeRuntimeNotificationsByIds } from '../utils/runtime-notifications.js';
+import { dismissNotificationIds } from '../utils/dismissedNotifications.js';
 import {
   isOzonSellerApiErrorMessage,
   parseOzonSellerApiHttpStatus
@@ -423,6 +424,54 @@ class IntegrationsController {
         return res.status(500).json({ ok: false, message: out?.error || 'Не удалось очистить уведомления' });
       }
       return res.status(200).json({ ok: true, data: { ok: true } });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  /**
+   * POST /api/integrations/notifications/dismiss
+   * Отметить уведомления просмотренными: скрыть для пользователя и удалить runtime-записи.
+   * Body: { ids: string[] }
+   */
+  async dismissNotifications(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const userId = req.user?.id ?? null;
+      if (userId == null || !Number.isFinite(Number(userId))) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      const rawIds = req.body?.ids ?? req.body?.notificationIds ?? [];
+      const ids = (Array.isArray(rawIds) ? rawIds : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean);
+      if (!ids.length) {
+        return res.status(400).json({ ok: false, message: 'Укажите ids уведомлений' });
+      }
+
+      const dismissed = await dismissNotificationIds(userId, ids);
+      if (!dismissed?.ok) {
+        return res.status(500).json({
+          ok: false,
+          message: dismissed?.error || 'Не удалось отметить уведомления',
+        });
+      }
+
+      const removed = await removeRuntimeNotificationsByIds(
+        ids,
+        tid == null ? {} : { profileId: tid }
+      );
+
+      return res.status(200).json({
+        ok: true,
+        data: {
+          dismissed: ids.length,
+          removedRuntime: removed?.removed || 0,
+        },
+      });
     } catch (e) {
       next(e);
     }
