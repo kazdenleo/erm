@@ -16,6 +16,14 @@ import {
 import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
 import { resolveOzonLogisticsCostsForReturn, computeOzonReturnUnitAmount } from '../../utils/ozonReturnAmount.js';
 import { calculateMinPrice, resolveSppPercent } from '../../utils/calculateMinPrice.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import {
+  getProfileLengthUnit,
+  lengthCmToDisplay,
+  lengthMmToDisplay,
+  lengthUnitLabel,
+} from '../../utils/displayUnits.js';
+import { PriceHistorySidePanel } from '../../pages/Prices/PriceHistorySidePanel.jsx';
 import './PriceDetailsModal.css';
 
 function toFiniteNumber(value) {
@@ -52,18 +60,29 @@ function PriceBreakdownValue({ children, formula, className = '', style, extra =
   );
 }
 
-function formatPackagingDimsCm(dimsMm) {
+function formatTriple(a, b, c, unitLabel) {
+  if (!a || !b || !c) return null;
+  return `${a}×${b}×${c} ${unitLabel}`;
+}
+
+function formatDimsFromMm(dimsMm, lengthUnit) {
   if (!dimsMm) return null;
-  const length = Number(dimsMm.length);
-  const width = Number(dimsMm.width);
-  const height = Number(dimsMm.height);
-  if (!(length > 0 && width > 0 && height > 0)) return null;
-  const toCm = (mm) => {
-    const cm = mm / 10;
-    if (Number.isInteger(cm)) return String(cm);
-    return String(Math.round(cm * 10) / 10);
-  };
-  return `${toCm(length)}×${toCm(width)}×${toCm(height)} см`;
+  return formatTriple(
+    lengthMmToDisplay(dimsMm.length, lengthUnit),
+    lengthMmToDisplay(dimsMm.width, lengthUnit),
+    lengthMmToDisplay(dimsMm.height, lengthUnit),
+    lengthUnitLabel(lengthUnit)
+  );
+}
+
+function formatDimsFromWbCm(wbCm, lengthUnit) {
+  if (!wbCm) return null;
+  return formatTriple(
+    lengthCmToDisplay(wbCm.length, lengthUnit),
+    lengthCmToDisplay(wbCm.width, lengthUnit),
+    lengthCmToDisplay(wbCm.height, lengthUnit),
+    lengthUnitLabel(lengthUnit)
+  );
 }
 
 function FromSettingsIcon({ title }) {
@@ -93,6 +112,36 @@ function BreakdownLabel({ children, fromSettings = false, title, className = '' 
       {children}
       {fromSettings ? <FromSettingsIcon title={tip} /> : null}
     </span>
+  );
+}
+
+function PriceCalcModal({
+  isOpen,
+  onClose,
+  title,
+  product,
+  marketplace,
+  children,
+  size = 'xl',
+  scrollable = true,
+}) {
+  const mp = ['ozon', 'wb', 'ym'].includes(String(marketplace || '').toLowerCase())
+    ? String(marketplace).toLowerCase()
+    : '';
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={title} size={size} scrollable={scrollable}>
+      <div className="price-details-layout">
+        <div className="price-details-layout__calc">{children}</div>
+        {product?.id ? (
+          <PriceHistorySidePanel
+            embedded
+            compact
+            productId={product.id}
+            defaultMarketplace={mp}
+          />
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
@@ -179,6 +228,9 @@ function PriceDetailsModalInner({
   ymEarlyShipmentDiscountPp = null,
   taxProfile = null,
 }) {
+  const { profile: accountProfile } = useAuth();
+  const lengthUnit = getProfileLengthUnit(accountProfile);
+
   if (!isOpen || !product || !marketplace) {
     return null;
   }
@@ -216,11 +268,13 @@ function PriceDetailsModalInner({
     })();
 
     return (
-      <Modal
+      <PriceCalcModal
         isOpen={isOpen}
         onClose={onClose}
         title="Минимальная цена — частные заказы"
-        size="medium"
+        product={product}
+        marketplace={marketplace}
+        size="xl"
       >
         <div className="price-details" style={{ padding: '20px' }}>
           <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
@@ -304,7 +358,7 @@ function PriceDetailsModalInner({
             </p>
           </div>
         </div>
-      </Modal>
+      </PriceCalcModal>
     );
   }
 
@@ -332,11 +386,12 @@ function PriceDetailsModalInner({
     const price = priceData != null && priceData !== '' ? Number(priceData) : null;
     const priceOk = price != null && !isNaN(price) && price > 0;
     return (
-      <Modal
+      <PriceCalcModal
         isOpen={isOpen}
         onClose={onClose}
         title={`Минимальная цена — ${marketplaceName}${titleScheme}`}
-        size="medium"
+        product={product}
+        marketplace={marketplace}
       >
         <div className="price-details" style={{ padding: '20px' }}>
           <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
@@ -357,7 +412,7 @@ function PriceDetailsModalInner({
             Детальный расчёт (комиссии, логистика, эквайринг) доступен после нажатия «Пересчитать и сохранить все минимальные цены» на странице цен.
           </p>
         </div>
-      </Modal>
+      </PriceCalcModal>
     );
   }
 
@@ -393,11 +448,12 @@ function PriceDetailsModalInner({
   const calculatedPriceStored = Number(priceData);
   if (!Number.isFinite(calculatedPriceStored) || calculatedPriceStored <= 0) {
     return (
-      <Modal
+      <PriceCalcModal
         isOpen={isOpen}
         onClose={onClose}
         title={`Минимальная цена — ${marketplaceName}${titleScheme}`}
-        size="medium"
+        product={product}
+        marketplace={marketplace}
       >
         <div className="price-details" style={{ padding: '20px' }}>
           <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
@@ -410,7 +466,7 @@ function PriceDetailsModalInner({
             Нажмите «Пересчитать и сохранить все минимальные цены» на странице цен.
           </p>
         </div>
-      </Modal>
+      </PriceCalcModal>
     );
   }
 
@@ -873,7 +929,8 @@ function PriceDetailsModalInner({
           : null)
       : null;
   const volumeLabel = headerVolume > 0 ? `${headerVolume.toFixed(2)} л` : 'нет габаритов';
-  const packagingLabel = formatPackagingDimsCm(extractGeneralDimensionsMm(product)) || 'нет размеров';
+  const packagingLabel = formatDimsFromMm(extractGeneralDimensionsMm(product), lengthUnit) || 'нет размеров';
+  const wbDimsLabel = formatDimsFromWbCm(wbCmDims, lengthUnit);
 
   const acquiringFromSettings =
     (marketplace === 'wb' && wbAcquiringPercent != null && wbAcquiringPercent !== undefined) ||
@@ -885,12 +942,12 @@ function PriceDetailsModalInner({
   const ymPaymentFromSettings = !!resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.fromSettings;
 
   return (
-    <Modal
+    <PriceCalcModal
       isOpen={isOpen}
       onClose={onClose}
       title={`💰 Расчёт минимальной цены · ${marketplaceName}${titleScheme}`}
-      size="large"
-      scrollable
+      product={product}
+      marketplace={marketplace}
     >
       <div className="price-details">
         <div className="price-details-header">
@@ -989,8 +1046,8 @@ function PriceDetailsModalInner({
               <BreakdownLabel fromSettings={marketplace === 'wb'}>
                 Логистика
                 {productVolume > 0
-                  ? wbCmDims && wbCmDims.length > 0
-                    ? ` (${productVolume.toFixed(2)} л, ${wbCmDims.length}×${wbCmDims.width}×${wbCmDims.height} см)`
+                  ? wbDimsLabel
+                    ? ` (${productVolume.toFixed(2)} л, ${wbDimsLabel})`
                     : ` (${productVolume.toFixed(2)} л)`
                   : ''}
                 :
@@ -1400,7 +1457,7 @@ function PriceDetailsModalInner({
           </div>
         )}
       </div>
-    </Modal>
+    </PriceCalcModal>
   );
 }
 

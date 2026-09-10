@@ -267,6 +267,32 @@
   max-width: 280px;
 }
 
+.price-history-embedded {
+  min-width: 0;
+  max-height: calc(100vh - 150px);
+  overflow: auto;
+  padding: 8px 10px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.price-history-embedded__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.price-history-embedded .price-history-table-wrap {
+  max-height: calc(100vh - 280px);
+}
+
+.price-history-embedded .price-history-table .reason {
+  max-width: 260px;
+}
+
 .product-prices-split {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.95fr);
