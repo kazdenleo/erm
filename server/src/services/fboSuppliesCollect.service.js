@@ -108,6 +108,10 @@ function mapItemCollectRow(row, kitMeta = null) {
   const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
   const collected = Math.max(0, parseInt(row.collected_quantity, 10) || 0);
   const progress = parseProgress(row.collect_component_progress);
+  const categoryId =
+    row.product_category_id != null && row.product_category_id !== ''
+      ? Number(row.product_category_id)
+      : null;
   const base = {
     id: Number(row.id),
     fboSupplyId: Number(row.fbo_supply_id),
@@ -117,6 +121,11 @@ function mapItemCollectRow(row, kitMeta = null) {
     name: row.name || row.product_name || null,
     productName: row.product_name || null,
     productImage: row.product_image || null,
+    productCategoryId: Number.isFinite(categoryId) && categoryId > 0 ? categoryId : null,
+    productCategoryName:
+      row.product_category_name != null && String(row.product_category_name).trim() !== ''
+        ? String(row.product_category_name).trim()
+        : null,
     planned,
     collected,
     remaining: Math.max(0, planned - collected),
@@ -163,6 +172,8 @@ const ITEM_SELECT = `
   i.id, i.fbo_supply_id, i.product_id, i.quantity, i.collected_quantity,
   i.collect_component_progress, i.sku, i.barcode, i.name,
   p.sku AS product_sku, p.name AS product_name,
+  p.user_category_id AS product_category_id,
+  (SELECT uc.name FROM user_categories uc WHERE uc.id = p.user_category_id) AS product_category_name,
   (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
 `;
 

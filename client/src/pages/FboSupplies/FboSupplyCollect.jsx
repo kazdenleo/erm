@@ -18,6 +18,7 @@ import { packedCellClass } from './fboPackedCell.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 
 const POLL_MS = 3000;
+const NO_CATEGORY_VALUE = '__none__';
 
 function fmtTime(iso) {
   if (!iso) return '—';
@@ -37,6 +38,29 @@ function closePrintSlot(slot) {
   }
 }
 
+/** Что сканировать для следующей позиции: SKU товара или недособранные комплектующие. */
+function getNextScanTargets(item) {
+  if (!item) return [];
+  if (item.isKit && Array.isArray(item.kitComponents) && item.kitComponents.length > 0) {
+    const pending = item.kitComponents.filter((c) => (Number(c.got) || 0) < (Number(c.need) || 1));
+    const list = pending.length ? pending : item.kitComponents;
+    return list.map((c) => ({
+      key: `c-${c.productId}`,
+      sku: c.sku || `#${c.productId}`,
+      need: Math.max(0, (Number(c.need) || 1) - (Number(c.got) || 0)) || Number(c.need) || 1,
+      labelNeed: Number(c.need) || 1,
+    }));
+  }
+  return [
+    {
+      key: `p-${item.productId || item.id}`,
+      sku: item.sku || item.productName || item.name || `#${item.id}`,
+      need: null,
+      labelNeed: null,
+    },
+  ];
+}
+
 export function FboSupplyCollect({
   supplyId,
   marketplace = 'ozon',
@@ -50,6 +74,7 @@ export function FboSupplyCollect({
   const [lastMsg, setLastMsg] = useState(null);
   const [overagePrompt, setOveragePrompt] = useState(null);
   const [manualPrintingId, setManualPrintingId] = useState(null);
+  const [categoryFilter, setCategoryFilter] = useState('');
   const scanLockRef = useRef(false);
   const { printProductLabel, printing, error: printHookError, setError: setPrintHookError } =
     useProductLabelPrint(printHelperUrl);
@@ -87,10 +112,46 @@ export function FboSupplyCollect({
 
   const items = state?.items || [];
   const searchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
+
+  const categoryOptions = useMemo(() => {
+    const map = new Map();
+    let hasNone = false;
+    for (const it of items) {
+      const id = it.productCategoryId;
+      if (id == null) {
+        hasNone = true;
+        continue;
+      }
+      if (!map.has(id)) {
+        map.set(id, it.productCategoryName || `Категория #${id}`);
+      }
+    }
+    const opts = [...map.entries()]
+      .map(([id, name]) => ({ value: String(id), label: name }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    if (hasNone) {
+      opts.push({ value: NO_CATEGORY_VALUE, label: 'Без категории' });
+    }
+    return opts;
+  }, [items]);
+
   const filteredItems = useMemo(() => {
-    if (!searchActive) return items;
-    return filterSupplyItemsByQuery(items, itemSearchQuery);
-  }, [items, itemSearchQuery, searchActive]);
+    let list = items;
+    if (categoryFilter) {
+      list = list.filter((it) => {
+        if (categoryFilter === NO_CATEGORY_VALUE) return it.productCategoryId == null;
+        return String(it.productCategoryId) === categoryFilter;
+      });
+    }
+    if (!searchActive) return list;
+    return filterSupplyItemsByQuery(list, itemSearchQuery);
+  }, [items, itemSearchQuery, searchActive, categoryFilter]);
+
+  const nextItem = useMemo(
+    () => filteredItems.find((it) => !it.complete) || null,
+    [filteredItems]
+  );
+  const nextTargets = useMemo(() => getNextScanTargets(nextItem), [nextItem]);
 
   const sendToPrinter = useCallback(
     async (printInfo, printSlot = null) => {
@@ -238,7 +299,7 @@ export function FboSupplyCollect({
       <p className="fbo-packing-hint">
         Сканируйте товар из поставки или комплектующие комплекта. Этикетка печатается для обычного
         товара сразу; для комплекта — только после скана всего SKU комплекта или всех комплектующих.
-        Несколько сотрудников могут работать одновременно; прогресс общий.
+        Фильтр категории только скрывает строки — скан из другой категории всё равно принимается.
       </p>
 
       {(state?.activeUsers || []).length > 0 ? (
@@ -247,11 +308,28 @@ export function FboSupplyCollect({
         </div>
       ) : null}
 
-      <div className="fbo-collect-summary muted-hint">
-        Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
-        {state?.itemCount != null
-          ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
-          : null}
+      <div className="fbo-collect-toolbar">
+        <div className="fbo-collect-summary muted-hint">
+          Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
+          {state?.itemCount != null
+            ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
+            : null}
+        </div>
+        <label className="fbo-collect-category-filter">
+          <span className="muted-hint">Категория</span>
+          <select
+            className="form-select form-select-sm"
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+          >
+            <option value="">Все категории</option>
+            {categoryOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="fbo-packing-scan-row">
@@ -265,6 +343,38 @@ export function FboSupplyCollect({
           enableGlobalCapture
         />
       </div>
+
+      {nextItem ? (
+        <div className="fbo-collect-next" aria-live="polite">
+          <div className="fbo-collect-next__label">Следующий к сборке</div>
+          <div className="fbo-collect-next__name">
+            {nextItem.productName || nextItem.name || nextItem.sku || '—'}
+            {nextItem.isKit ? (
+              <span className="fbo-collect-next__badge">комплект</span>
+            ) : null}
+          </div>
+          <div className="fbo-collect-next__skus">
+            {nextTargets.map((t) => (
+              <span key={t.key} className="fbo-collect-next__sku">
+                {t.sku}
+                {t.need != null && t.need > 0 ? (
+                  <span className="fbo-collect-next__qty">×{t.need}</span>
+                ) : null}
+              </span>
+            ))}
+          </div>
+          <div className="fbo-collect-next__progress muted-hint">
+            {nextItem.collected} / {nextItem.planned}
+            {nextItem.isKit && nextItem.kitProgress?.needPieces > 0
+              ? ` · к комплекту ${nextItem.kitProgress.scannedPieces}/${nextItem.kitProgress.needPieces}`
+              : null}
+          </div>
+        </div>
+      ) : filteredItems.length > 0 ? (
+        <div className="fbo-collect-next fbo-collect-next--done">
+          <div className="fbo-collect-next__skus">Всё собрано по текущему фильтру</div>
+        </div>
+      ) : null}
 
       {lastMsg ? <div className="alert alert-success fbo-collect-flash">{lastMsg}</div> : null}
       {err || printHookError ? (
@@ -288,19 +398,21 @@ export function FboSupplyCollect({
             {filteredItems.length === 0 ? (
               <tr>
                 <td colSpan={5} className="text-muted">
-                  {searchActive ? 'Ничего не найдено' : 'Нет позиций'}
+                  {searchActive || categoryFilter ? 'Ничего не найдено' : 'Нет позиций'}
                 </td>
               </tr>
             ) : (
               filteredItems.map((it) => {
                 const cls = packedCellClass(it.collected, it.planned);
                 const comps = it.kitComponents || [];
+                const isNext = nextItem && it.id === nextItem.id;
                 return (
                   <tr
                     key={it.id}
                     className={[
                       it.complete ? 'fbo-item-row--complete' : '',
                       it.collected > 0 && !it.complete ? 'fbo-item-row--partial' : '',
+                      isNext ? 'fbo-collect-row--next' : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
