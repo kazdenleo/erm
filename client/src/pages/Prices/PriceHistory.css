@@ -269,12 +269,12 @@
 
 .price-history-embedded {
   min-width: 0;
-  max-height: calc(100vh - 150px);
-  overflow: auto;
-  padding: 8px 10px 10px;
+  overflow: visible;
+  max-height: none;
+  padding: 4px 4px 8px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.9);
 }
 
 .price-history-embedded__head {
@@ -286,11 +286,25 @@
 }
 
 .price-history-embedded .price-history-table-wrap {
-  max-height: calc(100vh - 280px);
+  max-height: none;
+  overflow: visible;
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+.price-history-embedded .price-history-table th {
+  position: static;
+  background: #eef2f7;
+  color: #64748b;
 }
 
 .price-history-embedded .price-history-table .reason {
-  max-width: 260px;
+  max-width: none;
+}
+
+.price-history-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
 }
 
 .product-prices-split {

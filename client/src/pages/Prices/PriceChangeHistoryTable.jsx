@@ -52,6 +52,7 @@ export function PriceChangeHistoryTable({
   error = null,
   emptyText = 'Пока нет изменений цен за выбранный период.',
   hideProductColumn = false,
+  hideMarketplaceColumn = false,
   onProductClick,
 }) {
   const visible = (Array.isArray(items) ? items : []).filter((row) => {
@@ -80,7 +81,7 @@ export function PriceChangeHistoryTable({
             <tr>
               <th>Когда</th>
               {hideProductColumn ? null : <th>Товар</th>}
-              <th>МП</th>
+              {hideMarketplaceColumn ? null : <th>МП</th>}
               <th>Минимум</th>
               <th>Факт. цена</th>
               <th>Основание</th>
@@ -116,7 +117,9 @@ export function PriceChangeHistoryTable({
                       )}
                     </td>
                   )}
-                  <td className="nowrap">{row.marketplaceLabel || row.marketplace}</td>
+                  {hideMarketplaceColumn ? null : (
+                    <td className="nowrap">{row.marketplaceLabel || row.marketplace}</td>
+                  )}
                   <td className={`nowrap${minChanged ? ' price-history-delta-changed' : ''}`}>
                     {formatHistoryDelta(row.minPriceBefore, row.minPriceAfter)}
                   </td>
