@@ -21,6 +21,59 @@ function formatRub(n) {
   return `${Math.round(Number(n))} ₽`;
 }
 
+function MinMarkupRubPercentPair({
+  idPrefix,
+  title,
+  hint,
+  rubValue,
+  percentValue,
+  rubPlaceholder,
+  hasCost,
+  onRubChange,
+  onPercentChange,
+}) {
+  return (
+    <div className="col-md-6 col-xl-3">
+      <label className="form-label" htmlFor={`${idPrefix}-rub`}>
+        {title}
+      </label>
+      <div className="d-flex gap-2 align-items-start">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <input
+            id={`${idPrefix}-rub`}
+            type="number"
+            className="form-control form-control-sm"
+            step="0.01"
+            min="0"
+            placeholder={rubPlaceholder}
+            value={rubValue}
+            onChange={(e) => onRubChange(e.target.value)}
+            aria-label={`${title}, рубли`}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>₽</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <input
+            id={`${idPrefix}-pct`}
+            type="number"
+            className="form-control form-control-sm"
+            step="0.01"
+            min="0"
+            placeholder={hasCost ? '0' : '—'}
+            value={percentValue}
+            onChange={(e) => onPercentChange(e.target.value)}
+            aria-label={`${title}, процент от себестоимости`}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>% от себест.</div>
+        </div>
+      </div>
+      <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+        {hasCost ? hint : 'Укажите себестоимость, чтобы связать ₽ и %'}
+      </div>
+    </div>
+  );
+}
+
 function mpPack(product, marketplace) {
   return product?.marketplacePrices?.[marketplace] || {};
 }
@@ -285,110 +338,55 @@ export function ProductPricesTab({
       <div className="row g-3 mt-2">
         <div className="col-12">
           <h3 className="h6 mb-0">Мин. наценки</h3>
-        </div>
-
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="minPrice">
-            Мин. наценка (частные), ₽
-          </label>
-          <input
-            id="minPrice"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder="50"
-            value={formData.minPrice}
-            onChange={(e) => handleChange('minPrice', e.target.value)}
-          />
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Целевая прибыль для частных (ручных) заказов
+          <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>
+            ₽ и % от себестоимости связаны: меняете одно — пересчитывается другое. В карточке хранятся рубли.
           </div>
         </div>
 
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="minMarkupPercent">
-            Мин. наценка (частные), %
-          </label>
-          <input
-            id="minMarkupPercent"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder={parsePositiveCost(formData.cost) == null ? '—' : '0'}
-            value={formData.minMarkupPercent}
-            disabled={parsePositiveCost(formData.cost) == null}
-            onChange={(e) => handleChange('minMarkupPercent', e.target.value)}
-          />
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            {parsePositiveCost(formData.cost) == null
-              ? 'Укажите себестоимость, чтобы задать %'
-              : '% от себестоимости (для частных заказов)'}
-          </div>
-        </div>
-
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="minProfitOzon">
-            Мин. наценка Ozon, ₽
-          </label>
-          <input
-            id="minProfitOzon"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder="как общая"
-            value={formData.minProfitOzon}
-            onChange={(e) => handleChange('minProfitOzon', e.target.value)}
-          />
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Для расчёта мин. цены Ozon (пусто — общая)
-          </div>
-        </div>
-
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="minProfitWb">
-            Мин. наценка WB, ₽
-          </label>
-          <input
-            id="minProfitWb"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder="как общая"
-            value={formData.minProfitWb}
-            onChange={(e) => handleChange('minProfitWb', e.target.value)}
-          />
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Для расчёта мин. цены Wildberries (пусто — общая)
-          </div>
-        </div>
-
-        <div className="col-md-3">
-          <label className="form-label" htmlFor="minProfitYm">
-            Мин. наценка Я.Маркет, ₽
-          </label>
-          <input
-            id="minProfitYm"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 200 }}
-            step="0.01"
-            min="0"
-            placeholder="как общая"
-            value={formData.minProfitYm}
-            onChange={(e) => handleChange('minProfitYm', e.target.value)}
-          />
-          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-            Для расчёта мин. цены Яндекс.Маркет (пусто — общая)
-          </div>
-        </div>
+        <MinMarkupRubPercentPair
+          idPrefix="minPrice"
+          title="Мин. наценка (частные)"
+          hint="Целевая прибыль для частных (ручных) заказов"
+          rubValue={formData.minPrice}
+          percentValue={formData.minMarkupPercent}
+          rubPlaceholder="50"
+          hasCost={parsePositiveCost(formData.cost) != null}
+          onRubChange={(v) => handleChange('minPrice', v)}
+          onPercentChange={(v) => handleChange('minMarkupPercent', v)}
+        />
+        <MinMarkupRubPercentPair
+          idPrefix="minProfitOzon"
+          title="Мин. наценка Ozon"
+          hint="Для расчёта мин. цены Ozon (пусто — общая)"
+          rubValue={formData.minProfitOzon}
+          percentValue={formData.minProfitOzonPercent}
+          rubPlaceholder="как общая"
+          hasCost={parsePositiveCost(formData.cost) != null}
+          onRubChange={(v) => handleChange('minProfitOzon', v)}
+          onPercentChange={(v) => handleChange('minProfitOzonPercent', v)}
+        />
+        <MinMarkupRubPercentPair
+          idPrefix="minProfitWb"
+          title="Мин. наценка WB"
+          hint="Для расчёта мин. цены Wildberries (пусто — общая)"
+          rubValue={formData.minProfitWb}
+          percentValue={formData.minProfitWbPercent}
+          rubPlaceholder="как общая"
+          hasCost={parsePositiveCost(formData.cost) != null}
+          onRubChange={(v) => handleChange('minProfitWb', v)}
+          onPercentChange={(v) => handleChange('minProfitWbPercent', v)}
+        />
+        <MinMarkupRubPercentPair
+          idPrefix="minProfitYm"
+          title="Мин. наценка Я.Маркет"
+          hint="Для расчёта мин. цены Яндекс.Маркет (пусто — общая)"
+          rubValue={formData.minProfitYm}
+          percentValue={formData.minProfitYmPercent}
+          rubPlaceholder="как общая"
+          hasCost={parsePositiveCost(formData.cost) != null}
+          onRubChange={(v) => handleChange('minProfitYm', v)}
+          onPercentChange={(v) => handleChange('minProfitYmPercent', v)}
+        />
       </div>
 
       <div className="row g-3 mt-2">

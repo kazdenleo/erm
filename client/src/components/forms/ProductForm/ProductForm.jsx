@@ -1058,6 +1058,33 @@ function minMarkupPercentToRub(percent, cost) {
   return String(Math.round(c * (p / 100) * 100) / 100);
 }
 
+const MIN_MARKUP_PAIRS = {
+  minPrice: { group: 'private', kind: 'rub', rub: 'minPrice', percent: 'minMarkupPercent' },
+  minMarkupPercent: { group: 'private', kind: 'percent', rub: 'minPrice', percent: 'minMarkupPercent' },
+  minProfitOzon: { group: 'ozon', kind: 'rub', rub: 'minProfitOzon', percent: 'minProfitOzonPercent' },
+  minProfitOzonPercent: { group: 'ozon', kind: 'percent', rub: 'minProfitOzon', percent: 'minProfitOzonPercent' },
+  minProfitWb: { group: 'wb', kind: 'rub', rub: 'minProfitWb', percent: 'minProfitWbPercent' },
+  minProfitWbPercent: { group: 'wb', kind: 'percent', rub: 'minProfitWb', percent: 'minProfitWbPercent' },
+  minProfitYm: { group: 'ym', kind: 'rub', rub: 'minProfitYm', percent: 'minProfitYmPercent' },
+  minProfitYmPercent: { group: 'ym', kind: 'percent', rub: 'minProfitYm', percent: 'minProfitYmPercent' },
+};
+
+const MIN_MARKUP_PAIR_KEYS = [
+  { group: 'private', rub: 'minPrice', percent: 'minMarkupPercent' },
+  { group: 'ozon', rub: 'minProfitOzon', percent: 'minProfitOzonPercent' },
+  { group: 'wb', rub: 'minProfitWb', percent: 'minProfitWbPercent' },
+  { group: 'ym', rub: 'minProfitYm', percent: 'minProfitYmPercent' },
+];
+
+function defaultMinMarkupLastEdited() {
+  return { private: 'rub', ozon: 'rub', wb: 'rub', ym: 'rub' };
+}
+
+function percentFromStoredRub(v, cost) {
+  if (v == null || v === '' || Number.isNaN(Number(v))) return '';
+  return minMarkupRubToPercent(String(v), cost);
+}
+
 const EMPTY_PRODUCT_FORM_DATA = {
     name: '',
     sku: '',
@@ -1075,6 +1102,9 @@ const EMPTY_PRODUCT_FORM_DATA = {
     minProfitOzon: '',
     minProfitWb: '',
     minProfitYm: '',
+    minProfitOzonPercent: '',
+    minProfitWbPercent: '',
+    minProfitYmPercent: '',
     maxPriceOzon: '',
     maxPriceWb: '',
     maxPriceYm: '',
@@ -1759,8 +1789,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const ymAttributeValuesRef = useRef(null);
   const onCancelRef = useRef(_onCancel);
   const mpBaselineSettledForIdRef = useRef(null);
-  /** Последнее поле мин. наценки, которое правил пользователь: 'rub' | 'percent'. */
-  const minMarkupLastEditedRef = useRef('rub');
+  /** Последнее поле мин. наценки в каждой группе: 'rub' | 'percent'. */
+  const minMarkupLastEditedRef = useRef(defaultMinMarkupLastEdited());
   const [printHelperUrl, setPrintHelperUrl] = useState('');
   const { printProductLabel, printing: labelPrinting, error: labelPrintError } =
     useProductLabelPrint(printHelperUrl);
@@ -1938,7 +1968,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setImageError('');
       ozonFilledFromProductIdRef.current = null;
       ozonSyncedFromFetchedRef.current = null;
-      minMarkupLastEditedRef.current = 'rub';
+      minMarkupLastEditedRef.current = defaultMinMarkupLastEdited();
     } else {
       prevProductPropIdRef.current = null;
       setCurrentProduct(null);
@@ -1972,7 +2002,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setActiveTab(['main', 'price', 'ozon', 'wb', 'ym', 'competitors'].includes(t) ? t : 'main');
       ozonFilledFromProductIdRef.current = null;
       ozonSyncedFromFetchedRef.current = null;
-      minMarkupLastEditedRef.current = 'rub';
+      minMarkupLastEditedRef.current = defaultMinMarkupLastEdited();
     }
   }, [product]);
 
@@ -2034,7 +2064,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         full_product: currentProduct
       });
 
-      minMarkupLastEditedRef.current = 'rub';
+      minMarkupLastEditedRef.current = defaultMinMarkupLastEdited();
       setFormData({
         name: currentProduct.name || '',
         sku: currentProduct.sku || '',
@@ -2058,12 +2088,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           ? String(currentProduct.minPrice)
           : '',
         minMarkupPercent: (() => {
-          const rub =
-            currentProduct.minPrice != null && currentProduct.minPrice !== '' && !isNaN(Number(currentProduct.minPrice))
-              ? String(currentProduct.minPrice)
-              : '';
           const cost = currentProduct.cost || '';
-          return rub !== '' ? minMarkupRubToPercent(rub, cost) : '';
+          return percentFromStoredRub(currentProduct.minPrice, cost);
         })(),
         minProfitOzon: (() => {
           const v = currentProduct.minProfitOzon ?? currentProduct.min_profit_ozon;
@@ -2077,6 +2103,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
           const v = currentProduct.minProfitYm ?? currentProduct.min_profit_ym;
           return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
         })(),
+        minProfitOzonPercent: percentFromStoredRub(
+          currentProduct.minProfitOzon ?? currentProduct.min_profit_ozon,
+          currentProduct.cost || ''
+        ),
+        minProfitWbPercent: percentFromStoredRub(
+          currentProduct.minProfitWb ?? currentProduct.min_profit_wb,
+          currentProduct.cost || ''
+        ),
+        minProfitYmPercent: percentFromStoredRub(
+          currentProduct.minProfitYm ?? currentProduct.min_profit_ym,
+          currentProduct.cost || ''
+        ),
         maxPriceOzon: (() => {
           const v =
             currentProduct.maxPriceOzon ??
@@ -4941,41 +4979,50 @@ export const ProductForm = React.forwardRef(function ProductForm({
       } else {
         setFormData(prev => ({ ...prev, [field]: value }));
       }
-    } else if (field === 'minPrice') {
-      minMarkupLastEditedRef.current = 'rub';
-      setFormData((prev) => ({
-        ...prev,
-        minPrice: value,
-        minMarkupPercent: minMarkupRubToPercent(value, prev.cost),
-      }));
-    } else if (field === 'minMarkupPercent') {
-      minMarkupLastEditedRef.current = 'percent';
+    } else if (MIN_MARKUP_PAIRS[field]) {
+      const pair = MIN_MARKUP_PAIRS[field];
+      minMarkupLastEditedRef.current = {
+        ...minMarkupLastEditedRef.current,
+        [pair.group]: pair.kind,
+      };
       setFormData((prev) => {
+        if (pair.kind === 'rub') {
+          return {
+            ...prev,
+            [pair.rub]: value,
+            [pair.percent]: minMarkupRubToPercent(value, prev.cost),
+          };
+        }
         const cost = parsePositiveCost(prev.cost);
         if (cost == null) {
-          return { ...prev, minMarkupPercent: value };
+          return { ...prev, [pair.percent]: value };
         }
         const rub = value === '' || value == null ? '' : minMarkupPercentToRub(value, prev.cost);
         return {
           ...prev,
-          minMarkupPercent: value,
-          ...(rub !== '' || value === '' ? { minPrice: rub } : {}),
+          [pair.percent]: value,
+          ...(rub !== '' || value === '' ? { [pair.rub]: rub } : {}),
         };
       });
     } else if (field === 'cost') {
       setFormData((prev) => {
         const next = { ...prev, cost: value };
         const cost = parsePositiveCost(value);
-        if (cost == null) {
-          next.minMarkupPercent = '';
-          return next;
-        }
-        if (minMarkupLastEditedRef.current === 'percent' && prev.minMarkupPercent !== '' && prev.minMarkupPercent != null) {
-          const rub = minMarkupPercentToRub(prev.minMarkupPercent, value);
-          if (rub !== '') next.minPrice = rub;
-          next.minMarkupPercent = prev.minMarkupPercent;
-        } else {
-          next.minMarkupPercent = minMarkupRubToPercent(prev.minPrice, value);
+        const last = minMarkupLastEditedRef.current || defaultMinMarkupLastEdited();
+        for (const pair of MIN_MARKUP_PAIR_KEYS) {
+          if (cost == null) {
+            if (last[pair.group] !== 'percent') {
+              next[pair.percent] = '';
+            }
+            continue;
+          }
+          if (last[pair.group] === 'percent' && prev[pair.percent] !== '' && prev[pair.percent] != null) {
+            const rub = minMarkupPercentToRub(prev[pair.percent], value);
+            if (rub !== '') next[pair.rub] = rub;
+            next[pair.percent] = prev[pair.percent];
+          } else {
+            next[pair.percent] = minMarkupRubToPercent(prev[pair.rub], value);
+          }
         }
         return next;
       });
