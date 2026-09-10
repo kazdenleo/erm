@@ -133,7 +133,7 @@ async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
   let profileFilter = '';
   if (pid != null) {
     params.push(pid);
-    profileFilter = ` AND (comp.profile_id = $${params.length} OR kit.profile_id = $${params.length})`;
+    profileFilter = ` AND (comp.profile_id = $${params.length} OR p.profile_id = $${params.length})`;
   }
 
   const r = await query(
@@ -141,8 +141,8 @@ async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
             kc.component_product_id AS scanned_component_id,
             comp.sku AS scanned_component_sku
      FROM fbo_supply_items i
-     JOIN products kit ON kit.id = i.product_id
-     JOIN kit_components kc ON kc.kit_product_id = kit.id
+     JOIN products p ON p.id = i.product_id
+     JOIN kit_components kc ON kc.kit_product_id = p.id
      JOIN products comp ON comp.id = kc.component_product_id
      WHERE i.fbo_supply_id = $1${profileFilter}
        AND (
