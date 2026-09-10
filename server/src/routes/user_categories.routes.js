@@ -9,6 +9,16 @@ import userCategoriesController from '../controllers/user_categories.controller.
 
 const router = express.Router();
 
+router.put(
+  '/attributes/:attributeId/mp-links',
+  wrapAsync(userCategoriesController.updateAttributeMpLinksBulk.bind(userCategoriesController))
+);
+
+router.put(
+  '/dedicated-mp-links/:fieldKey',
+  wrapAsync(userCategoriesController.updateDedicatedMpLinksBulk.bind(userCategoriesController))
+);
+
 // Получить все пользовательские категории
 router.get('/', wrapAsync(userCategoriesController.getAll.bind(userCategoriesController)));
 

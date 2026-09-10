@@ -92,6 +92,18 @@
   margin-left: 8px;
 }
 
+.attributes-links-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.attributes-links-cell .mp-field-link-toggles {
+  margin-left: 0 !important;
+}
+
 .categories-cell {
   max-width: 280px;
   overflow: hidden;
@@ -229,10 +241,35 @@
   font-size: 13px;
 }
 
-.attribute-cat-mp-list {
+.attribute-mp-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.attribute-mp-scope-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-bottom: 10px;
+}
+
+.attribute-mp-scope-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.attribute-mp-apply {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.attribute-category-mp-links .checkbox-label {
+  flex-wrap: wrap;
 }
 
 .attribute-cat-mp-card {

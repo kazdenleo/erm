@@ -3,7 +3,7 @@
  * HTTP контроллер для пользовательских категорий
  */
 
-import { query } from '../config/database.js';
+import { query, transaction } from '../config/database.js';
 import logger from '../utils/logger.js';
 import integrationsService from '../services/integrations.service.js';
 import categoryMarketplaceCommissionsService from '../services/categoryMarketplaceCommissions.service.js';
@@ -11,7 +11,12 @@ import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { productAttributeListFilter } from '../utils/productAttributeTenant.js';
 import { normalizeMpLinks, normalizeAttributeMpLinksMap } from '../utils/attributeMpLinks.js';
-import { normalizeCategoryDedicatedCharcLinks, serializeCategoryDedicatedCharcLinks } from '../utils/productMpFieldLinks.js';
+import {
+  DEDICATED_MAIN_MAP_KEYS,
+  listAddedDedicatedMainKeys,
+  normalizeCategoryDedicatedCharcLinks,
+  serializeCategoryDedicatedCharcLinks,
+} from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
 import { normalizeCategoryTnVedCode, normalizeTnVedDigits } from '../utils/tnVedAttribute.js';
 
@@ -569,6 +574,151 @@ class UserCategoriesController {
       }
       
       return res.status(200).json({ ok: true, data: category });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /api/user-categories/attributes/:attributeId/mp-links
+   * Связь ERP-атрибута с характеристиками МП: все категории аккаунта или выбранные.
+   */
+  async updateAttributeMpLinksBulk(req, res, next) {
+    try {
+      const { attributeId } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const numAttrId = parseInt(attributeId, 10);
+      if (!numAttrId || Number.isNaN(numAttrId)) {
+        return res.status(400).json({ ok: false, message: 'Некорректный атрибут' });
+      }
+      const allowed = await filterUsableAttributeIds([numAttrId], tid);
+      if (!allowed.length) {
+        return res.status(404).json({ ok: false, message: 'Атрибут не найден' });
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const links = normalizeMpLinks(body.mp_links !== undefined ? body.mp_links : body);
+      const scope = String(body.scope || '').toLowerCase() === 'selected' ? 'selected' : 'all';
+      let catIds = [];
+      if (scope === 'all') {
+        const cats = await query('SELECT id FROM user_categories WHERE profile_id = $1', [tid]);
+        catIds = (cats.rows || []).map((row) => row.id);
+      } else {
+        const requested = [...new Set(
+          (Array.isArray(body.category_ids) ? body.category_ids : [])
+            .map((id) => parseInt(id, 10))
+            .filter((n) => n && !Number.isNaN(n))
+        )];
+        if (!requested.length) {
+          return res.status(400).json({ ok: false, message: 'Выберите хотя бы одну категорию' });
+        }
+        const cats = await query(
+          'SELECT id FROM user_categories WHERE profile_id = $1 AND id = ANY($2::bigint[])',
+          [tid, requested]
+        );
+        catIds = (cats.rows || []).map((row) => row.id);
+        if (!catIds.length) {
+          return res.status(404).json({ ok: false, message: 'Категории не найдены' });
+        }
+      }
+      await transaction(async (client) => {
+        for (const categoryId of catIds) {
+          await client.query(
+            `INSERT INTO category_attributes (user_category_id, attribute_id, mp_links)
+             VALUES ($1, $2, $3::jsonb)
+             ON CONFLICT (user_category_id, attribute_id)
+             DO UPDATE SET mp_links = EXCLUDED.mp_links`,
+            [categoryId, numAttrId, JSON.stringify(links)]
+          );
+        }
+      });
+      return res.status(200).json({
+        ok: true,
+        data: {
+          updated: catIds.length,
+          mp_links: links,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /api/user-categories/dedicated-mp-links/:fieldKey
+   * Связь системного поля «Основное» с характеристиками МП: все категории или выбранные.
+   */
+  async updateDedicatedMpLinksBulk(req, res, next) {
+    try {
+      const fieldKey = String(req.params.fieldKey || '').trim();
+      if (!DEDICATED_MAIN_MAP_KEYS.includes(fieldKey)) {
+        return res.status(400).json({ ok: false, message: 'Неизвестное поле карточки' });
+      }
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const links = normalizeMpLinks(body.mp_links !== undefined ? body.mp_links : body);
+      const slot = {
+        ozon: links.ozon || [],
+        wb: links.wb || [],
+        ym: links.ym || [],
+      };
+      const hasLinks = ['ozon', 'wb', 'ym'].some((mp) => slot[mp].length > 0);
+      const scope = String(body.scope || '').toLowerCase() === 'selected' ? 'selected' : 'all';
+      let catRows = [];
+      if (scope === 'all') {
+        const cats = await query(
+          'SELECT id, mp_field_links FROM user_categories WHERE profile_id = $1',
+          [tid]
+        );
+        catRows = cats.rows || [];
+      } else {
+        const requested = [...new Set(
+          (Array.isArray(body.category_ids) ? body.category_ids : [])
+            .map((id) => parseInt(id, 10))
+            .filter((n) => n && !Number.isNaN(n))
+        )];
+        if (!requested.length) {
+          return res.status(400).json({ ok: false, message: 'Выберите хотя бы одну категорию' });
+        }
+        const cats = await query(
+          'SELECT id, mp_field_links FROM user_categories WHERE profile_id = $1 AND id = ANY($2::bigint[])',
+          [tid, requested]
+        );
+        catRows = cats.rows || [];
+        if (!catRows.length) {
+          return res.status(404).json({ ok: false, message: 'Категории не найдены' });
+        }
+      }
+      await transaction(async (client) => {
+        for (const row of catRows) {
+          const current = normalizeCategoryDedicatedCharcLinks(row.mp_field_links);
+          const added = listAddedDedicatedMainKeys(row.mp_field_links);
+          const nextAdded = hasLinks
+            ? (added.includes(fieldKey) ? added : [...added, fieldKey])
+            : added.filter((key) => key !== fieldKey);
+          current[fieldKey] = slot;
+          const serialized = serializeCategoryDedicatedCharcLinks(current, nextAdded);
+          await client.query(
+            `UPDATE user_categories
+             SET mp_field_links = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2`,
+            [JSON.stringify(serialized), row.id]
+          );
+        }
+      });
+      return res.status(200).json({
+        ok: true,
+        data: {
+          updated: catRows.length,
+          field_key: fieldKey,
+          mp_links: slot,
+        },
+      });
     } catch (error) {
       next(error);
     }

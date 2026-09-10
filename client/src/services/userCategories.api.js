@@ -63,6 +63,29 @@ export const userCategoriesApi = {
     return response.data;
   },
 
+  /**
+   * Связь атрибута с характеристиками МП сразу для всех категорий или выбранных.
+   * @param {string|number} attributeId
+   * @param {{ mp_links: object, scope?: 'all'|'selected', category_ids?: Array<string|number> }} payload
+   */
+  async updateAttributeMpLinksBulk(attributeId, payload) {
+    const response = await api.put(`/user-categories/attributes/${attributeId}/mp-links`, payload);
+    return response.data;
+  },
+
+  /**
+   * Связь системного поля «Основное» с характеристиками МП для всех или выбранных категорий.
+   * @param {string} fieldKey name | sku | description | …
+   * @param {{ mp_links: object, scope?: 'all'|'selected', category_ids?: Array<string|number> }} payload
+   */
+  async updateDedicatedMpLinksBulk(fieldKey, payload) {
+    const response = await api.put(
+      `/user-categories/dedicated-mp-links/${encodeURIComponent(fieldKey)}`,
+      payload
+    );
+    return response.data;
+  },
+
   async delete(id) {
     const response = await api.delete(`/user-categories/${id}`);
     return response.data;
