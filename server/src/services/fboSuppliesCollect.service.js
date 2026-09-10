@@ -77,6 +77,8 @@ function kitProgressSummary(progress, aggregatedComponents) {
     scannedPieces += Math.min(got, need);
     lines.push({
       componentProductId: Number(c.component_product_id),
+      sku: c.sku || null,
+      name: c.name || null,
       need,
       got: Math.min(got, need),
     });
@@ -108,9 +110,20 @@ function mapItemCollectRow(row, kitMeta = null) {
     complete: planned > 0 && collected >= planned,
     over: collected > planned,
     isKit: kitMeta?.isKit === true,
+    kitComponents: null,
     kitProgress: null,
   };
   if (kitMeta?.isKit && kitMeta.components?.length) {
+    base.kitComponents = kitMeta.components.map((c) => ({
+      productId: Number(c.component_product_id),
+      sku: c.sku || null,
+      name: c.name || null,
+      need: Math.max(1, parseInt(c.quantity, 10) || 1),
+      got: Math.min(
+        Math.max(0, parseInt(progress[String(c.component_product_id)], 10) || 0),
+        Math.max(1, parseInt(c.quantity, 10) || 1)
+      ),
+    }));
     base.kitProgress = kitProgressSummary(progress, kitMeta.components);
   }
   return base;
@@ -256,6 +269,7 @@ async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
 async function loadKitMetaMap(productIds) {
   const map = new Map();
   const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((n) => n > 0))];
+  const allCompIds = new Set();
   await Promise.all(
     ids.map(async (pid) => {
       const isKit = await isKitProductId(pid);
@@ -264,9 +278,35 @@ async function loadKitMetaMap(productIds) {
         return;
       }
       const components = aggregateKitComponents(await getKitComponents(pid));
+      for (const c of components) allCompIds.add(Number(c.component_product_id));
       map.set(pid, { isKit: true, components });
     })
   );
+  const skuById = new Map();
+  const compIds = [...allCompIds];
+  if (compIds.length) {
+    const r = await query(
+      `SELECT id, sku, name FROM products WHERE id = ANY($1::bigint[])`,
+      [compIds]
+    );
+    for (const row of r.rows || []) {
+      skuById.set(Number(row.id), {
+        sku: row.sku != null ? String(row.sku).trim() : null,
+        name: row.name != null ? String(row.name).trim() : null,
+      });
+    }
+  }
+  for (const meta of map.values()) {
+    if (!meta.isKit) continue;
+    meta.components = (meta.components || []).map((c) => {
+      const info = skuById.get(Number(c.component_product_id)) || {};
+      return {
+        ...c,
+        sku: info.sku || null,
+        name: info.name || null,
+      };
+    });
+  }
   return map;
 }
 

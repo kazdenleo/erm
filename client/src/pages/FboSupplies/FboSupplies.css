@@ -473,6 +473,28 @@
   margin-top: 2px;
 }
 
+.fbo-collect-kit-comps {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  list-style: disc;
+}
+
+.fbo-collect-kit-comps li {
+  margin: 1px 0;
+}
+
+.fbo-collect-print-btn {
+  padding: 2px 6px;
+  line-height: 1.2;
+  text-decoration: none !important;
+  font-size: 16px;
+}
+
+.fbo-collect-print-btn:disabled {
+  opacity: 0.45;
+}
+
 .fbo-collect-recent {
   margin-top: 16px;
 }
