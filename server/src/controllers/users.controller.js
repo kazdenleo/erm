@@ -11,6 +11,8 @@ import {
   replaceUserAccessGrants,
   isAccountAdminLike,
 } from '../utils/userAccessScope.js';
+import { ensurePhoneAvailable, preparePhoneFields } from '../utils/userPhone.js';
+import { parseBirthDate } from '../utils/userBirthDate.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 
@@ -28,9 +30,45 @@ function isAccountAdmin(user) {
   return isAccountAdminLike(user);
 }
 
+function uniqueConstraintMessage(err, fallback = 'Такая запись уже существует') {
+  const detail = String(err?.detail || err?.constraint || '');
+  if (/phone/i.test(detail)) {
+    return 'Пользователь с таким телефоном уже существует';
+  }
+  if (/email/i.test(detail)) {
+    return 'Пользователь с таким email уже существует';
+  }
+  return fallback;
+}
+
+function applyPhoneToUpdates(updates, phoneValue) {
+  const fields = preparePhoneFields(phoneValue);
+  if (fields.error) {
+    const err = new Error(fields.error);
+    err.status = 400;
+    err.statusCode = 400;
+    throw err;
+  }
+  updates.phone = fields.phone;
+  updates.phone_normalized = fields.phone_normalized;
+  return fields;
+}
+
+function applyBirthDateToUpdates(updates, birthValue) {
+  const parsed = parseBirthDate(birthValue);
+  if (parsed.error) {
+    const err = new Error(parsed.error);
+    err.status = 400;
+    err.statusCode = 400;
+    throw err;
+  }
+  updates.birth_date = parsed.value;
+  return parsed;
+}
+
 function safeUserRow(row) {
   if (!row) return null;
-  const { password_hash, ...rest } = row;
+  const { password_hash, phone_normalized, ...rest } = row;
   return rest;
 }
 
@@ -76,7 +114,7 @@ export const usersController = {
 
   async updateMe(req, res, next) {
     try {
-      const { fullName, phone } = req.body || {};
+      const { fullName, phone, birthDate, birth_date: birthDateSnake } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
       const updates = {};
       if (
@@ -94,7 +132,11 @@ export const usersController = {
         updates.full_name = buildFullName(names);
       }
       if (phone !== undefined) {
-        updates.phone = String(phone).trim() === '' ? null : String(phone).trim();
+        const fields = applyPhoneToUpdates(updates, phone);
+        await ensurePhoneAvailable(usersRepo, fields.phone_normalized, req.user.id);
+      }
+      if (birthDate !== undefined || birthDateSnake !== undefined) {
+        applyBirthDateToUpdates(updates, birthDate ?? birthDateSnake);
       }
       if (Object.keys(updates).length === 0) {
         const cur = await usersRepo.findById(req.user.id);
@@ -103,6 +145,12 @@ export const usersController = {
       const item = await usersRepo.update(req.user.id, updates);
       res.json({ ok: true, data: safeUserRow(item) });
     } catch (error) {
+      if (error?.status === 400 || error?.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: error.message });
+      }
+      if (error?.code === '23505') {
+        return res.status(400).json({ ok: false, message: uniqueConstraintMessage(error) });
+      }
       next(error);
     }
   },
@@ -186,7 +234,7 @@ export const usersController = {
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Добавлять пользователей может только администратор профиля или системы' });
       }
-      const { email, password, phone, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
+      const { email, password, phone, birthDate, birth_date: birthDateSnake, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
       const targetAccountRole = normalizeAccountRole(accountRole) || (isProfileAdmin ? 'admin' : 'editor');
       if (!email || !password) {
@@ -231,8 +279,15 @@ export const usersController = {
         });
       }
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      const phoneTrim =
-        phone != null && String(phone).trim() !== '' ? String(phone).trim() : null;
+      const phoneFields = preparePhoneFields(phone);
+      if (phoneFields.error) {
+        return res.status(400).json({ ok: false, message: phoneFields.error });
+      }
+      await ensurePhoneAvailable(usersRepo, phoneFields.phone_normalized);
+      const birthParsed = parseBirthDate(birthDate ?? birthDateSnake);
+      if (birthParsed.error) {
+        return res.status(400).json({ ok: false, message: birthParsed.error });
+      }
       const item = await usersRepo.create({
         email,
         passwordHash,
@@ -240,7 +295,9 @@ export const usersController = {
         lastName: names.lastName,
         firstName: names.firstName,
         middleName: names.middleName,
-        phone: phoneTrim,
+        phone: phoneFields.phone,
+        phoneNormalized: phoneFields.phone_normalized,
+        birthDate: birthParsed.value,
         role: effectiveRole,
         profileId: effectiveProfileId,
         isProfileAdmin: effectiveIsProfileAdmin,
@@ -262,6 +319,12 @@ export const usersController = {
       }
       res.status(201).json({ ok: true, data: await withAccess(item) });
     } catch (error) {
+      if (error?.status === 400 || error?.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: error.message });
+      }
+      if (error?.code === '23505') {
+        return res.status(400).json({ ok: false, message: uniqueConstraintMessage(error) });
+      }
       next(error);
     }
   },
@@ -311,6 +374,15 @@ export const usersController = {
         delete updates.accountRole;
       }
       delete updates.navSections;
+      delete updates.phone_normalized;
+      if (updates.phone !== undefined) {
+        const fields = applyPhoneToUpdates(updates, updates.phone);
+        await ensurePhoneAvailable(usersRepo, fields.phone_normalized, id);
+      }
+      if (updates.birthDate !== undefined || updates.birth_date !== undefined) {
+        applyBirthDateToUpdates(updates, updates.birthDate ?? updates.birth_date);
+        delete updates.birthDate;
+      }
       if (updates.password) {
         updates.password_hash = await bcrypt.hash(updates.password, SALT_ROUNDS);
         delete updates.password;
@@ -408,6 +480,12 @@ export const usersController = {
 
       res.json({ ok: true, data: await withAccess(item) });
     } catch (error) {
+      if (error?.status === 400 || error?.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: error.message });
+      }
+      if (error?.code === '23505') {
+        return res.status(400).json({ ok: false, message: uniqueConstraintMessage(error) });
+      }
       next(error);
     }
   },

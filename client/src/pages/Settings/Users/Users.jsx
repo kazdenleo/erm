@@ -38,6 +38,8 @@ function emptyUserForm() {
     lastName: '',
     firstName: '',
     middleName: '',
+    phone: '',
+    birthDate: '',
     role: 'user',
     isProfileAdmin: false,
     accountRole: 'editor',
@@ -129,6 +131,8 @@ export function SettingsUsers() {
       lastName: u.last_name ?? '',
       firstName: u.first_name ?? '',
       middleName: u.middle_name ?? '',
+      phone: u.phone ?? '',
+      birthDate: (u.birth_date || '').toString().slice(0, 10),
       role: u.role ?? 'user',
       isProfileAdmin: !!u.is_profile_admin,
       accountRole: String(u.account_role ?? (u.is_profile_admin ? 'admin' : 'editor')).trim().toLowerCase() || 'editor',
@@ -157,6 +161,8 @@ export function SettingsUsers() {
         lastName: form.lastName.trim(),
         firstName: form.firstName.trim(),
         middleName: form.middleName.trim(),
+        phone: form.phone.trim() || null,
+        birthDate: form.birthDate.trim() || null,
         role: 'user',
       };
       if (form.password) payload.password = form.password;
@@ -244,7 +250,7 @@ export function SettingsUsers() {
       ) : (
         <>
           <p className="subtitle">
-            Добавление пользователей аккаунта: логин (email), пароль, роль и доступ к организациям/складам.
+            Добавление пользователей аккаунта: логин (email или телефон), пароль, роль и доступ к организациям/складам.
             Видимые разделы — на вкладке «Роли».
           </p>
           {loading && <div className="settings-users-loading">Загрузка...</div>}
@@ -341,6 +347,29 @@ export function SettingsUsers() {
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
                   autoComplete="additional-name"
+                />
+              </label>
+              <label>
+                Телефон
+                <input
+                  type="tel"
+                  value={form.phone}
+                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                  className="login-input"
+                  style={{ width: '100%', marginTop: '4px' }}
+                  autoComplete="tel"
+                  placeholder="+7 999 123-45-67"
+                />
+              </label>
+              <label>
+                Дата рождения
+                <input
+                  type="date"
+                  value={form.birthDate}
+                  onChange={(e) => setForm((f) => ({ ...f, birthDate: e.target.value }))}
+                  className="login-input"
+                  style={{ width: '100%', marginTop: '4px' }}
+                  autoComplete="bday"
                 />
               </label>
               <label>

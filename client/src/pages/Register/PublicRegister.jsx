@@ -110,6 +110,7 @@ export function PublicRegister() {
           </label>
           <p className="login-footer-text" style={{ textAlign: 'left', marginTop: 0 }}>
             На почту будет отправлен временный пароль. После входа его нужно будет сменить.
+            Если укажете телефон, им тоже можно будет входить.
           </p>
           <Button type="submit" disabled={submitting} className="login-submit">
             {submitting ? 'Отправка…' : 'Зарегистрироваться'}

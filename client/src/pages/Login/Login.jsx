@@ -10,11 +10,11 @@ import { Button } from '../../components/common/Button/Button';
 import './Login.css';
 
 export function Login({ mode = 'user' }) {
-  const [email, setEmail] = useState('');
+  const [loginValue, setLoginValue] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { login, logout } = useAuth();
+  const { login: signIn, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || (mode === 'platform' ? '/platform/accounts' : '/');
@@ -24,7 +24,7 @@ export function Login({ mode = 'user' }) {
     setError('');
     setSubmitting(true);
     try {
-      const result = await login(email.trim(), password);
+      const result = await signIn(loginValue.trim(), password);
       if (result?.mustChangePassword) {
         navigate('/first-login-change-password', { replace: true });
         return;
@@ -72,14 +72,15 @@ export function Login({ mode = 'user' }) {
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="login-error">{error}</div>}
           <label className="login-label">
-            Логин
+            Email или телефон
             <input
               type="text"
               className="login-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={loginValue}
+              onChange={(e) => setLoginValue(e.target.value)}
               required
               autoComplete="username"
+              placeholder="email@example.com или +7…"
             />
           </label>
           <label className="login-label">

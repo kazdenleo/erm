@@ -14,6 +14,8 @@ import { transaction } from '../config/database.js';
 import { sendNewAccountPassword } from '../services/mail.service.js';
 import { buildFullName, splitFullName } from '../utils/userName.js';
 import { buildUserNavFeatures, resolveNavSectionsForUser } from '../utils/userNavSections.js';
+import { ensurePhoneAvailable, preparePhoneFields } from '../utils/userPhone.js';
+import { parseBirthDate } from '../utils/userBirthDate.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 const profilesRepo = repositoryFactory.getProfilesRepository();
@@ -36,10 +38,17 @@ export const authController = {
         });
       }
 
-      const { accountName, email, phone, fullName } = req.body || {};
+      const { accountName, email, phone, fullName, birthDate, birth_date: birthDateSnake } = req.body || {};
       const name = String(accountName || '').trim();
       const em = String(email || '').trim().toLowerCase();
-      const ph = phone != null ? String(phone).trim() : '';
+      const phoneFields = preparePhoneFields(phone);
+      if (phoneFields.error) {
+        return res.status(400).json({ ok: false, message: phoneFields.error });
+      }
+      const birthParsed = parseBirthDate(birthDate ?? birthDateSnake);
+      if (birthParsed.error) {
+        return res.status(400).json({ ok: false, message: birthParsed.error });
+      }
       const fn = String(fullName || '').trim();
       const names = splitFullName(fn);
 
@@ -57,6 +66,11 @@ export const authController = {
       if (existing) {
         return res.status(400).json({ ok: false, message: 'Пользователь с таким email уже зарегистрирован' });
       }
+      try {
+        await ensurePhoneAvailable(usersRepo, phoneFields.phone_normalized);
+      } catch (e) {
+        return res.status(400).json({ ok: false, message: e.message || 'Пользователь с таким телефоном уже зарегистрирован' });
+      }
 
       const plainPassword = crypto.randomBytes(18).toString('base64url');
       const passwordHash = await bcrypt.hash(plainPassword, 10);
@@ -68,14 +82,25 @@ export const authController = {
           const pr = await client.query(
             `INSERT INTO profiles (name, contact_full_name, contact_email, contact_phone, tariff)
              VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [name, fn, em, ph || null, null]
+            [name, fn, em, phoneFields.phone, null]
           );
           const pid = pr.rows[0].id;
           const ur = await client.query(
-            `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'user', $8, true, true)
+            `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date, role, profile_id, is_profile_admin, must_change_password)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'user', $10, true, true)
              RETURNING id`,
-            [em, passwordHash, buildFullName(names), names.lastName, names.firstName, names.middleName, ph || null, pid]
+            [
+              em,
+              passwordHash,
+              buildFullName(names),
+              names.lastName,
+              names.firstName,
+              names.middleName,
+              phoneFields.phone,
+              phoneFields.phone_normalized,
+              birthParsed.value,
+              pid,
+            ]
           );
           return { profileId: pid, userId: ur.rows[0].id };
         });
@@ -83,6 +108,13 @@ export const authController = {
         userId = ids.userId;
       } catch (e) {
         if (e.code === '23505') {
+          const detail = String(e.detail || e.constraint || '');
+          if (/phone/i.test(detail)) {
+            return res.status(400).json({
+              ok: false,
+              message: 'Пользователь с таким телефоном уже зарегистрирован',
+            });
+          }
           return res.status(400).json({ ok: false, message: 'Пользователь с таким email уже зарегистрирован' });
         }
         throw e;
@@ -129,18 +161,18 @@ export const authController = {
 
   async login(req, res, next) {
     try {
-      const { email, password } = req.body || {};
-      const emailTrim = String(email || '').trim();
-      if (!emailTrim || !password) {
-        return res.status(400).json({ ok: false, message: 'Укажите email и пароль' });
+      const { email, password, login, phone } = req.body || {};
+      const loginTrim = String(login || email || phone || '').trim();
+      if (!loginTrim || !password) {
+        return res.status(400).json({ ok: false, message: 'Укажите логин (email или телефон) и пароль' });
       }
-      const user = await usersRepo.findByEmail(emailTrim);
+      const user = await usersRepo.findByLogin(loginTrim);
       if (!user) {
-        return res.status(401).json({ ok: false, message: 'Неверный email или пароль' });
+        return res.status(401).json({ ok: false, message: 'Неверный логин или пароль' });
       }
       const match = await bcrypt.compare(password, user.password_hash);
       if (!match) {
-        return res.status(401).json({ ok: false, message: 'Неверный email или пароль' });
+        return res.status(401).json({ ok: false, message: 'Неверный логин или пароль' });
       }
       const token = jwt.sign({ userId: user.id }, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
       res.json({
@@ -150,6 +182,8 @@ export const authController = {
           user: {
             id: user.id,
             email: user.email,
+            phone: user.phone ?? null,
+            birthDate: user.birth_date ?? null,
             fullName: user.full_name,
             lastName: user.last_name ?? null,
             firstName: user.first_name ?? null,
@@ -224,6 +258,7 @@ export const authController = {
           firstName: user.first_name ?? null,
           middleName: user.middle_name ?? null,
           phone: user.phone ?? null,
+          birthDate: user.birth_date ?? null,
           role: user.role,
           profileId,
           isProfileAdmin: !!user.is_profile_admin,

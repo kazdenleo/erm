@@ -3,9 +3,10 @@
  */
 
 import { query } from '../config/database.js';
+import { looksLikeEmail, normalizePhone } from '../utils/userPhone.js';
 
 const USER_SELECT =
-  'id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at';
+  'id, email, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date::text AS birth_date, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at';
 
 class UsersRepositoryPG {
   async findAll(filters = {}) {
@@ -35,10 +36,33 @@ class UsersRepositoryPG {
 
   async findByEmail(email) {
     const result = await query(
-      'SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))',
+      `SELECT ${USER_SELECT}, password_hash FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))`,
       [email]
     );
     return result.rows[0] || null;
+  }
+
+  async findByNormalizedPhone(phoneNormalized) {
+    if (!phoneNormalized) return null;
+    const result = await query(
+      `SELECT ${USER_SELECT}, password_hash FROM users WHERE phone_normalized = $1`,
+      [phoneNormalized]
+    );
+    return result.rows[0] || null;
+  }
+
+  async findByLogin(login) {
+    const raw = String(login || '').trim();
+    if (!raw) return null;
+    if (looksLikeEmail(raw)) {
+      return this.findByEmail(raw);
+    }
+    const parsed = normalizePhone(raw);
+    if (parsed.value) {
+      const byPhone = await this.findByNormalizedPhone(parsed.value);
+      if (byPhone) return byPhone;
+    }
+    return this.findByEmail(raw);
   }
 
   async create(data) {
@@ -50,6 +74,8 @@ class UsersRepositoryPG {
       firstName,
       middleName,
       phone,
+      phoneNormalized,
+      birthDate,
       role = 'user',
       profileId,
       isProfileAdmin = false,
@@ -58,11 +84,31 @@ class UsersRepositoryPG {
     } = data;
     const phoneVal =
       phone != null && phone !== '' && String(phone).trim() !== '' ? String(phone).trim() : null;
+    const phoneNormVal =
+      phoneNormalized != null && String(phoneNormalized).trim() !== ''
+        ? String(phoneNormalized).trim()
+        : null;
+    const birthVal = birthDate != null && String(birthDate).trim() !== '' ? String(birthDate).trim() : null;
     const result = await query(
-      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date, role, profile_id, is_profile_admin, account_role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING ${USER_SELECT}`,
-      [email, passwordHash, fullName || null, lastName || null, firstName || null, middleName || null, phoneVal, role, profileId || null, isProfileAdmin, accountRole, !!mustChangePassword]
+      [
+        email,
+        passwordHash,
+        fullName || null,
+        lastName || null,
+        firstName || null,
+        middleName || null,
+        phoneVal,
+        phoneNormVal,
+        birthVal,
+        role,
+        profileId || null,
+        isProfileAdmin,
+        accountRole,
+        !!mustChangePassword,
+      ]
     );
     return result.rows[0];
   }
@@ -94,6 +140,18 @@ class UsersRepositoryPG {
     if (updates.phone !== undefined) {
       fields.push(`phone = $${i++}`);
       params.push(updates.phone === '' || updates.phone == null ? null : String(updates.phone).trim());
+    }
+    if (updates.phone_normalized !== undefined) {
+      fields.push(`phone_normalized = $${i++}`);
+      params.push(
+        updates.phone_normalized === '' || updates.phone_normalized == null
+          ? null
+          : String(updates.phone_normalized).trim()
+      );
+    }
+    if (updates.birth_date !== undefined) {
+      fields.push(`birth_date = $${i++}`);
+      params.push(updates.birth_date === '' || updates.birth_date == null ? null : updates.birth_date);
     }
     if (updates.role !== undefined) {
       fields.push(`role = $${i++}`);

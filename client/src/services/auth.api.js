@@ -11,8 +11,9 @@ export const authApi = {
     return response.data;
   },
 
-  async login(email, password) {
-    const response = await api.post('/auth/login', { email, password });
+  async login(login, password) {
+    const value = String(login || '').trim();
+    const response = await api.post('/auth/login', { login: value, email: value, password });
     return response.data;
   },
 

@@ -27,6 +27,7 @@ export function Cabinet() {
     firstName: '',
     middleName: '',
     phone: '',
+    birthDate: '',
     email: '',
   });
   const [pwd, setPwd] = useState({ current: '', next: '', next2: '' });
@@ -51,6 +52,7 @@ export function Cabinet() {
           firstName: row.first_name ?? '',
           middleName: row.middle_name ?? '',
           phone: row.phone ?? '',
+          birthDate: (row.birth_date || '').toString().slice(0, 10),
           email: row.email ?? '',
         });
       }
@@ -89,6 +91,7 @@ export function Cabinet() {
         firstName: personal.firstName.trim() || null,
         middleName: personal.middleName.trim() || null,
         phone: personal.phone.trim() || null,
+        birthDate: personal.birthDate.trim() || null,
       });
       await refreshUser();
       alert('Сохранено');
@@ -215,7 +218,8 @@ export function Cabinet() {
 
           <h3 className="cabinet-subtitle">Пароль входа</h3>
           <p className="cabinet-hint small">
-            Пароль от вашей учётной записи ({personal.email || 'email'}). Забыли пароль — напишите в{' '}
+            Пароль от вашей учётной записи ({personal.email || 'email'}
+            {personal.phone ? ` / ${personal.phone}` : ''}). Забыли пароль — напишите в{' '}
             <Link to="/support">техподдержку</Link>, восстановление по почте пока не подключено.
           </p>
           <div className="cabinet-form-grid">
@@ -261,7 +265,7 @@ export function Cabinet() {
       <section className="cabinet-section">
         <h2 className="cabinet-section-title">Ваш профиль</h2>
         <p className="cabinet-hint">
-          {buildFullName(personal) ? `Текущее отображение: ${buildFullName(personal)}.` : 'Заполните ФИО, телефон и почту входа в систему.'}
+          {buildFullName(personal) ? `Текущее отображение: ${buildFullName(personal)}.` : 'Заполните ФИО, телефон и дату рождения.'} Телефон можно использовать для входа вместе с паролем.
         </p>
         <div className="cabinet-form-grid">
           <label className="cabinet-input-label">
@@ -302,6 +306,17 @@ export function Cabinet() {
               value={personal.phone}
               onChange={(e) => setPersonal((p) => ({ ...p, phone: e.target.value }))}
               autoComplete="tel"
+              placeholder="+7 999 123-45-67"
+            />
+          </label>
+          <label className="cabinet-input-label">
+            Дата рождения
+            <input
+              type="date"
+              className="login-input"
+              value={personal.birthDate}
+              onChange={(e) => setPersonal((p) => ({ ...p, birthDate: e.target.value }))}
+              autoComplete="bday"
             />
           </label>
           <label className="cabinet-input-label">

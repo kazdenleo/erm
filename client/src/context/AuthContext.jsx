@@ -157,13 +157,13 @@ export function AuthProvider({ children }) {
     [applyOrganizationId]
   );
 
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async (loginValue, password) => {
     clearStoredOrganizationId();
     applyOrganizationId(null, { persist: false });
     setHasOrganizations(null);
     let res;
     try {
-      res = await authApi.login(String(email || '').trim(), password);
+      res = await authApi.login(String(loginValue || '').trim(), password);
     } catch (err) {
       const status = err?.response?.status;
       const serverMsg = err?.response?.data?.message;

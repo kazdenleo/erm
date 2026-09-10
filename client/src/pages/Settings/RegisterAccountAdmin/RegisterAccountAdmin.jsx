@@ -85,7 +85,7 @@ export function RegisterAccountAdmin() {
       <h1 className="title">Регистрация администраторов аккаунта</h1>
       <p className="subtitle text-muted">
         Новый пользователь получит права администратора вашего аккаунта и сможет входить по указанной
-        почте и паролю.
+        почте или телефону и паролю.
       </p>
 
       <form className="register-account-admin-form" onSubmit={handleSubmit}>
