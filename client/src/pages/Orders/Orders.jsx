@@ -54,6 +54,8 @@ import {
   warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
 import { isProfileProcurementStatusEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { resolveOrderIncomingWarehouseTitle } from '../../utils/warehouseMappingMarketplaces.js';
+import { warehouseMappingsApi } from '../../services/warehouseMappings.api.js';
 import {
   manualOrderCanAcceptWarehouseReturn,
   isManualMarketplaceOrder,
@@ -215,6 +217,30 @@ function orderArticleLabel(o) {
     (o.sku != null && o.sku !== '' ? String(o.sku) : null);
   const s = v != null ? String(v).trim() : '';
   return s !== '' ? s : '—';
+}
+
+/** Наш склад ERP, на который пришёл заказ. Числовой ID склада МП не показываем. */
+function orderIncomingWarehouseLabel(order, warehouses, mappings) {
+  const asTitle = (value) => {
+    const t = String(value ?? '').trim();
+    if (!t || /^\d{1,20}$/.test(t)) return '';
+    return t;
+  };
+  const wid = order?.warehouseId ?? order?.warehouse_id;
+  if (wid != null && String(wid).trim() !== '') {
+    const wh = (warehouses || []).find((w) => String(w.id) === String(wid));
+    const fromErp = asTitle(wh?.name) || asTitle(wh?.address);
+    if (fromErp) return fromErp;
+  }
+  const raw = order?.deliveryAddress ?? order?.delivery_address ?? '';
+  const fromMap = asTitle(
+    resolveOrderIncomingWarehouseTitle(raw, {
+      warehouses,
+      mappings,
+      marketplace: order?.marketplace,
+    })
+  );
+  return fromMap || '—';
 }
 
 const ARTICLE_SORT_LOCALE_OPTS = { sensitivity: 'base', numeric: true };
@@ -498,11 +524,26 @@ export function Orders() {
   const procurementStatusEnabled = isProfileProcurementStatusEnabled(profile);
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const { warehouses, loadWarehouses } = useWarehouses();
+  const [warehouseMappings, setWarehouseMappings] = useState([]);
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders, patchOrders } = useOrders({
     autoLoad: false,
     skipAutoReserve: true,
   });
+  useEffect(() => {
+    let cancelled = false;
+    warehouseMappingsApi
+      .list()
+      .then((data) => {
+        if (!cancelled) setWarehouseMappings(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setWarehouseMappings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const ordersHydratedRef = useRef(false);
   const [, setOrdersHydrateTick] = useState(0);
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
@@ -3441,6 +3482,15 @@ export function Orders() {
         ) : (
           <>
             <table className="orders-table table">
+            <colgroup>
+              <col className="orders-col-checkbox" />
+              <col className="orders-col-num" />
+              <col className="orders-col-mp" />
+              <col />
+              <col />
+              <col />
+              <col className="orders-col-warehouse" />
+            </colgroup>
             <thead>
               <tr>
                 <th className="orders-col-checkbox">
@@ -3461,6 +3511,9 @@ export function Orders() {
                 <th>ID заказа</th>
                 <th>Появился</th>
                 <th title="Плановая дата отгрузки с маркетплейса">Отгрузка МП</th>
+                <th className="orders-col-warehouse" title="Наш склад, на который пришёл заказ">
+                  Склад
+                </th>
                 <th>Товары</th>
                 <th
                   className={`orders-th-sortable${sortByArticle ? ' orders-th-sortable--active' : ''}`}
@@ -3495,7 +3548,7 @@ export function Orders() {
                 <th>Цена</th>
                 {showStickerColumn ? <th>Стикер</th> : null}
                 {showShipmentColumn ? <th>Отгрузка</th> : null}
-                <th>Действия</th>
+                <th className="orders-col-actions">Действия</th>
               </tr>
             </thead>
             <tbody>
@@ -3675,6 +3728,12 @@ export function Orders() {
                     }
                   >
                     {formatShipmentDate(first.shipmentDate ?? first.shipment_date)}
+                  </td>
+                  <td
+                    className="orders-col-warehouse"
+                    title={orderIncomingWarehouseLabel(first, warehouses, warehouseMappings)}
+                  >
+                    {orderIncomingWarehouseLabel(first, warehouses, warehouseMappings)}
                   </td>
                   <td
                     className="orders-col-products"

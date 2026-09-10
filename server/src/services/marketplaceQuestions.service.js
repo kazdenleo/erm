@@ -205,8 +205,8 @@ function ozonQuestionNeedsProductEnrichment(row) {
   if (!row || row.marketplace !== 'ozon') return false;
   const sku = row.sku_or_offer != null ? String(row.sku_or_offer).trim() : '';
   const subject = row.subject != null ? String(row.subject).trim() : '';
-  if (!sku || isOzonNumericMarketSku(sku)) return true;
-  if (!ozonSubjectHasProductName(subject, sku)) return true;
+  if (!sku || sku === '0' || isOzonNumericMarketSku(sku)) return true;
+  if (!subject || subject === '0' || !ozonSubjectHasProductName(subject, sku)) return true;
   return false;
 }
 
@@ -355,9 +355,14 @@ function mapOzonQuestion(q, profileId) {
     answerText = q.answer.text ?? q.answer.message ?? null;
   }
   const body = String(q.text ?? q.question_text ?? '').trim() || '—';
-  const offerId =
-    q.offer_id != null && String(q.offer_id).trim() !== '' ? String(q.offer_id).trim() : null;
-  const ozonMarketSku = q.sku != null && String(q.sku).trim() !== '' ? String(q.sku).trim() : null;
+  const normalizeOzonSku = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s || s === '0' || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return null;
+    return s;
+  };
+  const offerId = normalizeOzonSku(q.offer_id ?? q.offerId);
+  const ozonMarketSku = normalizeOzonSku(q.sku ?? q.product_sku);
   const baseName = q.product_name ?? q.product_title ?? q.name ?? null;
   const subject = buildOzonQuestionSubject(
     offerId || (!isOzonNumericMarketSku(ozonMarketSku) ? ozonMarketSku : null),
@@ -404,6 +409,42 @@ function wbProductDetails(q) {
   return q.productDetails ?? q.product_details ?? {};
 }
 
+function isWbNumericNmId(value) {
+  return /^\d{6,}$/.test(String(value ?? '').trim());
+}
+
+/** Артикул продавца: не nmId и не «0». */
+function isSellerArticleCode(value) {
+  const s = value != null ? String(value).trim() : '';
+  if (!s || s === '0') return false;
+  if (isWbNumericNmId(s) || isOzonNumericMarketSku(s)) return false;
+  return true;
+}
+
+/**
+ * Часто в ERP реальный артикул только в начале названия: «DTSN2382RL Наконечник…»,
+ * а в sku/mp_wb_vendor_code ошибочно лежит nmId.
+ */
+function extractSellerArticleFromProductName(name) {
+  const s = name != null ? String(name).trim() : '';
+  if (!s) return null;
+  const m = s.match(/^([A-Za-z][A-Za-z0-9._\-/]{2,60})(?=\s|[—–-]|$)/);
+  if (!m) return null;
+  const art = m[1].trim();
+  return isSellerArticleCode(art) ? art : null;
+}
+
+function pickBestSellerArticle(...candidates) {
+  for (const v of candidates) {
+    if (isSellerArticleCode(v)) return String(v).trim();
+  }
+  for (const v of candidates) {
+    const fromName = extractSellerArticleFromProductName(v);
+    if (fromName) return fromName;
+  }
+  return null;
+}
+
 function wbSupplierArticleFromPd(pd, q) {
   const candidates = [
     pd.supplierArticle,
@@ -415,9 +456,106 @@ function wbSupplierArticleFromPd(pd, q) {
     q.vendor_code,
   ];
   for (const v of candidates) {
-    if (v != null && String(v).trim() !== '') return String(v).trim();
+    if (isSellerArticleCode(v)) return String(v).trim();
   }
   return null;
+}
+
+function wbQuestionNeedsSellerArticle(row) {
+  if (!row || String(row.marketplace || '').toLowerCase() !== 'wildberries') return false;
+  const sku = row.sku_or_offer != null ? String(row.sku_or_offer).trim() : '';
+  if (!sku || !isSellerArticleCode(sku)) return true;
+  return false;
+}
+
+async function lookupWbProductByNmId(nmId) {
+  const nmStr = String(nmId ?? '').trim();
+  if (!nmStr || !isWbNumericNmId(nmStr)) return null;
+  const nmNum = Number(nmStr);
+  try {
+    const result = await query(
+      `SELECT p.name,
+              TRIM(COALESCE(p.mp_wb_vendor_code, '')) AS mp_wb_vendor_code,
+              TRIM(COALESCE(p.sku, '')) AS erp_sku,
+              TRIM(COALESCE(ps.sku, '')) AS wb_sku,
+              ps.marketplace_product_id
+       FROM products p
+       LEFT JOIN product_skus ps
+         ON ps.product_id = p.id AND ps.marketplace IN ('wb', 'wildberries')
+       WHERE (
+           ($1::bigint IS NOT NULL AND ps.marketplace_product_id = $1::bigint)
+           OR TRIM(COALESCE(ps.sku, '')) = $2
+           OR TRIM(COALESCE(p.sku, '')) = $2
+           OR TRIM(COALESCE(p.mp_wb_vendor_code, '')) = $2
+           OR TRIM(COALESCE(p.wb_draft->>'nmId', '')) = $2
+           OR TRIM(COALESCE(p.wb_draft->>'nmID', '')) = $2
+         )
+       ORDER BY
+         CASE WHEN TRIM(COALESCE(p.mp_wb_vendor_code, '')) ~ '^[A-Za-z]' THEN 0 ELSE 1 END,
+         CASE WHEN TRIM(COALESCE(ps.sku, '')) ~ '^[A-Za-z]' THEN 0 ELSE 1 END,
+         p.updated_at DESC NULLS LAST,
+         p.id DESC
+       LIMIT 1`,
+      [Number.isFinite(nmNum) ? nmNum : null, nmStr]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const name = row.name != null ? String(row.name).trim() : '';
+    const offerId = pickBestSellerArticle(
+      row.mp_wb_vendor_code,
+      row.wb_sku,
+      row.erp_sku,
+      extractSellerArticleFromProductName(name),
+      name
+    );
+    if (!offerId && !name) return null;
+    return { offerId: offerId || null, name: name || null };
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] WB catalog lookup failed', { nmId: nmStr, error: e?.message });
+    return null;
+  }
+}
+
+async function enrichWbQuestionFromCatalog(row) {
+  if (!row || String(row.marketplace || '').toLowerCase() !== 'wildberries') return row;
+  if (!wbQuestionNeedsSellerArticle(row)) return row;
+  const pd = wbProductDetails(row.raw_payload);
+  const nmRaw = pd.nmId ?? pd.nmID ?? (isWbNumericNmId(row.sku_or_offer) ? row.sku_or_offer : null);
+  if (nmRaw == null || String(nmRaw).trim() === '') return row;
+  const info = await lookupWbProductByNmId(nmRaw);
+  if (!info?.offerId && !info?.name) return row;
+  if (info.offerId) row.sku_or_offer = info.offerId;
+  const baseName =
+    (pd.productName != null && String(pd.productName).trim() !== ''
+      ? String(pd.productName).trim()
+      : null) ||
+    stripLeadingArticleFromName(info.offerId, info.name) ||
+    info.name ||
+    null;
+  if (baseName && row.sku_or_offer) {
+    row.subject = `${baseName} · ${row.sku_or_offer}`;
+  } else if (row.sku_or_offer) {
+    row.subject = String(row.sku_or_offer);
+  } else if (baseName) {
+    row.subject = baseName;
+  }
+  return row;
+}
+
+async function finalizeWbQuestionRow(q, profileId, vendorByNm = null, previousRow = null) {
+  const row = mapWbQuestion(q, profileId);
+  if (!row) return null;
+  if (vendorByNm) applyWbVendorCodeToRow(row, vendorByNm);
+  const enriched = await enrichWbQuestionFromCatalog(row);
+  if (
+    previousRow &&
+    wbQuestionNeedsSellerArticle(enriched) &&
+    !wbQuestionNeedsSellerArticle(previousRow)
+  ) {
+    enriched.sku_or_offer = previousRow.sku_or_offer;
+    if (previousRow.subject) enriched.subject = previousRow.subject;
+  }
+  return enriched;
 }
 
 /**
@@ -430,10 +568,11 @@ function applyWbVendorCodeToRow(row, vendorByNm) {
   const nmRaw = pd.nmId ?? pd.nmID ?? null;
   if (nmRaw == null) return;
   const nmStr = String(nmRaw).trim();
-  const vc = vendorByNm.get(nmStr);
+  const vcRaw = vendorByNm.get(nmStr);
+  const vc = isSellerArticleCode(vcRaw) ? String(vcRaw).trim() : null;
   if (!vc) return;
   const sku = row.sku_or_offer != null ? String(row.sku_or_offer).trim() : '';
-  if (sku !== '' && sku !== nmStr) return;
+  if (sku !== '' && isSellerArticleCode(sku)) return;
   row.sku_or_offer = vc;
   const baseName = pd.productName ?? pd.product_name ?? null;
   let subject = baseName != null && String(baseName).trim() !== '' ? String(baseName).trim() : null;
@@ -726,10 +865,9 @@ async function syncWildberries(profileId, _organizationId = null) {
     if (!Array.isArray(questions) || questions.length === 0) break;
     const vendorByNm = await wbFetchVendorCodesForQuestions(questions, profileId);
     for (const q of questions) {
-      const row = mapWbQuestion(q, profileId);
+      const row = await finalizeWbQuestionRow(q, profileId, vendorByNm);
       if (!row) continue;
       if (!rowNeedsSellerReply(row)) continue;
-      applyWbVendorCodeToRow(row, vendorByNm);
       externalIds.push(row.external_id);
       await marketplaceQuestionsRepo.upsertRow(row);
       imported += 1;
@@ -737,7 +875,34 @@ async function syncWildberries(profileId, _organizationId = null) {
     if (questions.length < take) break;
     skip += take;
   }
+  await reEnrichWbQuestionsMissingArticle(profileId);
   return { imported, externalIds };
+}
+
+async function reEnrichWbQuestionsMissingArticle(profileId) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  const result = await query(
+    `SELECT * FROM marketplace_questions
+     WHERE profile_id = $1 AND marketplace = 'wildberries'`,
+    [pid]
+  );
+  let updated = 0;
+  for (const row of result.rows || []) {
+    if (!wbQuestionNeedsSellerArticle(row)) continue;
+    const enriched = await enrichWbQuestionFromCatalog({ ...row });
+    if (
+      enriched &&
+      (enriched.subject !== row.subject || enriched.sku_or_offer !== row.sku_or_offer)
+    ) {
+      await marketplaceQuestionsRepo.upsertRow(enriched);
+      updated += 1;
+    }
+  }
+  if (updated > 0) {
+    logger.info(`[MarketplaceQuestions] WB re-enriched seller articles: ${updated} questions`);
+  }
+  return updated;
 }
 
 async function syncYandex(profileId, _organizationId = null) {
@@ -1061,11 +1226,13 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
   if (mp === 'wildberries') {
     const payload = await fetchWbQuestionPayload(profileId, row.external_id, organizationId);
     if (!payload || typeof payload !== 'object') return null;
-    const mapped = mapWbQuestion({ ...payload, id: payload.id ?? row.external_id }, profileId);
-    if (!mapped) return null;
     const vendorByNm = await wbFetchVendorCodesForQuestions([payload], profileId);
-    applyWbVendorCodeToRow(mapped, vendorByNm);
-    return mapped;
+    return finalizeWbQuestionRow(
+      { ...payload, id: payload.id ?? row.external_id },
+      profileId,
+      vendorByNm,
+      row
+    );
   }
   if (mp === 'yandex') {
     const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
@@ -1141,6 +1308,15 @@ export async function getMarketplaceQuestionById(profileId, questionRowId, opts 
   const current = await marketplaceQuestionsRepo.findRowByIdAndProfile(questionRowId, profileId);
   if (current?.marketplace === 'ozon' && ozonQuestionNeedsProductEnrichment(current)) {
     const enriched = await enrichOzonQuestionFromCatalog({ ...current }, profileId);
+    if (
+      enriched &&
+      (enriched.subject !== current.subject || enriched.sku_or_offer !== current.sku_or_offer)
+    ) {
+      await marketplaceQuestionsRepo.upsertRow(enriched);
+    }
+  }
+  if (current?.marketplace === 'wildberries' && wbQuestionNeedsSellerArticle(current)) {
+    const enriched = await enrichWbQuestionFromCatalog({ ...current });
     if (
       enriched &&
       (enriched.subject !== current.subject || enriched.sku_or_offer !== current.sku_or_offer)

@@ -1,6 +1,9 @@
+import { resolveMinMarkupFromRules } from './minMarkupRules.js';
+
 /**
  * Целевая чистая прибыль (₽) для расчёта мин. цены МП.
  * products.min_price — общая наценка для частных заказов.
+ * profileMinMarkupRules — градации из настроек «Цены».
  */
 
 import {
@@ -26,6 +29,13 @@ export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50)
     specific = numOrNull(product.min_profit_ym ?? product.minProfitYm);
   }
   if (specific != null && specific >= 0) return specific;
+
+  const fromRules = resolveMinMarkupFromRules(
+    product,
+    product.profileMinMarkupRules ?? product.minMarkupRules ?? null
+  );
+  if (fromRules?.rub != null && fromRules.rub >= 0) return fromRules.rub;
+
   const general = numOrNull(product.min_price ?? product.minPrice);
   if (general != null && general >= 0) return general;
   return fallback;

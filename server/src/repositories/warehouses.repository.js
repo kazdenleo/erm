@@ -25,6 +25,7 @@ class WarehousesRepository {
     const newWarehouse = {
       id: data.id || Date.now().toString(),
       type: String(data.type || '').trim(),
+      name: data.name ? String(data.name).trim() : '',
       address: data.address ? String(data.address).trim() : '',
       organizationId: orgId,
       supplierId: data.supplierId || null,

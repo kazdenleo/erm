@@ -7,63 +7,109 @@ import shipmentsService from './shipments.service.js';
 import ordersService from './orders.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import logger from '../utils/logger.js';
+import { shipmentsMatchMarketplaceWarehouse } from '../utils/marketplaceWarehouseId.js';
 
 const profilesRepo = repositoryFactory.getProfilesRepository();
 
 async function addOrdersToOpenShipmentsForMarketplace(code, list, { profileId, organizationId, warehouseId = null }) {
   const shipmentsUsed = [];
   const warnings = [];
-  const openShipment = await shipmentsService.getOrCreateOpenShipment(code, {
-    profileId,
-    organizationId,
-    warehouseId
-  });
-  const byShipmentId = new Map();
+  const groups = new Map();
   for (const o of list) {
-    const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
-      profileId,
-      organizationId
-    });
-    const useShip = existingShip || openShipment;
-    if (!byShipmentId.has(useShip.id)) {
-      byShipmentId.set(useShip.id, { shipment: useShip, orderIds: [] });
-    }
-    byShipmentId.get(useShip.id).orderIds.push(o.orderId);
-  }
-  for (const { shipment, orderIds: oids } of byShipmentId.values()) {
+    let marketplaceWarehouseId = null;
+    let orderWarehouseId = warehouseId;
     try {
-      const s = await shipmentsService.addOrdersToShipment(shipment.id, oids, { profileId, organizationId });
-      shipmentsUsed.push({
-        marketplace: code,
-        shipmentId: s.id,
-        shipmentName: s.name,
-        orderIds: oids,
-        localWbOnly: s.localWbOnly === true
+      const order = await ordersService.getByMarketplaceAndOrderId(o.marketplace || code, o.orderId, {
+        profileId
       });
-    } catch (e) {
-      if (code === 'ozon' && e?.statusCode === 502) {
-        warnings.push({
-          marketplace: code,
-          shipmentId: shipment.id,
-          message: e.message,
-          failedOrderIds: Array.isArray(e?.ozonErrors)
-            ? e.ozonErrors.map((x) => String(x?.postingNumber || '')).filter(Boolean)
-            : []
-        });
-        continue;
+      marketplaceWarehouseId = order?.deliveryAddress ?? order?.delivery_address ?? null;
+      const ow = order?.warehouseId ?? order?.warehouse_id ?? null;
+      if (ow != null && String(ow).trim() !== '') orderWarehouseId = ow;
+    } catch {
+      /* склад МП неизвестен — отдельная группа default */
+    }
+    const groupKey = String(marketplaceWarehouseId ?? '').trim() || '__default__';
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        marketplaceWarehouseId,
+        warehouseId: orderWarehouseId,
+        items: []
+      });
+    }
+    groups.get(groupKey).items.push(o);
+  }
+
+  for (const group of groups.values()) {
+    const openShipment = await shipmentsService.getOrCreateOpenShipment(code, {
+      profileId,
+      organizationId,
+      warehouseId: group.warehouseId,
+      marketplaceWarehouseId: group.marketplaceWarehouseId
+    });
+    const byShipmentId = new Map();
+    for (const o of group.items) {
+      const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
+        profileId,
+        organizationId
+      });
+      let useShip = existingShip || openShipment;
+      if (
+        existingShip &&
+        !shipmentsMatchMarketplaceWarehouse(existingShip, group.marketplaceWarehouseId)
+      ) {
+        try {
+          await shipmentsService.removeOrdersFromShipment(existingShip.id, [o.orderId], {
+            profileId,
+            organizationId
+          });
+        } catch (e) {
+          logger.warn('[sendToAssembly] remove order from wrong-warehouse shipment failed', {
+            orderId: o.orderId,
+            shipmentId: existingShip.id,
+            message: e?.message || String(e)
+          });
+        }
+        useShip = openShipment;
       }
-      // WB 409/429/502: заказ уже записан в локальную поставку — не откатываем «На сборку».
-      const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
-      if (e?.shipment || e?.statusCode === 409 || e?.statusCode === 429 || e?.statusCode === 502) {
-        warnings.push({
-          marketplace: code,
-          shipmentId: shipment.id,
-          message: e.message,
-          failedOrderIds: failed
-        });
-        continue;
+      if (!byShipmentId.has(useShip.id)) {
+        byShipmentId.set(useShip.id, { shipment: useShip, orderIds: [] });
       }
-      throw e;
+      byShipmentId.get(useShip.id).orderIds.push(o.orderId);
+    }
+    for (const { shipment, orderIds: oids } of byShipmentId.values()) {
+      try {
+        const s = await shipmentsService.addOrdersToShipment(shipment.id, oids, { profileId, organizationId });
+        shipmentsUsed.push({
+          marketplace: code,
+          shipmentId: s.id,
+          shipmentName: s.name,
+          orderIds: oids,
+          localWbOnly: s.localWbOnly === true
+        });
+      } catch (e) {
+        if (code === 'ozon' && e?.statusCode === 502) {
+          warnings.push({
+            marketplace: code,
+            shipmentId: shipment.id,
+            message: e.message,
+            failedOrderIds: Array.isArray(e?.ozonErrors)
+              ? e.ozonErrors.map((x) => String(x?.postingNumber || '')).filter(Boolean)
+              : []
+          });
+          continue;
+        }
+        const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
+        if (e?.shipment || e?.statusCode === 409 || e?.statusCode === 429 || e?.statusCode === 502) {
+          warnings.push({
+            marketplace: code,
+            shipmentId: shipment.id,
+            message: e.message,
+            failedOrderIds: failed
+          });
+          continue;
+        }
+        throw e;
+      }
     }
   }
   return { shipmentsUsed, warnings };

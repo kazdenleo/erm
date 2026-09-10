@@ -3,6 +3,7 @@ import {
   isMpDimGroupLinked,
   isMpFieldLinked,
   normalizeMpFieldLinks,
+  overlayCategoryDedicatedMpLinks,
   resolveDimensionsMmForPush,
   setMpFieldLink,
 } from '../src/utils/productMpFieldLinks.js';
@@ -148,5 +149,18 @@ describe('applyLinkedOzonCardTextOnUpdate', () => {
     };
     const next = applyLinkedOzonCardTextOnUpdate(updates, { name: 'Основное' });
     expect(next.mp_ozon_name).toBe('Своё название Ozon');
+  });
+});
+
+describe('overlayCategoryDedicatedMpLinks', () => {
+  test('uses category dedicated mapping and keeps rich_content from product', () => {
+    const out = overlayCategoryDedicatedMpLinks(
+      { name: ['ozon', 'wb', 'ym'], rich_content: ['ozon'] },
+      { name: { ozon: [{ id: '1', name: 'Название' }], wb: [], ym: [] }, _added: ['name'] },
+      { 42: { wb: [{ id: '9', name: 'OEM' }] } }
+    );
+    expect(out.name).toEqual(['ozon']);
+    expect(out.rich_content).toEqual(['ozon']);
+    expect(out.attr_42).toEqual(['wb']);
   });
 });

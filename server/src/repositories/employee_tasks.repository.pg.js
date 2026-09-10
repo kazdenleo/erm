@@ -42,6 +42,7 @@ class EmployeeTasksRepositoryPG {
       params.push(involvedUserId);
       i += 1;
     }
+    where.push(`t.task_type <> 'dimensions_check'`);
     const sql = `${SELECT_BASE}
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY
@@ -66,27 +67,14 @@ class EmployeeTasksRepositoryPG {
     let sql = `SELECT COUNT(*)::int AS n
                FROM employee_tasks t
                WHERE t.profile_id = $1::bigint
-                 AND t.status = 'open'`;
+                 AND t.status = 'open'
+                 AND t.task_type <> 'dimensions_check'`;
     if (assigneeId != null && assigneeId !== '') {
       params.push(assigneeId);
       sql += ` AND t.assignee_id = $${params.length}::bigint`;
     }
     const result = await query(sql, params);
     return Number(result.rows[0]?.n) || 0;
-  }
-
-  /** Одна открытая задача данного типа на аккаунт (для сводных задач вроде проверки габаритов). */
-  async findOpenByType({ profileId, taskType }) {
-    const result = await query(
-      `${SELECT_BASE}
-       WHERE t.profile_id = $1::bigint
-         AND t.task_type = $2
-         AND t.status = 'open'
-       ORDER BY t.id ASC
-       LIMIT 1`,
-      [profileId, taskType]
-    );
-    return result.rows[0] || null;
   }
 
   async create(data) {

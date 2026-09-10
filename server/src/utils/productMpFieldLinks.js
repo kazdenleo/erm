@@ -32,6 +32,11 @@ export function isAttrMpFieldLinkKey(fieldKey) {
   return ATTR_MP_FIELD_LINK_RE.test(String(fieldKey || ''));
 }
 
+export function erpAttrLinkFieldKey(attrId) {
+  const id = String(attrId ?? '').trim();
+  return id ? `attr_${id}` : '';
+}
+
 export function isDedicatedMpFieldLinkKey(fieldKey) {
   const key = String(fieldKey || '');
   return (
@@ -266,9 +271,46 @@ export function defaultMpFieldLinks() {
   return emptyMpFieldLinks();
 }
 
-/** Связи Main↔МП на карточке не наследуются из категории. */
-export function overlayCategoryDedicatedMpLinks(productLinks, _categoryLinks) {
-  return normalizeMpFieldLinks(productLinks);
+function mpsFromDedicatedCharcSlot(slot) {
+  const out = [];
+  for (const mp of MP_FIELD_LINK_MPS) {
+    const list = slot?.[mp];
+    if (Array.isArray(list) && list.length > 0) out.push(mp);
+    else if (list && typeof list === 'object' && (list.id || list.name)) out.push(mp);
+  }
+  return out;
+}
+
+function mpsFromAttrMpLinksRaw(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  return MP_FIELD_LINK_MPS.filter((mp) => {
+    const v = raw[mp];
+    if (Array.isArray(v)) return v.length > 0;
+    if (v && typeof v === 'object') return !!(v.id || v.name);
+    if (typeof v === 'string' || typeof v === 'number') return String(v).trim() !== '';
+    return false;
+  });
+}
+
+/** Эффективные связи: сопоставления категории; с карточки — только rich_content. */
+export function overlayCategoryDedicatedMpLinks(productLinks, categoryLinks, attributeMpLinksMap) {
+  const product = normalizeMpFieldLinks(productLinks);
+  const dedicated = normalizeCategoryDedicatedCharcLinks(categoryLinks);
+  const out = emptyMpFieldLinks();
+  out.rich_content = Array.isArray(product.rich_content) ? [...product.rich_content] : [];
+  for (const key of DEDICATED_MAIN_STORED_KEYS) {
+    out[key] = mpsFromDedicatedCharcSlot(dedicated[key]);
+  }
+  const attrMap =
+    attributeMpLinksMap && typeof attributeMpLinksMap === 'object' && !Array.isArray(attributeMpLinksMap)
+      ? attributeMpLinksMap
+      : {};
+  for (const [aid, links] of Object.entries(attrMap)) {
+    const key = erpAttrLinkFieldKey(aid);
+    if (!key) continue;
+    out[key] = mpsFromAttrMpLinksRaw(links);
+  }
+  return normalizeMpFieldLinks(out);
 }
 
 export function normalizeMpFieldLinks(raw) {

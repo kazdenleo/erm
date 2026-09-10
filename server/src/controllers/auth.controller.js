@@ -5,20 +5,18 @@
 
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
 import config from '../config/index.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 import { transaction } from '../config/database.js';
-import { sendNewAccountPassword } from '../services/mail.service.js';
 import { buildFullName, splitFullName } from '../utils/userName.js';
 import { buildUserNavFeatures, resolveNavSectionsForUser } from '../utils/userNavSections.js';
-import { ensurePhoneAvailable, preparePhoneFields } from '../utils/userPhone.js';
+import { ensurePhoneAvailable, requirePhoneFields } from '../utils/userPhone.js';
 import { parseBirthDate } from '../utils/userBirthDate.js';
+import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
-const profilesRepo = repositoryFactory.getProfilesRepository();
 
 function userMustChangePassword(row) {
   return !!(row && (row.must_change_password === true || row.must_change_password === 1));
@@ -27,7 +25,7 @@ function userMustChangePassword(row) {
 export const authController = {
   /**
    * Публичная регистрация: новый профиль + первый администратор аккаунта.
-   * Пароль генерируется и отправляется на email (SMTP обязателен).
+   * Вход по телефону; email необязателен. Пароль задаёт пользователь.
    */
   async registerAccount(req, res, next) {
     try {
@@ -38,10 +36,13 @@ export const authController = {
         });
       }
 
-      const { accountName, email, phone, fullName, birthDate, birth_date: birthDateSnake } = req.body || {};
+      const { accountName, email, phone, fullName, password, birthDate, birth_date: birthDateSnake } = req.body || {};
       const name = String(accountName || '').trim();
-      const em = String(email || '').trim().toLowerCase();
-      const phoneFields = preparePhoneFields(phone);
+      const emailParsed = parseOptionalEmail(email);
+      if (emailParsed.error) {
+        return res.status(400).json({ ok: false, message: emailParsed.error });
+      }
+      const phoneFields = requirePhoneFields(phone);
       if (phoneFields.error) {
         return res.status(400).json({ ok: false, message: phoneFields.error });
       }
@@ -51,46 +52,41 @@ export const authController = {
       }
       const fn = String(fullName || '').trim();
       const names = splitFullName(fn);
+      const plainPassword = String(password || '');
 
       if (name.length < 2) {
         return res.status(400).json({ ok: false, message: 'Укажите название аккаунта' });
       }
-      if (!em || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
-        return res.status(400).json({ ok: false, message: 'Укажите корректный email' });
-      }
       if (fn.length < 2) {
         return res.status(400).json({ ok: false, message: 'Укажите ФИО' });
       }
-
-      const existing = await usersRepo.findByEmail(em);
-      if (existing) {
-        return res.status(400).json({ ok: false, message: 'Пользователь с таким email уже зарегистрирован' });
+      if (plainPassword.length < 8) {
+        return res.status(400).json({ ok: false, message: 'Пароль: не менее 8 символов' });
       }
+
       try {
         await ensurePhoneAvailable(usersRepo, phoneFields.phone_normalized);
+        await ensureEmailAvailable(usersRepo, emailParsed.value);
       } catch (e) {
-        return res.status(400).json({ ok: false, message: e.message || 'Пользователь с таким телефоном уже зарегистрирован' });
+        return res.status(400).json({ ok: false, message: e.message });
       }
 
-      const plainPassword = crypto.randomBytes(18).toString('base64url');
       const passwordHash = await bcrypt.hash(plainPassword, 10);
 
-      let profileId;
-      let userId;
       try {
-        const ids = await transaction(async (client) => {
+        await transaction(async (client) => {
           const pr = await client.query(
             `INSERT INTO profiles (name, contact_full_name, contact_email, contact_phone, tariff)
              VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [name, fn, em, phoneFields.phone, null]
+            [name, fn, emailParsed.value, phoneFields.phone, null]
           );
           const pid = pr.rows[0].id;
-          const ur = await client.query(
+          await client.query(
             `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, phone_normalized, birth_date, role, profile_id, is_profile_admin, must_change_password)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'user', $10, true, true)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'user', $10, true, false)
              RETURNING id`,
             [
-              em,
+              emailParsed.value,
               passwordHash,
               buildFullName(names),
               names.lastName,
@@ -102,10 +98,8 @@ export const authController = {
               pid,
             ]
           );
-          return { profileId: pid, userId: ur.rows[0].id };
+          return { profileId: pid };
         });
-        profileId = ids.profileId;
-        userId = ids.userId;
       } catch (e) {
         if (e.code === '23505') {
           const detail = String(e.detail || e.constraint || '');
@@ -120,39 +114,9 @@ export const authController = {
         throw e;
       }
 
-      const loginUrl = `${String(config.clientUrl || '').replace(/\/$/, '')}/login`;
-      const mailResult = await sendNewAccountPassword({
-        to: em,
-        fullName: fn,
-        accountName: name,
-        password: plainPassword,
-        loginUrl,
-      });
-
-      if (!mailResult.sent) {
-        try {
-          await usersRepo.delete(userId);
-          await profilesRepo.delete(profileId);
-        } catch (_) {
-          /* cleanup best effort */
-        }
-        if (mailResult.reason === 'smtp_disabled') {
-          return res.status(503).json({
-            ok: false,
-            message:
-              'Отправка почты не настроена. Задайте SMTP_HOST и MAIL_FROM в настройках сервера (и при необходимости SMTP_USER, SMTP_PASS).',
-          });
-        }
-        return res.status(503).json({
-          ok: false,
-          message: 'Не удалось отправить письмо с паролём. Попробуйте позже или обратитесь в поддержку.',
-        });
-      }
-
       res.status(201).json({
         ok: true,
-        message:
-          'На указанный email отправлен временный пароль. Войдите в систему и смените пароль при первом входе.',
+        message: 'Аккаунт создан. Войдите по телефону или email и паролю.',
       });
     } catch (error) {
       next(error);
@@ -164,7 +128,7 @@ export const authController = {
       const { email, password, login, phone } = req.body || {};
       const loginTrim = String(login || email || phone || '').trim();
       if (!loginTrim || !password) {
-        return res.status(400).json({ ok: false, message: 'Укажите логин (email или телефон) и пароль' });
+        return res.status(400).json({ ok: false, message: 'Укажите email или телефон и пароль' });
       }
       const user = await usersRepo.findByLogin(loginTrim);
       if (!user) {
@@ -214,7 +178,7 @@ export const authController = {
       if (np.length < 8) {
         return res.status(400).json({ ok: false, message: 'Новый пароль: не менее 8 символов' });
       }
-      const row = await usersRepo.findByEmail(req.user.email);
+      const row = await usersRepo.findAuthById(req.user.id);
       if (!row?.password_hash) {
         return res.status(400).json({ ok: false, message: 'Операция недоступна' });
       }

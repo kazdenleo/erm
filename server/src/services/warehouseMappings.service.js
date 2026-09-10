@@ -5,17 +5,32 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { normalizeWarehouseMappingMarketplace } from '../validators/warehouseMappingsValidator.js';
+import { parseMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
 import { buildYandexWarehouseMapping, parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 
 function normalizeMarketplaceWarehouseId(marketplace, marketplaceWarehouseId) {
   const mp = normalizeWarehouseMappingMarketplace(marketplace);
   const mw = String(marketplaceWarehouseId ?? '').trim();
+  if (mp === 'ozon' || mp === 'wb') {
+    return parseMarketplaceWarehouseId(mw) || '';
+  }
   if (mp !== 'ym') return mw;
   const parsed = parseYandexWarehouseMapping(mw);
   if (parsed.campaignId || parsed.warehouseId) {
     return buildYandexWarehouseMapping(parsed);
   }
   return mw;
+}
+
+function assertMarketplaceWarehouseId(mp, mw) {
+  if (mw) return;
+  const err = new Error(
+    mp === 'ozon' || mp === 'wb'
+      ? 'Укажите числовой ID склада маркетплейса (выберите склад из списка API, не название)'
+      : 'Укажите marketplaceWarehouseId (для Яндекс.Маркет: campaignId и/или warehouseId)'
+  );
+  err.statusCode = 400;
+  throw err;
 }
 
 class WarehouseMappingsService {
@@ -46,13 +61,7 @@ class WarehouseMappingsService {
       throw err;
     }
     const mw = normalizeMarketplaceWarehouseId(mp, marketplaceWarehouseId);
-    if (!mw) {
-      const err = new Error(
-        'Укажите marketplaceWarehouseId (для Яндекс.Маркет: campaignId и/или warehouseId)'
-      );
-      err.statusCode = 400;
-      throw err;
-    }
+    assertMarketplaceWarehouseId(mp, mw);
 
     // Проверяем, что склад существует в этом аккаунте и является "своим"
     const w =
@@ -121,11 +130,10 @@ class WarehouseMappingsService {
       updates.marketplace = mp;
     }
     if (marketplaceWarehouseId != null) {
-      const mw = normalizeMarketplaceWarehouseId(
-        updates.marketplace ?? existing.marketplace,
-        marketplaceWarehouseId
-      );
-      updates.marketplace_warehouse_id = mw || null;
+      const mpForMw = updates.marketplace ?? existing.marketplace;
+      const mw = normalizeMarketplaceWarehouseId(mpForMw, marketplaceWarehouseId);
+      assertMarketplaceWarehouseId(mpForMw, mw);
+      updates.marketplace_warehouse_id = mw;
     }
     const updated = await this.repo.update(mid, updates);
     if (!updated) {

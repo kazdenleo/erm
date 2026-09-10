@@ -264,8 +264,16 @@
 
 .attribute-mp-apply {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
   justify-content: flex-start;
   margin-top: 10px;
+}
+
+.attribute-mp-apply-status {
+  font-size: 13px;
+  color: #15803d;
 }
 
 .attribute-category-mp-links .checkbox-label {

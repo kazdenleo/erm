@@ -117,6 +117,28 @@ describe('marketplaceMinPricePush helpers', () => {
     expect(entry.min_price).toBe('3071');
   });
 
+  test('buildOzonPriceImportEntry sends net_price from ERP cost', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2000,
+      ozonProductId: 1,
+      netPrice: 850.4,
+    });
+    expect(entry.net_price).toBe('850');
+  });
+
+  test('buildOzonPriceImportEntry omits net_price when cost missing', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2000,
+      offerId: 'SKU-1',
+      netPrice: null,
+    });
+    expect(entry.net_price).toBeUndefined();
+  });
+
   test('buildWbPriceUploadPayload sync mode uses exact price without stale WB discount', () => {
     delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
     const pack = buildWbPriceUploadPayload({

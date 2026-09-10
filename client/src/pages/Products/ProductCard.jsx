@@ -38,6 +38,13 @@ export function ProductCard() {
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState(null);
+  const [saveNotice, setSaveNotice] = useState('');
+
+  useEffect(() => {
+    if (!saveNotice) return undefined;
+    const t = window.setTimeout(() => setSaveNotice(''), 2800);
+    return () => window.clearTimeout(t);
+  }, [saveNotice]);
 
   const initialTab = useMemo(() => {
     const tab = String(searchParams.get('tab') || 'main').trim();
@@ -113,11 +120,13 @@ export function ProductCard() {
       if (product?.id) {
         const updated = await updateProduct(product.id, productData);
         if (updated) setProduct(updated);
+        setSaveNotice('Товар сохранён');
         return updated;
       }
       const created = await createProduct(productData);
       if (created?.id) {
         setProduct(created);
+        setSaveNotice('Товар сохранён');
         navigate(`/products/${created.id}`, { replace: true });
       }
       return created;
@@ -166,6 +175,11 @@ export function ProductCard() {
 
   return (
     <div className="product-card-page">
+      {saveNotice ? (
+        <div className="product-card-save-toast" role="status">
+          {saveNotice}
+        </div>
+      ) : null}
       <PageTitle
         iconClass="pe-7s-box2"
         iconBgClass="bg-mean-fruit"

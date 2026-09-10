@@ -298,23 +298,7 @@ class WarehouseReceiptsRepositoryPG {
     organizationId = null,
     warehouseId = null,
   } = {}) {
-    /* Цена в документе или из карточки товара (старые строки с NULL cost всё же показывают сумму). */
-    const amountRub = `(
-      SELECT SUM(l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric)
-      FROM warehouse_receipt_lines l
-      INNER JOIN products p ON p.id = l.product_id
-      WHERE l.receipt_id = r.id
-        AND COALESCE(l.cost, p.cost) IS NOT NULL
-    ) AS total_amount_rub`;
-    const receiptWarehouseLabelSql = receiptWarehouseLabelSqlExpr({ useWhFromJoin: true });
-    const toWarehouseNameSql = transferToWarehouseNameSql({ useWhToJoin: true });
-    const purchaseReceiptIdSql = `(
-      SELECT pr.id
-      FROM purchase_receipts pr
-      WHERE pr.warehouse_receipt_id = r.id
-      ORDER BY pr.id DESC
-      LIMIT 1
-    ) AS purchase_receipt_id`;
+    // Список: без коррелированных подзапросов в stock_movements (иначе 5+ сек на 50 строк).
     const pid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'
@@ -342,25 +326,6 @@ class WarehouseReceiptsRepositoryPG {
     if (docType) baseListParams.push(docType);
     if (useOrg) baseListParams.push(orgId);
     if (useWh) baseListParams.push(whId);
-    const organizationNameSql = `COALESCE(
-      o.name,
-      (
-        SELECT o2.name
-        FROM stock_movements sm
-        JOIN organizations o2 ON o2.id = NULLIF(sm.meta->>'organization_id', '')::bigint
-        WHERE (sm.meta->>'receipt_id')::bigint = r.id
-          AND NULLIF(sm.meta->>'organization_id', '') IS NOT NULL
-        ORDER BY sm.id DESC
-        LIMIT 1
-      ),
-      (
-        SELECT o2.name
-        FROM warehouses wh
-        JOIN organizations o2 ON o2.id = wh.organization_id
-        WHERE wh.id = r.warehouse_id
-        LIMIT 1
-      )
-    ) AS organization_name`;
     const profileWhere = useProfile
       ? ` AND (
           (r.organization_id IS NOT NULL AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.id = r.organization_id AND o2.profile_id = $1::bigint))
@@ -378,31 +343,52 @@ class WarehouseReceiptsRepositoryPG {
     const orgWhere = useOrg ? ` AND r.organization_id = $${paramIdx++}` : '';
     const whWhere = useWh ? ` AND r.warehouse_id = $${paramIdx++}` : '';
 
+    const listSelect = `
+        SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
+                r.warehouse_id, r.to_warehouse_id, r.writeoff_reason,
+                s.name AS supplier_name, s.code AS supplier_code,
+                COALESCE(o.name, o_wh.name) AS organization_name,
+                COALESCE(la.lines_count, 0)::int AS lines_count,
+                COALESCE(la.total_quantity, 0)::int AS total_quantity,
+                ${warehouseLabelSql('wh_from')} AS warehouse_name,
+                ${warehouseLabelSql('wh_to')} AS to_warehouse_name,
+                pr_link.id AS purchase_receipt_id,
+                la.total_amount_rub
+         FROM warehouse_receipts r
+         LEFT JOIN suppliers s ON s.id = r.supplier_id
+         LEFT JOIN organizations o ON o.id = r.organization_id
+         LEFT JOIN warehouses wh_from ON wh_from.id = r.warehouse_id
+         LEFT JOIN organizations o_wh ON o_wh.id = wh_from.organization_id
+         LEFT JOIN warehouses wh_to ON wh_to.id = r.to_warehouse_id
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS lines_count,
+                  COALESCE(SUM(l.quantity), 0)::int AS total_quantity,
+                  SUM(
+                    CASE
+                      WHEN COALESCE(l.cost, p.cost) IS NULL THEN NULL
+                      ELSE l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric
+                    END
+                  ) AS total_amount_rub
+           FROM warehouse_receipt_lines l
+           LEFT JOIN products p ON p.id = l.product_id
+           WHERE l.receipt_id = r.id
+         ) la ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT pr.id
+           FROM purchase_receipts pr
+           WHERE pr.warehouse_receipt_id = r.id
+           ORDER BY pr.id DESC
+           LIMIT 1
+         ) pr_link ON TRUE
+         WHERE 1=1 ${profileWhere} ${docWhere} ${orgWhere} ${whWhere}
+         ORDER BY r.created_at DESC, r.id DESC`;
+
     try {
       const limIdx = baseListParams.length + 1;
       const offIdx = baseListParams.length + 2;
       const params = [...baseListParams, limit, offset];
       const r = await query(
-        `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
-                r.warehouse_id, r.to_warehouse_id, r.writeoff_reason,
-                s.name AS supplier_name, s.code AS supplier_code,
-                ${organizationNameSql},
-                (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
-                COALESCE(
-                  (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
-                  0
-                )::int AS total_quantity,
-                ${receiptWarehouseLabelSql},
-                ${toWarehouseNameSql},
-                ${purchaseReceiptIdSql},
-                ${amountRub}
-         FROM warehouse_receipts r
-         LEFT JOIN suppliers s ON s.id = r.supplier_id
-         LEFT JOIN organizations o ON o.id = r.organization_id
-         LEFT JOIN warehouses wh_from ON wh_from.id = r.warehouse_id
-         LEFT JOIN warehouses wh_to ON wh_to.id = r.to_warehouse_id
-         WHERE 1=1 ${profileWhere} ${docWhere} ${orgWhere} ${whWhere}
-         ORDER BY r.created_at DESC, r.id DESC
+        `${listSelect}
          LIMIT $${limIdx} OFFSET $${offIdx}`,
         params
       );
@@ -412,8 +398,6 @@ class WarehouseReceiptsRepositoryPG {
       const missingToWarehouse = /to_warehouse_id/i.test(msg);
       if (missingToWarehouse || /column.*does not exist|organization_id|document_type/i.test(msg)) {
         const retryParams = [...baseListParams, limit, offset];
-        const receiptWarehouseLabelSqlRetry = receiptWarehouseLabelSqlExpr({ useWhFromJoin: true });
-        const toWarehouseNameSqlRetry = transferToWarehouseNameSql({ useWhToJoin: false });
         const limIdx = baseListParams.length + 1;
         const offIdx = baseListParams.length + 2;
         try {
@@ -421,20 +405,38 @@ class WarehouseReceiptsRepositoryPG {
             `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
                     r.warehouse_id, r.writeoff_reason,
                     s.name AS supplier_name, s.code AS supplier_code,
-                    ${organizationNameSql},
-                    (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
-                    COALESCE(
-                      (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
-                      0
-                    )::int AS total_quantity,
-                    ${receiptWarehouseLabelSqlRetry},
-                    ${toWarehouseNameSqlRetry},
-                    ${purchaseReceiptIdSql},
-                    ${amountRub}
+                    COALESCE(o.name, o_wh.name) AS organization_name,
+                    COALESCE(la.lines_count, 0)::int AS lines_count,
+                    COALESCE(la.total_quantity, 0)::int AS total_quantity,
+                    ${warehouseLabelSql('wh_from')} AS warehouse_name,
+                    NULL::text AS to_warehouse_name,
+                    pr_link.id AS purchase_receipt_id,
+                    la.total_amount_rub
              FROM warehouse_receipts r
              LEFT JOIN suppliers s ON s.id = r.supplier_id
              LEFT JOIN organizations o ON o.id = r.organization_id
              LEFT JOIN warehouses wh_from ON wh_from.id = r.warehouse_id
+             LEFT JOIN organizations o_wh ON o_wh.id = wh_from.organization_id
+             LEFT JOIN LATERAL (
+               SELECT COUNT(*)::int AS lines_count,
+                      COALESCE(SUM(l.quantity), 0)::int AS total_quantity,
+                      SUM(
+                        CASE
+                          WHEN COALESCE(l.cost, p.cost) IS NULL THEN NULL
+                          ELSE l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric
+                        END
+                      ) AS total_amount_rub
+               FROM warehouse_receipt_lines l
+               LEFT JOIN products p ON p.id = l.product_id
+               WHERE l.receipt_id = r.id
+             ) la ON TRUE
+             LEFT JOIN LATERAL (
+               SELECT pr.id
+               FROM purchase_receipts pr
+               WHERE pr.warehouse_receipt_id = r.id
+               ORDER BY pr.id DESC
+               LIMIT 1
+             ) pr_link ON TRUE
              WHERE 1=1 ${profileWhere} ${docWhere} ${orgWhere} ${whWhere}
              ORDER BY r.created_at DESC, r.id DESC
              LIMIT $${limIdx} OFFSET $${offIdx}`,
@@ -461,14 +463,24 @@ class WarehouseReceiptsRepositoryPG {
         const r = await query(
           `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id,
                   s.name AS supplier_name, s.code AS supplier_code,
-                  (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
-                  COALESCE(
-                    (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
-                    0
-                  )::int AS total_quantity,
-                  ${amountRub}
+                  COALESCE(la.lines_count, 0)::int AS lines_count,
+                  COALESCE(la.total_quantity, 0)::int AS total_quantity,
+                  la.total_amount_rub
            FROM warehouse_receipts r
            LEFT JOIN suppliers s ON s.id = r.supplier_id
+           LEFT JOIN LATERAL (
+             SELECT COUNT(*)::int AS lines_count,
+                    COALESCE(SUM(l.quantity), 0)::int AS total_quantity,
+                    SUM(
+                      CASE
+                        WHEN COALESCE(l.cost, p.cost) IS NULL THEN NULL
+                        ELSE l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric
+                      END
+                    ) AS total_amount_rub
+             FROM warehouse_receipt_lines l
+             LEFT JOIN products p ON p.id = l.product_id
+             WHERE l.receipt_id = r.id
+           ) la ON TRUE
            WHERE 1=1 ${legacyProfileWhere}
            ORDER BY r.created_at DESC, r.id DESC
            LIMIT $${limIdxLegacy} OFFSET $${offIdxLegacy}`,

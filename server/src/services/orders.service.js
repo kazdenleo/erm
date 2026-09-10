@@ -1581,57 +1581,12 @@ class OrdersService {
     if (mp && mpWarehouseId) {
       try {
         const repo = repositoryFactory.getRepository('warehouse_mappings');
-        let wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(
+        const wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(
           mp,
           mpWarehouseId,
           profileId
         );
         if (wid) return wid;
-
-        const numMatch = mpWarehouseId.match(/^(\d+)/);
-        if (numMatch) {
-          wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(
-            mp,
-            numMatch[1],
-            profileId
-          );
-          if (wid) return wid;
-        }
-
-        const namePart = mpWarehouseId.includes('—')
-          ? mpWarehouseId
-              .split('—')
-              .slice(1)
-              .join('—')
-              .trim()
-          : mpWarehouseId;
-        if (namePart && repo?.findAll) {
-          const mappings = await repo.findAll({ marketplace: mp, profileId });
-          for (const m of mappings || []) {
-            const mid = String(m.marketplace_warehouse_id || '').trim();
-            if (!mid) continue;
-            if (mp === 'ym' || mp === 'yandex') {
-              const { parseYandexWarehouseMapping } = await import('../utils/yandexWarehouseMapping.js');
-              const parsed = parseYandexWarehouseMapping(mid);
-              if (
-                namePart === mid ||
-                namePart === parsed.campaignId ||
-                (parsed.campaignId && mid.includes(namePart))
-              ) {
-                return m.warehouse_id;
-              }
-              continue;
-            }
-            const midName = mid.includes('—') ? mid.split('—').slice(1).join('—').trim() : mid;
-            if (
-              mid.includes(namePart) ||
-              namePart.includes(midName) ||
-              midName.includes(namePart)
-            ) {
-              return m.warehouse_id;
-            }
-          }
-        }
       } catch {
         // ignore
       }

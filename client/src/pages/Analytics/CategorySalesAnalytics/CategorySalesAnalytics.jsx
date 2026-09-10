@@ -2,7 +2,7 @@
  * Аналитика продаж по категориям товаров
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
@@ -82,7 +82,7 @@ export function CategorySalesAnalytics() {
   const [dateTo, setDateTo] = useState(initial.dateTo);
   const [marketplace, setMarketplace] = useState('all');
   const [scheme, setScheme] = useState('all');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -107,6 +107,10 @@ export function CategorySalesAnalytics() {
       setLoading(false);
     }
   }, [dateFrom, dateTo, marketplace, scheme]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const summary = data?.summary || {};
   const taxMeta = data?.taxMeta || null;
@@ -171,7 +175,7 @@ export function CategorySalesAnalytics() {
         iconClass="pe-7s-portfolio"
         iconBgClass="bg-mean-fruit"
         title="По категориям"
-        subtitle="Продажи, затраты и чистая прибыль по категориям товаров"
+        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -204,8 +208,11 @@ export function CategorySalesAnalytics() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
+          {loading ? 'Загрузка…' : 'Загрузить'}
         </Button>
+        {loading && data != null ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
         <Button variant="secondary" size="small" onClick={expandAll} disabled={!categories.length}>
           Развернуть все
         </Button>
@@ -349,7 +356,9 @@ export function CategorySalesAnalytics() {
               <tr>
                 <td colSpan={colCount} className="sales-analytics__empty">
                   {data == null
-                    ? 'Выберите параметры и нажмите «Показать».'
+                    ? loading
+                      ? 'Загрузка…'
+                      : 'Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».'
                     : 'Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».'}
                 </td>
               </tr>

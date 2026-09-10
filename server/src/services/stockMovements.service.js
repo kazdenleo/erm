@@ -441,6 +441,25 @@ class StockMovementsService {
       } catch {
         // не блокируем движение при сбое пересчёта резервов
       }
+      // Приёмка не через закупку раньше только увеличивала наличие: заказы с резервом
+      // «в пути» не переводились на склад, и сборка блокировалась.
+      if (
+        safeDelta > 0 &&
+        (typeNormEarly === 'receipt' || typeNormEarly === 'customer_return')
+      ) {
+        try {
+          const { default: ordersService } = await import('./orders.service.js');
+          await ordersService.promoteIncomingOrderReservesToOnHand({
+            productIds: [idNum],
+            reason:
+              typeNormEarly === 'customer_return'
+                ? 'Возврат покупателя: резерв «в пути» → со склада'
+                : 'Приёмка на склад: резерв «в пути» → со склада',
+          });
+        } catch {
+          /* не блокируем приёмку */
+        }
+      }
       try {
         const { default: ordersService } = await import('./orders.service.js');
         await ordersService.ensureReservesForProductIfSupplyAvailable(idNum);

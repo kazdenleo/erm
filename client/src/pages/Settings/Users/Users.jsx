@@ -147,8 +147,8 @@ export function SettingsUsers() {
   };
 
   const save = async () => {
-    if (!form.email.trim()) {
-      alert('Введите email (логин)');
+    if (!form.phone.trim()) {
+      alert('Введите телефон (логин)');
       return;
     }
     if (!editing && !form.password) {
@@ -157,11 +157,11 @@ export function SettingsUsers() {
     }
     try {
       const payload = {
-        email: form.email.trim(),
+        email: form.email.trim() || null,
         lastName: form.lastName.trim(),
         firstName: form.firstName.trim(),
         middleName: form.middleName.trim(),
-        phone: form.phone.trim() || null,
+        phone: form.phone.trim(),
         birthDate: form.birthDate.trim() || null,
         role: 'user',
       };
@@ -250,7 +250,7 @@ export function SettingsUsers() {
       ) : (
         <>
           <p className="subtitle">
-            Добавление пользователей аккаунта: логин (email или телефон), пароль, роль и доступ к организациям/складам.
+            Добавление пользователей аккаунта: телефон (логин), пароль, роль и доступ к организациям/складам.
             Видимые разделы — на вкладке «Роли».
           </p>
           {loading && <div className="settings-users-loading">Загрузка...</div>}
@@ -267,7 +267,7 @@ export function SettingsUsers() {
                   list.map((u) => (
                     <div key={u.id} className="settings-users-item">
                       <div>
-                        <span className="settings-users-email">{u.email}</span>
+                        <span className="settings-users-email">{u.phone || u.email || 'без логина'}</span>
                         {userDisplayName(u) && <span className="settings-users-name"> — {userDisplayName(u)}</span>}
                         <span className="settings-users-role">{accountRoleLabel(u)}</span>
                         <span className="settings-users-access">{accessSummary(u)}</span>
@@ -295,14 +295,25 @@ export function SettingsUsers() {
           >
             <div className="settings-users-form settings-users-form--scroll">
               <label>
-                Логин (email) <span style={{ color: 'var(--error)' }}>*</span>
+                Телефон (логин) <span style={{ color: 'var(--error)' }}>*</span>
+                <input
+                  type="tel"
+                  value={form.phone}
+                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                  className="login-input"
+                  style={{ width: '100%', marginTop: '4px' }}
+                  autoComplete="tel"
+                  placeholder="+7 999 123-45-67"
+                />
+              </label>
+              <label>
+                Почта
                 <input
                   type="email"
                   value={form.email}
                   onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
-                  disabled={!!editing}
                 />
               </label>
               <label>
@@ -347,18 +358,6 @@ export function SettingsUsers() {
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
                   autoComplete="additional-name"
-                />
-              </label>
-              <label>
-                Телефон
-                <input
-                  type="tel"
-                  value={form.phone}
-                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-                  className="login-input"
-                  style={{ width: '100%', marginTop: '4px' }}
-                  autoComplete="tel"
-                  placeholder="+7 999 123-45-67"
                 />
               </label>
               <label>

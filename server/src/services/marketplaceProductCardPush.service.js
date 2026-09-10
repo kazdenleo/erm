@@ -121,16 +121,26 @@ function parseJsonObject(v) {
 
 async function loadCategoryPushContext(userCategoryId) {
   if (userCategoryId == null || userCategoryId === '') {
-    return { mappings: {}, mpFieldLinks: {} };
+    return { mappings: {}, mpFieldLinks: {}, attributeMpLinks: {} };
   }
   const r = await query(
-    `SELECT marketplace_mappings, mp_field_links FROM user_categories WHERE id = $1`,
+    `SELECT marketplace_mappings, mp_field_links,
+            (
+              SELECT jsonb_object_agg(ca.attribute_id::text, COALESCE(ca.mp_links, '{}'::jsonb))
+              FROM category_attributes ca
+              WHERE ca.user_category_id = user_categories.id
+            ) AS attribute_mp_links
+     FROM user_categories WHERE id = $1`,
     [userCategoryId]
   );
   const row = r.rows[0] || {};
   return {
     mappings: parseUserCategoryMarketplaceMappings(row.marketplace_mappings),
     mpFieldLinks: row.mp_field_links,
+    attributeMpLinks:
+      row.attribute_mp_links && typeof row.attribute_mp_links === 'object'
+        ? row.attribute_mp_links
+        : {},
   };
 }
 
@@ -763,7 +773,7 @@ function formatMoneyStr(n) {
  * «Цена до скидки» / «Цена после скидки» из системных атрибутов ERP + мин. цена МП.
  */
 async function loadErpCardPrices(productId, marketplace) {
-  const out = { before: null, after: null, min: null };
+  const out = { before: null, after: null, min: null, cost: null };
   try {
     await refreshComputedAttributeValues(query, productId);
   } catch (e) {
@@ -786,6 +796,12 @@ async function loadErpCardPrices(productId, marketplace) {
     }
   } catch (e) {
     logger.warn('[CardPush] load ERP price attributes failed', e?.message || e);
+  }
+  try {
+    const r = await query(`SELECT cost FROM products WHERE id = $1 LIMIT 1`, [productId]);
+    out.cost = toPosPrice(r.rows?.[0]?.cost);
+  } catch (e) {
+    logger.warn('[CardPush] load ERP cost failed', e?.message || e);
   }
   if (marketplace) {
     try {
@@ -889,12 +905,15 @@ async function pushOzonPricesFromErp(offerId, productId, erp, apiOpts) {
   if (erp.min != null && erp.min > 0 && erp.min < after) {
     entry.min_price = formatMoneyStr(erp.min);
   }
+  if (erp.cost != null && erp.cost > 0) {
+    entry.net_price = formatMoneyStr(erp.cost);
+  }
   const pid = productId != null ? Number(productId) : NaN;
   if (Number.isFinite(pid) && pid > 0) entry.product_id = pid;
   else entry.offer_id = offerId;
   try {
     await ozonApiPostWithRetry('/v1/product/import/prices', { prices: [entry] }, apiOpts);
-    return { ok: true, selling: after, before: erp.before };
+    return { ok: true, selling: after, before: erp.before, cost: erp.cost ?? null };
   } catch (e) {
     return { ok: false, error: `Ozon import/prices: ${e?.message || String(e)}`.substring(0, 220) };
   }
@@ -2670,10 +2689,11 @@ async function pushProductToMp(product, mp, opts) {
     throw err;
   }
   const categoryId = product.user_category_id ?? product.categoryId;
-  const { mappings: categoryMm, mpFieldLinks: catLinks } = await loadCategoryPushContext(categoryId);
+  const { mappings: categoryMm, mpFieldLinks: catLinks, attributeMpLinks } =
+    await loadCategoryPushContext(categoryId);
   const productForPush = {
     ...product,
-    mp_field_links: overlayCategoryDedicatedMpLinks(product.mp_field_links, catLinks),
+    mp_field_links: overlayCategoryDedicatedMpLinks(product.mp_field_links, catLinks, attributeMpLinks),
   };
   const ctx = {
     profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,

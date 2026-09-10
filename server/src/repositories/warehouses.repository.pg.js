@@ -21,6 +21,7 @@ function mapWarehouseRow(row) {
     supplierName: row.supplier_name,
     supplierCode: row.supplier_code,
     mainWarehouseAddress: row.main_warehouse_address,
+    mainWarehouseName: row.main_warehouse_name,
     orderAcceptanceTime: row.order_acceptance_time,
     wbWarehouseName: row.wb_warehouse_name,
     isFboStock: row.is_fbo_stock === true,
@@ -86,7 +87,7 @@ class WarehousesRepositoryPG {
       params.push(pid);
     }
     
-    sql += ' ORDER BY w.type, w.address';
+    sql += ' ORDER BY w.type, COALESCE(NULLIF(TRIM(w.name), \'\'), w.address)';
     
     const result = await query(sql, params);
     return result.rows.map((row) => mapWarehouseRow(row));
@@ -185,11 +186,12 @@ class WarehousesRepositoryPG {
     // Пытаемся вставить с полем wb_warehouse_name и organization_id
     try {
       const result = await query(`
-        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock, weekend_days, push_marketplace_stock, push_stock_ozon, push_stock_wb, push_stock_ym)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        INSERT INTO warehouses (type, name, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock, weekend_days, push_marketplace_stock, push_stock_ozon, push_stock_wb, push_stock_ym)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *
       `, [
         warehouseData.type || 'warehouse',
+        warehouseData.name || null,
         warehouseData.address || null,
         warehouseData.supplier_id || null,
         warehouseData.main_warehouse_id || null,
@@ -276,8 +278,8 @@ class WarehousesRepositoryPG {
       let paramIndex = 1;
       
       const allowedFields = includeWbWarehouseName 
-        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym']
-        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym'];
+        ? ['type', 'name', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym']
+        : ['type', 'name', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock', 'weekend_days', 'push_marketplace_stock', 'push_stock_ozon', 'push_stock_wb', 'push_stock_ym'];
       
       for (const field of allowedFields) {
         if (updates.hasOwnProperty(field)) {

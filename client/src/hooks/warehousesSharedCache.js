@@ -68,7 +68,7 @@ export async function fetchWarehousesShared(key, options = {}) {
     key !== '_all' ? { organizationId: key } : {};
 
   const request = warehousesApi
-    .getAll(key !== '_all' ? params : {})
+    .getAll({ ...params, force })
     .then((response) => {
       const list = extractWarehousesFromApiResponse(response);
       cacheByKey.set(key, { data: list, fetchedAt: Date.now() });

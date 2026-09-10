@@ -490,7 +490,7 @@ async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = 
       erpSku: row.sku,
       productName: row.name,
       marketplace: mp,
-      hint: `В ERP: ${diff.erpText}. На ${mpLabel(mp)}: ${diff.mpText}. Сверьте и обновите карточку.`,
+      hint: `В ERP: ${diff.erpText}. На МП: ${diff.mpText}. Сверьте и обновите карточку.`,
     });
   }
   return out;
@@ -500,6 +500,40 @@ class MarketplaceCardWorkService {
   /** Дубли идентификаторов — без отчёта продаж и периода. */
   async getDuplicates({ profileId } = {}) {
     return listIdentifierDuplicates({ profileId });
+  }
+
+  /** Товары без себестоимости в карточке (products.cost). */
+  async getMissingCost({ profileId } = {}) {
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      return { items: [], productCount: 0 };
+    }
+    let rows = [];
+    try {
+      const res = await query(
+        `SELECT p.id, p.sku, p.name, p.cost, p.product_type
+           FROM products p
+          WHERE p.profile_id = $1
+            AND COALESCE(p.is_archived, false) = false
+            AND (p.cost IS NULL OR p.cost::numeric <= 0)
+          ORDER BY p.sku NULLS LAST, p.id`,
+        [pid]
+      );
+      rows = res.rows || [];
+    } catch (e) {
+      return { items: [], productCount: 0 };
+    }
+
+    const items = rows.map((r) => ({
+      productId: Number(r.id) || 0,
+      sku: r.sku || '',
+      productName: r.name || '',
+      cost: r.cost != null && Number.isFinite(Number(r.cost)) ? Number(r.cost) : null,
+      productType: r.product_type || null,
+      isKit: String(r.product_type || '').toLowerCase() === 'kit',
+    })).filter((x) => x.productId > 0);
+
+    return { items, productCount: items.length };
   }
 
   async getQueue({

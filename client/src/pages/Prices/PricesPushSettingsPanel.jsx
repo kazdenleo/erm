@@ -27,7 +27,16 @@ function extractProductList(response) {
   return [];
 }
 
-function buildScopePayload(scope, pushFbs, pushFbo, pickedCategoryIds, selectedProducts, showFbsOption, showFboOption) {
+function buildScopePayload(
+  scope,
+  pushFbs,
+  pushFbo,
+  pickedCategoryIds,
+  selectedProducts,
+  showFbsOption,
+  showFboOption,
+  excludedProducts = []
+) {
   return {
     scope,
     pushFbs: showFbsOption ? pushFbs === true : false,
@@ -40,6 +49,9 @@ function buildScopePayload(scope, pushFbs, pushFbo, pickedCategoryIds, selectedP
       scope === SCOPES.categoriesAndProducts || scope === SCOPES.products
         ? selectedProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0)
         : [],
+    excludeProductIds: excludedProducts
+      .map((p) => Number(p.id))
+      .filter((n) => Number.isFinite(n) && n > 0),
   };
 }
 
@@ -56,6 +68,9 @@ function buildScopeSummaryText(settings) {
     scopeText = `${settings.productIds.length} выбранных товаров`;
   } else if (settings.scope === 'categories' && settings.categoryIds?.length) {
     scopeText = `${settings.categoryIds.length} категор(ий)`;
+  }
+  if (settings.excludeProductIds?.length) {
+    scopeText += `, −${settings.excludeProductIds.length} искл.`;
   }
   return `${scopeText}, мин. ${schemeText}`;
 }
@@ -83,6 +98,7 @@ export function PricesPushSettingsPanel({
   onPushNow,
   pushLoading = false,
   pushFeedback = null,
+  embedInModal = false,
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -95,12 +111,17 @@ export function PricesPushSettingsPanel({
   const [pushFbo, setPushFbo] = useState(true);
   const [pickedCategoryIds, setPickedCategoryIds] = useState(() => new Set());
   const [selectedProducts, setSelectedProducts] = useState([]);
+  const [excludedProducts, setExcludedProducts] = useState([]);
   const [orgToggles, setOrgToggles] = useState([]);
 
   const [productSearch, setProductSearch] = useState('');
+  const [excludeSearch, setExcludeSearch] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [excludeSearchResults, setExcludeSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [excludeSearchLoading, setExcludeSearchLoading] = useState(false);
   const searchDebounceRef = useRef(null);
+  const excludeDebounceRef = useRef(null);
 
   const sortedCategories = useMemo(() => {
     return [...(categories || [])].sort((a, b) =>
@@ -128,6 +149,18 @@ export function PricesPushSettingsPanel({
         );
       } else {
         setSelectedProducts([]);
+      }
+
+      const excludeIds = (data?.excludeProductIds || [])
+        .map(Number)
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (excludeIds.length) {
+        const loadedEx = await productsApi.getManyByIds(excludeIds);
+        setExcludedProducts(
+          excludeIds.map((id, idx) => loadedEx[idx] || { id, sku: `#${id}`, name: '' })
+        );
+      } else {
+        setExcludedProducts([]);
       }
     } catch (err) {
       console.error('[PricesPushSettings] load failed:', err);
@@ -173,6 +206,32 @@ export function PricesPushSettingsPanel({
     };
   }, [productSearch, selectedProducts, scope, pickedCategoryIds]);
 
+  useEffect(() => {
+    if (excludeDebounceRef.current) clearTimeout(excludeDebounceRef.current);
+    const q = excludeSearch.trim();
+    if (q.length < 2) {
+      setExcludeSearchResults([]);
+      setExcludeSearchLoading(false);
+      return undefined;
+    }
+    setExcludeSearchLoading(true);
+    excludeDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await productsApi.getAll({ search: q, limit: 15 });
+        const list = extractProductList(res);
+        const excludedIds = new Set(excludedProducts.map((p) => String(p.id)));
+        setExcludeSearchResults(list.filter((p) => p?.id && !excludedIds.has(String(p.id))));
+      } catch {
+        setExcludeSearchResults([]);
+      } finally {
+        setExcludeSearchLoading(false);
+      }
+    }, 350);
+    return () => {
+      if (excludeDebounceRef.current) clearTimeout(excludeDebounceRef.current);
+    };
+  }, [excludeSearch, excludedProducts]);
+
   const toggleCategory = (id) => {
     setPickedCategoryIds((prev) => {
       const next = new Set(prev);
@@ -195,6 +254,21 @@ export function PricesPushSettingsPanel({
 
   const removeProduct = (productId) => {
     setSelectedProducts((prev) => prev.filter((p) => String(p.id) !== String(productId)));
+  };
+
+  const addExcludedProduct = (product) => {
+    if (!product?.id) return;
+    setExcludedProducts((prev) => {
+      if (prev.some((p) => String(p.id) === String(product.id))) return prev;
+      return [...prev, product];
+    });
+    setSelectedProducts((prev) => prev.filter((p) => String(p.id) !== String(product.id)));
+    setExcludeSearch('');
+    setExcludeSearchResults([]);
+  };
+
+  const removeExcludedProduct = (productId) => {
+    setExcludedProducts((prev) => prev.filter((p) => String(p.id) !== String(productId)));
   };
 
   const handleOrgToggle = async (orgId, enabled) => {
@@ -231,7 +305,8 @@ export function PricesPushSettingsPanel({
         pickedCategoryIds,
         selectedProducts,
         showFbsOption,
-        showFboOption
+        showFboOption,
+        excludedProducts
       );
       await pricesApi.updatePushSettings(payload);
       setMessage('Настройки сохранены');
@@ -292,7 +367,8 @@ export function PricesPushSettingsPanel({
       pickedCategoryIds,
       selectedProducts,
       showFbsOption,
-      showFboOption
+      showFboOption,
+      excludedProducts
     );
     const enabledOrgs = orgList.filter((o) => o.autoPushMarketplacePrices === true);
     if (!enabledOrgs.length) {
@@ -326,7 +402,8 @@ export function PricesPushSettingsPanel({
           pickedCategoryIds,
           selectedProducts,
           showFbsOption,
-          showFboOption
+          showFboOption,
+          excludedProducts
         )
       ),
     [
@@ -335,6 +412,7 @@ export function PricesPushSettingsPanel({
       pushFbo,
       pickedCategoryIds,
       selectedProducts,
+      excludedProducts,
       showFbsOption,
       showFboOption,
     ]
@@ -466,12 +544,21 @@ export function PricesPushSettingsPanel({
   }
 
   return (
-    <section className="prices-push-settings" style={{ marginBottom: '16px' }}>
-      <h2 className="h6 mb-1">Отправка цен на маркетплейсы</h2>
-      <p className="text-muted small mb-3">
-        Управляет автоматической и ручной отправкой сохранённых цен на Ozon, Wildberries и Яндекс.Маркет.
-        Отправляются только товары с рассчитанными мин. ценами.
-      </p>
+    <section className="prices-push-settings" style={{ marginBottom: embedInModal ? 0 : '16px' }}>
+      {!embedInModal && (
+        <>
+          <h2 className="h6 mb-1">Отправка цен на маркетплейсы</h2>
+          <p className="text-muted small mb-3">
+            Управляет автоматической и ручной отправкой сохранённых цен на Ozon, Wildberries и Яндекс.Маркет.
+            Отправляются только товары с рассчитанными мин. ценами.
+          </p>
+        </>
+      )}
+      {embedInModal && (
+        <p className="text-muted small mb-3">
+          Автоматическая и ручная отправка сохранённых мин. цен на Ozon, Wildberries и Яндекс.Маркет.
+        </p>
+      )}
 
       {error && <div className="error mb-2">{error}</div>}
       {message && <div className="small mb-2" style={{ color: 'var(--primary)' }}>{message}</div>}
@@ -623,6 +710,78 @@ export function PricesPushSettingsPanel({
             </span>
           </label>
         </div>
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <strong className="small d-block mb-2">Исключения (не отправлять цены)</strong>
+        <p className="text-muted small mb-2">
+          Эти товары не попадут в автоотправку и ручную отправку по настройкам, даже если входят в область выше.
+        </p>
+        <input
+          type="search"
+          className="form-control form-control-sm"
+          placeholder="Поиск товара для исключения…"
+          value={excludeSearch}
+          onChange={(e) => setExcludeSearch(e.target.value)}
+        />
+        {excludeSearchLoading && <p className="text-muted small mt-1 mb-0">Поиск…</p>}
+        {excludeSearchResults.length > 0 && (
+          <div
+            style={{
+              maxHeight: 140,
+              overflowY: 'auto',
+              border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 6,
+              marginTop: 6,
+            }}
+          >
+            {excludeSearchResults.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="btn btn-link btn-sm text-start w-100 text-decoration-none"
+                style={{ fontSize: 12, padding: '4px 8px' }}
+                onClick={() => addExcludedProduct(p)}
+              >
+                + {productLabel(p)}
+              </button>
+            ))}
+          </div>
+        )}
+        {excludedProducts.length > 0 && (
+          <ul
+            style={{
+              margin: '8px 0 0',
+              padding: 0,
+              listStyle: 'none',
+              maxHeight: 140,
+              overflowY: 'auto',
+              fontSize: 12,
+            }}
+          >
+            {excludedProducts.map((p) => (
+              <li
+                key={p.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '2px 0',
+                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                }}
+              >
+                <span>{productLabel(p)}</span>
+                <button
+                  type="button"
+                  className="btn btn-link btn-sm p-0 text-danger"
+                  onClick={() => removeExcludedProduct(p.id)}
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <div className="d-flex gap-2 align-items-center flex-wrap">

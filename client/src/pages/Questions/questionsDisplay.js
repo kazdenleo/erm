@@ -113,7 +113,10 @@ function wbSupplierArticleFromRaw(raw) {
     raw.vendor_code,
   ];
   for (const v of candidates) {
-    if (v != null && String(v).trim() !== '') return String(v).trim();
+    if (v == null || String(v).trim() === '') continue;
+    const s = String(v).trim();
+    if (s === '0' || isOzonNumericMarketSku(s)) continue;
+    return s;
   }
   return '';
 }
@@ -173,24 +176,33 @@ function pickOfferSku(q) {
   const raw = q.rawPayload ?? q.raw_payload;
   if (mp === 'wildberries') {
     const fromApi = wbSupplierArticleFromRaw(raw);
-    if (fromApi) return fromApi;
+    if (fromApi && !isOzonNumericMarketSku(fromApi) && fromApi !== '0') return fromApi;
+    const direct = q.skuOrOffer ?? q.sku_or_offer;
+    if (direct != null) {
+      const d = String(direct).trim();
+      if (d && d !== '0' && !isOzonNumericMarketSku(d)) return d;
+    }
+    // nmId в колонке — не артикул продавца
+    return '';
   }
   if (mp === 'ozon') {
     const direct = q.skuOrOffer ?? q.sku_or_offer;
     if (direct != null) {
       const d = String(direct).trim();
-      if (d && !isOzonNumericMarketSku(d)) return d;
+      if (d && d !== '0' && !isOzonNumericMarketSku(d)) return d;
     }
     if (raw && typeof raw === 'object') {
       const offer = pickString(raw.offer_id, raw.offerId);
-      if (offer) return offer;
+      if (offer && offer !== '0' && !isOzonNumericMarketSku(offer)) return offer;
     }
     const fromSubject = ozonSellerArticleFromSubject(q?.subject);
     if (fromSubject) return fromSubject;
     return '';
   }
   const direct = q.skuOrOffer ?? q.sku_or_offer;
-  if (direct != null && String(direct).trim() !== '') return String(direct).trim();
+  if (direct != null && String(direct).trim() !== '' && String(direct).trim() !== '0') {
+    return String(direct).trim();
+  }
   if (mp !== 'yandex') return '';
   if (!raw || typeof raw !== 'object') return '';
   const qi = raw.questionIdentifiers ?? raw.QuestionIdentifiers ?? raw.question_identifiers ?? {};
@@ -210,12 +222,16 @@ function extractArticleOnly(q) {
   const sku = pickOfferSku(q);
   if (sku) return sku;
   let subj = q.subject != null && String(q.subject).trim() !== '' ? String(q.subject).trim() : '';
-  if (!subj) return '';
+  if (!subj || subj === '0') return '';
   subj = subj.replace(/^Арт\.\s*/i, '').trim();
   if (subj.includes(' · ')) {
     const tail = subj.split(' · ').pop().trim();
-    if (tail) return tail;
+    if (tail && tail !== '0' && !isOzonNumericMarketSku(tail)) return tail;
   }
+  // «DTSN2382RL Название» в subject без разделителя
+  const leading = subj.match(/^([A-Za-z][A-Za-z0-9._\-/]{2,60})(?=\s|[—–-]|$)/);
+  if (leading && !isOzonNumericMarketSku(leading[1])) return leading[1];
+  if (isOzonNumericMarketSku(subj) || subj === '0') return '';
   return subj;
 }
 
@@ -267,25 +283,42 @@ function productNameFromRaw(q) {
 function parseSubjectNameAndArticle(q) {
   let subj = q?.subject != null && String(q.subject).trim() !== '' ? String(q.subject).trim() : '';
   subj = subj.replace(/^Арт\.\s*/i, '').trim();
+  if (subj === '0') subj = '';
   const mp = String(q?.marketplace || '').toLowerCase();
   if (mp === 'ozon') {
     const art = ozonSellerArticleFromSubject(subj) || pickOfferSku(q) || null;
     const name = ozonProductNameFromSubject(subj, art) || null;
     if (art || name) return { name, article: art };
   }
-  const article = extractArticleOnly(q);
+  const article = extractArticleOnly(q) || null;
   if (subj.includes(' · ')) {
     const head = subj.split(' · ')[0].trim();
     const tail = subj.split(' · ').pop().trim();
+    const art =
+      (tail && tail !== '0' && !isOzonNumericMarketSku(tail) ? tail : null) || article;
     return {
       name: head || null,
-      article: tail || article || null,
+      article: art,
     };
   }
   if (article && subj && subj !== article) {
-    return { name: subj, article };
+    return { name: stripArticlePrefix(article, subj) || subj, article };
   }
-  return { name: subj || null, article: article || null };
+  // WB: название из API + артикул из ERP может прийти отдельно
+  const rawName = productNameFromRaw(q);
+  if (rawName && article) {
+    return { name: stripArticlePrefix(article, rawName) || rawName, article };
+  }
+  if (rawName && !article) {
+    const fromName = rawName.match(/^([A-Za-z][A-Za-z0-9._\-/]{2,60})(?=\s|[—–-]|$)/);
+    if (fromName && !isOzonNumericMarketSku(fromName[1])) {
+      return {
+        name: stripArticlePrefix(fromName[1], rawName) || rawName,
+        article: fromName[1],
+      };
+    }
+  }
+  return { name: subj || rawName || null, article: article || null };
 }
 
 function escapeRegex(s) {

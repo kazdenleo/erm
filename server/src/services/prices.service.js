@@ -3932,7 +3932,22 @@ class PricesService {
       integrationScope,
     };
 
-    const minProfitDefault = resolveMarketplaceMinProfit(product, null, 50);
+    let productForProfit = product;
+    try {
+      const pid = Number(integrationScope.profileId);
+      if (Number.isFinite(pid) && pid > 0) {
+        const { parsePricePushSettings } = await import('../utils/pricePushSettings.js');
+        const pref = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [pid]);
+        const rules = parsePricePushSettings(pref.rows?.[0]?.price_push_settings).minMarkupRules;
+        if (rules?.length) {
+          productForProfit = { ...product, profileMinMarkupRules: rules };
+        }
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] load min markup rules failed', e?.message || e);
+    }
+
+    const minProfitDefault = resolveMarketplaceMinProfit(productForProfit, null, 50);
     if (basePrice <= 0) {
       errors.wb = 'Нет себестоимости для расчёта минимальной цены WB.';
       return { errors };
@@ -4035,7 +4050,7 @@ class PricesService {
               );
               calculator.acquiring = ozonAcquiringPercent;
             }
-            const profit = resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault);
+            const profit = resolveMarketplaceMinProfit(productForProfit, 'ozon', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBS', ozonSppPercent);
             const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBO', ozonSppPercent);
@@ -4095,7 +4110,7 @@ class PricesService {
               volume,
               integrationScope
             );
-            const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
+            const profit = resolveMarketplaceMinProfit(productForProfit, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
               basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO', wbSppPercent
@@ -4144,7 +4159,7 @@ class PricesService {
           if (fallbackCalc && hasUsableCommissionPercent(fallbackCalc, 'wb')) {
             const volume = Number(fallbackCalc.volume_weight) || Number(product.volume) || 0;
             const wbCalc = await this._enrichWbCalculatorReturnAmount(fallbackCalc, volume, integrationScope);
-            const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
+            const profit = resolveMarketplaceMinProfit(productForProfit, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
               basePrice, wbCalc, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, taxProfile, 'FBO', wbSppPercent
@@ -4185,7 +4200,7 @@ class PricesService {
 
     if (skuYm && (ymCategoryId || ymUserCategoryId)) {
       try {
-        const profit = resolveMarketplaceMinProfit(product, 'ym', minProfitDefault);
+        const profit = resolveMarketplaceMinProfit(productForProfit, 'ym', minProfitDefault);
         const taxProfile = resolveMinPriceTaxProfile(product);
         const ymFbsResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, {
           ...mpOpts,

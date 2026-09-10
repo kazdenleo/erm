@@ -57,6 +57,15 @@ export function preparePhoneFields(value) {
   };
 }
 
+export function requirePhoneFields(value) {
+  const fields = preparePhoneFields(value);
+  if (fields.error) return fields;
+  if (!fields.phone_normalized) {
+    return { error: 'Укажите номер телефона' };
+  }
+  return fields;
+}
+
 export async function ensurePhoneAvailable(usersRepo, phoneNormalized, excludeUserId = null) {
   if (!phoneNormalized) return;
   const existing = await usersRepo.findByNormalizedPhone(phoneNormalized);

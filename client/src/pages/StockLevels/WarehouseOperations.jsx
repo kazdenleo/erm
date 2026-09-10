@@ -475,9 +475,14 @@ export function WarehouseOperations({
   const suggestOnPickRef = useRef(null);
 
   const closeLinkBarcodeModal = useCallback(() => {
+    const fn = linkBarcodeContinueRef.current;
+    linkBarcodeContinueRef.current = null;
     setLinkBarcodeModalOpen(false);
     setLinkBarcodeScanned('');
-    linkBarcodeContinueRef.current = null;
+    // Отмена без выбора — иначе Promise в lookupProductByAny зависает.
+    if (typeof fn === 'function') {
+      window.setTimeout(() => fn(null), 0);
+    }
   }, []);
 
   const closeProductPick = useCallback(() => {
@@ -533,6 +538,26 @@ export function WarehouseOperations({
         throw new Error('Введите штрихкод / артикул / название');
       }
 
+      const waitLinkBarcode = () =>
+        new Promise((resolve, reject) => {
+          openLinkBarcode(v, (p) => {
+            if (!p) reject(new Error('Товар не выбран'));
+            else resolve(p);
+          });
+        });
+
+      // Новый ШК при приёмке: только точный barcode, без fuzzy по SKU/названию —
+      // иначе подставляется «похожий» товар и окно привязки/габаритов не открывается.
+      if (allowLinkBarcode && isLikelyBarcodeScan(v)) {
+        try {
+          return await fetchProductByScanCode(v);
+        } catch (e) {
+          const msg = String(e?.message || '');
+          if (/битый штрихкод/i.test(msg)) throw e;
+          return await waitLinkBarcode();
+        }
+      }
+
       const matches = await searchProductsCombined(v, {
         products,
         organizationId,
@@ -551,12 +576,7 @@ export function WarehouseOperations({
       }
 
       if (allowLinkBarcode) {
-        return await new Promise((resolve, reject) => {
-          openLinkBarcode(v, (p) => {
-            if (!p) reject(new Error('Товар не выбран'));
-            else resolve(p);
-          });
-        });
+        return await waitLinkBarcode();
       }
 
       throw new Error('Товар не найден');
@@ -600,7 +620,7 @@ export function WarehouseOperations({
       const documentType = RECEIPT_DOCUMENT_TYPE_BY_MODE[forMode];
       if (!documentType) return;
       setReceiptsLoading(true);
-      const params = { limit: 200, documentType };
+      const params = { limit: 100, documentType };
       if (forMode === MODE_WRITEOFF) {
         if (writeoffFilterOrgId) params.organizationId = writeoffFilterOrgId;
         if (writeoffFilterWhId) params.warehouseId = writeoffFilterWhId;
@@ -855,7 +875,10 @@ export function WarehouseOperations({
       const local = findLocalMatches(qq);
       if (local.length > 0) return local;
       if (!transferOrganizationId) return [];
-      return searchProductsRemote(qq, transferOrganizationId);
+      return searchProductsRemote(qq, {
+        organizationId: transferOrganizationId,
+        limit: 40,
+      });
     },
     [findLocalMatches, searchProductsRemote, transferOrganizationId]
   );

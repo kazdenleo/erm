@@ -22,7 +22,13 @@ export function warehouseDisplayLabel(w, fallbackId = null) {
   if (!w) {
     return fallbackId != null && fallbackId !== '' ? `Склад #${fallbackId}` : '—';
   }
-  return w.name || w.address || w.city || `Склад #${w.id}`;
+  const name = String(w.name ?? '').trim();
+  if (name) return name;
+  const addr = String(w.address ?? '').trim();
+  if (addr) return addr;
+  const city = String(w.city ?? '').trim();
+  if (city) return city;
+  return `Склад #${w.id ?? fallbackId}`;
 }
 
 export function pickSingleEntityId(entities) {

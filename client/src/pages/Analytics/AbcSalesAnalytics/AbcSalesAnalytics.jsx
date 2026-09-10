@@ -2,7 +2,7 @@
  * ABC-анализ товаров (выручка / прибыль / штуки)
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
@@ -76,7 +76,7 @@ export function AbcSalesAnalytics() {
   const [scheme, setScheme] = useState('all');
   const [metric, setMetric] = useState('soldAmount');
   const [classFilter, setClassFilter] = useState('all');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   /** productId -> hypothesisId для активных гипотез */
@@ -113,6 +113,10 @@ export function AbcSalesAnalytics() {
       setLoading(false);
     }
   }, [dateFrom, dateTo, marketplace, scheme]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const classified = useMemo(
     () => classifyAbc(data?.products || [], metric),
@@ -161,7 +165,7 @@ export function AbcSalesAnalytics() {
         iconClass="pe-7s-graph1"
         iconBgClass="bg-mean-fruit"
         title="ABC-анализ"
-        subtitle="Товары A / B / C по выручке, прибыли или штукам (пороги 80% / 15% / 5%)"
+        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -194,8 +198,11 @@ export function AbcSalesAnalytics() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
+          {loading ? 'Загрузка…' : 'Загрузить'}
         </Button>
+        {loading && data != null ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
       </div>
 
       <div className="abc-sales-analytics__toggles">
@@ -295,7 +302,14 @@ export function AbcSalesAnalytics() {
             {!loading && data == null && (
               <tr>
                 <td colSpan={10} className="sales-analytics__empty">
-                  Выберите параметры и нажмите «Показать».
+                  Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».
+                </td>
+              </tr>
+            )}
+            {loading && data == null && (
+              <tr>
+                <td colSpan={10} className="sales-analytics__empty">
+                  Загрузка…
                 </td>
               </tr>
             )}

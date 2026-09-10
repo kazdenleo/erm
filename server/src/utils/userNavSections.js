@@ -6,6 +6,7 @@
 export const NAV_SECTION_KEYS = [
   'analytics',
   'analytics_sales',
+  'card_work',
   'products',
   'orders',
   'assembly',
@@ -43,6 +44,7 @@ export const NAV_SECTION_KEYS = [
 export const NAV_SECTION_LABELS = {
   analytics: 'Главная',
   analytics_sales: 'Аналитика — продажи',
+  card_work: 'Работа с карточками',
   products: 'Товары',
   orders: 'Заказы',
   assembly: 'Сборка',
@@ -80,7 +82,17 @@ export const NAV_SECTION_LABELS = {
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'assembly', 'shipments', 'prices', 'tasks'],
+    keys: [
+      'analytics',
+      'analytics_sales',
+      'card_work',
+      'products',
+      'orders',
+      'assembly',
+      'shipments',
+      'prices',
+      'tasks',
+    ],
   },
   {
     title: 'Маркетплейс',
@@ -125,6 +137,7 @@ export const ROLE_NAV_PRESETS = {
   picker: {
     analytics: false,
     analytics_sales: false,
+    card_work: false,
     products: false,
     prices: false,
     fbo: false,
@@ -154,6 +167,7 @@ export const ROLE_NAV_PRESETS = {
   warehouse_manager: {
     analytics: false,
     analytics_sales: false,
+    card_work: false,
     products: false,
     prices: false,
     fbo: false,
@@ -213,10 +227,17 @@ export function resolveNavSectionsForAccountRole(roleNavSections, accountRole) {
   const role = normalizeAccountRoleKey(accountRole) || 'editor';
   if (role === 'admin') return {};
   const all = parseRoleNavSections(roleNavSections);
-  if (Object.prototype.hasOwnProperty.call(all, role)) {
-    return all[role];
+  let sections = Object.prototype.hasOwnProperty.call(all, role)
+    ? all[role]
+    : ROLE_NAV_PRESETS[role] || {};
+  // card_work раньше был подпунктом аналитики (analytics_sales)
+  if (
+    !Object.prototype.hasOwnProperty.call(sections, 'card_work') &&
+    sections.analytics_sales === false
+  ) {
+    sections = { ...sections, card_work: false };
   }
-  return ROLE_NAV_PRESETS[role] || {};
+  return sections;
 }
 
 export function roleNavSectionsToFormState(roleNavSections, accountRole) {
@@ -300,6 +321,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   const path = String(pathname || '');
   const sp = new URLSearchParams(search || '');
   if (path === '/' || path === '') return 'analytics';
+  if (path.startsWith('/card-work') || path.startsWith('/analytics/card-work')) return 'card_work';
   if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';

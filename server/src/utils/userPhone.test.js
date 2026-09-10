@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePhone, preparePhoneFields, looksLikeEmail } from './userPhone.js';
+import { normalizePhone, preparePhoneFields, requirePhoneFields, looksLikeEmail } from './userPhone.js';
 import { parseBirthDate } from './userBirthDate.js';
+import { parseOptionalEmail } from './userEmail.js';
 
 test('normalizePhone: empty', () => {
   assert.deepEqual(normalizePhone(''), { value: null });
@@ -38,4 +39,15 @@ test('parseBirthDate', () => {
   assert.equal(parseBirthDate('1990-05-15').value, '1990-05-15');
   assert.equal(Boolean(parseBirthDate('1990-13-01').error), true);
   assert.equal(Boolean(parseBirthDate('1899-01-01').error), true);
+});
+
+test('requirePhoneFields', () => {
+  assert.equal(Boolean(requirePhoneFields('').error), true);
+  assert.equal(requirePhoneFields('89991234567').phone_normalized, '79991234567');
+});
+
+test('parseOptionalEmail', () => {
+  assert.deepEqual(parseOptionalEmail(''), { value: null });
+  assert.equal(parseOptionalEmail('  a@b.c  ').value, 'a@b.c');
+  assert.equal(Boolean(parseOptionalEmail('not-an-email').error), true);
 });

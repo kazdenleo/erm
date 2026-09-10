@@ -5,6 +5,7 @@
 
 import { query, transaction } from '../config/database.js';
 import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
+import { matchOwnWarehouseIdByMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -141,48 +142,31 @@ class WarehouseMappingsRepositoryPG {
   }
 
   /**
-   * Найти "свой" склад по идентификатору/названию склада маркетплейса.
-   * marketplace_warehouse_id хранится как строка (для Ozon/WB/YM это может быть name или id).
+   * Найти свой склад по числовому ID склада маркетплейса (не по названию).
+   * marketplace_warehouse_id: "991873" или устаревшее "991873 — Мой склад".
    */
   async findOwnWarehouseIdByMarketplaceWarehouseId(marketplace, marketplaceWarehouseId, profileId = null) {
     const mp = String(marketplace || '').toLowerCase();
     const mw = String(marketplaceWarehouseId ?? '').trim();
     if (!mp || !mw) return null;
     const pid = normalizeProfileId(profileId);
+    const rows = await this.findAll({ marketplace: mp, ...(pid ? { profileId: pid } : {}) });
     if (mp === 'ym') {
-      const rows = await this.findAll({ marketplace: mp, ...(pid ? { profileId: pid } : {}) });
       for (const row of rows || []) {
         const raw = String(row.marketplace_warehouse_id ?? '').trim();
         const parsed = parseYandexWarehouseMapping(raw);
-        if (mw === raw || mw === parsed.campaignId) {
+        if (mw === raw || mw === parsed.campaignId || (parsed.warehouseId && mw === parsed.warehouseId)) {
           return row.warehouse_id ?? null;
         }
       }
       return null;
     }
-    const params = [mp, mw];
-    let sql = `SELECT wm.warehouse_id
-       FROM warehouse_mappings wm`;
-    if (pid) {
-      sql += ` INNER JOIN warehouses w ON w.id = wm.warehouse_id AND w.profile_id = $3`;
-      params.push(pid);
-    }
-    sql += `
-       WHERE wm.marketplace = $1
-         AND (
-           TRIM(wm.marketplace_warehouse_id) = TRIM($2)
-           OR TRIM(REGEXP_REPLACE(wm.marketplace_warehouse_id, '\\s*—.*$', '')) =
-              TRIM(REGEXP_REPLACE($2, '\\s*—.*$', ''))
-         )
-       ORDER BY wm.id DESC
-       LIMIT 1`;
-    const r = await query(sql, params);
-    return r.rows?.[0]?.warehouse_id ?? null;
+    return matchOwnWarehouseIdByMarketplaceWarehouseId(rows, mw);
   }
 
   /**
    * Основной FBS-склад маркетплейса (если в заказе нет ID склада МП).
-   * Предпочитаем привязки вида «id — название» (FBS), затем меньший warehouse_id.
+   * Предпочитаем привязки с числовым ID, затем меньший warehouse_id.
    * @param {number|string|null} [profileId] — только склады этого профиля
    */
   async findPrimaryOwnWarehouseIdForMarketplace(marketplace, profileId = null) {
@@ -199,7 +183,7 @@ class WarehouseMappingsRepositoryPG {
     sql += `
        WHERE wm.marketplace = $1
        ORDER BY
-         CASE WHEN wm.marketplace_warehouse_id ~ '\\s*[—–-]\\s*' THEN 0 ELSE 1 END,
+         CASE WHEN TRIM(wm.marketplace_warehouse_id) ~ '^[0-9]+' THEN 0 ELSE 1 END,
          wm.warehouse_id ASC,
          wm.id ASC
        LIMIT 1`;

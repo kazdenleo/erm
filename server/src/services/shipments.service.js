@@ -12,6 +12,7 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+import { marketplaceWarehouseLabel, shipmentsMatchMarketplaceWarehouse } from '../utils/marketplaceWarehouseId.js';
 
 const SHIPMENT_STICKERS_DIR = join(DATA_DIR, 'shipment-stickers');
 
@@ -363,6 +364,7 @@ function normalizeShipment(s) {
     closed,
     externalId: s.externalId,
     warehouseId: s.warehouseId ?? s.warehouse_id ?? null,
+    marketplaceWarehouseId: s.marketplaceWarehouseId ?? s.marketplace_warehouse_id ?? null,
     orderIds,
     productsCount: orderIds.length,
     createdAt: s.createdAt,
@@ -587,7 +589,14 @@ async function fetchWBSupplies(config) {
 /**
  * Создать поставку. Ozon/Яндекс — только локально. WB — создать на маркетплейсе и сохранить у себя.
  */
-async function createShipment({ marketplace, name, profileId = null, organizationId = null, warehouseId = null } = {}) {
+async function createShipment({
+  marketplace,
+  name,
+  profileId = null,
+  organizationId = null,
+  warehouseId = null,
+  marketplaceWarehouseId = null,
+} = {}) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   if (!['ozon', 'wildberries', 'yandex', 'manual'].includes(code)) {
     const err = new Error('Неизвестный маркетплейс');
@@ -600,6 +609,16 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
   const id = generateId();
   const now = new Date().toISOString();
   const org = normalizeOrgId(organizationId);
+  const mpWh =
+    marketplaceWarehouseId != null && String(marketplaceWarehouseId).trim() !== ''
+      ? String(marketplaceWarehouseId).trim()
+      : null;
+  const erpWhNum =
+    warehouseId != null && warehouseId !== '' ? Number(warehouseId) : NaN;
+  const mpWhFields = {
+    ...(mpWh ? { marketplaceWarehouseId: mpWh } : {}),
+    ...(Number.isFinite(erpWhNum) && erpWhNum > 0 ? { warehouseId: erpWhNum } : {}),
+  };
 
   if (code === 'manual') {
     const whId = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : NaN;
@@ -642,6 +661,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
         externalId: supplyId,
         orderIds: [],
         createdAt: now,
+        ...mpWhFields,
         ...(profileId != null && profileId !== '' ? { profileId } : {}),
         ...(org ? { organizationId: org } : {}),
       };
@@ -662,6 +682,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
       orderIds: [],
       createdAt: now,
       localWbOnly: true,
+      ...mpWhFields,
       ...(profileId != null && profileId !== '' ? { profileId } : {}),
       ...(org ? { organizationId: org } : {}),
     };
@@ -678,6 +699,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
     closed: false,
     orderIds: [],
     createdAt: now,
+    ...mpWhFields,
     ...(profileId != null && profileId !== '' ? { profileId } : {}),
     ...(org ? { organizationId: org } : {}),
   };
@@ -699,12 +721,12 @@ function isOpenShipmentReusable(s) {
 }
 
 /**
- * Получить текущую открытую поставку по маркетплейсу или создать новую.
- * Используется при «Отправить на сборку»: все заказы до закрытия идут в одну поставку.
+ * Получить текущую открытую поставку по маркетплейсу и складу МП или создать новую.
+ * Заказы с разных складов WB/Ozon/YM не смешиваются в одной поставке.
  */
 async function getOrCreateOpenShipment(
   marketplace,
-  { profileId = null, organizationId = null, warehouseId = null } = {}
+  { profileId = null, organizationId = null, warehouseId = null, marketplaceWarehouseId = null } = {}
 ) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   if (!['ozon', 'wildberries', 'yandex', 'manual'].includes(code)) {
@@ -728,18 +750,24 @@ async function getOrCreateOpenShipment(
       if (!Number.isFinite(whId) || whId < 1) return false;
       return Number.isFinite(shipWh) && shipWh === whId;
     }
-    return true;
+    return shipmentsMatchMarketplaceWarehouse(s, marketplaceWarehouseId);
   });
   if (open) return normalizeShipment(open);
+  const dateLabel = new Date().toLocaleDateString('ru-RU');
+  const whLabel = marketplaceWarehouseLabel(marketplaceWarehouseId);
+  const baseName =
+    code === 'manual'
+      ? `Отгрузка ${dateLabel}`
+      : whLabel
+        ? `Сборка ${dateLabel} · ${whLabel}`
+        : `Сборка ${dateLabel}`;
   return createShipment({
     marketplace: code,
-    name:
-      code === 'manual'
-        ? `Отгрузка ${new Date().toLocaleDateString('ru-RU')}`
-        : formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
+    name: code === 'manual' ? baseName : formatWbShipmentDisplayName(null, baseName),
     profileId,
     organizationId,
-    warehouseId: whId
+    warehouseId: code === 'manual' ? whId : warehouseId,
+    marketplaceWarehouseId
   });
 }
 
@@ -1771,6 +1799,9 @@ function pickWbOverflowShipment(shipments, sourceShip, { profileId = null, organ
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== 'wildberries') continue;
     if (!shipmentVisibleForScope(s, prof, org)) continue;
+    if (!shipmentsMatchMarketplaceWarehouse(s, sourceShip?.marketplaceWarehouseId ?? sourceShip?.marketplace_warehouse_id)) {
+      continue;
+    }
     candidates.push(s);
   }
   candidates.sort((a, b) => {
@@ -1813,6 +1844,8 @@ async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { pr
       name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
       profileId: prof,
       organizationId: org,
+      warehouseId: sourceShip.warehouseId ?? sourceShip.warehouse_id ?? null,
+      marketplaceWarehouseId: sourceShip.marketplaceWarehouseId ?? sourceShip.marketplace_warehouse_id ?? null,
     });
     logger.info(
       `[Shipments WB] Created overflow shipment ${targetShip.id} (${targetShip.externalId || 'local'}) for relocate from ${sourceShip.id}`

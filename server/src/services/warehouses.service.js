@@ -146,6 +146,10 @@ class WarehousesService {
     const orgId = rawOrgId !== null ? (Number(rawOrgId) || rawOrgId) : null;
     const payload = repositoryFactory.isUsingPostgreSQL() ? {
       type,
+      name:
+        data.name != null && String(data.name).trim() !== ''
+          ? String(data.name).trim()
+          : null,
       address: data.address && data.address.trim() !== '' ? data.address.trim() : null,
       supplier_id: data.supplierId && data.supplierId.trim() !== '' ? data.supplierId : (data.supplier_id || null),
       main_warehouse_id: mainWarehouseIdValue,
@@ -290,6 +294,10 @@ class WarehousesService {
     // Это нужно для того, чтобы поле обновлялось в БД
     const payload = repositoryFactory.isUsingPostgreSQL() ? {
       type,
+      name:
+        data.name !== undefined
+          ? (data.name && String(data.name).trim() !== '' ? String(data.name).trim() : null)
+          : (existing.name || null),
       address: data.address !== undefined ? (data.address && data.address.trim() !== '' ? data.address.trim() : null) : existing.address,
       supplier_id: data.supplierId !== undefined ? (data.supplierId && data.supplierId.trim() !== '' ? data.supplierId : null) : (data.supplier_id !== undefined ? data.supplier_id : existing.supplier_id),
       main_warehouse_id: mainWarehouseIdValue,

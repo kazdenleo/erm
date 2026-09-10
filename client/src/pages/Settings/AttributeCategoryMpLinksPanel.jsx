@@ -1,4 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { Button } from '../../components/common/Button/Button';
 import { AttributeMpLinkFields } from '../../components/common/AttributeMpLinkFields/AttributeMpLinkFields.jsx';
@@ -44,15 +52,6 @@ function linksOfCategory(cat, { attributeId, dedicatedKey } = {}) {
   return normalizeAttrMpLinks(map[String(attributeId)] ?? map[attributeId]);
 }
 
-function categoryHasMapping(cat, spec) {
-  if (spec.dedicatedKey) {
-    const added = listAddedDedicatedMainKeys(cat?.mp_field_links);
-    return added.includes(spec.dedicatedKey) || attrMpLinksHasAny(linksOfCategory(cat, spec));
-  }
-  return (cat?.attribute_ids || []).map((id) => String(id)).includes(String(spec.attributeId))
-    && attrMpLinksHasAny(linksOfCategory(cat, spec));
-}
-
 function categoryPathName(cat, all) {
   const parentId = cat?.parent_id ?? cat?.parentId;
   if (!parentId) return cat?.name || String(cat?.id || '');
@@ -92,13 +91,34 @@ function linksSignature(links) {
   return JSON.stringify(normalizeAttrMpLinks(links));
 }
 
+/**
+ * Общий набор для редактора.
+ * Если у части категорий один и тот же маппинг, а у остальных пусто —
+ * показываем этот маппинг (не пустой редактор), иначе «Сохранить» затирало связи.
+ */
 function commonLinksOf(cats, spec) {
-  if (!cats.length) return { links: emptyAttrMpLinks(), mixed: false };
-  const first = linksSignature(linksOfCategory(cats[0], spec));
-  const mixed = cats.some((c) => linksSignature(linksOfCategory(c, spec)) !== first);
+  if (!cats.length) {
+    return { links: emptyAttrMpLinks(), mixed: false, mappedCount: 0, total: 0 };
+  }
+  const total = cats.length;
+  const perCat = cats.map((c) => linksOfCategory(c, spec));
+  const withLinks = perCat.filter((links) => attrMpLinksHasAny(links));
+  const mappedCount = withLinks.length;
+  if (!mappedCount) {
+    return { links: emptyAttrMpLinks(), mixed: false, mappedCount: 0, total };
+  }
+  const firstSig = linksSignature(withLinks[0]);
+  const allMappedSame = withLinks.every((links) => linksSignature(links) === firstSig);
+  if (!allMappedSame) {
+    return { links: emptyAttrMpLinks(), mixed: true, mappedCount, total };
+  }
+  const everyoneSame = mappedCount === total
+    && perCat.every((links) => linksSignature(links) === firstSig);
   return {
-    links: mixed ? emptyAttrMpLinks() : linksOfCategory(cats[0], spec),
-    mixed,
+    links: normalizeAttrMpLinks(withLinks[0]),
+    mixed: !everyoneSame,
+    mappedCount,
+    total,
   };
 }
 
@@ -118,7 +138,10 @@ function mergeMpAttrOptions(lists) {
   return out;
 }
 
-export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
+export const AttributeCategoryMpLinksPanel = forwardRef(function AttributeCategoryMpLinksPanel(
+  { attributeId, dedicatedKey },
+  ref
+) {
   const spec = useMemo(
     () => (dedicatedKey ? { dedicatedKey } : { attributeId }),
     [attributeId, dedicatedKey]
@@ -130,29 +153,48 @@ export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [links, setLinks] = useState(() => emptyAttrMpLinks());
   const [mixed, setMixed] = useState(false);
+  const [mappedCount, setMappedCount] = useState(0);
   const [ozonOptions, setOzonOptions] = useState([]);
   const [wbOptions, setWbOptions] = useState([]);
   const [ymOptions, setYmOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState('');
+  const dirtyRef = useRef(false);
+  const linksRef = useRef(links);
+  const scopeRef = useRef(scope);
+  const selectedIdsRef = useRef(selectedIds);
+  const categoriesRef = useRef(categories);
+
+  useEffect(() => {
+    linksRef.current = links;
+  }, [links]);
+  useEffect(() => {
+    scopeRef.current = scope;
+  }, [scope]);
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+  useEffect(() => {
+    categoriesRef.current = categories;
+  }, [categories]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setStatus('');
+    dirtyRef.current = false;
+    setScope('all');
+    setSelectedIds(new Set());
+    setLinks(emptyAttrMpLinks());
+    setMixed(false);
+    setMappedCount(0);
     userCategoriesApi
       .getAll()
       .then((res) => {
         if (cancelled) return;
         const list = Array.isArray(res?.data) ? res.data : [];
         setCategories(list);
-        const linked = list.filter((c) => categoryHasMapping(c, spec));
-        if (linked.length > 0 && linked.length < list.length) {
-          setScope('selected');
-          setSelectedIds(new Set(linked.map((c) => String(c.id))));
-        } else {
-          setScope('all');
-          setSelectedIds(new Set());
-        }
       })
       .catch(() => {
         if (!cancelled) setCategories([]);
@@ -182,11 +224,15 @@ export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
 
   const targetKey = scope === 'all' ? 'all' : [...selectedIds].sort().join(',');
 
+  // Подтягиваем связи с сервера только если пользователь ещё не правил черновик.
+  // Иначе смена «все/выбранные» или доп. галочки обнуляла редактор и «Сохранить» затирало БД.
   useEffect(() => {
     const common = commonLinksOf(targetCategories, spec);
-    setLinks(common.links);
     setMixed(common.mixed);
-  }, [attributeId, dedicatedKey, targetKey, categories, targetCategories]);
+    setMappedCount(common.mappedCount);
+    if (dirtyRef.current) return;
+    setLinks(common.links);
+  }, [attributeId, dedicatedKey, targetKey, categories, targetCategories, spec]);
 
   useEffect(() => {
     const sample = targetCategories.slice(0, 8);
@@ -236,49 +282,101 @@ export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
     });
   };
 
-  const applyLinks = async () => {
-    if (scope === 'selected' && selectedIds.size === 0) {
-      alert('Выберите хотя бы одну категорию');
-      return;
+  const onLinksChange = useCallback((next) => {
+    dirtyRef.current = true;
+    setStatus('');
+    setLinks(normalizeAttrMpLinks(next));
+  }, []);
+
+  const applyLinks = async ({ silent = false, force = false } = {}) => {
+    const currentScope = scopeRef.current;
+    const currentSelected = selectedIdsRef.current;
+    const currentCategories = categoriesRef.current;
+    const currentLinks = normalizeAttrMpLinks(linksRef.current);
+    const targets =
+      currentScope === 'all'
+        ? currentCategories
+        : currentCategories.filter((c) => currentSelected.has(String(c.id)));
+
+    if (currentScope === 'selected' && currentSelected.size === 0) {
+      const msg = 'Выберите хотя бы одну категорию';
+      if (!silent) alert(msg);
+      throw new Error(msg);
     }
-    if (!categories.length) {
-      alert('Сначала создайте категории');
-      return;
+    if (!currentCategories.length) {
+      const msg = 'Сначала создайте категории';
+      if (!silent) alert(msg);
+      throw new Error(msg);
     }
+
+    // На «Сохранить» формы не затираем БД пустым набором, если пользователь связи не трогал.
+    if (!force && !dirtyRef.current && !attrMpLinksHasAny(currentLinks)) {
+      const common = commonLinksOf(targets, spec);
+      if (common.mixed || common.mappedCount > 0) {
+        return { updated: 0, skipped: true };
+      }
+    }
+
     setSaving(true);
+    setStatus('');
     try {
       const payload =
-        scope === 'all'
-          ? { mp_links: links, scope: 'all' }
-          : { mp_links: links, scope: 'selected', category_ids: [...selectedIds] };
-      if (dedicatedKey) {
-        await userCategoriesApi.updateDedicatedMpLinksBulk(dedicatedKey, payload);
-      } else {
-        await userCategoriesApi.updateAttributeMpLinksBulk(attributeId, payload);
-      }
+        currentScope === 'all'
+          ? { mp_links: currentLinks, scope: 'all' }
+          : { mp_links: currentLinks, scope: 'selected', category_ids: [...currentSelected] };
+      const res = dedicatedKey
+        ? await userCategoriesApi.updateDedicatedMpLinksBulk(dedicatedKey, payload)
+        : await userCategoriesApi.updateAttributeMpLinksBulk(attributeId, payload);
+      const updated = Number(res?.data?.updated ?? res?.updated ?? 0);
       const applyIds =
-        scope === 'all' ? new Set(categories.map((c) => String(c.id))) : new Set([...selectedIds]);
+        currentScope === 'all'
+          ? new Set(currentCategories.map((c) => String(c.id)))
+          : new Set([...currentSelected]);
       setCategories((prev) =>
         prev.map((c) => {
           if (!applyIds.has(String(c.id))) return c;
           return dedicatedKey
-            ? patchDedicatedCategoryState(c, dedicatedKey, links)
-            : patchCategoryAttributeState(c, attributeId, links);
+            ? patchDedicatedCategoryState(c, dedicatedKey, currentLinks)
+            : patchCategoryAttributeState(c, attributeId, currentLinks);
         })
       );
+      dirtyRef.current = false;
       setMixed(false);
+      setMappedCount(attrMpLinksHasAny(currentLinks) ? applyIds.size : 0);
+      const okMsg =
+        currentScope === 'all'
+          ? `Связь сохранена для ${updated || applyIds.size} категорий`
+          : `Связь сохранена для ${updated || applyIds.size} выбранных категорий`;
+      setStatus(okMsg);
+      return { updated: updated || applyIds.size, skipped: false };
     } catch (err) {
-      alert(err?.response?.data?.message || err?.response?.data?.error || 'Не удалось сохранить связь');
+      const msg =
+        err?.response?.data?.message
+        || err?.response?.data?.error
+        || err?.message
+        || 'Не удалось сохранить связь';
+      setStatus('');
+      if (!silent) alert(msg);
+      throw err instanceof Error ? err : new Error(msg);
     } finally {
       setSaving(false);
     }
   };
+
+  useImperativeHandle(ref, () => ({
+    /** Сохранение из формы: не затирает пустым, если связи не меняли. */
+    apply: () => applyLinks({ silent: true, force: false }),
+    /** Явное «Применить связь» — всегда пишет текущий набор. */
+    applyForce: () => applyLinks({ silent: false, force: true }),
+    isSaving: () => saving,
+  }));
 
   if (loading) {
     return <p className="muted" style={{ margin: 0 }}>Загрузка категорий…</p>;
   }
 
   const allSelected = sortedCategories.length > 0 && selectedIds.size === sortedCategories.length;
+  const targetTotal = targetCategories.length;
 
   return (
     <div className="attribute-category-mp-links">
@@ -348,18 +446,19 @@ export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
       ) : null}
       {mixed ? (
         <p className="form-hint">
-          У {scope === 'all' ? 'категорий' : 'выбранных категорий'} сейчас разные связи. Задайте набор ниже
-          и нажмите «Применить» — он запишется {scope === 'all' ? 'во все категории' : 'в отмеченные'}.
+          Сейчас связь задана у {mappedCount} из {targetTotal || categories.length} категорий
+          {attrMpLinksHasAny(links) ? ' (ниже — общий набор из уже настроенных)' : ''}.
+          «Сохранить» запишет набор ниже {scope === 'all' ? 'во все категории' : 'в отмеченные'}.
         </p>
       ) : (
         <p className="form-hint">
           Один набор характеристик OZ / WB / ЯМ для {scope === 'all' ? 'всех категорий' : 'отмеченных категорий'}.
-          Списки характеристик собраны по сопоставленным категориям маркетплейсов; можно вписать название вручную.
+          Сохраняется кнопкой «Сохранить» внизу формы.
         </p>
       )}
       <AttributeMpLinkFields
         links={links}
-        onChange={setLinks}
+        onChange={onLinksChange}
         ozonOptions={ozonOptions}
         wbOptions={wbOptions}
         ymOptions={ymOptions}
@@ -368,10 +467,17 @@ export function AttributeCategoryMpLinksPanel({ attributeId, dedicatedKey }) {
         disabled={saving}
       />
       <div className="attribute-mp-apply">
-        <Button type="button" variant="primary" size="small" disabled={saving} onClick={() => void applyLinks()}>
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          disabled={saving}
+          onClick={() => void applyLinks({ force: true })}
+        >
           {saving ? 'Сохранение…' : 'Применить связь'}
         </Button>
+        {status ? <span className="attribute-mp-apply-status">{status}</span> : null}
       </div>
     </div>
   );
-}
+});

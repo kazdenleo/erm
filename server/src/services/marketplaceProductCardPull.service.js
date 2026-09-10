@@ -32,7 +32,6 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { marketplaceHtmlToPlainText, ozonAnnotationToErpText } from '../utils/marketplaceDescriptionHtml.js';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { createDimensionsCheckTaskIfNeeded } from './employeeTasks.service.js';
 import {
   detectOzonDimensionsLockedFromInfo,
   withOzonDraftDimensionsLock,
@@ -1072,24 +1071,6 @@ async function pullOneMarketplace(product, mp, opts = {}) {
       mp,
       error: e?.message || String(e),
     });
-  }
-
-  const profileIdForTask = opts.profileId ?? product.profile_id ?? product.profileId ?? null;
-  if (profileIdForTask != null && changedLabels.length > 0) {
-    try {
-      await createDimensionsCheckTaskIfNeeded({
-        profileId: profileIdForTask,
-        product,
-        marketplace: mp,
-        changedLabels,
-      });
-    } catch (e) {
-      logger.warn('[CardPull] dimensions task create failed', {
-        productId: product.id,
-        mp,
-        error: e?.message || String(e),
-      });
-    }
   }
 
   return {

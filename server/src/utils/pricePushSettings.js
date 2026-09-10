@@ -2,6 +2,8 @@
  * Настройки отправки цен на маркетплейсы (на уровне profile).
  */
 
+import { parseMinMarkupRules } from './minMarkupRules.js';
+
 /** Sentinel «без категории» — как на странице цен/товаров. */
 export const PRICE_PUSH_CATEGORY_NONE = '__no_category__';
 
@@ -68,8 +70,10 @@ export function parsePricePushSettings(raw) {
     scope,
     categoryIds: parseCategoryIdList(src.categoryIds),
     productIds: parsePositiveIntList(src.productIds),
+    excludeProductIds: parsePositiveIntList(src.excludeProductIds ?? src.exclude_product_ids),
     pushFbs: pushFbs || !pushFbo,
     pushFbo: pushFbo || !pushFbs,
+    minMarkupRules: parseMinMarkupRules(src.minMarkupRules ?? src.min_markup_rules),
   };
 }
 
@@ -88,11 +92,19 @@ export function mergePricePushSettings(current, incoming) {
   if (patch.productIds !== undefined) {
     next.productIds = parsePositiveIntList(patch.productIds);
   }
+  if (patch.excludeProductIds !== undefined || patch.exclude_product_ids !== undefined) {
+    next.excludeProductIds = parsePositiveIntList(
+      patch.excludeProductIds ?? patch.exclude_product_ids
+    );
+  }
   if (patch.pushFbs !== undefined || patch.push_fbs !== undefined) {
     next.pushFbs = parseBoolFlag(patch.pushFbs ?? patch.push_fbs, next.pushFbs);
   }
   if (patch.pushFbo !== undefined || patch.push_fbo !== undefined) {
     next.pushFbo = parseBoolFlag(patch.pushFbo ?? patch.push_fbo, next.pushFbo);
+  }
+  if (patch.minMarkupRules !== undefined || patch.min_markup_rules !== undefined) {
+    next.minMarkupRules = parseMinMarkupRules(patch.minMarkupRules ?? patch.min_markup_rules);
   }
 
   if (!next.pushFbs && !next.pushFbo) {
@@ -125,6 +137,12 @@ export function mergePricePushSettings(current, incoming) {
     next.productIds = [];
   }
 
+  // Исключения не должны пересекаться с явным списком отправки
+  if (next.excludeProductIds.length && next.productIds.length) {
+    const exclude = new Set(next.excludeProductIds);
+    next.productIds = next.productIds.filter((id) => !exclude.has(id));
+  }
+
   return next;
 }
 
@@ -150,6 +168,10 @@ export function filtersFromPricePushSettings(raw, profileId) {
     filters.productIds = settings.productIds;
   }
 
+  if (settings.excludeProductIds.length) {
+    filters.excludeProductIds = settings.excludeProductIds;
+  }
+
   return filters;
 }
 
@@ -162,6 +184,8 @@ export function isProductInPricePushScope(product, settingsRaw) {
   const s = parsePricePushSettings(settingsRaw);
   const productId = Number(product.id ?? product.product_id);
   if (!Number.isFinite(productId) || productId < 1) return false;
+
+  if (s.excludeProductIds.includes(productId)) return false;
 
   if (s.scope === PRICE_PUSH_SCOPE_ALL) return true;
 
@@ -187,17 +211,19 @@ export function isProductInPricePushScope(product, settingsRaw) {
 
 export function describePricePushScope(settings, { categoryNamesById = {} } = {}) {
   const s = parsePricePushSettings(settings);
+  let base = 'все товары';
   if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS) {
     const catPart = describeCategoryIds(s.categoryIds, categoryNamesById);
-    return `${catPart}, ${s.productIds.length} товар(ов)`;
+    base = `${catPart}, ${s.productIds.length} товар(ов)`;
+  } else if (s.scope === PRICE_PUSH_SCOPE_PRODUCTS) {
+    base = `выбранные товары (${s.productIds.length})`;
+  } else if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES) {
+    base = describeCategoryIds(s.categoryIds, categoryNamesById);
   }
-  if (s.scope === PRICE_PUSH_SCOPE_PRODUCTS) {
-    return `выбранные товары (${s.productIds.length})`;
+  if (s.excludeProductIds.length) {
+    base += `, исключений: ${s.excludeProductIds.length}`;
   }
-  if (s.scope === PRICE_PUSH_SCOPE_CATEGORIES) {
-    return describeCategoryIds(s.categoryIds, categoryNamesById);
-  }
-  return 'все товары';
+  return base;
 }
 
 function describeCategoryIds(categoryIds, categoryNamesById = {}) {

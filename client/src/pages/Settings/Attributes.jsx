@@ -3,7 +3,7 @@
  * Справочник атрибутов. Связь с характеристиками МП задаётся здесь: на все категории или на выбранные.
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { productAttributesApi } from '../../services/productAttributes.api';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { Button } from '../../components/common/Button/Button';
@@ -97,6 +97,7 @@ function AttrLinksCell({ stats }) {
 
 function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   const { enabled: aiIntegrationEnabled } = useAiEnabled();
+  const linksPanelRef = useRef(null);
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
   const [formula, setFormula] = useState(attribute?.formula || '');
@@ -120,6 +121,7 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
   );
   const [newDictItem, setNewDictItem] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const addDictionaryValue = () => {
     const v = newDictItem.trim();
@@ -139,7 +141,9 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
     setFormula((prev) => `${prev || ''}${token}`);
   };
 
-  const handleSubmit = (e) => {
+  const canEditMpLinks = isMainField || (!priceLocked && !!attribute?.id);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) {
       setError('Введите название атрибута');
@@ -161,7 +165,17 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       ai_chat_enabled: isEditableAttrType(type) ? !!aiChatEnabled : false,
     };
     if (!nameLocked) payload.name = name.trim();
-    onSubmit(payload);
+    setSaving(true);
+    try {
+      if (canEditMpLinks && linksPanelRef.current?.apply) {
+        await linksPanelRef.current.apply();
+      }
+      await onSubmit(payload);
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Не удалось сохранить связь с маркетплейсами');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -303,13 +317,13 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       <div className="form-group">
         <label>Связь с маркетплейсами</label>
         {isMainField ? (
-          <AttributeCategoryMpLinksPanel dedicatedKey={attribute.system_key} />
+          <AttributeCategoryMpLinksPanel ref={linksPanelRef} dedicatedKey={attribute.system_key} />
         ) : priceLocked ? (
           <p className="muted" style={{ margin: 0 }}>
             Цены не сопоставляются с характеристиками карточки маркетплейса.
           </p>
         ) : attribute?.id ? (
-          <AttributeCategoryMpLinksPanel attributeId={attribute.id} />
+          <AttributeCategoryMpLinksPanel ref={linksPanelRef} attributeId={attribute.id} />
         ) : (
           <p className="muted" style={{ margin: 0 }}>
             Сначала сохраните атрибут, затем откройте его снова — здесь можно задать связь OZ / WB / ЯМ
@@ -318,8 +332,10 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
         )}
       </div>
       <div className="form-actions">
-        <Button type="button" variant="secondary" onClick={onCancel}>Отмена</Button>
-        <Button type="submit" variant="primary">Сохранить</Button>
+        <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Отмена</Button>
+        <Button type="submit" variant="primary" disabled={saving}>
+          {saving ? 'Сохранение…' : 'Сохранить'}
+        </Button>
       </div>
     </form>
   );
@@ -419,10 +435,12 @@ export function Attributes() {
       }
       setModalOpen(false);
       setEditing(null);
-      await load();
+      await load({ silent: true });
     } catch (err) {
       console.error(err);
-      alert('Ошибка сохранения: ' + (err?.response?.data?.message || err?.message));
+      const msg = err?.response?.data?.message || err?.message || 'Ошибка сохранения';
+      alert(`Ошибка сохранения: ${msg}`);
+      throw err;
     }
   };
 

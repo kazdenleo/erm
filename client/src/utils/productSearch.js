@@ -97,6 +97,11 @@ export function scoreProductSearchMatch(product, query) {
   if (/^\d+$/.test(q) && skuDigits === q) score += 40;
   if (skuDigits.includes(q) && /^\d+$/.test(q)) score += 20;
   if (name.includes(q)) score += 10;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const allInNameOrSku = tokens.every((t) => name.includes(t) || sku.includes(t));
+    if (allInNameOrSku) score += 25;
+  }
   if (shouldUseBarcodeDigitFallback(q) && barcodeList.some((b) => b.includes(q))) score += 15;
   return score;
 }
@@ -105,6 +110,7 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
   const q = normalizeProductSearchQuery(query).toLowerCase();
   if (!q) return [];
   const list = Array.isArray(products) ? products.filter(Boolean) : [];
+  const tokens = q.split(/\s+/).filter(Boolean);
 
   const exactSku = list.filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
   if (exactSku.length) return exactSku.slice(0, limit);
@@ -124,12 +130,15 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
       const barcodeList = barcodeStringsFromProduct(p.barcodes).map((b) =>
         String(b || '').toLowerCase()
       );
+      const hay = `${sku} ${name}`;
       const hitSku = sku.includes(q);
       const hitName = name.includes(q);
+      const hitTokens =
+        tokens.length > 1 && tokens.every((t) => hay.includes(t) || barcodeList.some((b) => b.includes(t)));
       const hitBarcode = strictBarcode
         ? barcodeList.some((b) => b === q)
         : barcodeList.some((b) => b.includes(q));
-      if (!hitSku && !hitName && !hitBarcode) return null;
+      if (!hitSku && !hitName && !hitTokens && !hitBarcode) return null;
       return { p, score: scoreProductSearchMatch(p, q) };
     })
     .filter(Boolean)

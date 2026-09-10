@@ -132,6 +132,8 @@ export function buildOzonPriceImportEntry({
   ozonProductId,
   offerId,
   priceBeforeDiscount = null,
+  /** Себестоимость ERP → Ozon net_price (юнит-экономика кабинета) */
+  netPrice = null,
 }) {
   const floorVal = floorRub(floor);
   const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
@@ -149,6 +151,10 @@ export function buildOzonPriceImportEntry({
   const before = floorRub(priceBeforeDiscount);
   if (before != null && before > targetPrice + 0.009) {
     entry.old_price = String(before);
+  }
+  const costRaw = netPrice == null || netPrice === '' ? NaN : Number(netPrice);
+  if (Number.isFinite(costRaw) && costRaw > 0) {
+    entry.net_price = String(Math.round(costRaw));
   }
   if (ozonProductId) entry.product_id = ozonProductId;
   else if (offerId) entry.offer_id = offerId;
@@ -320,7 +326,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
 
   const prodRes = await query(
     `SELECT id, profile_id, organization_id, sku, wb_draft,
-            mp_wb_vendor_code
+            mp_wb_vendor_code, cost
      FROM products WHERE id = $1 LIMIT 1`,
     [pid]
   );
@@ -483,6 +489,7 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   let mpMin = null;
   let mpPrice = null;
   let mpOldPrice = null;
+  let mpNetPrice = null;
   try {
     const filter = ozonProductId
       ? { product_id: [ozonProductId] }
@@ -498,6 +505,7 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     mpMin = priceBlock?.min_price != null ? Number(priceBlock.min_price) : null;
     mpPrice = priceBlock?.price != null ? Number(priceBlock.price) : null;
     mpOldPrice = priceBlock?.old_price != null ? Number(priceBlock.old_price) : null;
+    mpNetPrice = priceBlock?.net_price != null ? Number(priceBlock.net_price) : null;
   } catch (e) {
     logger.warn('[MP MinPrice Push] Ozon read failed', { message: e?.message || String(e) });
   }
@@ -508,6 +516,7 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
     ozonProductId,
     offerId,
     priceBeforeDiscount: ctx.priceBeforeDiscount?.ozon ?? null,
+    netPrice: ctx.product?.cost ?? null,
   });
   if (!entry) {
     return { marketplace: 'ozon', skipped: true, reason: 'invalid_entry' };
@@ -515,7 +524,10 @@ async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const oldPriceOk =
     !entry.old_price ||
     (Number.isFinite(mpOldPrice) && pricesRoughlyEqual(mpOldPrice, Number(entry.old_price)));
-  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice }) && oldPriceOk) {
+  const netPriceOk =
+    !entry.net_price ||
+    (Number.isFinite(mpNetPrice) && pricesRoughlyEqual(mpNetPrice, Number(entry.net_price)));
+  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice }) && oldPriceOk && netPriceOk) {
     return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
@@ -939,6 +951,11 @@ export async function resolvePushProductIds(filters = {}) {
   if (productIds.length) {
     sql += ` AND p.id = ANY($${i++}::bigint[])`;
     params.push(productIds);
+  }
+  const excludeProductIds = parsePositiveIntList(filters.excludeProductIds);
+  if (excludeProductIds.length) {
+    sql += ` AND NOT (p.id = ANY($${i++}::bigint[]))`;
+    params.push(excludeProductIds);
   }
   const profileId =
     filters.profileId != null && filters.profileId !== '' ? Number(filters.profileId) : null;

@@ -209,11 +209,13 @@ export function Hypotheses() {
     const payload = location.state?.createFromAbc;
     if (!payload?.productId) return;
     const base = emptyForm();
-    const abcNote = payload.abcClass
-      ? `Из ABC-анализа: класс ${payload.abcClass}${
-          payload.metricLabel ? ` по «${payload.metricLabel}»` : ''
-        }.`
-      : '';
+    const abcNote = payload.note
+      ? String(payload.note)
+      : payload.abcClass
+        ? `Из ABC-анализа: класс ${payload.abcClass}${
+            payload.metricLabel ? ` по «${payload.metricLabel}»` : ''
+          }.`
+        : '';
     setEditingId(null);
     setOpenedItem(null);
     setForm({

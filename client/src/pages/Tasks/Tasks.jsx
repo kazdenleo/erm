@@ -56,21 +56,11 @@ function formatDateShort(v) {
   }
 }
 
-function dimItemsOf(task) {
-  return Array.isArray(task?.meta?.items) ? task.meta.items : [];
-}
-
 function productCreateSkuListOf(task) {
   return Array.isArray(task?.meta?.sku_list) ? task.meta.sku_list : [];
 }
 
 function taskPreviewMeta(task) {
-  const isDimensions = task.task_type === 'dimensions_check';
-  const dimItems = dimItemsOf(task);
-  if (isDimensions && dimItems.length > 0) {
-    const n = dimItems.length;
-    return `${n} ${n === 1 ? 'артикул' : n < 5 ? 'артикула' : 'артикулов'}`;
-  }
   if (task.task_type === 'product_create') {
     const n = productCreateSkuListOf(task).length;
     if (n > 0) {
@@ -204,15 +194,9 @@ export function Tasks() {
     setTitle(task.title || '');
     setDescription(task.description || '');
     setTaskType(
-      task.task_type === 'product_create'
-        ? 'product_create'
-        : task.task_type === 'dimensions_check'
-          ? 'dimensions_check'
-          : 'text'
+      task.task_type === 'product_create' ? 'product_create' : 'text'
     );
-    setSkuListText(
-      task.task_type === 'dimensions_check' ? '' : productCreateSkuListOf(task).join('\n')
-    );
+    setSkuListText(productCreateSkuListOf(task).join('\n'));
     setAssigneeId(task.assignee_id != null ? String(task.assignee_id) : '');
     setIsModalOpen(true);
   };
@@ -230,7 +214,7 @@ export function Tasks() {
     const payload = {
       title: title.trim(),
       description: description.trim() || null,
-      taskType: taskType === 'dimensions_check' ? undefined : taskType,
+      taskType,
       skuList: taskType === 'product_create' ? skuListText : '',
       assigneeId: assigneeId ? Number(assigneeId) : null,
     };
@@ -279,13 +263,7 @@ export function Tasks() {
     }
   };
 
-  const editingTask =
-    editingId != null
-      ? tasks.find((t) => Number(t.id) === Number(editingId)) || null
-      : null;
-  const hideSkuField = editingTask?.task_type === 'dimensions_check' || taskType === 'dimensions_check';
-  const showProductCreateFields = !hideSkuField && taskType === 'product_create';
-  const typeSelectDisabled = editingTask?.task_type === 'dimensions_check';
+  const showProductCreateFields = taskType === 'product_create';
 
   const formModal = (
     <Modal
@@ -298,15 +276,11 @@ export function Tasks() {
         <label>
           Тип задачи
           <select
-            value={taskType === 'dimensions_check' ? 'dimensions_check' : taskType}
+            value={taskType}
             onChange={(e) => setTaskType(e.target.value)}
-            disabled={typeSelectDisabled}
           >
             <option value="text">Текстовая</option>
             <option value="product_create">Создание товаров</option>
-            {taskType === 'dimensions_check' && (
-              <option value="dimensions_check">Проверка габаритов</option>
-            )}
           </select>
         </label>
         <label>
@@ -393,13 +367,10 @@ export function Tasks() {
     const isCreator =
       task.created_by_id != null && Number(task.created_by_id) === Number(user?.id);
     const canEdit = isOpen && (canManage || isCreator);
-    const dimItems = dimItemsOf(task);
-    const isDimensions = task.task_type === 'dimensions_check';
     const isProductCreate = task.task_type === 'product_create';
     const productUrl =
       rewriteLegacyProductCardUrl(task.meta?.url) ||
-      (task.product_id ? productCardPath(task.product_id) : null) ||
-      (dimItems[0]?.product_id ? productCardPath(dimItems[0].product_id) : null);
+      (task.product_id ? productCardPath(task.product_id) : null);
 
     return (
       <div className="card">
@@ -418,7 +389,6 @@ export function Tasks() {
           <span className={`task-badge ${isOpen ? 'open' : 'done'}`}>
             {isOpen ? 'Открыта' : 'Выполнена'}
           </span>
-          {isDimensions && <span className="task-badge">Габариты</span>}
           {isProductCreate && <span className="task-badge">Создание товаров</span>}
           <span>Исполнитель: {taskAssigneeLabel(task)}</span>
           <span>Создатель: {taskCreatorLabel(task)}</span>
@@ -428,33 +398,7 @@ export function Tasks() {
           )}
         </div>
 
-        {isDimensions && dimItems.length > 0 ? (
-          <div className="task-desc">
-            <div style={{ marginBottom: 8 }}>
-              После обновления с маркетплейсов изменились габариты/вес. Проверьте товары:
-            </div>
-            <ul className="task-sku-list">
-              {dimItems.map((it) => {
-                const sku = it.sku || `#${it.product_id}`;
-                const href = it.product_id ? productCardPath(it.product_id) : null;
-                const mps = Array.isArray(it.marketplaces)
-                  ? it.marketplaces
-                  : it.marketplace
-                    ? [it.marketplace]
-                    : [];
-                return (
-                  <li key={String(it.product_id)}>
-                    {href ? <Link to={href}>{sku}</Link> : sku}
-                    {it.name ? ` — ${it.name}` : ''}
-                    {mps.length
-                      ? ` [${mps.map((m) => String(m).toUpperCase()).join(', ')}]`
-                      : ''}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ) : isProductCreate ? (
+        {isProductCreate ? (
           <div className="task-desc">
             <div style={{ marginBottom: 8 }}>
               Создание товаров: статус в программе и на маркетплейсах
@@ -545,7 +489,7 @@ export function Tasks() {
           task.description && <div className="task-desc">{task.description}</div>
         )}
 
-        {!isDimensions && task.product_sku && (
+        {task.product_sku && (
           <div className="task-meta" style={{ marginTop: 12 }}>
             <span>
               Товар:{' '}
@@ -592,7 +536,7 @@ export function Tasks() {
                 Переадресовать
               </Button>
             )}
-            {!isDimensions && productUrl && (
+            {productUrl && (
               <Link to={productUrl}>
                 <Button size="small" variant="secondary">
                   Открыть товар
@@ -692,7 +636,6 @@ export function Tasks() {
         ) : (
           filtered.map((task) => {
             const isOpen = task.status === 'open';
-            const isDimensions = task.task_type === 'dimensions_check';
             const isProductCreate = task.task_type === 'product_create';
             const preview = taskPreviewMeta(task);
             return (
@@ -708,7 +651,6 @@ export function Tasks() {
                     <span className={`task-badge ${isOpen ? 'open' : 'done'}`}>
                       {isOpen ? 'Открыта' : 'Выполнена'}
                     </span>
-                    {isDimensions && <span className="task-badge">Габариты</span>}
                     {isProductCreate && <span className="task-badge">Создание товаров</span>}
                     {preview && <span>{preview}</span>}
                     <span>{taskAssigneeLabel(task)}</span>

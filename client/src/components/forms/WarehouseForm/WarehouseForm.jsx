@@ -16,13 +16,19 @@ import {
   parseYandexWarehouseMapping,
 } from '../../../utils/yandexWarehouseMapping';
 import {
+  extractMarketplaceWarehouseBindId,
+  formatMarketplaceWarehouseStoredLabel,
+  marketplaceWarehouseOptionSelected,
+  warehouseMappingMarketplaceHint,
+} from '../../../utils/warehouseMappingMarketplaces';
+import {
   WEEKDAY_OPTIONS,
   ALL_WEEKDAYS,
   weekendDaysToWorkDays,
   workDaysToWeekendDays,
   normalizeWeekendDays,
 } from '../../../utils/warehouseWeekendDays.js';
-import '../../../styles/mp-badges.css';
+import { warehouseDisplayLabel } from '../../../utils/stockDestinationDefaults';
 
 const MP_STOCK_CHANNELS = [
   { key: 'pushStockOzon', marketplace: 'ozon', label: 'OZ', badgeClass: 'ozon', title: 'Ozon' },
@@ -41,6 +47,7 @@ export function WarehouseForm({
 }) {
   const [formData, setFormData] = useState({
     type: '',
+    name: '',
     address: '',
     organizationId: '',
     supplierId: '',
@@ -180,7 +187,7 @@ export function WarehouseForm({
             return {
               id: idStr || null,
               name: idStr && nameStr ? `${idStr} — ${nameStr}` : (nameStr || idStr),
-              bindValue: idStr || nameStr,
+              bindValue: idStr,
               address: o.address ?? '',
             };
           })
@@ -276,7 +283,7 @@ export function WarehouseForm({
             return {
               id: idStr || null,
               name: idStr && nameStr ? `${idStr} — ${nameStr}` : (nameStr || idStr),
-              bindValue: idStr || nameStr
+              bindValue: idStr
             };
           })
           .filter((x) => String(x.bindValue || '').trim() !== '');
@@ -297,6 +304,7 @@ export function WarehouseForm({
     if (warehouse) {
       setFormData({
         type: warehouse.type || '',
+        name: warehouse.name || '',
         address: warehouse.address || '',
         organizationId: warehouse.organizationId != null ? String(warehouse.organizationId) : (warehouse.organization_id != null ? String(warehouse.organization_id) : ''),
         supplierId: warehouse.supplierId ? String(warehouse.supplierId) : '',
@@ -316,6 +324,7 @@ export function WarehouseForm({
     } else {
       setFormData({
         type: '',
+        name: '',
         address: '',
         organizationId: '',
         supplierId: '',
@@ -345,9 +354,12 @@ export function WarehouseForm({
   };
 
   const upsertMarketplaceMapping = async (warehouseId, marketplace, marketplaceWarehouseId) => {
-    const mw = String(marketplaceWarehouseId || '').trim();
-    if (!mw) return;
     const mp = normalizeMp(marketplace);
+    const mw =
+      mp === 'ym'
+        ? String(marketplaceWarehouseId || '').trim()
+        : extractMarketplaceWarehouseBindId(marketplaceWarehouseId);
+    if (!mw) return;
     const list = await warehouseMappingsApi.list({ warehouseId: String(warehouseId) });
     const found = (Array.isArray(list) ? list : []).find((m) => normalizeMp(m.marketplace) === mp);
     const payload = { warehouseId, marketplace: mp, marketplaceWarehouseId: mw };
@@ -378,7 +390,7 @@ export function WarehouseForm({
         warehouseId: editor.ymWarehouseId,
       });
     }
-    return String(editor.marketplaceWarehouseId || '').trim();
+    return extractMarketplaceWarehouseBindId(editor.marketplaceWarehouseId);
   };
 
   const openEditMapping = (m) => {
@@ -388,7 +400,7 @@ export function WarehouseForm({
     setMappingEditor({
       id: m.id,
       marketplace: mp,
-      marketplaceWarehouseId: raw,
+      marketplaceWarehouseId: mp === 'ym' ? raw : (extractMarketplaceWarehouseBindId(raw) || raw),
       ymCampaignId: ym.campaignId || '',
       ymWarehouseId: ym.warehouseId || '',
     });
@@ -411,7 +423,7 @@ export function WarehouseForm({
       alert(
         mappingEditor.marketplace === 'ym'
           ? 'Укажите campaignId и/или ID склада Яндекс.Маркет'
-          : 'Выберите склад маркетплейса'
+          : 'Выберите склад маркетплейса по ID из списка'
       );
       return;
     }
@@ -475,6 +487,9 @@ export function WarehouseForm({
     
     if (!formData.type) {
       newErrors.type = 'Выберите тип склада';
+    }
+    if (!String(formData.name || '').trim()) {
+      newErrors.name = 'Укажите название склада';
     }
     if (formData.type === 'supplier') {
       if (!formData.supplierId) {
@@ -589,6 +604,7 @@ export function WarehouseForm({
 
     const payload = {
       type: formData.type,
+      name: formData.name.trim(),
       address: formData.address.trim() || null,
       organizationId: formData.organizationId && formData.organizationId.trim() !== '' ? formData.organizationId : null,
       supplierId: formData.type === 'supplier' ? (formData.supplierId || null) : null,
@@ -647,6 +663,23 @@ export function WarehouseForm({
       </div>
 
       <div className="col-md-8">
+        <label className="form-label" htmlFor="stockName">
+          Название склада <span style={{color: '#ef4444'}}>*</span>
+        </label>
+        <input
+          id="stockName"
+          type="text"
+          className="form-control form-control-sm"
+          maxLength={200}
+          placeholder="Например: Москва, Киров"
+          value={formData.name}
+          onChange={(e) => handleChange('name', e.target.value)}
+          required
+        />
+        {errors.name && <div className="error">{errors.name}</div>}
+      </div>
+
+      <div className="col-12">
         <label className="form-label" htmlFor="stockAddress">Адрес</label>
         <textarea
           id="stockAddress"
@@ -862,7 +895,9 @@ export function WarehouseForm({
                               ? formatYandexWarehouseMappingLabel(
                                   m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
                                 )
-                              : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
+                              : formatMarketplaceWarehouseStoredLabel(
+                                  m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
+                                )}
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <Button
@@ -964,7 +999,7 @@ export function WarehouseForm({
                 .filter(w => w.type === 'warehouse')
                 .map(warehouse => (
                   <option key={warehouse.id} value={warehouse.id}>
-                    {warehouse.address || `Склад #${warehouse.id}`}
+                    {warehouseDisplayLabel(warehouse)}
                   </option>
                 ))}
             </select>
@@ -1003,8 +1038,11 @@ export function WarehouseForm({
         {mappingEditor ? (
           <>
             <p className="text-muted small">
-              Выберите склад маркетплейса для этого фактического склада
+              Выберите склад маркетплейса по ID для этого фактического склада
               {mappingEditor.id ? ' или удалите связь.' : '.'}
+            </p>
+            <p className="text-muted small">
+              {warehouseMappingMarketplaceHint(mappingEditor.marketplace)}
             </p>
             {mappingEditor.marketplace === 'wb' && (
               <>
@@ -1017,24 +1055,44 @@ export function WarehouseForm({
                 {wbOffices.length > 0 ? (
                   <select
                     className="form-select form-select-sm mb-2"
-                    value={mappingEditor.marketplaceWarehouseId}
+                    value={
+                      wbOffices.some((o) =>
+                        marketplaceWarehouseOptionSelected(
+                          mappingEditor.marketplaceWarehouseId,
+                          o.bindValue ?? o.id
+                        )
+                      )
+                        ? extractMarketplaceWarehouseBindId(mappingEditor.marketplaceWarehouseId) ||
+                          mappingEditor.marketplaceWarehouseId
+                        : mappingEditor.marketplaceWarehouseId
+                    }
                     onChange={(e) =>
                       setMappingEditor((prev) =>
-                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                        prev
+                          ? {
+                              ...prev,
+                              marketplaceWarehouseId: extractMarketplaceWarehouseBindId(
+                                e.target.value
+                              ),
+                            }
+                          : prev
                       )
                     }
                   >
-                    <option value="">-- Выберите склад WB (FBS) --</option>
+                    <option value="">-- Выберите склад WB по ID --</option>
                     {mappingEditor.marketplaceWarehouseId &&
-                    !wbOffices.some(
-                      (o) => String(o.bindValue ?? o.id ?? o.name) === String(mappingEditor.marketplaceWarehouseId)
+                    !wbOffices.some((o) =>
+                      marketplaceWarehouseOptionSelected(
+                        mappingEditor.marketplaceWarehouseId,
+                        o.bindValue ?? o.id
+                      )
                     ) ? (
                       <option value={mappingEditor.marketplaceWarehouseId}>
-                        {mappingEditor.marketplaceWarehouseId}
+                        {mappingEditor.marketplaceWarehouseId} (нет ID — выберите склад из списка)
                       </option>
                     ) : null}
                     {wbOffices.map((o) => (
-                      <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id ?? o.name)}>
+                      <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id)}>
                         {String(o.name)}{o.address ? ` · ${o.address}` : ''}
                       </option>
                     ))}
@@ -1045,10 +1103,17 @@ export function WarehouseForm({
                     value={mappingEditor.marketplaceWarehouseId}
                     onChange={(e) =>
                       setMappingEditor((prev) =>
-                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                        prev
+                          ? {
+                              ...prev,
+                              marketplaceWarehouseId:
+                                extractMarketplaceWarehouseBindId(e.target.value) ||
+                                e.target.value,
+                            }
+                          : prev
                       )
                     }
-                    placeholder="Склад WB (FBS), например «Свой склад РФ»"
+                    placeholder="ID склада WB (FBS), например 991873"
                   />
                 )}
               </>
@@ -1064,24 +1129,44 @@ export function WarehouseForm({
                 {ozonWarehouses.length > 0 ? (
                   <select
                     className="form-select form-select-sm mb-2"
-                    value={mappingEditor.marketplaceWarehouseId}
+                    value={
+                      ozonWarehouses.some((w) =>
+                        marketplaceWarehouseOptionSelected(
+                          mappingEditor.marketplaceWarehouseId,
+                          w.bindValue ?? w.id
+                        )
+                      )
+                        ? extractMarketplaceWarehouseBindId(mappingEditor.marketplaceWarehouseId) ||
+                          mappingEditor.marketplaceWarehouseId
+                        : mappingEditor.marketplaceWarehouseId
+                    }
                     onChange={(e) =>
                       setMappingEditor((prev) =>
-                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                        prev
+                          ? {
+                              ...prev,
+                              marketplaceWarehouseId: extractMarketplaceWarehouseBindId(
+                                e.target.value
+                              ),
+                            }
+                          : prev
                       )
                     }
                   >
-                    <option value="">-- Выберите склад Ozon --</option>
+                    <option value="">-- Выберите склад Ozon по ID --</option>
                     {mappingEditor.marketplaceWarehouseId &&
-                    !ozonWarehouses.some(
-                      (w) => String(w.bindValue ?? w.id ?? w.name) === String(mappingEditor.marketplaceWarehouseId)
+                    !ozonWarehouses.some((w) =>
+                      marketplaceWarehouseOptionSelected(
+                        mappingEditor.marketplaceWarehouseId,
+                        w.bindValue ?? w.id
+                      )
                     ) ? (
                       <option value={mappingEditor.marketplaceWarehouseId}>
-                        {mappingEditor.marketplaceWarehouseId}
+                        {mappingEditor.marketplaceWarehouseId} (нет ID — выберите склад из списка)
                       </option>
                     ) : null}
                     {ozonWarehouses.map((w, i) => (
-                      <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id ?? w.name)}>
+                      <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id)}>
                         {String(w.name)}
                       </option>
                     ))}
@@ -1092,7 +1177,14 @@ export function WarehouseForm({
                     value={mappingEditor.marketplaceWarehouseId}
                     onChange={(e) =>
                       setMappingEditor((prev) =>
-                        prev ? { ...prev, marketplaceWarehouseId: e.target.value } : prev
+                        prev
+                          ? {
+                              ...prev,
+                              marketplaceWarehouseId:
+                                extractMarketplaceWarehouseBindId(e.target.value) ||
+                                e.target.value,
+                            }
+                          : prev
                       )
                     }
                     placeholder="ID склада Ozon"

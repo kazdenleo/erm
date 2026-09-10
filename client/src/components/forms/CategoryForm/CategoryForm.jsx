@@ -973,7 +973,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       description: formData.description.trim() || null,
       parent_id: formData.parentId || null,
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
-      attribute_mp_links: attributeMpLinks,
       mp_field_links: serializeCategoryDedicatedCharcLinks(dedicatedMpLinks, addedDedicatedKeys),
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       tn_ved_code: formData.tn_ved_code || null,
@@ -1147,8 +1146,9 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       <div className="field">
         <label className="label">Поля и атрибуты карточки</label>
         <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-          Добавьте нужное поле или атрибут, затем прикрепите к нему характеристики Ozon / WB / Яндекс.Маркета.
-          К одному полю можно привязать несколько характеристик одного маркетплейса. Списки характеристик появятся после сопоставления категорий на вкладке «Основное».
+          Поля вкладки «Основное» сопоставляются здесь. Свои атрибуты добавляются в категорию здесь,
+          а связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в «Настройки → Атрибуты»
+          сразу для всех категорий или для выбранных.
         </p>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
           <select
@@ -1339,18 +1339,11 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
                     });
                   }}
                 >
-                  <AttributeMpLinkFields
-                    links={attributeMpLinks[id] || emptyAttrMpLinks()}
-                    onChange={(next) => {
-                      markDirty();
-                      setAttributeMpLinks((prev) => ({ ...prev, [id]: next }));
-                    }}
-                    ozonOptions={ozonMpAttrs}
-                    wbOptions={wbMpAttrs}
-                    ymOptions={ymMpAttrs}
-                    getWbId={wbAttrKey}
-                    getWbName={wbAttrName}
-                  />
+                  <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>
+                    Связь с Ozon / WB / Яндекс.Маркетом настраивается в{' '}
+                    <Link to="/settings/attributes">Настройки → Атрибуты</Link>
+                    : на все категории или на выбранные.
+                  </p>
                 </CategoryAttrMapCard>
               );
             })}

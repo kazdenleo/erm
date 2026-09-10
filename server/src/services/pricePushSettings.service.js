@@ -37,8 +37,10 @@ class PricePushSettingsService {
       scope: settings.scope,
       categoryIds: settings.categoryIds,
       productIds: settings.productIds,
+      excludeProductIds: settings.excludeProductIds,
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
+      minMarkupRules: settings.minMarkupRules,
       organizations: (orgs || []).map((o) => ({
         id: o.id,
         name: o.name,
@@ -57,8 +59,10 @@ class PricePushSettingsService {
       scope: settings.scope,
       categoryIds: settings.categoryIds,
       productIds: settings.productIds,
+      excludeProductIds: settings.excludeProductIds,
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
+      minMarkupRules: settings.minMarkupRules,
     };
   }
 

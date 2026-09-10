@@ -97,4 +97,9 @@ export const salesAnalyticsApi = {
     const r = await api.get('/sales-analytics/card-work/duplicates');
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  getCardWorkMissingCost: async () => {
+    const r = await api.get('/sales-analytics/card-work/missing-cost');
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
 };

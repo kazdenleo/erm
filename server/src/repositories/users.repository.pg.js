@@ -15,13 +15,13 @@ class UsersRepositoryPG {
       const result = await query(
         `SELECT ${USER_SELECT} FROM users
          WHERE profile_id = $1 AND role <> 'admin'
-         ORDER BY email`,
+         ORDER BY phone NULLS LAST, email NULLS LAST`,
         [profileId]
       );
       return result.rows;
     }
     const result = await query(
-      `SELECT ${USER_SELECT} FROM users ORDER BY email`
+      `SELECT ${USER_SELECT} FROM users ORDER BY phone NULLS LAST, email NULLS LAST`
     );
     return result.rows;
   }
@@ -34,10 +34,21 @@ class UsersRepositoryPG {
     return result.rows[0] || null;
   }
 
-  async findByEmail(email) {
+  async findAuthById(id) {
     const result = await query(
-      `SELECT ${USER_SELECT}, password_hash FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))`,
-      [email]
+      `SELECT ${USER_SELECT}, password_hash FROM users WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+
+  async findByEmail(email) {
+    const em = String(email || '').trim();
+    if (!em) return null;
+    const result = await query(
+      `SELECT ${USER_SELECT}, password_hash FROM users
+       WHERE email IS NOT NULL AND LOWER(TRIM(email)) = LOWER(TRIM($1))`,
+      [em]
     );
     return result.rows[0] || null;
   }
@@ -82,6 +93,8 @@ class UsersRepositoryPG {
       accountRole = null,
       mustChangePassword = false,
     } = data;
+    const emailVal =
+      email != null && String(email).trim() !== '' ? String(email).trim().toLowerCase() : null;
     const phoneVal =
       phone != null && phone !== '' && String(phone).trim() !== '' ? String(phone).trim() : null;
     const phoneNormVal =
@@ -94,7 +107,7 @@ class UsersRepositoryPG {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING ${USER_SELECT}`,
       [
-        email,
+        emailVal,
         passwordHash,
         fullName || null,
         lastName || null,
@@ -136,6 +149,10 @@ class UsersRepositoryPG {
     if (updates.middle_name !== undefined) {
       fields.push(`middle_name = $${i++}`);
       params.push(updates.middle_name === '' ? null : updates.middle_name);
+    }
+    if (updates.email !== undefined) {
+      fields.push(`email = $${i++}`);
+      params.push(updates.email === '' || updates.email == null ? null : String(updates.email).trim().toLowerCase());
     }
     if (updates.phone !== undefined) {
       fields.push(`phone = $${i++}`);

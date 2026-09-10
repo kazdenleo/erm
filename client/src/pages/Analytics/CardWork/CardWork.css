@@ -28,6 +28,11 @@
   color: #3f6212;
 }
 
+.card-work__reason--missing_cost {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .card-work__hint {
   color: #64748b;
   font-size: 13px;
@@ -184,6 +189,38 @@
   flex-direction: column;
   gap: 12px;
   margin-bottom: 0;
+}
+
+.card-work-fix-modal__fields--grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.card-work-fix-modal__hint-block {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.card-work__in-work {
+  border: none;
+  background: transparent;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.card-work__in-work:hover {
+  color: #115e59;
 }
 
 .card-work-fix-modal__products {

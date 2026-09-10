@@ -2,7 +2,7 @@
  * Оборачиваемость товаров на маркетплейсах: продажи vs остаток на складах МП.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -104,7 +104,7 @@ export function ProductTurnover() {
   const [marketplace, setMarketplace] = useState('all');
   const [scheme, setScheme] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [selectedKeys, setSelectedKeys] = useState([]);
@@ -132,6 +132,10 @@ export function ProductTurnover() {
       setLoading(false);
     }
   }, [dateFrom, dateTo, marketplace, scheme]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const items = useMemo(() => {
     const list = Array.isArray(data?.items) ? data.items : [];
@@ -170,7 +174,7 @@ export function ProductTurnover() {
         iconClass="pe-7s-timer"
         iconBgClass="bg-mean-fruit"
         title="Оборачиваемость"
-        subtitle="Остаток на складах маркетплейса и скорость продаж: дни запаса и коэффициент оборачиваемости"
+        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -203,8 +207,11 @@ export function ProductTurnover() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
+          {loading ? 'Загрузка…' : 'Загрузить'}
         </Button>
+        {loading && data != null ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
       </div>
 
       {error && <div className="sales-analytics__error">{error}</div>}
@@ -254,7 +261,9 @@ export function ProductTurnover() {
         {!loading && chartData.length === 0 && (
           <div className="product-dynamics__empty-chart">
             {data == null
-              ? 'Выберите период и нажмите «Показать».'
+              ? loading
+                ? 'Загрузка…'
+                : 'Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».'
               : 'Отметьте товары в таблице или нет данных за период.'}
           </div>
         )}

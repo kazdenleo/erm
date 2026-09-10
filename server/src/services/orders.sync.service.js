@@ -46,6 +46,14 @@ async function attachResolvedProductIds(orders) {
   }
 }
 
+/** Ключ склада МП для привязки: числовой ID, название только как подпись. */
+function marketplaceWarehouseBindKey(id, name) {
+  const idStr = id != null && String(id).trim() !== '' ? String(id).trim() : '';
+  const nameStr = String(name || '').trim();
+  if (idStr) return nameStr ? `${idStr} — ${nameStr}` : idStr;
+  return nameStr;
+}
+
 /**
  * Перед upsert: склад ERP из warehouse_mappings (склад МП в delivery_address → наш склад).
  * FBS-заказы относятся к связанному складу.
@@ -1988,7 +1996,10 @@ async function fetchOzonOrderByPostingNumber(config, postingNumberRaw) {
     shipmentDate: shipmentDate || '',
     customerName: order.customer_name || '',
     customerPhone: order.customer_phone || '',
-    deliveryAddress: order.delivery_method?.warehouse_name || ''
+    deliveryAddress: marketplaceWarehouseBindKey(
+      order.delivery_method?.warehouse_id ?? order.delivery_method?.warehouseId,
+      order.delivery_method?.warehouse_name ?? order.delivery_method?.warehouseName
+    )
   };
 }
 
@@ -2069,15 +2080,10 @@ function mapOzonPostingToSyncRows(order) {
       shipmentDate: shipmentDate || '',
       customerName: order.customer_name || '',
       customerPhone: order.customer_phone || '',
-      deliveryAddress: (() => {
-        const wid = order?.delivery_method?.warehouse_id ?? order?.delivery_method?.warehouseId ?? null;
-        const name = order?.delivery_method?.warehouse_name ?? order?.delivery_method?.warehouseName ?? '';
-        const nameStr = String(name || '').trim();
-        if (wid != null && String(wid).trim() !== '') {
-          return nameStr ? `${String(wid).trim()} — ${nameStr}` : String(wid).trim();
-        }
-        return nameStr;
-      })()
+      deliveryAddress: marketplaceWarehouseBindKey(
+        order?.delivery_method?.warehouse_id ?? order?.delivery_method?.warehouseId,
+        order?.delivery_method?.warehouse_name ?? order?.delivery_method?.warehouseName
+      )
     };
   });
 }
@@ -2663,15 +2669,10 @@ async function fetchWildberriesFBSOrders(config, { skipTitles = false } = {}) {
         shipmentDate: wbExtractShipmentDate(order),
         customerName: '',
         customerPhone: '',
-        deliveryAddress: (() => {
-          const wid = order.warehouseId ?? order.warehouse_id ?? null;
-          const officeName = Array.isArray(order.offices) ? (order.offices[0] || '') : (order.offices || '');
-          const nameStr = String(officeName || '').trim();
-          if (wid != null && String(wid).trim() !== '') {
-            return nameStr ? `${String(wid).trim()} — ${nameStr}` : String(wid).trim();
-          }
-          return nameStr;
-        })()
+        deliveryAddress: marketplaceWarehouseBindKey(
+          order.warehouseId ?? order.warehouse_id,
+          Array.isArray(order.offices) ? (order.offices[0] || '') : (order.offices || '')
+        )
       };
     });
   } catch (error) {
@@ -2764,7 +2765,10 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
       shipmentDate: wbExtractShipmentDate(order),
       customerName: '',
       customerPhone: '',
-      deliveryAddress: order.offices?.[0] || ''
+      deliveryAddress: marketplaceWarehouseBindKey(
+        order.warehouseId ?? order.warehouse_id,
+        Array.isArray(order.offices) ? (order.offices[0] || '') : (order.offices || '')
+      )
     };
   });
 

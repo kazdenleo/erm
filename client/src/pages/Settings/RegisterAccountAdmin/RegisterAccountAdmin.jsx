@@ -29,10 +29,11 @@ export function RegisterAccountAdmin() {
     setError('');
     if (!allowed) return;
 
+    const ph = phone.trim();
     const em = email.trim();
     const fn = fullName.trim();
-    if (!em) {
-      setError('Укажите электронную почту (логин)');
+    if (!ph) {
+      setError('Укажите номер телефона (логин)');
       return;
     }
     if (!fn) {
@@ -47,10 +48,10 @@ export function RegisterAccountAdmin() {
     setSubmitting(true);
     try {
       await usersApi.create({
-        email: em,
+        email: em || undefined,
         password,
         fullName: fn,
-        phone: phone.trim() || undefined,
+        phone: ph,
         role: 'user',
         profileId,
         isProfileAdmin: true,
@@ -84,8 +85,8 @@ export function RegisterAccountAdmin() {
     <div className="card register-account-admin-page">
       <h1 className="title">Регистрация администраторов аккаунта</h1>
       <p className="subtitle text-muted">
-        Новый пользователь получит права администратора вашего аккаунта и сможет входить по указанной
-        почте или телефону и паролю.
+        Новый пользователь получит права администратора вашего аккаунта и сможет входить по указанному
+        телефону и паролю.
       </p>
 
       <form className="register-account-admin-form" onSubmit={handleSubmit}>
@@ -108,25 +109,25 @@ export function RegisterAccountAdmin() {
         </label>
 
         <label className="register-account-admin-label">
-          Электронная почта <span className="register-account-admin-req">*</span>
-          <input
-            type="email"
-            className="form-control register-account-admin-input"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="off"
-            required
-          />
-        </label>
-
-        <label className="register-account-admin-label">
-          Телефон
+          Телефон <span className="register-account-admin-req">*</span>
           <input
             type="tel"
             className="form-control register-account-admin-input"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             autoComplete="tel"
+            required
+          />
+        </label>
+
+        <label className="register-account-admin-label">
+          Электронная почта
+          <input
+            type="email"
+            className="form-control register-account-admin-input"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="off"
           />
         </label>
 

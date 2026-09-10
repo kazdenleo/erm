@@ -28,13 +28,24 @@ function mapBarcodeDbRow(row) {
   };
 }
 
+const CATEGORY_ATTRIBUTE_MP_LINKS_SQL = `(
+  SELECT jsonb_object_agg(ca.attribute_id::text, COALESCE(ca.mp_links, '{}'::jsonb))
+  FROM category_attributes ca
+  WHERE ca.user_category_id = uc.id
+)`;
+
 function applyCategoryDedicatedMpLinks(product) {
   if (!product) return product;
+  if (!Object.prototype.hasOwnProperty.call(product, 'category_mp_field_links')) {
+    return product;
+  }
   product.mp_field_links = overlayCategoryDedicatedMpLinks(
     product.mp_field_links,
-    product.category_mp_field_links
+    product.category_mp_field_links,
+    product.category_attribute_mp_links
   );
   delete product.category_mp_field_links;
+  delete product.category_attribute_mp_links;
   return product;
 }
 
@@ -806,21 +817,30 @@ function buildFindAllFilters(options = {}) {
   }
 
   if (search) {
-    const searchParam = `%${search}%`;
-    whereSql += ` AND (
-      p.name ILIKE $${paramIndex}
-      OR p.sku ILIKE $${paramIndex}
-      OR EXISTS (
-        SELECT 1 FROM barcodes bc
-        WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
-      )
-      OR EXISTS (
-        SELECT 1 FROM product_skus ps
-        WHERE ps.product_id = p.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
-      )
-    )`;
-    params.push(searchParam);
-    paramIndex++;
+    const tokens = String(search)
+      .trim()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+      .slice(0, 8);
+    const effectiveTokens = tokens.length > 0 ? tokens : [String(search).trim()];
+    for (const token of effectiveTokens) {
+      const searchParam = `%${token}%`;
+      whereSql += ` AND (
+        p.name ILIKE $${paramIndex}
+        OR p.sku ILIKE $${paramIndex}
+        OR EXISTS (
+          SELECT 1 FROM barcodes bc
+          WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
+        )
+        OR EXISTS (
+          SELECT 1 FROM product_skus ps
+          WHERE ps.product_id = p.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
+        )
+      )`;
+      params.push(searchParam);
+      paramIndex++;
+    }
   }
 
   const pt = productType != null && String(productType).trim() !== '' ? String(productType).trim().toLowerCase() : '';
@@ -1361,6 +1381,7 @@ class ProductsRepositoryPG {
         uc.name as category_name,
         uc.tn_ved_code as category_tn_ved_code,
         uc.mp_field_links as category_mp_field_links,
+        ${CATEGORY_ATTRIBUTE_MP_LINKS_SQL} as category_attribute_mp_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
         o.vat as organization_vat,
@@ -2156,6 +2177,7 @@ class ProductsRepositoryPG {
         uc.name as category_name,
         uc.tn_ved_code as category_tn_ved_code,
         uc.mp_field_links as category_mp_field_links,
+        ${CATEGORY_ATTRIBUTE_MP_LINKS_SQL} as category_attribute_mp_links,
         o.name as organization_name,
         o.tax_system as organization_tax_system,
         o.vat as organization_vat,
@@ -2367,7 +2389,8 @@ class ProductsRepositoryPG {
         b.name as brand_name,
         uc.name as category_name,
         uc.tn_ved_code as category_tn_ved_code,
-        uc.mp_field_links as category_mp_field_links
+        uc.mp_field_links as category_mp_field_links,
+        ${CATEGORY_ATTRIBUTE_MP_LINKS_SQL} as category_attribute_mp_links
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
@@ -3816,20 +3839,30 @@ class ProductsRepositoryPG {
     }
     
     if (options.search) {
-      const sp = `%${options.search}%`;
-      sql += ` AND (
-        name ILIKE $${paramIndex}
-        OR sku ILIKE $${paramIndex}
-        OR EXISTS (
-          SELECT 1 FROM barcodes bc
-          WHERE bc.product_id = products.id AND bc.barcode ILIKE $${paramIndex}
-        )
-        OR EXISTS (
-          SELECT 1 FROM product_skus ps
-          WHERE ps.product_id = products.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
-        )
-      )`;
-      params.push(sp);
+      const tokens = String(options.search)
+        .trim()
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0)
+        .slice(0, 8);
+      const effectiveTokens = tokens.length > 0 ? tokens : [String(options.search).trim()];
+      for (const token of effectiveTokens) {
+        const sp = `%${token}%`;
+        sql += ` AND (
+          name ILIKE $${paramIndex}
+          OR sku ILIKE $${paramIndex}
+          OR EXISTS (
+            SELECT 1 FROM barcodes bc
+            WHERE bc.product_id = products.id AND bc.barcode ILIKE $${paramIndex}
+          )
+          OR EXISTS (
+            SELECT 1 FROM product_skus ps
+            WHERE ps.product_id = products.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
+          )
+        )`;
+        params.push(sp);
+        paramIndex += 1;
+      }
     }
 
     const ptCount =

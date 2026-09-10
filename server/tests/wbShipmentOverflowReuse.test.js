@@ -69,11 +69,13 @@ describe('pickWbOverflowShipment', () => {
     expect(picked?.id).toBe('ship-overflow-a');
   });
 
-  test('ignores closed and other profile/org', () => {
-    const closed = { ...overflowA, id: 'ship-closed', closed: true };
-    const otherOrg = { ...overflowA, id: 'ship-other-org', organizationId: '99' };
-    const otherProfile = { ...overflowA, id: 'ship-other-prof', profileId: 2 };
-    const picked = pickWbOverflowShipment([main, closed, otherOrg, otherProfile, overflowB], main, {
+  test('ignores overflow of another marketplace warehouse', () => {
+    const kirovOverflow = {
+      ...overflowA,
+      id: 'ship-kirov',
+      marketplaceWarehouseId: '1818583 — Киров',
+    };
+    const picked = pickWbOverflowShipment([main, kirovOverflow, overflowB], main, {
       profileId: 1,
       organizationId: '10',
     });

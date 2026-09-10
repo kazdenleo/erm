@@ -14,6 +14,9 @@ import { WarehouseForm } from '../../components/forms/WarehouseForm/WarehouseFor
 import { warehouseMappingsApi } from '../../services/warehouseMappings.api';
 import { integrationsApi } from '../../services/integrations.api';
 import {
+  extractMarketplaceWarehouseBindId,
+  formatMarketplaceWarehouseStoredLabel,
+  marketplaceWarehouseOptionSelected,
   normalizeWarehouseMappingMarketplace,
   warehouseMappingMarketplaceHint,
   warehouseMappingMarketplaceLabel,
@@ -24,7 +27,7 @@ import {
   formatYandexWarehouseMappingLabel,
   parseYandexWarehouseMapping,
 } from '../../utils/yandexWarehouseMapping';
-import './Warehouses.css';
+import { warehouseDisplayLabel } from '../../utils/stockDestinationDefaults';
 
 export function Warehouses() {
   const { warehouses, loading, error, createWarehouse, updateWarehouse, deleteWarehouse, loadWarehouses } = useWarehouses();
@@ -111,10 +114,12 @@ export function Warehouses() {
             const name = x.name ?? x.warehouse_name ?? '';
             const idStr = id != null ? String(id).trim() : '';
             const nameStr = String(name || '').trim();
-            const bindValue =
-              idStr && nameStr ? `${idStr} — ${nameStr}` : nameStr || idStr;
-            return { value: bindValue, label: bindValue || nameStr || idStr };
-          });
+            if (!idStr) return null;
+            return {
+              value: idStr,
+              label: nameStr ? `${idStr} — ${nameStr}` : idStr,
+            };
+          }).filter(Boolean);
         } else if (mp === 'wb') {
           const response = await integrationsApi.getWildberriesSellerWarehouses({
             organizationId: orgId,
@@ -126,11 +131,12 @@ export function Warehouses() {
             const name = o.name ?? o.warehouseName ?? '';
             const idStr = id != null ? String(id).trim() : '';
             const nameStr = String(name || '').trim();
-            const bindValue = idStr || nameStr;
-            const label =
-              idStr && nameStr ? `${idStr} — ${nameStr}` : nameStr || idStr;
-            return { value: bindValue, label };
-          });
+            if (!idStr) return null;
+            return {
+              value: idStr,
+              label: nameStr ? `${idStr} — ${nameStr}` : idStr,
+            };
+          }).filter(Boolean);
         } else if (mp === 'ym') {
           const [campRes, whRes] = await Promise.all([
             integrationsApi.getYandexCampaigns({ organizationId: orgId }),
@@ -207,7 +213,7 @@ export function Warehouses() {
   };
 
   const handleWarehouseSaved = async () => {
-    await loadWarehouses();
+    await loadWarehouses(filterOrganizationId || undefined, { force: true, silent: true });
     await loadMappings();
     setIsModalOpen(false);
     setEditingWarehouse(null);
@@ -217,8 +223,7 @@ export function Warehouses() {
     if (window.confirm('Вы уверены, что хотите удалить этот склад?')) {
       try {
         await deleteWarehouse(id);
-        // Перезагружаем список складов
-        await loadWarehouses();
+        await loadWarehouses(filterOrganizationId || undefined, { force: true, silent: true });
       } catch (error) {
         console.error('Error deleting warehouse:', error);
         alert('Ошибка удаления склада: ' + error.message);
@@ -246,7 +251,8 @@ export function Warehouses() {
     setMappingForm({
       warehouseId: String(m.warehouse_id ?? m.warehouseId ?? ''),
       marketplace: mp,
-      marketplaceWarehouseId: raw,
+      marketplaceWarehouseId:
+        mp === 'ym' ? raw : (extractMarketplaceWarehouseBindId(raw) || raw),
       ymCampaignId: ym.campaignId || '',
       ymWarehouseId: ym.warehouseId || '',
     });
@@ -263,12 +269,12 @@ export function Warehouses() {
               campaignId: mappingForm.ymCampaignId,
               warehouseId: mappingForm.ymWarehouseId,
             })
-          : String(mappingForm.marketplaceWarehouseId || '').trim();
+          : extractMarketplaceWarehouseBindId(mappingForm.marketplaceWarehouseId);
       if (!marketplaceWarehouseId) {
         alert(
           mp === 'ym'
             ? 'Укажите campaignId и/или ID склада Яндекс.Маркет'
-            : 'Укажите склад маркетплейса'
+            : 'Выберите склад маркетплейса по ID из списка'
         );
         return;
       }
@@ -314,6 +320,13 @@ export function Warehouses() {
     loadWarehouses(v || undefined);
   };
 
+  const mappingSelectMatched = mpSuggestions.some((s) =>
+    marketplaceWarehouseOptionSelected(mappingForm.marketplaceWarehouseId, s.value)
+  );
+  const mappingSelectValue = mappingSelectMatched
+    ? extractMarketplaceWarehouseBindId(mappingForm.marketplaceWarehouseId) || mappingForm.marketplaceWarehouseId
+    : mappingForm.marketplaceWarehouseId || '';
+
   return (
     <div className="card">
       <h1 className="title">📦 Склады</h1>
@@ -345,6 +358,7 @@ export function Warehouses() {
               <tr>
                 <th>ID</th>
                 <th>Тип</th>
+                <th>Название</th>
                 <th>Адрес</th>
                 <th>Поставщик</th>
                 <th>Основной склад</th>
@@ -358,6 +372,7 @@ export function Warehouses() {
                 <tr key={w.id}>
                   <td>{w.id}</td>
                   <td>{w.type === 'supplier' ? 'Склад поставщика' : 'Склад'}</td>
+                  <td>{warehouseDisplayLabel(w)}</td>
                   <td>{w.address || '—'}</td>
                   <td>{w.supplierId ? suppliers.find(s => s.id === w.supplierId)?.name || w.supplierId : '—'}</td>
                   <td>{w.mainWarehouseId || '—'}</td>
@@ -414,7 +429,7 @@ export function Warehouses() {
               <th>ID</th>
               <th>Фактический склад</th>
               <th>Маркетплейс</th>
-              <th>Склад маркетплейса (ID/название)</th>
+              <th>Склад маркетплейса (ID)</th>
               <th style={{ textAlign: 'right' }}>Действия</th>
             </tr>
           </thead>
@@ -427,14 +442,16 @@ export function Warehouses() {
               return (
                 <tr key={m.id}>
                   <td>{m.id}</td>
-                  <td>{wh?.address || `Склад #${wid}`}</td>
+                  <td>{wh ? warehouseDisplayLabel(wh) : `Склад #${wid}`}</td>
                   <td>{warehouseMappingMarketplaceLabel(m.marketplace)}</td>
                   <td>
                     {normalizeWarehouseMappingMarketplace(m.marketplace) === 'ym'
                       ? formatYandexWarehouseMappingLabel(
                           m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
                         )
-                      : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
+                      : formatMarketplaceWarehouseStoredLabel(
+                          m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
+                        )}
                   </td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
@@ -494,7 +511,7 @@ export function Warehouses() {
               <option value="">Выберите склад</option>
               {warehouses.filter((w) => w.type === 'warehouse' && !w.supplierId).map((w) => (
                 <option key={w.id} value={String(w.id)}>
-                  {w.address || `Склад #${w.id}`}
+                  {warehouseDisplayLabel(w)}
                 </option>
               ))}
             </select>
@@ -534,7 +551,7 @@ export function Warehouses() {
             <label className="label">
               {normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'ym'
                 ? 'Яндекс.Маркет: campaignId и ID склада'
-                : 'Склад маркетплейса (точно как в заказе)'}
+                : 'Склад маркетплейса (по ID)'}
             </label>
             {mappingOrgId && mpSuggestionsLoading ? (
               <div className="alert alert-secondary py-2 mb-2">Загрузка списка из интеграции…</div>
@@ -614,33 +631,44 @@ export function Warehouses() {
                 {mappingOrgId && mpSuggestions.length > 0 ? (
                   <select
                     className="form-control mb-2"
-                    value=""
+                    value={mappingSelectValue}
                     onChange={(e) => {
-                      const v = e.target.value;
-                      if (v) setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: v }));
+                      const v = extractMarketplaceWarehouseBindId(e.target.value);
+                      setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: v }));
                     }}
+                    required={!mappingForm.marketplaceWarehouseId}
                   >
-                    <option value="">— Выберите из API (необязательно) —</option>
+                    <option value="">— Выберите склад по ID —</option>
+                    {!mappingSelectMatched && mappingForm.marketplaceWarehouseId ? (
+                      <option value={mappingForm.marketplaceWarehouseId}>
+                        {mappingForm.marketplaceWarehouseId} (нет ID — выберите склад из списка)
+                      </option>
+                    ) : null}
                     {mpSuggestions.map((s) => (
                       <option key={s.value} value={s.value}>
                         {s.label}
                       </option>
                     ))}
                   </select>
-                ) : null}
-                <input
-                  className="form-control"
-                  value={mappingForm.marketplaceWarehouseId}
-                  onChange={(e) =>
-                    setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: e.target.value }))
-                  }
-                  placeholder={
-                    normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'wb'
-                      ? 'Напр. «Теплый Стан» или id склада FBS'
-                      : "Напр. 'Москва (FBS)' или id — название"
-                  }
-                  required
-                />
+                ) : (
+                  <input
+                    className="form-control"
+                    value={mappingForm.marketplaceWarehouseId}
+                    onChange={(e) =>
+                      setMappingForm((prev) => ({
+                        ...prev,
+                        marketplaceWarehouseId:
+                          extractMarketplaceWarehouseBindId(e.target.value) || e.target.value,
+                      }))
+                    }
+                    placeholder={
+                      normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'wb'
+                        ? 'ID склада FBS, напр. 991873'
+                        : 'ID склада Ozon'
+                    }
+                    required
+                  />
+                )}
               </>
             )}
             <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>

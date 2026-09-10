@@ -53,6 +53,8 @@
 .orders-page .orders-list {
   margin: 0;
   position: relative;
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .orders-page .orders-list--refreshing {
@@ -60,9 +62,72 @@
   pointer-events: none;
 }
 
+.orders-page .orders-table.table {
+  table-layout: fixed;
+  width: 100%;
+  margin: 8px 0 12px;
+}
+
 .orders-page .orders-table th,
 .orders-page .orders-table td {
-  padding: 12px 14px;
+  padding: 10px 8px;
+}
+
+/* Sticky на thead + overflow-x на обёртке сдвигает шапку относительно строк. */
+.orders-page .orders-table > thead {
+  position: static;
+}
+
+.orders-page .orders-table col.orders-col-checkbox {
+  width: 5rem;
+}
+
+.orders-page .orders-table col.orders-col-num {
+  width: 2.75rem;
+}
+
+.orders-page .orders-table col.orders-col-mp {
+  width: 3.25rem;
+}
+
+.orders-page .orders-table col.orders-col-order-id {
+  width: 8.25rem;
+}
+
+.orders-page .orders-table col.orders-col-arrived {
+  width: 7.25rem;
+}
+
+.orders-page .orders-table col.orders-col-ship-mp {
+  width: 7rem;
+}
+
+.orders-page .orders-table col.orders-col-warehouse {
+  width: 6.5rem;
+}
+
+.orders-page .orders-table col.orders-col-article {
+  width: 6.75rem;
+}
+
+.orders-page .orders-table col.orders-col-qty {
+  width: 4.25rem;
+}
+
+.orders-page .orders-table col.orders-col-price {
+  width: 3.75rem;
+}
+
+.orders-page .orders-table col.orders-col-actions {
+  width: 15rem;
+}
+
+.orders-col-warehouse {
+  width: 6.5rem;
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .orders-page .orders-list-pager {
@@ -86,23 +151,39 @@
 }
 
 .orders-col-checkbox {
-  width: 48px;
-  text-align: center;
+  width: 5rem;
+  min-width: 5rem;
+  max-width: 5rem;
+  text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .orders-col-num {
-  width: 2.5rem;
-  text-align: right;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  max-width: 2.75rem;
+  text-align: center;
+  vertical-align: middle;
   color: var(--muted, #666);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* Бейджи МП: src/styles/mp-badges.css */
 .orders-col-mp {
+  width: 3.25rem;
+  min-width: 3.25rem;
+  max-width: 3.25rem;
   text-align: center;
   vertical-align: middle;
   white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .orders-col-date {
@@ -269,7 +350,20 @@
 }
 .orders-col-products {
   min-width: 0;
-  max-width: 28rem;
+}
+
+.orders-col-article {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.orders-col-price {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .orders-product-cell-text {
@@ -296,6 +390,7 @@
   text-align: center;
   white-space: nowrap;
   vertical-align: middle;
+  overflow: hidden;
 }
 .orders-page .orders-table td.orders-col-qty .orders-stacked-lines {
   width: 100%;
@@ -361,22 +456,18 @@
   border-radius: 4px;
 }
 
-/* Колонка «Действия»: одна строка, при нехватке места — гориз. прокрутка */
+/* Колонка «Действия»: иконки в одну строку без внутренней прокрутки */
 .orders-col-actions {
   vertical-align: middle;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .orders-actions {
   display: flex;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
 }
 
 .orders-action-icon {

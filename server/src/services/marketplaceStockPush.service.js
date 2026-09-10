@@ -9,6 +9,9 @@ import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
+import { parseMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
+
+export { parseMarketplaceWarehouseId };
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,19 +72,6 @@ function wbAuth(cfg) {
 
 function yandexKey(cfg) {
   return integrationsService._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
-}
-
-/**
- * Числовой ID склада МП из сопоставления: "1020001624191000" или "1326703 — Теплый стан".
- * @param {unknown} raw
- * @returns {string|null}
- */
-export function parseMarketplaceWarehouseId(raw) {
-  const s = String(raw ?? '').trim();
-  if (!s) return null;
-  if (/^\d+$/.test(s)) return s;
-  const m = s.match(/^(\d{1,20})/);
-  return m ? m[1] : null;
 }
 
 /**

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
@@ -31,6 +31,7 @@ import './Users/Users.css';
 import './Settings.css';
 
 export function Settings() {
+  const location = useLocation();
   const { isProfileAdmin, isTenantAccountAdmin, isAccountAdmin, profileId, refreshUser } = useAuth();
   const canEditAccount =
     profileId != null && (isProfileAdmin || isTenantAccountAdmin || isAccountAdmin);
@@ -89,6 +90,14 @@ export function Settings() {
   useEffect(() => {
     loadAccount();
   }, [loadAccount]);
+
+  useEffect(() => {
+    if (location.hash !== '#notifications') return undefined;
+    const t = window.setTimeout(() => {
+      document.getElementById('notifications')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [location.hash, canEditAccount, loading]);
 
   useEffect(() => {
     if (canEditAccount) {
@@ -282,7 +291,7 @@ export function Settings() {
       )}
 
       {canEditAccount ? (
-        <section className="settings-account-section" style={{ marginBottom: 18 }}>
+        <section id="notifications" className="settings-account-section" style={{ marginBottom: 18 }}>
           <h2 className="h5">Уведомления</h2>
           <p className="text-muted small mb-3">
             Кому показывать уведомления в колокольчике. Приглашения в сессии (инвентаризация, приёмка)

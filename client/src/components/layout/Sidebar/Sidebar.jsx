@@ -141,6 +141,7 @@ const menuItems = [
     iconClass: 'pe-7s-config',
     children: [
       { path: '/settings', label: 'Общие', iconClass: 'pe-7s-note', sectionKey: 'settings_general' },
+      { path: '/settings#notifications', label: 'Уведомления', iconClass: 'pe-7s-bell', sectionKey: 'settings_general' },
       { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket', sectionKey: 'settings_attributes' },
       { path: '/settings/certificates', label: 'Сертификаты', iconClass: 'pe-7s-portfolio', sectionKey: 'settings_certificates' },
       { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels' },

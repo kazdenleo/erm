@@ -11,8 +11,9 @@ import {
   replaceUserAccessGrants,
   isAccountAdminLike,
 } from '../utils/userAccessScope.js';
-import { ensurePhoneAvailable, preparePhoneFields } from '../utils/userPhone.js';
+import { ensurePhoneAvailable, preparePhoneFields, requirePhoneFields } from '../utils/userPhone.js';
 import { parseBirthDate } from '../utils/userBirthDate.js';
+import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 
@@ -39,19 +40,6 @@ function uniqueConstraintMessage(err, fallback = 'Такая запись уже
     return 'Пользователь с таким email уже существует';
   }
   return fallback;
-}
-
-function applyPhoneToUpdates(updates, phoneValue) {
-  const fields = preparePhoneFields(phoneValue);
-  if (fields.error) {
-    const err = new Error(fields.error);
-    err.status = 400;
-    err.statusCode = 400;
-    throw err;
-  }
-  updates.phone = fields.phone;
-  updates.phone_normalized = fields.phone_normalized;
-  return fields;
 }
 
 function applyBirthDateToUpdates(updates, birthValue) {
@@ -114,7 +102,7 @@ export const usersController = {
 
   async updateMe(req, res, next) {
     try {
-      const { fullName, phone, birthDate, birth_date: birthDateSnake } = req.body || {};
+      const { fullName, phone, email, birthDate, birth_date: birthDateSnake } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
       const updates = {};
       if (
@@ -132,8 +120,21 @@ export const usersController = {
         updates.full_name = buildFullName(names);
       }
       if (phone !== undefined) {
-        const fields = applyPhoneToUpdates(updates, phone);
+        const fields = requirePhoneFields(phone);
+        if (fields.error) {
+          return res.status(400).json({ ok: false, message: fields.error });
+        }
+        updates.phone = fields.phone;
+        updates.phone_normalized = fields.phone_normalized;
         await ensurePhoneAvailable(usersRepo, fields.phone_normalized, req.user.id);
+      }
+      if (email !== undefined) {
+        const emailParsed = parseOptionalEmail(email);
+        if (emailParsed.error) {
+          return res.status(400).json({ ok: false, message: emailParsed.error });
+        }
+        await ensureEmailAvailable(usersRepo, emailParsed.value, req.user.id);
+        updates.email = emailParsed.value;
       }
       if (birthDate !== undefined || birthDateSnake !== undefined) {
         applyBirthDateToUpdates(updates, birthDate ?? birthDateSnake);
@@ -190,6 +191,7 @@ export const usersController = {
       const safe = (Array.isArray(list) ? list : []).map((u) => ({
         id: u.id,
         email: u.email,
+        phone: u.phone,
         full_name: u.full_name,
         last_name: u.last_name,
         first_name: u.first_name,
@@ -237,17 +239,17 @@ export const usersController = {
       const { email, password, phone, birthDate, birth_date: birthDateSnake, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
       const targetAccountRole = normalizeAccountRole(accountRole) || (isProfileAdmin ? 'admin' : 'editor');
-      if (!email || !password) {
-        return res.status(400).json({ ok: false, message: 'Укажите email (логин) и пароль' });
+      if (!password) {
+        return res.status(400).json({ ok: false, message: 'Укажите пароль' });
+      }
+      const emailParsed = parseOptionalEmail(email);
+      if (emailParsed.error) {
+        return res.status(400).json({ ok: false, message: emailParsed.error });
       }
       // Для администратора аккаунта (не system admin) запрещаем создавать system admin и выбирать profileId,
       // но безопасно игнорируем входящие поля (фронт/кэш мог присылать profileId по старой логике).
       const requestedRole = req.user.role === 'admin' ? role : 'user';
       const requestedProfileId = req.user.role === 'admin' ? profileId : undefined;
-      const existing = await usersRepo.findByEmail(email);
-      if (existing) {
-        return res.status(400).json({ ok: false, message: 'Пользователь с таким email уже существует' });
-      }
       let effectiveRole = req.user.role === 'admin' ? (requestedRole || 'user') : 'user';
       let effectiveProfileId =
         req.user.role === 'admin'
@@ -279,17 +281,22 @@ export const usersController = {
         });
       }
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      const phoneFields = preparePhoneFields(phone);
+      const phoneFields =
+        effectiveRole === 'admin' ? preparePhoneFields(phone) : requirePhoneFields(phone);
       if (phoneFields.error) {
         return res.status(400).json({ ok: false, message: phoneFields.error });
       }
+      if (effectiveRole === 'admin' && !emailParsed.value) {
+        return res.status(400).json({ ok: false, message: 'Укажите email администратора системы' });
+      }
       await ensurePhoneAvailable(usersRepo, phoneFields.phone_normalized);
+      await ensureEmailAvailable(usersRepo, emailParsed.value);
       const birthParsed = parseBirthDate(birthDate ?? birthDateSnake);
       if (birthParsed.error) {
         return res.status(400).json({ ok: false, message: birthParsed.error });
       }
       const item = await usersRepo.create({
-        email,
+        email: emailParsed.value,
         passwordHash,
         fullName: buildFullName(names),
         lastName: names.lastName,
@@ -347,8 +354,15 @@ export const usersController = {
         return res.status(403).json({ ok: false, message: 'Редактирование администратора системы недоступно' });
       }
       const updates = { ...req.body };
-      delete updates.email;
       delete updates.id;
+      if (req.body?.email !== undefined) {
+        const emailParsed = parseOptionalEmail(req.body.email);
+        if (emailParsed.error) {
+          return res.status(400).json({ ok: false, message: emailParsed.error });
+        }
+        await ensureEmailAvailable(usersRepo, emailParsed.value, id);
+        updates.email = emailParsed.value;
+      }
       if (
         updates.fullName !== undefined ||
         updates.lastName !== undefined ||
@@ -376,7 +390,13 @@ export const usersController = {
       delete updates.navSections;
       delete updates.phone_normalized;
       if (updates.phone !== undefined) {
-        const fields = applyPhoneToUpdates(updates, updates.phone);
+        const isTenant = (updates.role !== undefined ? updates.role : existing.role) !== 'admin';
+        const fields = isTenant ? requirePhoneFields(updates.phone) : preparePhoneFields(updates.phone);
+        if (fields.error) {
+          return res.status(400).json({ ok: false, message: fields.error });
+        }
+        updates.phone = fields.phone;
+        updates.phone_normalized = fields.phone_normalized;
         await ensurePhoneAvailable(usersRepo, fields.phone_normalized, id);
       }
       if (updates.birthDate !== undefined || updates.birth_date !== undefined) {

@@ -787,8 +787,10 @@ async function takeFromStockPools(stockPools, productId, warehouseIds, need) {
 
 class FboSupplyReserveService {
   /**
-   * Если по активной очереди FBO ещё нет движений reserve в журнале, а на складе списания
-   * есть свободный остаток — прогнать rebalance, чтобы «нал» совпадал с колонкой «Резерв».
+   * Разовая «лечение» дыр: если по активной очереди FBO нет движений reserve в журнале,
+   * а на складе списания есть свободный остаток — прогнать rebalance.
+   * Не вызывается при открытии списка/карточки (там только чтение); пересчёт — onSupplyStockEvent
+   * и CRUD/import поставок. Метод оставлен для ручного/скриптового восстановления.
    */
   async materializeMissingHardReserves(productIds, { profileId, skipMarketplaceSync = true } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
@@ -924,12 +926,7 @@ class FboSupplyReserveService {
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
-    if (reserveEnabled === true && productIds.length) {
-      await this.materializeMissingHardReserves(productIds, {
-        profileId,
-        skipMarketplaceSync: true,
-      });
-    }
+    // Hard-резерв пишется на событиях склада/поставки — на чтении карточки не rebalance.
     const breakdown =
       reserveEnabled === true
         ? await this._computeReserveBreakdownByItem(productIds, { profileId })
@@ -1038,7 +1035,11 @@ class FboSupplyReserveService {
     return out;
   }
 
-  /** Сводка резерва для списка поставок. */
+  /**
+   * Сводка резерва для списка поставок.
+   * Только чтение журнала + мягкий «путь» — без rebalance на открытии списка
+   * (пересчёт hard-резерва: onSupplyStockEvent / create-update-import поставки).
+   */
   async enrichSuppliesListWithReserveTotals(supplies, { profileId } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(supplies) || !supplies.length) {
       return supplies;
@@ -1060,7 +1061,7 @@ class FboSupplyReserveService {
     }
 
     const itemsR = await query(
-      `SELECT i.id, i.fbo_supply_id, i.product_id
+      `SELECT i.id, i.fbo_supply_id, i.product_id, i.quantity::int AS quantity
        FROM fbo_supply_items i
        WHERE i.fbo_supply_id = ANY($1::bigint[])
        ORDER BY i.fbo_supply_id, i.id`,
@@ -1070,6 +1071,7 @@ class FboSupplyReserveService {
       id: row.id,
       fboSupplyId: row.fbo_supply_id,
       productId: row.product_id,
+      quantity: row.quantity,
     }));
 
     const productIds = [
@@ -1079,12 +1081,44 @@ class FboSupplyReserveService {
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
-    await this.materializeMissingHardReserves(productIds, {
-      profileId,
-      skipMarketplaceSync: true,
-    });
 
-    const breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
+    const [incomingByProduct, kitFlags] = await Promise.all([
+      batchGetIncomingPoolForFboProducts(productIds),
+      batchIsKitProductIds(productIds),
+    ]);
+
+    const hasIncoming = [...incomingByProduct.values()].some((v) => (Number(v) || 0) > 0);
+
+    /** @type {Map<string, { reservedFromStock: number, reservedFromIncoming: number }>} */
+    let breakdown;
+    if (hasIncoming) {
+      // «Путь» зависит от FIFO по всем активным поставкам товара — полный разбор.
+      breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
+    } else {
+      // Нет ожидаемых поступлений — только hard из журнала по строкам страницы.
+      const [netReservedByItem, kitReservedPage] = await Promise.all([
+        getNetReservedForFboItemsBatch(productIds),
+        batchGetReservedKitUnitsForFboItems(
+          allItems
+            .filter((it) => kitFlags.get(Number(it.productId)) === true)
+            .map((it) => ({
+              kitProductId: Number(it.productId),
+              fboSupplyItemId: it.id,
+              lineQty: it.quantity,
+            }))
+        ),
+      ]);
+      breakdown = new Map();
+      for (const it of allItems) {
+        const itemId = String(it.id);
+        const pid = Number(it.productId);
+        const reservedFromStock =
+          kitFlags.get(pid) === true
+            ? kitReservedPage.get(itemId) || 0
+            : netReservedByItem.get(itemId) || 0;
+        breakdown.set(itemId, { reservedFromStock, reservedFromIncoming: 0 });
+      }
+    }
 
     const totalsBySupply = new Map();
     for (const item of allItems) {

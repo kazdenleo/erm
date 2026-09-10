@@ -14,7 +14,7 @@ const baseWarehouseSchema = z.object({
   organizationId: z.union([z.string(), z.number()]).optional().nullable(),
   supplierId: z.string().optional().nullable(),
   mainWarehouseId: z.string().optional().nullable(),
-  name: z.string().optional().nullable(),
+  name: z.string().max(200).optional().nullable(),
   orderAcceptanceTime: z.string().regex(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/, 'Неверный формат времени (HH:MM)').optional().nullable(),
   wbWarehouseName: z.string().optional().nullable(),
   isFboStock: z.boolean().optional(),
@@ -37,6 +37,7 @@ export const createWarehouseSchema = baseWarehouseSchema.transform((data) => {
     supplierId: data.supplierId && data.supplierId.trim() !== '' ? data.supplierId : null,
     mainWarehouseId: data.mainWarehouseId && data.mainWarehouseId.trim() !== '' ? data.mainWarehouseId : null,
     address: data.address && data.address.trim() !== '' ? data.address.trim() : null,
+    name: data.name && String(data.name).trim() !== '' ? String(data.name).trim() : null,
     orderAcceptanceTime: data.orderAcceptanceTime && data.orderAcceptanceTime.trim() !== '' ? data.orderAcceptanceTime.trim() : null,
     wbWarehouseName: data.wbWarehouseName && data.wbWarehouseName.trim() !== '' ? data.wbWarehouseName.trim() : null,
   };
@@ -54,6 +55,9 @@ export const updateWarehouseSchema = baseWarehouseSchema.partial().transform((da
     supplierId: data.supplierId && data.supplierId.trim() !== '' ? data.supplierId : null,
     mainWarehouseId: data.mainWarehouseId && data.mainWarehouseId.trim() !== '' ? data.mainWarehouseId : null,
     address: data.address && data.address.trim() !== '' ? data.address.trim() : null,
+    name: data.hasOwnProperty('name')
+      ? (data.name && String(data.name).trim() !== '' ? String(data.name).trim() : null)
+      : data.name,
     orderAcceptanceTime: data.orderAcceptanceTime && data.orderAcceptanceTime.trim() !== '' ? data.orderAcceptanceTime.trim() : null,
     wbWarehouseName: data.wbWarehouseName && data.wbWarehouseName.trim() !== '' ? data.wbWarehouseName.trim() : null,
   };

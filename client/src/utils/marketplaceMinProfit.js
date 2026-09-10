@@ -6,6 +6,7 @@ import {
   computeTaxesAndNetProfit,
   resolveOrganizationTaxProfile,
 } from './organizationTaxRates.js';
+import { resolveMinMarkupFromRules } from './minMarkupRules.js';
 
 function numOrNull(v) {
   if (v == null || v === '') return null;
@@ -25,6 +26,13 @@ export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50)
     specific = numOrNull(product.min_profit_ym ?? product.minProfitYm);
   }
   if (specific != null && specific >= 0) return specific;
+
+  const fromRules = resolveMinMarkupFromRules(
+    product,
+    product.profileMinMarkupRules ?? product.minMarkupRules ?? null
+  );
+  if (fromRules?.rub != null && fromRules.rub >= 0) return fromRules.rub;
+
   const general = numOrNull(product.min_price ?? product.minPrice);
   if (general != null && general >= 0) return general;
   return fallback;

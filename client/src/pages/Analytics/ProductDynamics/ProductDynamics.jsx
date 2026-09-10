@@ -129,7 +129,7 @@ export function ProductDynamics() {
   const [compareMp, setCompareMp] = useState('all');
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [comparePeriods, setComparePeriods] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const { sort, toggleSort } = useTableSort('soldAmount', 'desc');
@@ -162,6 +162,10 @@ export function ProductDynamics() {
       setLoading(false);
     }
   }, [dateFrom, dateTo, comparePeriods, granularity, marketplace, scheme]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const periods = useMemo(() => (Array.isArray(data?.periods) ? data.periods : []), [data]);
   const primary = periods[0] || null;
@@ -262,7 +266,7 @@ export function ProductDynamics() {
         iconClass="pe-7s-graph"
         iconBgClass="bg-mean-fruit"
         title="Динамика продаж"
-        subtitle="По каждому артикулу — количество и сумма продаж на графике по дням, неделям, месяцам"
+        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -295,8 +299,11 @@ export function ProductDynamics() {
           </select>
         </label>
         <Button variant="primary" size="small" onClick={load} disabled={loading}>
-          {loading ? 'Загрузка…' : data ? 'Обновить' : 'Показать'}
+          {loading ? 'Загрузка…' : 'Загрузить'}
         </Button>
+        {loading && data != null ? (
+          <span className="sales-analytics__filter-hint">Обновление…</span>
+        ) : null}
       </div>
 
       <div className="product-dynamics__controls-row">
@@ -440,7 +447,9 @@ export function ProductDynamics() {
         {!loading && chart.data.length === 0 && (
           <div className="product-dynamics__empty-chart">
             {data == null
-              ? 'Выберите параметры и нажмите «Показать».'
+              ? loading
+                ? 'Загрузка…'
+                : 'Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».'
               : selectedKeys.length === 0
                 ? 'Выберите товар в таблице ниже.'
                 : 'Нет данных за выбранный период. Загрузите отчёты FBO/FBS.'}

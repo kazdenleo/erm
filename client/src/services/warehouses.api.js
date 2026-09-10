@@ -10,6 +10,7 @@ import {
   setCachedWarehouseList,
   setInflightWarehouseList,
   warehouseListCacheKey,
+  invalidateWarehouseListCache,
 } from './warehouseListCache.js';
 
 export const warehousesApi = {
@@ -19,13 +20,15 @@ export const warehousesApi = {
    */
   getAll: async (options = {}) => {
     const key = warehouseListCacheKey(options.organizationId);
-    const cached = getCachedWarehouseList(key);
-    if (cached != null) {
-      return cached;
-    }
-    const existing = getInflightWarehouseList(key);
-    if (existing) {
-      return existing;
+    if (!options.force) {
+      const cached = getCachedWarehouseList(key);
+      if (cached != null) {
+        return cached;
+      }
+      const existing = getInflightWarehouseList(key);
+      if (existing) {
+        return existing;
+      }
     }
     const params =
       options.organizationId != null && options.organizationId !== ''
@@ -44,6 +47,7 @@ export const warehousesApi = {
    */
   create: async (warehouseData) => {
     const response = await api.post('/warehouses', warehouseData);
+    invalidateWarehouseListCache();
     return response.data;
   },
 
@@ -52,6 +56,7 @@ export const warehousesApi = {
    */
   update: async (id, updates) => {
     const response = await api.put(`/warehouses/${id}`, updates);
+    invalidateWarehouseListCache();
     return response.data;
   },
 
@@ -60,6 +65,7 @@ export const warehousesApi = {
    */
   delete: async (id) => {
     const response = await api.delete(`/warehouses/${id}`);
+    invalidateWarehouseListCache();
     return response.data;
   },
 

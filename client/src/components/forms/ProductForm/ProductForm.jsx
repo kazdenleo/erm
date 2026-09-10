@@ -97,7 +97,7 @@ import {
   limitItemsForControl,
 } from '../../../utils/marketplaceFieldLimits.js';
 import { useMarketplaceFieldLimits } from '../../../hooks/useMarketplaceFieldLimits.js';
-import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
+import { MpFieldLabel, MpFieldLinkToggles, MpFromMainLinkIcon, MpMappedMpBadges, MpValueDiffBadges } from '../../common/MpFieldLinkToggles/MpFieldLinkToggles.jsx';
 import {
   ATTR_MP_CODES,
   collectAttrMpLinkOfferFieldIds,
@@ -172,6 +172,7 @@ import {
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
   mmToCm,
+  overlayCategoryDedicatedMpLinks,
   normalizeCategoryDedicatedCharcLinks,
   normalizeMpFieldLinks,
   mergeOzonFormAttributes,
@@ -283,15 +284,7 @@ function ErpAttrFieldHeading({ attr, htmlFor, diffs, checkbox = false, links, on
       {typeLabel ? (
         <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({typeLabel})</span>
       ) : null}
-      {mapped.length > 0 && links && onToggle ? (
-        <MpFieldLinkToggles
-          fieldKey={erpAttrLinkFieldKey(attr.id)}
-          links={links}
-          onToggle={onToggle}
-          supportedMps={mapped}
-          size={18}
-        />
-      ) : null}
+      {mapped.length > 0 ? <MpMappedMpBadges mps={mapped} size={18} /> : null}
       <MpValueDiffBadges diffs={diffs} />
     </>
   );
@@ -2470,6 +2463,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const category = categories.find((c) => String(c.id) === cid);
     return normalizeCategoryDedicatedCharcLinks(category?.mp_field_links);
   }, [categories, formData.categoryId]);
+
+  const selectedUserCategory = useMemo(() => {
+    const cid = String(formData.categoryId || '').trim();
+    if (!cid) return null;
+    return categories.find((c) => String(c.id) === cid) || null;
+  }, [categories, formData.categoryId]);
+
+  useEffect(() => {
+    setFormData((prev) => {
+      const nextLinks = overlayCategoryDedicatedMpLinks(
+        prev.mp_field_links,
+        selectedUserCategory?.mp_field_links,
+        selectedUserCategory?.attribute_mp_links
+      );
+      if (JSON.stringify(nextLinks) === JSON.stringify(normalizeMpFieldLinks(prev.mp_field_links))) {
+        return prev;
+      }
+      return { ...prev, mp_field_links: nextLinks };
+    });
+  }, [selectedUserCategory]);
 
   // Источник значений сертификата: сначала категория товара, затем бренд
   const selectedCategoryForCert = useMemo(() => {
@@ -5484,6 +5497,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [categoryAttributes, formData.mp_field_links, ymFormAttributes]);
 
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
+    if (fieldKey !== 'rich_content') return;
     const attrForLink = isAttrMpFieldLinkKey(fieldKey)
       ? categoryAttributes.find((a) => erpAttrLinkFieldKey(a.id) === fieldKey)
       : null;
@@ -5662,15 +5676,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
   }, [currentProduct?.id, formData.mp_field_links, formData.attributeValues, formData.length, formData.width, formData.height, formData.weight, formData.product_length, formData.product_width, formData.product_height, formData.product_weight, ozonAttributes, ymCategoryAttributes, categoryAttributes, categoryDedicatedCharcLinks, mpAttrLabelMaps]);
 
   const mainFieldMpLabelProps = useCallback(
-    (fieldKey) => {
-      const mapped = mappedMpsFromDedicatedMainField(categoryDedicatedCharcLinks, fieldKey);
-      return {
-        links: formData.mp_field_links,
-        onToggle: handleMpFieldLinkToggle,
-        ...(mapped.length ? { supportedMps: mapped } : {}),
-      };
-    },
-    [categoryDedicatedCharcLinks, formData.mp_field_links, handleMpFieldLinkToggle]
+    (fieldKey) => ({
+      links: formData.mp_field_links,
+      readOnly: true,
+    }),
+    [formData.mp_field_links]
   );
 
   const handleBrandSelect = useCallback(
@@ -8537,7 +8547,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             Остальные атрибуты
           </h4>
           <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
-            Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в категории. Значки OZ / WB / ЯМ включают подстановку значения с «Основного» на маркетплейс.
+            Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в «Настройки → Атрибуты»
+            (все категории или выбранные). Значки показывают, куда подставляется значение с «Основного».
           </p>
           <div className="row g-3">
             {visibleCategoryAttributes.map((attr) => {
