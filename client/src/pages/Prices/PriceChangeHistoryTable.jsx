@@ -127,19 +127,36 @@ export function PriceChangeHistoryTable({
                     {formatHistoryDelta(row.sellingPriceBefore, row.sellingPriceAfter)}
                   </td>
                   <td className="reason">
-                    <div className="price-history-reason-title">
-                      {displayReason(row.reason)}
-                      {row.sourceLabel ? (
-                        <span className="price-history-source">{row.sourceLabel}</span>
-                      ) : null}
-                    </div>
-                    {grounds.length ? (
-                      <ul className="price-history-grounds">
-                        {grounds.map((line, idx) => (
-                          <li key={`${idx}-${line}`}>{line}</li>
-                        ))}
-                      </ul>
-                    ) : null}
+                    {row.source === 'min_recalc' && grounds.length ? (
+                      <>
+                        {row.sourceLabel ? (
+                          <div className="price-history-reason-title">
+                            <span className="price-history-source">{row.sourceLabel}</span>
+                          </div>
+                        ) : null}
+                        <ul className="price-history-grounds">
+                          {grounds.map((line, idx) => (
+                            <li key={`${idx}-${line}`}>{line}</li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      <>
+                        <div className="price-history-reason-title">
+                          {displayReason(row.reason)}
+                          {row.sourceLabel ? (
+                            <span className="price-history-source">{row.sourceLabel}</span>
+                          ) : null}
+                        </div>
+                        {grounds.length ? (
+                          <ul className="price-history-grounds">
+                            {grounds.map((line, idx) => (
+                              <li key={`${idx}-${line}`}>{line}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </>
+                    )}
                   </td>
                 </tr>
               );

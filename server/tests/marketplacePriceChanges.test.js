@@ -1,6 +1,9 @@
 import {
   formatPriceChangeGrounds,
   formatPriceChangeReason,
+  formatMinRecalcReason,
+  extractMinPriceDrivers,
+  diffMinPriceDrivers,
 } from '../src/services/marketplacePriceChanges.service.js';
 
 describe('formatPriceChangeGrounds', () => {
@@ -46,14 +49,31 @@ describe('formatPriceChangeGrounds', () => {
     expect(lines.join(' ')).not.toMatch(/себестоимость или наценка/i);
   });
 
-  test('min recalc fallback without drivers shows min delta', () => {
+  test('min recalc fallback without drivers has no redundant min delta', () => {
     const lines = formatPriceChangeGrounds({
       source: 'min_recalc',
       minPriceBefore: 3147,
       minPriceAfter: 3145,
     });
-    expect(lines[0]).toMatch(/3147/);
-    expect(lines[0]).toMatch(/3145/);
+    expect(lines.length).toBe(0);
+  });
+});
+
+describe('min recalc driver diff', () => {
+  test('detects markup change from _inputs even if card still has old min_price', () => {
+    const prev = extractMinPriceDrivers({
+      commissions: { FBS: { percent: 23 } },
+      _inputs: { minMarkup: 150, cost: 75, scheme: 'FBS' },
+    }, { marketplace: 'ozon', scheme: 'FBS' });
+    const next = extractMinPriceDrivers({
+      commissions: { FBS: { percent: 23 } },
+      _inputs: { minMarkup: 40, cost: 75, scheme: 'FBS' },
+    }, { marketplace: 'ozon', scheme: 'FBS', minMarkup: 40, cost: 75 });
+    const changes = diffMinPriceDrivers(prev, next);
+    expect(changes.some((c) => c.key === 'markup' && c.before === 150 && c.after === 40)).toBe(true);
+    expect(formatMinRecalcReason(changes)).toMatch(/Мин\. наценка/);
+    expect(formatMinRecalcReason(changes)).toMatch(/150/);
+    expect(formatMinRecalcReason(changes)).toMatch(/40/);
   });
 });
 

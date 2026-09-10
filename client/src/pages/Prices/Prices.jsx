@@ -775,14 +775,7 @@ export function Prices() {
 
   return (
     <div className="card">
-      <div className="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
-        <div>
-          <h1 className="title mb-1">💰 Цены</h1>
-        </div>
-        <Link to="/prices/settings" className="btn btn-secondary btn-sm btn-shadow">
-          Настройки
-        </Link>
-      </div>
+      <h1 className="title mb-2">💰 Цены</h1>
 
       <div className="main-card mb-3 card">
         <div className="card-body p-0">

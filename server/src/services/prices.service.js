@@ -3650,9 +3650,13 @@ class PricesService {
     if (logPrimaryMin) {
       try {
         const prev = await query(
-          `SELECT pmp.min_price, pmp.selling_price, pmp.calculation_details, p.profile_id,
-                  p.cost, p.additional_expenses, p.min_price AS markup,
+          `SELECT pmp.min_price, pmp.selling_price,
+                  pmp.min_price_fbs, pmp.min_price_fbo,
+                  pmp.calculation_details,
+                  pmp.calculation_details_fbs, pmp.calculation_details_fbo,
+                  p.profile_id, p.cost, p.additional_expenses, p.min_price AS markup,
                   p.min_profit_ozon, p.min_profit_wb, p.min_profit_ym,
+                  p.user_category_id,
                   p.buyout_rate, p.buyout_rate_ozon, p.buyout_rate_wb, p.buyout_rate_ym
            FROM product_marketplace_prices pmp
            JOIN products p ON p.id = pmp.product_id
@@ -3661,10 +3665,18 @@ class PricesService {
         );
         const row = prev.rows?.[0];
         if (row) {
-          prevMin = row.min_price != null ? Number(row.min_price) : null;
+          if (scheme === 'FBS') {
+            prevMin = row.min_price_fbs != null ? Number(row.min_price_fbs) : (row.min_price != null ? Number(row.min_price) : null);
+            prevDetails = row.calculation_details_fbs || row.calculation_details || null;
+          } else if (scheme === 'FBO') {
+            prevMin = row.min_price_fbo != null ? Number(row.min_price_fbo) : (row.min_price != null ? Number(row.min_price) : null);
+            prevDetails = row.calculation_details_fbo || row.calculation_details || null;
+          } else {
+            prevMin = row.min_price != null ? Number(row.min_price) : null;
+            prevDetails = row.calculation_details || null;
+          }
           prevSelling = row.selling_price != null ? Number(row.selling_price) : null;
           profileId = row.profile_id ?? null;
-          prevDetails = row.calculation_details || null;
           const mpKey = String(marketplace || '').toLowerCase();
           const markupMp =
             mpKey === 'ozon'
@@ -3686,11 +3698,16 @@ class PricesService {
                   : mpKey === 'ym'
                     ? row.buyout_rate_ym
                     : row.buyout_rate,
+            userCategoryId: row.user_category_id,
+            min_price: row.markup,
+            min_profit_ozon: row.min_profit_ozon,
+            min_profit_wb: row.min_profit_wb,
+            min_profit_ym: row.min_profit_ym,
           };
         } else {
           const p = await query(
             `SELECT profile_id, cost, additional_expenses, min_price AS markup,
-                    min_profit_ozon, min_profit_wb, min_profit_ym,
+                    min_profit_ozon, min_profit_wb, min_profit_ym, user_category_id,
                     buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym
              FROM products WHERE id = $1`,
             [productId]
@@ -3719,11 +3736,43 @@ class PricesService {
                     : mpKey === 'ym'
                       ? prow.buyout_rate_ym
                       : prow.buyout_rate,
+              userCategoryId: prow.user_category_id,
+              min_price: prow.markup,
+              min_profit_ozon: prow.min_profit_ozon,
+              min_profit_wb: prow.min_profit_wb,
+              min_profit_ym: prow.min_profit_ym,
             };
           }
         }
       } catch {
         /* журнал не должен ломать сохранение */
+      }
+    }
+
+    if (productInputs && profileId) {
+      try {
+        const { parsePricePushSettings } = await import('../utils/pricePushSettings.js');
+        const { resolveMarketplaceMinProfit } = await import('../utils/marketplaceMinProfit.js');
+        const pref = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [profileId]);
+        const rules = parsePricePushSettings(pref.rows?.[0]?.price_push_settings).minMarkupRules;
+        if (rules?.length) {
+          productInputs.minMarkup = resolveMarketplaceMinProfit(
+            {
+              id: productId,
+              cost: productInputs.cost,
+              user_category_id: productInputs.userCategoryId,
+              min_price: productInputs.min_price,
+              min_profit_ozon: productInputs.min_profit_ozon,
+              min_profit_wb: productInputs.min_profit_wb,
+              min_profit_ym: productInputs.min_profit_ym,
+              profileMinMarkupRules: rules,
+            },
+            marketplace,
+            productInputs.minMarkup
+          );
+        }
+      } catch {
+        /* оставляем наценку с карточки */
       }
     }
 
