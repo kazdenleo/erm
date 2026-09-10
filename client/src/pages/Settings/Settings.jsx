@@ -274,8 +274,12 @@ export function Settings() {
 
   return (
     <div className="settings-page card">
-      <h1 className="title">Настройки</h1>
-      <p className="subtitle">Общие настройки системы.</p>
+      <h1 className="title">{showNotificationsTab ? 'Уведомления' : 'Настройки'}</h1>
+      <p className="subtitle">
+        {showNotificationsTab
+          ? 'Кому показывать системные уведомления в колокольчике.'
+          : 'Общие настройки системы.'}
+      </p>
 
       {!showNotificationsTab && isTenantAccountAdmin && (
         <section className="settings-account-section" style={{ marginBottom: 18 }}>
@@ -294,13 +298,11 @@ export function Settings() {
         </section>
       )}
 
-      {canEditAccount ? (
+      {showNotificationsTab && canEditAccount ? (
         <section id="notifications" className="settings-account-section" style={{ marginBottom: 18 }}>
-          <h2 className="h5">Уведомления</h2>
+          <h2 className="h5">Каналы уведомлений</h2>
           <p className="text-muted small mb-3">
-            Кому показывать уведомления в колокольчике. Приглашения в сессии (инвентаризация, приёмка)
-            всегда приходят только приглашённому. Настройки сохраняются вместе с аккаунтом (кнопка
-            «Сохранить» ниже).
+            Приглашения в сессии (инвентаризация, приёмка) всегда приходят только приглашённому.
           </p>
           {error && <p className="text-danger">{error}</p>}
           {loading ? (
@@ -378,7 +380,6 @@ export function Settings() {
         </section>
       ) : showNotificationsTab ? (
         <section id="notifications" className="settings-account-section" style={{ marginBottom: 18 }}>
-          <h2 className="h5">Уведомления</h2>
           <p className="text-muted small mb-0">
             Настраивать получателей уведомлений может только администратор аккаунта. Свои уведомления
             смотрите в колокольчике → «Уведомления».
