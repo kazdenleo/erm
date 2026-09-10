@@ -277,6 +277,7 @@ export function FboSupplyCollect({
             <tr>
               <th>Артикул</th>
               <th>Товар</th>
+              <th>Комплектующие</th>
               <th className="text-end">Собрано / нужно</th>
               <th className="text-center" style={{ width: 52 }}>
                 Печать
@@ -286,7 +287,7 @@ export function FboSupplyCollect({
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={4} className="text-muted">
+                <td colSpan={5} className="text-muted">
                   {searchActive ? 'Ничего не найдено' : 'Нет позиций'}
                 </td>
               </tr>
@@ -306,6 +307,13 @@ export function FboSupplyCollect({
                   >
                     <td>
                       <code>{it.sku || '—'}</code>
+                    </td>
+                    <td>
+                      <div className="fbo-collect-item-name">
+                        {it.productName || it.name || '—'}
+                      </div>
+                    </td>
+                    <td>
                       {it.isKit && comps.length > 0 ? (
                         <ul className="fbo-collect-kit-comps">
                           {comps.map((c) => (
@@ -319,12 +327,9 @@ export function FboSupplyCollect({
                             </li>
                           ))}
                         </ul>
-                      ) : null}
-                    </td>
-                    <td>
-                      <div className="fbo-collect-item-name">
-                        {it.productName || it.name || '—'}
-                      </div>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
                     </td>
                     <td className="text-end">
                       <span className={`fbo-packed-cell fbo-packed-cell--${cls}`}>
