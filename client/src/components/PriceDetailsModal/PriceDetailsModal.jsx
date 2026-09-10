@@ -3,7 +3,7 @@
  * Модальное окно с детальной информацией о расчете цены
  */
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
@@ -12,6 +12,7 @@ import { extractGeneralDimensionsMm, resolveWbLogisticsDimensionsCm } from '../.
 import {
   privateClientPriceParts,
   resolveMarketplaceMinProfit,
+  resolveCardMinMarkupFromRules,
 } from '../../utils/marketplaceMinProfit.js';
 import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
 import { resolveOzonLogisticsCostsForReturn, computeOzonReturnUnitAmount } from '../../utils/ozonReturnAmount.js';
@@ -24,6 +25,7 @@ import {
   lengthUnitLabel,
 } from '../../utils/displayUnits.js';
 import { PriceHistorySidePanel } from '../../pages/Prices/PriceHistorySidePanel.jsx';
+import { pricesApi } from '../../services/prices.api.js';
 import './PriceDetailsModal.css';
 
 function toFiniteNumber(value) {
@@ -230,6 +232,40 @@ function PriceDetailsModalInner({
 }) {
   const { profile: accountProfile } = useAuth();
   const lengthUnit = getProfileLengthUnit(accountProfile);
+  const [loadedMarkupRules, setLoadedMarkupRules] = useState(null);
+
+  useEffect(() => {
+    if (!isOpen || !product) {
+      setLoadedMarkupRules(null);
+      return undefined;
+    }
+    if (Array.isArray(product.profileMinMarkupRules) && product.profileMinMarkupRules.length) {
+      return undefined;
+    }
+    let cancelled = false;
+    pricesApi
+      .getPushSettings()
+      .then((res) => {
+        if (cancelled) return;
+        const data = res?.data ?? res;
+        setLoadedMarkupRules(Array.isArray(data?.minMarkupRules) ? data.minMarkupRules : []);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadedMarkupRules([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, product?.id, product?.profileMinMarkupRules]);
+
+  const productForCalc = useMemo(() => {
+    if (!product) return product;
+    const rules = product.profileMinMarkupRules?.length
+      ? product.profileMinMarkupRules
+      : loadedMarkupRules;
+    if (!rules?.length) return product;
+    return { ...product, profileMinMarkupRules: rules };
+  }, [product, loadedMarkupRules]);
 
   if (!isOpen || !product || !marketplace) {
     return null;
@@ -237,7 +273,7 @@ function PriceDetailsModalInner({
 
   if (marketplace === 'private' || marketplace === 'manual') {
     const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
-    const parts = privateClientPriceParts(product, profile);
+    const parts = privateClientPriceParts(productForCalc, profile);
     const total =
       parts?.total ??
       (priceData != null && !Number.isNaN(Number(priceData)) ? Math.round(Number(priceData)) : null);
@@ -759,7 +795,7 @@ function PriceDetailsModalInner({
         : marketplace === 'ym'
           ? ymSppPercent
           : null;
-  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+  const targetProfit = resolveMarketplaceMinProfit(productForCalc, marketplace, null);
   if (targetProfit != null && targetProfit >= 0) {
     let calcForSolve = marketplace === 'ozon' && ozonAcquiringPercent != null
       ? { ...resolvedCalculatorData, acquiring: Number(ozonAcquiringPercent) || 0 }
@@ -775,7 +811,7 @@ function PriceDetailsModalInner({
       calcForSolve,
       marketplace,
       targetProfit,
-      product,
+      productForCalc,
       wbAcquiringPercent,
       wbGemServicesPercent,
       profile,
@@ -1333,10 +1369,11 @@ function PriceDetailsModalInner({
             <div className="price-breakdown-item">
               <BreakdownLabel fromSettings>Минимальная чистая прибыль:</BreakdownLabel>
               {(() => {
-                const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+                const targetProfit = resolveMarketplaceMinProfit(productForCalc, marketplace, null);
                 if (targetProfit == null) {
                   return <PriceBreakdownValue style={{ color: '#10b981' }}>— не указана</PriceBreakdownValue>;
                 }
+                const fromRule = resolveCardMinMarkupFromRules(productForCalc);
                 const mpLabel =
                   marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'WB' : marketplace === 'ym' ? 'Я.Маркет' : marketplace;
                 const specific =
@@ -1345,11 +1382,16 @@ function PriceDetailsModalInner({
                     : marketplace === 'wb'
                       ? product?.minProfitWb ?? product?.min_profit_wb
                       : product?.minProfitYm ?? product?.min_profit_ym;
-                const fromMp = specific != null && specific !== '' && !isNaN(Number(specific));
+                const fromMp = !fromRule && specific != null && specific !== '' && !isNaN(Number(specific));
+                const sourceHint = fromRule
+                  ? ` · правило градации${fromRule.ruleName ? ` «${fromRule.ruleName}»` : ''}`
+                  : fromMp
+                    ? ` · ${mpLabel}`
+                    : ' · общая наценка';
                 return (
                   <PriceBreakdownValue
                     style={{ color: '#10b981' }}
-                    formula={`= ${Number(targetProfit).toFixed(2)} ₽ (цель после налогов${fromMp ? ` · ${mpLabel}` : ' · общая наценка'})`}
+                    formula={`= ${Number(targetProfit).toFixed(2)} ₽ (цель после налогов${sourceHint})`}
                   >
                     +{Number(targetProfit).toFixed(2)} ₽
                   </PriceBreakdownValue>

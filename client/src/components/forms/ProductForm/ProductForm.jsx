@@ -10,6 +10,8 @@ import { ImageLightbox } from '../../common/ImageLightbox/ImageLightbox';
 import { productAttributesApi } from '../../../services/productAttributes.api';
 import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
+import { pricesApi } from '../../../services/prices.api.js';
+import { resolveMinMarkupFromRules } from '../../../utils/minMarkupRules.js';
 import {
   canRestoreImageAspect3x4,
   canStarImage,
@@ -1785,6 +1787,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   /** Последнее поле мин. наценки в каждой группе: 'rub' | 'percent'. */
   const minMarkupLastEditedRef = useRef(defaultMinMarkupLastEdited());
   const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const [minMarkupRules, setMinMarkupRules] = useState([]);
+  const minMarkupRuleMatchRef = useRef(null);
   const { printProductLabel, printing: labelPrinting, error: labelPrintError } =
     useProductLabelPrint(printHelperUrl);
 
@@ -1796,6 +1800,23 @@ export const ProductForm = React.forwardRef(function ProductForm({
         if (!cancelled) setPrintHelperUrl((body?.data?.printHelperUrl ?? '').trim());
       })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    pricesApi
+      .getPushSettings()
+      .then((res) => {
+        if (cancelled) return;
+        const data = res?.data ?? res;
+        setMinMarkupRules(Array.isArray(data?.minMarkupRules) ? data.minMarkupRules : []);
+      })
+      .catch(() => {
+        if (!cancelled) setMinMarkupRules([]);
+      });
     return () => {
       cancelled = true;
     };
@@ -4980,6 +5001,30 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, [mpMappingByMarketplace, ozonDictValues, formData.mp_field_links]);
 
+  const minMarkupRuleMatch = useMemo(() => {
+    const productId = currentProduct?.id ?? product?.id;
+    if (!minMarkupRules.length || productId == null) return null;
+    return resolveMinMarkupFromRules(
+      {
+        id: productId,
+        user_category_id: formData.categoryId || null,
+        cost: formData.cost,
+      },
+      minMarkupRules
+    );
+  }, [minMarkupRules, currentProduct?.id, product?.id, formData.categoryId, formData.cost]);
+  minMarkupRuleMatchRef.current = minMarkupRuleMatch;
+
+  const minMarkupRuleLockReason = minMarkupRuleMatch
+    ? `Задано правилом мин. наценки${
+        minMarkupRuleMatch.ruleName ? ` «${minMarkupRuleMatch.ruleName}»` : ''
+      }. Пока правило действует, поле нельзя менять.`
+    : '';
+  const minMarkupRuleRub = minMarkupRuleMatch ? String(minMarkupRuleMatch.rub) : '';
+  const minMarkupRulePercent = minMarkupRuleMatch
+    ? minMarkupRubToPercent(minMarkupRuleMatch.rub, formData.cost)
+    : '';
+
   const handleChange = (field, value) => {
     if (field === 'organizationId') {
       const org = organizations.find(o => String(o.id) === String(value));
@@ -4993,6 +5038,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         setFormData(prev => ({ ...prev, [field]: value }));
       }
     } else if (MIN_MARKUP_PAIRS[field]) {
+      if (minMarkupRuleMatchRef.current) return;
       const pair = MIN_MARKUP_PAIRS[field];
       minMarkupLastEditedRef.current = {
         ...minMarkupLastEditedRef.current,
@@ -10601,6 +10647,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
           handleChange={handleChange}
           errors={errors}
           parsePositiveCost={parsePositiveCost}
+          minMarkupRuleLocked={Boolean(minMarkupRuleMatch)}
+          minMarkupRuleRub={minMarkupRuleRub}
+          minMarkupRulePercent={minMarkupRulePercent}
+          minMarkupRuleLockReason={minMarkupRuleLockReason}
         />
       )}
 

@@ -32,6 +32,8 @@ function MinMarkupRubPercentPair({
   hasCost,
   onRubChange,
   onPercentChange,
+  disabled = false,
+  lockedReason = '',
 }) {
   return (
     <div className="col-md-6 col-xl-3">
@@ -49,6 +51,8 @@ function MinMarkupRubPercentPair({
             placeholder={rubPlaceholder}
             value={rubValue}
             onChange={(e) => onRubChange(e.target.value)}
+            disabled={disabled}
+            title={disabled ? lockedReason || undefined : undefined}
             aria-label={`${title}, рубли`}
           />
           <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>₽</div>
@@ -63,13 +67,19 @@ function MinMarkupRubPercentPair({
             placeholder={hasCost ? '0' : '—'}
             value={percentValue}
             onChange={(e) => onPercentChange(e.target.value)}
+            disabled={disabled}
+            title={disabled ? lockedReason || undefined : undefined}
             aria-label={`${title}, процент от себестоимости`}
           />
           <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>% от себест.</div>
         </div>
       </div>
       <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-        {hasCost ? hint : 'Укажите себестоимость, чтобы связать ₽ и %'}
+        {disabled && lockedReason
+          ? lockedReason
+          : hasCost
+            ? hint
+            : 'Укажите себестоимость, чтобы связать ₽ и %'}
       </div>
     </div>
   );
@@ -184,6 +194,10 @@ export function ProductPricesTab({
   handleChange,
   errors = {},
   parsePositiveCost,
+  minMarkupRuleLocked = false,
+  minMarkupRuleRub = '',
+  minMarkupRulePercent = '',
+  minMarkupRuleLockReason = '',
 }) {
   const strategyLocked = currentProduct?.hasPricingStrategy === true;
   const strategyName =
@@ -340,7 +354,9 @@ export function ProductPricesTab({
         <div className="col-12">
           <h3 className="h6 mb-0">Мин. наценки</h3>
           <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>
-            ₽ и % от себестоимости связаны: меняете одно — пересчитывается другое. В карточке хранятся рубли.
+            {minMarkupRuleLocked
+              ? 'Значения заданы правилом мин. наценки и недоступны для правки.'
+              : '₽ и % от себестоимости связаны: меняете одно — пересчитывается другое. В карточке хранятся рубли.'}
           </div>
         </div>
 
@@ -348,45 +364,53 @@ export function ProductPricesTab({
           idPrefix="minPrice"
           title="Мин. наценка (частные)"
           hint="Целевая прибыль для частных (ручных) заказов"
-          rubValue={formData.minPrice}
-          percentValue={formData.minMarkupPercent}
+          rubValue={minMarkupRuleLocked ? minMarkupRuleRub : formData.minPrice}
+          percentValue={minMarkupRuleLocked ? minMarkupRulePercent : formData.minMarkupPercent}
           rubPlaceholder="50"
           hasCost={parsePositiveCost(formData.cost) != null}
           onRubChange={(v) => handleChange('minPrice', v)}
           onPercentChange={(v) => handleChange('minMarkupPercent', v)}
+          disabled={minMarkupRuleLocked}
+          lockedReason={minMarkupRuleLockReason}
         />
         <MinMarkupRubPercentPair
           idPrefix="minProfitOzon"
           title="Мин. наценка Ozon"
           hint="Для расчёта мин. цены Ozon (пусто — общая)"
-          rubValue={formData.minProfitOzon}
-          percentValue={formData.minProfitOzonPercent}
+          rubValue={minMarkupRuleLocked ? minMarkupRuleRub : formData.minProfitOzon}
+          percentValue={minMarkupRuleLocked ? minMarkupRulePercent : formData.minProfitOzonPercent}
           rubPlaceholder="как общая"
           hasCost={parsePositiveCost(formData.cost) != null}
           onRubChange={(v) => handleChange('minProfitOzon', v)}
           onPercentChange={(v) => handleChange('minProfitOzonPercent', v)}
+          disabled={minMarkupRuleLocked}
+          lockedReason={minMarkupRuleLockReason}
         />
         <MinMarkupRubPercentPair
           idPrefix="minProfitWb"
           title="Мин. наценка WB"
           hint="Для расчёта мин. цены Wildberries (пусто — общая)"
-          rubValue={formData.minProfitWb}
-          percentValue={formData.minProfitWbPercent}
+          rubValue={minMarkupRuleLocked ? minMarkupRuleRub : formData.minProfitWb}
+          percentValue={minMarkupRuleLocked ? minMarkupRulePercent : formData.minProfitWbPercent}
           rubPlaceholder="как общая"
           hasCost={parsePositiveCost(formData.cost) != null}
           onRubChange={(v) => handleChange('minProfitWb', v)}
           onPercentChange={(v) => handleChange('minProfitWbPercent', v)}
+          disabled={minMarkupRuleLocked}
+          lockedReason={minMarkupRuleLockReason}
         />
         <MinMarkupRubPercentPair
           idPrefix="minProfitYm"
           title="Мин. наценка Я.Маркет"
           hint="Для расчёта мин. цены Яндекс.Маркет (пусто — общая)"
-          rubValue={formData.minProfitYm}
-          percentValue={formData.minProfitYmPercent}
+          rubValue={minMarkupRuleLocked ? minMarkupRuleRub : formData.minProfitYm}
+          percentValue={minMarkupRuleLocked ? minMarkupRulePercent : formData.minProfitYmPercent}
           rubPlaceholder="как общая"
           hasCost={parsePositiveCost(formData.cost) != null}
           onRubChange={(v) => handleChange('minProfitYm', v)}
           onPercentChange={(v) => handleChange('minProfitYmPercent', v)}
+          disabled={minMarkupRuleLocked}
+          lockedReason={minMarkupRuleLockReason}
         />
       </div>
 

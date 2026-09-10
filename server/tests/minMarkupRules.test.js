@@ -3,6 +3,7 @@ import {
   resolveMinMarkupFromRules,
   markupRubFromTier,
 } from '../src/utils/minMarkupRules.js';
+import { resolveMarketplaceMinProfit } from '../src/utils/marketplaceMinProfit.js';
 import { isProductInPricePushScope, parsePricePushSettings } from '../src/utils/pricePushSettings.js';
 
 describe('minMarkupRules', () => {
@@ -20,6 +21,19 @@ describe('minMarkupRules', () => {
     expect(resolveMinMarkupFromRules({ id: 1, cost: 400 }, rules).rub).toBe(200);
     expect(resolveMinMarkupFromRules({ id: 1, cost: 1500 }, rules).rub).toBe(200);
     expect(markupRubFromTier(400, { mode: 'percent', value: 50 })).toBe(200);
+  });
+
+  it('applies optional minRub floor', () => {
+    expect(markupRubFromTier(40, { mode: 'percent', value: 50, minRub: 80 })).toBe(80);
+    expect(markupRubFromTier(400, { mode: 'percent', value: 50, minRub: 80 })).toBe(200);
+    const rules = parseMinMarkupRules([
+      {
+        id: '1',
+        scope: 'all',
+        tiers: [{ costFrom: 0, costTo: 100, mode: 'percent', value: 50, minRub: 100 }],
+      },
+    ]);
+    expect(resolveMinMarkupFromRules({ id: 1, cost: 40 }, rules).rub).toBe(100);
   });
 
   it('prefers product scope over all', () => {
@@ -46,6 +60,31 @@ describe('minMarkupRules', () => {
       },
     ]);
     expect(resolveMinMarkupFromRules({ id: 7, cost: 100 }, rules)).toBeNull();
+  });
+
+  it('does not apply a card min_price of 150 when a cheaper-cost rule matches', () => {
+    const rules = parseMinMarkupRules([
+      {
+        id: 'cheap',
+        scope: 'all',
+        tiers: [{ costFrom: 0, costTo: 100, mode: 'rub', value: 40 }],
+      },
+    ]);
+    expect(resolveMinMarkupFromRules({ id: 11401, cost: 80, min_price: 150 }, rules).rub).toBe(40);
+    expect(resolveMinMarkupFromRules({ id: 11401, cost: 120, min_price: 150 }, rules)).toBeNull();
+    expect(
+      resolveMarketplaceMinProfit(
+        {
+          id: 11401,
+          cost: 80,
+          min_price: 150,
+          min_profit_ozon: 200,
+          profileMinMarkupRules: rules,
+        },
+        'ozon',
+        50
+      )
+    ).toBe(40);
   });
 });
 

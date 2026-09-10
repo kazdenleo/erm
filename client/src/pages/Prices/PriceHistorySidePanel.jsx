@@ -116,26 +116,28 @@ export function PriceHistorySidePanel({
           Сводка по кабинету. Кликните товар слева — справа останется его история и причина.
         </p>
       ) : null}
-      <div className="price-history-toolbar" style={{ marginTop: 0, marginBottom: 8 }}>
-        <label className="price-history-field">
-          Маркетплейс
-          <select value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
-            <option value="">Все</option>
-            <option value="ozon">Ozon</option>
-            <option value="wb">Wildberries</option>
-            <option value="ym">Яндекс.Маркет</option>
-          </select>
-        </label>
-        <Button
-          type="button"
-          variant="secondary"
-          size="small"
-          onClick={() => fetchPage({ offset: 0, append: false })}
-          disabled={loading}
-        >
-          {loading ? '…' : 'Обновить'}
-        </Button>
-      </div>
+      {embedded ? null : (
+        <div className="price-history-toolbar" style={{ marginTop: 0, marginBottom: 8 }}>
+          <label className="price-history-field">
+            Маркетплейс
+            <select value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
+              <option value="">Все</option>
+              <option value="ozon">Ozon</option>
+              <option value="wb">Wildberries</option>
+              <option value="ym">Яндекс.Маркет</option>
+            </select>
+          </label>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            onClick={() => fetchPage({ offset: 0, append: false })}
+            disabled={loading}
+          >
+            {loading ? '…' : 'Обновить'}
+          </Button>
+        </div>
+      )}
       <div className="price-history-meta" style={{ marginBottom: 6 }}>
         Записей: {items.length}
         {total > items.length ? ` из ${total}` : ''}
@@ -152,7 +154,7 @@ export function PriceHistorySidePanel({
             : 'Пока нет изменений. Они появятся после пересчёта минимума или стратегии.'
         }
       />
-      {embedded && hasMore ? (
+      {hasMore ? (
         <div className="price-history-more">
           <Button
             type="button"

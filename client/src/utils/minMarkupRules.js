@@ -33,13 +33,13 @@ export function createEmptyMinMarkupRule() {
     categoryIds: [],
     productIds: [],
     excludeProductIds: [],
-    tiers: [{ costFrom: 0, costTo: null, mode: 'rub', value: 50 }],
+    tiers: [{ costFrom: 0, costTo: null, mode: 'rub', value: 50, minRub: null }],
   };
 }
 
 export function parseMinMarkupTier(raw) {
   if (!Array.isArray(raw) || !raw.length) {
-    return [{ costFrom: 0, costTo: null, mode: 'rub', value: 50 }];
+    return [{ costFrom: 0, costTo: null, mode: 'rub', value: 50, minRub: null }];
   }
   const tiers = raw
     .map((t) => {
@@ -53,10 +53,14 @@ export function parseMinMarkupTier(raw) {
       const mode = String(t.mode || t.type || 'rub').toLowerCase() === 'percent' ? 'percent' : 'rub';
       const value = numOrNull(t.value);
       if (value == null || value < 0) return null;
-      return { costFrom, costTo, mode, value };
+      const minRubRaw = t.minRub ?? t.min_rub ?? t.notLessThan ?? t.not_less_than;
+      const minRubParsed = numOrNull(minRubRaw);
+      const minRub =
+        minRubParsed == null || minRubParsed < 0 ? null : Math.round(minRubParsed);
+      return { costFrom, costTo, mode, value, minRub };
     })
     .filter(Boolean);
-  return tiers.length ? tiers.sort((a, b) => a.costFrom - b.costFrom) : [{ costFrom: 0, costTo: null, mode: 'rub', value: 50 }];
+  return tiers.length ? tiers.sort((a, b) => a.costFrom - b.costFrom) : [{ costFrom: 0, costTo: null, mode: 'rub', value: 50, minRub: null }];
 }
 
 export function parseMinMarkupRules(raw) {
@@ -125,11 +129,18 @@ export function markupRubFromTier(cost, tier) {
   if (!tier) return null;
   const value = numOrNull(tier.value);
   if (value == null || value < 0) return null;
+  let rub;
   if (tier.mode === 'percent') {
     const c = Math.max(0, Number(cost) || 0);
-    return Math.max(0, Math.round((c * value) / 100));
+    rub = Math.max(0, Math.round((c * value) / 100));
+  } else {
+    rub = Math.max(0, Math.round(value));
   }
-  return Math.max(0, Math.round(value));
+  const floor = numOrNull(tier.minRub ?? tier.min_rub);
+  if (floor != null && floor >= 0) {
+    rub = Math.max(rub, Math.round(floor));
+  }
+  return rub;
 }
 
 /**

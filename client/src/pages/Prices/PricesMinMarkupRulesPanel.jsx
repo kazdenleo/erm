@@ -117,8 +117,9 @@ export function PricesMinMarkupRulesPanel({
     <div className="prices-min-markup-rules">
       <p className="text-muted small mb-3">
         Градации по себестоимости: для диапазона укажите мин. наценку в ₽ или в % от себестоимости.
-        Более узкое правило (товар → категория → все) имеет приоритет. Наценка на карточке товара по МП
-        (Ozon/WB/YM) по-прежнему сильнее правил.
+        Необязательное поле «но не меньше» задаёт нижнюю границу наценки в рублях (удобно для %).
+        Более узкое правило (товар → категория → все) имеет приоритет. Пока правило действует на товар,
+        мин. наценки на карточке берутся из правила и вручную не меняются.
       </p>
 
       {(rules || []).length === 0 && (
@@ -275,6 +276,7 @@ export function PricesMinMarkupRulesPanel({
                   <th>До, ₽</th>
                   <th>Тип</th>
                   <th>Значение</th>
+                  <th>Но не меньше, ₽</th>
                   <th />
                 </tr>
               </thead>
@@ -341,6 +343,26 @@ export function PricesMinMarkupRulesPanel({
                       />
                     </td>
                     <td>
+                      <input
+                        type="number"
+                        className="form-control form-control-sm"
+                        min="0"
+                        step="1"
+                        placeholder="—"
+                        title="Необязательно: мин. наценка не ниже этой суммы"
+                        value={tier.minRub ?? ''}
+                        onChange={(e) => {
+                          const tiers = [...(rule.tiers || [])];
+                          const raw = e.target.value;
+                          tiers[tIdx] = {
+                            ...tier,
+                            minRub: raw === '' ? null : Number(raw) || 0,
+                          };
+                          updateTier(rule.id, tiers);
+                        }}
+                      />
+                    </td>
+                    <td>
                       <button
                         type="button"
                         className="btn btn-link btn-sm text-danger p-0"
@@ -376,6 +398,7 @@ export function PricesMinMarkupRulesPanel({
                   costTo: null,
                   mode: 'rub',
                   value: 50,
+                  minRub: null,
                 },
               ])
             }

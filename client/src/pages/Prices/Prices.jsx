@@ -1107,7 +1107,11 @@ export function Prices() {
               </thead>
               <tbody>
                 {visibleProducts.map((product) => {
-                  const productMerged = product;
+                  const markupRules = pushSettingsSummary?.minMarkupRules || null;
+                  const productMerged =
+                    markupRules?.length && !product.profileMinMarkupRules
+                      ? { ...product, profileMinMarkupRules: markupRules }
+                      : product;
                   const productKey = String(product.id ?? product.sku ?? '');
                   const raw = calculatedPrices[productKey] || {};
                   const live = mpSettingsReady ? (liveMinsByProduct[productKey] || {}) : {};
@@ -1141,7 +1145,7 @@ export function Prices() {
                           : prices[marketplace]);
                     setPriceModal({
                       isOpen: true,
-                      product,
+                      product: productMerged,
                       marketplace,
                       priceScheme: scheme || null,
                       price: fallbackPrice,

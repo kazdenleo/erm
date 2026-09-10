@@ -14,8 +14,22 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Мин. наценка с карточки: правило градации, иначе ручное значение. */
+export function resolveCardMinMarkupFromRules(product) {
+  const fromRules = resolveMinMarkupFromRules(
+    product,
+    product.profileMinMarkupRules ?? product.minMarkupRules ?? null
+  );
+  if (fromRules?.rub != null && fromRules.rub >= 0) return fromRules;
+  return null;
+}
+
 export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50) {
   if (!product) return fallback;
+
+  const fromRules = resolveCardMinMarkupFromRules(product);
+  if (fromRules?.rub != null && fromRules.rub >= 0) return fromRules.rub;
+
   const mp = String(marketplace || '').toLowerCase();
   let specific = null;
   if (mp === 'ozon') {
@@ -26,12 +40,6 @@ export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50)
     specific = numOrNull(product.min_profit_ym ?? product.minProfitYm);
   }
   if (specific != null && specific >= 0) return specific;
-
-  const fromRules = resolveMinMarkupFromRules(
-    product,
-    product.profileMinMarkupRules ?? product.minMarkupRules ?? null
-  );
-  if (fromRules?.rub != null && fromRules.rub >= 0) return fromRules.rub;
 
   const general = numOrNull(product.min_price ?? product.minPrice);
   if (general != null && general >= 0) return general;
@@ -46,7 +54,11 @@ export function privateClientPriceParts(product, taxProfile = null) {
   if (!product) return null;
   const cost = numOrNull(product.cost ?? product.price ?? product.base_price) ?? 0;
   const add = numOrNull(product.additional_expenses ?? product.additionalExpenses) ?? 0;
-  const targetProfit = numOrNull(product.min_price ?? product.minPrice);
+  const fromRules = resolveCardMinMarkupFromRules(product);
+  const targetProfit =
+    fromRules?.rub != null && fromRules.rub >= 0
+      ? fromRules.rub
+      : numOrNull(product.min_price ?? product.minPrice);
   if (targetProfit == null || targetProfit < 0) return null;
 
   const expenses = cost + add;
