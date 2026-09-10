@@ -53,10 +53,9 @@ export function ProductPriceHistoryTab({ productId }) {
   return (
     <div className="product-price-history-tab">
       <p className="price-history-tab-hint">
-        Как менялись минимум и фактическая цена на маркетплейсах и на каком основании.
-        Журнал хранится 30 дней.{' '}
+        Что изменилось в минимуме и фактической цене и почему. Журнал — 30 дней.{' '}
         <Link to={`/prices/history?productId=${productId}`} style={{ color: 'var(--primary)' }}>
-          Открыть на странице истории
+          Открыть полностью
         </Link>
       </p>
       <div className="price-history-toolbar" style={{ marginTop: 0 }}>

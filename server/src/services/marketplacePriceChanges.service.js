@@ -4,6 +4,7 @@
 
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
+import { extractMinPriceCommissionPercent } from '../utils/commissionGuards.js';
 
 export const PRICE_CHANGE_RETENTION_DAYS = 30;
 
@@ -37,6 +38,109 @@ function sameMoney(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   return Math.abs(Number(a) - Number(b)) < 0.005;
+}
+
+const DRIVER_META = {
+  cost: { label: 'Себестоимость', unit: '₽' },
+  extra: { label: 'Доп. расходы', unit: '₽' },
+  markup: { label: 'Мин. наценка', unit: '₽' },
+  commission: { label: 'Комиссия', unit: '%' },
+  logistics: { label: 'Логистика', unit: '₽' },
+  processing: { label: 'Обработка', unit: '₽' },
+  acquiring: { label: 'Эквайринг', unit: '%' },
+  volume: { label: 'Объём', unit: 'л' },
+  buyout: { label: 'Выкуп', unit: '%' },
+  spp: { label: 'СПП', unit: '%' },
+  brandPromo: { label: 'Продвижение бренда', unit: '%' },
+  adsPromo: { label: 'Реклама', unit: '%' },
+};
+
+const PRODUCT_DRIVER_KEYS = new Set(['cost', 'extra', 'markup', 'buyout', 'spp']);
+
+function roundDriver(v, digits = 2) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const f = 10 ** digits;
+  return Math.round(n * f) / f;
+}
+
+function logisticsFromDetails(details, scheme) {
+  const d = details && typeof details === 'object' ? details : {};
+  const s = String(scheme || '').toUpperCase();
+  if (s === 'FBO') {
+    return roundDriver(d.logistics_cost_fbo ?? d.logistics_cost);
+  }
+  if (s === 'FBS') {
+    return roundDriver(d.logistics_cost_fbs ?? d.logistics_cost);
+  }
+  return roundDriver(d.logistics_cost_fbo ?? d.logistics_cost_fbs ?? d.logistics_cost);
+}
+
+/**
+ * Снимок входов расчёта мин. цены — чтобы в истории указать, что именно изменилось.
+ */
+export function extractMinPriceDrivers(details, extras = {}) {
+  const d = details && typeof details === 'object' ? details : {};
+  const inputs = d._inputs && typeof d._inputs === 'object' ? d._inputs : {};
+  const marketplace = extras.marketplace || d.marketplace || null;
+  const scheme = extras.scheme || d.scheme || inputs.scheme || null;
+  return {
+    cost: roundDriver(inputs.cost ?? extras.cost),
+    extra: roundDriver(inputs.additionalExpenses ?? inputs.extra ?? extras.additionalExpenses ?? extras.extra),
+    markup: roundDriver(inputs.minMarkup ?? inputs.markup ?? extras.minMarkup ?? extras.markup),
+    commission: roundDriver(
+      extractMinPriceCommissionPercent(d, marketplace, scheme) ?? inputs.commission ?? extras.commission
+    ),
+    logistics: logisticsFromDetails(d, scheme) ?? roundDriver(inputs.logistics ?? extras.logistics),
+    processing: roundDriver(d.processing_cost ?? inputs.processing ?? extras.processing),
+    acquiring: roundDriver(d.acquiring ?? inputs.acquiring ?? extras.acquiring),
+    volume: roundDriver(d.volume_weight ?? inputs.volume ?? extras.volume),
+    buyout: roundDriver(inputs.buyout ?? extras.buyout),
+    spp: roundDriver(inputs.spp ?? extras.spp),
+    brandPromo: roundDriver(d.brand_promotion_percent ?? inputs.brandPromo),
+    adsPromo: roundDriver(d.ads_promotion_percent ?? inputs.adsPromo),
+  };
+}
+
+export function diffMinPriceDrivers(prevDrivers, nextDrivers) {
+  const prev = prevDrivers && typeof prevDrivers === 'object' ? prevDrivers : {};
+  const next = nextDrivers && typeof nextDrivers === 'object' ? nextDrivers : {};
+  const changes = [];
+  for (const [key, meta] of Object.entries(DRIVER_META)) {
+    const before = prev[key] ?? null;
+    const after = next[key] ?? null;
+    if (before == null && after == null) continue;
+    if (PRODUCT_DRIVER_KEYS.has(key) && before == null) continue;
+    if (sameMoney(before, after)) continue;
+    changes.push({
+      key,
+      label: meta.label,
+      unit: meta.unit,
+      before,
+      after,
+    });
+  }
+  return changes;
+}
+
+export function formatDriverChangeLine(change) {
+  if (!change) return '';
+  const unit = change.unit || '';
+  const fmt = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return '—';
+    if (unit === '₽') return `${Math.round(Number(v))} ₽`;
+    if (unit === '%') return `${Number(v)}%`;
+    return `${Number(v)} ${unit}`.trim();
+  };
+  return `${change.label}: ${fmt(change.before)} → ${fmt(change.after)}`;
+}
+
+export function formatMinRecalcReason(driverChanges) {
+  const list = Array.isArray(driverChanges) ? driverChanges : [];
+  if (!list.length) return 'Пересчёт минимальной цены';
+  const names = list.slice(0, 4).map((c) => c.label).join(', ');
+  return `Пересчёт минимума: ${names}`;
 }
 
 /**
@@ -154,8 +258,23 @@ export function formatPriceChangeGrounds(meta) {
     const floor = rubLabel(m.floor ?? m.sellingPrice);
     lines.push(floor ? `Нет стратегии — цена равна полу ${floor}` : 'Нет активной стратегии');
   }
-  if (String(m.source || '').toLowerCase() === 'min_recalc' && lines.length === 0) {
-    lines.push('Изменился расчётный минимум (комиссии, логистика, себестоимость или наценка)');
+
+  const driverChanges = Array.isArray(m.driverChanges)
+    ? m.driverChanges
+    : Array.isArray(m.driver_changes)
+      ? m.driver_changes
+      : [];
+  if (driverChanges.length) {
+    for (const change of driverChanges) {
+      const line = formatDriverChangeLine(change);
+      if (line) lines.push(line);
+    }
+  } else if (String(m.source || '').toLowerCase() === 'min_recalc' && lines.length === 0) {
+    const minFrom = rubLabel(m.minPriceBefore ?? m.min_price_before);
+    const minTo = rubLabel(m.minPriceAfter ?? m.min_price_after);
+    if (minFrom && minTo && minFrom !== minTo) {
+      lines.push(`Минимум: ${minFrom} → ${minTo}`);
+    }
   }
 
   return lines;
@@ -356,7 +475,11 @@ export async function listMarketplacePriceChanges(opts = {}) {
       row.pricing_strategy_id != null ? Number(row.pricing_strategy_id) : null,
     strategyName: row.strategy_name || null,
     sourceLabel: SOURCE_LABELS[row.source] || row.source,
-    grounds: formatPriceChangeGrounds(row.meta),
+    grounds: formatPriceChangeGrounds({
+      ...(row.meta && typeof row.meta === 'object' ? row.meta : {}),
+      minPriceBefore: row.min_price_before,
+      minPriceAfter: row.min_price_after,
+    }),
     meta: row.meta || null,
   }));
 
@@ -373,6 +496,10 @@ export default {
   PRICE_CHANGE_RETENTION_DAYS,
   formatPriceChangeReason,
   formatPriceChangeGrounds,
+  extractMinPriceDrivers,
+  diffMinPriceDrivers,
+  formatDriverChangeLine,
+  formatMinRecalcReason,
   logMarketplacePriceChange,
   pruneMarketplacePriceChanges,
   listMarketplacePriceChanges,

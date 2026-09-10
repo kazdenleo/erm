@@ -3634,7 +3634,6 @@ class PricesService {
     const toStore = calculationDetails != null && typeof calculationDetails === 'object'
       ? (this._sanitizeCalculatorForStorage(calculationDetails, marketplace) || calculationDetails)
       : null;
-    const detailsJson = toStore != null ? JSON.stringify(toStore) : null;
     const scheme = String(opts.scheme || '').toUpperCase();
     const alsoPrimary = opts.alsoPrimary !== false;
     const mp = String(marketplace || '').toLowerCase();
@@ -3646,10 +3645,15 @@ class PricesService {
     let prevMin = null;
     let prevSelling = null;
     let profileId = null;
+    let prevDetails = null;
+    let productInputs = null;
     if (logPrimaryMin) {
       try {
         const prev = await query(
-          `SELECT pmp.min_price, pmp.selling_price, p.profile_id
+          `SELECT pmp.min_price, pmp.selling_price, pmp.calculation_details, p.profile_id,
+                  p.cost, p.additional_expenses, p.min_price AS markup,
+                  p.min_profit_ozon, p.min_profit_wb, p.min_profit_ym,
+                  p.buyout_rate, p.buyout_rate_ozon, p.buyout_rate_wb, p.buyout_rate_ym
            FROM product_marketplace_prices pmp
            JOIN products p ON p.id = pmp.product_id
            WHERE pmp.product_id = $1 AND pmp.marketplace = $2`,
@@ -3660,14 +3664,80 @@ class PricesService {
           prevMin = row.min_price != null ? Number(row.min_price) : null;
           prevSelling = row.selling_price != null ? Number(row.selling_price) : null;
           profileId = row.profile_id ?? null;
+          prevDetails = row.calculation_details || null;
+          const mpKey = String(marketplace || '').toLowerCase();
+          const markupMp =
+            mpKey === 'ozon'
+              ? row.min_profit_ozon
+              : mpKey === 'wb'
+                ? row.min_profit_wb
+                : mpKey === 'ym'
+                  ? row.min_profit_ym
+                  : null;
+          productInputs = {
+            cost: row.cost,
+            additionalExpenses: row.additional_expenses,
+            minMarkup: markupMp != null && markupMp !== '' ? markupMp : row.markup,
+            buyout:
+              mpKey === 'ozon'
+                ? row.buyout_rate_ozon
+                : mpKey === 'wb'
+                  ? row.buyout_rate_wb
+                  : mpKey === 'ym'
+                    ? row.buyout_rate_ym
+                    : row.buyout_rate,
+          };
         } else {
-          const p = await query(`SELECT profile_id FROM products WHERE id = $1`, [productId]);
-          profileId = p.rows?.[0]?.profile_id ?? null;
+          const p = await query(
+            `SELECT profile_id, cost, additional_expenses, min_price AS markup,
+                    min_profit_ozon, min_profit_wb, min_profit_ym,
+                    buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym
+             FROM products WHERE id = $1`,
+            [productId]
+          );
+          const prow = p.rows?.[0];
+          profileId = prow?.profile_id ?? null;
+          if (prow) {
+            const mpKey = String(marketplace || '').toLowerCase();
+            const markupMp =
+              mpKey === 'ozon'
+                ? prow.min_profit_ozon
+                : mpKey === 'wb'
+                  ? prow.min_profit_wb
+                  : mpKey === 'ym'
+                    ? prow.min_profit_ym
+                    : null;
+            productInputs = {
+              cost: prow.cost,
+              additionalExpenses: prow.additional_expenses,
+              minMarkup: markupMp != null && markupMp !== '' ? markupMp : prow.markup,
+              buyout:
+                mpKey === 'ozon'
+                  ? prow.buyout_rate_ozon
+                  : mpKey === 'wb'
+                    ? prow.buyout_rate_wb
+                    : mpKey === 'ym'
+                      ? prow.buyout_rate_ym
+                      : prow.buyout_rate,
+            };
+          }
         }
       } catch {
         /* журнал не должен ломать сохранение */
       }
     }
+
+    if (toStore != null && productInputs) {
+      toStore._inputs = {
+        ...(toStore._inputs && typeof toStore._inputs === 'object' ? toStore._inputs : {}),
+        cost: productInputs.cost,
+        additionalExpenses: productInputs.additionalExpenses,
+        minMarkup: productInputs.minMarkup,
+        buyout: productInputs.buyout,
+        scheme: scheme || null,
+      };
+    }
+    const detailsJson = toStore != null ? JSON.stringify(toStore) : null;
 
     try {
       if (scheme === 'FBS' || scheme === 'FBO') {
@@ -3724,20 +3794,37 @@ class PricesService {
 
     if (logPrimaryMin) {
       try {
-        const { logMarketplacePriceChange } = await import(
-          './marketplacePriceChanges.service.js'
+        const {
+          logMarketplacePriceChange,
+          extractMinPriceDrivers,
+          diffMinPriceDrivers,
+          formatMinRecalcReason,
+        } = await import('./marketplacePriceChanges.service.js');
+        const driverChanges = diffMinPriceDrivers(
+          extractMinPriceDrivers(prevDetails, { marketplace, scheme }),
+          extractMinPriceDrivers(toStore, {
+            marketplace,
+            scheme,
+            ...(productInputs || {}),
+          })
         );
         await logMarketplacePriceChange({
           productId,
           marketplace,
           source: 'min_recalc',
-          reason: 'Пересчёт минимальной цены',
+          reason: formatMinRecalcReason(driverChanges),
           minPriceBefore: prevMin,
           minPriceAfter: Number(num),
           sellingPriceBefore: prevSelling,
           sellingPriceAfter: prevSelling,
           profileId,
-          meta: { source: 'min_recalc', scheme: scheme || null },
+          meta: {
+            source: 'min_recalc',
+            scheme: scheme || null,
+            driverChanges,
+            minPriceBefore: prevMin,
+            minPriceAfter: Number(num),
+          },
         });
       } catch {
         /* журнал не должен ломать сохранение */
@@ -3844,6 +3931,7 @@ class PricesService {
       ...(options.useCalculatorCache ? { source: 'cache' } : {}),
       integrationScope,
     };
+
     const minProfitDefault = resolveMarketplaceMinProfit(product, null, 50);
     if (basePrice <= 0) {
       errors.wb = 'Нет себестоимости для расчёта минимальной цены WB.';

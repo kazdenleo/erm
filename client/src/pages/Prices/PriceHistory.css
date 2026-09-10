@@ -211,3 +211,77 @@
 .product-price-history-tab .price-history-table-wrap {
   max-height: 55vh;
 }
+
+.price-history-side {
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.price-history-side__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.price-history-side__all {
+  font-size: 12px;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.price-history-side__selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  font-size: 12px;
+}
+
+.price-history-side__selected button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.price-history-side .price-history-table-wrap {
+  max-height: calc(100vh - 280px);
+}
+
+.price-history-side .price-history-table .reason {
+  max-width: 280px;
+}
+
+.product-prices-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.95fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .product-prices-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.product-prices-split__history {
+  min-width: 0;
+  position: sticky;
+  top: 8px;
+}

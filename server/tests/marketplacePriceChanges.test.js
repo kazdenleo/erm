@@ -33,9 +33,27 @@ describe('formatPriceChangeGrounds', () => {
     expect(lines.some((l) => l.includes('Продажи'))).toBe(true);
   });
 
-  test('min recalc fallback', () => {
-    const lines = formatPriceChangeGrounds({ source: 'min_recalc' });
-    expect(lines[0]).toMatch(/минимум/i);
+  test('min recalc lists concrete driver changes', () => {
+    const lines = formatPriceChangeGrounds({
+      source: 'min_recalc',
+      driverChanges: [
+        { label: 'Комиссия', unit: '%', before: 16, after: 18 },
+        { label: 'Логистика', unit: '₽', before: 80, after: 95 },
+      ],
+    });
+    expect(lines.some((l) => l.includes('Комиссия'))).toBe(true);
+    expect(lines.some((l) => l.includes('Логистика'))).toBe(true);
+    expect(lines.join(' ')).not.toMatch(/себестоимость или наценка/i);
+  });
+
+  test('min recalc fallback without drivers shows min delta', () => {
+    const lines = formatPriceChangeGrounds({
+      source: 'min_recalc',
+      minPriceBefore: 3147,
+      minPriceAfter: 3145,
+    });
+    expect(lines[0]).toMatch(/3147/);
+    expect(lines[0]).toMatch(/3145/);
   });
 });
 

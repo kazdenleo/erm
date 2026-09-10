@@ -4,6 +4,27 @@
   -webkit-overflow-scrolling: touch;
 }
 
+.prices-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1280px) {
+  .prices-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.prices-split__calc {
+  min-width: 0;
+}
+
+.prices-table tbody tr {
+  cursor: pointer;
+}
+
 .prices-table .product-sku-cell {
   cursor: text;
   user-select: text;

@@ -18,7 +18,9 @@ import { Button } from '../../components/common/Button/Button';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
-import { PricesPushSettingsPanel, buildScopeSummaryText } from './PricesPushSettingsPanel.jsx';
+import { PriceHistorySidePanel } from './PriceHistorySidePanel.jsx';
+import { PricesSettingsModal } from './PricesSettingsModal.jsx';
+import { buildScopeSummaryText } from './PricesPushSettingsPanel.jsx';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -114,6 +116,8 @@ export function Prices() {
   const [pushOneProductId, setPushOneProductId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
+  const [historyProductId, setHistoryProductId] = useState(null);
+  const [historyProductLabel, setHistoryProductLabel] = useState('');
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
@@ -553,22 +557,27 @@ export function Prices() {
   const liveMinsByProduct = useMemo(() => {
     const map = {};
     const orgId = filterOrganizationId || getApiSessionContext().organizationId || null;
+    const markupRules = pushSettingsSummary?.minMarkupRules || null;
     for (const product of visibleProducts) {
       const key = String(product.id ?? product.sku ?? '');
       if (!key) continue;
       const taxProfile = taxProfileForProduct(organizations, product, orgId);
       const optsBase = { ...liveMinOpts, taxProfile };
+      const productWithRules =
+        markupRules?.length && !product.profileMinMarkupRules
+          ? { ...product, profileMinMarkupRules: markupRules }
+          : product;
       map[key] = {
-        ozonFbs: liveMinPriceForProduct(product, 'ozon', 'FBS', { ...optsBase, sppPercent: ozonSppPercent }),
-        ozonFbo: liveMinPriceForProduct(product, 'ozon', 'FBO', { ...optsBase, sppPercent: ozonSppPercent }),
-        wbFbs: liveMinPriceForProduct(product, 'wb', 'FBS', { ...optsBase, sppPercent: wbSppPercent }),
-        wbFbo: liveMinPriceForProduct(product, 'wb', 'FBO', { ...optsBase, sppPercent: wbSppPercent }),
-        ymFbs: liveMinPriceForProduct(product, 'ym', 'FBS', { ...optsBase, sppPercent: ymSppPercent }),
-        ymFbo: liveMinPriceForProduct(product, 'ym', 'FBO', { ...optsBase, sppPercent: ymSppPercent }),
+        ozonFbs: liveMinPriceForProduct(productWithRules, 'ozon', 'FBS', { ...optsBase, sppPercent: ozonSppPercent }),
+        ozonFbo: liveMinPriceForProduct(productWithRules, 'ozon', 'FBO', { ...optsBase, sppPercent: ozonSppPercent }),
+        wbFbs: liveMinPriceForProduct(productWithRules, 'wb', 'FBS', { ...optsBase, sppPercent: wbSppPercent }),
+        wbFbo: liveMinPriceForProduct(productWithRules, 'wb', 'FBO', { ...optsBase, sppPercent: wbSppPercent }),
+        ymFbs: liveMinPriceForProduct(productWithRules, 'ym', 'FBS', { ...optsBase, sppPercent: ymSppPercent }),
+        ymFbo: liveMinPriceForProduct(productWithRules, 'ym', 'FBO', { ...optsBase, sppPercent: ymSppPercent }),
       };
     }
     return map;
-  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId, ozonSppPercent, wbSppPercent, ymSppPercent]);
+  }, [visibleProducts, liveMinOpts, organizations, filterOrganizationId, ozonSppPercent, wbSppPercent, ymSppPercent, pushSettingsSummary]);
 
   // Сохраняем живой расчёт, если он разошёлся с БД — иначе «Отправить цены» уйдёт со старым значением.
   useEffect(() => {
@@ -851,37 +860,32 @@ export function Prices() {
           variant="secondary"
           size="small"
           className="btn-shadow"
-          onClick={() => setSettingsOpen((v) => !v)}
+          onClick={() => setSettingsOpen(true)}
         >
-          {settingsOpen ? 'Скрыть настройки' : 'Настройки'}
+          Настройки
         </Button>
       </div>
 
-      {settingsOpen && (
-        <div
-          className="main-card mb-3 card"
-          style={{ padding: '12px 16px', border: '1px solid rgba(255,255,255,0.1)' }}
-        >
-          <PricesPushSettingsPanel
-            categories={categories}
-            showUncategorizedCategoryOption={showNoneCategoryOption}
-            showFbsOption={showFbsPrices}
-            showFboOption={showFboPrices}
-            organizations={organizations}
-            onOrganizationsChange={handleOrgPushToggle}
-            onSaved={(payload) =>
-              setPushSettingsSummary((prev) => ({
-                ...(prev || {}),
-                ...payload,
-                organizations: prev?.organizations,
-              }))
-            }
-            onPushNow={handlePushNow}
-            pushLoading={pushAllLoading}
-            pushFeedback={recalcAllMessage}
-          />
-        </div>
-      )}
+      <PricesSettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        categories={categories}
+        showUncategorizedCategoryOption={showNoneCategoryOption}
+        showFbsOption={showFbsPrices}
+        showFboOption={showFboPrices}
+        organizations={organizations}
+        onOrganizationsChange={handleOrgPushToggle}
+        onSaved={(payload) =>
+          setPushSettingsSummary((prev) => ({
+            ...(prev || {}),
+            ...payload,
+            organizations: prev?.organizations,
+          }))
+        }
+        onPushNow={handlePushNow}
+        pushLoading={pushAllLoading}
+        pushFeedback={recalcAllMessage}
+      />
 
       <div className="main-card mb-3 card">
         <div className="card-body p-0">
@@ -1100,7 +1104,8 @@ export function Prices() {
         </div>
       )}
 
-      <div style={{marginTop: '20px', width: '100%'}}>
+      <div className="prices-split" style={{marginTop: '20px', width: '100%'}}>
+        <div className="prices-split__calc">
         {totalProducts === 0 && !listRefreshing ? (
           <div className="empty-state">
             <p>Нет товаров для отображения</p>
@@ -1266,7 +1271,23 @@ export function Prices() {
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
 
                   return (
-                    <tr key={product.id}>
+                    <tr
+                      key={product.id}
+                      className={historyProductId === product.id ? 'prices-row-selected' : ''}
+                      onClick={(e) => {
+                        if (e.target.closest('a, button, input, select, textarea')) return;
+                        if (historyProductId === product.id) {
+                          setHistoryProductId(null);
+                          setHistoryProductLabel('');
+                          return;
+                        }
+                        setHistoryProductId(product.id);
+                        setHistoryProductLabel(
+                          [product.sku, product.name].filter(Boolean).join(' — ')
+                        );
+                      }}
+                      title="Показать историю изменения цен справа"
+                    >
                       <td className="product-sku-cell" style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         <span className="product-sku" title="Выделите, чтобы скопировать">
                           {product.sku || '—'}
@@ -1505,6 +1526,15 @@ export function Prices() {
             {renderPricesListPager('bottom')}
           </div>
         )}
+        </div>
+        <PriceHistorySidePanel
+          productId={historyProductId}
+          productLabel={historyProductLabel}
+          onClearProduct={() => {
+            setHistoryProductId(null);
+            setHistoryProductLabel('');
+          }}
+        />
       </div>
 
       <div className="actions" style={{marginTop: '16px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center'}}>
@@ -1512,7 +1542,7 @@ export function Prices() {
           {recalcAllLoading ? '⏳ Запуск пересчёта...' : '📊 Пересчитать и сохранить все минимальные цены'}
         </Button>
         <div style={{marginTop: '8px', fontSize: '12px', color: 'var(--muted)', width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px'}}>
-          {!settingsOpen && recalcAllMessage && (
+          {recalcAllMessage && (
             <span style={{color: recalcAllMessage.startsWith('Ошибка') ? 'var(--danger, #ef4444)' : 'var(--primary)'}}>
               {recalcAllMessage.startsWith('Ошибка') ? '⚠️' : 'ℹ️'} {recalcAllMessage}
             </span>

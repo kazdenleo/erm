@@ -4,6 +4,7 @@
 import React from 'react';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import { ProductPriceHistoryTab } from './ProductPriceHistoryTab.jsx';
+import '../../../pages/Prices/PriceHistory.css';
 import {
   evaluateFormula,
   SYSTEM_ATTR_KEYS,
@@ -192,6 +193,8 @@ export function ProductPricesTab({
 
   return (
     <>
+      <div className="product-prices-split">
+      <div className="product-prices-split__calc">
       <div className="row g-3">
         <div className="col-12">
           <h3 className="h6 mb-0">Себестоимость</h3>
@@ -459,10 +462,10 @@ export function ProductPricesTab({
           {Object.values(errors)[0]}
         </div>
       )}
-
-      <div className="mt-4">
-        <h3 className="h6 mb-2">История изменений цен</h3>
+      </div>
+      <div className="product-prices-split__history">
         <ProductPriceHistoryTab productId={productId} />
+      </div>
       </div>
     </>
   );
