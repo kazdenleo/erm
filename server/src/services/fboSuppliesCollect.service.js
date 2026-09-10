@@ -22,6 +22,19 @@ function normalizeBarcode(v) {
   return String(v || '').trim();
 }
 
+function itemStillNeedsCollect(row) {
+  if (!row) return false;
+  const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
+  const collected = Math.max(0, parseInt(row.collected_quantity, 10) || 0);
+  return collected < planned;
+}
+
+/** Незавершённые строки поставки раньше завершённых. */
+const COLLECT_ITEM_PRIORITY_ORDER = `
+  CASE WHEN COALESCE(i.collected_quantity, 0) >= GREATEST(i.quantity, 0) THEN 1 ELSE 0 END ASC,
+  i.id ASC
+`;
+
 function normalizeUserId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -166,6 +179,7 @@ async function findSupplyItemDirect(supplyId, barcode, profileId) {
          TRIM(COALESCE(i.barcode, '')) = $2
          OR TRIM(COALESCE(i.sku, '')) = $2
        )
+     ORDER BY ${COLLECT_ITEM_PRIORITY_ORDER}
      LIMIT 1`,
     [supplyId, code]
   );
@@ -196,6 +210,7 @@ async function findSupplyItemDirect(supplyId, barcode, profileId) {
            WHERE ps.product_id = p.id AND TRIM(ps.sku) = $2
          )
        )
+     ORDER BY ${COLLECT_ITEM_PRIORITY_ORDER}
      LIMIT 1`,
     params
   );
@@ -241,7 +256,7 @@ async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
            WHERE ps.product_id = comp.id AND TRIM(ps.sku) = $2
          )
        )
-     ORDER BY i.id ASC
+     ORDER BY ${COLLECT_ITEM_PRIORITY_ORDER}
      LIMIT 1`,
     params
   );
@@ -254,14 +269,25 @@ async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
   };
 }
 
+/**
+ * Один штрихкод может быть и отдельной строкой (5404), и комплектующей комплекта (5404RL).
+ * Сначала добираем незавершённую прямую позицию; когда она собрана — идём в незавершённый комплект.
+ */
 async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
   const codes = productLookupCodesFromScan(barcode);
   const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
   for (const code of toTry) {
     const direct = await findSupplyItemDirect(supplyId, code, profileId);
-    if (direct) return direct;
     const viaKit = await findSupplyItemByKitComponent(supplyId, code, profileId);
-    if (viaKit) return viaKit;
+    if (!direct && !viaKit) continue;
+
+    const directOpen = direct && itemStillNeedsCollect(direct.item) ? direct : null;
+    const kitOpen = viaKit && itemStillNeedsCollect(viaKit.item) ? viaKit : null;
+
+    if (directOpen) return directOpen;
+    if (kitOpen) return kitOpen;
+    // Обе (или одна) уже собраны — вернём прямую позицию для сообщения «уже собрано».
+    return direct || viaKit;
   }
   return null;
 }
