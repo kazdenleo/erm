@@ -323,7 +323,7 @@ class FboPurchaseCalcSessionService {
 
   /**
    * Создать закупку по выбранным строкам сессии (разные поставщики — отдельные вызовы).
-   * items: [{ rowKey, productId, quantity? }] — quantity по умолчанию = remainingToPurchase
+   * items: [{ rowKey, productId, quantity? }] — quantity из предпросмотра; по умолчанию remainingToPurchase
    */
   async createPurchaseFromSession(
     sessionId,
@@ -387,11 +387,9 @@ class FboPurchaseCalcSessionService {
         throw err;
       }
       let qty = it?.quantity != null ? parseInt(it.quantity, 10) : remaining;
-      if (!Number.isFinite(qty) || qty < 1) qty = remaining;
-      if (qty > remaining) {
-        const err = new Error(
-          `К закупке по «${row.sku || row.productName}» осталось ${remaining} шт., указано ${qty}`
-        );
+      if (!Number.isFinite(qty) || qty < 1) continue;
+      if (qty > 99999) {
+        const err = new Error(`Количество по «${row.sku || row.productName}» слишком большое`);
         err.statusCode = 400;
         throw err;
       }

@@ -9,7 +9,6 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
-import { Modal } from '../../components/common/Modal/Modal';
 import {
   calcPurchaseTotals,
   componentQtyToKitUnits,
@@ -22,6 +21,7 @@ import {
   sortPurchaseRowsWithProgress,
 } from './fboPurchaseCalcUtils';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal';
+import { FboPurchaseCreateModal, parseDraftQty } from './FboPurchaseCreateModal';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
@@ -90,6 +90,8 @@ export function FboPurchaseCalculation() {
   const [createWarehouseId, setCreateWarehouseId] = useState('');
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
+  const [purchaseDraftQty, setPurchaseDraftQty] = useState({});
+  const [purchaseModalErr, setPurchaseModalErr] = useState(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [filterSupplierId, setFilterSupplierId] = useState('');
   const [restoringCell, setRestoringCell] = useState(null);
@@ -487,17 +489,35 @@ export function FboPurchaseCalculation() {
     }
   };
 
+  const selectedPurchaseRows = useMemo(
+    () => (calc?.rows || []).filter((r) => selectedRowKeys.has(r.key) && isRowSelectable(r)),
+    [calc?.rows, selectedRowKeys]
+  );
+
   const selectedPurchaseItems = useMemo(
     () =>
-      (calc?.rows || [])
-        .filter((r) => selectedRowKeys.has(r.key) && isRowSelectable(r))
+      selectedPurchaseRows
         .map((r) => ({
           rowKey: r.key,
           productId: r.productId,
-          quantity: r.remainingToPurchase,
-        })),
-    [calc?.rows, selectedRowKeys]
+          quantity: purchaseOpen
+            ? parseDraftQty(purchaseDraftQty[r.key])
+            : Number(r.remainingToPurchase) || 0,
+        }))
+        .filter((it) => it.quantity > 0),
+    [selectedPurchaseRows, purchaseOpen, purchaseDraftQty]
   );
+
+  const openPurchaseModal = () => {
+    const draft = {};
+    for (const row of selectedPurchaseRows) {
+      draft[row.key] = String(Math.max(0, Number(row.remainingToPurchase) || 0));
+    }
+    setPurchaseDraftQty(draft);
+    setPurchaseModalErr(null);
+    setErr(null);
+    setPurchaseOpen(true);
+  };
 
   const handleExportExcel = async () => {
     if (!calc?.rows?.length || !supplyIdsForExport.length) return;
@@ -539,18 +559,19 @@ export function FboPurchaseCalculation() {
   const handleCreatePurchase = async () => {
     const sid = session?.id ?? sessionIdFromUrl;
     if (!sid) {
-      setErr('Сессия расчёта не найдена');
+      setPurchaseModalErr('Сессия расчёта не найдена');
       return;
     }
     if (!selectedPurchaseItems.length) {
-      setErr('Отметьте галочками позиции для закупки');
+      setPurchaseModalErr('Укажите количество больше нуля хотя бы по одной позиции');
       return;
     }
     if (!createSupplierId) {
-      setErr('Выберите поставщика');
+      setPurchaseModalErr('Выберите поставщика');
       return;
     }
     setPurchaseSaving(true);
+    setPurchaseModalErr(null);
     setErr(null);
     setSuccessMsg(null);
     try {
@@ -581,7 +602,7 @@ export function FboPurchaseCalculation() {
         );
       }
     } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось создать закупку');
+      setPurchaseModalErr(e.response?.data?.message || e.message || 'Не удалось создать закупку');
     } finally {
       setPurchaseSaving(false);
     }
@@ -609,10 +630,10 @@ export function FboPurchaseCalculation() {
         <Button
           variant="primary"
           size="small"
-          disabled={!selectedPurchaseItems.length || session?.status === 'completed'}
-          onClick={() => setPurchaseOpen(true)}
+          disabled={!selectedPurchaseRows.length || session?.status === 'completed'}
+          onClick={openPurchaseModal}
         >
-          Закупить выбранное ({selectedPurchaseItems.length})
+          Закупить выбранное ({selectedPurchaseRows.length})
         </Button>
       </div>
 
@@ -910,83 +931,28 @@ export function FboPurchaseCalculation() {
         onConfirm={handleReplaceConfirm}
       />
 
-      <Modal
+      <FboPurchaseCreateModal
         isOpen={purchaseOpen}
+        saving={purchaseSaving}
+        rows={selectedPurchaseRows}
+        qtyByKey={purchaseDraftQty}
+        onQtyChange={(rowKey, value) => {
+          setPurchaseDraftQty((prev) => ({ ...prev, [rowKey]: value }));
+          setPurchaseModalErr(null);
+        }}
+        suppliers={suppliers}
+        organizations={organizations}
+        warehouses={warehouses}
+        supplierId={createSupplierId}
+        organizationId={createOrganizationId}
+        warehouseId={createWarehouseId}
+        onSupplierChange={setCreateSupplierId}
+        onOrganizationChange={setCreateOrganizationId}
+        onWarehouseChange={setCreateWarehouseId}
+        error={purchaseModalErr}
         onClose={() => !purchaseSaving && setPurchaseOpen(false)}
-        title="Создать закупку"
-        size="medium"
-      >
-        <p className="text-muted small">
-          Выбрано позиций: <strong>{selectedPurchaseItems.length}</strong>, шт.:{' '}
-          <strong>
-            {selectedPurchaseItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0)}
-          </strong>
-          , сумма себестоимости по выбранному:{' '}
-          <strong>
-            {fmtMoney(
-              (calc?.rows || [])
-                .filter((r) => selectedRowKeys.has(r.key))
-                .reduce((s, r) => s + (Number(r.lineCostTotal) || 0), 0)
-            )}
-          </strong>
-        </p>
-        <div className="mb-3">
-          <label className="form-label">Поставщик</label>
-          <select
-            className="form-select form-select-sm"
-            value={createSupplierId}
-            onChange={(e) => setCreateSupplierId(e.target.value)}
-          >
-            <option value="">— выберите —</option>
-            {(suppliers || []).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name || s.code || `#${s.id}`}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="mb-3">
-          <label className="form-label">Организация</label>
-          <select
-            className="form-select form-select-sm"
-            value={createOrganizationId}
-            onChange={(e) => setCreateOrganizationId(e.target.value)}
-          >
-            <option value="">—</option>
-            {(organizations || []).map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="mb-3">
-          <label className="form-label">Склад назначения</label>
-          <select
-            className="form-select form-select-sm"
-            value={createWarehouseId}
-            onChange={(e) => setCreateWarehouseId(e.target.value)}
-          >
-            <option value="">—</option>
-            {(warehouses || [])
-              .filter((w) => w.type === 'warehouse' && !w.supplierId)
-              .map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.address || w.name || `#${w.id}`}
-                  {w.isFboStock ? ' (FBO)' : ''}
-                </option>
-              ))}
-          </select>
-        </div>
-        <div className="d-flex justify-content-end gap-2">
-          <Button variant="secondary" onClick={() => setPurchaseOpen(false)} disabled={purchaseSaving}>
-            Отмена
-          </Button>
-          <Button variant="primary" onClick={handleCreatePurchase} disabled={purchaseSaving}>
-            {purchaseSaving ? 'Создание…' : 'Создать закупку'}
-          </Button>
-        </div>
-      </Modal>
+        onConfirm={handleCreatePurchase}
+      />
     </div>
   );
 }

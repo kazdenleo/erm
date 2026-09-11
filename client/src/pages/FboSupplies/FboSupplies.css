@@ -899,6 +899,47 @@
   max-height: min(72vh, calc(100vh - 200px));
 }
 
+.fbo-pc-preview-table-wrap {
+  max-height: min(48vh, 420px);
+  overflow: auto;
+  margin-bottom: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.fbo-pc-preview-table.table {
+  margin: 0;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.fbo-pc-preview-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.fbo-pc-preview-qty {
+  width: 88px;
+  margin-left: auto;
+  text-align: right;
+}
+
+.fbo-pc-preview-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 768px) {
+  .fbo-pc-preview-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 .fbo-purchase-calc-table .fbo-pc-check-col {
   width: 36px;
   text-align: center;
