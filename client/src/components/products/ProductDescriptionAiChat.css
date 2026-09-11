@@ -27,8 +27,17 @@
   gap: 6px 10px;
 }
 
-.product-desc-ai-chat__head strong {
-  font-size: 14px;
+.product-desc-ai-chat__settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.product-desc-ai-chat__settings-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .product-desc-ai-chat__meta {

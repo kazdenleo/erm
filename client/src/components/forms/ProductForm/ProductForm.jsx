@@ -35,6 +35,7 @@ import { ProductDescriptionAiModal } from '../../products/ProductDescriptionAiMo
 import { AttributeEditorAiChat } from '../../products/AttributeEditorAiChat.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
 import { erpAttrEditorKey } from '../../../utils/aiAttributeEditorFields.js';
+import { mergeUpdatedAttribute } from '../../../utils/aiChatSettings.js';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import {
   applyComputedAttributeValues,
@@ -51,7 +52,7 @@ import {
   normalizeOzonComplexAttributes,
   setVehicleGroupRows,
 } from '../../../utils/ozonComplexAttributes.js';
-import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
+import { isSystemMainFieldAttr, findSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { categoryVideoCoverTemplatesApi } from '../../../services/categoryVideoCoverTemplates.api.js';
 import { normalizeVideoCoverSettings } from '../../../utils/videoCoverTemplate.js';
 import { MarketplaceCardQualityPanel } from './MarketplaceCardQualityPanel.jsx';
@@ -2413,6 +2414,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_links: normalizeAttrMpLinks(linksMap[String(a.id)] ?? linksMap[a.id]),
       }));
   }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
+
+  const descriptionAiAttribute = useMemo(
+    () => findSystemMainFieldAttr(allAttributes, 'description'),
+    [allAttributes]
+  );
+
+  const handleAiSettingsSaved = useCallback((attr) => {
+    setAllAttributes((prev) => mergeUpdatedAttribute(prev, attr));
+    setEditableAttrAiModal((prev) =>
+      prev && attr && String(prev.id) === String(attr.id) ? { ...prev, ...attr } : prev
+    );
+  }, []);
 
   const visibleCategoryAttributes = useMemo(
     () =>
@@ -10789,6 +10802,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           })
         }
         onApply={applyAiDraft}
+        settingsAttribute={descriptionAiAttribute}
+        onSettingsSaved={handleAiSettingsSaved}
       />
       <Modal
         isOpen={!!editableAttrAiModal}
@@ -10834,6 +10849,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
               }
               setEditableAttrAiModal(null);
             }}
+            settingsAttribute={
+              allAttributes.find((a) => String(a.id) === String(editableAttrAiModal.id)) ||
+              editableAttrAiModal
+            }
+            onSettingsSaved={handleAiSettingsSaved}
           />
         ) : null}
       </Modal>

@@ -8,6 +8,8 @@ export function ProductDescriptionAiModal({
   productId = null,
   getDraft,
   onApply,
+  settingsAttribute = null,
+  onSettingsSaved,
 }) {
   if (!isOpen) return null;
   return (
@@ -20,6 +22,8 @@ export function ProductDescriptionAiModal({
           onApply?.(proposed, data);
           onClose?.();
         }}
+        settingsAttribute={settingsAttribute}
+        onSettingsSaved={onSettingsSaved}
       />
     </Modal>
   );

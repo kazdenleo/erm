@@ -48,7 +48,9 @@ import { attrShowsRelatedFields, attrAiChatEnabled, isEditableAttrType } from '.
 import {
   isSystemMainFieldAttr,
   mainFieldShowsRelatedFields,
+  findSystemMainFieldAttr,
 } from '../../utils/systemMainFieldAttributes.js';
+import { mergeUpdatedAttribute } from '../../utils/aiChatSettings.js';
 import {
   getMpDraftDimensionsMm,
   getYmDraftWeightDimensions,
@@ -3418,6 +3420,7 @@ function buildErpAttrColumnDefs(
         system_key: attr.system_key || '',
         show_related_fields: !!attr.show_related_fields,
         ai_chat_enabled: !!attr.ai_chat_enabled,
+        ai_chat_settings: attr.ai_chat_settings ?? attr.aiChatSettings ?? null,
       },
       showRelatedFields: attrShowsRelatedFields(attr),
       dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
@@ -5705,6 +5708,21 @@ export function ProductsBulkEdit() {
   const [mpAttrColumnDefsState, setMpAttrColumnDefs] = useState([]);
   const [erpAttrColumnDefs, setErpAttrColumnDefs] = useState([]);
   const [allProductAttributes, setAllProductAttributes] = useState([]);
+  const descriptionAiAttribute = useMemo(
+    () => findSystemMainFieldAttr(allProductAttributes, 'description'),
+    [allProductAttributes]
+  );
+  const handleAiSettingsSaved = useCallback((attr) => {
+    if (!attr?.id) return;
+    setAllProductAttributes((prev) => mergeUpdatedAttribute(prev, attr));
+    setErpAttrColumnDefs((cols) =>
+      (cols || []).map((c) =>
+        c?.erpAttr && String(c.erpAttr.id) === String(attr.id)
+          ? { ...c, erpAttr: { ...c.erpAttr, ...attr } }
+          : c
+      )
+    );
+  }, []);
   const [mpLabelMaps, setMpLabelMaps] = useState({ ozon: {}, wb: {}, ym: {} });
   const mpAttrColumnDefs = useMemo(() => {
     const catId = String(filterCategoryId || '').trim();
@@ -9661,6 +9679,8 @@ export function ProductsBulkEdit() {
             {textPopupIsDescription ? (
               <ProductDescriptionAiChat
                 compact
+                settingsAttribute={descriptionAiAttribute}
+                onSettingsSaved={handleAiSettingsSaved}
                 productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
                 getDraft={() => {
                   const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
@@ -9690,6 +9710,11 @@ export function ProductsBulkEdit() {
             ) : textPopupIsAiEditable && aiEnabled ? (
               <AttributeEditorAiChat
                 title={`ИИ — ${textPopup.col?.erpAttr?.name || textPopup.col?.label || 'атрибут'}`}
+                settingsAttribute={
+                  allProductAttributes.find((a) => String(a.id) === String(textPopup.col?.erpAttr?.id)) ||
+                  textPopup.col?.erpAttr
+                }
+                onSettingsSaved={handleAiSettingsSaved}
                 productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
                 outputFields={[
                   {
@@ -9791,6 +9816,8 @@ export function ProductsBulkEdit() {
               <div className="products-bulk-modal-ai-desc mb-3">
                 <ProductDescriptionAiChat
                   bulkItems={pageDescriptionAiItems}
+                  settingsAttribute={descriptionAiAttribute}
+                  onSettingsSaved={handleAiSettingsSaved}
                   onApplyBulk={(items) => {
                     applyAiBulkDraft(items);
                     setBulkModal({ open: false, column: null });
@@ -9805,6 +9832,11 @@ export function ProductsBulkEdit() {
               <div className="products-bulk-modal-ai-desc mb-3">
                 <AttributeEditorAiChat
                   title={`ИИ — ${bulkModalCol.erpAttr?.name || bulkModalCol.label || 'атрибут'}`}
+                  settingsAttribute={
+                    allProductAttributes.find((a) => String(a.id) === String(bulkModalCol.erpAttr?.id)) ||
+                    bulkModalCol.erpAttr
+                  }
+                  onSettingsSaved={handleAiSettingsSaved}
                   outputFields={[
                     {
                       key: erpAttrEditorKey(bulkModalCol.erpAttr.id),

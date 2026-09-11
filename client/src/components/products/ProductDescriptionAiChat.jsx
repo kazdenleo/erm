@@ -13,15 +13,14 @@ import {
   filterDraftForAiContext,
   formatAiChangesPreview,
 } from '../../utils/aiDescriptionFields.js';
+import { AiChatSettingsPanel } from './AiChatSettingsPanel.jsx';
+import {
+  attrAiChatSettingsRaw,
+  aiChatSettingsKey,
+  pickAiChatSettings,
+  saveAttributeAiChatSettings,
+} from '../../utils/aiChatSettings.js';
 import './ProductDescriptionAiChat.css';
-
-function toggleKey(list, key) {
-  if (list.includes(key)) {
-    const next = list.filter((k) => k !== key);
-    return next.length ? next : list;
-  }
-  return [...list, key];
-}
 
 export function ProductDescriptionAiChat({
   compact = false,
@@ -32,6 +31,8 @@ export function ProductDescriptionAiChat({
   bulkItems = [],
   onApply,
   onApplyBulk,
+  settingsAttribute = null,
+  onSettingsSaved,
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
@@ -41,10 +42,29 @@ export function ProductDescriptionAiChat({
   const [outputFields, setOutputFields] = useState(() => [...AI_DESCRIPTION_OUTPUT_KEYS]);
   const [contextFields, setContextFields] = useState(() => [...AI_DESCRIPTION_CONTEXT_KEYS]);
   const [fillEmptyOnly, setFillEmptyOnly] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const listRef = useRef(null);
+
+  const settingsKey = aiChatSettingsKey(settingsAttribute);
+  useEffect(() => {
+    const picked = pickAiChatSettings(attrAiChatSettingsRaw(settingsAttribute), {
+      allowOutput: AI_DESCRIPTION_OUTPUT_KEYS,
+      allowContext: AI_DESCRIPTION_CONTEXT_KEYS,
+      defaultOutput: AI_DESCRIPTION_OUTPUT_KEYS,
+      defaultContext: AI_DESCRIPTION_CONTEXT_KEYS,
+    });
+    setOutputFields(picked.outputKeys);
+    setContextFields(picked.contextKeys);
+    setFillEmptyOnly(picked.fillEmptyOnly);
+    setInput(picked.prompt);
+    setSettingsMessage('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsKey]);
 
   useEffect(() => {
     if (!listRef.current) return;
@@ -64,7 +84,6 @@ export function ProductDescriptionAiChat({
     }
 
     setMessages((prev) => [...prev, { role: 'user', content: instruction }]);
-    setInput('');
     setSending(true);
     setError(null);
     setLastResult(null);
@@ -133,6 +152,30 @@ export function ProductDescriptionAiChat({
     ? (lastResult.items || []).some((it) => it?.changes?.length)
     : !!(lastResult?.data?.changes?.length);
 
+  const persistSettings = async () => {
+    if (!settingsAttribute?.id) {
+      setSettingsMessage('Нет системного атрибута «Описание» — настройки некуда сохранить.');
+      return;
+    }
+    setSettingsSaving(true);
+    setSettingsMessage('');
+    try {
+      const payload = {
+        outputKeys: outputFields,
+        contextKeys: contextFields,
+        fillEmptyOnly,
+        prompt: input,
+      };
+      const saved = await saveAttributeAiChatSettings(settingsAttribute.id, payload);
+      onSettingsSaved?.(saved);
+      setSettingsMessage('Настройки сохранены для описания');
+    } catch (err) {
+      setSettingsMessage(getApiErrorMessage(err, 'Не удалось сохранить настройки'));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
   if (configLoading || !ready) return null;
 
   return (
@@ -151,49 +194,23 @@ export function ProductDescriptionAiChat({
         <p className="product-desc-ai-chat__meta mb-0">товаров: {bulkItems.length}</p>
       ) : null}
 
-      <div className="product-desc-ai-chat__sections">
-        <p className="product-desc-ai-chat__section-title">Заполнить поля</p>
-        <div className="product-desc-ai-chat__checks">
-          {AI_DESCRIPTION_OUTPUT_FIELDS.map((f) => (
-            <label key={f.key} className="product-desc-ai-chat__check">
-              <input
-                type="checkbox"
-                checked={outputFields.includes(f.key)}
-                onChange={() => setOutputFields((prev) => toggleKey(prev, f.key))}
-                disabled={sending}
-              />
-              {f.label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="product-desc-ai-chat__sections">
-        <p className="product-desc-ai-chat__section-title">Учитывать при генерации</p>
-        <div className="product-desc-ai-chat__checks">
-          {AI_DESCRIPTION_CONTEXT_FIELDS.map((f) => (
-            <label key={f.key} className="product-desc-ai-chat__check">
-              <input
-                type="checkbox"
-                checked={contextFields.includes(f.key)}
-                onChange={() => setContextFields((prev) => toggleKey(prev, f.key))}
-                disabled={sending}
-              />
-              {f.label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <label className="product-desc-ai-chat__check">
-        <input
-          type="checkbox"
-          checked={fillEmptyOnly}
-          onChange={(e) => setFillEmptyOnly(e.target.checked)}
-          disabled={sending}
-        />
-        Только пустые — не переписывать уже заполненное
-      </label>
+      <AiChatSettingsPanel
+        open={settingsOpen}
+        onToggleOpen={() => setSettingsOpen((v) => !v)}
+        outputDefs={AI_DESCRIPTION_OUTPUT_FIELDS}
+        selectedOutputs={outputFields}
+        onChangeOutputs={setOutputFields}
+        contextDefs={AI_DESCRIPTION_CONTEXT_FIELDS}
+        contextKeys={contextFields}
+        onChangeContext={setContextFields}
+        fillEmptyOnly={fillEmptyOnly}
+        onChangeFillEmptyOnly={setFillEmptyOnly}
+        canSave={!!settingsAttribute?.id}
+        saving={settingsSaving}
+        saveMessage={settingsMessage}
+        onSave={persistSettings}
+        disabled={sending}
+      />
 
       <div className="product-desc-ai-chat__messages" ref={listRef}>
         {messages.length === 0 ? (

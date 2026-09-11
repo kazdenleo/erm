@@ -11,15 +11,14 @@ import {
   filterContextForAttrEditor,
   formatAttrEditorChangesPreview,
 } from '../../utils/aiAttributeEditorFields.js';
+import { AiChatSettingsPanel } from './AiChatSettingsPanel.jsx';
+import {
+  attrAiChatSettingsRaw,
+  aiChatSettingsKey,
+  pickAiChatSettings,
+  saveAttributeAiChatSettings,
+} from '../../utils/aiChatSettings.js';
 import './ProductDescriptionAiChat.css';
-
-function toggleKey(list, key) {
-  if (list.includes(key)) {
-    const next = list.filter((k) => k !== key);
-    return next.length ? next : list;
-  }
-  return [...list, key];
-}
 
 export function AttributeEditorAiChat({
   productId = null,
@@ -30,6 +29,8 @@ export function AttributeEditorAiChat({
   onApplyBulk,
   examples = APPLICABILITY_AI_EXAMPLES,
   title = 'ИИ',
+  settingsAttribute = null,
+  onSettingsSaved,
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
@@ -40,19 +41,30 @@ export function AttributeEditorAiChat({
   const [input, setInput] = useState('');
   const [contextKeys, setContextKeys] = useState(() => [...DEFAULT_ATTR_EDITOR_CONTEXT_KEYS]);
   const [fillEmptyOnly, setFillEmptyOnly] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const listRef = useRef(null);
 
   const outputKeysSig = outputKeys.join('|');
+  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${outputKeysSig}`;
   useEffect(() => {
-    setSelectedOutputs((prev) => {
-      const next = outputKeys.filter((k) => prev.includes(k));
-      return next.length ? next : [...outputKeys];
+    const picked = pickAiChatSettings(attrAiChatSettingsRaw(settingsAttribute), {
+      allowOutput: outputKeys,
+      allowContext: DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
+      defaultOutput: outputKeys,
+      defaultContext: DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when field list identity changes
-  }, [outputKeysSig]);
+    setSelectedOutputs(picked.outputKeys);
+    setContextKeys(picked.contextKeys);
+    setFillEmptyOnly(picked.fillEmptyOnly);
+    setInput(picked.prompt);
+    setSettingsMessage('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsKey]);
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -69,7 +81,6 @@ export function AttributeEditorAiChat({
     const fillEmpty = fillEmptyOnly && !instructionAllowsOverwrite(instruction);
 
     setMessages((prev) => [...prev, { role: 'user', content: instruction }]);
-    setInput('');
     setSending(true);
     setError(null);
     setLastResult(null);
@@ -152,6 +163,29 @@ export function AttributeEditorAiChat({
     ? (lastResult.items || []).some((it) => it?.changes?.length)
     : !!(lastResult?.data?.changes?.length);
 
+  const persistSettings = async () => {
+    if (!settingsAttribute?.id) {
+      setSettingsMessage('Некуда сохранить: нет id атрибута.');
+      return;
+    }
+    setSettingsSaving(true);
+    setSettingsMessage('');
+    try {
+      const saved = await saveAttributeAiChatSettings(settingsAttribute.id, {
+        outputKeys: selectedOutputs,
+        contextKeys,
+        fillEmptyOnly,
+        prompt: input,
+      });
+      onSettingsSaved?.(saved);
+      setSettingsMessage('Настройки сохранены для этого атрибута');
+    } catch (err) {
+      setSettingsMessage(getApiErrorMessage(err, 'Не удалось сохранить настройки'));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
   if (aiLoading || !aiReady) return null;
 
   return (
@@ -161,53 +195,27 @@ export function AttributeEditorAiChat({
         {isBulk ? (
           <span className="product-desc-ai-chat__meta">товаров: {bulkItems.length}</span>
         ) : (
-          <span className="product-desc-ai-chat__meta">выберите поля и напишите запрос</span>
+          <span className="product-desc-ai-chat__meta">напишите запрос или откройте настройки</span>
         )}
       </div>
 
-      <div className="product-desc-ai-chat__sections">
-        <p className="product-desc-ai-chat__section-title">Заполнить поля</p>
-        <div className="product-desc-ai-chat__checks">
-          {(outputFields || []).map((f) => (
-            <label key={f.key} className="product-desc-ai-chat__check">
-              <input
-                type="checkbox"
-                checked={selectedOutputs.includes(f.key)}
-                onChange={() => setSelectedOutputs((prev) => toggleKey(prev, f.key))}
-                disabled={sending}
-              />
-              {f.label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="product-desc-ai-chat__sections">
-        <p className="product-desc-ai-chat__section-title">Учитывать при генерации</p>
-        <div className="product-desc-ai-chat__checks">
-          {DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS.map((f) => (
-            <label key={f.key} className="product-desc-ai-chat__check">
-              <input
-                type="checkbox"
-                checked={contextKeys.includes(f.key)}
-                onChange={() => setContextKeys((prev) => toggleKey(prev, f.key))}
-                disabled={sending}
-              />
-              {f.label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <label className="product-desc-ai-chat__check">
-        <input
-          type="checkbox"
-          checked={fillEmptyOnly}
-          onChange={(e) => setFillEmptyOnly(e.target.checked)}
-          disabled={sending}
-        />
-        Только пустые — не переписывать уже заполненное
-      </label>
+      <AiChatSettingsPanel
+        open={settingsOpen}
+        onToggleOpen={() => setSettingsOpen((v) => !v)}
+        outputDefs={outputFields || []}
+        selectedOutputs={selectedOutputs}
+        onChangeOutputs={setSelectedOutputs}
+        contextDefs={DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS}
+        contextKeys={contextKeys}
+        onChangeContext={setContextKeys}
+        fillEmptyOnly={fillEmptyOnly}
+        onChangeFillEmptyOnly={setFillEmptyOnly}
+        canSave={!!settingsAttribute?.id}
+        saving={settingsSaving}
+        saveMessage={settingsMessage}
+        onSave={persistSettings}
+        disabled={sending}
+      />
 
       <div ref={listRef} className="product-desc-ai-chat__messages">
         {messages.length === 0 ? (

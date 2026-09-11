@@ -16,6 +16,7 @@ import {
   isSystemCardAttrKey,
   isSystemMainFieldAttrKey,
 } from '../utils/systemMainFieldAttributes.js';
+import { normalizeAiChatSettings } from '../utils/aiChatSettings.js';
 import {
   isSystemProductAttribute,
   productAttributeListFilter,
@@ -134,7 +135,16 @@ class ProductAttributesController {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const { id } = req.params;
-      const { name, type, dictionary_values, mp_links, formula, show_related_fields, ai_chat_enabled } = req.body;
+      const {
+        name,
+        type,
+        dictionary_values,
+        mp_links,
+        formula,
+        show_related_fields,
+        ai_chat_enabled,
+        ai_chat_settings,
+      } = req.body;
       const filter = productAttributeListFilter(tid, 2);
       const check = await query(
         `SELECT id, system_key, type, show_related_fields, ai_chat_enabled, profile_id
@@ -215,6 +225,11 @@ class ProductAttributesController {
         updates.push(`ai_chat_enabled = $${idx++}`);
         params.push(aiChat);
       }
+      if (ai_chat_settings !== undefined) {
+        const settings = normalizeAiChatSettings(ai_chat_settings);
+        updates.push(`ai_chat_settings = $${idx++}::jsonb`);
+        params.push(settings == null ? null : JSON.stringify(settings));
+      }
       if (updates.length > 0) {
         updates.push(`updated_at = CURRENT_TIMESTAMP`);
         params.push(id);
@@ -226,6 +241,12 @@ class ProductAttributesController {
       const result = await query('SELECT * FROM product_attributes WHERE id = $1', [id]);
       return res.status(200).json({ ok: true, data: result.rows[0] });
     } catch (error) {
+      if (String(error?.message || '').includes('ai_chat_settings')) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Нужна миграция атрибутов (209_product_attributes_ai_chat_settings).',
+        });
+      }
       next(error);
     }
   }
