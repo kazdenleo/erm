@@ -586,6 +586,7 @@ export function Orders() {
     }
   }, [location.search]);
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
+  const [countsByMarketplace, setCountsByMarketplace] = useState({});
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -998,16 +999,22 @@ export function Orders() {
       try {
         const params = {};
         if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
+        if (statusFilter && statusFilter !== 'all') params.status = statusFilter;
         const q = String(orderSearchQuery || '').trim();
         if (q) params.search = q;
         const data = await ordersApi.getStatusCounts(params);
-        setStatusCounts(data && typeof data === 'object' ? data : { all: 0 });
+        const payload = data && typeof data === 'object' ? data : { all: 0 };
+        const { byMarketplace, ...statusOnly } = payload;
+        setStatusCounts(statusOnly && typeof statusOnly === 'object' ? statusOnly : { all: 0 });
+        if (byMarketplace && typeof byMarketplace === 'object') {
+          setCountsByMarketplace(byMarketplace);
+        }
         requestNewOrdersSoundCheck();
       } catch (e) {
         // Не блокируем UI счётчиков на ошибке — просто оставляем прошлые значения.
       }
     },
-    [marketplaceFilter, orderSearchQuery]
+    [marketplaceFilter, statusFilter, orderSearchQuery]
   );
 
   /** Список + кнопки статусов (после «В закупку», «На сборку» и т.п.). */
@@ -1067,7 +1074,7 @@ export function Orders() {
       void loadStatusCounts({ silent: false });
     }, 250);
     return () => clearTimeout(t);
-  }, [marketplaceFilter, orderSearchQuery, loadStatusCounts]);
+  }, [marketplaceFilter, statusFilter, orderSearchQuery, loadStatusCounts]);
 
   // Звук "Новый заказ" перенесён в глобальный опрос (Layout) — чтобы работать на любой странице
   // и не срабатывать при открытии страницы «Заказы».
@@ -2061,34 +2068,6 @@ export function Orders() {
     }
     return out;
   }, [selectedKeys, selectedOrderByKey, filteredOrders]);
-
-  // Подсчёт количества строк (групп заказов) для кнопок фильтра маркетплейсов.
-  // Важно: считаем группы по `orderGroupId`, т.к. один заказ может быть из нескольких товаров.
-  const countsByMarketplace = useMemo(() => {
-    const ordersByStatus = orders.filter((o) => {
-      if (statusFilter === 'all') return true;
-      const mpLower = String(o.marketplace || '').toLowerCase();
-      const isWb = mpLower === 'wb' || mpLower === 'wildberries';
-      const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
-      return (
-        stNorm === statusFilter ||
-        (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
-        (!isWb && o.status === statusFilter)
-      );
-    });
-    const byGroup = new Map(); // gid -> normalizedMarketplace
-    for (const o of ordersByStatus) {
-      const mp = normalizeMarketplaceForUI(o.marketplace);
-      const ogk = orderGroupKey(o);
-      const gid = ogk || singleOrderListGroupKey(o);
-      if (!byGroup.has(gid)) byGroup.set(gid, mp);
-    }
-    const out = {};
-    for (const mp of byGroup.values()) {
-      out[mp] = (out[mp] || 0) + 1;
-    }
-    return out;
-  }, [orders, statusFilter]);
 
   const mpFilterRowTotal = useMemo(
     () => Object.values(countsByMarketplace).reduce((a, b) => a + (Number(b) || 0), 0),

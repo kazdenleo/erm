@@ -4,6 +4,7 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import { sumOrderableSupplierWarehouseStock } from '../utils/supplierProcurementArrival.js';
 
 class SupplierStocksRepositoryPG {
   /**
@@ -158,9 +159,11 @@ class SupplierStocksRepositoryPG {
          ss.price,
          ss.delivery_days,
          ss.stock_name,
+         ss.warehouses,
          s.id AS supplier_id,
          s.name AS supplier_name,
-         s.code AS supplier_code
+         s.code AS supplier_code,
+         s.api_config
        FROM supplier_stocks ss
        JOIN suppliers s ON ss.supplier_id = s.id
        WHERE ss.product_id = ANY($1::int[])
@@ -169,7 +172,25 @@ class SupplierStocksRepositoryPG {
        ORDER BY ss.product_id, s.name NULLS LAST`,
       params
     );
-    return result.rows || [];
+    const now = new Date();
+    return (result.rows || []).map((row) => {
+      const orderable = sumOrderableSupplierWarehouseStock({
+        apiConfig: row.api_config,
+        stockWarehouses: row.warehouses,
+        aggregatedStock: row.stock,
+        now
+      });
+      return {
+        product_id: row.product_id,
+        stock: orderable,
+        price: row.price,
+        delivery_days: row.delivery_days,
+        stock_name: row.stock_name,
+        supplier_id: row.supplier_id,
+        supplier_name: row.supplier_name,
+        supplier_code: row.supplier_code
+      };
+    }).filter((row) => (Number(row.stock) || 0) > 0);
   }
 
   /**

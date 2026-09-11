@@ -208,7 +208,7 @@ function mergeKitHeaderCell(existing, meta) {
 
 function addKitLine(
   kitHeaderMap,
-  componentRowMap,
+  productRowMap,
   {
     supplyId,
     supplyItemId,
@@ -249,8 +249,9 @@ function addKitLine(
     const perKit = comp.quantity;
     const componentQty = kitQty * perKit;
     const info = productInfoById.get(compId) || {};
-    const compKey = `kit:p:${kitProductId}:c:${compId}`;
-    const agg = ensureProductRow(componentRowMap, compKey, {
+    // Одна строка на комплектующий SKU — иначе один артикул дублируется под каждым комплектом.
+    const compKey = `p:${compId}`;
+    const agg = ensureProductRow(productRowMap, compKey, {
       productId: compId,
       productName: info.name || `Товар #${compId}`,
       sku: info.sku || null,
@@ -260,9 +261,15 @@ function addKitLine(
       incoming: incomingByProduct.get(compId) ?? 0,
     });
     agg.rowType = 'component';
-    agg.parentKey = header.key;
-    agg.kitProductId = kitProductId;
-    agg.kitSources = [{ kitProductId, label: kitLabel }];
+    if (agg.kitProductId == null) {
+      agg.kitProductId = kitProductId;
+      agg.parentKey = header.key;
+    }
+    const sources = Array.isArray(agg.kitSources) ? agg.kitSources : [];
+    if (!sources.some((s) => Number(s.kitProductId) === Number(kitProductId))) {
+      sources.push({ kitProductId, label: kitLabel });
+    }
+    agg.kitSources = sources;
     const prevQty = agg.supplyQty[supplyId] || 0;
     agg.supplyQty[supplyId] = prevQty + componentQty;
     agg.supplyCells[supplyId] = mergeSupplyCell(agg.supplyCells[supplyId], {
@@ -374,11 +381,28 @@ function sortPurchaseDisplayRows(rows) {
   return out;
 }
 
-function buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap) {
-  const componentRows = [...componentRowMap.values()].map(finalizePurchaseRow);
-  const plainRows = [...plainRowMap.values()].map((r) =>
-    finalizePurchaseRow({ ...r, rowType: 'plain' })
-  );
+function componentBelongsToKit(row, kitProductId) {
+  const kid = Number(kitProductId);
+  if (!Number.isFinite(kid)) return false;
+  if (Number(row.kitProductId) === kid) return true;
+  return (row.kitSources || []).some((s) => Number(s.kitProductId) === kid);
+}
+
+function buildPurchaseDisplayRows(kitHeaderMap, productRowMap) {
+  const productRows = [...productRowMap.values()].map((r) => {
+    const hasKitSources = (r.kitSources?.length ?? 0) > 0;
+    return finalizePurchaseRow({
+      ...r,
+      rowType: hasKitSources ? 'component' : r.rowType || 'plain',
+    });
+  });
+
+  const componentRows = productRows.filter((r) => r.rowType === 'component');
+  const plainRows = productRows
+    .filter((r) => r.rowType !== 'component')
+    .sort((a, b) =>
+      String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
+    );
 
   const kitHeaders = [...kitHeaderMap.values()]
     .map(finalizeKitHeaderRow)
@@ -386,18 +410,53 @@ function buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap) {
       String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
     );
 
+  const emittedKeys = new Set();
   const rows = [];
   for (const header of kitHeaders) {
-    rows.push(header);
     const comps = componentRows
-      .filter((r) => r.kitProductId === header.kitProductId)
+      .filter((r) => componentBelongsToKit(r, header.kitProductId) && !emittedKeys.has(r.key))
       .sort((a, b) =>
         String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
       );
-    rows.push(...comps);
+    // Комплектующие уже показаны под другим комплектом — шапку без строк не дублируем.
+    if (!comps.length) continue;
+    rows.push(header);
+    for (const c of comps) {
+      emittedKeys.add(c.key);
+      rows.push(c);
+    }
+  }
+  for (const c of componentRows) {
+    if (!emittedKeys.has(c.key)) rows.push(c);
   }
   rows.push(...plainRows);
   return sortPurchaseDisplayRows(rows);
+}
+
+/** Оставить только строки выбранного поставщика; шапки комплектов — только если под ними есть строки. */
+function filterRowsBySupplier(rows, filterSid) {
+  if (filterSid == null) return rows;
+  const out = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    if (row.isKitHeader || row.rowType === 'kit') {
+      const header = row;
+      i += 1;
+      const comps = [];
+      while (i < rows.length && rows[i].rowType === 'component' && !rows[i].isKitHeader) {
+        const sid = rows[i].supplierId != null ? Number(rows[i].supplierId) : null;
+        if (sid === filterSid) comps.push(rows[i]);
+        i += 1;
+      }
+      if (comps.length) out.push(header, ...comps);
+      continue;
+    }
+    const sid = row.supplierId != null ? Number(row.supplierId) : null;
+    if (sid === filterSid) out.push(row);
+    i += 1;
+  }
+  return out;
 }
 
 class FboSuppliesPurchaseCalcService {
@@ -555,8 +614,7 @@ class FboSuppliesPurchaseCalcService {
     }
 
     const kitHeaderMap = new Map();
-    const componentRowMap = new Map();
-    const plainRowMap = new Map();
+    const productRowMap = new Map();
 
     for (const row of itemsR.rows || []) {
       const supplyId = Number(row.fbo_supply_id);
@@ -566,7 +624,7 @@ class FboSuppliesPurchaseCalcService {
 
       if (components?.length) {
         const kitInfo = productInfoById.get(productId) || {};
-        addKitLine(kitHeaderMap, componentRowMap, {
+        addKitLine(kitHeaderMap, productRowMap, {
           supplyId,
           supplyItemId: row.supply_item_id,
           kitProductId: productId,
@@ -583,7 +641,7 @@ class FboSuppliesPurchaseCalcService {
 
       const key = productId != null ? `p:${productId}` : `item:${row.supply_item_id}`;
       const info = productId != null ? productInfoById.get(productId) : null;
-      const agg = ensureProductRow(plainRowMap, key, {
+      const agg = ensureProductRow(productRowMap, key, {
         productId,
         productName: row.product_name || info?.name,
         sku: row.sku || info?.sku,
@@ -595,31 +653,25 @@ class FboSuppliesPurchaseCalcService {
         onHand: productId != null ? onHandByProduct.get(productId) ?? 0 : 0,
         incoming: productId != null ? incomingByProduct.get(productId) ?? 0 : 0,
       });
+      if (!agg.rowType) agg.rowType = 'plain';
       addPlainSupplyLine(agg, supplyId, row.supply_item_id, qty);
     }
 
-    const rows = buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap);
+    const rows = buildPurchaseDisplayRows(kitHeaderMap, productRowMap);
 
     const filterSid =
       supplierId != null && supplierId !== '' && !Number.isNaN(Number(supplierId))
         ? Number(supplierId)
         : null;
     const rowsWithSupplier = rows.map((row) => {
-      const pid = row.productId != null ? Number(row.productId) : null;
-      const info = pid != null ? productInfoById.get(pid) : null;
+      const productId = row.productId != null ? Number(row.productId) : null;
+      const info = productId != null ? productInfoById.get(productId) : null;
       return {
         ...row,
         supplierId: info?.supplierId ?? null,
       };
     });
-    const filteredRows =
-      filterSid != null
-        ? rowsWithSupplier.filter((row) => {
-            if (row.isKitHeader || row.rowType === 'kit') return true;
-            const sid = row.supplierId != null ? Number(row.supplierId) : null;
-            return sid == null || sid === filterSid;
-          })
-        : rowsWithSupplier;
+    const filteredRows = filterRowsBySupplier(rowsWithSupplier, filterSid);
 
     const purchasableRows = filteredRows.filter((r) => r.rowType !== 'kit' && !r.isKitHeader);
     const totals = purchasableRows.reduce(

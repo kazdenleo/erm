@@ -27,6 +27,7 @@ import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseSto
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 import logger from '../utils/logger.js';
 import { resolveProfileKitsEnabled } from '../utils/profileFeatureFlags.js';
+import { resolveKitOutstandingShipPlan } from '../utils/outstandingShipmentQty.js';
 
 export { syncProductQuantityFromWarehouseStock };
 
@@ -1517,13 +1518,20 @@ export async function readKitDisplayReservedQuantityForStockSummary(kitProductId
 
 /**
  * План отгрузки комплекта по заказу: целые SKU и/или комплектующие, без двойного списания.
- * @returns {Promise<{ wholeUnitsToShip: number, componentKitUnitsToShip: number }>}
+ * Текущий резерв списывается даже если по истории заказ уже «закрыт».
  */
 export async function resolveKitOrderShipmentPlan(kitProductId, orderDbId, opts = {}) {
+  const empty = {
+    wholeUnitsToShip: 0,
+    componentKitUnitsToShip: 0,
+    orderKitsRemaining: 0,
+    kitNet: 0,
+    compKitUnitsReserved: 0
+  };
   const kitId = Number(kitProductId);
   const oid = Number(orderDbId);
   if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) {
-    return { wholeUnitsToShip: 0, componentKitUnitsToShip: 0 };
+    return empty;
   }
 
   const kitOrderQty = Math.max(1, parseInt(opts.kitOrderQty, 10) || 1);
@@ -1531,7 +1539,7 @@ export async function resolveKitOrderShipmentPlan(kitProductId, orderDbId, opts 
   const warehouseId = opts.warehouseId ?? opts.warehouse_id ?? null;
   const getShippedQtyForProduct = opts.getShippedQtyForProduct;
   if (typeof getShippedQtyForProduct !== 'function') {
-    return { wholeUnitsToShip: 0, componentKitUnitsToShip: 0 };
+    return empty;
   }
 
   const components = await getKitComponents(kitId);
@@ -1546,32 +1554,28 @@ export async function resolveKitOrderShipmentPlan(kitProductId, orderDbId, opts 
         )
       : 0;
 
-  const orderKitsRemaining = Math.max(0, kitOrderQty - wholeShipped - kitsShippedViaComp);
-
   const compKitUnitsReserved =
     components.length > 0
       ? await minKitUnitsFromComponentReservesAsync(components, (pid) =>
           getNetReservedForOrderProduct(oid, pid, marketplaceOrderId, warehouseId)
         )
       : 0;
-  const compKitUnitsRemaining = Math.max(0, compKitUnitsReserved - kitsShippedViaComp);
 
   const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId });
-  // Резерв на SKU комплекта — план по резерву; иначе — по наличию (догоняющее списание после снятия резерва).
-  const wholeUnitsRemaining =
-    kitNet > 0
-      ? Math.max(0, kitNet - wholeShipped)
-      : Math.max(0, physicalWhole - wholeShipped);
-  const wholeUnitsToShip = Math.min(orderKitsRemaining, wholeUnitsRemaining);
-  const orderAfterWhole = orderKitsRemaining - wholeUnitsToShip;
-  let componentKitUnitsToShip = Math.min(orderAfterWhole, compKitUnitsRemaining);
+  const plan = resolveKitOutstandingShipPlan({
+    kitOrderQty,
+    wholeShipped,
+    kitsShippedViaComp,
+    kitNet,
+    compKitUnitsReserved,
+    physicalWhole
+  });
 
-  const totalPlanned = wholeUnitsToShip + componentKitUnitsToShip;
-  if (totalPlanned > orderKitsRemaining) {
-    componentKitUnitsToShip = Math.max(0, orderKitsRemaining - wholeUnitsToShip);
-  }
-
-  return { wholeUnitsToShip, componentKitUnitsToShip };
+  return {
+    ...plan,
+    kitNet,
+    compKitUnitsReserved
+  };
 }
 
 /** Резерв комплекта по заказу превышает фактическое наличие на складе (без «в пути»). */

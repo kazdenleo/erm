@@ -244,6 +244,80 @@ export function isMinutesInWarehouseWindow(minutes, timeAfter, timeUntil) {
   return minutes >= after || minutes <= until;
 }
 
+/** Склад поставщика сейчас принимает заказ (окно timeAfter…time по Москве). */
+export function isSupplierWarehouseAcceptingOrdersNow(warehouseCfg, now = new Date()) {
+  if (!warehouseCfg) return false;
+  const until = warehouseCfg.time || warehouseCfg.timeUntil || '23:59';
+  const after = warehouseCfg.timeAfter || '00:00';
+  const mins = getMoscowMinutesOfDay(now);
+  return isMinutesInWarehouseWindow(mins, after, until);
+}
+
+function parseJsonValue(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    if (!t) return null;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  return value;
+}
+
+function matchConfigWarehouseByStockName(cfgRows, stockName) {
+  const want = normalizeWarehouseNameKey(stockName);
+  if (!want || !cfgRows.length) return null;
+  const exact = cfgRows.find((w) => normalizeWarehouseNameKey(w.name) === want);
+  if (exact) return exact;
+  return findWarehouseByNameKey(cfgRows, stockName);
+}
+
+/**
+ * Остаток поставщика, который ещё можно заказать в текущем окне.
+ * После отсечки склада (СПб 17:00, Москва 21:00) его qty не идёт в «доступно» / пуш на МП.
+ */
+export function sumOrderableSupplierWarehouseStock({
+  apiConfig,
+  stockWarehouses,
+  aggregatedStock = 0,
+  now = new Date()
+} = {}) {
+  const cfg = parseJsonValue(apiConfig);
+  const cfgRows = normalizeSupplierConfigWarehouses(
+    cfg && typeof cfg === 'object' ? cfg.warehouses : null
+  );
+  const warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
+  const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
+
+  if (!warehouses.length) {
+    return agg;
+  }
+
+  const anyOpen = warehouses.some((w) => isSupplierWarehouseAcceptingOrdersNow(w, now));
+  if (!anyOpen) return 0;
+
+  const rawWh = parseJsonValue(stockWarehouses);
+  const stockRows = Array.isArray(rawWh) ? rawWh : [];
+  if (!stockRows.length) {
+    return anyOpen ? agg : 0;
+  }
+
+  let sum = 0;
+  for (const sw of stockRows) {
+    const qty = Math.max(0, Math.floor(Number(sw?.stock) || 0));
+    if (qty <= 0) continue;
+    const name = sw.city || sw.name || '';
+    const matched = matchConfigWarehouseByStockName(warehouses, name);
+    if (!matched) continue;
+    if (!isSupplierWarehouseAcceptingOrdersNow(matched, now)) continue;
+    sum += qty;
+  }
+  return sum;
+}
+
 function addDaysToYmd(ymd, days) {
   const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
   const base = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));

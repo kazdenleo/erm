@@ -9,6 +9,7 @@ import {
   parseCutoffBucket,
   isProcurementBucketOpenForNewOrders,
   isPurchaseCreatedInProcurementWindow,
+  sumOrderableSupplierWarehouseStock,
 } from '../src/utils/supplierProcurementArrival.js';
 
 function moscowDate(y, mo, d, h = 12, min = 0) {
@@ -210,5 +211,80 @@ describe('procurement window guards', () => {
     expect(isPurchaseCreatedInProcurementWindow(createdYesterday, bucket, now)).toBe(false);
     const createdInWindow = moscowDate(2026, 6, 29, 22, 0);
     expect(isPurchaseCreatedInProcurementWindow(createdInWindow, bucket, now)).toBe(true);
+  });
+});
+
+describe('sumOrderableSupplierWarehouseStock', () => {
+  const mikadoCfg = {
+    warehouses: [
+      { name: 'Москва', time: '21:00', timeAfter: '09:00', arrivalDay: 'tomorrow' },
+      { name: 'Москва2', time: '21:00', timeAfter: '09:00', arrivalDay: 'tomorrow' },
+      { name: 'СПБ', time: '17:00', timeAfter: '09:00', arrivalDay: 'tomorrow' },
+    ],
+  };
+  const stocks = [
+    { city: 'Москва', name: 'Москва', stock: 0 },
+    { city: 'СПб', name: 'СПб', stock: 5 },
+  ];
+
+  test('после 17:00 СПб не в «доступно», Москва 0 → 0', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: stocks,
+        aggregatedStock: 5,
+        now: moscowDate(2026, 9, 10, 17, 30),
+      })
+    ).toBe(0);
+  });
+
+  test('до 17:00 СПб ещё можно заказать', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: stocks,
+        aggregatedStock: 5,
+        now: moscowDate(2026, 9, 10, 16, 0),
+      })
+    ).toBe(5);
+  });
+
+  test('Москва до 21:00 плюс СПб до 17:00', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 1 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 6,
+        now: moscowDate(2026, 9, 10, 16, 0),
+      })
+    ).toBe(6);
+  });
+
+  test('после 17:00 остаётся только Москва', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 1 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 6,
+        now: moscowDate(2026, 9, 10, 18, 0),
+      })
+    ).toBe(1);
+  });
+
+  test('без окон в api_config — как раньше, вся сумма', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: {},
+        stockWarehouses: stocks,
+        aggregatedStock: 5,
+        now: moscowDate(2026, 9, 10, 18, 0),
+      })
+    ).toBe(5);
   });
 });

@@ -169,6 +169,7 @@ class OrdersController {
 
       const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
       const search = req.query?.search ? String(req.query.search).trim() : null;
+      const status = req.query?.status ? String(req.query.status).trim() : null;
 
       let excludeManual = false;
       if (tid != null) {
@@ -184,9 +185,16 @@ class OrdersController {
       };
       await applyAccessScopeToOrderOptions(req, options);
 
-      const data = await ordersService.getStatusCounts(options);
+      const [data, byMarketplace] = await Promise.all([
+        ordersService.getStatusCounts(options),
+        ordersService.getMarketplaceCounts({
+          ...options,
+          marketplace: undefined,
+          ...(status && status !== 'all' ? { status } : {}),
+        }),
+      ]);
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ ok: true, data });
+      return res.status(200).json({ ok: true, data: { ...data, byMarketplace } });
     } catch (error) {
       next(error);
     }

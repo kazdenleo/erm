@@ -13,6 +13,10 @@ import {
   clampReserveSplitToFreeIncoming,
 } from '../utils/reserveIncomingSplit.js';
 import {
+  outstandingShipmentQty,
+  kitShipmentPlanAllowedQty
+} from '../utils/outstandingShipmentQty.js';
+import {
   isKitProductId,
   applyKitOrderReserve,
   computeMaxKitUnitsReservable,
@@ -2311,15 +2315,15 @@ class OrdersService {
       targetQty != null
         ? Math.max(0, parseInt(targetQty, 10) || 0)
         : await this._resolveShipmentQtyForOrderProduct(orderRow, pid);
-    if (lineQty <= 0) return;
+    const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+    if (lineQty <= 0 && net <= 0) return;
 
     const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, pid);
-    const shipQty = Math.max(0, lineQty - alreadyShipped);
+    const shipQty = outstandingShipmentQty(lineQty, alreadyShipped, net);
     if (shipQty <= 0) return;
 
     let requireReserve = opts.requireReserve;
     if (requireReserve === undefined) {
-      const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
       requireReserve = net > 0;
     }
 
@@ -2363,50 +2367,32 @@ class OrdersService {
     const warehouseId = metaBase.warehouse_id ?? null;
     const orderIdStr = metaBase.orderId || '';
 
-    const { wholeUnitsToShip, componentKitUnitsToShip } = await resolveKitOrderShipmentPlan(
-      kitId,
-      orderDbId,
-      {
-        kitOrderQty: kitQty,
-        marketplaceOrderId: orderIdStr || null,
-        warehouseId,
-        getShippedQtyForProduct: (odbId, pid) => this._getShippedQtyForOrderProduct(odbId, pid)
-      }
-    );
+    const {
+      wholeUnitsToShip,
+      componentKitUnitsToShip,
+      orderKitsRemaining,
+      kitNet: planKitNet,
+      compKitUnitsReserved
+    } = await resolveKitOrderShipmentPlan(kitId, orderDbId, {
+      kitOrderQty: kitQty,
+      marketplaceOrderId: orderIdStr || null,
+      warehouseId,
+      getShippedQtyForProduct: (odbId, pid) => this._getShippedQtyForOrderProduct(odbId, pid)
+    });
 
-    const components = await getKitComponents(kitId);
-    const wholeShipped = Math.max(
-      0,
-      Number(await this._getShippedQtyForOrderProduct(orderDbId, kitId)) || 0
-    );
-    let kitsShippedViaComp = 0;
-    if (components.length > 0) {
-      const qtyPerKitByComp = new Map();
-      for (const c of components) {
-        const pid = Number(c.component_product_id);
-        if (!Number.isFinite(pid) || pid < 1) continue;
-        const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-        qtyPerKitByComp.set(pid, (qtyPerKitByComp.get(pid) || 0) + perKit);
-      }
-      let minKits = Infinity;
-      for (const [pid, perKit] of qtyPerKitByComp) {
-        const shipped = Number(await this._getShippedQtyForOrderProduct(orderDbId, pid)) || 0;
-        minKits = Math.min(minKits, Math.floor(shipped / perKit));
-      }
-      kitsShippedViaComp = Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
-    }
-    const orderKitsRemaining = Math.max(0, kitQty - wholeShipped - kitsShippedViaComp);
-    if (wholeUnitsToShip + componentKitUnitsToShip > orderKitsRemaining) {
+    const planned = wholeUnitsToShip + componentKitUnitsToShip;
+    const allowed = kitShipmentPlanAllowedQty(orderKitsRemaining, planKitNet, compKitUnitsReserved);
+    if (planned > allowed) {
       const err = new Error(
         `План отгрузки комплекта превышает остаток заказа: ` +
-          `к отгрузке ${wholeUnitsToShip + componentKitUnitsToShip}, осталось ${orderKitsRemaining}`
+          `к отгрузке ${planned}, осталось ${allowed}`
       );
       err.statusCode = 409;
       throw err;
     }
 
-    const kitNet = await getNetReservedForOrderProduct(orderDbId, kitId, orderIdStr || null, warehouseId);
-    const requireReserve = kitNet > 0;
+    const requireReserve = Number(planKitNet) > 0;
+    const components = await getKitComponents(kitId);
 
     if (wholeUnitsToShip > 0) {
       await stockMovementsService.applyOrderAssemblyShipment(kitId, {
@@ -2426,7 +2412,7 @@ class OrdersService {
     }
   }
 
-  /** Снять остаточный резерв после отгрузки (если unreserve не прошёл по складу / комплекту). */
+  /** Снять остаточный резерв после отгрузки (лишний резерв на другом SKU / комплектующих). */
   async _releaseLeftoverOrderReserve(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
     const orderDbId = orderRowDbId(orderRow);
@@ -2627,11 +2613,8 @@ class OrdersService {
       seen.add(dbId);
 
       try {
-        if (await this.isOrderFullyShipped(row)) {
-          skipped += 1;
-          await this._releaseLeftoverOrderReserve(row).catch(() => {});
-          continue;
-        }
+        // Всегда через apply: «уже отгружен» по истории + новый резерв должен списать наличие,
+        // а не только unreserve (post_shipment_cleanup).
         await this._applyAssemblyStockForOrderRow(row);
         if (await this.isOrderFullyShipped(row)) {
           processed += 1;
@@ -4117,6 +4100,44 @@ class OrdersService {
     const out = { all: groupToStatus.size };
     for (const st of groupToStatus.values()) {
       out[st] = (out[st] || 0) + 1;
+    }
+    return out;
+  }
+
+  /**
+   * Счётчики групп заказов по маркетплейсам (для кнопок фильтра МП).
+   * Не принимает marketplace: цифры всегда по всем МП в рамках статуса/поиска.
+   */
+  async getMarketplaceCounts(options = {}) {
+    const { marketplace: _ignore, ...rest } = options;
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      if (typeof this.repository.countGroupsByMarketplace === 'function') {
+        const rows = await this.repository.countGroupsByMarketplace(rest);
+        const out = {};
+        for (const r of rows || []) {
+          if (!r || !r.marketplace) continue;
+          out[String(r.marketplace)] = Number(r.count) || 0;
+        }
+        return out;
+      }
+    }
+    const items = await this.getAll({ ...rest, marketplace: undefined });
+    const groupToMp = new Map();
+    for (const o of items || []) {
+      const mpRaw = String(o.marketplace || 'unknown').toLowerCase();
+      const mp =
+        mpRaw === 'wb' || mpRaw === 'wildberries'
+          ? 'wildberries'
+          : mpRaw === 'ym' || mpRaw === 'yandex' || mpRaw === 'yandexmarket'
+            ? 'yandex'
+            : mpRaw;
+      const gid = String(o.orderGroupId ?? o.order_group_id ?? '').trim();
+      const ok = gid ? `${mp}|g|${gid}` : `${mp}|o|${String(o.orderId ?? o.order_id ?? '').trim()}`;
+      if (!groupToMp.has(ok)) groupToMp.set(ok, mp);
+    }
+    const out = {};
+    for (const mp of groupToMp.values()) {
+      out[mp] = (out[mp] || 0) + 1;
     }
     return out;
   }

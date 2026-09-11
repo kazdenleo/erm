@@ -404,6 +404,54 @@ class OrdersRepositoryPG {
   }
 
   /**
+   * Счётчики по маркетплейсам для кнопок «Все / OZ / WB / YM».
+   * Без фильтра marketplace: иначе при выбранном Яндексе «Все» = только Яндекс.
+   */
+  async countGroupsByMarketplace(options = {}) {
+    const { status, search, profileId, excludeManual, warehouseIds } = options;
+    const { whereSql, params } = this.buildFindAllFilters({
+      marketplace: null,
+      status: status && String(status).trim() !== '' && String(status).trim() !== 'all' ? status : null,
+      productId: null,
+      search,
+      profileId,
+      excludeManual,
+      warehouseIds,
+    });
+
+    const sql = `
+      WITH base AS (
+        SELECT
+          CASE
+            WHEN o.marketplace IN ('wb', 'wildberries') THEN 'wildberries'
+            WHEN o.marketplace IN ('ym', 'yandex', 'yandexmarket') THEN 'yandex'
+            WHEN o.marketplace = 'ozon' THEN 'ozon'
+            WHEN o.marketplace = 'manual' THEN 'manual'
+            ELSE COALESCE(o.marketplace, 'unknown')
+          END AS mp,
+          CASE
+            WHEN o.order_group_id IS NOT NULL AND TRIM(COALESCE(o.order_group_id, '')) <> ''
+              THEN (o.marketplace || '|g|' || o.order_group_id)
+            ELSE (o.marketplace || '|o|' || o.order_id)
+          END AS gk
+        FROM orders o
+        ${whereSql}
+      ),
+      uniq AS (
+        SELECT DISTINCT ON (gk) gk, mp
+        FROM base
+        ORDER BY gk, mp
+      )
+      SELECT mp AS marketplace, COUNT(*)::int AS count
+      FROM uniq
+      GROUP BY mp
+    `;
+
+    const result = await query(sql, params);
+    return result.rows?.map((r) => ({ marketplace: r.marketplace, count: Number(r.count) || 0 })) ?? [];
+  }
+
+  /**
    * Количество групп заказов в статусе «Новый» (лёгкий запрос для звукового оповещения).
    * Та же логика группировки и фильтра «new», что в findAll со status=new.
    */
