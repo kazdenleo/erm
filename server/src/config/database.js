@@ -195,13 +195,43 @@ export async function transaction(callback, { lockTimeoutMs = 20000, statementTi
       err.statusCode = 503;
       throw err;
     }
-    logger.error('Transaction rolled back', {
-      error: error.message,
-    });
+    if (isRetryablePgContention(error)) {
+      logger.warn('Transaction rolled back (deadlock)', { error: error.message, code: error.code });
+    } else {
+      logger.error('Transaction rolled back', {
+        error: error.message,
+      });
+    }
     throw error;
   } finally {
     client.release();
   }
+}
+
+export function isRetryablePgContention(error) {
+  const code = String(error?.code || '');
+  if (code === '40P01' || code === '40001') return true;
+  return /deadlock detected|serialization failure/i.test(String(error?.message || ''));
+}
+
+/**
+ * Повтор всей функции при deadlock / serialization failure PostgreSQL.
+ */
+export async function withDeadlockRetry(fn, { attempts = 6, label = 'db' } = {}) {
+  let lastErr;
+  const n = Math.max(1, Number(attempts) || 6);
+  for (let i = 0; i < n; i += 1) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!isRetryablePgContention(e) || i >= n - 1) throw e;
+      const waitMs = 50 + i * 90 + Math.floor(Math.random() * 80);
+      logger.warn('Deadlock retry', { label, attempt: i + 1, waitMs, message: e.message });
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
 }
 
 /** Статистика пула (для /health и диагностики перегрузки). */

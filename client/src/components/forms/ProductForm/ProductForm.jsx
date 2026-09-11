@@ -31,8 +31,10 @@ import { ProductMarketplaceLinkSection, OzonManufacturerArticleField } from './P
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
-import { ProductDescriptionAiChat } from '../../products/ProductDescriptionAiChat.jsx';
+import { ProductDescriptionAiModal } from '../../products/ProductDescriptionAiModal.jsx';
+import { AttributeEditorAiChat } from '../../products/AttributeEditorAiChat.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
+import { erpAttrEditorKey } from '../../../utils/aiAttributeEditorFields.js';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import {
   applyComputedAttributeValues,
@@ -47,6 +49,7 @@ import { useAiEnabled } from '../../../hooks/useAiEnabled.js';
 import {
   findOzonVehicleGroups,
   normalizeOzonComplexAttributes,
+  setVehicleGroupRows,
 } from '../../../utils/ozonComplexAttributes.js';
 import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { categoryVideoCoverTemplatesApi } from '../../../services/categoryVideoCoverTemplates.api.js';
@@ -1844,6 +1847,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
     normalizeOzonComplexAttributes(null)
   );
   const [editableAttrModal, setEditableAttrModal] = useState(null);
+  const [editableAttrAiModal, setEditableAttrAiModal] = useState(null);
+  const [descriptionAiOpen, setDescriptionAiOpen] = useState(false);
   const [ozonDictValues, setOzonDictValues] = useState({});
   const ozonDictQueueRef = useRef(null);
   const applyErpAttrValueToLinkedMpRef = useRef(null);
@@ -3159,6 +3164,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const links = normalizeAttrMpLinks(editableAttrModal.mp_links);
     return findOzonVehicleGroups(ozonFormAttributes, links.ozon);
   }, [editableAttrModal, ozonFormAttributes]);
+
+  const ozonVehicleGroupsForAi = useMemo(() => {
+    if (!editableAttrAiModal) return [];
+    const links = normalizeAttrMpLinks(editableAttrAiModal.mp_links);
+    return findOzonVehicleGroups(ozonFormAttributes, links.ozon);
+  }, [editableAttrAiModal, ozonFormAttributes]);
 
   const visibleOzonFormAttrs = useMemo(
     () =>
@@ -7695,14 +7706,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
 
       <div className="mt-2">
-        <MpFieldLabel
-          htmlFor="description"
-          fieldKey="description"
-          {...mainFieldMpLabelProps('description')}
-          diffs={mainCardFieldMpDiffs.description}
-        >
-          Описание
-        </MpFieldLabel>
+        <div className="d-flex align-items-center justify-content-between gap-2 flex-wrap">
+          <MpFieldLabel
+            htmlFor="description"
+            fieldKey="description"
+            {...mainFieldMpLabelProps('description')}
+            diffs={mainCardFieldMpDiffs.description}
+          >
+            Описание
+          </MpFieldLabel>
+          {aiEnabled ? (
+            <Button type="button" variant="secondary" size="small" onClick={() => setDescriptionAiOpen(true)}>
+              ИИ
+            </Button>
+          ) : null}
+        </div>
         <textarea
           id="description"
           className={limitClassName(
@@ -7724,18 +7742,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           );
         })()}
-        <div style={{ marginTop: '12px' }}>
-          <ProductDescriptionAiChat
-            compact
-            productId={currentProduct?.id || product?.id || null}
-            getDraft={() =>
-              snapshotAiCardDraft(formData, {
-                categoryName: selectedCategoryForCert?.name || '',
-              })
-            }
-            onApply={applyAiDraft}
-          />
-        </div>
       </div>
 
       {/* Изображения — габариты упаковки перенесены в «Атрибуты категории» */}
@@ -8759,14 +8765,26 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         onClick={() => setEditableAttrModal(attr)}
                         onFocus={() => setEditableAttrModal(attr)}
                       />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="small"
-                        onClick={() => setEditableAttrModal(attr)}
-                      >
-                        Редактировать{aiEnabled && attrAiChatEnabled(attr) ? ' · ИИ' : ''}
-                      </Button>
+                      <div className="d-flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="small"
+                          onClick={() => setEditableAttrModal(attr)}
+                        >
+                          Редактировать
+                        </Button>
+                        {aiEnabled && attrAiChatEnabled(attr) ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="small"
+                            onClick={() => setEditableAttrAiModal(attr)}
+                          >
+                            ИИ
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : isEditableAttrType(attr.type) ||
                   /аналог|применимост/i.test(String(attr.name || '')) ||
@@ -10747,7 +10765,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
             : ''
         }
         productId={currentProduct?.id || product?.id || null}
-        showAiChat={aiEnabled}
+        showAiChat={false}
         vehicleGroups={ozonVehicleGroupsForEditable}
         ozonComplex={ozonComplexAttributes}
         getContext={() =>
@@ -10760,6 +10778,65 @@ export const ProductForm = React.forwardRef(function ProductForm({
           if (nextComplex) setOzonComplexAttributes(normalizeOzonComplexAttributes(nextComplex));
         }}
       />
+      {/* Форма ИИ открывается только по кнопке у описания */}
+      <ProductDescriptionAiModal
+        isOpen={descriptionAiOpen}
+        onClose={() => setDescriptionAiOpen(false)}
+        productId={currentProduct?.id || product?.id || null}
+        getDraft={() =>
+          snapshotAiCardDraft(formData, {
+            categoryName: selectedCategoryForCert?.name || '',
+          })
+        }
+        onApply={applyAiDraft}
+      />
+      <Modal
+        isOpen={!!editableAttrAiModal}
+        onClose={() => setEditableAttrAiModal(null)}
+        title={editableAttrAiModal ? `ИИ — ${editableAttrAiModal.name || 'атрибут'}` : 'ИИ'}
+        size="large"
+        scrollable
+      >
+        {editableAttrAiModal ? (
+          <AttributeEditorAiChat
+            title="ИИ"
+            productId={currentProduct?.id || product?.id || null}
+            outputFields={[
+              {
+                key: erpAttrEditorKey(editableAttrAiModal.id),
+                label: editableAttrAiModal.name || 'Атрибут',
+                type: 'text',
+              },
+              ...(ozonVehicleGroupsForAi[0]
+                ? [{ key: 'vehicles', label: 'Автомобили Ozon', type: 'vehicles' }]
+                : []),
+            ]}
+            getContext={() => ({
+              ...snapshotAiCardDraft(formData, {
+                categoryName: selectedCategoryForCert?.name || '',
+              }),
+              [erpAttrEditorKey(editableAttrAiModal.id)]: String(
+                formData.attributeValues?.[String(editableAttrAiModal.id)] ?? ''
+              ),
+            })}
+            onApply={(proposed) => {
+              const key = erpAttrEditorKey(editableAttrAiModal.id);
+              if (proposed?.[key] != null) handleAttributeChange(editableAttrAiModal.id, proposed[key]);
+              if (Array.isArray(proposed?.vehicles_json) && ozonVehicleGroupsForAi[0]) {
+                const nextRows = proposed.vehicles_json.map((r) => ({
+                  mark: String(r.mark || ''),
+                  model: String(r.model || ''),
+                  modification: String(r.modification || ''),
+                }));
+                setOzonComplexAttributes((prev) =>
+                  setVehicleGroupRows(prev, ozonVehicleGroupsForAi[0].complexId, nextRows)
+                );
+              }
+              setEditableAttrAiModal(null);
+            }}
+          />
+        ) : null}
+      </Modal>
     </>
   );
 });

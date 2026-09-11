@@ -13,6 +13,13 @@
   padding: 10px 12px;
 }
 
+.product-desc-ai-chat--embedded {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
 .product-desc-ai-chat__head {
   display: flex;
   flex-wrap: wrap;

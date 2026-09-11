@@ -46,3 +46,8 @@ export async function proposeAttributeEditor(req, res) {
   const data = await aiAttributeEditorService.propose(profileIdFromReq(req), req.body || {});
   return res.json({ ok: true, data });
 }
+
+export async function proposeAttributeEditorBulk(req, res) {
+  const data = await aiAttributeEditorService.proposeBulk(profileIdFromReq(req), req.body || {});
+  return res.json({ ok: true, data });
+}

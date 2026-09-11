@@ -39,4 +39,9 @@ export const aiApi = {
     const response = await api.post('/ai/attribute-editor/propose', payload, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
+
+  proposeAttributeEditorBulk: async (payload) => {
+    const response = await api.post('/ai/attribute-editor/propose-bulk', payload, { timeout: 180000 });
+    return response.data?.data ?? response.data;
+  },
 };

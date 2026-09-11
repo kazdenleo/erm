@@ -5,7 +5,7 @@
 import productsService from './products.service.js';
 import { gigachatChatCompletions } from './gigachat.client.js';
 import { assertAiReady, aiHttpError } from '../utils/aiSettings.js';
-import { instructionAllowsOverwrite } from '../utils/aiProductCardFields.js';
+import { instructionAllowsOverwrite, MAX_BULK_AI_CARDS } from '../utils/aiProductCardFields.js';
 import logger from '../utils/logger.js';
 import repositoryFactory from '../config/repository-factory.js';
 
@@ -195,6 +195,26 @@ class AiAttributeEditorService {
       fillEmptyOnlyApplied: fillEmptyOnly,
       model: settings.model,
     };
+  }
+
+  async proposeBulk(profileId, body = {}) {
+    const list = Array.isArray(body.items) ? body.items : [];
+    if (!list.length) throw aiHttpError('Нет товаров для генерации', 400);
+    if (list.length > MAX_BULK_AI_CARDS) {
+      throw aiHttpError(`За один раз не больше ${MAX_BULK_AI_CARDS} товаров`, 400);
+    }
+    const items = [];
+    for (const it of list) {
+      const one = await this.propose(profileId, {
+        productId: it.productId,
+        instruction: body.instruction,
+        context: it.context,
+        outputFields: body.outputFields,
+        fillEmptyOnly: body.fillEmptyOnly,
+      });
+      items.push({ ...one, sku: str(it.sku) || one.sku || '' });
+    }
+    return { items };
   }
 }
 

@@ -10,7 +10,9 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { ProductAiDraftModal } from '../../components/products/ProductAiDraftModal.jsx';
 import { ProductDescriptionAiChat } from '../../components/products/ProductDescriptionAiChat.jsx';
+import { AttributeEditorAiChat } from '../../components/products/AttributeEditorAiChat.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
+import { erpAttrEditorKey } from '../../utils/aiAttributeEditorFields.js';
 import { ImageLightbox } from '../../components/common/ImageLightbox/ImageLightbox';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useCategories } from '../../hooks/useCategories';
@@ -42,7 +44,7 @@ import {
   isComputedAttrType,
   isSystemPriceAttr,
 } from '../../utils/attributeFormula.js';
-import { attrShowsRelatedFields, isEditableAttrType } from '../../utils/editableAttribute.js';
+import { attrShowsRelatedFields, attrAiChatEnabled, isEditableAttrType } from '../../utils/editableAttribute.js';
 import {
   isSystemMainFieldAttr,
   mainFieldShowsRelatedFields,
@@ -1260,7 +1262,30 @@ function linksSignature(links) {
 }
 
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
-const BULK_SAVE_CONCURRENCY = 8;
+const BULK_SAVE_CONCURRENCY = 4;
+const BULK_SAVE_DEADLOCK_ATTEMPTS = 5;
+
+function isBulkSaveDeadlockError(e) {
+  const data = e?.response?.data;
+  const code = data?.code || e?.code;
+  const msg = String(data?.message || data?.error || e?.message || '');
+  return code === '40P01' || code === '40001' || /deadlock detected|serialization failure/i.test(msg);
+}
+
+async function withBulkSaveDeadlockRetry(fn) {
+  let lastErr;
+  for (let i = 0; i < BULK_SAVE_DEADLOCK_ATTEMPTS; i += 1) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!isBulkSaveDeadlockError(e) || i >= BULK_SAVE_DEADLOCK_ATTEMPTS - 1) throw e;
+      const waitMs = 80 + i * 140 + Math.floor(Math.random() * 80);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
+}
 const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
 /** Фильтры списка и выбор категории — переживают F5 (localStorage; миграция из sessionStorage) */
 const LS_BULK_FILTERS = 'productsBulkEditFilters';
@@ -3392,6 +3417,7 @@ function buildErpAttrColumnDefs(
         formula: attr.formula || '',
         system_key: attr.system_key || '',
         show_related_fields: !!attr.show_related_fields,
+        ai_chat_enabled: !!attr.ai_chat_enabled,
       },
       showRelatedFields: attrShowsRelatedFields(attr),
       dictOptions: type === 'dictionary' ? dict.map((v) => ({ id: String(v), label: String(v) })) : null,
@@ -5270,6 +5296,10 @@ function isDescriptionTextColumn(col, erpAttrCols = []) {
   return false;
 }
 
+function isAiEditableErpColumn(col) {
+  return attrAiChatEnabled(col?.erpAttr);
+}
+
 function applyProposedToTextPopupGroup(group, proposed, linkKey) {
   const drafts = {};
   const independent = {};
@@ -5286,6 +5316,7 @@ function applyProposedToTextPopupGroup(group, proposed, linkKey) {
         val = proposed.mp_ozon_description;
       }
     }
+    if (val == null && c.erpAttr?.id) val = proposed[erpAttrEditorKey(c.erpAttr.id)];
     if (val == null || !String(val).trim()) continue;
     drafts[c.key] = String(val);
     if (linkKey && !isPopupMainColumn(c, linkKey)) independent[c.key] = true;
@@ -7233,6 +7264,42 @@ export function ProductsBulkEdit() {
       }));
   }, [rows, categories]);
 
+  const buildEditableAttrAiItems = useCallback(
+    (col) => {
+      if (!col?.erpAttr?.id) return [];
+      const fieldKey = erpAttrEditorKey(col.erpAttr.id);
+      const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
+      return rows
+        .filter((r) => {
+          if (!r?.id || isNewBulkRowId(r.id)) return false;
+          const nid = Number(r.id);
+          return Number.isInteger(nid) && nid >= 1;
+        })
+        .map((row) => ({
+          productId: Number(row.id),
+          sku: row.sku || '',
+          context: {
+            ...snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
+            [fieldKey]: String(row[col.key] ?? ''),
+          },
+        }));
+    },
+    [rows, categories]
+  );
+
+  const applyAiEditableAttrBulk = useCallback(
+    (items, attrId, colKey) => {
+      const fieldKey = erpAttrEditorKey(attrId);
+      for (const it of items || []) {
+        const id = str(it?.productId);
+        const val = it?.proposed?.[fieldKey];
+        if (!id || val == null || !String(val).trim()) continue;
+        updateCells(id, [[colKey, String(val)]]);
+      }
+    },
+    [updateCells]
+  );
+
   const handleGenerateBarcode = useCallback(
     async (row) => {
       const id = row?.id;
@@ -7479,7 +7546,7 @@ export function ProductsBulkEdit() {
             const r = item.row;
             try {
               if (item.type === 'create') {
-                const wrap = await productsApi.create(item.payload);
+                const wrap = await withBulkSaveDeadlockRetry(() => productsApi.create(item.payload));
                 const u = wrap?.data !== undefined ? wrap.data : wrap;
                 let nextRow = productToRow(
                   u,
@@ -7500,7 +7567,7 @@ export function ProductsBulkEdit() {
                 ok += 1;
                 createdCount += 1;
               } else {
-                const wrap = await productsApi.update(r.id, item.payload);
+                const wrap = await withBulkSaveDeadlockRetry(() => productsApi.update(r.id, item.payload));
                 const u = wrap?.data !== undefined ? wrap.data : wrap;
                 let nextRow = productToRow(
                   u,
@@ -8350,6 +8417,10 @@ export function ProductsBulkEdit() {
   const bulkModalIsDescription = bulkModalCol
     ? isDescriptionTextColumn(bulkModalCol, erpAttrColumnDefs)
     : false;
+  const textPopupIsAiEditable = isAiEditableErpColumn(textPopup.col);
+  const bulkModalIsAiEditable = isAiEditableErpColumn(bulkModalCol);
+  const bulkEditableAiItems =
+    bulkModalIsAiEditable && bulkModalCol ? buildEditableAttrAiItems(bulkModalCol) : [];
 
   return (
     <div key={location.key} className="products-bulk-page">
@@ -9499,10 +9570,10 @@ export function ProductsBulkEdit() {
         isOpen={!!(textPopup.open && textPopup.col && textPopupRow)}
         onClose={() => setTextPopup(EMPTY_TEXT_POPUP)}
         title={textPopupModalTitle}
-        size={textPopupIsDescription ? 'xl' : 'large'}
+        size={textPopupIsDescription || textPopupIsAiEditable ? 'xl' : 'large'}
       >
         {textPopup.col && textPopupRow ? (
-          <div className={textPopupIsDescription ? 'products-bulk-text-popup-layout' : undefined}>
+          <div className={textPopupIsDescription || textPopupIsAiEditable ? 'products-bulk-text-popup-layout' : undefined}>
             <div className="products-bulk-text-popup-group">
               {textPopupGroup.map((c) => {
                 const linkKey = popupLinkFieldKey(c, erpAttrColumnDefs);
@@ -9616,6 +9687,38 @@ export function ProductsBulkEdit() {
                   }));
                 }}
               />
+            ) : textPopupIsAiEditable && aiEnabled ? (
+              <AttributeEditorAiChat
+                title={`ИИ — ${textPopup.col?.erpAttr?.name || textPopup.col?.label || 'атрибут'}`}
+                productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
+                outputFields={[
+                  {
+                    key: erpAttrEditorKey(textPopup.col.erpAttr.id),
+                    label: textPopup.col.erpAttr.name || textPopup.col.label || 'Атрибут',
+                    type: 'text',
+                  },
+                ]}
+                getContext={() => {
+                  const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
+                  const base = textPopupSyntheticRow || textPopupRow;
+                  const ctx = snapshotAiCardDraft(base, { categoryName: cat?.name || '' });
+                  const key = erpAttrEditorKey(textPopup.col.erpAttr.id);
+                  ctx[key] = String((textPopup.drafts || {})[textPopup.col.key] ?? base[textPopup.col.key] ?? '');
+                  return ctx;
+                }}
+                onApply={(proposed) => {
+                  const patch = applyProposedToTextPopupGroup(
+                    textPopupGroup,
+                    proposed,
+                    textPopupLinkKey
+                  );
+                  setTextPopup((prev) => ({
+                    ...prev,
+                    drafts: { ...(prev.drafts || {}), ...patch.drafts },
+                    independent: { ...(prev.independent || {}), ...patch.independent },
+                  }));
+                }}
+              />
             ) : null}
             <div className="d-flex justify-content-end gap-2 mt-3 products-bulk-text-popup-footer">
               <Button
@@ -9677,7 +9780,7 @@ export function ProductsBulkEdit() {
                 .trim()}`
             : ''
         }
-        size={bulkModalIsDescription ? 'xl' : 'large'}
+        size={bulkModalIsDescription || bulkModalIsAiEditable ? 'xl' : 'large'}
       >
         {bulkModalCol ? (
           <div>
@@ -9695,6 +9798,28 @@ export function ProductsBulkEdit() {
                 />
                 <p className="text-muted small mt-2 mb-0">
                   Или введите одно описание вручную для всех строк ниже.
+                </p>
+              </div>
+            ) : null}
+            {bulkModalIsAiEditable && aiEnabled && bulkEditableAiItems.length > 0 ? (
+              <div className="products-bulk-modal-ai-desc mb-3">
+                <AttributeEditorAiChat
+                  title={`ИИ — ${bulkModalCol.erpAttr?.name || bulkModalCol.label || 'атрибут'}`}
+                  outputFields={[
+                    {
+                      key: erpAttrEditorKey(bulkModalCol.erpAttr.id),
+                      label: bulkModalCol.erpAttr?.name || bulkModalCol.label || 'Атрибут',
+                      type: 'text',
+                    },
+                  ]}
+                  bulkItems={bulkEditableAiItems}
+                  onApplyBulk={(items) => {
+                    applyAiEditableAttrBulk(items, bulkModalCol.erpAttr.id, bulkModalCol.key);
+                    setBulkModal({ open: false, column: null });
+                  }}
+                />
+                <p className="text-muted small mt-2 mb-0">
+                  Или введите одно значение вручную для всех строк ниже.
                 </p>
               </div>
             ) : null}

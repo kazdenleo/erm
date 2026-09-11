@@ -25,6 +25,7 @@ function toggleKey(list, key) {
 
 export function ProductDescriptionAiChat({
   compact = false,
+  embedded = false,
   disabled = false,
   productId = null,
   getDraft,
@@ -55,16 +56,14 @@ export function ProductDescriptionAiChat({
   const send = async (text) => {
     const instruction = String(text || '').trim();
     if (!instruction || sending || !ready) return;
-    const fillEmpty =
-      fillEmptyOnly && !instructionAllowsOverwrite(instruction);
+    const fillEmpty = fillEmptyOnly && !instructionAllowsOverwrite(instruction);
     const fields = outputFields.filter((k) => AI_DESCRIPTION_OUTPUT_KEYS.includes(k));
     if (!fields.length) {
       setError('Выберите хотя бы одно поле описания для генерации.');
       return;
     }
 
-    const userMsg = { role: 'user', content: instruction };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, { role: 'user', content: instruction }]);
     setInput('');
     setSending(true);
     setError(null);
@@ -92,19 +91,14 @@ export function ProductDescriptionAiChat({
         const reply = changed.length
           ? `Готово для ${changed.length} из ${items.length} товаров.\n\n${changed
               .slice(0, 3)
-              .map(
-                (it) =>
-                  `${it.sku || it.productId}:\n${formatAiChangesPreview(it.changes)}`
-              )
+              .map((it) => `${it.sku || it.productId}:\n${formatAiChangesPreview(it.changes)}`)
               .join('\n\n')}${changed.length > 3 ? `\n\n…и ещё ${changed.length - 3}` : ''}`
           : 'Модель не предложила изменений. Уточните запрос или снимите «Только пустые».';
         setLastResult({ bulk: true, items: allItems });
         setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
       } else {
         const draft =
-          typeof getDraft === 'function'
-            ? filterDraftForAiContext(getDraft(), contextFields)
-            : {};
+          typeof getDraft === 'function' ? filterDraftForAiContext(getDraft(), contextFields) : {};
         const data = await aiApi.proposeProductCard({
           productId: productId || undefined,
           draft,
@@ -143,118 +137,115 @@ export function ProductDescriptionAiChat({
 
   return (
     <div
-      className={`product-desc-ai-chat${compact ? ' product-desc-ai-chat--compact' : ''}${className ? ` ${className}` : ''}`}
+      className={`product-desc-ai-chat${compact ? ' product-desc-ai-chat--compact' : ''}${
+        embedded ? ' product-desc-ai-chat--embedded' : ''
+      }${className ? ` ${className}` : ''}`}
     >
-      <div className="product-desc-ai-chat__head">
-        <strong>ИИ — описание</strong>
-        {isBulk ? (
-          <span className="product-desc-ai-chat__meta">товаров: {bulkItems.length}</span>
+      {embedded ? null : (
+        <div className="product-desc-ai-chat__head">
+          <strong>ИИ — описание</strong>
+          {isBulk ? <span className="product-desc-ai-chat__meta">товаров: {bulkItems.length}</span> : null}
+        </div>
+      )}
+      {isBulk && embedded ? (
+        <p className="product-desc-ai-chat__meta mb-0">товаров: {bulkItems.length}</p>
+      ) : null}
+
+      <div className="product-desc-ai-chat__sections">
+        <p className="product-desc-ai-chat__section-title">Заполнить поля</p>
+        <div className="product-desc-ai-chat__checks">
+          {AI_DESCRIPTION_OUTPUT_FIELDS.map((f) => (
+            <label key={f.key} className="product-desc-ai-chat__check">
+              <input
+                type="checkbox"
+                checked={outputFields.includes(f.key)}
+                onChange={() => setOutputFields((prev) => toggleKey(prev, f.key))}
+                disabled={sending}
+              />
+              {f.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="product-desc-ai-chat__sections">
+        <p className="product-desc-ai-chat__section-title">Учитывать при генерации</p>
+        <div className="product-desc-ai-chat__checks">
+          {AI_DESCRIPTION_CONTEXT_FIELDS.map((f) => (
+            <label key={f.key} className="product-desc-ai-chat__check">
+              <input
+                type="checkbox"
+                checked={contextFields.includes(f.key)}
+                onChange={() => setContextFields((prev) => toggleKey(prev, f.key))}
+                disabled={sending}
+              />
+              {f.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <label className="product-desc-ai-chat__check">
+        <input
+          type="checkbox"
+          checked={fillEmptyOnly}
+          onChange={(e) => setFillEmptyOnly(e.target.checked)}
+          disabled={sending}
+        />
+        Только пустые — не переписывать уже заполненное
+      </label>
+
+      <div className="product-desc-ai-chat__messages" ref={listRef}>
+        {messages.length === 0 ? (
+          <div className="product-desc-ai-chat__examples">
+            {DESCRIPTION_AI_EXAMPLES.map((q) => (
+              <button key={q} type="button" onClick={() => send(q)} disabled={sending}>
+                {q}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {messages.map((msg, idx) => (
+          <div key={`${msg.role}-${idx}`} className={`product-desc-ai-chat__msg product-desc-ai-chat__msg--${msg.role}`}>
+            {msg.content}
+          </div>
+        ))}
+        {sending ? (
+          <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">Готовлю описание…</div>
         ) : null}
       </div>
 
-      <>
-          <div className="product-desc-ai-chat__sections">
-            <p className="product-desc-ai-chat__section-title">Заполнить поля</p>
-            <div className="product-desc-ai-chat__checks">
-              {AI_DESCRIPTION_OUTPUT_FIELDS.map((f) => (
-                <label key={f.key} className="product-desc-ai-chat__check">
-                  <input
-                    type="checkbox"
-                    checked={outputFields.includes(f.key)}
-                    onChange={() => setOutputFields((prev) => toggleKey(prev, f.key))}
-                    disabled={sending}
-                  />
-                  {f.label}
-                </label>
-              ))}
-            </div>
-          </div>
+      {error ? <div className="product-desc-ai-chat__error">{error}</div> : null}
 
-          <div className="product-desc-ai-chat__sections">
-            <p className="product-desc-ai-chat__section-title">Учитывать при генерации</p>
-            <div className="product-desc-ai-chat__checks">
-              {AI_DESCRIPTION_CONTEXT_FIELDS.map((f) => (
-                <label key={f.key} className="product-desc-ai-chat__check">
-                  <input
-                    type="checkbox"
-                    checked={contextFields.includes(f.key)}
-                    onChange={() => setContextFields((prev) => toggleKey(prev, f.key))}
-                    disabled={sending}
-                  />
-                  {f.label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <label className="product-desc-ai-chat__check">
-            <input
-              type="checkbox"
-              checked={fillEmptyOnly}
-              onChange={(e) => setFillEmptyOnly(e.target.checked)}
-              disabled={sending}
-            />
-            Только пустые — не переписывать уже заполненное
-          </label>
-
-          <div className="product-desc-ai-chat__messages" ref={listRef}>
-            {messages.length === 0 && (
-              <div className="product-desc-ai-chat__examples">
-                {DESCRIPTION_AI_EXAMPLES.map((q) => (
-                  <button key={q} type="button" onClick={() => send(q)} disabled={sending}>
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
-            {messages.map((msg, idx) => (
-              <div
-                key={`${msg.role}-${idx}`}
-                className={`product-desc-ai-chat__msg product-desc-ai-chat__msg--${msg.role}`}
-              >
-                {msg.content}
-              </div>
-            ))}
-            {sending ? (
-              <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">
-                Готовлю описание…
-              </div>
-            ) : null}
-          </div>
-
-          {error ? <div className="product-desc-ai-chat__error">{error}</div> : null}
-
-          <form
-            className="product-desc-ai-chat__form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send(input);
-            }}
-          >
-            <textarea
-              className="product-desc-ai-chat__input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Напишите, как изменить описание…"
-              disabled={sending}
-              rows={compact ? 2 : 3}
-            />
-            <div className="product-desc-ai-chat__actions">
-              <Button type="submit" variant="primary" size="small" disabled={sending || !input.trim()}>
-                Отправить
-              </Button>
-              {canApply ? (
-                <Button type="button" variant="secondary" size="small" onClick={applyLast} disabled={sending}>
-                  Подставить результат
-                </Button>
-              ) : null}
-            </div>
-            <p className="product-desc-ai-chat__apply-hint">
-              В ERP и на МП ничего не уходит, пока не нажмёте «Сохранить» в таблице или карточке.
-            </p>
-          </form>
-        </>
-      )}
+      <form
+        className="product-desc-ai-chat__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+      >
+        <textarea
+          className="product-desc-ai-chat__input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Напишите, как изменить описание…"
+          disabled={sending}
+          rows={compact ? 2 : 3}
+        />
+        <div className="product-desc-ai-chat__actions">
+          <Button type="submit" variant="primary" size="small" disabled={sending || !input.trim()}>
+            Отправить
+          </Button>
+          {canApply ? (
+            <Button type="button" variant="secondary" size="small" onClick={applyLast} disabled={sending}>
+              Подставить результат
+            </Button>
+          ) : null}
+        </div>
+        <p className="product-desc-ai-chat__apply-hint">
+          В ERP и на МП ничего не уходит, пока не нажмёте «Сохранить» в таблице или карточке.
+        </p>
+      </form>
     </div>
   );
 }

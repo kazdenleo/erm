@@ -4,7 +4,7 @@
  */
 
 import { overlayCategoryDedicatedMpLinks } from '../utils/productMpFieldLinks.js';
-import { query, transaction } from '../config/database.js';
+import { query, transaction, withDeadlockRetry } from '../config/database.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import { refreshComputedAttributeValues } from '../services/computedAttributes.service.js';
 import {
@@ -3271,7 +3271,8 @@ class ProductsRepositoryPG {
    */
   async update(id, updates) {
     const numId = typeof id === 'string' ? parseInt(id, 10) : id;
-    await transaction(async (client) => {
+    await withDeadlockRetry(async () => {
+      await transaction(async (client) => {
       // Для комплектов cost не берём из запроса — он считается по комплектующим ниже
       const typeCheck = await client.query(
         `SELECT product_type, ozon_attributes, wb_attributes, ym_attributes, ozon_draft, wb_draft, ym_draft
@@ -3474,9 +3475,20 @@ class ProductsRepositoryPG {
         [numId]
       );
       if (kitsContainingThis.rows && kitsContainingThis.rows.length > 0) {
-        for (const row of kitsContainingThis.rows) {
-          const kitId = row.kit_product_id;
-          if (!kitId) continue;
+        const kitIds = [
+          ...new Set(
+            kitsContainingThis.rows
+              .map((row) => Number(row.kit_product_id))
+              .filter((kitId) => Number.isFinite(kitId) && kitId > 0)
+          ),
+        ].sort((a, b) => a - b);
+        if (kitIds.length > 0) {
+          await client.query(
+            'SELECT id FROM products WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE',
+            [kitIds]
+          );
+        }
+        for (const kitId of kitIds) {
           const kitCost = await this._computeKitCost(client, kitId);
           await client.query(
             'UPDATE products SET cost = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -3486,7 +3498,8 @@ class ProductsRepositoryPG {
         }
       }
       await refreshComputedForProduct(client, numId);
-    });
+      });
+    }, { attempts: 6, label: 'product.update' });
     return await this.findByIdWithDetails(id);
   }
 
