@@ -899,6 +899,12 @@
   max-height: min(72vh, calc(100vh - 200px));
 }
 
+/* tables.css вешает overflow-y: clip на .table-responsive — без этого список не скроллится */
+.app-main__inner .fbo-purchase-calc-wrap.table-responsive {
+  overflow: auto;
+  overflow-y: auto;
+}
+
 .fbo-pc-preview-table-wrap {
   max-height: min(48vh, 420px);
   overflow: auto;
@@ -911,6 +917,8 @@
   margin: 0;
   box-shadow: none;
   border-radius: 0;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .fbo-pc-preview-table thead th {
@@ -944,10 +952,28 @@
   width: 36px;
   text-align: center;
   vertical-align: middle;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #fff;
+}
+
+.fbo-purchase-calc-table thead th.fbo-pc-check-col {
+  z-index: 5;
+  background: #f8fafc;
 }
 
 .fbo-purchase-calc-table tr.fbo-pc-row-selected td {
   background: rgba(13, 110, 253, 0.06);
+}
+
+.fbo-purchase-calc-table tr.fbo-pc-row-selected td.fbo-pc-check-col,
+.fbo-purchase-calc-table tr.fbo-pc-row-selected td.fbo-pc-sticky-col {
+  background: #eef5ff;
+}
+
+.fbo-purchase-calc-table tr.fbo-pc-row-selectable {
+  cursor: pointer;
 }
 
 .fbo-purchase-calc-table {
@@ -966,17 +992,18 @@
 }
 
 .fbo-purchase-calc-table thead th.fbo-pc-sticky-col {
-  left: 0;
+  left: 36px;
   z-index: 4;
 }
 
 .fbo-purchase-calc-table .fbo-pc-sticky-col {
   position: sticky;
-  left: 0;
+  left: 36px;
   background: #fff;
   z-index: 1;
   min-width: 160px;
-  max-width: 220px;
+  max-width: 240px;
+  overflow: hidden;
 }
 
 .fbo-purchase-calc-table tbody td.fbo-pc-sticky-col {
@@ -1041,18 +1068,40 @@
   background: #f1f5f9;
 }
 
+.fbo-pc-kit-header-name,
+.fbo-pc-kit-component-name,
+.fbo-pc-plain-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .fbo-pc-kit-header-name {
   font-weight: 600;
+}
+
+.fbo-pc-kit-header-name .badge {
+  flex-shrink: 0;
+}
+
+.fbo-pc-name {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fbo-purchase-calc-table tr.fbo-pc-kit-component-row td.fbo-pc-sticky-col {
   padding-left: 1.25rem;
 }
 
-.fbo-pc-kit-component-name {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.35rem;
+.fbo-pc-preview-name {
+  width: 32%;
+  max-width: 280px;
 }
 
 .fbo-pc-kit-component-marker {

@@ -755,7 +755,16 @@ export function FboPurchaseCalculation() {
                     checked ? 'fbo-pc-row-selected' : '',
                     isKitHeader ? 'fbo-pc-kit-header-row' : '',
                     isComponent ? 'fbo-pc-kit-component-row' : '',
+                    selectable ? 'fbo-pc-row-selectable' : '',
                   ].filter(Boolean).join(' ')}
+                  onClick={
+                    selectable
+                      ? (e) => {
+                          if (e.target.closest('input, button, a, select, textarea')) return;
+                          toggleRowSelected(row.key);
+                        }
+                      : undefined
+                  }
                 >
                   <td className="fbo-pc-check-col">
                     {selectable ? (
@@ -771,12 +780,16 @@ export function FboPurchaseCalculation() {
                     {isKitHeader ? (
                       <div className="fbo-pc-kit-header-name">
                         <span className="badge bg-secondary me-1">комплект</span>
-                        {getPurchaseRowDisplayName(row)}
+                        <span className="fbo-pc-name" title={getPurchaseRowDisplayName(row)}>
+                          {getPurchaseRowDisplayName(row)}
+                        </span>
                       </div>
                     ) : (
-                      <div className={isComponent ? 'fbo-pc-kit-component-name' : undefined}>
+                      <div className={isComponent ? 'fbo-pc-kit-component-name' : 'fbo-pc-plain-name'}>
                         {isComponent ? <span className="fbo-pc-kit-component-marker" aria-hidden>↳</span> : null}
-                        {getPurchaseRowDisplayName(row)}
+                        <span className="fbo-pc-name" title={getPurchaseRowDisplayName(row)}>
+                          {getPurchaseRowDisplayName(row)}
+                        </span>
                       </div>
                     )}
                   </td>

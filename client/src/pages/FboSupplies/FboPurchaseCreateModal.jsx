@@ -105,14 +105,16 @@ export function FboPurchaseCreateModal({
                 const suggested = Number(row.remainingToPurchase ?? row.toPurchase) || 0;
                 return (
                   <tr key={row.key}>
-                    <td>
-                      <div className={row.rowType === 'component' ? 'fbo-pc-kit-component-name' : undefined}>
+                    <td className="fbo-pc-preview-name">
+                      <div className={row.rowType === 'component' ? 'fbo-pc-kit-component-name' : 'fbo-pc-plain-name'}>
                         {row.rowType === 'component' ? (
                           <span className="fbo-pc-kit-component-marker" aria-hidden>
                             ↳
                           </span>
                         ) : null}
-                        {getPurchaseRowDisplayName(row)}
+                        <span className="fbo-pc-name" title={getPurchaseRowDisplayName(row)}>
+                          {getPurchaseRowDisplayName(row)}
+                        </span>
                       </div>
                       {purchased > 0 ? (
                         <div className="text-muted small">Уже оформлено: {purchased} шт.</div>
