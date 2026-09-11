@@ -22,7 +22,9 @@ export function pickAiChatSettings(raw, { allowOutput = [], allowContext = [], d
   const allowOut = new Set((allowOutput || []).map(String));
   const allowCtx = new Set((allowContext || []).map(String));
   const outputKeys = (parsed.outputKeys || []).filter((k) => allowOut.has(k));
-  const contextKeys = (parsed.contextKeys || []).filter((k) => allowCtx.has(k));
+  const contextKeys = allowCtx.size
+    ? (parsed.contextKeys || []).filter((k) => allowCtx.has(k))
+    : [...(parsed.contextKeys || [])];
   return {
     outputKeys: outputKeys.length ? outputKeys : [...defaultOutput],
     contextKeys: contextKeys.length ? contextKeys : [...defaultContext],

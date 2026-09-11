@@ -9681,6 +9681,7 @@ export function ProductsBulkEdit() {
                 compact
                 settingsAttribute={descriptionAiAttribute}
                 onSettingsSaved={handleAiSettingsSaved}
+                contextAttributes={allProductAttributes}
                 productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
                 getDraft={() => {
                   const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
@@ -9715,6 +9716,7 @@ export function ProductsBulkEdit() {
                   textPopup.col?.erpAttr
                 }
                 onSettingsSaved={handleAiSettingsSaved}
+                contextAttributes={allProductAttributes}
                 productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
                 outputFields={[
                   {
@@ -9818,6 +9820,7 @@ export function ProductsBulkEdit() {
                   bulkItems={pageDescriptionAiItems}
                   settingsAttribute={descriptionAiAttribute}
                   onSettingsSaved={handleAiSettingsSaved}
+                  contextAttributes={allProductAttributes}
                   onApplyBulk={(items) => {
                     applyAiBulkDraft(items);
                     setBulkModal({ open: false, column: null });
@@ -9837,6 +9840,7 @@ export function ProductsBulkEdit() {
                     bulkModalCol.erpAttr
                   }
                   onSettingsSaved={handleAiSettingsSaved}
+                  contextAttributes={allProductAttributes}
                   outputFields={[
                     {
                       key: erpAttrEditorKey(bulkModalCol.erpAttr.id),

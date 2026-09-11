@@ -116,6 +116,13 @@ function compactProduct(product, draft = {}) {
     mp_ym_name: str(src.mp_ym_name),
     mp_ym_description: str(src.mp_ym_description),
   };
+  const draftObj = draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : {};
+  for (const [key, value] of Object.entries(draftObj)) {
+    if (key in out || key === 'id' || key === 'product_id') continue;
+    const text = str(value).slice(0, 4000);
+    if (!text) continue;
+    out[key] = text;
+  }
   return out;
 }
 

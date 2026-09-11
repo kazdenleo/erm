@@ -1,11 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../common/Button/Button';
 import { aiApi } from '../../services/ai.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { instructionAllowsOverwrite, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
 import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
-  AI_DESCRIPTION_CONTEXT_FIELDS,
   AI_DESCRIPTION_CONTEXT_KEYS,
   AI_DESCRIPTION_OUTPUT_FIELDS,
   AI_DESCRIPTION_OUTPUT_KEYS,
@@ -13,6 +12,7 @@ import {
   filterDraftForAiContext,
   formatAiChangesPreview,
 } from '../../utils/aiDescriptionFields.js';
+import { buildAiContextFieldDefs } from '../../utils/aiContextAttributes.js';
 import { AiChatSettingsPanel } from './AiChatSettingsPanel.jsx';
 import {
   attrAiChatSettingsRaw,
@@ -33,9 +33,15 @@ export function ProductDescriptionAiChat({
   onApplyBulk,
   settingsAttribute = null,
   onSettingsSaved,
+  contextAttributes = [],
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
+  const contextDefs = useMemo(
+    () => buildAiContextFieldDefs(contextAttributes),
+    [contextAttributes]
+  );
+  const contextAllowKeys = useMemo(() => contextDefs.map((f) => f.key), [contextDefs]);
   const { enabled: aiReady, loading: configLoading } = useAiEnabled();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -50,11 +56,11 @@ export function ProductDescriptionAiChat({
   const [lastResult, setLastResult] = useState(null);
   const listRef = useRef(null);
 
-  const settingsKey = aiChatSettingsKey(settingsAttribute);
+  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${contextAllowKeys.join('|')}`;
   useEffect(() => {
     const picked = pickAiChatSettings(attrAiChatSettingsRaw(settingsAttribute), {
       allowOutput: AI_DESCRIPTION_OUTPUT_KEYS,
-      allowContext: AI_DESCRIPTION_CONTEXT_KEYS,
+      allowContext: contextAllowKeys,
       defaultOutput: AI_DESCRIPTION_OUTPUT_KEYS,
       defaultContext: AI_DESCRIPTION_CONTEXT_KEYS,
     });
@@ -96,7 +102,7 @@ export function ProductDescriptionAiChat({
         for (let i = 0; i < items.length; i += MAX_BULK_AI_CARDS) {
           const chunk = items.slice(i, i + MAX_BULK_AI_CARDS).map((it) => ({
             productId: it.productId,
-            draft: filterDraftForAiContext(it.draft, contextFields),
+            draft: filterDraftForAiContext(it.draft, contextFields, contextDefs),
           }));
           const data = await aiApi.proposeProductCardsBulk({
             items: chunk,
@@ -117,7 +123,7 @@ export function ProductDescriptionAiChat({
         setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
       } else {
         const draft =
-          typeof getDraft === 'function' ? filterDraftForAiContext(getDraft(), contextFields) : {};
+          typeof getDraft === 'function' ? filterDraftForAiContext(getDraft(), contextFields, contextDefs) : {};
         const data = await aiApi.proposeProductCard({
           productId: productId || undefined,
           draft,
@@ -200,7 +206,7 @@ export function ProductDescriptionAiChat({
         outputDefs={AI_DESCRIPTION_OUTPUT_FIELDS}
         selectedOutputs={outputFields}
         onChangeOutputs={setOutputFields}
-        contextDefs={AI_DESCRIPTION_CONTEXT_FIELDS}
+        contextDefs={contextDefs}
         contextKeys={contextFields}
         onChangeContext={setContextFields}
         fillEmptyOnly={fillEmptyOnly}

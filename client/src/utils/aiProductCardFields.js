@@ -1,3 +1,5 @@
+import { collectAttributeContextValues } from './aiContextAttributes.js';
+
 /** Поля карточки, которые ИИ может предлагать (совпадает с сервером). */
 
 export const AI_CARD_FIELDS = [
@@ -34,13 +36,26 @@ export function snapshotAiCardFields(src) {
   return out;
 }
 
-/** Снимок для GigaChat: редактируемые поля + контекст (артикул, бренд, категория). */
+/** Снимок для GigaChat: поля карточки, габариты и значения ERP-атрибутов. */
 export function snapshotAiCardDraft(src, extra = {}) {
+  const dim = (key) => {
+    const v = src?.[key];
+    return v == null ? '' : String(v);
+  };
   return {
     ...snapshotAiCardFields(src),
     sku: src?.sku == null ? '' : String(src.sku),
     brand: src?.brand == null ? '' : String(src.brand),
     country_of_origin: src?.country_of_origin == null ? '' : String(src.country_of_origin),
     category_name: extra.categoryName || src?.category_name || src?.categoryName || '',
+    product_length: dim('product_length'),
+    product_width: dim('product_width'),
+    product_height: dim('product_height'),
+    product_weight: dim('product_weight'),
+    length: dim('length'),
+    width: dim('width'),
+    height: dim('height'),
+    weight: dim('weight'),
+    ...collectAttributeContextValues(src, extra),
   };
 }

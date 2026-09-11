@@ -10,6 +10,7 @@ export function ProductDescriptionAiModal({
   onApply,
   settingsAttribute = null,
   onSettingsSaved,
+  contextAttributes = [],
 }) {
   if (!isOpen) return null;
   return (
@@ -24,6 +25,7 @@ export function ProductDescriptionAiModal({
         }}
         settingsAttribute={settingsAttribute}
         onSettingsSaved={onSettingsSaved}
+        contextAttributes={contextAttributes}
       />
     </Modal>
   );

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../common/Button/Button';
 import { aiApi } from '../../services/ai.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
@@ -6,11 +6,11 @@ import { instructionAllowsOverwrite, MAX_BULK_AI_CARDS } from '../../utils/aiPro
 import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   APPLICABILITY_AI_EXAMPLES,
-  DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS,
   DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
   filterContextForAttrEditor,
   formatAttrEditorChangesPreview,
 } from '../../utils/aiAttributeEditorFields.js';
+import { buildAiContextFieldDefs } from '../../utils/aiContextAttributes.js';
 import { AiChatSettingsPanel } from './AiChatSettingsPanel.jsx';
 import {
   attrAiChatSettingsRaw,
@@ -31,9 +31,15 @@ export function AttributeEditorAiChat({
   title = 'ИИ',
   settingsAttribute = null,
   onSettingsSaved,
+  contextAttributes = [],
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
+  const contextDefs = useMemo(
+    () => buildAiContextFieldDefs(contextAttributes),
+    [contextAttributes]
+  );
+  const contextAllowKeys = useMemo(() => contextDefs.map((f) => f.key), [contextDefs]);
   const { enabled: aiReady, loading: aiLoading } = useAiEnabled();
   const outputKeys = (outputFields || []).map((f) => f.key).filter(Boolean);
   const [selectedOutputs, setSelectedOutputs] = useState(() => [...outputKeys]);
@@ -50,11 +56,11 @@ export function AttributeEditorAiChat({
   const listRef = useRef(null);
 
   const outputKeysSig = outputKeys.join('|');
-  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${outputKeysSig}`;
+  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${outputKeysSig}|${contextAllowKeys.join('|')}`;
   useEffect(() => {
     const picked = pickAiChatSettings(attrAiChatSettingsRaw(settingsAttribute), {
       allowOutput: outputKeys,
-      allowContext: DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
+      allowContext: contextAllowKeys,
       defaultOutput: outputKeys,
       defaultContext: DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
     });
@@ -93,7 +99,7 @@ export function AttributeEditorAiChat({
         for (let i = 0; i < items.length; i += MAX_BULK_AI_CARDS) {
           const chunk = items.slice(i, i + MAX_BULK_AI_CARDS).map((it) => {
             const ctx = it.context && typeof it.context === 'object' ? it.context : {};
-            const context = filterContextForAttrEditor(ctx, contextKeys);
+            const context = filterContextForAttrEditor(ctx, contextKeys, contextDefs);
             for (const f of selected) {
               if (f.key && ctx[f.key] != null) context[f.key] = String(ctx[f.key]);
             }
@@ -124,7 +130,8 @@ export function AttributeEditorAiChat({
         const ctx = typeof getContext === 'function' ? getContext() : {};
         const context = filterContextForAttrEditor(
           { ...ctx, ...Object.fromEntries(selected.map((f) => [f.key, ctx[f.key] ?? ''])) },
-          contextKeys
+          contextKeys,
+          contextDefs
         );
         for (const f of selected) {
           if (f.key && ctx[f.key] != null) context[f.key] = String(ctx[f.key]);
@@ -205,7 +212,7 @@ export function AttributeEditorAiChat({
         outputDefs={outputFields || []}
         selectedOutputs={selectedOutputs}
         onChangeOutputs={setSelectedOutputs}
-        contextDefs={DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS}
+        contextDefs={contextDefs}
         contextKeys={contextKeys}
         onChangeContext={setContextKeys}
         fillEmptyOnly={fillEmptyOnly}

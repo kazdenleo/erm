@@ -1,15 +1,9 @@
 /** Поля для универсального ИИ-редактора атрибутов (editable + связанные МП). */
 
-export const DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS = [
-  { key: 'name', label: 'Название' },
-  { key: 'sku', label: 'Артикул' },
-  { key: 'brand', label: 'Бренд' },
-  { key: 'description', label: 'Описание' },
-  { key: 'category_name', label: 'Категория' },
-  { key: 'country_of_origin', label: 'Страна' },
-];
+import { AI_CARD_CONTEXT_FIELDS, AI_CARD_CONTEXT_KEYS, pickContextByKeys } from './aiContextAttributes.js';
 
-export const DEFAULT_ATTR_EDITOR_CONTEXT_KEYS = DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS.map((f) => f.key);
+export const DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS = AI_CARD_CONTEXT_FIELDS;
+export const DEFAULT_ATTR_EDITOR_CONTEXT_KEYS = AI_CARD_CONTEXT_KEYS;
 
 export function erpAttrEditorKey(attrId) {
   return `erp_attr_${attrId}`;
@@ -19,21 +13,12 @@ export function ozonAttrEditorKey(attrId) {
   return `ozon_attr_${attrId}`;
 }
 
-export function filterContextForAttrEditor(draft, contextKeys) {
-  const src = draft && typeof draft === 'object' ? draft : {};
-  const allow = new Set(
-    (Array.isArray(contextKeys) ? contextKeys : DEFAULT_ATTR_EDITOR_CONTEXT_KEYS).map((k) =>
-      String(k || '').trim()
-    )
+export function filterContextForAttrEditor(draft, contextKeys, fieldDefs = DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS) {
+  return pickContextByKeys(
+    draft,
+    Array.isArray(contextKeys) && contextKeys.length ? contextKeys : DEFAULT_ATTR_EDITOR_CONTEXT_KEYS,
+    fieldDefs
   );
-  allow.add('sku');
-  const out = {};
-  for (const k of allow) {
-    if (Object.prototype.hasOwnProperty.call(src, k)) {
-      out[k] = src[k] == null ? '' : String(src[k]);
-    }
-  }
-  return out;
 }
 
 export function formatAttrEditorChangesPreview(changes = []) {

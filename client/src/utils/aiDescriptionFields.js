@@ -1,5 +1,7 @@
 /** Поля описаний для ИИ (выход) и контекст карточки (вход). */
 
+import { AI_CARD_CONTEXT_FIELDS, AI_CARD_CONTEXT_KEYS, pickContextByKeys } from './aiContextAttributes.js';
+
 export const AI_DESCRIPTION_OUTPUT_FIELDS = [
   { key: 'description', label: 'Основное — описание' },
   { key: 'mp_ozon_description', label: 'Ozon — описание' },
@@ -9,40 +11,11 @@ export const AI_DESCRIPTION_OUTPUT_FIELDS = [
 
 export const AI_DESCRIPTION_OUTPUT_KEYS = AI_DESCRIPTION_OUTPUT_FIELDS.map((f) => f.key);
 
-export const AI_DESCRIPTION_CONTEXT_FIELDS = [
-  { key: 'name', label: 'Название' },
-  { key: 'brand', label: 'Бренд' },
-  { key: 'sku', label: 'Артикул' },
-  { key: 'category_name', label: 'Категория' },
-  { key: 'country_of_origin', label: 'Страна' },
-  { key: 'description', label: 'Текущее описание' },
-  { key: 'mp_ozon_name', label: 'Ozon — название' },
-  { key: 'mp_ozon_description', label: 'Ozon — описание' },
-  { key: 'mp_wb_name', label: 'Wildberries — название' },
-  { key: 'mp_wb_description', label: 'Wildberries — описание' },
-  { key: 'mp_ym_name', label: 'Яндекс Маркет — название' },
-  { key: 'mp_ym_description', label: 'Яндекс Маркет — описание' },
-];
+export const AI_DESCRIPTION_CONTEXT_FIELDS = AI_CARD_CONTEXT_FIELDS;
+export const AI_DESCRIPTION_CONTEXT_KEYS = AI_CARD_CONTEXT_KEYS;
 
-export const AI_DESCRIPTION_CONTEXT_KEYS = AI_DESCRIPTION_CONTEXT_FIELDS.map((f) => f.key);
-
-const CONTEXT_ALWAYS = new Set(['sku']);
-
-export function filterDraftForAiContext(draft, contextKeys) {
-  const src = draft && typeof draft === 'object' ? draft : {};
-  const allow = new Set(
-    (Array.isArray(contextKeys) ? contextKeys : [])
-      .map((k) => String(k || '').trim())
-      .filter(Boolean)
-  );
-  for (const k of CONTEXT_ALWAYS) allow.add(k);
-  const out = {};
-  for (const k of allow) {
-    if (Object.prototype.hasOwnProperty.call(src, k)) {
-      out[k] = src[k] == null ? '' : String(src[k]);
-    }
-  }
-  return out;
+export function filterDraftForAiContext(draft, contextKeys, fieldDefs = AI_DESCRIPTION_CONTEXT_FIELDS) {
+  return pickContextByKeys(draft, contextKeys, fieldDefs);
 }
 
 export function previewAiText(value, limit = 160) {

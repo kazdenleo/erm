@@ -1,5 +1,5 @@
 const PROMPT_MAX = 2000;
-const KEYS_MAX = 40;
+const KEYS_MAX = 80;
 const KEY_LEN = 80;
 
 function strList(raw) {

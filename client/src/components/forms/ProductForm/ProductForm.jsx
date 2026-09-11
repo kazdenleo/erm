@@ -10804,6 +10804,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         onApply={applyAiDraft}
         settingsAttribute={descriptionAiAttribute}
         onSettingsSaved={handleAiSettingsSaved}
+        contextAttributes={allAttributes}
       />
       <Modal
         isOpen={!!editableAttrAiModal}
@@ -10854,6 +10855,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               editableAttrAiModal
             }
             onSettingsSaved={handleAiSettingsSaved}
+            contextAttributes={allAttributes}
           />
         ) : null}
       </Modal>

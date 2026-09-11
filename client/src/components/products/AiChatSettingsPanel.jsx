@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from '../common/Button/Button';
+import { AiContextFieldsSelect } from './AiContextFieldsSelect.jsx';
 
 function toggleKey(list, key) {
   if (list.includes(key)) {
@@ -62,19 +63,13 @@ export function AiChatSettingsPanel({
           {contextDefs.length ? (
             <div className="product-desc-ai-chat__sections">
               <p className="product-desc-ai-chat__section-title">Учитывать при генерации</p>
-              <div className="product-desc-ai-chat__checks">
-                {contextDefs.map((f) => (
-                  <label key={f.key} className="product-desc-ai-chat__check">
-                    <input
-                      type="checkbox"
-                      checked={contextKeys.includes(f.key)}
-                      onChange={() => onChangeContext((prev) => toggleKey(prev, f.key))}
-                      disabled={disabled}
-                    />
-                    {f.label}
-                  </label>
-                ))}
-              </div>
+              <AiContextFieldsSelect
+                options={contextDefs}
+                value={contextKeys}
+                onChange={onChangeContext}
+                disabled={disabled}
+                placeholder="Выберите атрибуты и поля карточки"
+              />
             </div>
           ) : null}
           <label className="product-desc-ai-chat__check">
