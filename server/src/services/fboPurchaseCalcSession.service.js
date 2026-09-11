@@ -118,7 +118,8 @@ function applyRowState(calc, rowStateMaps) {
   const pendingRows = purchasableRows.filter(
     (r) => (Number(r.toPurchase) || 0) > 0 && (Number(r.remainingToPurchase) || 0) > 0 && r.productId
   );
-  const allComplete = pendingRows.length === 0;
+  const hadNeed = purchasableRows.some((r) => (Number(r.toPurchase) || 0) > 0);
+  const allComplete = hadNeed && pendingRows.length === 0;
 
   return { ...calc, rows, totals, allComplete, pendingPositions: pendingRows.length };
 }
@@ -355,9 +356,13 @@ class FboPurchaseCalcSessionService {
 
     const view = await this.getSessionView(sid, { profileId: pid });
     if (view.session.status !== 'open') {
-      const err = new Error('Сессия расчёта уже завершена');
-      err.statusCode = 400;
-      throw err;
+      await query(
+        `UPDATE fbo_purchase_calc_sessions
+         SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [sid]
+      );
+      view.session.status = 'open';
     }
 
     const rowByKey = new Map((view.calc.rows || []).map((r) => [r.key, r]));
@@ -381,11 +386,6 @@ class FboPurchaseCalcSessionService {
         throw err;
       }
       const remaining = Math.max(0, Number(row.remainingToPurchase) || 0);
-      if (remaining <= 0) {
-        const err = new Error(`По позиции «${row.sku || row.productName}» уже оформлена закупка`);
-        err.statusCode = 400;
-        throw err;
-      }
       let qty = it?.quantity != null ? parseInt(it.quantity, 10) : remaining;
       if (!Number.isFinite(qty) || qty < 1) continue;
       if (qty > 99999) {

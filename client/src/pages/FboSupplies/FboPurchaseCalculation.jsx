@@ -44,7 +44,11 @@ function applyCalcRows(data, { withProgress = false, prevRows = [] } = {}) {
 }
 
 function isRowSelectable(row) {
-  return isPurchasablePurchaseRow(row) && Boolean(row?.productId) && (Number(row.remainingToPurchase) || 0) > 0;
+  return isPurchasablePurchaseRow(row) && Boolean(row?.productId);
+}
+
+function isRowPendingPurchase(row) {
+  return isRowSelectable(row) && (Number(row.remainingToPurchase) || 0) > 0;
 }
 
 export function FboPurchaseCalculation() {
@@ -587,7 +591,7 @@ export function FboPurchaseCalculation() {
       setSelectedRowKeys(new Set());
       setPurchaseOpen(false);
       const pid = res.purchaseId ?? res.purchase?.id;
-      const pending = (res.calc?.rows || []).filter(isRowSelectable).length;
+      const pending = (res.calc?.rows || []).filter(isRowPendingPurchase).length;
       if (res.session?.status === 'completed') {
         setSuccessMsg(
           pid
@@ -630,30 +634,30 @@ export function FboPurchaseCalculation() {
         <Button
           variant="primary"
           size="small"
-          disabled={!selectedPurchaseRows.length || session?.status === 'completed'}
+          disabled={!selectedPurchaseRows.length}
           onClick={openPurchaseModal}
         >
           Закупить выбранное ({selectedPurchaseRows.length})
         </Button>
       </div>
 
-      {session?.id && session.status !== 'completed' ? (
-        <div className="fbo-open-calc-sessions-banner fbo-open-calc-sessions-banner--current" role="status">
+      {session?.id ? (
+        <div
+          className={`fbo-open-calc-sessions-banner${
+            session.status === 'completed' ? '' : ' fbo-open-calc-sessions-banner--current'
+          }`}
+          role="status"
+        >
           <div className="fbo-open-calc-sessions-banner__title">
-            Текущий расчёт закупки №{session.id} · в работе
+            Текущий расчёт закупки №{session.id}
+            {session.status === 'completed' ? ' · потребность закрыта' : ' · в работе'}
           </div>
           <p className="fbo-open-calc-sessions-banner__hint">
-            {selectableRows.length > 0
-              ? `Осталось оформить: ${selectableRows.length} поз. Прогресс сохраняется — можно вернуться позже через «Поставки FBO».`
-              : 'Все позиции закуплены или покрыты остатком.'}
+            {selectableRows.filter(isRowPendingPurchase).length > 0
+              ? `Осталось оформить: ${selectableRows.filter(isRowPendingPurchase).length} поз. Прогресс сохраняется — можно вернуться позже через «Поставки FBO».`
+              : 'Расчётная потребность закрыта остатком или уже оформлена. Можно отметить позиции и закупить дополнительно.'}
           </p>
         </div>
-      ) : null}
-
-      {session?.id && session.status === 'completed' ? (
-        <p className="fbo-packing-hint" style={{ marginBottom: 8 }}>
-          Сессия расчёта №{session.id} · завершена. Все позиции оформлены.
-        </p>
       ) : null}
 
       {successMsg ? (
