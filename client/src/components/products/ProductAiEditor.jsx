@@ -30,6 +30,8 @@ export function ProductAiEditor({
   getDraft,
   onApply,
   bulkItems = [],
+  bulkScope = 'page',
+  resolveBulkItems = null,
   onApplyBulk,
   attributes = [],
 }) {
@@ -47,8 +49,10 @@ export function ProductAiEditor({
   const [tplMessage, setTplMessage] = useState('');
   const [messages, setMessages] = useState([]);
   const [sending, setSending] = useState(false);
+  const [progressText, setProgressText] = useState('');
   const [error, setError] = useState(null);
   const [lastResult, setLastResult] = useState(null);
+  const [skipIds, setSkipIds] = useState(() => new Set());
   const listRef = useRef(null);
 
   const contextDefs = useMemo(() => buildAiContextFieldDefs(attributes), [attributes]);
@@ -163,10 +167,15 @@ export function ProductAiEditor({
         return context;
       };
       if (isBulk) {
-        const items = bulkItems.filter((it) => it?.productId);
+        let items = bulkItems.filter((it) => it?.productId);
+        if (typeof resolveBulkItems === 'function') {
+          const resolved = await resolveBulkItems();
+          if (Array.isArray(resolved)) items = resolved.filter((it) => it?.productId);
+        }
         if (!items.length) throw new Error('Нет сохранённых товаров для генерации');
         const allItems = [];
         for (let i = 0; i < items.length; i += MAX_BULK_AI_CARDS) {
+          setProgressText(`Карточка ${Math.min(i + MAX_BULK_AI_CARDS, items.length)} из ${items.length}…`);
           const chunk = items.slice(i, i + MAX_BULK_AI_CARDS).map((it) => ({
             productId: it.productId,
             sku: it.sku || '',
@@ -182,12 +191,10 @@ export function ProductAiEditor({
         }
         const changed = allItems.filter((it) => it?.changes?.length);
         const reply = changed.length
-          ? `Готово для ${changed.length} из ${items.length} товаров.\n\n${changed
-              .slice(0, 3)
-              .map((it) => `${it.sku || it.productId}:\n${formatAttrEditorChangesPreview(it.changes)}`)
-              .join('\n\n')}${changed.length > 3 ? `\n\n…и ещё ${changed.length - 3}` : ''}`
+          ? `Готово: изменения по ${changed.length} из ${items.length} товаров. Ниже превью по каждому — снимите галочку, если товар не подставлять.`
           : 'Модель не предложила изменений. Уточните запрос или снимите «Только пустые».';
-        setLastResult({ bulk: true, items: allItems });
+        setSkipIds(new Set());
+        setLastResult({ bulk: true, items: allItems, total: items.length });
         setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
       } else {
         const ctx = typeof getDraft === 'function' ? getDraft() : {};
@@ -208,13 +215,16 @@ export function ProductAiEditor({
       setError(getApiErrorMessage(err, 'Не удалось получить ответ GigaChat'));
     } finally {
       setSending(false);
+      setProgressText('');
     }
   };
 
   const applyLast = () => {
     if (!lastResult) return;
     if (lastResult.bulk) {
-      const items = (lastResult.items || []).filter((it) => it?.changes?.length);
+      const items = (lastResult.items || []).filter(
+        (it) => it?.changes?.length && !skipIds.has(String(it.productId))
+      );
       if (items.length) onApplyBulk?.(items);
     } else if (lastResult.data?.proposed && Object.keys(lastResult.data.proposed).length) {
       onApply?.(lastResult.data.proposed);
@@ -222,9 +232,24 @@ export function ProductAiEditor({
     setOpen(false);
   };
 
+  const bulkChangedItems = lastResult?.bulk
+    ? (lastResult.items || []).filter((it) => it?.changes?.length)
+    : [];
+  const bulkApplyCount = bulkChangedItems.filter((it) => !skipIds.has(String(it.productId))).length;
+
   const canApply = lastResult?.bulk
-    ? (lastResult.items || []).some((it) => it?.changes?.length)
+    ? bulkApplyCount > 0
     : !!(lastResult?.data?.changes?.length);
+
+  const toggleSkip = (productId) => {
+    const id = String(productId);
+    setSkipIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   if (configLoading || !aiReady) return null;
   if (typeof document === 'undefined') return null;
@@ -281,7 +306,13 @@ export function ProductAiEditor({
           </div>
 
           {isBulk ? (
-            <p className="product-ai-editor__meta mb-0">товаров: {bulkItems.length}</p>
+            <p className="product-ai-editor__meta mb-0">
+              {bulkItems.length
+                ? bulkScope === 'selected'
+                  ? `По отмеченным: ${bulkItems.length}. У каждого товара модель читает его карточку и меняет выбранные поля.`
+                  : `Галочек нет — все товары текущего фильтра (сейчас в таблице ${bulkItems.length}, при генерации подгрузим остальные страницы). У каждого читается своя карточка.`
+                : 'Нет сохранённых товаров. Выберите категорию или отметьте строки.'}
+            </p>
           ) : null}
 
           <div className="product-ai-editor__section">
@@ -326,9 +357,46 @@ export function ProductAiEditor({
               </div>
             ))}
             {sending ? (
-              <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">Готовлю текст…</div>
+              <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">
+                {progressText || 'Готовлю текст…'}
+              </div>
             ) : null}
           </div>
+          {bulkChangedItems.length ? (
+            <div className="product-ai-editor__results">
+              <p className="product-ai-editor__label">
+                Результат по товарам ({bulkApplyCount} к подстановке
+                {lastResult?.total ? ` из ${lastResult.total}` : ''})
+              </p>
+              <div className="product-ai-editor__results-list">
+                {bulkChangedItems.map((it) => {
+                  const id = String(it.productId);
+                  const skipped = skipIds.has(id);
+                  return (
+                    <article
+                      key={id}
+                      className={`product-ai-editor__result${skipped ? ' is-skipped' : ''}`}
+                    >
+                      <label className="product-ai-editor__result-head">
+                        <input
+                          type="checkbox"
+                          checked={!skipped}
+                          onChange={() => toggleSkip(it.productId)}
+                        />
+                        <strong>{it.sku || `Товар #${it.productId}`}</strong>
+                      </label>
+                      {(it.changes || []).map((c) => (
+                        <div key={c.field} className="product-ai-editor__result-field">
+                          <span>{c.label || c.field}</span>
+                          <pre>{String(c.to || '')}</pre>
+                        </div>
+                      ))}
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           {error ? <div className="product-desc-ai-chat__error">{error}</div> : null}
 
           <textarea
@@ -345,12 +413,16 @@ export function ProductAiEditor({
             </Button>
             {canApply ? (
               <Button type="button" variant="secondary" size="small" onClick={applyLast} disabled={sending}>
-                Подставить результат
+                {lastResult?.bulk
+                  ? `Подставить в таблицу (${bulkApplyCount})`
+                  : 'Подставить результат'}
               </Button>
             ) : null}
           </div>
           <p className="product-desc-ai-chat__apply-hint">
-            В ERP и на МП ничего не уходит, пока не нажмёте «Сохранить» в карточке или таблице.
+            {isBulk
+              ? 'Превью по каждому товару — в списке выше. «Подставить» пишет в ячейки таблицы. В ERP и на МП — только после «Сохранить».'
+              : 'В ERP и на МП ничего не уходит, пока не нажмёте «Сохранить» в карточке или таблице.'}
           </p>
         </div>
       </Modal>

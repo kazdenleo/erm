@@ -1261,6 +1261,8 @@ function linksSignature(links) {
 const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
 const BULK_SAVE_CONCURRENCY = 4;
 const BULK_SAVE_DEADLOCK_ATTEMPTS = 5;
+/** За один запуск ИИ: у каждого товара своя карточка, пачками по 8 к GigaChat. */
+const MAX_BULK_AI_RUN = 100;
 
 function isBulkSaveDeadlockError(e) {
   const data = e?.response?.data;
@@ -5543,6 +5545,7 @@ export function ProductsBulkEdit() {
 
   const listSearchDebounceRef = useRef(null);
   const loadGenRef = useRef(0);
+  const offPageAiRef = useRef([]);
   const newBulkRowSeqRef = useRef(0);
   const currentPageRef = useRef(1);
   const pageSizeRef = useRef(pageSize);
@@ -7190,34 +7193,134 @@ export function ProductsBulkEdit() {
   }, [markChangedForPush, markDirty, mpAttrColumnDefs, erpAttrColumnDefs, lengthUnit, weightUnit]);
 
   const applyAiBulkDraft = useCallback((items) => {
+    const extra = [];
+    const onPage = new Set(rows.map((r) => str(r.id)));
     for (const it of items || []) {
       const id = str(it?.productId);
       if (!id) continue;
       const pairs = proposedToBulkPairs(it?.proposed);
-      if (pairs.length) updateCells(id, pairs);
+      if (!pairs.length) continue;
+      if (onPage.has(id)) updateCells(id, pairs);
+      else extra.push({ productId: it.productId, sku: it.sku || '', proposed: it.proposed });
     }
-  }, [updateCells]);
+    offPageAiRef.current = extra;
+    if (extra.length) markDirty();
+  }, [updateCells, rows, markDirty]);
 
-  const aiBulkItems = useMemo(() => {
-    const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
-    const toItem = (row) => {
-      const nid = Number(row.id);
-      if (!Number.isInteger(nid) || nid < 1 || isNewBulkRowId(row.id)) return null;
+  const toAiBulkItem = useCallback(
+    (row) => {
+      const nid = Number(row?.id);
+      if (!row || !Number.isInteger(nid) || nid < 1 || isNewBulkRowId(row.id)) return null;
+      const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
       return {
         productId: nid,
         sku: row.sku || '',
         draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
       };
-    };
-    const selected = [];
+    },
+    [categories]
+  );
+
+  const aiBulkSelectedItems = useMemo(() => {
+    const out = [];
     for (const sid of selectedRowIds) {
-      const row = rows.find((r) => str(r.id) === str(sid));
-      const item = row ? toItem(row) : null;
-      if (item) selected.push(item);
+      const item = toAiBulkItem(rows.find((r) => str(r.id) === str(sid)));
+      if (item) out.push(item);
     }
-    if (selected.length) return selected;
-    return rows.map(toItem).filter(Boolean);
-  }, [selectedRowIds, rows, categories]);
+    return out;
+  }, [selectedRowIds, rows, toAiBulkItem]);
+
+  const aiBulkPageItems = useMemo(
+    () => rows.map(toAiBulkItem).filter(Boolean),
+    [rows, toAiBulkItem]
+  );
+
+  const aiBulkItems = aiBulkSelectedItems.length ? aiBulkSelectedItems : aiBulkPageItems;
+  const aiBulkScope = aiBulkSelectedItems.length ? 'selected' : 'page';
+
+  const collectBulkAiTargets = useCallback(async () => {
+    const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
+    const overlayOf = (row) =>
+      row
+        ? snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' })
+        : {};
+    if (aiBulkSelectedItems.length) return aiBulkSelectedItems;
+
+    const org = filterOrganizationId || undefined;
+    const brand = filterBrandId || undefined;
+    const cat = categoryIdFromScopePick(categoryPickDraft);
+    const ptTrim = typeof filterProductType === 'string' ? filterProductType.trim() : '';
+    const search = typeof listSearch === 'string' ? listSearch.trim() : '';
+    const unlinkedArr = [...mpFilterSetFromState(filterUnlinkedMp)];
+    const linkedArr = [...mpFilterSetFromState(filterLinkedMp)];
+    const selectedIds = [...new Set((appliedSelectedIds || []).map((x) => str(x)).filter(Boolean))];
+    const baseParams = {
+      organizationId: org,
+      brandId: brand,
+      categoryId: cat || undefined,
+      productType: ptTrim || undefined,
+      search: search || undefined,
+      unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
+      linkedMp: linkedArr.length ? linkedArr : undefined,
+      cacheBust: true,
+    };
+
+    const found = [];
+    const seen = new Set();
+    const pushProduct = (p) => {
+      const id = Number(p?.id);
+      if (!Number.isInteger(id) || id < 1 || seen.has(id)) return;
+      seen.add(id);
+      const row = rows.find((r) => str(r.id) === str(id));
+      found.push({
+        productId: id,
+        sku: p.sku || row?.sku || '',
+        draft: overlayOf(row),
+      });
+    };
+
+    if (selectedIds.length > 0) {
+      for (const id of selectedIds) {
+        if (found.length >= MAX_BULK_AI_RUN) break;
+        const row = rows.find((r) => str(r.id) === str(id));
+        const nid = Number(id);
+        if (!Number.isInteger(nid) || nid < 1) continue;
+        seen.add(nid);
+        found.push({
+          productId: nid,
+          sku: row?.sku || '',
+          draft: overlayOf(row),
+        });
+      }
+      return found;
+    }
+
+    let offset = 0;
+    const limit = 500;
+    while (found.length < MAX_BULK_AI_RUN) {
+      const res = await productsApi.getAll({ ...baseParams, limit, offset });
+      const list = Array.isArray(res?.data) ? res.data : [];
+      for (const p of list) {
+        if (found.length >= MAX_BULK_AI_RUN) break;
+        pushProduct(p);
+      }
+      if (list.length < limit) break;
+      offset += limit;
+    }
+    return found;
+  }, [
+    aiBulkSelectedItems,
+    categories,
+    rows,
+    filterOrganizationId,
+    filterBrandId,
+    categoryPickDraft,
+    filterProductType,
+    listSearch,
+    filterUnlinkedMp,
+    filterLinkedMp,
+    appliedSelectedIds,
+  ]);
 
   const handleGenerateBarcode = useCallback(
     async (row) => {
@@ -7455,6 +7558,45 @@ export function ProductsBulkEdit() {
         workItems.push({ type: 'update', row: r, payload });
       }
 
+      const offPage = Array.isArray(offPageAiRef.current) ? offPageAiRef.current : [];
+      for (const it of offPage) {
+        const id = str(it?.productId);
+        if (!id || rows.some((r) => str(r.id) === id)) continue;
+        try {
+          const wrap = await productsApi.getById(id);
+          const p = wrap?.data ?? wrap;
+          if (!p?.id) continue;
+          let row = productToRow(
+            p,
+            mpAttrColumnDefs,
+            lengthUnit,
+            weightUnit,
+            erpAttrColumnDefs,
+            categories
+          );
+          const orig = cloneRow(row);
+          const pairs = proposedToBulkPairs(it.proposed);
+          for (const [key, value] of pairs) {
+            row = applyOneBulkCellChange(row, key, value, {
+              erpAttrColumnDefs,
+              mpAttrColumnDefs,
+              lengthUnit,
+              weightUnit,
+              ozonDictOptions: ozonBulkDictOptionsRef.current,
+            });
+          }
+          const payload = buildUpdatePayload(orig, row, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
+          if (Object.keys(payload).length === 0) continue;
+          workItems.push({ type: 'update', row, payload });
+        } catch (e) {
+          errors.push({
+            id: it.productId,
+            sku: it.sku,
+            msg: e?.response?.data?.message || e?.message || 'Не удалось подготовить правки ИИ',
+          });
+        }
+      }
+
       const totalToSave = workItems.length;
       let doneCount = 0;
       const enqueueSave = createAsyncQueue(BULK_SAVE_CONCURRENCY);
@@ -7553,6 +7695,7 @@ export function ProductsBulkEdit() {
         }
       }
       if (errors.length === 0) {
+        offPageAiRef.current = [];
         clearDirty();
         if (ok > 0) {
           if (createMode && createdCount > 0) {
@@ -9881,13 +10024,16 @@ export function ProductsBulkEdit() {
         />
       ) : null}
 
-      <ProductAiEditor
-        attributes={allProductAttributes}
-        bulkItems={aiBulkItems}
-        onApplyBulk={applyAiBulkDraft}
-      />
-
       </div>
+      ) : null}
+      {!createMode ? (
+        <ProductAiEditor
+          attributes={allProductAttributes}
+          bulkItems={aiBulkItems}
+          bulkScope={aiBulkScope}
+          resolveBulkItems={collectBulkAiTargets}
+          onApplyBulk={applyAiBulkDraft}
+        />
       ) : null}
     </div>
   );

@@ -80,6 +80,57 @@ function buildProperties(outputFields) {
   return properties;
 }
 
+function stringifyDraftValue(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value.map(stringifyDraftValue).filter(Boolean).join(', ');
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value);
+}
+
+/** Полный снимок карточки: массовый ИИ не должен опираться только на видимые ячейки таблицы. */
+function buildCardDraft(product) {
+  if (!product || typeof product !== 'object') return {};
+  const dim = (key) => str(product[key]);
+  const out = {
+    sku: str(product.sku),
+    name: str(product.name),
+    description: str(product.description),
+    brand: str(product.brand || product.brand_name),
+    country_of_origin: str(product.country_of_origin || product.countryOfOrigin),
+    category_name: str(product.category_name || product.categoryName),
+    mp_ozon_name: str(product.mp_ozon_name),
+    mp_ozon_description: str(product.mp_ozon_description),
+    mp_wb_name: str(product.mp_wb_name),
+    mp_wb_description: str(product.mp_wb_description),
+    mp_ym_name: str(product.mp_ym_name),
+    mp_ym_description: str(product.mp_ym_description),
+    product_length: dim('product_length'),
+    product_width: dim('product_width'),
+    product_height: dim('product_height'),
+    product_weight: dim('product_weight'),
+    length: dim('length'),
+    width: dim('width'),
+    height: dim('height'),
+    weight: dim('weight'),
+  };
+  const attrs = product.attribute_values || product.attributeValues || {};
+  if (attrs && typeof attrs === 'object' && !Array.isArray(attrs)) {
+    for (const [id, val] of Object.entries(attrs)) {
+      if (id == null || String(id).trim() === '') continue;
+      out[`erp_attr_${id}`] = stringifyDraftValue(val);
+    }
+  }
+  return out;
+}
+
 function sanitizeProposal(raw, current, outputFields, { fillEmptyOnly }) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const proposed = {};
@@ -128,23 +179,32 @@ class AiAttributeEditorService {
     const outputFields = normalizeOutputFields(body.outputFields);
     if (!outputFields.length) throw aiHttpError('Укажите поля для генерации', 400);
 
-    const context = body.context && typeof body.context === 'object' ? body.context : {};
+    const clientContext = body.context && typeof body.context === 'object' ? body.context : {};
     const instruction = str(body.instruction).slice(0, MAX_INSTRUCTION);
     const fillEmptyOnly =
       body.fillEmptyOnly !== false && !instructionAllowsOverwrite(instruction);
 
+    let cardDraft = {};
     if (body.productId) {
-      const product = await productsService.getById(body.productId, { profileId });
+      const product = await productsService.getById(body.productId);
       const pid = product.profile_id ?? product.profileId;
       if (pid != null && String(pid) !== String(profileId)) {
         throw aiHttpError('Товар не найден', 404);
       }
+      cardDraft = buildCardDraft(product);
+    }
+    const context = { ...cardDraft };
+    for (const [key, value] of Object.entries(clientContext)) {
+      if (value == null) continue;
+      const text = typeof value === 'string' ? value.trim() : stringifyDraftValue(value);
+      if (!text) continue;
+      context[key] = value;
     }
 
     const current = {};
     for (const f of outputFields) {
       if (f.type === 'vehicles') continue;
-      current[f.key] = str(context[f.key]);
+      current[f.key] = str(context[f.key] || cardDraft[f.key]);
     }
 
     const fieldLabels = outputFields.map((f) => f.label).join(', ');
