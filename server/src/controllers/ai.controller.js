@@ -17,8 +17,16 @@ export async function getConfig(req, res) {
   return res.json({ ok: true, data });
 }
 
-export async function saveConfig(req, res) {
-  const data = await aiAssistantService.saveConfig(profileIdFromReq(req), req.body || {});
+export async function getEditorTemplates(req, res) {
+  const data = await aiAssistantService.getEditorTemplates(profileIdFromReq(req));
+  return res.json({ ok: true, data });
+}
+
+export async function saveEditorTemplates(req, res) {
+  const data = await aiAssistantService.saveEditorTemplates(
+    profileIdFromReq(req),
+    req.body?.templates ?? req.body
+  );
   return res.json({ ok: true, data });
 }
 

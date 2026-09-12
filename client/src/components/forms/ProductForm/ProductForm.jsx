@@ -30,12 +30,9 @@ import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection, OzonManufacturerArticleField } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
-import { ProductAiDraftModal } from '../../products/ProductAiDraftModal.jsx';
-import { ProductDescriptionAiModal } from '../../products/ProductDescriptionAiModal.jsx';
-import { AttributeEditorAiChat } from '../../products/AttributeEditorAiChat.jsx';
+import { ProductAiEditor } from '../../products/ProductAiEditor.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
-import { erpAttrEditorKey } from '../../../utils/aiAttributeEditorFields.js';
-import { mergeUpdatedAttribute } from '../../../utils/aiChatSettings.js';
+import { parseErpAttrEditorId } from '../../../utils/aiAttributeEditorFields.js';
 import { ComputedAttributeField } from './ComputedAttributeField.jsx';
 import {
   applyComputedAttributeValues,
@@ -44,15 +41,13 @@ import {
   isSystemPriceAttr,
   SYSTEM_ATTR_KEYS,
 } from '../../../utils/attributeFormula.js';
-import { isEditableAttrType, attrAiChatEnabled } from '../../../utils/editableAttribute.js';
+import { isEditableAttrType } from '../../../utils/editableAttribute.js';
 import { EditableAttributeEditorModal } from '../../common/EditableAttributeEditorModal/EditableAttributeEditorModal.jsx';
-import { useAiEnabled } from '../../../hooks/useAiEnabled.js';
 import {
   findOzonVehicleGroups,
   normalizeOzonComplexAttributes,
-  setVehicleGroupRows,
 } from '../../../utils/ozonComplexAttributes.js';
-import { isSystemMainFieldAttr, findSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
+import { isSystemMainFieldAttr } from '../../../utils/systemMainFieldAttributes.js';
 import { categoryVideoCoverTemplatesApi } from '../../../services/categoryVideoCoverTemplates.api.js';
 import { normalizeVideoCoverSettings } from '../../../utils/videoCoverTemplate.js';
 import { MarketplaceCardQualityPanel } from './MarketplaceCardQualityPanel.jsx';
@@ -1848,8 +1843,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
     normalizeOzonComplexAttributes(null)
   );
   const [editableAttrModal, setEditableAttrModal] = useState(null);
-  const [editableAttrAiModal, setEditableAttrAiModal] = useState(null);
-  const [descriptionAiOpen, setDescriptionAiOpen] = useState(false);
   const [ozonDictValues, setOzonDictValues] = useState({});
   const ozonDictQueueRef = useRef(null);
   const applyErpAttrValueToLinkedMpRef = useRef(null);
@@ -1927,8 +1920,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageLightboxIndex, setImageLightboxIndex] = useState(null);
-  const [aiDraftOpen, setAiDraftOpen] = useState(false);
-  const { enabled: aiEnabled } = useAiEnabled();
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
   const [imageAspectLoadingId, setImageAspectLoadingId] = useState('');
   const [imageError, setImageError] = useState('');
@@ -2414,18 +2405,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_links: normalizeAttrMpLinks(linksMap[String(a.id)] ?? linksMap[a.id]),
       }));
   }, [allAttributes, categories, formData.categoryId, categoryMpLinksOverlay]);
-
-  const descriptionAiAttribute = useMemo(
-    () => findSystemMainFieldAttr(allAttributes, 'description'),
-    [allAttributes]
-  );
-
-  const handleAiSettingsSaved = useCallback((attr) => {
-    setAllAttributes((prev) => mergeUpdatedAttribute(prev, attr));
-    setEditableAttrAiModal((prev) =>
-      prev && attr && String(prev.id) === String(attr.id) ? { ...prev, ...attr } : prev
-    );
-  }, []);
 
   const visibleCategoryAttributes = useMemo(
     () =>
@@ -3177,12 +3156,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
     const links = normalizeAttrMpLinks(editableAttrModal.mp_links);
     return findOzonVehicleGroups(ozonFormAttributes, links.ozon);
   }, [editableAttrModal, ozonFormAttributes]);
-
-  const ozonVehicleGroupsForAi = useMemo(() => {
-    if (!editableAttrAiModal) return [];
-    const links = normalizeAttrMpLinks(editableAttrAiModal.mp_links);
-    return findOzonVehicleGroups(ozonFormAttributes, links.ozon);
-  }, [editableAttrAiModal, ozonFormAttributes]);
 
   const visibleOzonFormAttrs = useMemo(
     () =>
@@ -7519,48 +7492,86 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   const applyAiDraft = (proposed) => {
     const patch = proposed && typeof proposed === 'object' ? proposed : {};
-    const keys = AI_CARD_FIELDS.map((f) => f.key).filter((key) => patch[key] != null && String(patch[key]).trim());
-    if (!keys.length) return;
-    setFormData((prev) => {
-      let next = { ...prev };
-      for (const key of keys) next[key] = String(patch[key]);
-      const unlink = (linkKey, mp, dedicatedKey) => {
-        if (!keys.includes(dedicatedKey)) return;
-        if (!isMpFieldLinked(next.mp_field_links, linkKey, mp)) return;
-        next = { ...next, mp_field_links: setMpFieldLink(next.mp_field_links, linkKey, mp, false) };
-      };
-      unlink('name', 'ozon', 'mp_ozon_name');
-      unlink('name', 'wb', 'mp_wb_name');
-      unlink('name', 'ym', 'mp_ym_name');
-      unlink('description', 'ozon', 'mp_ozon_description');
-      unlink('description', 'wb', 'mp_wb_description');
-      unlink('description', 'ym', 'mp_ym_description');
-      const syncFields = [];
-      if (keys.includes('name')) syncFields.push('name');
-      if (keys.includes('description')) syncFields.push('description');
-      if (syncFields.length) {
-        next = applyLinkedMpFieldsFromMain(next, next.mp_field_links, syncFields);
+    const extraKeys = [
+      'brand',
+      'country_of_origin',
+      'product_length',
+      'product_width',
+      'product_height',
+      'product_weight',
+      'length',
+      'width',
+      'height',
+      'weight',
+    ];
+    const keys = [...AI_CARD_FIELDS.map((f) => f.key), ...extraKeys].filter(
+      (key) => patch[key] != null && String(patch[key]).trim()
+    );
+    const erpEntries = Object.entries(patch)
+      .map(([key, val]) => {
+        const attrId = parseErpAttrEditorId(key);
+        if (!attrId || val == null || !String(val).trim()) return null;
+        return [attrId, String(val)];
+      })
+      .filter(Boolean);
+    if (keys.length) {
+      setFormData((prev) => {
+        let next = { ...prev };
         for (const key of keys) next[key] = String(patch[key]);
-      }
-      return next;
-    });
-    if (keys.includes('mp_ozon_name') || keys.includes('mp_ozon_description')) {
-      setOzonAttributeValues((prev) => {
-        const next = { ...prev };
-        if (keys.includes('mp_ozon_name')) {
-          for (const attr of findOzonNameAttrs(ozonAttributes)) {
-            next[String(attr.id)] = String(patch.mp_ozon_name);
-          }
+        const unlink = (linkKey, mp, dedicatedKey) => {
+          if (!keys.includes(dedicatedKey)) return;
+          if (!isMpFieldLinked(next.mp_field_links, linkKey, mp)) return;
+          next = { ...next, mp_field_links: setMpFieldLink(next.mp_field_links, linkKey, mp, false) };
+        };
+        unlink('name', 'ozon', 'mp_ozon_name');
+        unlink('name', 'wb', 'mp_wb_name');
+        unlink('name', 'ym', 'mp_ym_name');
+        unlink('description', 'ozon', 'mp_ozon_description');
+        unlink('description', 'wb', 'mp_wb_description');
+        unlink('description', 'ym', 'mp_ym_description');
+        const syncFields = [];
+        if (keys.includes('name')) syncFields.push('name');
+        if (keys.includes('description')) syncFields.push('description');
+        if (keys.includes('brand')) syncFields.push('brand');
+        if (keys.includes('country_of_origin')) syncFields.push('country');
+        if (keys.some((k) => k === 'length' || k === 'width' || k === 'height' || k === 'weight')) {
+          syncFields.push('dimensions');
         }
-        if (keys.includes('mp_ozon_description')) {
-          const anns = findOzonAnnotationAttrs(ozonAttributes);
-          const targets = anns.length ? anns : [{ id: OZON_ANNOTATION_ATTR_ID }];
-          for (const attr of targets) {
-            next[String(attr.id)] = String(patch.mp_ozon_description);
-          }
+        if (
+          keys.some(
+            (k) =>
+              k === 'product_length' || k === 'product_width' || k === 'product_height' || k === 'product_weight'
+          )
+        ) {
+          syncFields.push('product_dimensions');
+        }
+        if (syncFields.length) {
+          next = applyLinkedMpFieldsFromMain(next, next.mp_field_links, syncFields);
+          for (const key of keys) next[key] = String(patch[key]);
         }
         return next;
       });
+      if (keys.includes('mp_ozon_name') || keys.includes('mp_ozon_description')) {
+        setOzonAttributeValues((prev) => {
+          const next = { ...prev };
+          if (keys.includes('mp_ozon_name')) {
+            for (const attr of findOzonNameAttrs(ozonAttributes)) {
+              next[String(attr.id)] = String(patch.mp_ozon_name);
+            }
+          }
+          if (keys.includes('mp_ozon_description')) {
+            const anns = findOzonAnnotationAttrs(ozonAttributes);
+            const targets = anns.length ? anns : [{ id: OZON_ANNOTATION_ATTR_ID }];
+            for (const attr of targets) {
+              next[String(attr.id)] = String(patch.mp_ozon_description);
+            }
+          }
+          return next;
+        });
+      }
+    }
+    for (const [attrId, val] of erpEntries) {
+      handleAttributeChange(attrId, val);
     }
   };
 
@@ -7719,7 +7730,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
 
       <div className="mt-2">
-        <div className="d-flex align-items-center justify-content-between gap-2 flex-wrap">
           <MpFieldLabel
             htmlFor="description"
             fieldKey="description"
@@ -7728,12 +7738,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           >
             Описание
           </MpFieldLabel>
-          {aiEnabled ? (
-            <Button type="button" variant="secondary" size="small" onClick={() => setDescriptionAiOpen(true)}>
-              ИИ
-            </Button>
-          ) : null}
-        </div>
         <textarea
           id="description"
           className={limitClassName(
@@ -8787,16 +8791,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
                         >
                           Редактировать
                         </Button>
-                        {aiEnabled && attrAiChatEnabled(attr) ? (
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="small"
-                            onClick={() => setEditableAttrAiModal(attr)}
-                          >
-                            ИИ
-                          </Button>
-                        ) : null}
                       </div>
                     </div>
                   ) : isEditableAttrType(attr.type) ||
@@ -10757,13 +10751,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
           onClose={() => setImageLightboxIndex(null)}
         />
       ) : null}
-      <ProductAiDraftModal
-        isOpen={aiDraftOpen}
-        onClose={() => setAiDraftOpen(false)}
+      <ProductAiEditor
         productId={currentProduct?.id || product?.id || null}
+        attributes={allAttributes}
         getDraft={() =>
           snapshotAiCardDraft(formData, {
             categoryName: selectedCategoryForCert?.name || '',
+            attributeValues: formData.attributeValues,
           })
         }
         onApply={applyAiDraft}
@@ -10777,88 +10771,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
             ? String(formData.attributeValues?.[String(editableAttrModal.id)] ?? '')
             : ''
         }
-        productId={currentProduct?.id || product?.id || null}
-        showAiChat={false}
         vehicleGroups={ozonVehicleGroupsForEditable}
         ozonComplex={ozonComplexAttributes}
-        getContext={() =>
-          snapshotAiCardDraft(formData, {
-            categoryName: selectedCategoryForCert?.name || '',
-          })
-        }
         onApply={({ value: nextVal, ozonComplex: nextComplex }) => {
           if (editableAttrModal) handleAttributeChange(editableAttrModal.id, nextVal);
           if (nextComplex) setOzonComplexAttributes(normalizeOzonComplexAttributes(nextComplex));
         }}
       />
-      {/* Форма ИИ открывается только по кнопке у описания */}
-      <ProductDescriptionAiModal
-        isOpen={descriptionAiOpen}
-        onClose={() => setDescriptionAiOpen(false)}
-        productId={currentProduct?.id || product?.id || null}
-        getDraft={() =>
-          snapshotAiCardDraft(formData, {
-            categoryName: selectedCategoryForCert?.name || '',
-          })
-        }
-        onApply={applyAiDraft}
-        settingsAttribute={descriptionAiAttribute}
-        onSettingsSaved={handleAiSettingsSaved}
-        contextAttributes={allAttributes}
-      />
-      <Modal
-        isOpen={!!editableAttrAiModal}
-        onClose={() => setEditableAttrAiModal(null)}
-        title={editableAttrAiModal ? `ИИ — ${editableAttrAiModal.name || 'атрибут'}` : 'ИИ'}
-        size="large"
-        scrollable
-      >
-        {editableAttrAiModal ? (
-          <AttributeEditorAiChat
-            title="ИИ"
-            productId={currentProduct?.id || product?.id || null}
-            outputFields={[
-              {
-                key: erpAttrEditorKey(editableAttrAiModal.id),
-                label: editableAttrAiModal.name || 'Атрибут',
-                type: 'text',
-              },
-              ...(ozonVehicleGroupsForAi[0]
-                ? [{ key: 'vehicles', label: 'Автомобили Ozon', type: 'vehicles' }]
-                : []),
-            ]}
-            getContext={() => ({
-              ...snapshotAiCardDraft(formData, {
-                categoryName: selectedCategoryForCert?.name || '',
-              }),
-              [erpAttrEditorKey(editableAttrAiModal.id)]: String(
-                formData.attributeValues?.[String(editableAttrAiModal.id)] ?? ''
-              ),
-            })}
-            onApply={(proposed) => {
-              const key = erpAttrEditorKey(editableAttrAiModal.id);
-              if (proposed?.[key] != null) handleAttributeChange(editableAttrAiModal.id, proposed[key]);
-              if (Array.isArray(proposed?.vehicles_json) && ozonVehicleGroupsForAi[0]) {
-                const nextRows = proposed.vehicles_json.map((r) => ({
-                  mark: String(r.mark || ''),
-                  model: String(r.model || ''),
-                  modification: String(r.modification || ''),
-                }));
-                setOzonComplexAttributes((prev) =>
-                  setVehicleGroupRows(prev, ozonVehicleGroupsForAi[0].complexId, nextRows)
-                );
-              }
-              setEditableAttrAiModal(null);
-            }}
-            settingsAttribute={
-              allAttributes.find((a) => String(a.id) === String(editableAttrAiModal.id)) ||
-              editableAttrAiModal
-            }
-            onSettingsSaved={handleAiSettingsSaved}
-            contextAttributes={allAttributes}
-          />
-        ) : null}
-      </Modal>
     </>
   );
 });

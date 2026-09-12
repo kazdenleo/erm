@@ -11,12 +11,19 @@ export function ProductDescriptionAiModal({
   settingsAttribute = null,
   onSettingsSaved,
   contextAttributes = [],
+  title = 'ИИ — описание',
+  outputDefs,
+  examples,
+  inputPlaceholder,
+  saveOkMessage,
+  missingAttrMessage,
 }) {
   if (!isOpen) return null;
   return (
-    <Modal isOpen onClose={onClose} title="ИИ — описание" size="large" scrollable>
+    <Modal isOpen onClose={onClose} title={title} size="large" scrollable>
       <ProductDescriptionAiChat
         embedded
+        title={title}
         productId={productId}
         getDraft={getDraft}
         onApply={(proposed, data) => {
@@ -26,6 +33,11 @@ export function ProductDescriptionAiModal({
         settingsAttribute={settingsAttribute}
         onSettingsSaved={onSettingsSaved}
         contextAttributes={contextAttributes}
+        outputDefs={outputDefs}
+        examples={examples}
+        inputPlaceholder={inputPlaceholder}
+        saveOkMessage={saveOkMessage}
+        missingAttrMessage={missingAttrMessage}
       />
     </Modal>
   );

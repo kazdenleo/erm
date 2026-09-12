@@ -11,6 +11,16 @@ export const aiApi = {
     return response.data?.data ?? response.data;
   },
 
+  getEditorTemplates: async () => {
+    const response = await api.get('/ai/editor-templates');
+    return response.data?.data ?? response.data;
+  },
+
+  saveEditorTemplates: async (templates) => {
+    const response = await api.put('/ai/editor-templates', { templates });
+    return response.data?.data ?? response.data;
+  },
+
   test: async () => {
     const response = await api.post('/ai/test', {}, { timeout: 30000 });
     return response.data?.data ?? response.data;

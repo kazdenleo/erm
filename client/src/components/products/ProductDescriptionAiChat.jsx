@@ -7,7 +7,6 @@ import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   AI_DESCRIPTION_CONTEXT_KEYS,
   AI_DESCRIPTION_OUTPUT_FIELDS,
-  AI_DESCRIPTION_OUTPUT_KEYS,
   DESCRIPTION_AI_EXAMPLES,
   filterDraftForAiContext,
   formatAiChangesPreview,
@@ -34,9 +33,19 @@ export function ProductDescriptionAiChat({
   settingsAttribute = null,
   onSettingsSaved,
   contextAttributes = [],
+  outputDefs = AI_DESCRIPTION_OUTPUT_FIELDS,
+  title = 'ИИ — описание',
+  examples = DESCRIPTION_AI_EXAMPLES,
+  inputPlaceholder = 'Напишите, как изменить описание…',
+  saveOkMessage = 'Настройки сохранены для описания',
+  missingAttrMessage = 'Нет системного атрибута — настройки некуда сохранить.',
   className = '',
 }) {
   const isBulk = Array.isArray(bulkItems) && bulkItems.length > 0;
+  const outputAllowKeys = useMemo(
+    () => (outputDefs || []).map((f) => f.key).filter(Boolean),
+    [outputDefs]
+  );
   const contextDefs = useMemo(
     () => buildAiContextFieldDefs(contextAttributes),
     [contextAttributes]
@@ -45,7 +54,7 @@ export function ProductDescriptionAiChat({
   const { enabled: aiReady, loading: configLoading } = useAiEnabled();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [outputFields, setOutputFields] = useState(() => [...AI_DESCRIPTION_OUTPUT_KEYS]);
+  const [outputFields, setOutputFields] = useState(() => [...outputAllowKeys]);
   const [contextFields, setContextFields] = useState(() => [...AI_DESCRIPTION_CONTEXT_KEYS]);
   const [fillEmptyOnly, setFillEmptyOnly] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -56,12 +65,12 @@ export function ProductDescriptionAiChat({
   const [lastResult, setLastResult] = useState(null);
   const listRef = useRef(null);
 
-  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${contextAllowKeys.join('|')}`;
+  const settingsKey = `${aiChatSettingsKey(settingsAttribute)}|${outputAllowKeys.join('|')}|${contextAllowKeys.join('|')}`;
   useEffect(() => {
     const picked = pickAiChatSettings(attrAiChatSettingsRaw(settingsAttribute), {
-      allowOutput: AI_DESCRIPTION_OUTPUT_KEYS,
+      allowOutput: outputAllowKeys,
       allowContext: contextAllowKeys,
-      defaultOutput: AI_DESCRIPTION_OUTPUT_KEYS,
+      defaultOutput: outputAllowKeys,
       defaultContext: AI_DESCRIPTION_CONTEXT_KEYS,
     });
     setOutputFields(picked.outputKeys);
@@ -83,9 +92,9 @@ export function ProductDescriptionAiChat({
     const instruction = String(text || '').trim();
     if (!instruction || sending || !ready) return;
     const fillEmpty = fillEmptyOnly && !instructionAllowsOverwrite(instruction);
-    const fields = outputFields.filter((k) => AI_DESCRIPTION_OUTPUT_KEYS.includes(k));
+    const fields = outputFields.filter((k) => outputAllowKeys.includes(k));
     if (!fields.length) {
-      setError('Выберите хотя бы одно поле описания для генерации.');
+      setError('Выберите хотя бы одно поле для генерации.');
       return;
     }
 
@@ -160,7 +169,7 @@ export function ProductDescriptionAiChat({
 
   const persistSettings = async () => {
     if (!settingsAttribute?.id) {
-      setSettingsMessage('Нет системного атрибута «Описание» — настройки некуда сохранить.');
+      setSettingsMessage(missingAttrMessage);
       return;
     }
     setSettingsSaving(true);
@@ -174,7 +183,7 @@ export function ProductDescriptionAiChat({
       };
       const saved = await saveAttributeAiChatSettings(settingsAttribute.id, payload);
       onSettingsSaved?.(saved);
-      setSettingsMessage('Настройки сохранены для описания');
+      setSettingsMessage(saveOkMessage);
     } catch (err) {
       setSettingsMessage(getApiErrorMessage(err, 'Не удалось сохранить настройки'));
     } finally {
@@ -192,7 +201,7 @@ export function ProductDescriptionAiChat({
     >
       {embedded ? null : (
         <div className="product-desc-ai-chat__head">
-          <strong>ИИ — описание</strong>
+          <strong>{title}</strong>
           {isBulk ? <span className="product-desc-ai-chat__meta">товаров: {bulkItems.length}</span> : null}
         </div>
       )}
@@ -203,7 +212,7 @@ export function ProductDescriptionAiChat({
       <AiChatSettingsPanel
         open={settingsOpen}
         onToggleOpen={() => setSettingsOpen((v) => !v)}
-        outputDefs={AI_DESCRIPTION_OUTPUT_FIELDS}
+        outputDefs={outputDefs}
         selectedOutputs={outputFields}
         onChangeOutputs={setOutputFields}
         contextDefs={contextDefs}
@@ -221,7 +230,7 @@ export function ProductDescriptionAiChat({
       <div className="product-desc-ai-chat__messages" ref={listRef}>
         {messages.length === 0 ? (
           <div className="product-desc-ai-chat__examples">
-            {DESCRIPTION_AI_EXAMPLES.map((q) => (
+            {(examples || []).map((q) => (
               <button key={q} type="button" onClick={() => send(q)} disabled={sending}>
                 {q}
               </button>
@@ -234,7 +243,7 @@ export function ProductDescriptionAiChat({
           </div>
         ))}
         {sending ? (
-          <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">Готовлю описание…</div>
+          <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">Готовлю текст…</div>
         ) : null}
       </div>
 
@@ -251,7 +260,7 @@ export function ProductDescriptionAiChat({
           className="product-desc-ai-chat__input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Напишите, как изменить описание…"
+          placeholder={inputPlaceholder}
           disabled={sending}
           rows={compact ? 2 : 3}
         />

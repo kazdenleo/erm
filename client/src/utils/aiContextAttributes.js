@@ -2,6 +2,11 @@ export function erpAttrEditorKey(attrId) {
   return `erp_attr_${attrId}`;
 }
 
+export function parseErpAttrEditorId(key) {
+  const m = String(key || '').match(/^erp_attr_(.+)$/);
+  return m ? m[1] : null;
+}
+
 /** Базовые поля карточки и МП — всегда в списке «учитывать». */
 export const AI_CARD_CONTEXT_FIELDS = [
   { key: 'name', label: 'Название' },
@@ -89,6 +94,10 @@ export function buildAiContextFieldDefs(attributes = []) {
     add(key, attr.name || key);
   }
   return out;
+}
+
+export function buildAiOutputFieldDefs(attributes = []) {
+  return buildAiContextFieldDefs(attributes).filter((f) => f.key !== 'sku' && f.key !== 'category_name');
 }
 
 export function contextFieldLabels(defs = []) {

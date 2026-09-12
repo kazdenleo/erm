@@ -9,6 +9,8 @@ router.use(requireAuth); // JWT; ключ GigaChat только на серве�
 
 router.get('/config', wrapAsync(controller.getConfig));
 router.put('/config', requireProfileAdmin, wrapAsync(controller.saveConfig));
+router.get('/editor-templates', wrapAsync(controller.getEditorTemplates));
+router.put('/editor-templates', wrapAsync(controller.saveEditorTemplates));
 router.post('/test', requireProfileAdmin, wrapAsync(controller.testConnection));
 router.post('/chat', wrapAsync(controller.chat));
 router.post('/product-card/propose', wrapAsync(controller.proposeProductCard));

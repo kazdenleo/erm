@@ -246,6 +246,20 @@ class AiAssistantService {
     return toPublicAiSettings(saved?.ai_settings ?? next);
   }
 
+  async getEditorTemplates(profileId) {
+    const row = await this._loadProfile(profileId);
+    const parsed = toPublicAiSettings(row.ai_settings ?? row.aiSettings);
+    return parsed.editorTemplates || [];
+  }
+
+  async saveEditorTemplates(profileId, templates) {
+    const repo = repositoryFactory.getProfilesRepository();
+    const row = await this._loadProfile(profileId);
+    const next = mergeAiSettings(row.ai_settings ?? row.aiSettings, { editorTemplates: templates });
+    const saved = await repo.update(profileId, { ai_settings: next });
+    return toPublicAiSettings(saved?.ai_settings ?? next).editorTemplates || [];
+  }
+
   async testConnection(profileId) {
     const row = await this._loadProfile(profileId);
     const settings = assertAiReady(row.ai_settings ?? row.aiSettings);

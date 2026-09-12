@@ -28,6 +28,48 @@ export const DEFAULT_GIGACHAT_SCOPE = 'GIGACHAT_API_PERS';
 export const GIGACHAT_OAUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth';
 export const CREDENTIALS_PLACEHOLDER = '********';
 
+const EDITOR_TEMPLATES_MAX = 40;
+const EDITOR_TEMPLATE_NAME_MAX = 80;
+const EDITOR_TEMPLATE_PROMPT_MAX = 2000;
+const EDITOR_TEMPLATE_KEYS_MAX = 80;
+
+function strKeyList(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const k = String(item || '').trim().slice(0, 80);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= EDITOR_TEMPLATE_KEYS_MAX) break;
+  }
+  return out;
+}
+
+export function normalizeAiEditorTemplates(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const id = String(item.id || '').trim().slice(0, 64) || `t_${Date.now()}_${out.length}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const name = String(item.name || '').trim().slice(0, EDITOR_TEMPLATE_NAME_MAX) || 'Шаблон';
+    out.push({
+      id,
+      name,
+      prompt: String(item.prompt ?? '').slice(0, EDITOR_TEMPLATE_PROMPT_MAX),
+      outputKeys: strKeyList(item.outputKeys),
+      contextKeys: strKeyList(item.contextKeys),
+      fillEmptyOnly: item.fillEmptyOnly !== false,
+    });
+    if (out.length >= EDITOR_TEMPLATES_MAX) break;
+  }
+  return out;
+}
+
 function httpError(message, statusCode = 400) {
   const err = new Error(message);
   err.statusCode = statusCode;
@@ -73,6 +115,7 @@ export function parseAiSettings(raw) {
     model,
     apiBase,
     enabled,
+    editorTemplates: normalizeAiEditorTemplates(src.editorTemplates ?? src.editor_templates),
   };
 }
 
@@ -88,6 +131,7 @@ export function toPublicAiSettings(raw) {
     model: s.model,
     scope: s.scope,
     apiBase: s.apiBase,
+    editorTemplates: s.editorTemplates || [],
   };
 }
 
@@ -123,6 +167,11 @@ export function mergeAiSettings(existingRaw, incoming = {}) {
     if (cred && cred !== CREDENTIALS_PLACEHOLDER) {
       next.credentials = cred.replace(/^Basic\s+/i, '').trim();
     }
+  }
+  if (incoming.editorTemplates !== undefined || incoming.editor_templates !== undefined) {
+    next.editorTemplates = normalizeAiEditorTemplates(
+      incoming.editorTemplates ?? incoming.editor_templates
+    );
   }
   next.provider = AI_PROVIDER_GIGACHAT;
   return next;

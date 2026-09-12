@@ -1,13 +1,11 @@
 /** Поля для универсального ИИ-редактора атрибутов (editable + связанные МП). */
 
-import { AI_CARD_CONTEXT_FIELDS, AI_CARD_CONTEXT_KEYS, pickContextByKeys } from './aiContextAttributes.js';
+import { AI_CARD_CONTEXT_FIELDS, AI_CARD_CONTEXT_KEYS, pickContextByKeys, erpAttrEditorKey, parseErpAttrEditorId } from './aiContextAttributes.js';
+
+export { erpAttrEditorKey, parseErpAttrEditorId };
 
 export const DEFAULT_ATTR_EDITOR_CONTEXT_FIELDS = AI_CARD_CONTEXT_FIELDS;
 export const DEFAULT_ATTR_EDITOR_CONTEXT_KEYS = AI_CARD_CONTEXT_KEYS;
-
-export function erpAttrEditorKey(attrId) {
-  return `erp_attr_${attrId}`;
-}
 
 export function ozonAttrEditorKey(attrId) {
   return `ozon_attr_${attrId}`;

@@ -21,11 +21,13 @@ export function attrShowsRelatedFields(attr) {
 /** ИИ-чат в попапе редактора (контекст из других полей карточки). */
 export function attrAiChatEnabled(attr) {
   if (!attr || typeof attr !== 'object') return false;
-  if (!isEditableAttrType(attr.type)) return false;
-  return (
+  const on =
     attr.ai_chat_enabled === true ||
     attr.ai_chat_enabled === 'true' ||
     attr.ai_chat_enabled === 1 ||
-    attr.aiChatEnabled === true
-  );
+    attr.aiChatEnabled === true;
+  if (!on) return false;
+  if (isEditableAttrType(attr.type)) return true;
+  const sk = String(attr.system_key || '').trim();
+  return sk === 'name' || sk === 'description';
 }

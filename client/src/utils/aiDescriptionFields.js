@@ -11,6 +11,15 @@ export const AI_DESCRIPTION_OUTPUT_FIELDS = [
 
 export const AI_DESCRIPTION_OUTPUT_KEYS = AI_DESCRIPTION_OUTPUT_FIELDS.map((f) => f.key);
 
+export const AI_NAME_OUTPUT_FIELDS = [
+  { key: 'name', label: 'Основное — название' },
+  { key: 'mp_ozon_name', label: 'Ozon — название' },
+  { key: 'mp_wb_name', label: 'Wildberries — название' },
+  { key: 'mp_ym_name', label: 'Яндекс Маркет — название' },
+];
+
+export const AI_NAME_OUTPUT_KEYS = AI_NAME_OUTPUT_FIELDS.map((f) => f.key);
+
 export const AI_DESCRIPTION_CONTEXT_FIELDS = AI_CARD_CONTEXT_FIELDS;
 export const AI_DESCRIPTION_CONTEXT_KEYS = AI_CARD_CONTEXT_KEYS;
 
@@ -36,4 +45,10 @@ export const DESCRIPTION_AI_EXAMPLES = [
   'Сделай продающее описание по фактам из карточки, без воды',
   'Перепиши описание короче, сохрани характеристики',
   'Заполни пустые описания для всех выбранных полей',
+];
+
+export const NAME_AI_EXAMPLES = [
+  'Сделай продающее название по фактам из карточки',
+  'Короткие названия для маркетплейсов, без капса',
+  'Заполни пустые названия для всех выбранных полей',
 ];

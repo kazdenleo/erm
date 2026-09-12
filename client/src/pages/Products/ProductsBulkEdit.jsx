@@ -8,17 +8,14 @@ import { productAttributesApi } from '../../services/productAttributes.api';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
-import { ProductAiDraftModal } from '../../components/products/ProductAiDraftModal.jsx';
-import { ProductDescriptionAiChat } from '../../components/products/ProductDescriptionAiChat.jsx';
-import { AttributeEditorAiChat } from '../../components/products/AttributeEditorAiChat.jsx';
-import { snapshotAiCardDraft, AI_CARD_FIELDS, MAX_BULK_AI_CARDS } from '../../utils/aiProductCardFields.js';
-import { erpAttrEditorKey } from '../../utils/aiAttributeEditorFields.js';
+import { ProductAiEditor } from '../../components/products/ProductAiEditor.jsx';
+import { snapshotAiCardDraft } from '../../utils/aiProductCardFields.js';
+import { parseErpAttrEditorId } from '../../utils/aiAttributeEditorFields.js';
 import { ImageLightbox } from '../../components/common/ImageLightbox/ImageLightbox';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useBrands } from '../../hooks/useBrands';
-import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   getPrimaryProductImageUrl,
   parseProductImages,
@@ -44,13 +41,11 @@ import {
   isComputedAttrType,
   isSystemPriceAttr,
 } from '../../utils/attributeFormula.js';
-import { attrShowsRelatedFields, attrAiChatEnabled, isEditableAttrType } from '../../utils/editableAttribute.js';
+import { attrShowsRelatedFields, isEditableAttrType } from '../../utils/editableAttribute.js';
 import {
   isSystemMainFieldAttr,
   mainFieldShowsRelatedFields,
-  findSystemMainFieldAttr,
 } from '../../utils/systemMainFieldAttributes.js';
-import { mergeUpdatedAttribute } from '../../utils/aiChatSettings.js';
 import {
   getMpDraftDimensionsMm,
   getYmDraftWeightDimensions,
@@ -5284,47 +5279,20 @@ function rowWithPopupDraftLinks(row, textPopup, group, erpAttrCols = []) {
 
 const EMPTY_TEXT_POPUP = { open: false, rowId: null, col: null, drafts: {}, independent: {} };
 
-function isDescriptionTextColumn(col, erpAttrCols = []) {
-  if (!col) return false;
-  if (col.key === 'description' || col.linkFieldKey === 'description') return true;
-  if (String(col.key || '').includes('description')) return true;
-  if (col.mpAttr?.bucket === 'ozon') {
-    const meta = { id: col.mpAttr.attrId, name: col._humanName || col.label };
-    if (isOzonAnnotationAttr(meta)) return true;
-  }
-  if (col.mpAttr && erpAttrCols.length) {
-    const erp = findErpColForMpAttrMirror(erpAttrCols, col.mpAttr, col);
-    if (erp?.linkFieldKey === 'description') return true;
-  }
-  return false;
-}
-
-function isAiEditableErpColumn(col) {
-  return attrAiChatEnabled(col?.erpAttr);
-}
-
-function applyProposedToTextPopupGroup(group, proposed, linkKey) {
-  const drafts = {};
-  const independent = {};
-  if (!proposed || typeof proposed !== 'object') return { drafts, independent };
-  for (const c of group || []) {
-    let val = proposed[c.key];
-    if (val == null && c.key === 'description') val = proposed.description;
-    if (val == null && c.key === 'mp_ozon_description') val = proposed.mp_ozon_description;
-    if (val == null && c.key === 'mp_wb_description') val = proposed.mp_wb_description;
-    if (val == null && c.key === 'mp_ym_description') val = proposed.mp_ym_description;
-    if (val == null && c.mpAttr) {
-      const meta = { id: c.mpAttr.attrId, name: c._humanName || c.label };
-      if (isOzonAnnotationAttr(meta) && proposed.mp_ozon_description != null) {
-        val = proposed.mp_ozon_description;
-      }
-    }
-    if (val == null && c.erpAttr?.id) val = proposed[erpAttrEditorKey(c.erpAttr.id)];
+function proposedToBulkPairs(proposed) {
+  const pairs = [];
+  if (!proposed || typeof proposed !== 'object') return pairs;
+  for (const [key, val] of Object.entries(proposed)) {
     if (val == null || !String(val).trim()) continue;
-    drafts[c.key] = String(val);
-    if (linkKey && !isPopupMainColumn(c, linkKey)) independent[c.key] = true;
+    if (key === 'sku' || key === 'category_name') continue;
+    const attrId = parseErpAttrEditorId(key);
+    if (attrId) {
+      pairs.push([erpAttrColKey(attrId), String(val)]);
+      continue;
+    }
+    pairs.push([key, String(val)]);
   }
-  return { drafts, independent };
+  return pairs;
 }
 
 function applyOneBulkCellChange(
@@ -5469,8 +5437,6 @@ export function ProductsBulkEdit() {
   const [saving, setSaving] = useState(false);
   const [saveProgress, setSaveProgress] = useState(null);
   const [saveMessage, setSaveMessage] = useState(null);
-  const [aiDraftOpen, setAiDraftOpen] = useState(false);
-  const { enabled: aiEnabled } = useAiEnabled();
   const [pushMpLoading, setPushMpLoading] = useState(null);
   const [videoCoverBulkLoading, setVideoCoverBulkLoading] = useState(false);
   const [pushMpMessage, setPushMpMessage] = useState(null);
@@ -5708,21 +5674,6 @@ export function ProductsBulkEdit() {
   const [mpAttrColumnDefsState, setMpAttrColumnDefs] = useState([]);
   const [erpAttrColumnDefs, setErpAttrColumnDefs] = useState([]);
   const [allProductAttributes, setAllProductAttributes] = useState([]);
-  const descriptionAiAttribute = useMemo(
-    () => findSystemMainFieldAttr(allProductAttributes, 'description'),
-    [allProductAttributes]
-  );
-  const handleAiSettingsSaved = useCallback((attr) => {
-    if (!attr?.id) return;
-    setAllProductAttributes((prev) => mergeUpdatedAttribute(prev, attr));
-    setErpAttrColumnDefs((cols) =>
-      (cols || []).map((c) =>
-        c?.erpAttr && String(c.erpAttr.id) === String(attr.id)
-          ? { ...c, erpAttr: { ...c.erpAttr, ...attr } }
-          : c
-      )
-    );
-  }, []);
   const [mpLabelMaps, setMpLabelMaps] = useState({ ozon: {}, wb: {}, ym: {} });
   const mpAttrColumnDefs = useMemo(() => {
     const catId = String(filterCategoryId || '').trim();
@@ -7242,81 +7193,31 @@ export function ProductsBulkEdit() {
     for (const it of items || []) {
       const id = str(it?.productId);
       if (!id) continue;
-      const pairs = [];
-      for (const { key } of AI_CARD_FIELDS) {
-        const val = it?.proposed?.[key];
-        if (val == null || !String(val).trim()) continue;
-        pairs.push([key, String(val)]);
-      }
+      const pairs = proposedToBulkPairs(it?.proposed);
       if (pairs.length) updateCells(id, pairs);
     }
   }, [updateCells]);
 
   const aiBulkItems = useMemo(() => {
     const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
-    const out = [];
+    const toItem = (row) => {
+      const nid = Number(row.id);
+      if (!Number.isInteger(nid) || nid < 1 || isNewBulkRowId(row.id)) return null;
+      return {
+        productId: nid,
+        sku: row.sku || '',
+        draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
+      };
+    };
+    const selected = [];
     for (const sid of selectedRowIds) {
       const row = rows.find((r) => str(r.id) === str(sid));
-      if (!row || isNewBulkRowId(row.id)) continue;
-      const nid = Number(row.id);
-      if (!Number.isInteger(nid) || nid < 1) continue;
-      out.push({
-        productId: nid,
-        draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
-      });
+      const item = row ? toItem(row) : null;
+      if (item) selected.push(item);
     }
-    return out;
+    if (selected.length) return selected;
+    return rows.map(toItem).filter(Boolean);
   }, [selectedRowIds, rows, categories]);
-
-  const pageDescriptionAiItems = useMemo(() => {
-    const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
-    return rows
-      .filter((r) => {
-        if (!r?.id || isNewBulkRowId(r.id)) return false;
-        const nid = Number(r.id);
-        return Number.isInteger(nid) && nid >= 1;
-      })
-      .map((row) => ({
-        productId: Number(row.id),
-        draft: snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
-      }));
-  }, [rows, categories]);
-
-  const buildEditableAttrAiItems = useCallback(
-    (col) => {
-      if (!col?.erpAttr?.id) return [];
-      const fieldKey = erpAttrEditorKey(col.erpAttr.id);
-      const catById = new Map((categories || []).map((c) => [String(c.id), c.name || '']));
-      return rows
-        .filter((r) => {
-          if (!r?.id || isNewBulkRowId(r.id)) return false;
-          const nid = Number(r.id);
-          return Number.isInteger(nid) && nid >= 1;
-        })
-        .map((row) => ({
-          productId: Number(row.id),
-          sku: row.sku || '',
-          context: {
-            ...snapshotAiCardDraft(row, { categoryName: catById.get(str(row.categoryId)) || '' }),
-            [fieldKey]: String(row[col.key] ?? ''),
-          },
-        }));
-    },
-    [rows, categories]
-  );
-
-  const applyAiEditableAttrBulk = useCallback(
-    (items, attrId, colKey) => {
-      const fieldKey = erpAttrEditorKey(attrId);
-      for (const it of items || []) {
-        const id = str(it?.productId);
-        const val = it?.proposed?.[fieldKey];
-        if (!id || val == null || !String(val).trim()) continue;
-        updateCells(id, [[colKey, String(val)]]);
-      }
-    },
-    [updateCells]
-  );
 
   const handleGenerateBarcode = useCallback(
     async (row) => {
@@ -8430,15 +8331,6 @@ export function ProductsBulkEdit() {
               : popupFieldTitle(textPopup.col)
       }${textPopupRow?.sku ? ` · ${textPopupRow.sku}` : ''}`
     : '';
-  const textPopupIsDescription =
-    textPopupLinkKey === 'description' || isDescriptionTextColumn(textPopup.col, erpAttrColumnDefs);
-  const bulkModalIsDescription = bulkModalCol
-    ? isDescriptionTextColumn(bulkModalCol, erpAttrColumnDefs)
-    : false;
-  const textPopupIsAiEditable = isAiEditableErpColumn(textPopup.col);
-  const bulkModalIsAiEditable = isAiEditableErpColumn(bulkModalCol);
-  const bulkEditableAiItems =
-    bulkModalIsAiEditable && bulkModalCol ? buildEditableAttrAiItems(bulkModalCol) : [];
 
   return (
     <div key={location.key} className="products-bulk-page">
@@ -9003,22 +8895,6 @@ export function ProductsBulkEdit() {
                     >
                       {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
                     </Button>
-                    {aiEnabled ? (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="small"
-                        disabled={!!pushMpLoading || !!pullMpLoading || aiBulkItems.length === 0}
-                        title={
-                          aiBulkItems.length === 0
-                            ? 'Отметьте сохранённые товары галочками'
-                            : 'GigaChat предложит названия и описания. В ERP и на МП ничего не пишется, пока не сохраните'
-                        }
-                        onClick={() => setAiDraftOpen(true)}
-                      >
-                        Черновик ИИ{aiBulkItems.length > 0 ? ` (${Math.min(aiBulkItems.length, MAX_BULK_AI_CARDS)})` : ''}
-                      </Button>
-                    ) : null}
                   </div>
                   {pushMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>
@@ -9588,10 +9464,10 @@ export function ProductsBulkEdit() {
         isOpen={!!(textPopup.open && textPopup.col && textPopupRow)}
         onClose={() => setTextPopup(EMPTY_TEXT_POPUP)}
         title={textPopupModalTitle}
-        size={textPopupIsDescription || textPopupIsAiEditable ? 'xl' : 'large'}
+        size="large"
       >
         {textPopup.col && textPopupRow ? (
-          <div className={textPopupIsDescription || textPopupIsAiEditable ? 'products-bulk-text-popup-layout' : undefined}>
+          <div>
             <div className="products-bulk-text-popup-group">
               {textPopupGroup.map((c) => {
                 const linkKey = popupLinkFieldKey(c, erpAttrColumnDefs);
@@ -9676,77 +9552,6 @@ export function ProductsBulkEdit() {
                 );
               })}
             </div>
-            {textPopupIsDescription ? (
-              <ProductDescriptionAiChat
-                compact
-                settingsAttribute={descriptionAiAttribute}
-                onSettingsSaved={handleAiSettingsSaved}
-                contextAttributes={allProductAttributes}
-                productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
-                getDraft={() => {
-                  const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
-                  const base = textPopupSyntheticRow || textPopupRow;
-                  const draft = snapshotAiCardDraft(base, { categoryName: cat?.name || '' });
-                  const drafts = textPopup.drafts || {};
-                  for (const c of textPopupGroup) {
-                    if (Object.prototype.hasOwnProperty.call(drafts, c.key)) {
-                      draft[c.key] = drafts[c.key];
-                    }
-                  }
-                  return draft;
-                }}
-                onApply={(proposed) => {
-                  const patch = applyProposedToTextPopupGroup(
-                    textPopupGroup,
-                    proposed,
-                    textPopupLinkKey
-                  );
-                  setTextPopup((prev) => ({
-                    ...prev,
-                    drafts: { ...(prev.drafts || {}), ...patch.drafts },
-                    independent: { ...(prev.independent || {}), ...patch.independent },
-                  }));
-                }}
-              />
-            ) : textPopupIsAiEditable && aiEnabled ? (
-              <AttributeEditorAiChat
-                title={`ИИ — ${textPopup.col?.erpAttr?.name || textPopup.col?.label || 'атрибут'}`}
-                settingsAttribute={
-                  allProductAttributes.find((a) => String(a.id) === String(textPopup.col?.erpAttr?.id)) ||
-                  textPopup.col?.erpAttr
-                }
-                onSettingsSaved={handleAiSettingsSaved}
-                contextAttributes={allProductAttributes}
-                productId={Number(textPopupRow.id) >= 1 ? Number(textPopupRow.id) : null}
-                outputFields={[
-                  {
-                    key: erpAttrEditorKey(textPopup.col.erpAttr.id),
-                    label: textPopup.col.erpAttr.name || textPopup.col.label || 'Атрибут',
-                    type: 'text',
-                  },
-                ]}
-                getContext={() => {
-                  const cat = categories.find((c) => str(c.id) === str(textPopupRow.categoryId));
-                  const base = textPopupSyntheticRow || textPopupRow;
-                  const ctx = snapshotAiCardDraft(base, { categoryName: cat?.name || '' });
-                  const key = erpAttrEditorKey(textPopup.col.erpAttr.id);
-                  ctx[key] = String((textPopup.drafts || {})[textPopup.col.key] ?? base[textPopup.col.key] ?? '');
-                  return ctx;
-                }}
-                onApply={(proposed) => {
-                  const patch = applyProposedToTextPopupGroup(
-                    textPopupGroup,
-                    proposed,
-                    textPopupLinkKey
-                  );
-                  setTextPopup((prev) => ({
-                    ...prev,
-                    drafts: { ...(prev.drafts || {}), ...patch.drafts },
-                    independent: { ...(prev.independent || {}), ...patch.independent },
-                  }));
-                }}
-              />
-            ) : null}
             <div className="d-flex justify-content-end gap-2 mt-3 products-bulk-text-popup-footer">
               <Button
                 type="button"
@@ -9807,58 +9612,13 @@ export function ProductsBulkEdit() {
                 .trim()}`
             : ''
         }
-        size={bulkModalIsDescription || bulkModalIsAiEditable ? 'xl' : 'large'}
+        size="large"
       >
         {bulkModalCol ? (
           <div>
             <p className="text-muted small">
               Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
             </p>
-            {bulkModalIsDescription && pageDescriptionAiItems.length > 0 ? (
-              <div className="products-bulk-modal-ai-desc mb-3">
-                <ProductDescriptionAiChat
-                  bulkItems={pageDescriptionAiItems}
-                  settingsAttribute={descriptionAiAttribute}
-                  onSettingsSaved={handleAiSettingsSaved}
-                  contextAttributes={allProductAttributes}
-                  onApplyBulk={(items) => {
-                    applyAiBulkDraft(items);
-                    setBulkModal({ open: false, column: null });
-                  }}
-                />
-                <p className="text-muted small mt-2 mb-0">
-                  Или введите одно описание вручную для всех строк ниже.
-                </p>
-              </div>
-            ) : null}
-            {bulkModalIsAiEditable && aiEnabled && bulkEditableAiItems.length > 0 ? (
-              <div className="products-bulk-modal-ai-desc mb-3">
-                <AttributeEditorAiChat
-                  title={`ИИ — ${bulkModalCol.erpAttr?.name || bulkModalCol.label || 'атрибут'}`}
-                  settingsAttribute={
-                    allProductAttributes.find((a) => String(a.id) === String(bulkModalCol.erpAttr?.id)) ||
-                    bulkModalCol.erpAttr
-                  }
-                  onSettingsSaved={handleAiSettingsSaved}
-                  contextAttributes={allProductAttributes}
-                  outputFields={[
-                    {
-                      key: erpAttrEditorKey(bulkModalCol.erpAttr.id),
-                      label: bulkModalCol.erpAttr?.name || bulkModalCol.label || 'Атрибут',
-                      type: 'text',
-                    },
-                  ]}
-                  bulkItems={bulkEditableAiItems}
-                  onApplyBulk={(items) => {
-                    applyAiEditableAttrBulk(items, bulkModalCol.erpAttr.id, bulkModalCol.key);
-                    setBulkModal({ open: false, column: null });
-                  }}
-                />
-                <p className="text-muted small mt-2 mb-0">
-                  Или введите одно значение вручную для всех строк ниже.
-                </p>
-              </div>
-            ) : null}
             {bulkModalCol.input === 'checkbox' ? (
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
                 <option value="true">Да</option>
@@ -10121,10 +9881,8 @@ export function ProductsBulkEdit() {
         />
       ) : null}
 
-      <ProductAiDraftModal
-        isOpen={aiDraftOpen}
-        onClose={() => setAiDraftOpen(false)}
-        mode="bulk"
+      <ProductAiEditor
+        attributes={allProductAttributes}
         bulkItems={aiBulkItems}
         onApplyBulk={applyAiBulkDraft}
       />

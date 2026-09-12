@@ -23,7 +23,6 @@ import {
   validateFormula,
 } from '../../utils/attributeFormula.js';
 import { isEditableAttrType } from '../../utils/editableAttribute.js';
-import { useAiEnabled } from '../../hooks/useAiEnabled.js';
 import {
   isSystemCardAttr,
   isSystemMainFieldAttr,
@@ -96,16 +95,12 @@ function AttrLinksCell({ stats }) {
 }
 
 function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
-  const { enabled: aiIntegrationEnabled } = useAiEnabled();
   const linksPanelRef = useRef(null);
   const [name, setName] = useState(attribute?.name || '');
   const [type, setType] = useState(attribute?.type || 'text');
   const [formula, setFormula] = useState(attribute?.formula || '');
   const [showRelatedFields, setShowRelatedFields] = useState(
     !!(attribute?.show_related_fields ?? attribute?.showRelatedFields)
-  );
-  const [aiChatEnabled, setAiChatEnabled] = useState(
-    !!(attribute?.ai_chat_enabled ?? attribute?.aiChatEnabled)
   );
   const isSystem = isSystemCardAttr(attribute);
   const isMainField = isSystemMainFieldAttr(attribute);
@@ -162,7 +157,6 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
       dictionary_values: type === 'dictionary' ? sortDict(dictionaryValues) : undefined,
       formula: isComputedAttrType(type) ? String(formula || '').trim() : '',
       show_related_fields: isEditableAttrType(type) ? !!showRelatedFields : false,
-      ai_chat_enabled: isEditableAttrType(type) ? !!aiChatEnabled : false,
     };
     if (!nameLocked) payload.name = name.trim();
     setSaving(true);
@@ -272,23 +266,6 @@ function AttributeForm({ attribute, attributes = [], onSubmit, onCancel }) {
           </p>
         </div>
       )}
-      {isEditableAttrType(type) && aiIntegrationEnabled ? (
-        <div className="form-group">
-          <label className="form-check-label d-flex align-items-center gap-2">
-            <input
-              type="checkbox"
-              className="form-check-input m-0"
-              checked={aiChatEnabled}
-              onChange={(e) => setAiChatEnabled(e.target.checked)}
-            />
-            ИИ в отдельном окне
-          </label>
-          <p className="form-hint">
-            На карточке товара и в массовом редактировании появляется кнопка «ИИ»: можно выбрать поля и написать
-            промпт. Модель видит название, артикул, бренд и другие отмеченные поля и заполняет этот атрибут.
-          </p>
-        </div>
-      ) : null}
       {type === 'dictionary' && !isMainField && (
         <div className="form-group">
           <label>Значения словаря</label>
