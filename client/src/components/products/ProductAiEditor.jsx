@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '../common/Button/Button';
 import { Modal } from '../common/Modal/Modal';
 import { aiApi } from '../../services/ai.api';
@@ -226,8 +227,9 @@ export function ProductAiEditor({
     : !!(lastResult?.data?.changes?.length);
 
   if (configLoading || !aiReady) return null;
+  if (typeof document === 'undefined') return null;
 
-  return (
+  return createPortal(
     <>
       {open ? null : (
         <button type="button" className="product-ai-fab" onClick={() => setOpen(true)} title="ИИ-редактор">
@@ -352,7 +354,8 @@ export function ProductAiEditor({
           </p>
         </div>
       </Modal>
-    </>
+    </>,
+    document.body
   );
 }
 

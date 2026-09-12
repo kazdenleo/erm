@@ -81,4 +81,9 @@ if [ -f "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" ]; then
   bash "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" || echo "WARN: nginx gzip patch skipped"
 fi
 
+echo "==> nginx SPA HTML cache"
+if [ -f "$APP_ROOT/scripts/vps-fix-nginx-spa-cache.sh" ]; then
+  bash "$APP_ROOT/scripts/vps-fix-nginx-spa-cache.sh" || echo "WARN: nginx SPA cache patch skipped"
+fi
+
 echo "==> done"
