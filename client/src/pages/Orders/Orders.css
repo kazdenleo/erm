@@ -289,18 +289,12 @@
 .orders-checkbox-label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   cursor: pointer;
   user-select: none;
 }
 
 .orders-checkbox-label input {
   cursor: pointer;
-}
-
-.orders-checkbox-caption {
-  font-size: 12px;
-  color: var(--muted, #666);
 }
 
 .orders-row-selected {
