@@ -1647,16 +1647,35 @@ class PricesService {
 
     let drr = null;
     let source = 'ads';
+    let foundStats = false;
     try {
       for (const key of candidates) {
-        drr = await ozonPerformanceAdsService.getDrrPercentForOffer(key, integrationScope || {});
-        if (drr != null) break;
+        const stats = await ozonPerformanceAdsService.getAdsStatsForOffer(key, integrationScope || {});
+        if (!stats) continue;
+        foundStats = true;
+        // Товар не в активной кампании — рекламу в мин. цене не учитываем
+        if (stats.inActiveCampaign === false) {
+          drr = 0;
+          source = 'not_in_campaign';
+          break;
+        }
+        if (stats.inActiveCampaign === true && stats.drrPercent != null) {
+          drr = stats.drrPercent;
+          source = 'ads';
+          break;
+        }
+        // Членство неизвестно (null) — используем исторический ДРР
+        if (stats.drrPercent != null) {
+          drr = stats.drrPercent;
+          source = 'ads';
+          break;
+        }
       }
     } catch (e) {
       logger.warn('[Prices Service] Ozon ads DRR lookup failed:', e?.message || e);
     }
 
-    if (drr == null) {
+    if (drr == null && !foundStats) {
       try {
         const cfg = await integrationsService.getMarketplaceConfig('ozon', integrationScope || {});
         const fallback =
@@ -1672,6 +1691,11 @@ class PricesService {
       } catch {
         /* ignore */
       }
+    }
+
+    // Нашли, что товар вне кампаний — явно 0%, без fallback из настроек
+    if (source === 'not_in_campaign') {
+      return applyOzonAdsPromotion(calculator, 0, 'not_in_campaign');
     }
 
     if (drr == null || Number.isNaN(Number(drr))) return calculator;

@@ -39,6 +39,7 @@ const REASON_FILTERS = [
   { value: 'stockout', label: 'Нет остатка' },
   { value: 'low_content_rating', label: 'Качество' },
   { value: 'dim_mismatch', label: 'Размеры' },
+  { value: 'high_drr', label: 'Высокий ДРР' },
   { value: 'duplicate', label: 'Дубли' },
   { value: 'missing_cost', label: 'Без себестоимости' },
 ];
@@ -209,7 +210,8 @@ export function CardWork() {
   const showDuplicates = reason === 'duplicate';
   const showMissingCost = reason === 'missing_cost';
   const showMainTable = !showDuplicates && !showMissingCost;
-  const hideSoldQty = reason === 'low_content_rating' || reason === 'dim_mismatch';
+  const hideSoldQty =
+    reason === 'low_content_rating' || reason === 'dim_mismatch' || reason === 'high_drr';
   const showRowActions = reason === 'low_content_rating' || reason === 'dim_mismatch';
   const anyLoading = loading || dupLoading || costLoading;
 
@@ -340,6 +342,20 @@ export function CardWork() {
           <div className="product-dynamics__summary-card-label">Размеры</div>
           <div className="product-dynamics__summary-card-value">
             {loading && data == null ? '…' : formatQty(summary.dimMismatchCount)}
+          </div>
+        </div>
+        <div
+          className={`product-dynamics__summary-card${reason === 'high_drr' ? ' is-active' : ''}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => setReason('high_drr')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setReason('high_drr');
+          }}
+        >
+          <div className="product-dynamics__summary-card-label">Высокий ДРР</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.highDrrCount)}
           </div>
         </div>
         <div

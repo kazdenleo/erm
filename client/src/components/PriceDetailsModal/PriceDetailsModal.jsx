@@ -1321,17 +1321,21 @@ function PriceDetailsModalInner({
                   Реклама / ДРР ({(adsPromotionPercent * 100).toFixed(2)}%)
                   {resolvedCalculatorData.ads_promotion_source === 'config'
                     ? ' — из настроек интеграции'
-                    : resolvedCalculatorData.ads_promotion_source === 'ads'
-                      ? ' — Performance API'
-                      : ''}
+                    : resolvedCalculatorData.ads_promotion_source === 'not_in_campaign'
+                      ? ' — не в активной кампании'
+                      : resolvedCalculatorData.ads_promotion_source === 'ads'
+                        ? ' — Performance API'
+                        : ''}
                   :
                 </BreakdownLabel>
                 <PriceBreakdownValue
                   className={adsPromotionAmount > 0 ? 'negative' : ''}
                   formula={
-                    adsPromotionPercent > 0
-                      ? `= ${calculatedPrice.toFixed(2)} × ${(adsPromotionPercent * 100).toFixed(2)}% = ${adsPromotionAmount.toFixed(2)} ₽`
-                      : 'нет статистики Performance по SKU — в формуле 0% (или задайте ДРР по умолчанию в интеграциях)'
+                    resolvedCalculatorData.ads_promotion_source === 'not_in_campaign'
+                      ? 'товар не участвует в активных рекламных кампаниях — в формуле 0%'
+                      : adsPromotionPercent > 0
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(adsPromotionPercent * 100).toFixed(2)}% = ${adsPromotionAmount.toFixed(2)} ₽`
+                        : 'нет статистики Performance по SKU — в формуле 0% (или задайте ДРР по умолчанию в интеграциях)'
                   }
                 >
                   {adsPromotionAmount > 0 ? `-${adsPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}

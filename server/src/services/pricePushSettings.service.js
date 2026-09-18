@@ -41,6 +41,7 @@ class PricePushSettingsService {
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
       minMarkupRules: settings.minMarkupRules,
+      highDrrPercent: settings.highDrrPercent,
       organizations: (orgs || []).map((o) => ({
         id: o.id,
         name: o.name,
@@ -63,6 +64,7 @@ class PricePushSettingsService {
       pushFbs: settings.pushFbs,
       pushFbo: settings.pushFbo,
       minMarkupRules: settings.minMarkupRules,
+      highDrrPercent: settings.highDrrPercent,
     };
   }
 

@@ -22,6 +22,15 @@ const POLL_DELAY_MS = 3000;
 const REQUEST_429_RETRIES = 12;
 const REQUEST_429_DELAY_MS = 15000;
 const CHUNK_GAP_MS = 2000;
+const CAMPAIGN_PRODUCTS_PAGE_SIZE = 100;
+
+/** Кампании с активной отдачей (товар сейчас в рекламе). */
+const ACTIVE_DELIVERY_STATES = new Set([
+  'CAMPAIGN_STATE_RUNNING',
+  'RUNNING',
+  'ACTIVE',
+  'STATE_RUNNING',
+]);
 
 /** @type {Map<string, { token: string, expiresAt: number }>} */
 const tokenCache = new Map();
@@ -185,7 +194,7 @@ async function perfFetch(token, url, { method = 'GET', body = null } = {}) {
   return json ?? text;
 }
 
-async function listCampaignIds(token) {
+async function listCampaigns(token) {
   const data = await perfFetch(token, CAMPAIGNS_URL);
   const list = Array.isArray(data)
     ? data
@@ -194,6 +203,11 @@ async function listCampaignIds(token) {
       : Array.isArray(data?.campaigns)
         ? data.campaigns
         : [];
+  return list.filter((c) => c && (c.id != null || c.campaignId != null || c.campaign_id != null));
+}
+
+async function listCampaignIds(token) {
+  const list = await listCampaigns(token);
   const ids = [];
   for (const c of list) {
     const id = c?.id ?? c?.campaignId ?? c?.campaign_id;
@@ -204,6 +218,118 @@ async function listCampaignIds(token) {
     ids.push(Number(id) || String(id));
   }
   return [...new Set(ids)];
+}
+
+function campaignIsActivelyDelivering(campaign) {
+  const st = String(campaign?.state ?? campaign?.status ?? '').toUpperCase();
+  if (!st) return false;
+  if (ACTIVE_DELIVERY_STATES.has(st)) return true;
+  // Иногда state без префикса
+  return st === 'RUNNING' || st === 'ACTIVE';
+}
+
+async function listActiveDeliveryCampaignIds(token) {
+  const list = await listCampaigns(token);
+  const ids = [];
+  for (const c of list) {
+    if (!campaignIsActivelyDelivering(c)) continue;
+    const id = c?.id ?? c?.campaignId ?? c?.campaign_id;
+    if (id == null) continue;
+    ids.push(Number(id) || String(id));
+  }
+  return [...new Set(ids)];
+}
+
+function extractOfferIdsFromCampaignProductsPayload(data) {
+  const out = new Set();
+  const push = (raw) => {
+    const id = normalizeOfferId(raw);
+    if (id) out.add(id);
+  };
+  const consumeItem = (item) => {
+    if (item == null) return;
+    if (typeof item === 'string' || typeof item === 'number') {
+      push(item);
+      return;
+    }
+    if (typeof item !== 'object') return;
+    push(item.sku);
+    push(item.SKU);
+    push(item.offer_id);
+    push(item.offerId);
+    push(item.id);
+    push(item.objectId);
+    push(item.object_id);
+    push(item.productId);
+    push(item.product_id);
+  };
+
+  if (Array.isArray(data)) {
+    for (const item of data) consumeItem(item);
+    return out;
+  }
+  if (!data || typeof data !== 'object') return out;
+
+  const lists = [
+    data.products,
+    data.list,
+    data.objects,
+    data.items,
+    data.rows,
+    data.result?.products,
+    data.result?.list,
+    data.result?.objects,
+  ];
+  for (const arr of lists) {
+    if (Array.isArray(arr)) {
+      for (const item of arr) consumeItem(item);
+    }
+  }
+  return out;
+}
+
+async function fetchCampaignOfferIds(token, campaignId) {
+  const offers = new Set();
+  const cid = encodeURIComponent(String(campaignId));
+
+  // v2/products с пагинацией
+  try {
+    let page = 1;
+    for (let guard = 0; guard < 50; guard++) {
+      const url = `${CAMPAIGNS_URL}/${cid}/v2/products?page=${page}&pageSize=${CAMPAIGN_PRODUCTS_PAGE_SIZE}`;
+      const data = await perfFetch(token, url);
+      const batch = extractOfferIdsFromCampaignProductsPayload(data);
+      for (const id of batch) offers.add(id);
+      const products = Array.isArray(data?.products)
+        ? data.products
+        : Array.isArray(data?.list)
+          ? data.list
+          : Array.isArray(data)
+            ? data
+            : [];
+      if (products.length < CAMPAIGN_PRODUCTS_PAGE_SIZE) break;
+      page += 1;
+    }
+    if (offers.size) return offers;
+  } catch (e) {
+    logger.warn('[Ozon Performance] campaign v2/products failed', {
+      campaignId,
+      message: e?.message || String(e),
+    });
+  }
+
+  // fallback: /objects
+  try {
+    const data = await perfFetch(token, `${CAMPAIGNS_URL}/${cid}/objects`);
+    const batch = extractOfferIdsFromCampaignProductsPayload(data);
+    for (const id of batch) offers.add(id);
+  } catch (e) {
+    logger.warn('[Ozon Performance] campaign objects failed', {
+      campaignId,
+      message: e?.message || String(e),
+    });
+  }
+  return offers;
 }
 
 async function requestStatsUuid(token, campaignIds, dateFrom, dateTo) {
@@ -375,6 +501,65 @@ async function upsertStatsRows(rows, { profileId, organizationId, periodFrom, pe
   return upserted;
 }
 
+/**
+ * Сбросить/проставить in_active_campaign по SKU из активных кампаний.
+ * Если рекламу выключили — флаги станут false, товар уйдёт из «Высокий ДРР».
+ */
+async function syncActiveCampaignMembership(token, { profileId, organizationId }) {
+  const scopeKey = adsScopeKey(profileId, organizationId);
+  const activeCampaignIds = await listActiveDeliveryCampaignIds(token);
+  const activeOffers = new Set();
+
+  for (const campaignId of activeCampaignIds) {
+    try {
+      const offers = await fetchCampaignOfferIds(token, campaignId);
+      for (const oid of offers) activeOffers.add(oid);
+    } catch (e) {
+      logger.warn('[Ozon Performance] membership campaign failed', {
+        campaignId,
+        message: e?.message || String(e),
+      });
+    }
+    await sleep(200);
+  }
+
+  // Все ранее известные SKU scope — не в активной рекламе, пока не подтвердим.
+  await query(
+    `UPDATE ozon_ads_sku_stats
+     SET in_active_campaign = false,
+         campaign_synced_at = CURRENT_TIMESTAMP
+     WHERE scope_key = $1`,
+    [scopeKey]
+  );
+
+  let marked = 0;
+  for (const offerId of activeOffers) {
+    await query(
+      `INSERT INTO ozon_ads_sku_stats
+         (scope_key, profile_id, organization_id, offer_id, spend, revenue, drr_percent,
+          period_from, period_to, source, in_active_campaign, campaign_synced_at, updated_at)
+       VALUES (
+         $1, $2, $3, $4, 0, 0, NULL,
+         CURRENT_DATE, CURRENT_DATE, 'performance_api', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       )
+       ON CONFLICT (scope_key, offer_id)
+       DO UPDATE SET
+         in_active_campaign = true,
+         campaign_synced_at = CURRENT_TIMESTAMP,
+         profile_id = COALESCE(EXCLUDED.profile_id, ozon_ads_sku_stats.profile_id),
+         organization_id = COALESCE(EXCLUDED.organization_id, ozon_ads_sku_stats.organization_id)`,
+      [scopeKey, profileId, organizationId, offerId]
+    );
+    marked += 1;
+  }
+
+  return {
+    activeCampaigns: activeCampaignIds.length,
+    activeOffers: activeOffers.size,
+    marked,
+  };
+}
+
 class OzonPerformanceAdsService {
   async getCreds(scope = {}) {
     const config = await integrationsService.getMarketplaceConfig('ozon', scope);
@@ -466,13 +651,26 @@ class OzonPerformanceAdsService {
       periodTo: dateTo,
     });
 
+    let membership = { activeCampaigns: 0, activeOffers: 0, marked: 0 };
+    try {
+      membership = await syncActiveCampaignMembership(token, {
+        profileId: Number.isFinite(profileId) ? profileId : null,
+        organizationId: Number.isFinite(organizationId) ? organizationId : null,
+      });
+    } catch (e) {
+      logger.warn('[Ozon Performance] campaign membership sync failed', {
+        message: e?.message || String(e),
+      });
+    }
+
     logger.info('[Ozon Performance] ads sync done', {
       campaigns: campaignIds.length,
       offers: list.length,
       upserted,
       dateFrom,
       dateTo,
-      scope: scopeKey(profileId, organizationId),
+      scope: adsScopeKey(profileId, organizationId),
+      membership,
     });
 
     return {
@@ -482,13 +680,14 @@ class OzonPerformanceAdsService {
       upserted,
       dateFrom,
       dateTo,
+      membership,
     };
   }
 
   /**
-   * ДРР % для offer_id (sku_ozon). Сначала точный scope, затем без organization.
+   * Статистика ДРР + флаг участия в активной кампании.
    */
-  async getDrrPercentForOffer(offerId, scope = {}) {
+  async getAdsStatsForOffer(offerId, scope = {}) {
     const oid = normalizeOfferId(offerId);
     if (!oid) return null;
 
@@ -505,7 +704,7 @@ class OzonPerformanceAdsService {
         Number.isFinite(organizationId) ? organizationId : null
       );
       const r = await query(
-        `SELECT drr_percent, spend, revenue, updated_at
+        `SELECT drr_percent, spend, revenue, in_active_campaign, updated_at, campaign_synced_at
          FROM ozon_ads_sku_stats
          WHERE offer_id = $1
            AND (
@@ -527,12 +726,104 @@ class OzonPerformanceAdsService {
       );
       const row = r.rows?.[0];
       if (!row) return null;
+      let drrPercent = null;
       if (row.drr_percent != null && !Number.isNaN(Number(row.drr_percent))) {
-        return normalizeOzonAdsPercent(row.drr_percent);
+        drrPercent = normalizeOzonAdsPercent(row.drr_percent);
+      } else {
+        drrPercent = computeDrrPercent(row.spend, row.revenue);
       }
-      return computeDrrPercent(row.spend, row.revenue);
+      return {
+        drrPercent,
+        spend: Number(row.spend) || 0,
+        revenue: Number(row.revenue) || 0,
+        inActiveCampaign:
+          row.in_active_campaign === true
+            ? true
+            : row.in_active_campaign === false
+              ? false
+              : null,
+        updatedAt: row.updated_at || null,
+        campaignSyncedAt: row.campaign_synced_at || null,
+      };
     } catch (e) {
       if (String(e.message || '').includes('ozon_ads_sku_stats')) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * ДРР % для offer_id (sku_ozon). Сначала точный scope, затем без organization.
+   * Если SKU не в активной кампании — возвращает 0 (рекламу в мин. цене не учитываем).
+   */
+  async getDrrPercentForOffer(offerId, scope = {}) {
+    const stats = await this.getAdsStatsForOffer(offerId, scope);
+    if (!stats) return null;
+    if (stats.inActiveCampaign === false) return 0;
+    return stats.drrPercent;
+  }
+
+  /**
+   * Товары с высоким ДРР, которые сейчас в активной рекламе (для «Работа с карточками»).
+   */
+  async listHighDrrProducts({ profileId, highDrrPercent, organizationId = null } = {}) {
+    const pid = Number(profileId);
+    const threshold = Number(highDrrPercent);
+    if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(threshold) || threshold <= 0) {
+      return [];
+    }
+    const orgId =
+      organizationId != null && organizationId !== '' && Number.isFinite(Number(organizationId))
+        ? Number(organizationId)
+        : null;
+    const scopeExact = adsScopeKey(pid, orgId);
+
+    try {
+      const r = await query(
+        `SELECT DISTINCT ON (p.id)
+            p.id AS product_id,
+            p.sku AS erp_sku,
+            p.name AS product_name,
+            s.offer_id,
+            s.drr_percent,
+            s.spend,
+            s.revenue,
+            s.in_active_campaign
+         FROM ozon_ads_sku_stats s
+         INNER JOIN product_skus ps
+           ON ps.marketplace = 'ozon'
+          AND (
+            TRIM(COALESCE(ps.marketplace_product_id, '')) = s.offer_id
+            OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
+            OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
+            OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
+            OR TRIM(COALESCE(ps.mp_extra->>'finance_sku', '')) = s.offer_id
+          )
+         INNER JOIN products p ON p.id = ps.product_id
+         WHERE s.in_active_campaign IS TRUE
+           AND s.drr_percent IS NOT NULL
+           AND s.drr_percent > $1
+           AND (
+             s.scope_key = $2
+             OR s.profile_id = $3
+             OR s.scope_key LIKE ($3::text || ':%')
+           )
+           AND (p.profile_id IS NULL OR p.profile_id = $3)
+         ORDER BY p.id, s.drr_percent DESC, s.updated_at DESC`,
+        [threshold, scopeExact, pid]
+      );
+      return (r.rows || []).map((row) => ({
+        productId: Number(row.product_id),
+        sku: row.offer_id || null,
+        erpSku: row.erp_sku || null,
+        productName: row.product_name || null,
+        drrPercent: normalizeOzonAdsPercent(row.drr_percent),
+        spend: Number(row.spend) || 0,
+        revenue: Number(row.revenue) || 0,
+        marketplace: 'ozon',
+      }));
+    } catch (e) {
+      if (String(e.message || '').includes('ozon_ads_sku_stats')) return [];
+      if (String(e.message || '').includes('in_active_campaign')) return [];
       throw e;
     }
   }
@@ -587,6 +878,66 @@ class OzonPerformanceAdsService {
     }
 
     return { processed, upserted, errors };
+  }
+
+  /**
+   * Только членство в активных кампаниях (без тяжёлой статистики).
+   * Нужно днём: после отключения рекламы товар быстро уходит из «Высокий ДРР».
+   */
+  async syncMembershipAllConfiguredScopes() {
+    let cabinets = { rows: [] };
+    try {
+      cabinets = await query(
+        `SELECT mc.organization_id, mc.config, o.profile_id
+         FROM marketplace_cabinets mc
+         LEFT JOIN organizations o ON o.id = mc.organization_id
+         WHERE mc.marketplace_type = 'ozon'
+           AND (mc.is_active IS NULL OR mc.is_active = true)`
+      );
+    } catch (e) {
+      logger.warn('[Ozon Performance] marketplace_cabinets query failed:', e?.message || e);
+    }
+
+    let processed = 0;
+    let marked = 0;
+    const errors = [];
+    const rows = cabinets.rows?.length
+      ? cabinets.rows
+      : [{ profile_id: null, organization_id: null, config: null }];
+
+    for (const row of rows) {
+      const scope = {
+        profileId: row.profile_id ?? null,
+        organizationId: row.organization_id ?? null,
+      };
+      let config = row.config;
+      if (!config || typeof config !== 'object') {
+        try {
+          config = await integrationsService.getMarketplaceConfig('ozon', scope);
+        } catch {
+          config = null;
+        }
+      }
+      if (!readPerformanceCreds(config)) continue;
+      try {
+        const creds = readPerformanceCreds(config);
+        const token = await getAccessToken(creds);
+        const out = await syncActiveCampaignMembership(token, {
+          profileId: scope.profileId != null ? Number(scope.profileId) : null,
+          organizationId: scope.organizationId != null ? Number(scope.organizationId) : null,
+        });
+        processed += 1;
+        marked += out.marked || 0;
+      } catch (e) {
+        errors.push({ scope, message: e?.message || String(e) });
+        logger.warn('[Ozon Performance] membership scope failed', {
+          ...scope,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    return { processed, marked, errors };
   }
 }
 

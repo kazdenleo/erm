@@ -3,6 +3,7 @@
  */
 
 import { parseMinMarkupRules } from './minMarkupRules.js';
+import { clampHighDrrPercent, HIGH_DRR_DEFAULT_PERCENT } from './highDrrSettings.js';
 
 /** Sentinel «без категории» — как на странице цен/товаров. */
 export const PRICE_PUSH_CATEGORY_NONE = '__no_category__';
@@ -74,6 +75,10 @@ export function parsePricePushSettings(raw) {
     pushFbs: pushFbs || !pushFbo,
     pushFbo: pushFbo || !pushFbs,
     minMarkupRules: parseMinMarkupRules(src.minMarkupRules ?? src.min_markup_rules),
+    highDrrPercent: clampHighDrrPercent(
+      src.highDrrPercent ?? src.high_drr_percent,
+      HIGH_DRR_DEFAULT_PERCENT
+    ),
   };
 }
 
@@ -105,6 +110,12 @@ export function mergePricePushSettings(current, incoming) {
   }
   if (patch.minMarkupRules !== undefined || patch.min_markup_rules !== undefined) {
     next.minMarkupRules = parseMinMarkupRules(patch.minMarkupRules ?? patch.min_markup_rules);
+  }
+  if (patch.highDrrPercent !== undefined || patch.high_drr_percent !== undefined) {
+    next.highDrrPercent = clampHighDrrPercent(
+      patch.highDrrPercent ?? patch.high_drr_percent,
+      next.highDrrPercent
+    );
   }
 
   if (!next.pushFbs && !next.pushFbo) {

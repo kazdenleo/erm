@@ -6,6 +6,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { PricesPushSettingsPanel, buildScopeSummaryText } from './PricesPushSettingsPanel.jsx';
 import { PricesMinMarkupRulesPanel } from './PricesMinMarkupRulesPanel.jsx';
+import { PricesHighDrrPanel } from './PricesHighDrrPanel.jsx';
 import { pricesApi } from '../../services/prices.api.js';
 import { useCategories } from '../../hooks/useCategories.js';
 import { useOrganizations } from '../../hooks/useOrganizations.js';
@@ -16,6 +17,7 @@ import './Prices.css';
 const TABS = {
   push: 'push',
   markup: 'markup',
+  drr: 'drr',
 };
 
 export function PricesSettings() {
@@ -28,6 +30,7 @@ export function PricesSettings() {
   const [tab, setTab] = useState(TABS.push);
   const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
   const [markupRules, setMarkupRules] = useState([]);
+  const [highDrrPercent, setHighDrrPercent] = useState(20);
   const [markupLoading, setMarkupLoading] = useState(false);
   const [markupSaving, setMarkupSaving] = useState(false);
   const [markupMessage, setMarkupMessage] = useState(null);
@@ -43,6 +46,11 @@ export function PricesSettings() {
       const data = res?.data ?? res;
       setPushSettingsSummary(data);
       setMarkupRules(Array.isArray(data?.minMarkupRules) ? data.minMarkupRules : []);
+      setHighDrrPercent(
+        data?.highDrrPercent != null && Number.isFinite(Number(data.highDrrPercent))
+          ? Number(data.highDrrPercent)
+          : 20
+      );
     } catch (err) {
       setMarkupError(err.response?.data?.message || err.message || 'Не удалось загрузить настройки');
     } finally {
@@ -179,6 +187,18 @@ export function PricesSettings() {
         >
           Мин. наценки (градации)
         </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          style={{
+            background: tab === TABS.drr ? 'rgba(59,130,246,0.25)' : 'transparent',
+            border: '1px solid rgba(255,255,255,0.15)',
+            color: tab === TABS.drr ? '#fff' : 'var(--muted)',
+          }}
+          onClick={() => setTab(TABS.drr)}
+        >
+          Реклама / ДРР
+        </button>
       </div>
 
       {tab === TABS.push && (
@@ -232,6 +252,25 @@ export function PricesSettings() {
                 </Button>
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {tab === TABS.drr && (
+        <div>
+          {markupLoading ? (
+            <p className="text-muted small">Загрузка…</p>
+          ) : (
+            <PricesHighDrrPanel
+              initialPercent={highDrrPercent}
+              onSaved={(saved) => {
+                if (saved?.highDrrPercent != null) setHighDrrPercent(Number(saved.highDrrPercent));
+                setPushSettingsSummary((prev) => ({
+                  ...(prev || {}),
+                  highDrrPercent: saved?.highDrrPercent ?? prev?.highDrrPercent,
+                }));
+              }}
+            />
           )}
         </div>
       )}

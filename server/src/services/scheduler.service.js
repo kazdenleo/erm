@@ -878,6 +878,26 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
+      // Днём: членство SKU в активных кампаниях Ozon (без полной статистики).
+      // Чтобы после отключения рекламы товар быстро ушёл из «Высокий ДРР» / 0% в мин. цене.
+      const ozonAdsMembershipJob = cron.schedule(
+        process.env.OZON_ADS_MEMBERSHIP_CRON && String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
+          ? String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
+          : '20 */2 * * *',
+        async () => {
+          logger.info('[Scheduler] Ozon ads campaign membership sync...');
+          try {
+            const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js'))
+              .default;
+            const res = await ozonPerformanceAdsService.syncMembershipAllConfiguredScopes();
+            logger.info('[Scheduler] Ozon ads membership done', res);
+          } catch (error) {
+            logger.warn('[Scheduler] Ozon ads membership failed:', error?.message || error);
+          }
+        },
+        { scheduled: false, timezone: 'Europe/Moscow' }
+      );
+
       // Дневная сверка: если цена на МП ≠ ERP (стратегия/selling/мин.) — пушим.
       let minPriceReconcileJob = null;
       const minPriceReconcileCron = getMinPriceReconcileCron();
@@ -1592,6 +1612,7 @@ class SchedulerService {
       mpBrandDirectoryJob.start();
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
+      ozonAdsMembershipJob.start();
       if (questionsSyncJob) {
         questionsSyncJob.start();
       }

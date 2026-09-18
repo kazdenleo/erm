@@ -22,4 +22,10 @@ describe('ozonAdsPromotion', () => {
     expect(out.ads_promotion_percent).toBe(7.5);
     expect(out.ads_promotion_source).toBe('ads');
   });
+
+  test('not in campaign → 0%', () => {
+    const out = applyOzonAdsPromotion({ commissions: {} }, 0, 'not_in_campaign');
+    expect(out.ads_promotion_percent).toBe(0);
+    expect(out.ads_promotion_source).toBe('not_in_campaign');
+  });
 });
