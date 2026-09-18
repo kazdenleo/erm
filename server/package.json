@@ -10,6 +10,7 @@
     "server": "node server.js",
     "migrate": "node scripts/migrations/run-migrations.js up",
     "seed-admin": "node scripts/seed-admin.js",
+    "seed-local-profile": "node scripts/seed-local-profile.js",
     "create-platform-admin": "node scripts/create-platform-admin.js",
     "set-system-admin-login": "node scripts/set-system-admin-login.js",
     "migrate:status": "node scripts/migrations/run-migrations.js status",
