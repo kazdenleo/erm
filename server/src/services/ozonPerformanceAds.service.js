@@ -505,10 +505,10 @@ async function upsertStatsRows(rows, { profileId, organizationId, periodFrom, pe
   return upserted;
 }
 
-/** JOIN product_skus ↔ offer_id (как в listHighDrrProducts). */
+/** JOIN product_skus ↔ offer_id (как в listHighDrrProducts). marketplace_product_id — bigint. */
 const OZON_OFFER_JOIN = `
   (
-    TRIM(COALESCE(ps.marketplace_product_id, '')) = s.offer_id
+    (ps.marketplace_product_id IS NOT NULL AND TRIM(ps.marketplace_product_id::text) = s.offer_id)
     OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
     OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
     OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
@@ -533,7 +533,7 @@ async function resolveProductIdsForOzonOffers(offerIds, { profileId = null } = {
      WHERE ps.marketplace = 'ozon'
        AND COALESCE(p.is_archived, false) = false
        AND (
-         TRIM(COALESCE(ps.marketplace_product_id, '')) = ANY($1::text[])
+         (ps.marketplace_product_id IS NOT NULL AND TRIM(ps.marketplace_product_id::text) = ANY($1::text[]))
          OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = ANY($1::text[])
          OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = ANY($1::text[])
          OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = ANY($1::text[])
