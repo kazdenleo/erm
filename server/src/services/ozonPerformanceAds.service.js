@@ -935,14 +935,7 @@ class OzonPerformanceAdsService {
             s.in_active_campaign
          FROM ozon_ads_sku_stats s
          INNER JOIN product_skus ps
-           ON ps.marketplace = 'ozon'
-          AND (
-            TRIM(COALESCE(ps.marketplace_product_id, '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'finance_sku', '')) = s.offer_id
-          )
+           ON ps.marketplace = 'ozon' AND ${OZON_OFFER_JOIN}
          INNER JOIN products p ON p.id = ps.product_id
          WHERE s.in_active_campaign IS TRUE
            AND s.drr_percent IS NOT NULL
