@@ -878,18 +878,22 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Днём: членство SKU в активных кампаниях Ozon (без полной статистики).
-      // Чтобы после отключения рекламы товар быстро ушёл из «Высокий ДРР» / 0% в мин. цене.
-      const ozonAdsMembershipJob = cron.schedule(
+      // Днём: членство SKU в активных кампаниях Ozon + пересчёт/пуш мин. цен
+      // для вышедших/вошедших в рекламу (иначе пол остаётся до ночного прогона).
+      const ozonAdsMembershipCron =
         process.env.OZON_ADS_MEMBERSHIP_CRON && String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
           ? String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
-          : '20 */2 * * *',
+          : '20 */2 * * *';
+      const ozonAdsMembershipJob = cron.schedule(
+        ozonAdsMembershipCron,
         async () => {
           logger.info('[Scheduler] Ozon ads campaign membership sync...');
           try {
             const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js'))
               .default;
-            const res = await ozonPerformanceAdsService.syncMembershipAllConfiguredScopes();
+            const res = await ozonPerformanceAdsService.syncMembershipAllConfiguredScopes({
+              recalculatePrices: true,
+            });
             logger.info('[Scheduler] Ozon ads membership done', res);
           } catch (error) {
             logger.warn('[Scheduler] Ozon ads membership failed:', error?.message || error);
@@ -1355,6 +1359,14 @@ class SchedulerService {
             'Сверка цен с МП каждые 2 ч: пуш при расхождении с ERP (стратегия/selling/мин.). MARKETPLACE_MIN_PRICE_RECONCILE_CRON',
         });
       }
+
+      this.jobs.push({
+        name: 'ozon-ads-membership',
+        job: ozonAdsMembershipJob,
+        schedule: ozonAdsMembershipCron,
+        description:
+          'Членство SKU в RUNNING-кампаниях Ozon Performance каждые 2 ч + пересчёт/пуш мин. цен при выходе/входе из рекламы (OZON_ADS_MEMBERSHIP_CRON)',
+      });
 
       this.jobs.push({
         name: 'marketplace-api-check',

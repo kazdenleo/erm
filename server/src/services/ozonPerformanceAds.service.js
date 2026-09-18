@@ -6,7 +6,11 @@
 import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
-import { computeDrrPercent, normalizeOzonAdsPercent } from '../utils/ozonAdsPromotion.js';
+import {
+  computeDrrPercent,
+  diffCampaignMembership,
+  normalizeOzonAdsPercent,
+} from '../utils/ozonAdsPromotion.js';
 
 const TOKEN_URL = 'https://api-performance.ozon.ru/api/client/token';
 const CAMPAIGNS_URL = 'https://api-performance.ozon.ru/api/client/campaign';
@@ -501,14 +505,150 @@ async function upsertStatsRows(rows, { profileId, organizationId, periodFrom, pe
   return upserted;
 }
 
+/** JOIN product_skus ↔ offer_id (как в listHighDrrProducts). marketplace_product_id — bigint. */
+const OZON_OFFER_JOIN = `
+  (
+    (ps.marketplace_product_id IS NOT NULL AND TRIM(ps.marketplace_product_id::text) = s.offer_id)
+    OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
+    OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
+    OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
+    OR TRIM(COALESCE(ps.mp_extra->>'finance_sku', '')) = s.offer_id
+  )
+`;
+
+/**
+ * product_id по offer_id Ozon.
+ */
+async function resolveProductIdsForOzonOffers(offerIds, { profileId = null } = {}) {
+  const ids = [...new Set((offerIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  if (!ids.length) return [];
+  const pid =
+    profileId != null && profileId !== '' && Number.isFinite(Number(profileId))
+      ? Number(profileId)
+      : null;
+  const r = await query(
+    `SELECT DISTINCT ps.product_id
+     FROM product_skus ps
+     INNER JOIN products p ON p.id = ps.product_id
+     WHERE ps.marketplace = 'ozon'
+       AND COALESCE(p.is_archived, false) = false
+       AND (
+         (ps.marketplace_product_id IS NOT NULL AND TRIM(ps.marketplace_product_id::text) = ANY($1::text[]))
+         OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = ANY($1::text[])
+         OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = ANY($1::text[])
+         OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = ANY($1::text[])
+         OR TRIM(COALESCE(ps.mp_extra->>'finance_sku', '')) = ANY($1::text[])
+       )
+       AND ($2::int IS NULL OR p.profile_id IS NULL OR p.profile_id = $2)`,
+    [ids, pid]
+  );
+  return (r.rows || [])
+    .map((row) => Number(row.product_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
+
+/**
+ * Товары вне активной кампании, но в сохранённых деталях мин. цены ещё «реклама > 0».
+ * Нужно, чтобы снять завышенный пол сразу, а не ждать ночного пересчёта.
+ */
+async function findProductIdsWithStaleAdsMinPrice({ profileId = null, scopeKey = null } = {}) {
+  const pid =
+    profileId != null && profileId !== '' && Number.isFinite(Number(profileId))
+      ? Number(profileId)
+      : null;
+  try {
+    const r = await query(
+      `SELECT DISTINCT p.id AS product_id
+       FROM ozon_ads_sku_stats s
+       INNER JOIN product_skus ps
+         ON ps.marketplace = 'ozon' AND ${OZON_OFFER_JOIN}
+       INNER JOIN products p ON p.id = ps.product_id
+       INNER JOIN product_marketplace_prices pmp
+         ON pmp.product_id = p.id AND pmp.marketplace = 'ozon'
+       WHERE s.in_active_campaign IS FALSE
+         AND COALESCE(p.is_archived, false) = false
+         AND (
+           $1::text IS NULL
+           OR s.scope_key = $1
+           OR ($2::int IS NOT NULL AND (s.profile_id = $2 OR s.scope_key LIKE ($2::text || ':%')))
+         )
+         AND ($2::int IS NULL OR p.profile_id IS NULL OR p.profile_id = $2)
+         AND (
+           COALESCE((pmp.calculation_details->>'ads_promotion_percent')::numeric, 0) > 0
+           OR COALESCE((pmp.calculation_details_fbs->>'ads_promotion_percent')::numeric, 0) > 0
+           OR COALESCE((pmp.calculation_details_fbo->>'ads_promotion_percent')::numeric, 0) > 0
+         )`,
+      [scopeKey || null, pid]
+    );
+    return (r.rows || [])
+      .map((row) => Number(row.product_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+  } catch (e) {
+    if (String(e.message || '').includes('ozon_ads_sku_stats')) return [];
+    if (String(e.message || '').includes('in_active_campaign')) return [];
+    if (String(e.message || '').includes('ads_promotion')) return [];
+    throw e;
+  }
+}
+
+/**
+ * Пересчёт мин. цены (из кэша) + отложенный пуш для товаров после смены рекламы.
+ */
+async function recalculateMinPricesForProductIds(productIds, reason = 'ads_membership') {
+  const ids = [...new Set((productIds || []).map(Number).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!ids.length) return { recalculated: 0, errors: 0 };
+  const pricesService = (await import('./prices.service.js')).default;
+  let recalculated = 0;
+  let errors = 0;
+  for (const productId of ids) {
+    try {
+      await pricesService.recalculateAndSaveForProduct(productId, {
+        useCalculatorCache: true,
+      });
+      recalculated += 1;
+    } catch (e) {
+      errors += 1;
+      logger.warn('[Ozon Performance] min price recalc after ads change failed', {
+        productId,
+        reason,
+        message: e?.message || String(e),
+      });
+    }
+  }
+  logger.info('[Ozon Performance] min prices recalculated after ads change', {
+    reason,
+    requested: ids.length,
+    recalculated,
+    errors,
+  });
+  return { recalculated, errors };
+}
+
 /**
  * Сбросить/проставить in_active_campaign по SKU из активных кампаний.
  * Если рекламу выключили — флаги станут false, товар уйдёт из «Высокий ДРР».
+ * Возвращает leftOffers / joinedOffers для пересчёта мин. цен.
  */
 async function syncActiveCampaignMembership(token, { profileId, organizationId }) {
   const scopeKey = adsScopeKey(profileId, organizationId);
   const activeCampaignIds = await listActiveDeliveryCampaignIds(token);
   const activeOffers = new Set();
+
+  let previouslyActive = new Set();
+  try {
+    const prev = await query(
+      `SELECT offer_id FROM ozon_ads_sku_stats
+       WHERE scope_key = $1 AND in_active_campaign IS TRUE`,
+      [scopeKey]
+    );
+    previouslyActive = new Set(
+      (prev.rows || []).map((row) => String(row.offer_id || '').trim()).filter(Boolean)
+    );
+  } catch (e) {
+    logger.warn('[Ozon Performance] previous membership snapshot failed', {
+      message: e?.message || String(e),
+    });
+  }
 
   for (const campaignId of activeCampaignIds) {
     try {
@@ -553,10 +693,15 @@ async function syncActiveCampaignMembership(token, { profileId, organizationId }
     marked += 1;
   }
 
+  const { leftOffers, joinedOffers } = diffCampaignMembership(previouslyActive, activeOffers);
+
   return {
     activeCampaigns: activeCampaignIds.length,
     activeOffers: activeOffers.size,
     marked,
+    leftOffers,
+    joinedOffers,
+    scopeKey,
   };
 }
 
@@ -790,14 +935,7 @@ class OzonPerformanceAdsService {
             s.in_active_campaign
          FROM ozon_ads_sku_stats s
          INNER JOIN product_skus ps
-           ON ps.marketplace = 'ozon'
-          AND (
-            TRIM(COALESCE(ps.marketplace_product_id, '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
-            OR TRIM(COALESCE(ps.mp_extra->>'finance_sku', '')) = s.offer_id
-          )
+           ON ps.marketplace = 'ozon' AND ${OZON_OFFER_JOIN}
          INNER JOIN products p ON p.id = ps.product_id
          WHERE s.in_active_campaign IS TRUE
            AND s.drr_percent IS NOT NULL
@@ -824,6 +962,13 @@ class OzonPerformanceAdsService {
     } catch (e) {
       if (String(e.message || '').includes('ozon_ads_sku_stats')) return [];
       if (String(e.message || '').includes('in_active_campaign')) return [];
+      // Защита от старых JOIN с COALESCE(bigint, '')
+      if (String(e.message || '').includes('invalid input syntax for type bigint')) {
+        logger.warn('[Ozon Performance] listHighDrrProducts bigint cast failed', {
+          message: e?.message || String(e),
+        });
+        return [];
+      }
       throw e;
     }
   }
@@ -881,10 +1026,47 @@ class OzonPerformanceAdsService {
   }
 
   /**
-   * Только членство в активных кампаниях (без тяжёлой статистики).
-   * Нужно днём: после отключения рекламы товар быстро уходит из «Высокий ДРР».
+   * Пересчитать мин. цены для офферов, сменивших членство, + снять «залипший» ДРР
+   * у товаров уже вне кампании (старые calculation_details).
    */
-  async syncMembershipAllConfiguredScopes() {
+  async recalculatePricesAfterMembershipChange(membership, scope = {}) {
+    const leftOffers = membership?.leftOffers || [];
+    const joinedOffers = membership?.joinedOffers || [];
+    const profileId =
+      scope.profileId != null && scope.profileId !== '' ? Number(scope.profileId) : null;
+    const productIds = new Set();
+
+    for (const oid of [...leftOffers, ...joinedOffers]) {
+      const ids = await resolveProductIdsForOzonOffers([oid], { profileId });
+      for (const id of ids) productIds.add(id);
+    }
+
+    const staleIds = await findProductIdsWithStaleAdsMinPrice({
+      profileId: Number.isFinite(profileId) ? profileId : null,
+      scopeKey: membership?.scopeKey || null,
+    });
+    for (const id of staleIds) productIds.add(id);
+
+    if (!productIds.size) {
+      return { recalculated: 0, errors: 0, leftOffers: leftOffers.length, joinedOffers: joinedOffers.length, stale: staleIds.length };
+    }
+
+    const recalc = await recalculateMinPricesForProductIds([...productIds], 'ads_membership');
+    return {
+      ...recalc,
+      leftOffers: leftOffers.length,
+      joinedOffers: joinedOffers.length,
+      stale: staleIds.length,
+      products: productIds.size,
+    };
+  }
+
+  /**
+   * Только членство в активных кампаниях (без тяжёлой статистики).
+   * Нужно днём: после отключения рекламы товар быстро уходит из «Высокий ДРР»
+   * и мин. цена пересчитывается/пушится без ожидания ночного прогона.
+   */
+  async syncMembershipAllConfiguredScopes({ recalculatePrices = true } = {}) {
     let cabinets = { rows: [] };
     try {
       cabinets = await query(
@@ -900,6 +1082,7 @@ class OzonPerformanceAdsService {
 
     let processed = 0;
     let marked = 0;
+    let recalculated = 0;
     const errors = [];
     const rows = cabinets.rows?.length
       ? cabinets.rows
@@ -928,6 +1111,18 @@ class OzonPerformanceAdsService {
         });
         processed += 1;
         marked += out.marked || 0;
+
+        if (recalculatePrices) {
+          try {
+            const priceRes = await this.recalculatePricesAfterMembershipChange(out, scope);
+            recalculated += priceRes.recalculated || 0;
+          } catch (e) {
+            logger.warn('[Ozon Performance] price recalc after membership failed', {
+              ...scope,
+              message: e?.message || String(e),
+            });
+          }
+        }
       } catch (e) {
         errors.push({ scope, message: e?.message || String(e) });
         logger.warn('[Ozon Performance] membership scope failed', {
@@ -937,7 +1132,7 @@ class OzonPerformanceAdsService {
       }
     }
 
-    return { processed, marked, errors };
+    return { processed, marked, recalculated, errors };
   }
 }
 
