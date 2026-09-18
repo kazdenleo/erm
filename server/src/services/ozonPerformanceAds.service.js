@@ -962,6 +962,13 @@ class OzonPerformanceAdsService {
     } catch (e) {
       if (String(e.message || '').includes('ozon_ads_sku_stats')) return [];
       if (String(e.message || '').includes('in_active_campaign')) return [];
+      // Защита от старых JOIN с COALESCE(bigint, '')
+      if (String(e.message || '').includes('invalid input syntax for type bigint')) {
+        logger.warn('[Ozon Performance] listHighDrrProducts bigint cast failed', {
+          message: e?.message || String(e),
+        });
+        return [];
+      }
       throw e;
     }
   }
