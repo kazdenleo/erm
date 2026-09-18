@@ -3465,10 +3465,17 @@ export function Orders() {
               <col className="orders-col-checkbox" />
               <col className="orders-col-num" />
               <col className="orders-col-mp" />
-              <col />
-              <col />
-              <col />
+              <col className="orders-col-order-id" />
+              <col className="orders-col-arrived" />
+              <col className="orders-col-ship-mp" />
               <col className="orders-col-warehouse" />
+              <col className="orders-col-products" />
+              <col className="orders-col-article" />
+              <col className="orders-col-qty" />
+              <col className="orders-col-price" />
+              {showStickerColumn ? <col className="orders-col-sticker" /> : null}
+              {showShipmentColumn ? <col className="orders-col-shipment" /> : null}
+              <col className="orders-col-actions" />
             </colgroup>
             <thead>
               <tr>

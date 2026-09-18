@@ -55,6 +55,7 @@
   position: relative;
   overflow-x: auto;
   max-width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .orders-page .orders-list--refreshing {
@@ -62,9 +63,14 @@
   pointer-events: none;
 }
 
+/*
+  fixed + width:100% на узком экране сжимал ~12–14 колонок в viewport —
+  ячейки накладывались. Держим min-width по сумме col, скролл в .orders-list.
+*/
 .orders-page .orders-table.table {
   table-layout: fixed;
   width: 100%;
+  min-width: 78rem;
   margin: 8px 0 12px;
 }
 
@@ -106,6 +112,10 @@
   width: 6.5rem;
 }
 
+.orders-page .orders-table col.orders-col-products {
+  width: 12rem;
+}
+
 .orders-page .orders-table col.orders-col-article {
   width: 6.75rem;
 }
@@ -116,6 +126,14 @@
 
 .orders-page .orders-table col.orders-col-price {
   width: 3.75rem;
+}
+
+.orders-page .orders-table col.orders-col-sticker {
+  width: 6.5rem;
+}
+
+.orders-page .orders-table col.orders-col-shipment {
+  width: 7rem;
 }
 
 .orders-page .orders-table col.orders-col-actions {
@@ -344,6 +362,9 @@
 }
 .orders-col-products {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .orders-col-article {
@@ -491,6 +512,14 @@
 @media (max-width: 640px) {
   .orders-add-customer-grid {
     grid-template-columns: 1fr !important;
+  }
+}
+
+/* mobile.css ставит .orders-table { min-width: 560px } — для заказов этого мало. */
+@media (max-width: 767.98px) {
+  .orders-page .orders-table.table,
+  .orders-page .orders-table {
+    min-width: 78rem;
   }
 }
 
