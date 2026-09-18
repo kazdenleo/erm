@@ -2,6 +2,7 @@ import {
   normalizeOzonAdsPercent,
   computeDrrPercent,
   applyOzonAdsPromotion,
+  diffCampaignMembership,
 } from '../src/utils/ozonAdsPromotion.js';
 
 describe('ozonAdsPromotion', () => {
@@ -27,5 +28,20 @@ describe('ozonAdsPromotion', () => {
     const out = applyOzonAdsPromotion({ commissions: {} }, 0, 'not_in_campaign');
     expect(out.ads_promotion_percent).toBe(0);
     expect(out.ads_promotion_source).toBe('not_in_campaign');
+  });
+
+  test('diffCampaignMembership: left and joined', () => {
+    const { leftOffers, joinedOffers } = diffCampaignMembership(
+      ['a', 'b', 'c'],
+      new Set(['b', 'c', 'd'])
+    );
+    expect(leftOffers.sort()).toEqual(['a']);
+    expect(joinedOffers.sort()).toEqual(['d']);
+  });
+
+  test('diffCampaignMembership: empty', () => {
+    expect(diffCampaignMembership([], [])).toEqual({ leftOffers: [], joinedOffers: [] });
+    expect(diffCampaignMembership(['x'], []).leftOffers).toEqual(['x']);
+    expect(diffCampaignMembership([], ['y']).joinedOffers).toEqual(['y']);
   });
 });

@@ -35,3 +35,22 @@ export function applyOzonAdsPromotion(calculator, adsPercent, source = 'ads') {
     ads_promotion_source: source,
   };
 }
+
+/**
+ * Diff членства в кампаниях: кто вышел / кто вошёл.
+ * @param {Iterable<string>} previouslyActive
+ * @param {Iterable<string>} currentlyActive
+ */
+export function diffCampaignMembership(previouslyActive, currentlyActive) {
+  const prev = previouslyActive instanceof Set ? previouslyActive : new Set(previouslyActive || []);
+  const curr = currentlyActive instanceof Set ? currentlyActive : new Set(currentlyActive || []);
+  const leftOffers = [];
+  const joinedOffers = [];
+  for (const id of prev) {
+    if (!curr.has(id)) leftOffers.push(id);
+  }
+  for (const id of curr) {
+    if (!prev.has(id)) joinedOffers.push(id);
+  }
+  return { leftOffers, joinedOffers };
+}
