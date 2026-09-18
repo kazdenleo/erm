@@ -3479,8 +3479,8 @@ export function Orders() {
                       checked={allFilteredSelected}
                       onChange={toggleSelectAll}
                       title={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
+                      aria-label={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
                     />
-                    <span className="orders-checkbox-caption">Все</span>
                   </label>
                 </th>
                 <th className="orders-col-num">№</th>
