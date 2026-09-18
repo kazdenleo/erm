@@ -30,18 +30,20 @@ async function main() {
   if (existingUser.rows.length > 0) {
     const u = existingUser.rows[0];
     if (u.profile_id != null) {
+      const passwordHash = await bcrypt.hash(PASSWORD, SALT_ROUNDS);
       await query(
         `UPDATE users
-         SET is_profile_admin = true,
+         SET password_hash = $1,
+             is_profile_admin = true,
              account_role = 'admin',
              must_change_password = false,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [u.id]
+         WHERE id = $2`,
+        [passwordHash, u.id]
       );
-      console.log('Пользователь уже есть, права админа аккаунта обновлены:');
-      console.log('  email:', EMAIL);
-      console.log('  password: (без изменений; задайте LOCAL_USER_PASSWORD и перезапустите со сбросом при необходимости)');
+      console.log('Пользователь уже есть — пароль и права обновлены:');
+      console.log('  login:', EMAIL);
+      console.log('  password:', PASSWORD);
       console.log('  profile_id:', u.profile_id);
       return;
     }
