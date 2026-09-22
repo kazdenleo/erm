@@ -37,6 +37,7 @@ import { authApi } from '../../services/auth.api.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
+import { warehouseDisplayLabel } from '../../utils/stockDestinationDefaults';
 import './StockLevels.css';
 
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
@@ -1785,7 +1786,9 @@ function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
     const supplierId = warehouseSupplierId(w);
     if (!supplierId) continue;
     if (!warehouseLabelBySupplierId[supplierId]) {
-      warehouseLabelBySupplierId[supplierId] = w.address || w.name || '';
+      const name = String(w.name ?? '').trim();
+      const addr = String(w.address ?? '').trim();
+      warehouseLabelBySupplierId[supplierId] = name || addr || '';
     }
   }
 
@@ -2625,8 +2628,7 @@ export function WarehouseStocks() {
         setMpPushPanel({ type: 'error', message: mpPushBlockReason });
         return;
       }
-      const whLabel =
-        mpLinkedWarehouse?.address || mpLinkedWarehouse?.name || `склад #${mpLinkedWarehouseId}`;
+      const whLabel = warehouseDisplayLabel(mpLinkedWarehouse, mpLinkedWarehouseId);
       const orgLabel =
         organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
         filterOrganizationId;
@@ -3204,7 +3206,7 @@ export function WarehouseStocks() {
     ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
     : null;
   const mainWarehouseName = selectedWarehouse
-    ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
+    ? warehouseDisplayLabel(selectedWarehouse)
     : 'Все склады (сумма)';
 
   const rows = useMemo(() => {
@@ -3391,7 +3393,7 @@ export function WarehouseStocks() {
               style={{ marginLeft: 8 }}
               title={
                 mpLinkedWarehouse
-                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
+                  ? `Отправить «Доступно» со склада «${warehouseDisplayLabel(mpLinkedWarehouse, mpLinkedWarehouseId)}» (привязан к МП) на Ozon, WB и Яндекс`
                   : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
               }
             >
@@ -3414,7 +3416,7 @@ export function WarehouseStocks() {
                 <option value="">Все склады (сумма)</option>
                 {ownWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>
@@ -4358,9 +4360,10 @@ export function WarehouseStocks() {
           <p className="text-muted small mb-2">
             Склад:{' '}
             <strong>
-              {ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.address ||
-                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.name ||
-                `#${stockWarehouseId}`}
+              {warehouseDisplayLabel(
+                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId)),
+                stockWarehouseId
+              )}
             </strong>
           </p>
         )}
