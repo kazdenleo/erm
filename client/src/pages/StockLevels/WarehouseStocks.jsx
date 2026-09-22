@@ -50,6 +50,16 @@ function isStockResetFlagEnabled(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+/** Подпись своего склада в фильтре/UI: сначала название (FBS), не адрес. */
+function ownWarehouseDisplayName(w, fallback = 'Склад') {
+  if (!w) return fallback;
+  const name = w.name != null ? String(w.name).trim() : '';
+  if (name) return name;
+  const address = w.address != null ? String(w.address).trim() : '';
+  if (address) return address;
+  return w.id != null ? `Склад #${w.id}` : fallback;
+}
+
 const MOVEMENT_TYPE_LABELS = {
   receipt: 'Поступление',
   incoming: 'В пути',
@@ -2679,8 +2689,10 @@ export function WarehouseStocks() {
         setMpPushPanel({ type: 'error', message: mpPushBlockReason });
         return;
       }
-      const whLabel =
-        mpLinkedWarehouse?.address || mpLinkedWarehouse?.name || `склад #${mpLinkedWarehouseId}`;
+      const whLabel = ownWarehouseDisplayName(
+        mpLinkedWarehouse,
+        mpLinkedWarehouseId != null ? `склад #${mpLinkedWarehouseId}` : 'Склад'
+      );
       const orgLabel =
         organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
         filterOrganizationId;
@@ -3258,7 +3270,7 @@ export function WarehouseStocks() {
     ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
     : null;
   const mainWarehouseName = selectedWarehouse
-    ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
+    ? ownWarehouseDisplayName(selectedWarehouse)
     : 'Все склады (сумма)';
 
   const rows = useMemo(() => {
@@ -3445,7 +3457,7 @@ export function WarehouseStocks() {
               style={{ marginLeft: 8 }}
               title={
                 mpLinkedWarehouse
-                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
+                  ? `Отправить «Доступно» со склада «${ownWarehouseDisplayName(mpLinkedWarehouse, mpLinkedWarehouseId)}» (привязан к МП) на Ozon, WB и Яндекс`
                   : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
               }
             >
@@ -3468,7 +3480,7 @@ export function WarehouseStocks() {
                 <option value="">Все склады (сумма)</option>
                 {ownWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {ownWarehouseDisplayName(w, `Склад #${w.id}`)}
                   </option>
                 ))}
               </select>
@@ -4412,9 +4424,10 @@ export function WarehouseStocks() {
           <p className="text-muted small mb-2">
             Склад:{' '}
             <strong>
-              {ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.address ||
-                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.name ||
-                `#${stockWarehouseId}`}
+              {ownWarehouseDisplayName(
+                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId)),
+                stockWarehouseId ? `#${stockWarehouseId}` : 'Склад'
+              )}
             </strong>
           </p>
         )}
