@@ -166,12 +166,16 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
   const t = movementTypeLower(m);
   const isWarehouseScopedReturn =
     t === 'return_to_supplier' || t === 'customer_return';
+  const warehouseScoped =
+    warehouseFilterId != null && String(warehouseFilterId).trim() !== '';
 
   let inc = incDb;
   if (inc == null && t === 'incoming' && balDb != null && !hasNew) {
     inc = balDb;
   }
-  let res = resDb;
+  // reserved_after в журнале — глобальный (все склады). При фильтре склада не
+  // подставляем его: иначе FBO «прилипает» к FBS/Москве на receipt/manual/reserve.
+  let res = warehouseScoped ? null : resDb;
   let bal = whBal != null ? whBal : isWarehouseScopedReturn && movementWarehouseId(m) ? null : balDb;
 
   if (t === 'incoming' && !hasNew) {
@@ -189,6 +193,17 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
     res: res != null ? res : null,
     bal: bal != null ? bal : null,
   };
+}
+
+/** Резерв строки истории при фильтре склада: prev или 0, без глобального reserved_after. */
+function historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes = null) {
+  if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+    return Number(prevLineBelow.res);
+  }
+  if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+    return 0;
+  }
+  return dbRes != null ? dbRes : 0;
 }
 
 /** Наличие после возврата поставщику: предыдущая строка + quantity_change. */
@@ -1066,12 +1081,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       const dbInc = movementNum(head, 'incoming_after');
       out.inc = dbInc != null ? dbInc : 0;
     }
-    if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-      out.res = Number(prevLineBelow.res);
-    } else {
-      const dbRes = movementNum(head, 'reserved_after');
-      out.res = dbRes != null ? dbRes : 0;
-    }
+    out.res = historyReservedCarryForward(
+      prevLineBelow,
+      warehouseFilterId,
+      movementNum(head, 'reserved_after')
+    );
     const asmLost = kitAssemblableUnitsLostFromReturnMovements(ms);
     if (asmLost > 0) out._kitAssemblableUnitsLost = asmLost;
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
@@ -1114,9 +1128,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     else if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
       out.inc = Number(prevLineBelow.inc);
     }
-    if (dbRes != null) out.res = dbRes;
-    else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-      out.res = Number(prevLineBelow.res);
+    if (dbRes != null && !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')) {
+      out.res = dbRes;
+    } else {
+      out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes);
     }
     if (whBal != null) out.bal = whBal;
     else if (dbBal != null) out.bal = dbBal;
@@ -1339,12 +1354,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         const dbInc = movementNum(m, 'incoming_after');
         out.inc = dbInc != null ? dbInc : 0;
       }
-      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-        out.res = Number(prevLineBelow.res);
-      } else {
-        const dbRes = movementNum(m, 'reserved_after');
-        out.res = dbRes != null ? dbRes : 0;
-      }
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
       return out;
     }
     if (t === 'writeoff') {
@@ -1368,11 +1382,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       } else if (out.inc == null || Number.isNaN(Number(out.inc))) {
         out.inc = 0;
       }
-      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-        out.res = Number(prevLineBelow.res);
-      } else if (out.res == null || Number.isNaN(Number(out.res))) {
-        out.res = 0;
-      }
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
       return out;
     }
     if (t === 'return_to_supplier' || t === 'customer_return') {
@@ -1455,7 +1469,23 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       if (prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
         out.bal = prevLineBelow.bal;
       }
+    } else if (
+      // manual / opening_balance / прочие типы без смены резерва: не оставляем
+      // глобальный reserved_after из cur (уже null при фильтре) и не «дырявый» null.
+      warehouseFilterId != null &&
+      String(warehouseFilterId).trim() !== '' &&
+      (out.res == null || Number.isNaN(Number(out.res)))
+    ) {
+      out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, null);
     }
+  }
+
+  if (
+    warehouseFilterId != null &&
+    String(warehouseFilterId).trim() !== '' &&
+    (out.res == null || Number.isNaN(Number(out.res)))
+  ) {
+    out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, null);
   }
 
   return out;
