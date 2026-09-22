@@ -958,10 +958,21 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         out.res = isUnreserve || sumQc > 0
           ? Math.max(0, Number(prevLineBelow.res) - Math.abs(sumQc))
           : Number(prevLineBelow.res) + Math.abs(sumQc);
-      } else if (dbRes != null) {
-        out.res = dbRes;
+      } else {
+        out.res = Number(prevLineBelow.res);
       }
-    } else if (dbRes != null && !warehouseScoped) {
+    } else if (warehouseScoped) {
+      // Нижняя (самая старая) видимая строка: стартуем с 0 + Δ этой строки.
+      // Иначе reserved_after с FBO «прилипает» к фильтру другого склада.
+      if (useKitUnits) {
+        const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
+        out.res = isUnreserve ? 0 : kitUnits;
+      } else if (Number.isFinite(sumQc)) {
+        out.res = isUnreserve || sumQc > 0 ? 0 : Math.abs(sumQc);
+      } else {
+        out.res = 0;
+      }
+    } else if (dbRes != null) {
       out.res = dbRes;
     } else if (useKitUnits && prevLineBelow?.res != null) {
       const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
@@ -973,8 +984,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         sumQc > 0
           ? Math.max(0, prevLineBelow.res - sumQc)
           : Math.max(0, prevLineBelow.res + Math.abs(sumQc));
-    } else if (dbRes != null) {
-      out.res = dbRes;
     }
 
     // Резерв не меняет наличие на складе — в колонке «Наличие» держим снимок как у строки ниже.
@@ -1011,6 +1020,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         .filter((x) => movementTypeLower(x) === 'unreserve')
         .reduce((s, x) => s + Math.max(0, Number(x.quantity_change) || 0), 0);
       out.res = Math.max(0, Number(prevLineBelow.res) - unreserveSum);
+    } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+      out.res = 0;
     } else if (dbRes != null) {
       out.res = dbRes;
     }
@@ -1279,6 +1290,9 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       }
       if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
         out.res = Number(prevLineBelow.res);
+      } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+        // Не тянем глобальный reserved_after (FBO и др. склады) при фильтре склада.
+        out.res = 0;
       } else {
         const dbRes = movementNum(m, 'reserved_after');
         out.res = dbRes != null ? dbRes : 0;
@@ -1408,6 +1422,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       }
       if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
         out.res = Number(prevLineBelow.res);
+      } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+        out.res = 0;
       } else {
         const dbRes = movementNum(m, 'reserved_after');
         out.res = dbRes != null ? dbRes : 0;
@@ -1416,7 +1432,23 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     }
     if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
-      if (dbRes != null) out.res = dbRes;
+      if (
+        dbRes != null &&
+        !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')
+      ) {
+        out.res = dbRes;
+      } else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        const qc = Number(m.quantity_change) || 0;
+        out.res =
+          t === 'unreserve' || qc > 0
+            ? Math.max(0, Number(prevLineBelow.res) - Math.abs(qc))
+            : Number(prevLineBelow.res) + Math.abs(qc);
+      } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+        const qc = Number(m.quantity_change) || 0;
+        out.res = t === 'unreserve' || qc > 0 ? 0 : Math.abs(qc);
+      } else if (dbRes != null) {
+        out.res = dbRes;
+      }
       if (prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
         out.inc = prevLineBelow.inc;
       }
@@ -1445,8 +1477,30 @@ function buildHistoryDisplaySnapshots(
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
     enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId);
   }
-  // Не подменяем резерв верхней строки «живым» net: иначе поступление/отгрузка
-  // получают чужой Δ резерва (после скрытых FBO-пересчётов и т.п.).
+  // При фильтре склада цепочка строится с 0 снизу (без глобального reserved_after).
+  // Подтягиваем верх к актуальному резерву склада, чтобы цифры совпали с колонкой таблицы.
+  const warehouseScoped =
+    warehouseFilterId != null && String(warehouseFilterId).trim() !== '';
+  if (
+    warehouseScoped &&
+    currentNetReserved != null &&
+    Number.isFinite(Number(currentNetReserved)) &&
+    enriched[0]?.res != null &&
+    !Number.isNaN(Number(enriched[0].res))
+  ) {
+    const target = Math.max(0, Math.floor(Number(currentNetReserved) || 0));
+    const top = Math.max(0, Math.floor(Number(enriched[0].res) || 0));
+    const offset = target - top;
+    if (offset !== 0) {
+      for (let i = 0; i < n; i++) {
+        if (enriched[i]?.res == null || Number.isNaN(Number(enriched[i].res))) continue;
+        enriched[i] = {
+          ...enriched[i],
+          res: Math.max(0, Math.floor(Number(enriched[i].res) + offset)),
+        };
+      }
+    }
+  }
 
   return enriched;
 }
