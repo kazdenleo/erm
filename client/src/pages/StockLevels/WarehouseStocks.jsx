@@ -3271,7 +3271,7 @@ export function WarehouseStocks() {
     : null;
   const mainWarehouseName = selectedWarehouse
     ? ownWarehouseDisplayName(selectedWarehouse)
-    : 'Все склады (сумма)';
+    : 'Все склады';
 
   const rows = useMemo(() => {
     const built = buildStockRowsWithKits(products, (product) => {
@@ -3477,7 +3477,7 @@ export function WarehouseStocks() {
                 onChange={handleStockWarehouseChange}
                 className="stock-levels-filter-select"
               >
-                <option value="">Все склады (сумма)</option>
+                <option value="">Все склады</option>
                 {ownWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
                     {ownWarehouseDisplayName(w, `Склад #${w.id}`)}
