@@ -126,7 +126,7 @@ export function SettingsUsers() {
   const openEdit = (u) => {
     setEditing(u);
     setForm({
-      email: u.email,
+      email: u.email ?? '',
       password: '',
       lastName: u.last_name ?? '',
       firstName: u.first_name ?? '',
@@ -147,7 +147,14 @@ export function SettingsUsers() {
   };
 
   const save = async () => {
-    if (!form.phone.trim()) {
+    const phone = String(form.phone ?? '').trim();
+    const email = String(form.email ?? '').trim();
+    const lastName = String(form.lastName ?? '').trim();
+    const firstName = String(form.firstName ?? '').trim();
+    const middleName = String(form.middleName ?? '').trim();
+    const birthDate = String(form.birthDate ?? '').trim();
+
+    if (!phone) {
       alert('Введите телефон (логин)');
       return;
     }
@@ -157,12 +164,12 @@ export function SettingsUsers() {
     }
     try {
       const payload = {
-        email: form.email.trim() || null,
-        lastName: form.lastName.trim(),
-        firstName: form.firstName.trim(),
-        middleName: form.middleName.trim(),
-        phone: form.phone.trim(),
-        birthDate: form.birthDate.trim() || null,
+        email: email || null,
+        lastName,
+        firstName,
+        middleName,
+        phone,
+        birthDate: birthDate || null,
         role: 'user',
       };
       if (form.password) payload.password = form.password;
@@ -298,7 +305,7 @@ export function SettingsUsers() {
                 Телефон (логин) <span style={{ color: 'var(--error)' }}>*</span>
                 <input
                   type="tel"
-                  value={form.phone}
+                  value={form.phone ?? ''}
                   onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
@@ -310,7 +317,7 @@ export function SettingsUsers() {
                 Почта
                 <input
                   type="email"
-                  value={form.email}
+                  value={form.email ?? ''}
                   onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
