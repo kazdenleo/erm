@@ -104,6 +104,26 @@ function kitProgressSummary(progress, aggregatedComponents) {
   };
 }
 
+/** Есть ли незакрытый набор комплектующих (нельзя начинать другой комплект). */
+export function hasPartialKitComponentProgress(progress, aggregatedComponents) {
+  const p = parseProgress(progress);
+  if (!aggregatedComponents?.length) return Object.keys(p).length > 0;
+  if (kitsCompletableFromProgress(p, aggregatedComponents) > 0) return true;
+  return Object.values(p).some((n) => n > 0);
+}
+
+/** Нужна ли ещё эта комплектующая для текущего незакрытого набора. */
+export function kitComponentStillNeeded(progress, aggregatedComponents, componentProductId) {
+  const compId = Number(componentProductId);
+  if (!Number.isFinite(compId) || compId <= 0 || !aggregatedComponents?.length) return false;
+  const p = parseProgress(progress);
+  const c = aggregatedComponents.find((x) => Number(x.component_product_id) === compId);
+  if (!c) return false;
+  const need = Math.max(1, parseInt(c.quantity, 10) || 1);
+  const got = Math.max(0, parseInt(p[String(compId)], 10) || 0);
+  return got < need;
+}
+
 function mapItemCollectRow(row, kitMeta = null) {
   const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
   const collected = Math.max(0, parseInt(row.collected_quantity, 10) || 0);
@@ -235,9 +255,9 @@ async function findSupplyItemDirect(supplyId, barcode, profileId) {
   return null;
 }
 
-async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
+async function findSupplyItemsByKitComponent(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
-  if (!code) return null;
+  if (!code) return [];
 
   const pid = normalizeProfileId(profileId);
   const params = [supplyId, code];
@@ -267,38 +287,120 @@ async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
            WHERE ps.product_id = comp.id AND TRIM(ps.sku) = $2
          )
        )
-     ORDER BY ${COLLECT_ITEM_PRIORITY_ORDER}
-     LIMIT 1`,
+     ORDER BY ${COLLECT_ITEM_PRIORITY_ORDER}`,
     params
   );
-  if (!r.rows?.[0]) return null;
-  return {
-    item: r.rows[0],
-    scannedProductId: r.rows[0].scanned_component_id,
+  return (r.rows || []).map((row) => ({
+    item: row,
+    scannedProductId: row.scanned_component_id,
     match: 'kit_component',
-    scannedComponentSku: r.rows[0].scanned_component_sku || null,
-  };
+    scannedComponentSku: row.scanned_component_sku || null,
+  }));
+}
+
+/**
+ * Незавершённый комплект с частичным прогрессом комплектующих — «липкая» сессия.
+ * Пока он не закрыт, нельзя начинать другой комплект / чужую позицию.
+ */
+async function findStickyPartialKitItems(supplyId) {
+  const r = await query(
+    `SELECT ${ITEM_SELECT}
+     FROM fbo_supply_items i
+     LEFT JOIN products p ON p.id = i.product_id
+     WHERE i.fbo_supply_id = $1
+       AND COALESCE(i.collected_quantity, 0) < GREATEST(i.quantity, 0)
+       AND i.collect_component_progress IS NOT NULL
+       AND i.collect_component_progress <> '{}'::jsonb
+     ORDER BY i.id ASC`,
+    [supplyId]
+  );
+  const rows = r.rows || [];
+  if (!rows.length) return [];
+  const kitMeta = await loadKitMetaMap(rows.map((row) => row.product_id));
+  return rows.filter((row) => {
+    const pid = row.product_id != null ? Number(row.product_id) : null;
+    const meta = pid != null ? kitMeta.get(pid) : null;
+    if (!meta?.isKit) return Object.keys(parseProgress(row.collect_component_progress)).length > 0;
+    return hasPartialKitComponentProgress(row.collect_component_progress, meta.components);
+  });
+}
+
+async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
+  const matches = await findSupplyItemsByKitComponent(supplyId, barcode, profileId);
+  return pickPreferredKitComponentMatch(matches);
+}
+
+/** Выбрать комплект, которому комплектующая ещё нужна; иначе первый незакрытый. */
+async function pickPreferredKitComponentMatch(matches) {
+  if (!matches?.length) return null;
+
+  for (const m of matches) {
+    if (!itemStillNeedsCollect(m.item)) continue;
+    const kitPid = m.item.product_id != null ? Number(m.item.product_id) : null;
+    if (kitPid == null) continue;
+    const isKit = await isKitProductId(kitPid);
+    if (!isKit) continue;
+    const components = aggregateKitComponents(await getKitComponents(kitPid));
+    if (kitComponentStillNeeded(m.item.collect_component_progress, components, m.scannedProductId)) {
+      return m;
+    }
+  }
+
+  const open = matches.find((m) => itemStillNeedsCollect(m.item));
+  return open || matches[0];
 }
 
 /**
  * Один штрихкод может быть и отдельной строкой (5404), и комплектующей комплекта (5404RL).
  * Сначала добираем незавершённую прямую позицию; когда она собрана — идём в незавершённый комплект.
+ * Если уже начат комплект (частичный прогресс) — не перепрыгиваем на другую позицию.
  */
 async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
+  const stickyRows = await findStickyPartialKitItems(supplyId);
+  const sticky = stickyRows[0] || null;
+
   const codes = productLookupCodesFromScan(barcode);
   const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
   for (const code of toTry) {
     const direct = await findSupplyItemDirect(supplyId, code, profileId);
-    const viaKit = await findSupplyItemByKitComponent(supplyId, code, profileId);
-    if (!direct && !viaKit) continue;
+    const kitMatches = await findSupplyItemsByKitComponent(supplyId, code, profileId);
+
+    if (sticky) {
+      const stickyId = Number(sticky.id);
+      const kitOnSticky = kitMatches.find((m) => Number(m.item.id) === stickyId) || null;
+      const directOnSticky =
+        direct && Number(direct.item.id) === stickyId ? direct : null;
+
+      if (kitOnSticky || directOnSticky) {
+        // Даже если комплектующая уже набрана — вернём sticky, scan() ответит «уже отсканировано».
+        if (kitOnSticky) return kitOnSticky;
+        return directOnSticky;
+      }
+
+      if (!direct && kitMatches.length === 0) continue;
+
+      const err = new Error(
+        'Сначала дособерите текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар.'
+      );
+      err.statusCode = 409;
+      err.code = 'COLLECT_KIT_STICKY';
+      err.details = {
+        stickySupplyItemId: stickyId,
+        stickySku: sticky.sku || sticky.product_sku || null,
+        stickyName: sticky.name || sticky.product_name || null,
+      };
+      throw err;
+    }
+
+    const viaKitResolved = await pickPreferredKitComponentMatch(kitMatches);
+    if (!direct && !viaKitResolved) continue;
 
     const directOpen = direct && itemStillNeedsCollect(direct.item) ? direct : null;
-    const kitOpen = viaKit && itemStillNeedsCollect(viaKit.item) ? viaKit : null;
+    const kitOpen = viaKitResolved && itemStillNeedsCollect(viaKitResolved.item) ? viaKitResolved : null;
 
     if (directOpen) return directOpen;
     if (kitOpen) return kitOpen;
-    // Обе (или одна) уже собраны — вернём прямую позицию для сообщения «уже собрано».
-    return direct || viaKit;
+    return direct || viaKitResolved;
   }
   return null;
 }
@@ -573,6 +675,20 @@ class FboSuppliesCollectService {
         const perKit =
           components.find((c) => Number(c.component_product_id) === compId)?.quantity || 1;
         const key = String(compId);
+        if (!kitComponentStillNeeded(progress, components, compId)) {
+          const err = new Error(
+            `Эта комплектующая уже отсканирована для текущего комплекта. Отсканируйте оставшиеся позиции или SKU комплекта целиком.`
+          );
+          err.statusCode = 409;
+          err.code = 'COLLECT_COMPONENT_ALREADY';
+          err.details = {
+            supplyItemId: itemId,
+            componentProductId: compId,
+            need: Math.max(1, parseInt(perKit, 10) || 1),
+            got: Math.max(0, parseInt(progress[key], 10) || 0),
+          };
+          throw err;
+        }
         const beforeCompletable = kitsCompletableFromProgress(progress, components);
         progress[key] = (progress[key] || 0) + 1;
         const afterCompletable = kitsCompletableFromProgress(progress, components);
