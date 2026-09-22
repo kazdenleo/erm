@@ -125,3 +125,29 @@ test('partial progress on order A: barcode shared with B stays on A', () => {
   assert.equal(shouldPreferCurrentAssemblyOrder({ id: brush400 }, orderAItems, qtyA), false);
   assert.equal(shouldPreferCurrentAssemblyOrder({ id: brush550 }, orderAItems, qtyA), false);
 });
+
+test('shared component A across A+B and A+C: after A stay on first kit, reject C', () => {
+  const compA = 101;
+  const compB = 102;
+  const compC = 103;
+  const kitAb = [
+    { productId: compA, quantity: 1, kitProductId: 9101, isKitComponent: true },
+    { productId: compB, quantity: 1, kitProductId: 9101, isKitComponent: true },
+  ];
+  const kitAc = [
+    { productId: compA, quantity: 1, kitProductId: 9102, isKitComponent: true },
+    { productId: compC, quantity: 1, kitProductId: 9102, isKitComponent: true },
+  ];
+
+  let qty = applyAssemblyBarcodeScan({}, { id: compA }, kitAb);
+  assert.equal(isAssemblyCompositionComplete(kitAb, qty), false);
+  assert.equal(scannedProductStillNeededOnOrder({ id: compA }, kitAb, qty), false);
+  assert.equal(scannedProductStillNeededOnOrder({ id: compB }, kitAb, qty), true);
+  assert.equal(scannedProductStillNeededOnOrder({ id: compC }, kitAb, qty), false);
+  assert.equal(shouldPreferCurrentAssemblyOrder({ id: compC }, kitAb, qty), false);
+  assert.equal(scannedProductStillNeededOnOrder({ id: compA }, kitAc, {}), true);
+  assert.equal(scannedProductStillNeededOnOrder({ id: compC }, kitAc, {}), true);
+
+  qty = applyAssemblyBarcodeScan(qty, { id: compB }, kitAb);
+  assert.equal(isAssemblyCompositionComplete(kitAb, qty), true);
+});

@@ -29,7 +29,11 @@ import {
   scannedQtyForAssemblyLine,
   applyAssemblyBarcodeScan,
   isAssemblyCompositionComplete,
+  scannedProductStillNeededOnOrder,
   shouldPreferCurrentAssemblyOrder,
+  orderItemMatchesScannedProduct,
+  isKitSkuScanForOrder,
+  isRootKitSkuScanForOrder,
 } from '../../utils/assemblyKitScan.js';
 import './Assembly.css';
 
@@ -685,6 +689,8 @@ export function Assembly() {
     const trimmed = (barcode || '').trim();
     if (trimmed.length < 2) return;
     if (printingFlowRef.current) return;
+    if (scanLoadingRef.current) return;
+    scanLoadingRef.current = true;
     setScanError(null);
     setScanLoading(true);
     try {
@@ -718,16 +724,34 @@ export function Assembly() {
           playEventSound(SOUND_EVENTS.scan_error);
           return;
         }
-        playEventSound(SOUND_EVENTS.scan_ok);
+
         let order = data.order;
         let orderItems = data.orderItems || [];
         const apiKey = assemblyOrderSessionKey(order);
         const prevKey = orderKeyRef.current;
 
-        // Страховка: API мог вернуть другой заказ с тем же SKU — не бросаем незавершённый текущий.
-        // Если штрихкод ещё нужен на текущем — остаёмся. Если текущий незакрыт, а SKU к нему
-        // не относится — тоже не переключаемся (иначе общие комплектующие «прыгают» между заказами).
-        if (prevKey && apiKey !== prevKey && cur?.order && preferIncomplete) {
+        // Hard-lock: пока текущий состав не закрыт — только ещё нужные штрихкоды.
+        // Иначе общие комплектующие (A в A+B и A+C) перепрыгивают и печатают чужой стикер.
+        if (preferIncomplete && curItems.length > 0 && cur?.order) {
+          const stillNeeded = scannedProductStillNeededOnOrder(data.product, curItems, qty);
+          if (!stillNeeded) {
+            const onCurrentOrder =
+              isKitSkuScanForOrder(data.product, curItems) ||
+              isRootKitSkuScanForOrder(data.product, curItems) ||
+              curItems.some((item) => orderItemMatchesScannedProduct(item, data.product));
+            clearScanField(barcodeInputRef.current);
+            setScanError(
+              onCurrentOrder
+                ? 'Этот штрихкод уже отсканирован в текущем заказе. Отсканируйте оставшиеся позиции или сбросьте сессию.'
+                : 'Этот штрихкод не нужен в текущем заказе. Дособерите текущий или сбросьте сессию.'
+            );
+            playEventSound(SOUND_EVENTS.scan_error);
+            return;
+          }
+          order = cur.order;
+          orderItems = curItems;
+        } else if (prevKey && apiKey !== prevKey && cur?.order && preferIncomplete) {
+          // Страховка для заказов без строк состава (однострочные).
           const stillNeeded = shouldPreferCurrentAssemblyOrder(data.product, curItems, qty);
           const currentOpen =
             curItems.length > 0 && !isAssemblyCompositionComplete(curItems, qty);
@@ -745,6 +769,7 @@ export function Assembly() {
           }
         }
 
+        playEventSound(SOUND_EVENTS.scan_ok);
         const newKey = assemblyOrderSessionKey(order);
         if (newKey !== prevKey) {
           markedCollectedKeyRef.current = '';
@@ -768,6 +793,7 @@ export function Assembly() {
       clearScanField(barcodeInputRef.current);
       playEventSound(SOUND_EVENTS.scan_error);
     } finally {
+      scanLoadingRef.current = false;
       setScanLoading(false);
     }
   };

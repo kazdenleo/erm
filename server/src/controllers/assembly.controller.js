@@ -106,8 +106,8 @@ class AssemblyController {
 
       // Предпочесть текущий незавершённый заказ (клиент шлёт preferOrderId, пока состав не закрыт).
       // Нельзя «перепрыгивать» на другой заказ с тем же SKU комплектующей — иначе сборка зацикливается.
+      // При preferOrderId не ищем другой комплект через findFirst — только sticky или 409.
       let order = null;
-      let preferStickyReject = false;
       if (preferOrderId) {
         let preferred = null;
         const mpHint = preferMarketplace || marketplaceFilter;
@@ -127,20 +127,23 @@ class AssemblyController {
           if (matches) {
             order = preferred;
           } else {
-            preferStickyReject = true;
+            return res.status(409).json({
+              ok: false,
+              message:
+                'Этот штрихкод не относится к текущему заказу на сборке. Дособерите текущий заказ или сбросьте сессию скана.'
+            });
           }
+        } else {
+          return res.status(409).json({
+            ok: false,
+            message:
+              'Текущий заказ на сборке недоступен или уже не на сборке. Сбросьте сессию скана и начните заново.'
+          });
         }
       }
 
       // Поиск только по product_id / SKU / комплекту — без fallback по названию:
       // общие названия («Салонный фильтр») давали ложные совпадения с чужими заказами.
-      if (!order && preferStickyReject) {
-        return res.status(409).json({
-          ok: false,
-          message:
-            'Этот штрихкод не относится к текущему заказу на сборке. Дособерите текущий заказ или сбросьте сессию скана.'
-        });
-      }
       if (!order) {
         order = await ordersService.findFirstAssembledByProductId(product.id, {
           marketplace: marketplaceFilter
