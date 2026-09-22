@@ -1257,10 +1257,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         out.inc = Math.max(0, Number(prevLineBelow.inc) - moveQty);
       } else if (dbInc != null) out.inc = dbInc;
       else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
-      const prevRes =
-        prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))
-          ? Number(prevLineBelow.res)
-          : null;
       // Приёмка резерв не меняет — берём снимок склада или строку ниже.
       out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes);
       // Наличие: при фильтре склада — остаток склада (meta) или prev + qty; не products.quantity (все склады).
