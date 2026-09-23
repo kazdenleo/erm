@@ -287,8 +287,10 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  getCollect: async (id) => {
-    const response = await api.get(`/fbo-supplies/${id}/collect`);
+  getCollect: async (id, { resetPartialProgress = false } = {}) => {
+    const response = await api.get(`/fbo-supplies/${id}/collect`, {
+      params: resetPartialProgress ? { resetPartialProgress: '1' } : undefined,
+    });
     return response.data?.data ?? response.data;
   },
 

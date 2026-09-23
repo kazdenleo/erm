@@ -667,7 +667,15 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const data = await fboSuppliesCollectService.getCollectState(id, { profileId });
+      const resetRaw = String(req.query.resetPartialProgress ?? req.query.reset_partial ?? '')
+        .trim()
+        .toLowerCase();
+      const resetPartialProgress =
+        resetRaw === '1' || resetRaw === 'true' || resetRaw === 'yes';
+      const data = await fboSuppliesCollectService.getCollectState(id, {
+        profileId,
+        resetPartialProgress,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404 || e.statusCode === 503) {

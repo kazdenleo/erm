@@ -80,11 +80,15 @@ export function FboSupplyCollect({
     useProductLabelPrint(printHelperUrl);
 
   const load = useCallback(
-    async ({ silent = false } = {}) => {
+    async ({ silent = false, resetPartialProgress = false } = {}) => {
       if (!supplyId) return;
       if (!silent) setLoading(true);
       try {
-        const data = await fboSuppliesApi.getCollect(supplyId);
+        // F5 / первый заход: сбросить незакрытый набор комплектующих; стикеры (collected) остаются.
+        // Тихий poll сброс не делает — иначе сорвёт текущую сборку комплекта.
+        const data = await fboSuppliesApi.getCollect(supplyId, {
+          resetPartialProgress: !silent && resetPartialProgress,
+        });
         setState(data);
         if (!silent) setErr(null);
       } catch (e) {
@@ -99,7 +103,7 @@ export function FboSupplyCollect({
   );
 
   useEffect(() => {
-    load();
+    load({ resetPartialProgress: true });
   }, [load]);
 
   useEffect(() => {
@@ -299,7 +303,9 @@ export function FboSupplyCollect({
       <p className="fbo-packing-hint">
         Сканируйте товар из поставки или комплектующие комплекта. Этикетка печатается для обычного
         товара сразу; для комплекта — только после скана всего SKU комплекта или всех комплектующих.
-        Фильтр категории только скрывает строки — скан из другой категории всё равно принимается.
+        Пока набор комплекта начат — дособерите его; если комплектующей нет — обновите страницу
+        (незакрытый прогресс сбросится, уже напечатанные стикеры останутся). Фильтр категории только
+        скрывает строки — скан из другой категории всё равно принимается.
       </p>
 
       {(state?.activeUsers || []).length > 0 ? (

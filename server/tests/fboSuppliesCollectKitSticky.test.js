@@ -35,3 +35,9 @@ test('empty progress is not sticky; full unit ready counts as partial until subt
     true
   );
 });
+
+test('orphan progress keys for other products do not sticky an empty kit', () => {
+  const orphan = { '999999': 2 };
+  assert.equal(hasPartialKitComponentProgress(orphan, kitAb), false);
+  assert.equal(hasPartialKitComponentProgress({ [String(compA)]: 1 }, kitAb), true);
+});

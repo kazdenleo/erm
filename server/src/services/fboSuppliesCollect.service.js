@@ -107,9 +107,17 @@ function kitProgressSummary(progress, aggregatedComponents) {
 /** Есть ли незакрытый набор комплектующих (нельзя начинать другой комплект). */
 export function hasPartialKitComponentProgress(progress, aggregatedComponents) {
   const p = parseProgress(progress);
-  if (!aggregatedComponents?.length) return Object.keys(p).length > 0;
+  if (!aggregatedComponents?.length) {
+    // Без состава — любой ненулевой хвост считаем частичным (сбросится при обновлении страницы).
+    return Object.values(p).some((n) => n > 0);
+  }
   if (kitsCompletableFromProgress(p, aggregatedComponents) > 0) return true;
-  return Object.values(p).some((n) => n > 0);
+  // Только комплектующие текущего состава — чужие ключи в JSONB не держат sticky.
+  for (const c of aggregatedComponents) {
+    const got = Math.max(0, parseInt(p[String(c.component_product_id)], 10) || 0);
+    if (got > 0) return true;
+  }
+  return false;
 }
 
 /** Нужна ли ещё эта комплектующая для текущего незакрытого набора. */
@@ -380,7 +388,7 @@ async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
       if (!direct && kitMatches.length === 0) continue;
 
       const err = new Error(
-        'Сначала дособерите текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар.'
+        'Сначала дособерите текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: незакрытый прогресс сбросится, напечатанные стикеры останутся.'
       );
       err.statusCode = 409;
       err.code = 'COLLECT_KIT_STICKY';
@@ -482,13 +490,36 @@ async function insertScanLog({
 }
 
 class FboSuppliesCollectService {
-  async getCollectState(supplyId, { profileId } = {}) {
+  /**
+   * Сбросить незакрытый прогресс комплектующих (после F5 / повторного входа на вкладку).
+   * collected_quantity (уже напечатанные стикеры) не трогаем.
+   */
+  async resetPartialKitProgress(supplyId, { profileId } = {}) {
+    await assertSupplyAccess(supplyId, profileId);
+    const r = await query(
+      `UPDATE fbo_supply_items
+       SET collect_component_progress = '{}'::jsonb,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE fbo_supply_id = $1
+         AND collect_component_progress IS NOT NULL
+         AND collect_component_progress <> '{}'::jsonb
+       RETURNING id`,
+      [supplyId]
+    );
+    return { cleared: (r.rows || []).length };
+  }
+
+  async getCollectState(supplyId, { profileId, resetPartialProgress = false } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const err = new Error('Сбор этикеток доступен только с PostgreSQL');
       err.statusCode = 503;
       throw err;
     }
     await assertSupplyAccess(supplyId, profileId);
+
+    if (resetPartialProgress) {
+      await this.resetPartialKitProgress(supplyId, { profileId });
+    }
 
     const itemsR = await query(
       `SELECT ${ITEM_SELECT}
