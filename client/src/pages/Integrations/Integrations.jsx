@@ -22,6 +22,27 @@ import { ChestnyZnakTab } from './ChestnyZnakTab';
 import { GigaChatTab } from './GigaChatTab';
 import './Integrations.css';
 
+const TOKEN_EXPIRES_HINT =
+  'Если дату не указать — ключ считается бессрочным (уведомлений о сроке не будет). При указанной дате за 10 дней до окончания придёт уведомление. Для Wildberries срок можно подставить из JWT-токена автоматически.';
+
+/** Дата окончания из JWT payload.exp → YYYY-MM-DD (для токенов WB). */
+function extractJwtExpiryYmd(token) {
+  try {
+    const normalized = String(token || '').replace(/\s+/g, '').replace(/\uFEFF/g, '');
+    const parts = normalized.split('.');
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(b64 + pad);
+    const obj = JSON.parse(json);
+    const exp = Number(obj?.exp);
+    if (!Number.isFinite(exp) || exp <= 0) return null;
+    return new Date(exp * 1000).toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
 export function Integrations() {
   const { selectedOrganizationId, setSelectedOrganizationId, profile } = useAuth();
   const [searchParams] = useSearchParams();
@@ -424,6 +445,15 @@ function MarketplacesTab({
     };
 
     const handleChange = (field, value) => {
+      if (field === 'api_key' && type === 'wildberries') {
+        const jwtYmd = extractJwtExpiryYmd(value);
+        const curExpiry = String(formData.token_expires_at || '').trim();
+        // Автодата только если поле пустое — очищенную дату не перезаписываем.
+        if (jwtYmd && !curExpiry) {
+          setFormData({ ...formData, api_key: value, token_expires_at: jwtYmd });
+          return;
+        }
+      }
       setFormData({ ...formData, [field]: value });
     };
 
@@ -655,7 +685,7 @@ function MarketplacesTab({
               onChange={(e) => handleChange('token_expires_at', e.target.value)}
             />
             <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Срок действия токенов — до 180 дней. Если не указать, при сохранении подставится дата через 180 дней. За 10 дней до окончания придёт уведомление.
+              {TOKEN_EXPIRES_HINT}
             </div>
           </div>
           {tokenStatus && (
@@ -677,7 +707,18 @@ function MarketplacesTab({
               )}
               {tokenStatus.expires_at && (
                 <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
-                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}{tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}
+                  {tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                </div>
+              )}
+              {!tokenStatus.expires_at && tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  В токене найден срок: {String(tokenStatus.detected_expires_at).slice(0, 10)} — можно указать вручную или оставить пустым (бессрочный)
+                </div>
+              )}
+              {!tokenStatus.expires_at && !tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  Срок не задан — ключ считается бессрочным
                 </div>
               )}
             </div>
@@ -858,7 +899,7 @@ function MarketplacesTab({
               onChange={(e) => handleChange('token_expires_at', e.target.value)}
             />
             <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Срок действия токенов — до 180 дней. Если не указать, при сохранении подставится дата через 180 дней. За 10 дней до окончания придёт уведомление.
+              {TOKEN_EXPIRES_HINT}
             </div>
           </div>
           {tokenStatus && (
@@ -878,7 +919,18 @@ function MarketplacesTab({
               )}
               {tokenStatus.expires_at && (
                 <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
-                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}{tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}
+                  {tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                </div>
+              )}
+              {!tokenStatus.expires_at && tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  В токене найден срок: {String(tokenStatus.detected_expires_at).slice(0, 10)} — можно указать вручную или оставить пустым (бессрочный)
+                </div>
+              )}
+              {!tokenStatus.expires_at && !tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  Срок не задан — ключ считается бессрочным
                 </div>
               )}
             </div>
@@ -1350,7 +1402,7 @@ function MarketplacesTab({
               onChange={(e) => handleChange('token_expires_at', e.target.value)}
             />
             <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Срок действия токенов — до 180 дней. Если не указать, при сохранении подставится дата через 180 дней. За 10 дней до окончания придёт уведомление.
+              {TOKEN_EXPIRES_HINT}
             </div>
           </div>
           {tokenStatus && (
@@ -1359,7 +1411,18 @@ function MarketplacesTab({
               <div style={{ marginTop: '4px', color: 'var(--muted)' }}>{tokenStatus.message}</div>
               {tokenStatus.expires_at && (
                 <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
-                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}{tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                  expires_at: {String(tokenStatus.expires_at).slice(0, 10)}
+                  {tokenStatus.days_left != null ? ` (дней: ${tokenStatus.days_left})` : ''}
+                </div>
+              )}
+              {!tokenStatus.expires_at && tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  В токене найден срок: {String(tokenStatus.detected_expires_at).slice(0, 10)} — можно указать вручную или оставить пустым (бессрочный)
+                </div>
+              )}
+              {!tokenStatus.expires_at && !tokenStatus.detected_expires_at && (
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  Срок не задан — ключ считается бессрочным
                 </div>
               )}
             </div>

@@ -218,6 +218,27 @@ class IntegrationsService {
     return String(apiKey).replace(/\s+/g, '').replace(/\uFEFF/g, '').trim();
   }
 
+  /**
+   * Дата окончания из JWT payload.exp (WB API-токены).
+   * @returns {string|null} YYYY-MM-DD
+   */
+  _extractJwtExpiryYmd(token) {
+    const normalized = this._normalizeWbToken(token);
+    const parts = normalized.split('.');
+    if (parts.length < 2) return null;
+    try {
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+      const json = Buffer.from(b64 + pad, 'base64').toString('utf8');
+      const obj = JSON.parse(json);
+      const exp = Number(obj?.exp);
+      if (!Number.isFinite(exp) || exp <= 0) return null;
+      return new Date(exp * 1000).toISOString().slice(0, 10);
+    } catch (_) {
+      return null;
+    }
+  }
+
   _safeTokenMeta(token) {
     const t = token == null ? '' : String(token);
     const normalized = this._normalizeWbToken(t);
@@ -238,12 +259,14 @@ class IntegrationsService {
         jwtHeaderOk = false;
       }
     }
+    const jwtExpiresYmd = looksJwt ? this._extractJwtExpiryYmd(normalized) : null;
     return {
       length: normalized.length,
       dot_count: dotCount,
       looks_jwt: looksJwt,
       jwt_header_decodable: jwtHeaderOk,
-      jwt_alg: jwtAlg
+      jwt_alg: jwtAlg,
+      jwt_expires_at: jwtExpiresYmd,
     };
   }
 
@@ -284,6 +307,10 @@ class IntegrationsService {
     const cfg = await this.getMarketplaceConfig(type, { profileId, organizationId });
     const expiresAt = cfg.token_expires_at || cfg.api_key_expires_at || cfg.expires_at || null;
     const expiry = this._computeExpiry(expiresAt);
+    let detectedExpiresAt = null;
+    if (!expiresAt && type === 'wildberries') {
+      detectedExpiresAt = this._extractJwtExpiryYmd(cfg.api_key || cfg.apiKey);
+    }
 
     let valid = false;
     let message = '';
@@ -547,6 +574,7 @@ class IntegrationsService {
       checked_at: checkedAt,
       message,
       checks,
+      detected_expires_at: detectedExpiresAt,
       ...expiry
     };
 
@@ -792,7 +820,7 @@ class IntegrationsService {
 
   /**
    * Сохранить настройки маркетплейса.
-   * При добавлении API-ключа без даты окончания автоматически ставится срок 180 дней.
+   * Дата окончания токена опциональна: пусто = бессрочный ключ (уведомлений о сроке не будет).
    */
   async saveMarketplaceConfig(type, config, { profileId = null, organizationId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
@@ -923,12 +951,15 @@ class IntegrationsService {
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;
     }
-    const hasKey = config.api_key != null && String(config.api_key).trim() !== '';
-    const hasExpiry = !!(config.token_expires_at || config.api_key_expires_at || config.expires_at);
-    if (hasKey && !hasExpiry) {
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 180);
-      config.token_expires_at = expiresAt.toISOString().slice(0, 10);
+
+    // Дата окончания: пустая строка → null (бессрочный ключ). Больше не подставляем 180 дней.
+    for (const key of ['token_expires_at', 'api_key_expires_at', 'expires_at']) {
+      if (config[key] === '' || config[key] == null) {
+        config[key] = null;
+      } else if (typeof config[key] === 'string') {
+        const ymd = config[key].trim().slice(0, 10);
+        config[key] = /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : null;
+      }
     }
 
     // Валидация обязательных полей

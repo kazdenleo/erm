@@ -20,6 +20,29 @@ function productLabel(p) {
   return name ? `${sku} — ${name}` : sku;
 }
 
+/** Отображение числа в поле без принудительного ведущего 0. */
+function formatTierNumberField(v) {
+  if (v === '' || v == null) return '';
+  return String(v);
+}
+
+/**
+ * Разбор ввода: '' | number | undefined (отклонить).
+ * Убирает ведущие нули («025» → 25), не подставляет 0 при очистке.
+ */
+function parseTierNumberInput(raw) {
+  const s0 = String(raw ?? '').trim().replace(',', '.');
+  if (s0 === '') return '';
+  if (!/^\d*\.?\d*$/.test(s0)) return undefined;
+  // Промежуточные «.» / «0.» оставляем строкой — иначе курсор прыгает.
+  if (s0 === '.' || s0.endsWith('.')) return s0;
+  // «025» → 25, «0.5» остаётся 0.5, одиночный «0» → 0.
+  const normalized = s0.replace(/^0+(?=\d)/, '');
+  const n = Number(normalized === '' ? '0' : normalized);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n;
+}
+
 /**
  * Редактор градаций мин. наценки (₽ или %).
  */
@@ -274,8 +297,8 @@ export function PricesMinMarkupRulesPanel({
                 <tr>
                   <th>От, ₽</th>
                   <th>До, ₽</th>
-                  <th>Тип</th>
                   <th>Значение</th>
+                  <th>Тип</th>
                   <th>Но не меньше, ₽</th>
                   <th />
                 </tr>
@@ -285,30 +308,83 @@ export function PricesMinMarkupRulesPanel({
                   <tr key={`${rule.id}-t-${tIdx}`}>
                     <td>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         className="form-control form-control-sm"
-                        min="0"
-                        value={tier.costFrom ?? 0}
+                        placeholder="0"
+                        value={formatTierNumberField(tier.costFrom)}
                         onChange={(e) => {
+                          const next = parseTierNumberInput(e.target.value);
+                          if (next === undefined) return;
                           const tiers = [...(rule.tiers || [])];
-                          tiers[tIdx] = { ...tier, costFrom: Number(e.target.value) || 0 };
+                          tiers[tIdx] = { ...tier, costFrom: next === '' ? '' : next };
+                          updateTier(rule.id, tiers);
+                        }}
+                        onBlur={() => {
+                          const tiers = [...(rule.tiers || [])];
+                          const n = Number(tier.costFrom);
+                          tiers[tIdx] = {
+                            ...tier,
+                            costFrom: Number.isFinite(n) && n >= 0 ? n : 0,
+                          };
                           updateTier(rule.id, tiers);
                         }}
                       />
                     </td>
                     <td>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         className="form-control form-control-sm"
-                        min="0"
                         placeholder="∞"
-                        value={tier.costTo ?? ''}
+                        value={formatTierNumberField(tier.costTo)}
                         onChange={(e) => {
+                          const next = parseTierNumberInput(e.target.value);
+                          if (next === undefined) return;
                           const tiers = [...(rule.tiers || [])];
-                          const raw = e.target.value;
                           tiers[tIdx] = {
                             ...tier,
-                            costTo: raw === '' ? null : Number(raw) || 0,
+                            costTo: next === '' ? null : next,
+                          };
+                          updateTier(rule.id, tiers);
+                        }}
+                        onBlur={() => {
+                          if (tier.costTo === '' || tier.costTo == null) {
+                            const tiers = [...(rule.tiers || [])];
+                            tiers[tIdx] = { ...tier, costTo: null };
+                            updateTier(rule.id, tiers);
+                            return;
+                          }
+                          const n = Number(tier.costTo);
+                          const tiers = [...(rule.tiers || [])];
+                          tiers[tIdx] = {
+                            ...tier,
+                            costTo: Number.isFinite(n) && n >= 0 ? n : null,
+                          };
+                          updateTier(rule.id, tiers);
+                        }}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        className="form-control form-control-sm"
+                        placeholder="0"
+                        value={formatTierNumberField(tier.value)}
+                        onChange={(e) => {
+                          const next = parseTierNumberInput(e.target.value);
+                          if (next === undefined) return;
+                          const tiers = [...(rule.tiers || [])];
+                          tiers[tIdx] = { ...tier, value: next === '' ? '' : next };
+                          updateTier(rule.id, tiers);
+                        }}
+                        onBlur={() => {
+                          const tiers = [...(rule.tiers || [])];
+                          const n = Number(tier.value);
+                          tiers[tIdx] = {
+                            ...tier,
+                            value: Number.isFinite(n) && n >= 0 ? n : 0,
                           };
                           updateTier(rule.id, tiers);
                         }}
@@ -330,33 +406,34 @@ export function PricesMinMarkupRulesPanel({
                     </td>
                     <td>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         className="form-control form-control-sm"
-                        min="0"
-                        step="0.1"
-                        value={tier.value ?? ''}
-                        onChange={(e) => {
-                          const tiers = [...(rule.tiers || [])];
-                          tiers[tIdx] = { ...tier, value: Number(e.target.value) || 0 };
-                          updateTier(rule.id, tiers);
-                        }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        className="form-control form-control-sm"
-                        min="0"
-                        step="1"
                         placeholder="—"
                         title="Необязательно: мин. наценка не ниже этой суммы"
-                        value={tier.minRub ?? ''}
+                        value={formatTierNumberField(tier.minRub)}
                         onChange={(e) => {
+                          const next = parseTierNumberInput(e.target.value);
+                          if (next === undefined) return;
                           const tiers = [...(rule.tiers || [])];
-                          const raw = e.target.value;
                           tiers[tIdx] = {
                             ...tier,
-                            minRub: raw === '' ? null : Number(raw) || 0,
+                            minRub: next === '' ? null : next,
+                          };
+                          updateTier(rule.id, tiers);
+                        }}
+                        onBlur={() => {
+                          if (tier.minRub === '' || tier.minRub == null) {
+                            const tiers = [...(rule.tiers || [])];
+                            tiers[tIdx] = { ...tier, minRub: null };
+                            updateTier(rule.id, tiers);
+                            return;
+                          }
+                          const n = Number(tier.minRub);
+                          const tiers = [...(rule.tiers || [])];
+                          tiers[tIdx] = {
+                            ...tier,
+                            minRub: Number.isFinite(n) && n >= 0 ? Math.round(n) : null,
                           };
                           updateTier(rule.id, tiers);
                         }}
