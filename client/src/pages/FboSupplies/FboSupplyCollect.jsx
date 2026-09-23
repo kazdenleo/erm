@@ -38,18 +38,25 @@ function closePrintSlot(slot) {
   }
 }
 
-/** Что сканировать для следующей позиции: SKU товара или недособранные комплектующие. */
+/** Что сканировать для следующей позиции: SKU товара или ещё нужные комплектующие. */
 function getNextScanTargets(item) {
   if (!item) return [];
   if (item.isKit && Array.isArray(item.kitComponents) && item.kitComponents.length > 0) {
-    const pending = item.kitComponents.filter((c) => (Number(c.got) || 0) < (Number(c.need) || 1));
-    const list = pending.length ? pending : item.kitComponents;
-    return list.map((c) => ({
-      key: `c-${c.productId}`,
-      sku: c.sku || `#${c.productId}`,
-      need: Math.max(0, (Number(c.need) || 1) - (Number(c.got) || 0)) || Number(c.need) || 1,
-      labelNeed: Number(c.need) || 1,
-    }));
+    // Только то, что ещё не набрано для текущего комплекта — уже отсканированное не показываем.
+    const pending = item.kitComponents.filter(
+      (c) => (Number(c.got) || 0) < (Number(c.need) || 1)
+    );
+    return pending.map((c) => {
+      const need = Number(c.need) || 1;
+      const got = Number(c.got) || 0;
+      const left = Math.max(0, need - got);
+      return {
+        key: `c-${c.productId}`,
+        sku: c.sku || `#${c.productId}`,
+        need: left > 0 ? left : need,
+        labelNeed: need,
+      };
+    });
   }
   return [
     {
@@ -367,20 +374,23 @@ export function FboSupplyCollect({
             ) : null}
           </div>
           <div className="fbo-collect-next__skus">
-            {nextTargets.map((t) => (
-              <span key={t.key} className="fbo-collect-next__sku">
-                {t.sku}
-                {t.need != null && t.need > 0 ? (
-                  <span className="fbo-collect-next__qty">×{t.need}</span>
-                ) : null}
+            {nextTargets.length > 0 ? (
+              nextTargets.map((t) => (
+                <span key={t.key} className="fbo-collect-next__sku">
+                  {t.sku}
+                  {t.need != null && t.need > 0 ? (
+                    <span className="fbo-collect-next__qty">×{t.need}</span>
+                  ) : null}
+                </span>
+              ))
+            ) : (
+              <span className="fbo-collect-next__sku">
+                {nextItem.sku || nextItem.productName || '—'}
               </span>
-            ))}
+            )}
           </div>
           <div className="fbo-collect-next__progress muted-hint">
             {nextItem.collected} / {nextItem.planned}
-            {nextItem.isKit && nextItem.kitProgress?.needPieces > 0
-              ? ` · к комплекту ${nextItem.kitProgress.scannedPieces}/${nextItem.kitProgress.needPieces}`
-              : null}
           </div>
         </div>
       ) : filteredItems.length > 0 ? (

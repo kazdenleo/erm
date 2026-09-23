@@ -545,7 +545,10 @@
 
 .fbo-collect-next__progress {
   margin-top: 10px;
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #334155;
+  text-decoration: none;
 }
 
 .fbo-collect-flash {
