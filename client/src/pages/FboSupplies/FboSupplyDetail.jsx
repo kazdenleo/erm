@@ -1084,7 +1084,6 @@ export function FboSupplyDetail() {
         </button>
       </div>
 
-      {activeTab !== 'collect' ? (
       <div className="fbo-supply-item-search">
         <input
           type="search"
@@ -1096,7 +1095,7 @@ export function FboSupplyDetail() {
           spellCheck={false}
           aria-label="Поиск товаров в поставке"
         />
-        {itemSearchActive ? (
+        {itemSearchActive && activeTab !== 'collect' ? (
           <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
             Найдено:{' '}
             <strong>
@@ -1109,7 +1108,6 @@ export function FboSupplyDetail() {
           </span>
         ) : null}
       </div>
-      ) : null}
 
       {activeTab === 'collect' ? (
         <FboSupplyCollect

@@ -347,19 +347,6 @@ export function FboSupplyCollect({
               ))}
             </select>
           </label>
-          <label className="fbo-collect-search-filter">
-            <span className="muted-hint">Поиск</span>
-            <input
-              type="search"
-              className="form-control form-control-sm"
-              value={itemSearchQuery}
-              onChange={(e) => onItemSearchQueryChange?.(e.target.value)}
-              placeholder="Артикул, название или штрихкод"
-              autoComplete="off"
-              spellCheck={false}
-              aria-label="Поиск в списке сбора этикеток"
-            />
-          </label>
         </div>
         <div className="fbo-collect-summary muted-hint">
           Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
