@@ -1084,30 +1084,32 @@ export function FboSupplyDetail() {
         </button>
       </div>
 
-      <div className="fbo-supply-item-search">
-        <input
-          type="search"
-          className="form-control form-control-sm fbo-supply-item-search__input"
-          value={itemSearchQuery}
-          onChange={(e) => setItemSearchQuery(e.target.value)}
-          placeholder="Поиск товаров: название, артикул или штрихкод"
-          autoComplete="off"
-          spellCheck={false}
-          aria-label="Поиск товаров в поставке"
-        />
-        {itemSearchActive && activeTab !== 'collect' ? (
-          <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
-            Найдено:{' '}
-            <strong>
-              {activeTab === 'packing' ? filteredSupplyItems.length : filteredGeneralItems.length}
-            </strong>{' '}
-            из{' '}
-            <strong>
-              {activeTab === 'packing' ? sortedSupplyItems.length : generalSupplyItems.length}
-            </strong>
-          </span>
-        ) : null}
-      </div>
+      {activeTab !== 'collect' ? (
+        <div className="fbo-supply-item-search">
+          <input
+            type="search"
+            className="form-control form-control-sm fbo-supply-item-search__input"
+            value={itemSearchQuery}
+            onChange={(e) => setItemSearchQuery(e.target.value)}
+            placeholder="Поиск товаров: название, артикул или штрихкод"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Поиск товаров в поставке"
+          />
+          {itemSearchActive ? (
+            <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
+              Найдено:{' '}
+              <strong>
+                {activeTab === 'packing' ? filteredSupplyItems.length : filteredGeneralItems.length}
+              </strong>{' '}
+              из{' '}
+              <strong>
+                {activeTab === 'packing' ? sortedSupplyItems.length : generalSupplyItems.length}
+              </strong>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {activeTab === 'collect' ? (
         <FboSupplyCollect

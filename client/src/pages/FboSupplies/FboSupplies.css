@@ -465,11 +465,13 @@
 
 .fbo-collect-filters {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: 10px 12px;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   justify-content: flex-start;
+  width: 100%;
+  max-width: 720px;
 }
 
 .fbo-collect-category-filter,
