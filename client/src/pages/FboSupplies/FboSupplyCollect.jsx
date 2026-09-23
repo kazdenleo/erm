@@ -151,10 +151,17 @@ export function FboSupplyCollect({
     return filterSupplyItemsByQuery(list, itemSearchQuery);
   }, [items, itemSearchQuery, searchActive, categoryFilter]);
 
-  const nextItem = useMemo(
-    () => filteredItems.find((it) => !it.complete) || null,
-    [filteredItems]
-  );
+  const nextItem = useMemo(() => {
+    // Приоритет — комплект, который уже начали (частичный прогресс комплектующих).
+    const inProgress = filteredItems.find((it) => {
+      if (it.complete || !it.isKit) return false;
+      const scanned = Number(it.kitProgress?.scannedPieces) || 0;
+      if (scanned > 0) return true;
+      return (it.kitComponents || []).some((c) => (Number(c.got) || 0) > 0);
+    });
+    if (inProgress) return inProgress;
+    return filteredItems.find((it) => !it.complete) || null;
+  }, [filteredItems]);
   const nextTargets = useMemo(() => getNextScanTargets(nextItem), [nextItem]);
 
   const sendToPrinter = useCallback(
