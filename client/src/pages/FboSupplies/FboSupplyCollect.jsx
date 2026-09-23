@@ -397,16 +397,14 @@ export function FboSupplyCollect({
               enableGlobalCapture
             />
           </div>
-          {(state?.activeUsers || []).length > 0 ? (
-            <div className="fbo-collect-users" aria-live="polite">
-              <span className="fbo-collect-users__label">Сейчас работают</span>
-              <span className="fbo-collect-users__names">
-                {state.activeUsers.map((u) => u.userName).join(', ')}
-              </span>
-            </div>
-          ) : (
-            <div className="fbo-collect-users fbo-collect-users--empty" aria-hidden="true" />
-          )}
+          <div className="fbo-collect-users" aria-live="polite">
+            <span className="fbo-collect-users__label">Сейчас работают</span>
+            <span className="fbo-collect-users__names">
+              {(state?.activeUsers || []).length > 0
+                ? state.activeUsers.map((u) => u.userName).join(', ')
+                : '—'}
+            </span>
+          </div>
         </div>
 
         {nextItem ? (

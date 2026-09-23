@@ -205,6 +205,49 @@ const ITEM_SELECT = `
   (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
 `;
 
+/** Присутствие на вкладке «Сборка» (in-memory, TTL). */
+const COLLECT_PRESENCE_TTL_MS = 90_000;
+const collectPresenceByKey = new Map();
+
+function touchCollectPresence(supplyId, { userId, userName } = {}) {
+  const sid = Number(supplyId);
+  if (!Number.isFinite(sid) || sid <= 0) return;
+  const uid = normalizeUserId(userId);
+  const uname =
+    userName != null && String(userName).trim() !== ''
+      ? String(userName).trim().slice(0, 200)
+      : uid != null
+        ? `Пользователь #${uid}`
+        : null;
+  if (uid == null && !uname) return;
+  const key = `${sid}:${uid != null ? uid : uname}`;
+  collectPresenceByKey.set(key, {
+    supplyId: sid,
+    userId: uid,
+    userName: uname || 'Сотрудник',
+    at: Date.now(),
+  });
+}
+
+function listCollectPresence(supplyId) {
+  const sid = Number(supplyId);
+  const now = Date.now();
+  const out = [];
+  for (const [key, row] of collectPresenceByKey) {
+    if (!row || Number(row.supplyId) !== sid) continue;
+    if (now - Number(row.at || 0) > COLLECT_PRESENCE_TTL_MS) {
+      collectPresenceByKey.delete(key);
+      continue;
+    }
+    out.push({
+      userId: row.userId,
+      userName: row.userName,
+      lastScanAt: new Date(row.at).toISOString(),
+    });
+  }
+  return out;
+}
+
 async function findSupplyItemDirect(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
@@ -509,7 +552,7 @@ class FboSuppliesCollectService {
     return { cleared: (r.rows || []).length };
   }
 
-  async getCollectState(supplyId, { profileId, resetPartialProgress = false } = {}) {
+  async getCollectState(supplyId, { profileId, resetPartialProgress = false, userId, userName } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const err = new Error('Сбор этикеток доступен только с PostgreSQL');
       err.statusCode = 503;
@@ -520,6 +563,8 @@ class FboSuppliesCollectService {
     if (resetPartialProgress) {
       await this.resetPartialKitProgress(supplyId, { profileId });
     }
+
+    touchCollectPresence(supplyId, { userId, userName });
 
     const itemsR = await query(
       `SELECT ${ITEM_SELECT}
@@ -556,6 +601,14 @@ class FboSuppliesCollectService {
     );
 
     const activeUsersMap = new Map();
+    for (const row of listCollectPresence(supplyId)) {
+      const uid = row.userId != null ? String(row.userId) : row.userName || 'anon';
+      activeUsersMap.set(uid, {
+        userId: row.userId,
+        userName: row.userName,
+        lastScanAt: row.lastScanAt,
+      });
+    }
     for (const row of recentR.rows || []) {
       const uid = row.user_id != null ? String(row.user_id) : row.user_name || 'anon';
       if (!activeUsersMap.has(uid)) {
