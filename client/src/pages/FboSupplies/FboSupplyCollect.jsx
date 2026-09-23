@@ -438,21 +438,29 @@ export function FboSupplyCollect({
             <div className="fbo-collect-next__body fbo-collect-next__body--empty" />
           )}
 
-          <div className="fbo-collect-users" aria-live="polite">
-            <span className="fbo-collect-users__label">Сейчас работают</span>
-            <span className="fbo-collect-users__names">
-              {(state?.activeUsers || []).length > 0
-                ? state.activeUsers.map((u) => u.userName).join(', ')
-                : '—'}
-            </span>
+          <div className="fbo-collect-next__aside">
+            <div className="fbo-collect-users" aria-live="polite">
+              <span className="fbo-collect-users__label">Сейчас работают</span>
+              <span className="fbo-collect-users__names">
+                {(state?.activeUsers || []).length > 0
+                  ? state.activeUsers.map((u) => u.userName).join(', ')
+                  : '—'}
+              </span>
+            </div>
+            {lastMsg || err || printHookError ? (
+              <div
+                className={`fbo-collect-flash${
+                  err || printHookError ? ' fbo-collect-flash--error' : ' fbo-collect-flash--ok'
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {err || printHookError || lastMsg}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
-
-      {lastMsg ? <div className="alert alert-success fbo-collect-flash">{lastMsg}</div> : null}
-      {err || printHookError ? (
-        <div className="alert alert-danger">{err || printHookError}</div>
-      ) : null}
 
       <div className="table-responsive fbo-collect-table-wrap">
         <table className="table table-sm fbo-items-table">
