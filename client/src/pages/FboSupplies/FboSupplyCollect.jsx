@@ -338,12 +338,6 @@ export function FboSupplyCollect({
         скрывает строки — скан из другой категории всё равно принимается.
       </p>
 
-      {(state?.activeUsers || []).length > 0 ? (
-        <div className="fbo-collect-users" aria-live="polite">
-          Сейчас работают: {state.activeUsers.map((u) => u.userName).join(', ')}
-        </div>
-      ) : null}
-
       <div className="fbo-collect-toolbar">
         <div className="fbo-collect-summary muted-hint">
           Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
@@ -383,16 +377,28 @@ export function FboSupplyCollect({
         </div>
       </div>
 
-      <div className="fbo-packing-scan-row">
-        <BarcodeScanField
-          id={`fbo-collect-scan-${supplyId}`}
-          label="Скан для этикетки"
-          placeholder="Штрихкод / артикул товара или комплектующей"
-          disabled={scanning || printing}
-          loading={scanning || printing}
-          onScan={(code) => doScan(code)}
-          enableGlobalCapture
-        />
+      <div className="fbo-collect-scan-row">
+        <div className="fbo-collect-scan-row__field">
+          <BarcodeScanField
+            id={`fbo-collect-scan-${supplyId}`}
+            label="Скан для этикетки"
+            placeholder="Штрихкод / артикул товара или комплектующей"
+            className="warehouse-ops-scan-input fbo-collect-scan-input"
+            formClassName="fbo-collect-scan-form warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
+            disabled={scanning || printing}
+            loading={scanning || printing}
+            onScan={(code) => doScan(code)}
+            enableGlobalCapture
+          />
+        </div>
+        {(state?.activeUsers || []).length > 0 ? (
+          <div className="fbo-collect-users" aria-live="polite">
+            <span className="fbo-collect-users__label">Сейчас работают</span>
+            <span className="fbo-collect-users__names">
+              {state.activeUsers.map((u) => u.userName).join(', ')}
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {nextItem ? (
