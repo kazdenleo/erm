@@ -383,7 +383,7 @@ export function FboSupplyCollect({
         }`}
         aria-live="polite"
       >
-        <div className="fbo-collect-next__top">
+        <div className="fbo-collect-next__row">
           <div className="fbo-collect-next__scan">
             <BarcodeScanField
               id={`fbo-collect-scan-${supplyId}`}
@@ -397,6 +397,46 @@ export function FboSupplyCollect({
               enableGlobalCapture
             />
           </div>
+
+          {nextItem ? (
+            <div className="fbo-collect-next__body">
+              <div className="fbo-collect-next__label">Следующий к сборке</div>
+              <div className="fbo-collect-next__name">
+                {nextItem.productName || nextItem.name || nextItem.sku || '—'}
+                {nextItem.isKit ? (
+                  <span className="fbo-collect-next__badge">комплект</span>
+                ) : null}
+              </div>
+              <div className="fbo-collect-next__skus">
+                {nextTargets.length > 0 ? (
+                  nextTargets.map((t) => (
+                    <span key={t.key} className="fbo-collect-next__sku">
+                      {t.sku}
+                      {t.need != null && t.need > 0 ? (
+                        <span className="fbo-collect-next__qty">×{t.need}</span>
+                      ) : null}
+                    </span>
+                  ))
+                ) : (
+                  <span className="fbo-collect-next__sku">
+                    {nextItem.sku || nextItem.productName || '—'}
+                  </span>
+                )}
+              </div>
+              <div className="fbo-collect-next__progress muted-hint">
+                {nextItem.collected} / {nextItem.planned}
+              </div>
+            </div>
+          ) : filteredItems.length > 0 ? (
+            <div className="fbo-collect-next__body">
+              <div className="fbo-collect-next__skus fbo-collect-next__skus--done">
+                Всё собрано по текущему фильтру
+              </div>
+            </div>
+          ) : (
+            <div className="fbo-collect-next__body fbo-collect-next__body--empty" />
+          )}
+
           <div className="fbo-collect-users" aria-live="polite">
             <span className="fbo-collect-users__label">Сейчас работают</span>
             <span className="fbo-collect-users__names">
@@ -406,41 +446,6 @@ export function FboSupplyCollect({
             </span>
           </div>
         </div>
-
-        {nextItem ? (
-          <div className="fbo-collect-next__body">
-            <div className="fbo-collect-next__label">Следующий к сборке</div>
-            <div className="fbo-collect-next__name">
-              {nextItem.productName || nextItem.name || nextItem.sku || '—'}
-              {nextItem.isKit ? (
-                <span className="fbo-collect-next__badge">комплект</span>
-              ) : null}
-            </div>
-            <div className="fbo-collect-next__skus">
-              {nextTargets.length > 0 ? (
-                nextTargets.map((t) => (
-                  <span key={t.key} className="fbo-collect-next__sku">
-                    {t.sku}
-                    {t.need != null && t.need > 0 ? (
-                      <span className="fbo-collect-next__qty">×{t.need}</span>
-                    ) : null}
-                  </span>
-                ))
-              ) : (
-                <span className="fbo-collect-next__sku">
-                  {nextItem.sku || nextItem.productName || '—'}
-                </span>
-              )}
-            </div>
-            <div className="fbo-collect-next__progress muted-hint">
-              {nextItem.collected} / {nextItem.planned}
-            </div>
-          </div>
-        ) : filteredItems.length > 0 ? (
-          <div className="fbo-collect-next__body">
-            <div className="fbo-collect-next__skus">Всё собрано по текущему фильтру</div>
-          </div>
-        ) : null}
       </div>
 
       {lastMsg ? <div className="alert alert-success fbo-collect-flash">{lastMsg}</div> : null}
