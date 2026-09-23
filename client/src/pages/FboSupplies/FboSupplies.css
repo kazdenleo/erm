@@ -124,7 +124,7 @@
 
 .fbo-status-select {
   display: inline-block;
-  padding: 0.35em 1.6em 0.35em 0.55em;
+  padding: 0.35em 0.65em;
   font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
@@ -133,7 +133,14 @@
   white-space: nowrap;
   cursor: pointer;
   max-width: 100%;
-  appearance: auto;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: none;
+}
+
+.fbo-status-select::-ms-expand {
+  display: none;
 }
 
 .fbo-status-select:disabled {
