@@ -11,15 +11,25 @@ const NGINX_502_HINT =
   'Если ошибка повторяется, обновите страницу или сообщите администратору (pm2 logs erm-api).';
 
 const TIMEOUT_HINT =
+  'Запрос занял слишком много времени. Подождите и повторите попытку.';
+
+/** Подсказка при таймауте оформления закупки (заказы / склад). */
+export const PURCHASE_TIMEOUT_HINT =
   'Запрос занял слишком много времени. Проверьте раздел «Склад → Закупки» — закупка могла уже создаться. Обновите список заказов.';
 
-export function getApiErrorMessage(error, fallback = 'Ошибка запроса') {
+/**
+ * @param {unknown} error
+ * @param {string} [fallback]
+ * @param {{ timeoutHint?: string }} [options]
+ */
+export function getApiErrorMessage(error, fallback = 'Ошибка запроса', options = {}) {
   const status = error?.response?.status;
   const data = error?.response?.data;
   const code = error?.code;
+  const timeoutHint = options.timeoutHint || TIMEOUT_HINT;
 
   if (code === 'ECONNABORTED' || String(error?.message || '').includes('timeout of')) {
-    return TIMEOUT_HINT;
+    return timeoutHint;
   }
 
   const apiMessage =

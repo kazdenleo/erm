@@ -411,7 +411,7 @@ export function Certificates() {
                 <th>Начало</th>
                 <th>Окончание</th>
                 <th>Статус</th>
-                <th style={{ width: 160 }}></th>
+                <th style={{ width: 88 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -456,16 +456,29 @@ export function Certificates() {
                         <span className="muted">Ок</span>
                       )}
                     </td>
-                    <td>
-                      <Button variant="secondary" size="small" onClick={() => openEdit(c)}>Изменить</Button>
-                      <Button
-                        variant="secondary"
-                        size="small"
-                        className="btn-delete"
-                        onClick={() => handleDelete(c.id)}
-                      >
-                        Удалить
-                      </Button>
+                    <td className="certificates-actions-cell">
+                      <div className="certificates-actions">
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => openEdit(c)}
+                          title="Изменить"
+                          className="btn-icon btn-icon-only"
+                          aria-label="Изменить"
+                        >
+                          ✏️
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          className="btn-icon btn-icon-only btn-delete"
+                          onClick={() => handleDelete(c.id)}
+                          title="Удалить"
+                          aria-label="Удалить"
+                        >
+                          🗑️
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );

@@ -499,7 +499,7 @@ export function Attributes() {
                 <th>Тип</th>
                 <th>Настройки</th>
                 <th>Связи</th>
-                <th style={{ width: 140 }}></th>
+                <th style={{ width: 88 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -519,20 +519,31 @@ export function Attributes() {
                   <td>
                     <AttrLinksCell stats={linkStatsById.get(String(attr.id))} />
                   </td>
-                  <td>
-                    <Button variant="secondary" size="small" onClick={() => handleEdit(attr)}>
-                      Изменить
-                    </Button>
-                    {!isSystemCardAttr(attr) ? (
+                  <td className="attributes-actions-cell">
+                    <div className="attributes-actions">
                       <Button
                         variant="secondary"
                         size="small"
-                        onClick={() => handleDelete(attr.id)}
-                        className="btn-delete"
+                        onClick={() => handleEdit(attr)}
+                        title="Изменить"
+                        className="btn-icon btn-icon-only"
+                        aria-label="Изменить"
                       >
-                        Удалить
+                        ✏️
                       </Button>
-                    ) : null}
+                      {!isSystemCardAttr(attr) ? (
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => handleDelete(attr.id)}
+                          title="Удалить"
+                          className="btn-icon btn-icon-only btn-delete"
+                          aria-label="Удалить"
+                        >
+                          🗑️
+                        </Button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))}

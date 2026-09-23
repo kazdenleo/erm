@@ -18,43 +18,64 @@
   user-select: none;
 }
 
-/* Prevent modals/backdrop from covering the fixed left sidebar */
-.fixed-sidebar .modal-backdrop-erm,
+/* Prevent modals from covering the fixed left sidebar */
 .fixed-sidebar .modal.modal-erm {
   left: var(--erm-sidebar-width);
   width: calc(100vw - var(--erm-sidebar-width));
 }
 
-.fixed-sidebar.closed-sidebar .modal-backdrop-erm,
 .fixed-sidebar.closed-sidebar .modal.modal-erm {
   left: var(--erm-sidebar-width-closed);
   width: calc(100vw - var(--erm-sidebar-width-closed));
 }
 
 /* On mobile sidebar overlay mode we want full-screen modals */
-.sidebar-mobile-open .modal-backdrop-erm,
 .sidebar-mobile-open .modal.modal-erm {
   left: 0;
   width: 100vw;
 }
 
-/* Prevent modals/backdrop from covering the fixed header (top menu) */
-.fixed-header .modal-backdrop-erm,
+/* Prevent modals from covering the fixed header (top menu) */
 .fixed-header .modal.modal-erm {
   top: var(--erm-header-height);
   height: calc(100vh - var(--erm-header-height));
 }
 
 /*
-  Вложенные модалки через createPortal(body): Bootstrap ~1055,
-  карточка товара .erm-product-card-overlay = 1100, footer формы = 1110.
-  Иначе «Комплектующие» и др. открываются под карточкой — «кнопка ничего не делает».
+  Вложенные модалки через createPortal(body).
+  Затемнение — дочерний .modal-backdrop-erm--internal (всегда под .modal-dialog).
+  Центрирование через flex на .modal — без modal-dialog-centered (у него min-height ≈ 100vh
+  и получается «серый столб» той же ширины, что окно, но выше контента).
 */
-.modal-backdrop-erm--stacked {
-  z-index: 1140 !important;
+.modal.modal-erm {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
 }
 .modal.modal-erm--stacked {
-  z-index: 1150 !important;
+  z-index: var(--erm-modal-dialog-z, 1150) !important;
+}
+.modal-backdrop-erm--internal {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  pointer-events: none; /* клик ловит сам .modal */
+}
+.modal.modal-erm .modal-dialog {
+  position: relative;
+  z-index: 1;
+  margin: 1.75rem auto;
+  min-height: 0 !important;
+  height: auto;
+  display: block;
+  background: transparent;
+  pointer-events: auto;
+}
+.modal.modal-erm .modal-content {
+  background-color: #fff;
+  opacity: 1;
 }
 
 /* Product card overlay (non-modal, inside app chrome) */
@@ -289,11 +310,6 @@
   flex-wrap: wrap;
   margin-left: auto;
   flex-shrink: 0;
-}
-
-.purchase-detail-modal-title__save--hidden {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 /* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */

@@ -29,7 +29,7 @@ import { OrderCardActions, OrderDetailContent, OrderSummaryFromList, ManualOrder
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import { onNavigationClick } from '../../utils/navigationClick.js';
-import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
+import { getApiErrorMessage, PURCHASE_TIMEOUT_HINT } from '../../utils/apiErrorMessage.js';
 import {
   normalizeMarketplaceForUI,
   orderGroupKey,
@@ -1594,7 +1594,9 @@ export function Orders() {
       });
     } catch (e) {
       console.error('Ошибка «В закупку»:', e);
-      const msg = getApiErrorMessage(e, 'Не удалось оформить закупку и обновить заказ');
+      const msg = getApiErrorMessage(e, 'Не удалось оформить закупку и обновить заказ', {
+        timeoutHint: PURCHASE_TIMEOUT_HINT,
+      });
       showProcurementModalError(msg);
       setRefreshError(msg);
     } finally {
@@ -1692,7 +1694,9 @@ export function Orders() {
       applyProcurementListUi(toSend, { procurementUpdated: procUpdated, hasPurchase });
     } catch (e) {
       const details = e.response?.data?.details;
-      let msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
+      let msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку', {
+        timeoutHint: PURCHASE_TIMEOUT_HINT,
+      });
       const manualReason = details?.manualLines?.find((l) => l.manualReason)?.manualReason;
       if (manualReason && !msg.includes(manualReason)) {
         msg = `${msg}. ${manualReason}`;

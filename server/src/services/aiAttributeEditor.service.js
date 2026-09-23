@@ -224,7 +224,7 @@ class AiAttributeEditorService {
       model: settings.model,
       messages: [{ role: 'user', content: rules.join('\n') }],
       temperature: 0.25,
-      max_tokens: 3500,
+      max_tokens: 8000,
       function_call: { name: PROPOSE_FN },
       functions: [
         {

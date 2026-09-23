@@ -112,9 +112,10 @@ export function errorHandler(err, req, res, next) {
   } else if (err.code === 'ECONNREFUSED') {
     statusCode = 503;
     message = 'Database connection failed';
-  } else if (err.code === 'ENOTFOUND') {
+  } else if (err.code === 'ENOTFOUND' || /getaddrinfo ENOTFOUND/i.test(message)) {
     statusCode = 503;
-    message = 'Service unavailable';
+    message =
+      'Не удалось найти хост во внешней сети (DNS). Проверьте интернет, DNS или VPN и повторите.';
   }
 
   // Формируем ответ

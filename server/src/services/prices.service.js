@@ -541,6 +541,54 @@ class PricesService {
     };
   }
 
+  /** Money / number из ответов Ozon Actions v2 → число. */
+  _ozonMoneyAmount(v) {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'object') {
+      const a = v.amount ?? v.value;
+      if (a != null) {
+        const n = Number(a);
+        return Number.isFinite(n) ? n : null;
+      }
+    }
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  _normalizeOzonActionProduct(p) {
+    if (!p || typeof p !== 'object') return p;
+    const price = this._ozonMoneyAmount(p.price);
+    const actionPrice = this._ozonMoneyAmount(p.action_price);
+    const maxActionPrice = this._ozonMoneyAmount(p.max_action_price);
+    return {
+      ...p,
+      id: p.id != null && p.id !== '' ? Number(p.id) : p.id,
+      price: price != null ? price : p.price,
+      action_price: actionPrice != null ? actionPrice : p.action_price,
+      max_action_price: maxActionPrice != null ? maxActionPrice : p.max_action_price,
+    };
+  }
+
+  /** Разбор ответа /v2/actions/products|candidates (с result или без). */
+  _parseOzonActionsProductsResponse(data) {
+    const result =
+      data?.result && typeof data.result === 'object' && !Array.isArray(data.result)
+        ? data.result
+        : data || {};
+    const raw = Array.isArray(result.products)
+      ? result.products
+      : Array.isArray(data?.products)
+        ? data.products
+        : [];
+    const products = raw.map((p) => this._normalizeOzonActionProduct(p));
+    return {
+      products,
+      total: result.total != null ? result.total : data?.total != null ? data.total : products.length,
+      last_id: result.last_id || data?.last_id || '',
+    };
+  }
+
   async _fetchOzonActionsFromApiWithCreds(client_id, api_key) {
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
@@ -562,13 +610,12 @@ class PricesService {
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
     }
-    const response = await fetch('https://api-seller.ozon.ru/v1/actions/products', {
+    const response = await fetch('https://api-seller.ozon.ru/v2/actions/products', {
       method: 'POST',
       headers: this._ozonApiHeaders(client_id, api_key),
       body: JSON.stringify({
         action_id: Number(actionId),
         limit: Math.min(Number(limit) || 100, 100),
-        offset: 0,
         last_id: lastId || '',
       }),
     });
@@ -577,13 +624,12 @@ class PricesService {
       return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
     }
     const data = await response.json();
-    const result = data.result || {};
-    const products = Array.isArray(result.products) ? result.products : [];
+    const parsed = this._parseOzonActionsProductsResponse(data);
     return {
       ok: true,
-      products,
-      total: result.total != null ? result.total : products.length,
-      last_id: result.last_id || '',
+      products: parsed.products,
+      total: parsed.total,
+      last_id: parsed.last_id,
     };
   }
 
@@ -640,12 +686,13 @@ class PricesService {
     const batchSize = 100;
     for (let i = 0; i < unique.length; i += batchSize) {
       const chunk = unique.slice(i, i + batchSize);
-      const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/deactivate', {
+      const response = await fetch('https://api-seller.ozon.ru/v2/actions/products/deactivate', {
         method: 'POST',
         headers: this._ozonApiHeaders(client_id, api_key),
         body: JSON.stringify({
           action_id: Number(actionId),
-          product_ids: chunk,
+          // v2: product_ids — массив строк
+          product_ids: chunk.map(String),
         }),
       });
       if (!response.ok) {
@@ -869,33 +916,26 @@ class PricesService {
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
     }
-    const response = await fetch('https://api-seller.ozon.ru/v1/actions/candidates', {
+    const response = await fetch('https://api-seller.ozon.ru/v2/actions/candidates', {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Client-Id': String(client_id),
-        'Api-Key': String(api_key)
-      },
+      headers: this._ozonApiHeaders(client_id, api_key),
       body: JSON.stringify({
         action_id: Number(actionId),
         limit: Math.min(Number(limit) || 100, 100),
-        offset: 0,
-        last_id: lastId || ''
-      })
+        last_id: lastId || '',
+      }),
     });
     if (!response.ok) {
       const errorText = await response.text();
       return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
     }
     const data = await response.json();
-    const result = data.result || {};
-    const products = Array.isArray(result.products) ? result.products : [];
+    const parsed = this._parseOzonActionsProductsResponse(data);
     return {
       ok: true,
-      products,
-      total: result.total != null ? result.total : products.length,
-      last_id: result.last_id || ''
+      products: parsed.products,
+      total: parsed.total,
+      last_id: parsed.last_id,
     };
   }
 
@@ -1474,7 +1514,7 @@ class PricesService {
   }
 
   /**
-   * Один запрос товаров акции: POST /v1/actions/products
+   * Один запрос товаров акции: POST /v2/actions/products
    */
   async _fetchOzonActionProductsFromApi(actionId, limit = 100, lastId = '', options = {}) {
     const { client_id, api_key } = await this._getOzonApiCredentials(options);

@@ -218,7 +218,7 @@ async function callPropose(settings, { functionName, parameters, userContent }) 
     model: settings.model,
     messages: [{ role: 'user', content: userContent }],
     temperature: 0.3,
-    max_tokens: 3500,
+    max_tokens: 8000,
     function_call: { name: functionName },
     functions: [
       {

@@ -37,7 +37,7 @@ export function previewAiText(value, limit = 160) {
 export function formatAiChangesPreview(changes = []) {
   if (!changes?.length) return 'Модель не предложила изменений.';
   return changes
-    .map((c) => `• ${c.label || c.field}:\n${previewAiText(c.to, 240)}`)
+    .map((c) => `• ${c.label || c.field}:\n${String(c.to || '').trim() || '—'}`)
     .join('\n\n');
 }
 

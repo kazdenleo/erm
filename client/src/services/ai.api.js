@@ -36,7 +36,7 @@ export const aiApi = {
   },
 
   proposeProductCard: async (payload) => {
-    const response = await api.post('/ai/product-card/propose', payload, { timeout: 120000 });
+    const response = await api.post('/ai/product-card/propose', payload, { timeout: 180000 });
     return response.data?.data ?? response.data;
   },
 
@@ -46,7 +46,7 @@ export const aiApi = {
   },
 
   proposeAttributeEditor: async (payload) => {
-    const response = await api.post('/ai/attribute-editor/propose', payload, { timeout: 120000 });
+    const response = await api.post('/ai/attribute-editor/propose', payload, { timeout: 180000 });
     return response.data?.data ?? response.data;
   },
 

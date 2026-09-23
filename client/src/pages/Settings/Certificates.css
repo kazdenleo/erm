@@ -142,7 +142,32 @@
 }
 
 .certificates-table td button + button {
-  margin-left: 8px;
+  margin-left: 0;
+}
+
+.certificates-actions-cell {
+  width: 88px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.certificates-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.certificates-actions .btn-icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  line-height: 1;
 }
 
 .certificates-table .cell-strong {

@@ -3,8 +3,17 @@
  * Компонент модального окна
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+
+const STACK_BASE_MODAL = 1150;
+const STACK_STEP = 20;
+
+/** Сколько portaled-модалок уже в DOM (текущая ещё не смонтирована). */
+function countStackedModals() {
+  if (typeof document === 'undefined') return 0;
+  return document.querySelectorAll('.modal.modal-erm--stacked').length;
+}
 
 /** usePortal=true: рендер в body — вложенные модалки не ломаются из‑за родительского диалога. */
 export function Modal({
@@ -20,16 +29,35 @@ export function Modal({
   scrollable = false,
 }) {
   const modalRef = useRef(null);
+  const wasOpenRef = useRef(false);
+  const stackDepthRef = useRef(0);
+
+  // Глубину фиксируем в момент открытия (сколько модалок уже в DOM).
+  if (isOpen && usePortal && !wasOpenRef.current) {
+    stackDepthRef.current = countStackedModals();
+  }
+  if (!isOpen) {
+    stackDepthRef.current = 0;
+  }
+  wasOpenRef.current = Boolean(isOpen);
+
+  const stackDepth = isOpen && usePortal ? stackDepthRef.current : 0;
+  const zModal = STACK_BASE_MODAL + stackDepth * STACK_STEP;
 
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
     } else {
-      document.body.style.overflow = '';
+      // Не снимаем overflow, если ещё открыта другая модалка.
+      if (!document.querySelector('.modal.modal-erm.show')) {
+        document.body.style.overflow = '';
+      }
     }
 
     return () => {
-      document.body.style.overflow = '';
+      if (!document.querySelector('.modal.modal-erm.show')) {
+        document.body.style.overflow = '';
+      }
     };
   }, [isOpen]);
 
@@ -55,45 +83,52 @@ export function Modal({
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen, onClose, closeOnEscape, usePortal]);
 
+  const dialogSizeClass = useMemo(
+    () =>
+      size === 'small'
+        ? 'modal-sm'
+        : size === 'large'
+          ? 'modal-lg'
+          : size === 'xl'
+            ? 'modal-xl'
+            : size === 'full'
+              ? 'modal-fullscreen'
+              : '',
+    [size]
+  );
+
   if (!isOpen) return null;
 
-  const dialogSizeClass =
-    size === 'small' ? 'modal-sm' :
-      size === 'large' ? 'modal-lg' :
-        size === 'xl' ? 'modal-xl' :
-          size === 'full' ? 'modal-fullscreen' :
-            '';
-
   const content = (
-    <>
+    <div
+      ref={modalRef}
+      className={`modal fade show modal-erm${usePortal ? ' modal-erm--stacked' : ''}`}
+      style={{
+        display: 'block',
+        ...(usePortal ? { ['--erm-modal-dialog-z']: String(zModal) } : null),
+      }}
+      role="dialog"
+      aria-modal="true"
+      data-erm-size={size}
+      data-erm-stack={usePortal ? String(stackDepth) : undefined}
+      onMouseDown={closeOnBackdropClick ? onClose : undefined}
+    >
+      {/* Затемнение внутри модалки — всегда под .modal-dialog, без «двойных» полей */}
+      <div className="modal-backdrop-erm modal-backdrop-erm--internal" aria-hidden />
       <div
-        className={`modal-backdrop fade show modal-backdrop-erm${usePortal ? ' modal-backdrop-erm--stacked' : ''}`}
-        aria-hidden
-      />
-      <div
-        ref={modalRef}
-        className={`modal fade show modal-erm${usePortal ? ' modal-erm--stacked' : ''}`}
-        style={{ display: 'block' }}
-        role="dialog"
-        aria-modal="true"
-        data-erm-size={size}
-        onMouseDown={closeOnBackdropClick ? onClose : undefined}
+        className={`modal-dialog ${dialogSizeClass}${scrollable ? ' modal-dialog-scrollable' : ''}`}
+        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div
-          className={`modal-dialog modal-dialog-centered ${dialogSizeClass}${scrollable ? ' modal-dialog-scrollable' : ''}`}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="modal-content">
-            <div className="modal-header">
-              <h5 className="modal-title">{title}</h5>
-              {headerExtra ? <div className="modal-header-extra">{headerExtra}</div> : null}
-              <button type="button" className="btn-close" aria-label="Close" onClick={onClose} />
-            </div>
-            <div className="modal-body">{children}</div>
+        <div className="modal-content">
+          <div className="modal-header">
+            <h5 className="modal-title">{title}</h5>
+            {headerExtra ? <div className="modal-header-extra">{headerExtra}</div> : null}
+            <button type="button" className="btn-close" aria-label="Close" onClick={onClose} />
           </div>
+          <div className="modal-body">{children}</div>
         </div>
       </div>
-    </>
+    </div>
   );
 
   if (usePortal && typeof document !== 'undefined') {

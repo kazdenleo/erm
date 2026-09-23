@@ -22,7 +22,7 @@ export function filterContextForAttrEditor(draft, contextKeys, fieldDefs = DEFAU
 export function formatAttrEditorChangesPreview(changes = []) {
   if (!changes?.length) return 'Модель не предложила изменений.';
   return changes
-    .map((c) => `• ${c.label || c.field}:\n${String(c.to || '').slice(0, 400)}`)
+    .map((c) => `• ${c.label || c.field}:\n${String(c.to || '')}`)
     .join('\n\n');
 }
 

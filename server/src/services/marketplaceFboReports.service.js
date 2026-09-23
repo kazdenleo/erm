@@ -9,6 +9,7 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { extractOzonFinanceAmounts } from '../utils/ozonFinanceReportAmounts.js';
+import { fetchOzonFinanceAccrualOperations } from '../utils/ozonFinanceAccrualFetch.js';
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
 import { buildOrderBreakdownFromLines, buildAmountTooltips } from '../utils/marketplaceReportBreakdown.js';
@@ -1252,56 +1253,17 @@ async function fetchWbReportDetailByPeriod(apiKey, dateFrom, dateTo) {
   return allRows;
 }
 
-async function fetchOzonFinanceTransactionsChunk({ clientId, apiKey, dateFrom, dateTo }) {
-  const cid = String(clientId || '').trim();
-  const key = String(apiKey || '').trim();
-  if (!cid || !key) throw new Error('Не настроены Client-Id / Api-Key Ozon');
-
-  const allOps = [];
-  let page = 1;
-  const pageSize = 1000;
-
-  for (let guard = 0; guard < 100; guard += 1) {
-    const response = await fetch('https://api-seller.ozon.ru/v3/finance/transaction/list', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'Client-Id': cid,
-        'Api-Key': key,
-      },
-      body: JSON.stringify({
-        filter: {
-          date: { from: `${dateFrom}T00:00:00.000Z`, to: `${dateTo}T23:59:59.999Z` },
-          operation_type: [],
-          posting_number: '',
-          transaction_type: 'all',
-        },
-        page,
-        page_size: pageSize,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ozon finance/transaction/list: ${response.status} ${(await response.text().catch(() => '')).slice(0, 300)}`);
-    }
-
-    const data = await response.json();
-    const ops = data?.result?.operations;
-    const chunk = Array.isArray(ops) ? ops : [];
-    allOps.push(...chunk);
-    if (chunk.length < pageSize) break;
-    page += 1;
-  }
-
-  return allOps;
-}
-
+/** Ozon finance: /v1/finance/accrual/* (вместо отключённого v3/transaction/list). */
 async function fetchOzonFinanceTransactions({ clientId, apiKey, dateFrom, dateTo }) {
   const monthChunks = splitDateRangeByCalendarMonth(dateFrom, dateTo);
   const allOps = [];
   for (const chunk of monthChunks) {
-    const ops = await fetchOzonFinanceTransactionsChunk({ clientId, apiKey, ...chunk });
+    const ops = await fetchOzonFinanceAccrualOperations({
+      clientId,
+      apiKey,
+      dateFrom: chunk.dateFrom,
+      dateTo: chunk.dateTo,
+    });
     allOps.push(...ops);
   }
   return allOps;

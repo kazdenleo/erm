@@ -48,7 +48,7 @@ export function categorizeOzonOperationKind(operationType) {
 
 /** @param {object} op — строка Ozon Finance API или raw_json из БД */
 export function extractOzonFinanceAmounts(op) {
-  const operationType = op?.operation_type ?? op?.type ?? null;
+  const operationType = op?.operation_type ?? op?.accrued_category ?? op?.type ?? null;
   const kind = categorizeOzonOperationKind(operationType);
   const amount = toNum(op?.amount);
 

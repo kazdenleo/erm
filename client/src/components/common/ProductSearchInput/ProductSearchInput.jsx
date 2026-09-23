@@ -50,6 +50,8 @@ export function ProductSearchInput({
   inputRef = null,
   minQueryLength = 1,
   autoSelectSingleScan = false,
+  /** Enter / автоскан, если поиск ничего не нашёл (ШК, КИ). */
+  onNoMatch = null,
   renderOption = null,
   leadingOption = null,
   onEscape = null,
@@ -59,6 +61,8 @@ export function ProductSearchInput({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const lastAutoSelectKeyRef = useRef('');
+  const onNoMatchRef = useRef(onNoMatch);
+  onNoMatchRef.current = onNoMatch;
 
   const q = normalizeProductSearchQuery(value);
   const showQuery = q.length >= minQueryLength;
@@ -96,14 +100,18 @@ export function ProductSearchInput({
         if (cancelled) return;
         setResults(merged);
         setActiveIndex(merged.length > 0 ? 0 : -1);
-        if (
-          autoSelectSingleScan &&
-          merged.length === 1 &&
-          isLikelyBarcodeScan(q) &&
-          lastAutoSelectKeyRef.current !== q
-        ) {
-          lastAutoSelectKeyRef.current = q;
-          pickProduct(merged[0]);
+        if (autoSelectSingleScan && lastAutoSelectKeyRef.current !== q) {
+          if (merged.length === 1 && isLikelyBarcodeScan(q)) {
+            lastAutoSelectKeyRef.current = q;
+            pickProduct(merged[0]);
+          } else if (
+            merged.length === 0 &&
+            isLikelyBarcodeScan(q) &&
+            typeof onNoMatchRef.current === 'function'
+          ) {
+            lastAutoSelectKeyRef.current = q;
+            onNoMatchRef.current(q);
+          }
         }
       } catch {
         if (!cancelled) {
@@ -167,7 +175,13 @@ export function ProductSearchInput({
         return;
       }
       const exact = findExactMatch(results, q);
-      if (exact) pickProduct(exact);
+      if (exact) {
+        pickProduct(exact);
+        return;
+      }
+    }
+    if (results.length === 0 && q && typeof onNoMatchRef.current === 'function') {
+      onNoMatchRef.current(q);
     }
   };
 

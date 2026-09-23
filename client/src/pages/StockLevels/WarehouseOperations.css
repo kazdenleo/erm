@@ -506,6 +506,33 @@
   text-align: center;
 }
 
+/* Приёмка закупки: числовые колонки (цена, ожидается, было, принято, коробкой) */
+.warehouse-ops-receipt-list-table--purchase-scan .warehouse-ops-receipt-num {
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  width: 1%;
+}
+
+.warehouse-ops-receipt-list-table--purchase-scan .warehouse-ops-receipt-num .warehouse-ops-qty-input {
+  display: block;
+  margin: 0 auto;
+  width: 72px;
+  text-align: center;
+}
+
+.warehouse-ops-receipt-list-table--purchase-scan .warehouse-ops-receipt-num--price {
+  min-width: 168px;
+  width: 168px;
+}
+
+.warehouse-ops-receipt-list-table--purchase-scan
+  .warehouse-ops-receipt-num--price
+  .warehouse-ops-qty-input.warehouse-ops-qty-input--price {
+  width: 148px;
+  max-width: none;
+}
+
 .warehouse-ops-remove-btn {
   padding: 4px 8px;
   font-size: 14px;

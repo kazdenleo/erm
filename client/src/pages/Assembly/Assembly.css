@@ -211,6 +211,18 @@
   text-align: left;
 }
 
+.assembly-col-order-id,
+.assembly-col-sticker {
+  min-width: 11.5rem;
+  width: 1%;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.assembly-col-order-id .assembly-order-link {
+  white-space: nowrap;
+}
+
 .assembly-order-link {
   color: var(--primary, #0d6efd);
   text-decoration: none;
@@ -291,6 +303,17 @@ button.assembly-label-link {
 .assembly-row-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.assembly-action-btn.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  line-height: 1;
 }

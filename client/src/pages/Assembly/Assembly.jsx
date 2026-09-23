@@ -66,6 +66,65 @@ const marketplaceLabels = [
   { code: 'yandex', name: 'Яндекс.Маркет', icon: '🔴', badgeClass: 'ym', shortLabel: 'YM' },
 ];
 
+function AssemblyCheckIcon({ size = 18 }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function AssemblyUndoIcon({ size = 18 }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 10h10a5 5 0 0 1 0 10H9" />
+      <path d="M7 6 3 10l4 4" />
+    </svg>
+  );
+}
+
+function AssemblyWaitIcon({ size = 18 }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
 /**
  * Страница /orders/.../label/print сама вызывает печать после загрузки.
  * window.open после async (скан → markCollected → печать) часто блокируется; iframe — нет.
@@ -1323,11 +1382,11 @@ export function Assembly() {
             <thead>
               <tr>
                 <th>Маркетплейс</th>
-                <th>ID заказа</th>
+                <th className="assembly-col-order-id">ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
                 <th>Состав</th>
-                <th>Стикер</th>
+                <th className="assembly-col-sticker">Стикер</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -1344,7 +1403,7 @@ export function Assembly() {
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
-                    <td>
+                    <td className="assembly-col-order-id">
                       <Link
                         to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(apiOrderId || primary.orderId)}`}
                         className="assembly-order-link"
@@ -1412,6 +1471,7 @@ export function Assembly() {
                         <Button
                           variant="primary"
                           size="small"
+                          className="assembly-action-btn"
                           onClick={() => handleManualAssembleFromTable(primary)}
                           disabled={
                             isReturnLoading ||
@@ -1423,17 +1483,24 @@ export function Assembly() {
                             orderRequiresMarketplaceLabel(primary) &&
                             labelReadyByOrderId?.[String(primary.orderId)] !== true
                               ? labelNotReadyAssemblyMessage(primary.marketplace)
-                              : 'Отметить заказ собранным без сканирования и напечатать этикетку'
+                              : 'Собрать — отметить заказ собранным без сканирования и напечатать этикетку'
+                          }
+                          aria-label={
+                            orderRequiresMarketplaceLabel(primary) &&
+                            labelReadyByOrderId?.[String(primary.orderId)] !== true
+                              ? 'Ожидание этикетки'
+                              : 'Собрать'
                           }
                         >
                           {orderRequiresMarketplaceLabel(primary) &&
                           labelReadyByOrderId?.[String(primary.orderId)] !== true
-                            ? '⏳ Этикетка…'
-                            : '✓ Собрать'}
+                            ? <AssemblyWaitIcon />
+                            : <AssemblyCheckIcon />}
                         </Button>
                         <Button
                           variant="secondary"
                           size="small"
+                          className="assembly-action-btn"
                           onClick={() =>
                             handleReturnToNew(
                               primary.marketplace,
@@ -1442,9 +1509,10 @@ export function Assembly() {
                             )
                           }
                           disabled={isReturnLoading || finishScanSubmitting}
-                          title="Вернуть заказ в статус «Новый»"
+                          title="Вернуть в новые"
+                          aria-label="Вернуть в новые"
                         >
-                          {isReturnLoading ? '...' : '↩️ Вернуть в новые'}
+                          {isReturnLoading ? '…' : <AssemblyUndoIcon />}
                         </Button>
                       </div>
                     </td>
@@ -1476,13 +1544,13 @@ export function Assembly() {
             <thead>
               <tr>
                 <th>Маркетплейс</th>
-                <th>ID заказа</th>
+                <th className="assembly-col-order-id">ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
                 <th>Состав</th>
                 <th>Собран</th>
                 <th>Собрал</th>
-                <th>Стикер</th>
+                <th className="assembly-col-sticker">Стикер</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -1507,7 +1575,7 @@ export function Assembly() {
                 return (
                   <tr key={groupKey}>
                     <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : mp}</td>
-                    <td>
+                    <td className="assembly-col-order-id">
                       <Link
                         to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(stickerOrderId)}`}
                         className="assembly-order-link"
