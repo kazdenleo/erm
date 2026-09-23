@@ -574,6 +574,11 @@
   max-width: 420px;
 }
 
+.fbo-collect-panel .fbo-packed-cell {
+  cursor: default;
+  text-decoration: none;
+}
+
 .fbo-collect-panel code {
   color: #0f172a;
   font-size: inherit;
