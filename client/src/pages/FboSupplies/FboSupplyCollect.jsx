@@ -351,12 +351,6 @@ export function FboSupplyCollect({
             </select>
           </label>
         </div>
-        <div className="fbo-collect-summary muted-hint">
-          Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
-          {state?.itemCount != null
-            ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
-            : null}
-        </div>
       </div>
 
       <div
@@ -378,6 +372,12 @@ export function FboSupplyCollect({
               onScan={(code) => doScan(code)}
               enableGlobalCapture
             />
+            <div className="fbo-collect-summary muted-hint">
+              Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
+              {state?.itemCount != null
+                ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
+                : null}
+            </div>
           </div>
 
           {nextItem ? (
