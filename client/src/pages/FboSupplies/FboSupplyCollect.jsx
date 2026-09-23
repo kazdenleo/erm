@@ -162,13 +162,11 @@ export function FboSupplyCollect({
     }
     if (lastScannedItemId == null) return list;
     const topId = Number(lastScannedItemId);
-    const top = [];
-    const rest = [];
-    for (const it of list) {
-      if (Number(it.id) === topId) top.push(it);
-      else rest.push(it);
-    }
-    return top.length ? [...top, ...rest] : list;
+    const pinned = list.find((it) => Number(it.id) === topId);
+    // Полностью собранные (2/2) не держим сверху — уходят вниз по серверному порядку.
+    if (!pinned || pinned.complete) return list;
+    const rest = list.filter((it) => Number(it.id) !== topId);
+    return [pinned, ...rest];
   }, [items, itemSearchQuery, searchActive, categoryFilter, lastScannedItemId]);
 
   const nextItem = useMemo(() => {
@@ -225,7 +223,12 @@ export function FboSupplyCollect({
     async (data, printSlot = null) => {
       if (data?.state) setState(data.state);
       if (data?.item?.id != null) {
-        setLastScannedItemId(Number(data.item.id));
+        // Вверху только незавершённые (1/2); готовые (2/2) сразу отпускаем вниз.
+        if (data.item.complete) {
+          setLastScannedItemId(null);
+        } else {
+          setLastScannedItemId(Number(data.item.id));
+        }
       }
       const collected = data?.item?.collected;
       const planned = data?.item?.planned;
