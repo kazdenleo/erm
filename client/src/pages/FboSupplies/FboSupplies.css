@@ -574,11 +574,6 @@
   max-width: 420px;
 }
 
-.fbo-collect-kit-progress {
-  font-size: 12px;
-  margin-top: 2px;
-}
-
 .fbo-collect-panel code {
   color: #0f172a;
   font-size: inherit;

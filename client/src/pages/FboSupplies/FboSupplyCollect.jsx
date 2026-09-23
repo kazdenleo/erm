@@ -401,7 +401,7 @@ export function FboSupplyCollect({
               <th>Артикул</th>
               <th>Товар</th>
               <th>Комплектующие</th>
-              <th className="text-end">Собрано / нужно</th>
+              <th className="text-center">Собрано / нужно</th>
               <th className="text-center" style={{ width: 52 }}>
                 Печать
               </th>
@@ -456,15 +456,10 @@ export function FboSupplyCollect({
                         <span className="text-muted">—</span>
                       )}
                     </td>
-                    <td className="text-end">
+                    <td className="text-center">
                       <span className={`fbo-packed-cell fbo-packed-cell--${cls}`}>
                         {it.collected} / {it.planned}
                       </span>
-                      {it.isKit && it.kitProgress && it.kitProgress.needPieces > 0 && !it.complete ? (
-                        <div className="fbo-collect-kit-progress muted-hint">
-                          к комплекту: {it.kitProgress.scannedPieces}/{it.kitProgress.needPieces}
-                        </div>
-                      ) : null}
                     </td>
                     <td className="text-center">
                       <button
