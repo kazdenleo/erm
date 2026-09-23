@@ -65,6 +65,7 @@ export function parsePricePushSettings(raw) {
   const src = parseObject(raw);
   const scopeRaw = String(src.scope || PRICE_PUSH_SCOPE_ALL).trim();
   const scope = SCOPES.has(scopeRaw) ? scopeRaw : PRICE_PUSH_SCOPE_ALL;
+  // Обе схемы могут быть выключены — «не отправлять цены на МП» по схемам.
   const pushFbs = parseBoolFlag(src.pushFbs ?? src.push_fbs, true);
   const pushFbo = parseBoolFlag(src.pushFbo ?? src.push_fbo, true);
   return {
@@ -72,8 +73,8 @@ export function parsePricePushSettings(raw) {
     categoryIds: parseCategoryIdList(src.categoryIds),
     productIds: parsePositiveIntList(src.productIds),
     excludeProductIds: parsePositiveIntList(src.excludeProductIds ?? src.exclude_product_ids),
-    pushFbs: pushFbs || !pushFbo,
-    pushFbo: pushFbo || !pushFbs,
+    pushFbs,
+    pushFbo,
     minMarkupRules: parseMinMarkupRules(src.minMarkupRules ?? src.min_markup_rules),
     highDrrPercent: clampHighDrrPercent(
       src.highDrrPercent ?? src.high_drr_percent,
@@ -116,10 +117,6 @@ export function mergePricePushSettings(current, incoming) {
       patch.highDrrPercent ?? patch.high_drr_percent,
       next.highDrrPercent
     );
-  }
-
-  if (!next.pushFbs && !next.pushFbo) {
-    next.pushFbs = true;
   }
 
   if (next.scope === PRICE_PUSH_SCOPE_CATEGORIES && !next.categoryIds.length) {
@@ -249,10 +246,17 @@ function describeCategoryIds(categoryIds, categoryNamesById = {}) {
 
 export function describePricePushSchemes(settings) {
   const s = parsePricePushSettings(settings);
+  if (!s.pushFbs && !s.pushFbo) return 'не отправлять (FBS и FBO выкл.)';
   if (s.pushFbs && s.pushFbo) return 'мин. цены FBS и FBO';
   if (s.pushFbs) return 'мин. цены FBS';
   if (s.pushFbo) return 'мин. цены FBO';
   return 'мин. цены';
+}
+
+/** Есть ли хотя бы одна схема для отправки цен на МП. */
+export function hasPricePushSchemeEnabled(settings) {
+  const s = parsePricePushSettings(settings);
+  return s.pushFbs === true || s.pushFbo === true;
 }
 
 /**

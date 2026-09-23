@@ -810,6 +810,14 @@ export async function pushForProduct(productId) {
   profileIdForSettings = peek?.profile_id ?? null;
   const pushSchemes = await loadProfilePushSchemes(profileIdForSettings);
 
+  if (!pushSchemes.pushFbs && !pushSchemes.pushFbo) {
+    return {
+      skipped: true,
+      reason: 'schemes_disabled',
+      productId: Number(productId),
+    };
+  }
+
   // Область из «Цены → Настройки»: schedule после пересчёта / push-one
   // раньше игнорировали список товаров и пушили любой SKU с auto_push org.
   if (Number.isFinite(Number(profileIdForSettings)) && Number(profileIdForSettings) > 0) {

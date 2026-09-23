@@ -1,7 +1,9 @@
 import {
   filtersFromPricePushSettings,
+  mergePricePushSettings,
   parsePricePushSettings,
   PRICE_PUSH_SCOPE_CATEGORIES_AND_PRODUCTS,
+  hasPricePushSchemeEnabled,
   isProductInPricePushScope,
   resolvePushFloorForMarketplace,
 } from '../src/utils/pricePushSettings.js';
@@ -11,6 +13,25 @@ describe('pricePushSettings', () => {
     const s = parsePricePushSettings({});
     expect(s.pushFbs).toBe(true);
     expect(s.pushFbo).toBe(true);
+  });
+
+  it('allows both FBS and FBO schemes disabled (do not push prices)', () => {
+    const s = parsePricePushSettings({ pushFbs: false, pushFbo: false });
+    expect(s.pushFbs).toBe(false);
+    expect(s.pushFbo).toBe(false);
+    expect(hasPricePushSchemeEnabled(s)).toBe(false);
+    const merged = mergePricePushSettings({ pushFbs: true, pushFbo: true }, {
+      pushFbs: false,
+      pushFbo: false,
+    });
+    expect(merged.pushFbs).toBe(false);
+    expect(merged.pushFbo).toBe(false);
+  });
+
+  it('resolvePushFloorForMarketplace returns null when both schemes off', () => {
+    const row = { min_price: 1000, min_price_fbs: 1100, min_price_fbo: 1200 };
+    expect(resolvePushFloorForMarketplace(row, 'ozon', { pushFbs: false, pushFbo: false })).toBe(null);
+    expect(resolvePushFloorForMarketplace(row, 'wb', { pushFbs: false, pushFbo: false })).toBe(null);
   });
 
   it('resolvePushFloorForMarketplace uses FBS on Ozon when only FBS selected', () => {

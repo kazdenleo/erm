@@ -58,9 +58,12 @@ function buildScopePayload(
 function buildScopeSummaryText(settings) {
   if (!settings) return 'по сохранённым настройкам';
   const schemeParts = [];
-  if (settings.pushFbs !== false) schemeParts.push('FBS');
-  if (settings.pushFbo !== false) schemeParts.push('FBO');
-  const schemeText = schemeParts.length ? schemeParts.join(' + ') : 'FBS';
+  if (settings.pushFbs === true) schemeParts.push('FBS');
+  if (settings.pushFbo === true) schemeParts.push('FBO');
+  if (!schemeParts.length) {
+    return 'не отправлять цены на маркетплейсы (FBS и FBO выкл.)';
+  }
+  const schemeText = schemeParts.join(' + ');
   let scopeText = 'все товары организаций с включённой отправкой';
   if (settings.scope === 'categories_and_products' && settings.categoryIds?.length && settings.productIds?.length) {
     scopeText = `${settings.categoryIds.length} категор(ий), ${settings.productIds.length} товар(ов)`;
@@ -327,22 +330,26 @@ export function PricesPushSettingsPanel({
 
   const hasEnabledOrg = orgList.some((o) => o.autoPushMarketplacePrices === true);
 
-  const canSaveScope =
-    (showFbsOption ? pushFbs : false) || (showFboOption ? pushFbo : false)
-      ? scope === SCOPES.all ||
-        (scope === SCOPES.categories && pickedCategoryIds.size > 0) ||
-        (scope === SCOPES.products && selectedProducts.length > 0) ||
-        (scope === SCOPES.categoriesAndProducts &&
-          pickedCategoryIds.size > 0 &&
-          selectedProducts.length > 0)
-      : false;
+  const hasScheme =
+    (showFbsOption ? pushFbs === true : false) || (showFboOption ? pushFbo === true : false);
 
-  const canPushNow = canSaveScope && hasEnabledOrg && typeof onPushNow === 'function';
+  const scopeValid =
+    scope === SCOPES.all ||
+    (scope === SCOPES.categories && pickedCategoryIds.size > 0) ||
+    (scope === SCOPES.products && selectedProducts.length > 0) ||
+    (scope === SCOPES.categoriesAndProducts &&
+      pickedCategoryIds.size > 0 &&
+      selectedProducts.length > 0);
+
+  // Обе схемы выкл. — валидный режим «не отправлять»; область тогда не обязательна.
+  const canSaveScope = hasScheme ? scopeValid : true;
+
+  const canPushNow = canSaveScope && hasScheme && hasEnabledOrg && typeof onPushNow === 'function';
 
   const pushDisabledReason = (() => {
     if (!hasEnabledOrg) return 'Включите отправку хотя бы для одной организации.';
-    if (!(showFbsOption ? pushFbs : false) && !(showFboOption ? pushFbo : false)) {
-      return 'Выберите хотя бы одну схему (FBS или FBO).';
+    if (!hasScheme) {
+      return 'FBS и FBO выключены — цены на маркетплейсы не отправляются. Включите хотя бы одну схему или оставьте так, если пуш не нужен.';
     }
     if (scope === SCOPES.categories && pickedCategoryIds.size === 0) {
       return 'Выберите хотя бы одну категорию.';
@@ -588,8 +595,8 @@ export function PricesPushSettingsPanel({
           </div>
         )}
         <p className="text-muted small mt-2 mb-0">
-          Если выключено, система не меняет цены на МП для товаров этой организации
-          (ни при пересчёте минимума, ни по расписанию).
+          Если выключено у организации — цены этой организации на МП не меняются. Чтобы полностью
+          отключить пуш по схемам FBS/FBO, выключите оба переключателя ниже.
         </p>
       </div>
 
@@ -629,9 +636,15 @@ export function PricesPushSettingsPanel({
             )}
           </div>
           <p className="text-muted small mt-2 mb-0">
-            На карточке маркетплейса одна цена. Если выбраны обе схемы — отправляется максимум из
-            выбранных мин. цен, чтобы не опуститься ниже любого из порогов.
+            Можно выключить обе схемы — тогда цены на маркетплейсы не отправляются (ни вручную, ни по
+            расписанию). Если выбраны обе — на карточке уходит максимум из мин. цен FBS и FBO, чтобы
+            не опуститься ниже любого порога.
           </p>
+          {!hasScheme && (
+            <p className="small mt-2 mb-0" style={{ color: 'var(--warning, #eab308)' }}>
+              Отправка цен выключена: ни FBS, ни FBO не выбраны.
+            </p>
+          )}
         </div>
       )}
 
@@ -810,8 +823,9 @@ export function PricesPushSettingsPanel({
           {canSaveScope ? currentScopeSummary : 'настройте область отправки выше'}
         </p>
         <p className="text-muted small mb-2">
-          По расписанию цены отправляются автоматически. Нажмите кнопку ниже, чтобы отправить
-          сейчас по выбранным настройкам.
+          {hasScheme
+            ? 'По расписанию цены отправляются автоматически. Нажмите кнопку ниже, чтобы отправить сейчас по выбранным настройкам.'
+            : 'Схемы FBS/FBO выключены — автоматическая и ручная отправка цен на МП не выполняются. Включите схему или сохраните настройки как есть.'}
         </p>
         <Button
           type="button"
