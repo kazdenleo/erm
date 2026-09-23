@@ -72,6 +72,7 @@ export function FboSupplyCollect({
   supplyId,
   marketplace = 'ozon',
   itemSearchQuery = '',
+  onItemSearchQueryChange,
   printHelperUrl = '',
 }) {
   const [state, setState] = useState(null);
@@ -82,6 +83,7 @@ export function FboSupplyCollect({
   const [overagePrompt, setOveragePrompt] = useState(null);
   const [manualPrintingId, setManualPrintingId] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [lastScannedItemId, setLastScannedItemId] = useState(null);
   const scanLockRef = useRef(false);
   const { printProductLabel, printing, error: printHookError, setError: setPrintHookError } =
     useProductLabelPrint(printHelperUrl);
@@ -111,6 +113,7 @@ export function FboSupplyCollect({
 
   useEffect(() => {
     load({ resetPartialProgress: true });
+    setLastScannedItemId(null);
   }, [load]);
 
   useEffect(() => {
@@ -154,9 +157,19 @@ export function FboSupplyCollect({
         return String(it.productCategoryId) === categoryFilter;
       });
     }
-    if (!searchActive) return list;
-    return filterSupplyItemsByQuery(list, itemSearchQuery);
-  }, [items, itemSearchQuery, searchActive, categoryFilter]);
+    if (searchActive) {
+      list = filterSupplyItemsByQuery(list, itemSearchQuery);
+    }
+    if (lastScannedItemId == null) return list;
+    const topId = Number(lastScannedItemId);
+    const top = [];
+    const rest = [];
+    for (const it of list) {
+      if (Number(it.id) === topId) top.push(it);
+      else rest.push(it);
+    }
+    return top.length ? [...top, ...rest] : list;
+  }, [items, itemSearchQuery, searchActive, categoryFilter, lastScannedItemId]);
 
   const nextItem = useMemo(() => {
     // Приоритет — комплект, который уже начали (частичный прогресс комплектующих).
@@ -211,6 +224,9 @@ export function FboSupplyCollect({
   const applyScanResult = useCallback(
     async (data, printSlot = null) => {
       if (data?.state) setState(data.state);
+      if (data?.item?.id != null) {
+        setLastScannedItemId(Number(data.item.id));
+      }
       const collected = data?.item?.collected;
       const planned = data?.item?.planned;
       const sku = data?.item?.sku || data?.print?.title || '';
@@ -335,21 +351,36 @@ export function FboSupplyCollect({
             ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
             : null}
         </div>
-        <label className="fbo-collect-category-filter">
-          <span className="muted-hint">Категория</span>
-          <select
-            className="form-select form-select-sm"
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <option value="">Все категории</option>
-            {categoryOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="fbo-collect-filters">
+          <label className="fbo-collect-category-filter">
+            <span className="muted-hint">Категория</span>
+            <select
+              className="form-select form-select-sm"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <option value="">Все категории</option>
+              {categoryOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="fbo-collect-search-filter">
+            <span className="muted-hint">Поиск</span>
+            <input
+              type="search"
+              className="form-control form-control-sm"
+              value={itemSearchQuery}
+              onChange={(e) => onItemSearchQueryChange?.(e.target.value)}
+              placeholder="Артикул, название или штрихкод"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Поиск в списке сбора этикеток"
+            />
+          </label>
+        </div>
       </div>
 
       <div className="fbo-packing-scan-row">

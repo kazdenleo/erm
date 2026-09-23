@@ -1130,26 +1130,14 @@ export function FboSupplyDetail() {
           </span>
         ) : null}
       </div>
-      ) : (
-      <div className="fbo-supply-item-search">
-        <input
-          type="search"
-          className="form-control form-control-sm fbo-supply-item-search__input"
-          value={itemSearchQuery}
-          onChange={(e) => setItemSearchQuery(e.target.value)}
-          placeholder="Фильтр списка этикеток: название, артикул или штрихкод"
-          autoComplete="off"
-          spellCheck={false}
-          aria-label="Поиск в списке сбора этикеток"
-        />
-      </div>
-      )}
+      ) : null}
 
       {activeTab === 'collect' ? (
         <FboSupplyCollect
           supplyId={id}
           marketplace={supply?.marketplace}
           itemSearchQuery={itemSearchQuery}
+          onItemSearchQueryChange={setItemSearchQuery}
           printHelperUrl={printHelperUrl}
         />
       ) : null}
