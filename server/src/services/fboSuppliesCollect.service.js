@@ -132,6 +132,17 @@ export function kitComponentStillNeeded(progress, aggregatedComponents, componen
   return got < need;
 }
 
+/** Тестовые хелперы sticky per-user (in-memory). */
+export const collectStickyTestApi = {
+  setUserSticky,
+  getUserStickyItemId,
+  clearUserSticky,
+  clearStickiesForSupplyItem,
+  resetAll() {
+    collectStickyByKey.clear();
+  },
+};
+
 function mapItemCollectRow(row, kitMeta = null) {
   const planned = Math.max(0, parseInt(row.quantity, 10) || 0);
   const collected = Math.max(0, parseInt(row.collected_quantity, 10) || 0);
@@ -209,9 +220,13 @@ const ITEM_SELECT = `
 const COLLECT_PRESENCE_TTL_MS = 90_000;
 const collectPresenceByKey = new Map();
 
-function touchCollectPresence(supplyId, { userId, userName } = {}) {
+/** Sticky-комплект на пользователя (in-memory): чужой незакрытый набор не блокирует. */
+const COLLECT_STICKY_TTL_MS = 8 * 60 * 60 * 1000;
+const collectStickyByKey = new Map();
+
+function collectActorKey(supplyId, { userId, userName } = {}) {
   const sid = Number(supplyId);
-  if (!Number.isFinite(sid) || sid <= 0) return;
+  if (!Number.isFinite(sid) || sid <= 0) return null;
   const uid = normalizeUserId(userId);
   const uname =
     userName != null && String(userName).trim() !== ''
@@ -219,12 +234,22 @@ function touchCollectPresence(supplyId, { userId, userName } = {}) {
       : uid != null
         ? `Пользователь #${uid}`
         : null;
-  if (uid == null && !uname) return;
-  const key = `${sid}:${uid != null ? uid : uname}`;
-  collectPresenceByKey.set(key, {
+  if (uid == null && !uname) return null;
+  return {
+    key: `${sid}:${uid != null ? uid : uname}`,
     supplyId: sid,
     userId: uid,
     userName: uname || 'Сотрудник',
+  };
+}
+
+function touchCollectPresence(supplyId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  if (!actor) return;
+  collectPresenceByKey.set(actor.key, {
+    supplyId: actor.supplyId,
+    userId: actor.userId,
+    userName: actor.userName,
     at: Date.now(),
   });
 }
@@ -246,6 +271,84 @@ function listCollectPresence(supplyId) {
     });
   }
   return out;
+}
+
+function getUserStickyItemId(supplyId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  if (!actor) return null;
+  const row = collectStickyByKey.get(actor.key);
+  if (!row) return null;
+  if (Date.now() - Number(row.at || 0) > COLLECT_STICKY_TTL_MS) {
+    collectStickyByKey.delete(actor.key);
+    return null;
+  }
+  const id = Number(row.supplyItemId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function setUserSticky(supplyId, supplyItemId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  const itemId = Number(supplyItemId);
+  if (!actor || !Number.isFinite(itemId) || itemId <= 0) return;
+  collectStickyByKey.set(actor.key, {
+    supplyId: actor.supplyId,
+    supplyItemId: itemId,
+    at: Date.now(),
+  });
+}
+
+function clearUserSticky(supplyId, { userId, userName } = {}) {
+  const actor = collectActorKey(supplyId, { userId, userName });
+  if (!actor) return;
+  collectStickyByKey.delete(actor.key);
+}
+
+/** Снять sticky у всех, кто держал эту строку (комплект закрыт / прогресс сброшен). */
+function clearStickiesForSupplyItem(supplyId, supplyItemId) {
+  const sid = Number(supplyId);
+  const itemId = Number(supplyItemId);
+  if (!Number.isFinite(sid) || !Number.isFinite(itemId)) return;
+  for (const [key, row] of collectStickyByKey) {
+    if (!row || Number(row.supplyId) !== sid) continue;
+    if (Number(row.supplyItemId) === itemId) collectStickyByKey.delete(key);
+  }
+}
+
+/** Sticky текущего пользователя, только если у строки ещё есть незакрытый прогресс. */
+async function loadUserStickyItem(supplyId, { userId, userName } = {}) {
+  const stickyId = getUserStickyItemId(supplyId, { userId, userName });
+  if (stickyId == null) return null;
+  const r = await query(
+    `SELECT ${ITEM_SELECT}
+     FROM fbo_supply_items i
+     LEFT JOIN products p ON p.id = i.product_id
+     WHERE i.fbo_supply_id = $1 AND i.id = $2
+     LIMIT 1`,
+    [supplyId, stickyId]
+  );
+  const row = r.rows?.[0];
+  if (!row) {
+    clearUserSticky(supplyId, { userId, userName });
+    return null;
+  }
+  if (Math.max(0, parseInt(row.collected_quantity, 10) || 0) >= Math.max(0, parseInt(row.quantity, 10) || 0)) {
+    clearUserSticky(supplyId, { userId, userName });
+    return null;
+  }
+  const progress = parseProgress(row.collect_component_progress);
+  if (!Object.keys(progress).length) {
+    clearUserSticky(supplyId, { userId, userName });
+    return null;
+  }
+  const pid = row.product_id != null ? Number(row.product_id) : null;
+  const kitMeta = pid != null ? (await loadKitMetaMap([pid])).get(pid) : null;
+  if (kitMeta?.isKit) {
+    if (!hasPartialKitComponentProgress(progress, kitMeta.components)) {
+      clearUserSticky(supplyId, { userId, userName });
+      return null;
+    }
+  }
+  return row;
 }
 
 async function findSupplyItemDirect(supplyId, barcode, profileId) {
@@ -349,38 +452,6 @@ async function findSupplyItemsByKitComponent(supplyId, barcode, profileId) {
   }));
 }
 
-/**
- * Незавершённый комплект с частичным прогрессом комплектующих — «липкая» сессия.
- * Пока он не закрыт, нельзя начинать другой комплект / чужую позицию.
- */
-async function findStickyPartialKitItems(supplyId) {
-  const r = await query(
-    `SELECT ${ITEM_SELECT}
-     FROM fbo_supply_items i
-     LEFT JOIN products p ON p.id = i.product_id
-     WHERE i.fbo_supply_id = $1
-       AND COALESCE(i.collected_quantity, 0) < GREATEST(i.quantity, 0)
-       AND i.collect_component_progress IS NOT NULL
-       AND i.collect_component_progress <> '{}'::jsonb
-     ORDER BY i.id ASC`,
-    [supplyId]
-  );
-  const rows = r.rows || [];
-  if (!rows.length) return [];
-  const kitMeta = await loadKitMetaMap(rows.map((row) => row.product_id));
-  return rows.filter((row) => {
-    const pid = row.product_id != null ? Number(row.product_id) : null;
-    const meta = pid != null ? kitMeta.get(pid) : null;
-    if (!meta?.isKit) return Object.keys(parseProgress(row.collect_component_progress)).length > 0;
-    return hasPartialKitComponentProgress(row.collect_component_progress, meta.components);
-  });
-}
-
-async function findSupplyItemByKitComponent(supplyId, barcode, profileId) {
-  const matches = await findSupplyItemsByKitComponent(supplyId, barcode, profileId);
-  return pickPreferredKitComponentMatch(matches);
-}
-
 /** Выбрать комплект, которому комплектующая ещё нужна; иначе первый незакрытый. */
 async function pickPreferredKitComponentMatch(matches) {
   if (!matches?.length) return null;
@@ -404,11 +475,11 @@ async function pickPreferredKitComponentMatch(matches) {
 /**
  * Один штрихкод может быть и отдельной строкой (5404), и комплектующей комплекта (5404RL).
  * Сначала добираем незавершённую прямую позицию; когда она собрана — идём в незавершённый комплект.
- * Если уже начат комплект (частичный прогресс) — не перепрыгиваем на другую позицию.
+ * Sticky — на пользователя: пока у вас незакрытый комплект, нельзя перепрыгивать на другой товар.
+ * Чужой sticky не блокирует.
  */
-async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
-  const stickyRows = await findStickyPartialKitItems(supplyId);
-  const sticky = stickyRows[0] || null;
+async function resolveScanToSupplyItem(supplyId, barcode, profileId, { userId, userName } = {}) {
+  const sticky = await loadUserStickyItem(supplyId, { userId, userName });
 
   const codes = productLookupCodesFromScan(barcode);
   const toTry = codes.length ? codes : [normalizeBarcode(barcode)];
@@ -431,7 +502,7 @@ async function resolveScanToSupplyItem(supplyId, barcode, profileId) {
       if (!direct && kitMatches.length === 0) continue;
 
       const err = new Error(
-        'Сначала дособерите текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: незакрытый прогресс сбросится, напечатанные стикеры останутся.'
+        'Сначала дособерите ваш текущий комплект (есть незакрытые комплектующие). Нельзя перепрыгивать на другой товар. Чтобы бросить набор — обновите страницу: ваш незакрытый прогресс сбросится, напечатанные стикеры останутся.'
       );
       err.statusCode = 409;
       err.code = 'COLLECT_KIT_STICKY';
@@ -534,22 +605,41 @@ async function insertScanLog({
 
 class FboSuppliesCollectService {
   /**
-   * Сбросить незакрытый прогресс комплектующих (после F5 / повторного входа на вкладку).
-   * collected_quantity (уже напечатанные стикеры) не трогаем.
+   * Сбросить незакрытый прогресс комплектующих текущего пользователя (F5 / повторный вход).
+   * Чужие sticky не трогаем. Если тот же комплект держат другие — только снимаем ваш sticky,
+   * общий прогресс строки оставляем.
    */
-  async resetPartialKitProgress(supplyId, { profileId } = {}) {
+  async resetPartialKitProgress(supplyId, { profileId, userId, userName } = {}) {
     await assertSupplyAccess(supplyId, profileId);
+    const sid = Number(supplyId);
+    const stickyId = getUserStickyItemId(supplyId, { userId, userName });
+    clearUserSticky(supplyId, { userId, userName });
+    if (stickyId == null) {
+      return { cleared: 0, stickySupplyItemId: null };
+    }
+    let othersHold = false;
+    for (const row of collectStickyByKey.values()) {
+      if (!row || Number(row.supplyId) !== sid) continue;
+      if (Number(row.supplyItemId) === stickyId) {
+        othersHold = true;
+        break;
+      }
+    }
+    if (othersHold) {
+      return { cleared: 0, stickySupplyItemId: stickyId, keptShared: true };
+    }
     const r = await query(
       `UPDATE fbo_supply_items
        SET collect_component_progress = '{}'::jsonb,
            updated_at = CURRENT_TIMESTAMP
        WHERE fbo_supply_id = $1
+         AND id = $2
          AND collect_component_progress IS NOT NULL
          AND collect_component_progress <> '{}'::jsonb
        RETURNING id`,
-      [supplyId]
+      [supplyId, stickyId]
     );
-    return { cleared: (r.rows || []).length };
+    return { cleared: (r.rows || []).length, stickySupplyItemId: stickyId };
   }
 
   async getCollectState(supplyId, { profileId, resetPartialProgress = false, userId, userName } = {}) {
@@ -561,10 +651,12 @@ class FboSuppliesCollectService {
     await assertSupplyAccess(supplyId, profileId);
 
     if (resetPartialProgress) {
-      await this.resetPartialKitProgress(supplyId, { profileId });
+      await this.resetPartialKitProgress(supplyId, { profileId, userId, userName });
     }
 
     touchCollectPresence(supplyId, { userId, userName });
+
+    const myStickySupplyItemId = getUserStickyItemId(supplyId, { userId, userName });
 
     const itemsR = await query(
       `SELECT ${ITEM_SELECT}
@@ -629,6 +721,7 @@ class FboSuppliesCollectService {
       collectedTotal,
       completeCount: items.filter((it) => it.complete).length,
       itemCount: items.length,
+      myStickySupplyItemId,
       activeUsers: [...activeUsersMap.values()],
       recentScans: (recentR.rows || []).map((row) => ({
         id: Number(row.id),
@@ -668,7 +761,7 @@ class FboSuppliesCollectService {
       throw err;
     }
 
-    const resolved = await resolveScanToSupplyItem(supplyId, code, profileId);
+    const resolved = await resolveScanToSupplyItem(supplyId, code, profileId, { userId, userName });
     if (!resolved?.item) {
       const err = new Error('Товар не найден в этой поставке (ни как позиция, ни как комплектующая комплекта)');
       err.statusCode = 404;
@@ -864,7 +957,20 @@ class FboSuppliesCollectService {
       client.release();
     }
 
-    const state = await this.getCollectState(supplyId, { profileId });
+    const progressKeys = Object.keys(progressAfter || {}).length;
+    if (isComponentScan && progressKeys > 0) {
+      setUserSticky(supplyId, itemId, { userId, userName });
+    } else if (progressKeys === 0) {
+      clearStickiesForSupplyItem(supplyId, itemId);
+      clearUserSticky(supplyId, { userId, userName });
+    } else if (action === 'collected') {
+      // Единица закрыта, но на строке ещё хвост следующего набора — держим sticky.
+      setUserSticky(supplyId, itemId, { userId, userName });
+    }
+
+    touchCollectPresence(supplyId, { userId, userName });
+
+    const state = await this.getCollectState(supplyId, { profileId, userId, userName });
     const item =
       state.items.find((it) => it.id === itemId) ||
       mapItemCollectRow(

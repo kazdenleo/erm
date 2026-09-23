@@ -170,6 +170,12 @@ export function FboSupplyCollect({
   }, [items, itemSearchQuery, searchActive, categoryFilter, lastScannedItemId]);
 
   const nextItem = useMemo(() => {
+    const stickyId =
+      state?.myStickySupplyItemId != null ? Number(state.myStickySupplyItemId) : null;
+    if (stickyId != null) {
+      const mine = filteredItems.find((it) => Number(it.id) === stickyId && !it.complete);
+      if (mine) return mine;
+    }
     // Приоритет — комплект, который уже начали (частичный прогресс комплектующих).
     const inProgress = filteredItems.find((it) => {
       if (it.complete || !it.isKit) return false;
@@ -179,7 +185,7 @@ export function FboSupplyCollect({
     });
     if (inProgress) return inProgress;
     return filteredItems.find((it) => !it.complete) || null;
-  }, [filteredItems]);
+  }, [filteredItems, state?.myStickySupplyItemId]);
   const nextTargets = useMemo(() => getNextScanTargets(nextItem), [nextItem]);
 
   const sendToPrinter = useCallback(

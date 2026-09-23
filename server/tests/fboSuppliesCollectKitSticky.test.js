@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   hasPartialKitComponentProgress,
   kitComponentStillNeeded,
+  collectStickyTestApi,
 } from '../src/services/fboSuppliesCollect.service.js';
 
 const compA = 101;
@@ -40,4 +41,31 @@ test('orphan progress keys for other products do not sticky an empty kit', () =>
   const orphan = { '999999': 2 };
   assert.equal(hasPartialKitComponentProgress(orphan, kitAb), false);
   assert.equal(hasPartialKitComponentProgress({ [String(compA)]: 1 }, kitAb), true);
+});
+
+test('sticky per-user: two users can hold different kits on same supply', () => {
+  collectStickyTestApi.resetAll();
+  const supplyId = 183;
+  collectStickyTestApi.setUserSticky(supplyId, 10, { userId: 1, userName: 'A' });
+  collectStickyTestApi.setUserSticky(supplyId, 20, { userId: 2, userName: 'B' });
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 1 }), 10);
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), 20);
+  collectStickyTestApi.clearUserSticky(supplyId, { userId: 1 });
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 1 }), null);
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), 20);
+  collectStickyTestApi.clearStickiesForSupplyItem(supplyId, 20);
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), null);
+  collectStickyTestApi.resetAll();
+});
+
+test('sticky per-user: two users can share the same kit sticky', () => {
+  collectStickyTestApi.resetAll();
+  const supplyId = 183;
+  collectStickyTestApi.setUserSticky(supplyId, 10, { userId: 1, userName: 'A' });
+  collectStickyTestApi.setUserSticky(supplyId, 10, { userId: 2, userName: 'B' });
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 1 }), 10);
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), 10);
+  collectStickyTestApi.clearUserSticky(supplyId, { userId: 1 });
+  assert.equal(collectStickyTestApi.getUserStickyItemId(supplyId, { userId: 2 }), 10);
+  collectStickyTestApi.resetAll();
 });
