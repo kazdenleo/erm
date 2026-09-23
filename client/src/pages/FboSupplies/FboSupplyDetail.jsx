@@ -1011,12 +1011,6 @@ export function FboSupplyDetail() {
           </button>
         </div>
       ) : null}
-      {packingHasDiscrepancy ? (
-        <div className="alert alert-warning">
-          Есть расхождения между планом и сборкой — завершите упаковку всех позиций, чтобы перейти в
-          «Упакован» / «Готов к отгрузке» или отправить состав на маркетплейс.
-        </div>
-      ) : null}
       {err && <div className="alert alert-danger">{err}</div>}
       {placementZonesMsg ? (
         <div className="alert alert-success">{placementZonesMsg}</div>
@@ -1026,11 +1020,6 @@ export function FboSupplyDetail() {
       ) : null}
       {syncMpContentMsg ? (
         <div className="alert alert-success">{syncMpContentMsg}</div>
-      ) : null}
-      {supply.pendingMpContentUpdate && isFboMarketplaceSupply ? (
-        <div className="alert alert-warning">
-          Состав поставки изменён в ERM и ещё не отправлен на {mpLabel}. Нажмите «Обновить на маркетплейсе».
-        </div>
       ) : null}
       {pullMpContentMsg ? (
         <div className="alert alert-success">{pullMpContentMsg}</div>
