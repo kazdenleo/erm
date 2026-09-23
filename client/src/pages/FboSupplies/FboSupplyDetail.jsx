@@ -20,18 +20,14 @@ import {
 } from '../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../services/api';
 import {
-  FBO_SUPPLY_STATUS_ORDER,
-  FBO_SUPPLY_STATUS_OPTIONS,
   canSelectFboSupplyStatus,
-  fboSupplyStatusBlockedTitle,
   getFboSupplyStatusLabel,
-  getFboSupplyStatusClass,
   getMarketplaceLabel,
   hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyCollect } from './FboSupplyCollect.jsx';
-import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge.jsx';
+import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
 import { getFboItemReserveParts } from './fboSupplyItemReserve.js';
@@ -864,7 +860,6 @@ export function FboSupplyDetail() {
     );
   }
 
-  const statusIdx = FBO_SUPPLY_STATUS_ORDER.indexOf(supply.status);
   const isOzonSupply =
     supply.marketplace !== 'wb' && supply.marketplace !== 'ym' && supply.marketplace !== 'yandex';
   const mpLabel = getMarketplaceLabel(supply.marketplace);
@@ -900,7 +895,13 @@ export function FboSupplyDetail() {
             Поставка FBO № {supply.id}
             {supply.externalShipmentNumber ? ` · ${supply.externalShipmentNumber}` : ''}
           </span>
-          <FboSupplyStatusBadge status={supply.status} />
+          <FboSupplyStatusSelect
+            status={supply.status}
+            disabled={saving}
+            hasDiscrepancy={packingHasDiscrepancy}
+            onChange={handleStatusChange}
+            title="Нажмите, чтобы сменить статус"
+          />
         </h2>
         <Button
           variant="secondary"
@@ -1054,28 +1055,6 @@ export function FboSupplyDetail() {
       {statusSyncMsg ? (
         <div className="alert alert-info">{statusSyncMsg}</div>
       ) : null}
-
-      <div className="fbo-status-stepper">
-        {FBO_SUPPLY_STATUS_OPTIONS.map((s, i) => {
-          const done = i < statusIdx;
-          const active = s === supply.status;
-          const blocked = !canSelectFboSupplyStatus(s, packingHasDiscrepancy);
-          const blockedTitle = fboSupplyStatusBlockedTitle(s, packingHasDiscrepancy);
-          const statusClass = getFboSupplyStatusClass(s);
-          return (
-            <button
-              key={s}
-              type="button"
-              className={`fbo-status-step fbo-status-step--${statusClass}${active ? ' active' : ''}${done ? ' done' : ''}${blocked ? ' blocked' : ''}`}
-              disabled={saving || blocked}
-              title={blockedTitle || `Установить: ${getFboSupplyStatusLabel(s)}`}
-              onClick={() => handleStatusChange(s)}
-            >
-              {getFboSupplyStatusLabel(s)}
-            </button>
-          );
-        })}
-      </div>
 
       <div className="fbo-detail-tabs" role="tablist">
         <button
