@@ -339,12 +339,6 @@ export function FboSupplyCollect({
       </p>
 
       <div className="fbo-collect-toolbar">
-        <div className="fbo-collect-summary muted-hint">
-          Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
-          {state?.itemCount != null
-            ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
-            : null}
-        </div>
         <div className="fbo-collect-filters">
           <label className="fbo-collect-category-filter">
             <span className="muted-hint">Категория</span>
@@ -374,6 +368,12 @@ export function FboSupplyCollect({
               aria-label="Поиск в списке сбора этикеток"
             />
           </label>
+        </div>
+        <div className="fbo-collect-summary muted-hint">
+          Собрано {state?.collectedTotal ?? 0} из {state?.plannedTotal ?? 0}
+          {state?.itemCount != null
+            ? ` · позиций готово: ${state.completeCount ?? 0}/${state.itemCount}`
+            : null}
         </div>
       </div>
 

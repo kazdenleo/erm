@@ -454,7 +454,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px 16px;
   margin-bottom: 10px;
 }
@@ -464,8 +464,8 @@
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 10px 12px;
-  flex: 1 1 420px;
-  justify-content: flex-end;
+  flex: 0 1 auto;
+  justify-content: flex-start;
 }
 
 .fbo-collect-category-filter,
