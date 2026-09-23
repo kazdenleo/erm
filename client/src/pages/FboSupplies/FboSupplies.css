@@ -123,16 +123,21 @@
 }
 
 .fbo-status-select {
-  display: inline-block;
-  padding: 0.35em 0.65em;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  /* Как Bootstrap .btn-sm у кнопок в тулбаре поставки */
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  line-height: 1.2;
-  border-radius: 6px;
+  line-height: 1.5;
+  border-radius: 0.25rem;
   border: 1px solid transparent;
   white-space: nowrap;
   cursor: pointer;
   max-width: 100%;
+  min-height: calc(1.5em + 0.5rem + 2px);
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
