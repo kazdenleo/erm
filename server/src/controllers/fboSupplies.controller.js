@@ -669,6 +669,7 @@ class FboSuppliesController {
       const profileId = req.user?.profileId ?? null;
       const userId = req.user?.id ?? req.user?.userId ?? null;
       const userName =
+        req.user?.fullName ||
         req.user?.name ||
         [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ').trim() ||
         req.user?.email ||
@@ -699,6 +700,7 @@ class FboSuppliesController {
       const profileId = req.user?.profileId ?? null;
       const userId = req.user?.id ?? req.user?.userId ?? null;
       const userName =
+        req.user?.fullName ||
         req.user?.name ||
         [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ').trim() ||
         req.user?.email ||
