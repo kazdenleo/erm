@@ -754,6 +754,18 @@
   max-width: 420px;
 }
 
+.fbo-collect-out-of-stock-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+  color: #64748b;
+  background: #e2e8f0;
+  border-radius: 999px;
+}
+
 .fbo-collect-panel .fbo-packed-cell {
   cursor: default;
   text-decoration: none;
@@ -1032,6 +1044,16 @@
 
 .fbo-item-row--complete td {
   background: #f8fafc;
+}
+
+.fbo-collect-row--out-of-stock td {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.fbo-collect-row--out-of-stock code,
+.fbo-collect-row--out-of-stock .muted-hint {
+  color: #94a3b8;
 }
 
 .fbo-cargo-line-meta {

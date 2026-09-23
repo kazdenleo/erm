@@ -11,6 +11,7 @@ import {
   getKitComponents,
   aggregateKitComponents,
 } from './kitStock.service.js';
+import fboSupplyReserveService from './fboSupplyReserve.service.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -173,6 +174,9 @@ function mapItemCollectRow(row, kitMeta = null) {
     isKit: kitMeta?.isKit === true,
     kitComponents: null,
     kitProgress: null,
+    sourceOnHand: 0,
+    sourceIncoming: 0,
+    inStock: false,
   };
   if (kitMeta?.isKit && kitMeta.components?.length) {
     base.kitComponents = kitMeta.components.map((c) => ({
@@ -193,7 +197,7 @@ function mapItemCollectRow(row, kitMeta = null) {
 async function assertSupplyAccess(supplyId, profileId) {
   const pid = normalizeProfileId(profileId);
   const r = await query(
-    `SELECT id, marketplace, profile_id, status, external_shipment_number
+    `SELECT id, marketplace, profile_id, status, external_shipment_number, deduct_stock
      FROM fbo_supplies
      WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2)
      LIMIT 1`,
@@ -648,7 +652,7 @@ class FboSuppliesCollectService {
       err.statusCode = 503;
       throw err;
     }
-    await assertSupplyAccess(supplyId, profileId);
+    const supply = await assertSupplyAccess(supplyId, profileId);
 
     if (resetPartialProgress) {
       await this.resetPartialKitProgress(supplyId, { profileId, userId, userName });
@@ -674,10 +678,30 @@ class FboSuppliesCollectService {
     );
     const rows = itemsR.rows || [];
     const kitMeta = await loadKitMetaMap(rows.map((r) => r.product_id));
-    const items = rows.map((row) => {
+    let items = rows.map((row) => {
       const pid = row.product_id != null ? Number(row.product_id) : null;
       return mapItemCollectRow(row, pid != null ? kitMeta.get(pid) : null);
     });
+
+    try {
+      const enriched = await fboSupplyReserveService.enrichItemsWithReserved(items, {
+        profileId: normalizeProfileId(profileId) ?? supply.profile_id ?? null,
+        reserveEnabled: supply.deduct_stock === true,
+      });
+      items = (enriched || items).map((it) => {
+        const onHand = Number(it.sourceOnHand ?? it.source_on_hand) || 0;
+        const incoming = Number(it.sourceIncoming ?? it.source_incoming) || 0;
+        return {
+          ...it,
+          sourceOnHand: onHand,
+          sourceIncoming: incoming,
+          // На складе есть физический остаток (для комплекта — сколько единиц можно собрать).
+          inStock: onHand > 0,
+        };
+      });
+    } catch (e) {
+      console.warn('[FboCollect] stock enrich:', e?.message || e);
+    }
 
     const recentR = await query(
       `SELECT s.id, s.fbo_supply_item_id, s.product_id, s.scanned_product_id, s.barcode,

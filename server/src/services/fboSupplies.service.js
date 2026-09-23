@@ -500,7 +500,8 @@ class FboSuppliesService {
       sql += ` AND s.marketplace = $${params.length}`;
     }
     params.push(Math.min(500, Math.max(1, parseInt(limit, 10) || 200)));
-    sql += ` ORDER BY s.created_at DESC LIMIT $${params.length}`;
+    // Сначала ближайшая дата готовности/отгрузки; без даты — в конце.
+    sql += ` ORDER BY s.ready_at ASC NULLS LAST, s.created_at ASC, s.id ASC LIMIT $${params.length}`;
     const r = await query(sql, params);
     const rows = (r.rows || []).map(mapSupplyRow);
     if (skipReserveTotals) {

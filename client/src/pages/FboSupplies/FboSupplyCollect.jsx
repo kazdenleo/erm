@@ -160,6 +160,19 @@ export function FboSupplyCollect({
     if (searchActive) {
       list = filterSupplyItemsByQuery(list, itemSearchQuery);
     }
+    // Без остатка на складе — ниже позиций, которые можно собирать (кроме уже начатых).
+    list = [...list].sort((a, b) => {
+      const tier = (it) => {
+        if (it.complete) return 3;
+        if ((Number(it.collected) || 0) > 0) return 0;
+        if (it.inStock === false) return 2;
+        return 1;
+      };
+      const tA = tier(a);
+      const tB = tier(b);
+      if (tA !== tB) return tA - tB;
+      return Number(a.id) - Number(b.id);
+    });
     if (lastScannedItemId == null) return list;
     const topId = Number(lastScannedItemId);
     const pinned = list.find((it) => Number(it.id) === topId);
@@ -184,7 +197,8 @@ export function FboSupplyCollect({
       return (it.kitComponents || []).some((c) => (Number(c.got) || 0) > 0);
     });
     if (inProgress) return inProgress;
-    return filteredItems.find((it) => !it.complete) || null;
+    // «Следующий» — только то, что есть на складе.
+    return filteredItems.find((it) => !it.complete && it.inStock !== false) || null;
   }, [filteredItems, state?.myStickySupplyItemId]);
   const nextTargets = useMemo(() => getNextScanTargets(nextItem), [nextItem]);
 
@@ -487,16 +501,19 @@ export function FboSupplyCollect({
                 const cls = packedCellClass(it.collected, it.planned);
                 const comps = it.kitComponents || [];
                 const isNext = nextItem && it.id === nextItem.id;
+                const outOfStock = !it.complete && it.inStock === false;
                 return (
                   <tr
                     key={it.id}
                     className={[
                       it.complete ? 'fbo-item-row--complete' : '',
                       it.collected > 0 && !it.complete ? 'fbo-item-row--partial' : '',
+                      outOfStock ? 'fbo-collect-row--out-of-stock' : '',
                       isNext ? 'fbo-collect-row--next' : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
+                    title={outOfStock ? 'Нет на складе — пока не собирать' : undefined}
                   >
                     <td>
                       <code>{it.sku || '—'}</code>
@@ -504,6 +521,9 @@ export function FboSupplyCollect({
                     <td>
                       <div className="fbo-collect-item-name">
                         {it.productName || it.name || '—'}
+                        {outOfStock ? (
+                          <span className="fbo-collect-out-of-stock-badge">нет на складе</span>
+                        ) : null}
                       </div>
                     </td>
                     <td>
