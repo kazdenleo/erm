@@ -2028,11 +2028,44 @@ export function WarehouseOperations({
 
 
   const receiptModalHeaderExtra = useMemo(() => {
+    const listEmpty = !Array.isArray(receiptList) || receiptList.length === 0;
+    const submitBtn = (
+      <Button
+        type="button"
+        size="small"
+        onClick={applyReceiptList}
+        disabled={opLoading || isReceiptSessionGuest || listEmpty}
+        title={
+          isReceiptSessionGuest
+            ? 'Оформить может только создатель общей приёмки'
+            : listEmpty
+              ? 'Сначала добавьте товары в список'
+              : undefined
+        }
+      >
+        {opLoading ? 'Оформление…' : 'Оформить поступление'}
+      </Button>
+    );
+    const clearBtn = (
+      <Button
+        type="button"
+        variant="secondary"
+        size="small"
+        onClick={clearReceiptList}
+        disabled={opLoading || listEmpty}
+      >
+        Очистить список
+      </Button>
+    );
+
     if (isReceiptSessionGuest) {
       return (
-        <Button type="button" variant="secondary" size="small" onClick={exitReceiptSessionAndModal}>
-          Выйти
-        </Button>
+        <div className="warehouse-ops-receipt-modal-header-actions">
+          {submitBtn}
+          <Button type="button" variant="secondary" size="small" onClick={exitReceiptSessionAndModal}>
+            Выйти
+          </Button>
+        </div>
       );
     }
     if (receiptSessionEnabled && receiptSessionId) {
@@ -2042,6 +2075,7 @@ export function WarehouseOperations({
           <InviteUserButton
             users={inviteUsers}
             busy={inviteBusy}
+            size="small"
             excludeUserId={user?.id ?? user?.userId}
             onInvite={async (uid) => {
               const sid = String(receiptSessionId || '').trim();
@@ -2058,6 +2092,8 @@ export function WarehouseOperations({
               }
             }}
           />
+          {submitBtn}
+          {clearBtn}
           <Button type="button" variant="secondary" size="small" onClick={exitReceiptSessionAndModal}>
             Выйти
           </Button>
@@ -2065,22 +2101,30 @@ export function WarehouseOperations({
       );
     }
     return (
-      <Button
-        type="button"
-        variant="secondary"
-        size="small"
-        onClick={startReceiptSession}
-        disabled={!receiptWarehouseId}
-        title={!receiptWarehouseId ? 'Сначала выберите склад приёмки' : undefined}
-      >
-        Общая приёмка
-      </Button>
+      <div className="warehouse-ops-receipt-modal-header-actions">
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          onClick={startReceiptSession}
+          disabled={!receiptWarehouseId}
+          title={!receiptWarehouseId ? 'Сначала выберите склад приёмки' : undefined}
+        >
+          Общая приёмка
+        </Button>
+        {submitBtn}
+        {clearBtn}
+      </div>
     );
   }, [
+    applyReceiptList,
+    clearReceiptList,
     exitReceiptSessionAndModal,
     inviteBusy,
     inviteUsers,
     isReceiptSessionGuest,
+    opLoading,
+    receiptList,
     receiptSessionEnabled,
     receiptSessionId,
     receiptWarehouseId,
@@ -5543,22 +5587,6 @@ export function WarehouseOperations({
                   </table>
                 </div>
                 <p className="warehouse-ops-receipt-cost-hint">Если указана себестоимость, она будет сохранена в карточке товара.</p>
-                <div className="warehouse-ops-receipt-list-actions">
-                <Button
-                    onClick={applyReceiptList}
-                    disabled={opLoading || isReceiptSessionGuest}
-                    title={
-                      isReceiptSessionGuest
-                        ? 'Оформить может только создатель общей приёмки'
-                        : undefined
-                    }
-                  >
-                    {opLoading ? 'Оформление…' : 'Оформить поступление'}
-                  </Button>
-                  <Button variant="secondary" onClick={clearReceiptList} disabled={opLoading}>
-                    Очистить список
-                </Button>
-              </div>
               </>
             )}
           </div>
