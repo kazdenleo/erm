@@ -2520,18 +2520,53 @@ export function WarehouseStocks() {
     };
   }, []);
 
-  const tableProductIdsForMpPush = useMemo(() => {
-    if (!Array.isArray(products) || products.length === 0) return [];
-    const ids = products
-      .map((p) => p?.id)
-      .filter((id) => id != null && id !== '')
-      .map((id) => {
-        const n = Number(id);
-        return Number.isFinite(n) && n > 0 ? n : String(id).trim();
-      })
-      .filter((id) => (typeof id === 'number' && id > 0) || (typeof id === 'string' && id.length > 0));
-    return [...new Set(ids)];
-  }, [products]);
+  const filteredProductsCountForMpPush = useMemo(() => {
+    if (Number.isFinite(Number(meta?.total))) return Math.max(0, Number(meta.total));
+    return Array.isArray(products) ? products.length : 0;
+  }, [meta?.total, products]);
+
+  /** Все id по текущим фильтрам таблицы (все страницы), не только открытая страница. */
+  const fetchAllFilteredProductIdsForMpPush = useCallback(async () => {
+    const pageSize = 200;
+    const ids = [];
+    const seen = new Set();
+    let offset = 0;
+    let total = Infinity;
+
+    while (offset < total) {
+      const res = await productsApi.getAll({
+        ...buildListParams(),
+        stockList: true,
+        limit: pageSize,
+        offset,
+        cacheBust: true,
+      });
+      const list = Array.isArray(res?.data)
+        ? res.data
+        : Array.isArray(res?.data?.data)
+          ? res.data.data
+          : [];
+      const reportedTotal = Number(res?.meta?.total);
+      if (Number.isFinite(reportedTotal) && reportedTotal >= 0) {
+        total = reportedTotal;
+      } else if (list.length < pageSize) {
+        total = offset + list.length;
+      }
+
+      for (const p of list) {
+        const n = Number(p?.id);
+        if (!Number.isFinite(n) || n < 1 || seen.has(n)) continue;
+        seen.add(n);
+        ids.push(n);
+      }
+
+      if (list.length === 0 || list.length < pageSize) break;
+      offset += pageSize;
+      if (ids.length > 100000) break;
+    }
+
+    return ids;
+  }, [buildListParams]);
 
   const mpPushBlockReason = useMemo(() => {
     if (!filterOrganizationId) {
@@ -2540,11 +2575,11 @@ export function WarehouseStocks() {
     if (!mpLinkedWarehouseId) {
       return 'Нет привязки складов ERP ↔ маркетплейсы. Настройте в разделе «Склады».';
     }
-    if (tableProductIdsForMpPush.length === 0) {
+    if (filteredProductsCountForMpPush === 0) {
       return 'В таблице нет товаров для отправки. Измените фильтры или нажмите «Обновить склад».';
     }
     return null;
-  }, [filterOrganizationId, mpLinkedWarehouseId, tableProductIdsForMpPush.length]);
+  }, [filterOrganizationId, mpLinkedWarehouseId, filteredProductsCountForMpPush]);
 
   const buildMpPushFilterHint = useCallback(() => {
     const filterParts = [];
@@ -2621,9 +2656,17 @@ export function WarehouseStocks() {
       setMpStockSyncing(true);
       setMpPushPanel({ type: 'working' });
       try {
+        const productIds = await fetchAllFilteredProductIdsForMpPush();
+        if (!productIds.length) {
+          setMpPushPanel({
+            type: 'error',
+            message: 'По текущим фильтрам нет товаров для отправки.',
+          });
+          return;
+        }
         const res = await marketplaceStockApi.syncBulk({
           organizationId: filterOrganizationId,
-          productIds: tableProductIdsForMpPush,
+          productIds,
           warehouseId: mpLinkedWarehouseId,
           warehouseScoped: true,
           force
@@ -2636,7 +2679,7 @@ export function WarehouseStocks() {
             title: 'Отправка в фоне',
             details:
               data?.message ||
-              `Отправка запущена (~${data?.productsTotal ?? tableProductIdsForMpPush.length} поз.). Статус обновится на странице; до 50 позиций результат показывается сразу.`
+              `Отправка запущена (~${data?.productsTotal ?? productIds.length} поз. по фильтрам). Статус обновится на странице; до 50 позиций результат показывается сразу.`
           });
           return;
         }
@@ -2664,7 +2707,7 @@ export function WarehouseStocks() {
     },
     [
       filterOrganizationId,
-      tableProductIdsForMpPush,
+      fetchAllFilteredProductIdsForMpPush,
       mpLinkedWarehouseId,
       refreshMpStockPushStatus,
       formatMpPushResultDetails
@@ -2689,7 +2732,7 @@ export function WarehouseStocks() {
         type: 'confirm',
         whLabel,
         orgLabel,
-        count: tableProductIdsForMpPush.length,
+        count: filteredProductsCountForMpPush,
         filterHint
       });
     } catch (err) {
@@ -3801,7 +3844,8 @@ export function WarehouseStocks() {
               </span>
             </p>
             <p className="mb-2 text-muted small">
-              Позиций в таблице: <strong>{mpPushPanel.count}</strong> (организация «{mpPushPanel.orgLabel}»).
+              Позиций по фильтрам: <strong>{mpPushPanel.count}</strong> (организация «
+              {mpPushPanel.orgLabel}») — все страницы, не только открытая.
               {mpPushPanel.filterHint ? (
                 <>
                   <br />
@@ -3839,7 +3883,9 @@ export function WarehouseStocks() {
           </>
         ) : null}
         {mpPushPanel?.type === 'working' ? (
-          <p className="mb-0">Идёт отправка остатков на маркетплейсы, подождите…</p>
+          <p className="mb-0">
+            Собираем список по фильтрам и отправляем остатки на маркетплейсы, подождите…
+          </p>
         ) : null}
         {mpPushPanel?.type === 'result' ? (
           <>
