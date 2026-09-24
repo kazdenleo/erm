@@ -46,12 +46,16 @@
   Затемнение — дочерний .modal-backdrop-erm--internal (всегда под .modal-dialog).
   Центрирование через flex на .modal — без modal-dialog-centered (у него min-height ≈ 100vh
   и получается «серый столб» той же ширины, что окно, но выше контента).
+  Высота диалога ограничена viewport: шапка с кнопками всегда видна, длинное тело скроллится.
 */
 .modal.modal-erm {
   display: flex !important;
   align-items: center;
   justify-content: center;
   background: transparent;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .modal.modal-erm--stacked {
   z-index: var(--erm-modal-dialog-z, 1150) !important;
@@ -66,16 +70,34 @@
 .modal.modal-erm .modal-dialog {
   position: relative;
   z-index: 1;
-  margin: 1.75rem auto;
+  margin: 1rem auto;
   min-height: 0 !important;
   height: auto;
-  display: block;
+  max-height: calc(100% - 2rem);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
   background: transparent;
   pointer-events: auto;
 }
 .modal.modal-erm .modal-content {
   background-color: #fff;
   opacity: 1;
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.modal.modal-erm .modal-header {
+  flex: 0 0 auto;
+}
+.modal.modal-erm .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Product card overlay (non-modal, inside app chrome) */
@@ -175,6 +197,9 @@
 
 /* Полноэкранная модалка «Редактировать товар» — без второй полосы прокрутки на dialog */
 .modal-erm .modal-dialog.modal-fullscreen {
+  max-height: 100%;
+  height: 100%;
+  margin: 0;
   overflow: hidden;
 }
 
@@ -248,12 +273,12 @@
 }
 
 .modal-erm .modal-dialog.modal-dialog-scrollable {
-  max-height: calc(100vh - 2rem);
+  max-height: calc(100% - 2rem);
   margin: 1rem auto;
 }
 
 .modal-erm .modal-dialog.modal-dialog-scrollable .modal-content {
-  max-height: calc(100vh - 2rem);
+  max-height: 100%;
 }
 
 .modal-erm .modal-dialog.modal-dialog-scrollable .modal-body {
