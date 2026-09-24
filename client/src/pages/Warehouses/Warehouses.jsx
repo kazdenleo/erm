@@ -480,6 +480,7 @@ export function Warehouses() {
         size="medium"
       >
         <WarehouseForm
+          key={editingWarehouse?.id != null ? `wh-${editingWarehouse.id}` : 'wh-new'}
           warehouse={editingWarehouse}
           suppliers={suppliers}
           warehouses={warehouses}

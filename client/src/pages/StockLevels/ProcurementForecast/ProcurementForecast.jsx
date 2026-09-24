@@ -485,7 +485,7 @@ export function ProcurementForecast() {
               {Number(data.bufferPercent) > 0
                 ? ` × (1 + ${Number(data.bufferPercent)}%)`
                 : ''}{' '}
-              − наличие − в пути − в комплектах
+              − доступно − в пути − в комплектах
             </span>
           </div>
 
@@ -543,7 +543,12 @@ export function ProcurementForecast() {
                   <th>Артикул</th>
                   <th>Поставщик</th>
                   <th className="procurement-forecast__num">Продано</th>
-                  <th className="procurement-forecast__num">Наличие</th>
+                  <th
+                    className="procurement-forecast__num"
+                    title="Свободное количество на складе: наличие минус резерв (в т.ч. собранные, но не отгруженные заказы)"
+                  >
+                    Доступно
+                  </th>
                   <th className="procurement-forecast__num">В пути</th>
                   <th
                     className="procurement-forecast__num"
@@ -590,7 +595,16 @@ export function ProcurementForecast() {
                       <td>{row.productSku || '—'}</td>
                       <td>{row.supplierName || '—'}</td>
                       <td className="procurement-forecast__num">{formatQty(row.soldQty)}</td>
-                      <td className="procurement-forecast__num">{formatQty(row.onHand)}</td>
+                      <td
+                        className="procurement-forecast__num"
+                        title={
+                          Number(row.reserved) > 0
+                            ? `Наличие ${formatQty(row.onHand)}, резерв ${formatQty(row.reserved)}`
+                            : undefined
+                        }
+                      >
+                        {formatQty(row.available ?? row.onHand)}
+                      </td>
                       <td className="procurement-forecast__num">{formatQty(row.incoming)}</td>
                       <td
                         className="procurement-forecast__num"

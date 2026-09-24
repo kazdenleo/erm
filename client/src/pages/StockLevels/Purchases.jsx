@@ -2354,16 +2354,17 @@ export function Purchases() {
         isOpen={!!receipt?.receipt?.id || receiptLoading}
         onClose={requestCloseReceipt}
         title={
-          receiptLoading && !receipt?.receipt?.id ? (
-            'Загрузка приёмки…'
-          ) : receipt?.receipt?.id ? (
-            (() => {
-              const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
-              return (
-                <div className="purchase-detail-modal-title">
-                  <span className="purchase-detail-modal-title__heading">
-                    Приёмка №{receipt.receipt.id}
-                  </span>
+          receiptLoading && !receipt?.receipt?.id
+            ? 'Загрузка приёмки…'
+            : receipt?.receipt?.id
+              ? `Приёмка №${receipt.receipt.id}`
+              : 'Приёмка'
+        }
+        headerExtra={
+          receipt?.receipt?.id
+            ? (() => {
+                const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
+                return (
                   <div className="purchase-detail-modal-title__actions">
                     {isReceiptScanning && !isReceiptGuest ? (
                       <InviteUserButton
@@ -2446,12 +2447,9 @@ export function Purchases() {
                       </Button>
                     ) : null}
                   </div>
-                </div>
-              );
-            })()
-          ) : (
-            'Приёмка'
-          )
+                );
+              })()
+            : null
         }
         size="xl"
       >

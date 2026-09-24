@@ -16,10 +16,16 @@ function parseBoolFlag(raw, fallback = true) {
 
 function parseStockSyncPayload(data, existing = null) {
   const ex = existing || {};
-  const has = (a, b) => data?.hasOwnProperty(a) || data?.hasOwnProperty(b);
+  const has = (a, b) =>
+    Object.prototype.hasOwnProperty.call(data || {}, a) ||
+    Object.prototype.hasOwnProperty.call(data || {}, b);
   const read = (camel, snake, fallback) => {
-    if (has(camel, snake)) return parseBoolFlag(data[camel] ?? data[snake], fallback);
-    return parseBoolFlag(ex[camel] ?? ex[snake], fallback);
+    if (has(camel, snake)) {
+      const raw = data[camel] !== undefined ? data[camel] : data[snake];
+      return parseBoolFlag(raw, fallback);
+    }
+    const exRaw = ex[camel] !== undefined ? ex[camel] : ex[snake];
+    return parseBoolFlag(exRaw, fallback);
   };
   return {
     push_marketplace_stock: read('pushMarketplaceStock', 'push_marketplace_stock', true),

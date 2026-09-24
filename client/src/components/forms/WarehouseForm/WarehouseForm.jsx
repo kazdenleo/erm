@@ -36,6 +36,42 @@ const MP_STOCK_CHANNELS = [
   { key: 'pushStockYm', marketplace: 'ym', label: 'YM', badgeClass: 'ym', title: 'Яндекс.Маркет' },
 ];
 
+/** Явный false/true; иначе default (по умолчанию передаём остатки). */
+function coerceStockPushFlag(value, defaultTrue = true) {
+  if (value === undefined || value === null || value === '') return defaultTrue;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  return defaultTrue;
+}
+
+function readWarehouseStockPushFlags(warehouse = {}) {
+  return {
+    pushMarketplaceStock: coerceStockPushFlag(
+      warehouse.pushMarketplaceStock ?? warehouse.push_marketplace_stock,
+      true
+    ),
+    pushStockOzon: coerceStockPushFlag(warehouse.pushStockOzon ?? warehouse.push_stock_ozon, true),
+    pushStockWb: coerceStockPushFlag(warehouse.pushStockWb ?? warehouse.push_stock_wb, true),
+    pushStockYm: coerceStockPushFlag(warehouse.pushStockYm ?? warehouse.push_stock_ym, true),
+  };
+}
+
+const EMPTY_WAREHOUSE_FORM = {
+  type: '',
+  name: '',
+  address: '',
+  organizationId: '',
+  supplierId: '',
+  mainWarehouseId: '',
+  wbWarehouseName: '',
+  isFboStock: false,
+  pushMarketplaceStock: true,
+  pushStockOzon: true,
+  pushStockWb: true,
+  pushStockYm: true,
+  workDays: [...ALL_WEEKDAYS],
+};
+
 export function WarehouseForm({
   warehouse,
   suppliers = [],
@@ -45,23 +81,10 @@ export function WarehouseForm({
   onSaved,
   onCancel
 }) {
-  const [formData, setFormData] = useState({
-    type: '',
-    name: '',
-    address: '',
-    organizationId: '',
-    supplierId: '',
-    mainWarehouseId: '',
-    wbWarehouseName: '',
-    isFboStock: false,
-    pushMarketplaceStock: true,
-    pushStockOzon: true,
-    pushStockWb: true,
-    pushStockYm: true,
-    // UI: отмеченные = рабочие дни; в API уходит weekend_days = дополнение
+  const [formData, setFormData] = useState(() => ({
+    ...EMPTY_WAREHOUSE_FORM,
     workDays: [...ALL_WEEKDAYS],
-  });
-  
+  }));  
   const [errors, setErrors] = useState({});
   const [exclusionCount, setExclusionCount] = useState(0);
   const [exclusionsOpen, setExclusionsOpen] = useState(false);
@@ -302,6 +325,7 @@ export function WarehouseForm({
 
   useEffect(() => {
     if (warehouse) {
+      const stockFlags = readWarehouseStockPushFlags(warehouse);
       setFormData({
         type: warehouse.type || '',
         name: warehouse.name || '',
@@ -311,11 +335,7 @@ export function WarehouseForm({
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
         wbWarehouseName: warehouse.wbWarehouseName || '',
         isFboStock: warehouse.isFboStock === true || warehouse.is_fbo_stock === true,
-        pushMarketplaceStock:
-          warehouse.pushMarketplaceStock !== false && warehouse.push_marketplace_stock !== false,
-        pushStockOzon: warehouse.pushStockOzon !== false && warehouse.push_stock_ozon !== false,
-        pushStockWb: warehouse.pushStockWb !== false && warehouse.push_stock_wb !== false,
-        pushStockYm: warehouse.pushStockYm !== false && warehouse.push_stock_ym !== false,
+        ...stockFlags,
         workDays: weekendDaysToWorkDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
       setExclusionCount(Number(warehouse.stockSyncExclusionCount) || 0);
@@ -323,18 +343,7 @@ export function WarehouseForm({
       loadMappings(warehouse.id);
     } else {
       setFormData({
-        type: '',
-        name: '',
-        address: '',
-        organizationId: '',
-        supplierId: '',
-        mainWarehouseId: '',
-        wbWarehouseName: '',
-        isFboStock: false,
-        pushMarketplaceStock: true,
-        pushStockOzon: true,
-        pushStockWb: true,
-        pushStockYm: true,
+        ...EMPTY_WAREHOUSE_FORM,
         workDays: [...ALL_WEEKDAYS],
       });
       setExclusionCount(0);
@@ -467,14 +476,13 @@ export function WarehouseForm({
   }, [suppliers, formData]);
 
   const handleChange = (field, value) => {
-    console.log(`[WarehouseForm] handleChange: ${field} =`, value);
-    setFormData(prev => {
+    setFormData((prev) => {
       const newData = { ...prev, [field]: value };
-      console.log(`[WarehouseForm] New formData:`, newData);
+      // Мастер выкл. — каналы оставляем как были (при включении снова), но в payload уйдёт master=false.
       return newData;
     });
     if (errors[field]) {
-      setErrors(prev => {
+      setErrors((prev) => {
         const newErrors = { ...prev };
         delete newErrors[field];
         return newErrors;
@@ -617,10 +625,14 @@ export function WarehouseForm({
             : null
           : null,
       isFboStock: formData.type === 'warehouse' ? !!formData.isFboStock : false,
-      pushMarketplaceStock: formData.type === 'warehouse' ? !!formData.pushMarketplaceStock : true,
-      pushStockOzon: formData.type === 'warehouse' ? !!formData.pushStockOzon : true,
-      pushStockWb: formData.type === 'warehouse' ? !!formData.pushStockWb : true,
-      pushStockYm: formData.type === 'warehouse' ? !!formData.pushStockYm : true,
+      pushMarketplaceStock:
+        formData.type === 'warehouse' ? coerceStockPushFlag(formData.pushMarketplaceStock, true) : true,
+      pushStockOzon:
+        formData.type === 'warehouse' ? coerceStockPushFlag(formData.pushStockOzon, true) : true,
+      pushStockWb:
+        formData.type === 'warehouse' ? coerceStockPushFlag(formData.pushStockWb, true) : true,
+      pushStockYm:
+        formData.type === 'warehouse' ? coerceStockPushFlag(formData.pushStockYm, true) : true,
       weekendDays:
         formData.type === 'warehouse'
           ? workDaysToWeekendDays(formData.workDays)

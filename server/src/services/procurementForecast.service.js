@@ -4,7 +4,12 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
 import { batchWarehouseScopedIncomingMap } from './kitStock.service.js';
+import {
+  batchOrderAttributedReservedMap,
+  mergeJournalAndOrderAttributedReserved,
+} from './orderAttributedReserve.service.js';
 
 const FBS_MARKETPLACES = ['ozon', 'wb', 'wildberries', 'ym', 'yandex', 'yandexmarket'];
 
@@ -81,6 +86,39 @@ async function batchComponentQtyInKitsOnWarehouse(componentIds, warehouseId) {
     const cid = Number(row.component_id);
     const qty = Math.max(0, Number(row.qty_in_kits) || 0);
     if (Number.isFinite(cid) && cid > 0) map.set(cid, qty);
+  }
+  return map;
+}
+
+/**
+ * Нетто-резерв по складу (журнал + атрибуция заказов), как в остатках.
+ * @returns {Promise<Map<number, number>>}
+ */
+async function batchWarehouseReservedMap(productIds, warehouseId) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const wh = Number(warehouseId);
+  const map = new Map();
+  if (!ids.length || !Number.isFinite(wh) || wh < 1) return map;
+
+  const journalR = await query(
+    `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND type IN ('reserve', 'unreserve')
+       AND warehouse_id = $2
+     GROUP BY product_id`,
+    [ids, wh]
+  );
+  const journalMap = new Map(
+    (journalR.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0])
+  );
+  const orderMap = await batchOrderAttributedReservedMap(ids, { warehouseId: wh });
+
+  for (const id of ids) {
+    map.set(
+      id,
+      mergeJournalAndOrderAttributedReserved(journalMap.get(id) ?? 0, orderMap.get(id) ?? 0)
+    );
   }
   return map;
 }
@@ -213,17 +251,22 @@ class ProcurementForecastService {
     });
     // Наличие внутри собранных комплектов на этом складе (не только свободные комплектующие).
     const inKitsByProduct = await batchComponentQtyInKitsOnWarehouse(productIds, whId);
+    // Резерв (в т.ч. собранные, но не отгруженные заказы) — чтобы колонка была «доступно», не «наличие».
+    const reservedByProduct = await batchWarehouseReservedMap(productIds, whId);
 
     const items = rows.map((row) => {
       const productId = Number(row.product_id);
       const soldQty = Number(row.sold_qty) || 0;
-      const onHand = Number(row.on_hand) || 0;
+      const onHand = Math.max(0, Number(row.on_hand) || 0);
+      const reserved = Math.max(0, Number(reservedByProduct.get(productId)) || 0);
+      // Свободное наличие на складе: наличие − резерв (без «в пути» — оно отдельной колонкой).
+      const available = Math.max(0, onHand - Math.min(reserved, onHand));
       const incoming = Math.max(0, Number(incomingByProduct.get(productId)) || 0);
       const onHandInKits = Math.max(0, Number(inKitsByProduct.get(productId)) || 0);
       const dailyRate = soldQty / salesPeriodDays;
       // Запас % увеличивает потребность относительно темпа продаж (не обязательно).
       const projectedNeed = Math.ceil(dailyRate * procDays * bufferFactor);
-      const toPurchase = Math.max(0, projectedNeed - onHand - incoming - onHandInKits);
+      const toPurchase = Math.max(0, projectedNeed - available - incoming - onHandInKits);
       return {
         productId,
         productName: row.product_name || '',
@@ -237,6 +280,8 @@ class ProcurementForecastService {
         bufferPercent: bufferPct,
         projectedNeed,
         onHand,
+        reserved,
+        available,
         incoming,
         onHandInKits,
         toPurchase,
@@ -248,6 +293,7 @@ class ProcurementForecastService {
         acc.soldQty += row.soldQty;
         acc.projectedNeed += row.projectedNeed;
         acc.onHand += row.onHand;
+        acc.available += row.available;
         acc.incoming += row.incoming;
         acc.onHandInKits += row.onHandInKits;
         acc.toPurchase += row.toPurchase;
@@ -258,6 +304,7 @@ class ProcurementForecastService {
         soldQty: 0,
         projectedNeed: 0,
         onHand: 0,
+        available: 0,
         incoming: 0,
         onHandInKits: 0,
         toPurchase: 0,

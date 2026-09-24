@@ -22,6 +22,15 @@ const baseWarehouseSchema = z.object({
   // Иначе Zod.strip удаляет weekendDays и выходные не сохраняются
   weekendDays: z.array(z.coerce.number().int().min(0).max(6)).optional().nullable(),
   weekend_days: z.array(z.coerce.number().int().min(0).max(6)).optional().nullable(),
+  // Иначе Zod.strip удаляет флаги передачи остатков — тумблер всегда остаётся включённым
+  pushMarketplaceStock: z.boolean().optional(),
+  push_marketplace_stock: z.boolean().optional(),
+  pushStockOzon: z.boolean().optional(),
+  push_stock_ozon: z.boolean().optional(),
+  pushStockWb: z.boolean().optional(),
+  push_stock_wb: z.boolean().optional(),
+  pushStockYm: z.boolean().optional(),
+  push_stock_ym: z.boolean().optional(),
 });
 
 /**

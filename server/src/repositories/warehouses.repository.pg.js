@@ -13,6 +13,12 @@ function normalizeProfileId(v) {
 
 function mapWarehouseRow(row) {
   if (!row) return null;
+  const parsePush = (v) => {
+    if (v === false || v === 'false' || v === 0 || v === '0') return false;
+    if (v === true || v === 'true' || v === 1 || v === '1') return true;
+    // null/undefined → по умолчанию передаём
+    return true;
+  };
   return {
     ...row,
     supplierId: row.supplier_id,
@@ -26,10 +32,10 @@ function mapWarehouseRow(row) {
     wbWarehouseName: row.wb_warehouse_name,
     isFboStock: row.is_fbo_stock === true,
     weekendDays: row.weekend_days ?? null,
-    pushMarketplaceStock: row.push_marketplace_stock !== false,
-    pushStockOzon: row.push_stock_ozon !== false,
-    pushStockWb: row.push_stock_wb !== false,
-    pushStockYm: row.push_stock_ym !== false,
+    pushMarketplaceStock: parsePush(row.push_marketplace_stock),
+    pushStockOzon: parsePush(row.push_stock_ozon),
+    pushStockWb: parsePush(row.push_stock_wb),
+    pushStockYm: parsePush(row.push_stock_ym),
     stockSyncExclusionCount: Number(row.stock_sync_exclusion_count) || 0,
   };
 }

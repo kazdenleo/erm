@@ -264,10 +264,12 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  overflow: visible;
+  flex-wrap: wrap;
 }
 
 .modal-erm .modal-header .modal-title {
-  flex: 1;
+  flex: 1 1 auto;
   margin-bottom: 0;
   min-width: 0;
 }
@@ -275,8 +277,12 @@
 .modal-erm .modal-header-extra {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-left: auto;
 }
 
 .modal-erm .modal-header .modal-title:has(.purchase-detail-modal-title) {
