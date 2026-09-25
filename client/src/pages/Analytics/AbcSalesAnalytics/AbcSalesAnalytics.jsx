@@ -139,10 +139,10 @@ export function AbcSalesAnalytics() {
       const productId = Number(row.productId);
       if (!Number.isFinite(productId) || productId < 1) return;
       if (activeHypothesisByProduct.has(productId)) {
-        navigate('/analytics/hypotheses');
+        navigate('/card-work/hypotheses');
         return;
       }
-      navigate('/analytics/hypotheses', {
+      navigate('/card-work/hypotheses', {
         state: {
           createFromAbc: {
             productId,
@@ -345,7 +345,7 @@ export function AbcSalesAnalytics() {
                       type="button"
                       className="abc-sales-analytics__in-work"
                       title="Уже есть гипотеза в работе — открыть список"
-                      onClick={() => navigate('/analytics/hypotheses')}
+                      onClick={() => navigate('/card-work/hypotheses')}
                     >
                       В работе
                     </button>

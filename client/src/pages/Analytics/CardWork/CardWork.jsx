@@ -5,7 +5,6 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
 import { productHypothesesApi } from '../../../services/productHypotheses.api';
@@ -220,14 +219,14 @@ export function CardWork() {
       const productId = Number(row.productId);
       if (!Number.isFinite(productId) || productId < 1) return;
       if (activeHypothesisByProduct.has(productId)) {
-        navigate('/analytics/hypotheses');
+        navigate('/card-work/hypotheses');
         return;
       }
       const quality = reasonsForSection(row.reasons, 'low_content_rating')[0];
       const note = quality?.hint
         ? `Из «Работы с карточками» (качество): ${quality.hint}`
         : 'Из «Работы с карточками»: низкий контент-рейтинг.';
-      navigate('/analytics/hypotheses', {
+      navigate('/card-work/hypotheses', {
         state: {
           createFromAbc: {
             productId,
@@ -246,14 +245,7 @@ export function CardWork() {
   const mainColSpan = 4 + (hideSoldQty ? 0 : 1) + 1 + (showRowActions ? 1 : 0);
 
   return (
-    <div className="sales-analytics card-work">
-      <PageTitle
-        iconClass="pe-7s-note2"
-        iconBgClass="bg-mean-fruit"
-        title="Работа с карточками"
-        subtitle="По уже загруженным отчётам (ночью и вручную). Смена фильтров пересчитывает сразу; «Загрузить» — обновить данные"
-      />
-
+    <div className="card-work">
       <div className="sales-analytics__filters erp-filter-bar">
         <AnalyticsPeriodFilters
           periodPreset={periodPreset}
@@ -512,7 +504,7 @@ export function CardWork() {
                             type="button"
                             className="card-work__in-work"
                             title="Уже есть гипотеза в работе — открыть список"
-                            onClick={() => navigate('/analytics/hypotheses')}
+                            onClick={() => navigate('/card-work/hypotheses')}
                           >
                             В работе
                           </button>

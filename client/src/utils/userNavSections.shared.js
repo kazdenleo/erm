@@ -316,6 +316,8 @@ export function navSectionKeyForPath(pathname, search = '') {
   const sp = new URLSearchParams(search || '');
   if (path === '/' || path === '') return 'analytics';
   if (path.startsWith('/card-work') || path.startsWith('/analytics/card-work')) return 'card_work';
+  // Гипотезы — часть «Работы с карточками», не общей аналитики продаж.
+  if (path.startsWith('/analytics/hypotheses')) return 'card_work';
   if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';

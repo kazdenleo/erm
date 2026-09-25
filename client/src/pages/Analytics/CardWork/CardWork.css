@@ -1,3 +1,41 @@
+.card-work-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.card-work-tabs__link {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #475569;
+  text-decoration: none;
+  background: #f8fafc;
+  border: 1px solid transparent;
+}
+
+.card-work-tabs__link:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.card-work-tabs__link--active {
+  color: #0f172a;
+  font-weight: 600;
+  background: #fff;
+  border-color: #cbd5e1;
+}
+
+.card-work-tab-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .card-work__reason {
   display: inline-block;
   margin: 0 6px 6px 0;

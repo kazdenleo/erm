@@ -118,6 +118,13 @@ describe('navSectionKeyForPath', () => {
     expect(navSectionKeyForPath('/stock-levels/warehouse', '?op=inventory')).toBe('warehouse_inventory');
     expect(navSectionKeyForPath('/stock-levels/warehouse')).toBe('warehouse_stock');
   });
+
+  test('maps hypotheses to card_work', () => {
+    expect(navSectionKeyForPath('/analytics/hypotheses')).toBe('card_work');
+    expect(navSectionKeyForPath('/card-work/hypotheses')).toBe('card_work');
+    expect(navSectionKeyForPath('/analytics/sales')).toBe('analytics_sales');
+    expect(navSectionKeyForPath('/card-work')).toBe('card_work');
+  });
 });
 
 describe('roleNavSectionsToFormState', () => {

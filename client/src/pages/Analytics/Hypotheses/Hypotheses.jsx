@@ -4,7 +4,6 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { PageTitle } from '../../../components/layout/PageTitle/PageTitle';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
 import { ProductSearchInput } from '../../../components/common/ProductSearchInput/ProductSearchInput';
@@ -20,6 +19,7 @@ import {
 import { HypothesesComparePanel } from './HypothesesComparePanel';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './Hypotheses.css';
+import '../CardWork/CardWork.css';
 
 const MARKETPLACE_OPTIONS = [
   { value: 'all', label: 'Все маркетплейсы' },
@@ -386,19 +386,11 @@ export function Hypotheses() {
   };
 
   return (
-    <div className="sales-analytics hypotheses">
-      <PageTitle
-        iconClass="pe-7s-light"
-        iconBgClass="bg-mean-fruit"
-        title="Гипотезы"
-        subtitle="Указываете начало предыдущего периода — он заканчивается в день создания. С этой даты вперёд смотрим продажи столько же дней, потом вывод"
-        actions={
-          <Button variant="primary" size="small" onClick={openCreate}>
-            Новая гипотеза
-          </Button>
-        }
-      />
-
+    <div className="hypotheses">
+      <p className="card-work-tab-lead text-muted">
+        Указываете начало предыдущего периода — он заканчивается в день создания. С этой даты вперёд
+        смотрим продажи столько же дней, потом вывод.
+      </p>
       <div className="sales-analytics__filters erp-filter-bar">
         <label className="sales-analytics__filter">
           <span>Статус</span>
@@ -421,6 +413,9 @@ export function Hypotheses() {
         </label>
         <Button variant="secondary" size="small" onClick={load} disabled={loading}>
           {loading ? 'Загрузка…' : 'Обновить'}
+        </Button>
+        <Button variant="primary" size="small" onClick={openCreate}>
+          Новая гипотеза
         </Button>
       </div>
 

@@ -99,12 +99,6 @@ const analyticsChildren = [
     sectionKey: 'analytics_sales',
     requiresFbo: true,
   },
-  {
-    path: '/analytics/hypotheses',
-    label: 'Гипотезы',
-    iconClass: 'pe-7s-angle-right',
-    sectionKey: 'analytics_sales',
-  },
 ];
 
 const menuItems = [

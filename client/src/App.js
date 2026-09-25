@@ -22,6 +22,7 @@ import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesA
 import { ProductDynamics } from './pages/Analytics/ProductDynamics/ProductDynamics';
 import { ProductTurnover } from './pages/Analytics/ProductTurnover/ProductTurnover';
 import { CardWork } from './pages/Analytics/CardWork/CardWork';
+import { CardWorkLayout } from './pages/Analytics/CardWork/CardWorkLayout';
 import { Hypotheses } from './pages/Analytics/Hypotheses/Hypotheses';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
@@ -142,11 +143,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Layout>
-                  <CardWork />
+                  <CardWorkLayout />
                 </Layout>
               </ProtectedRoute>
             }
-          />
+          >
+            <Route index element={<CardWork />} />
+            <Route path="hypotheses" element={<Hypotheses />} />
+          </Route>
           <Route path="/analytics" element={<ProtectedRoute><Layout><AnalyticsLayout /></Layout></ProtectedRoute>}>
             <Route index element={<Navigate to="/analytics/sales" replace />} />
             <Route path="sales" element={<SalesAnalytics />} />
@@ -156,7 +160,7 @@ function App() {
             <Route path="dynamics" element={<ProductDynamics />} />
             <Route path="turnover" element={<ProductTurnover />} />
             <Route path="card-work" element={<Navigate to="/card-work" replace />} />
-            <Route path="hypotheses" element={<Hypotheses />} />
+            <Route path="hypotheses" element={<Navigate to="/card-work/hypotheses" replace />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />
