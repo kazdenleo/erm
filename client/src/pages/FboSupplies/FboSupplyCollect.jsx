@@ -449,7 +449,9 @@ export function FboSupplyCollect({
           ) : filteredItems.length > 0 ? (
             <div className="fbo-collect-next__body">
               <div className="fbo-collect-next__skus fbo-collect-next__skus--done">
-                Всё собрано по текущему фильтру
+                {filteredItems.some((it) => !it.complete)
+                  ? 'На складе больше нечего собирать — остались позиции без остатка'
+                  : 'Всё собрано по текущему фильтру'}
               </div>
             </div>
           ) : (
