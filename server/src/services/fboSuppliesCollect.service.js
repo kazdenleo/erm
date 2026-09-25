@@ -703,6 +703,96 @@ class FboSuppliesCollectService {
       console.warn('[FboCollect] stock enrich:', e?.message || e);
     }
 
+    // Кто последний сканировал по каждой строке (для колонки «Собрал»).
+    try {
+      const collectorsR = await query(
+        `SELECT DISTINCT ON (s.fbo_supply_item_id)
+           s.fbo_supply_item_id,
+           s.user_id,
+           s.user_name,
+           s.created_at
+         FROM fbo_supply_item_scans s
+         WHERE s.fbo_supply_id = $1
+         ORDER BY s.fbo_supply_item_id, s.created_at DESC`,
+        [supplyId]
+      );
+      const byItem = new Map();
+      for (const row of collectorsR.rows || []) {
+        const iid = Number(row.fbo_supply_item_id);
+        if (!Number.isFinite(iid)) continue;
+        byItem.set(iid, {
+          lastCollectorUserId: row.user_id != null ? Number(row.user_id) : null,
+          lastCollectorName:
+            row.user_name && String(row.user_name).trim()
+              ? String(row.user_name).trim()
+              : row.user_id != null
+                ? `Пользователь #${row.user_id}`
+                : null,
+          lastCollectedAt: row.created_at || null,
+        });
+      }
+      items = items.map((it) => {
+        const c = byItem.get(Number(it.id));
+        return c
+          ? {
+              ...it,
+              lastCollectorUserId: c.lastCollectorUserId,
+              lastCollectorName: c.lastCollectorName,
+              lastCollectedAt: c.lastCollectedAt,
+            }
+          : { ...it, lastCollectorUserId: null, lastCollectorName: null, lastCollectedAt: null };
+      });
+    } catch (e) {
+      console.warn('[FboCollect] collectors enrich:', e?.message || e);
+    }
+
+    try {
+      const collectorsR = await query(
+        `SELECT DISTINCT ON (s.fbo_supply_item_id)
+           s.fbo_supply_item_id,
+           s.user_id,
+           s.user_name,
+           s.created_at
+         FROM fbo_supply_item_scans s
+         WHERE s.fbo_supply_id = $1
+         ORDER BY s.fbo_supply_item_id, s.created_at DESC`,
+        [supplyId]
+      );
+      const byItem = new Map();
+      for (const row of collectorsR.rows || []) {
+        const iid = Number(row.fbo_supply_item_id);
+        if (!Number.isFinite(iid)) continue;
+        byItem.set(iid, {
+          lastCollectorUserId: row.user_id != null ? Number(row.user_id) : null,
+          lastCollectorName:
+            row.user_name != null && String(row.user_name).trim() !== ''
+              ? String(row.user_name).trim()
+              : row.user_id != null
+                ? `Пользователь #${row.user_id}`
+                : null,
+          lastCollectedAt: row.created_at || null,
+        });
+      }
+      items = items.map((it) => {
+        const c = byItem.get(Number(it.id));
+        return c
+          ? {
+              ...it,
+              lastCollectorUserId: c.lastCollectorUserId,
+              lastCollectorName: c.lastCollectorName,
+              lastCollectedAt: c.lastCollectedAt,
+            }
+          : {
+              ...it,
+              lastCollectorUserId: null,
+              lastCollectorName: null,
+              lastCollectedAt: null,
+            };
+      });
+    } catch (e) {
+      console.warn('[FboCollect] collectors enrich:', e?.message || e);
+    }
+
     const recentR = await query(
       `SELECT s.id, s.fbo_supply_item_id, s.product_id, s.scanned_product_id, s.barcode,
               s.user_id, s.user_name, s.created_at,

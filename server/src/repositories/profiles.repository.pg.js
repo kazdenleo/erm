@@ -3,7 +3,7 @@
  */
 
 import { query } from '../config/database.js';
-import { parseRoleNavSections } from '../utils/userNavSections.js';
+import { parseRoleFlags, parseRoleNavSections } from '../utils/userNavSections.js';
 import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
@@ -591,7 +591,9 @@ class ProfilesRepositoryPG {
     }
     if (updates.role_nav_sections !== undefined || updates.roleNavSections !== undefined) {
       const raw = updates.role_nav_sections ?? updates.roleNavSections;
-      set('role_nav_sections', JSON.stringify(parseRoleNavSections(raw)));
+      const nav = parseRoleNavSections(raw);
+      const flags = parseRoleFlags(raw);
+      set('role_nav_sections', JSON.stringify({ ...nav, roleFlags: flags }));
     }
 
     if (fields.length === 0) return await this.findById(id);

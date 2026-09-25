@@ -11,7 +11,7 @@ import { profileIdFromDb } from '../utils/profileId.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 import { transaction } from '../config/database.js';
 import { buildFullName, splitFullName } from '../utils/userName.js';
-import { buildUserNavFeatures, resolveNavSectionsForUser } from '../utils/userNavSections.js';
+import { buildUserNavFeatures, resolveDailyLogoutForUser, resolveNavSectionsForUser } from '../utils/userNavSections.js';
 import { ensurePhoneAvailable, requirePhoneFields } from '../utils/userPhone.js';
 import { parseBirthDate } from '../utils/userBirthDate.js';
 import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
@@ -20,6 +20,26 @@ const usersRepo = repositoryFactory.getUsersRepository();
 
 function userMustChangePassword(row) {
   return !!(row && (row.must_change_password === true || row.must_change_password === 1));
+}
+
+/** Календарный день YYYY-M-D в локальной TZ сервера (для daily logout). */
+function calendarDayKey(msOrSec) {
+  const ms = msOrSec < 1e12 ? Number(msOrSec) * 1000 : Number(msOrSec);
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+function tokenIssuedDayKey(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  try {
+    const decoded = jwt.decode(authHeader.slice(7));
+    if (!decoded?.iat) return null;
+    return calendarDayKey(decoded.iat);
+  } catch {
+    return null;
+  }
 }
 
 export const authController = {
@@ -212,6 +232,18 @@ export const authController = {
         const profilesRepository = (await import('../config/repository-factory.js')).default.getProfilesRepository();
         profile = await profilesRepository.findById(profileId);
       }
+      const dailyLogout = resolveDailyLogoutForUser(user, profile);
+      if (dailyLogout) {
+        const issuedDay = tokenIssuedDayKey(req);
+        const today = calendarDayKey(Date.now());
+        if (issuedDay && today && issuedDay !== today) {
+          return res.status(401).json({
+            ok: false,
+            message: 'Сессия истекла: требуется повторный вход в новый день',
+            code: 'DAILY_LOGOUT',
+          });
+        }
+      }
       res.json({
         ok: true,
         data: {
@@ -228,6 +260,7 @@ export const authController = {
           isProfileAdmin: !!user.is_profile_admin,
           accountRole: user.account_role ?? null,
           mustChangePassword: userMustChangePassword(user),
+          dailyLogout,
           profile: profile
             ? {
                 id: profile.id,

@@ -17,6 +17,7 @@ import {
   CONFIGURABLE_ACCOUNT_ROLES,
   formStateToNavSections,
   normalizeAccountRoleKey,
+  parseRoleFlags,
   parseRoleNavSections,
   roleNavSectionsToFormState,
 } from '../utils/userNavSections.js';
@@ -266,11 +267,13 @@ export const profilesController = {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
       const stored = parseRoleNavSections(item.role_nav_sections);
+      const flags = parseRoleFlags(item.role_nav_sections);
       const roles = {};
       for (const role of CONFIGURABLE_ACCOUNT_ROLES) {
         roles[role] = {
           configured: Object.prototype.hasOwnProperty.call(stored, role),
           navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
+          dailyLogout: flags[role]?.dailyLogout === true,
         };
       }
       res.json({ ok: true, data: { roles } });
@@ -294,22 +297,30 @@ export const profilesController = {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
       const all = parseRoleNavSections(current.role_nav_sections);
-      const { navSections, useDefaultPreset } = req.body || {};
+      const flags = parseRoleFlags(current.role_nav_sections);
+      const { navSections, useDefaultPreset, dailyLogout } = req.body || {};
       if (useDefaultPreset) {
         delete all[role];
+        delete flags[role];
       } else {
         all[role] = formStateToNavSections(navSections);
+        flags[role] = {
+          dailyLogout: dailyLogout === true,
+        };
       }
-      const item = await repo.update(id, { role_nav_sections: all });
+      const payload = { ...all, roleFlags: flags };
+      const item = await repo.update(id, { role_nav_sections: payload });
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
+      const savedFlags = parseRoleFlags(item.role_nav_sections);
       res.json({
         ok: true,
         data: {
           role,
-          configured: Object.prototype.hasOwnProperty.call(all, role),
+          configured: Object.prototype.hasOwnProperty.call(parseRoleNavSections(item.role_nav_sections), role),
           navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
+          dailyLogout: savedFlags[role]?.dailyLogout === true,
         },
       });
     } catch (error) {

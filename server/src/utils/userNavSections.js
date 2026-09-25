@@ -222,6 +222,44 @@ export function parseRoleNavSections(raw) {
   return out;
 }
 
+/** Поведенческие флаги ролей (рядом с nav в role_nav_sections.roleFlags). */
+export function parseRoleFlags(raw) {
+  const src = parseNavSections(raw);
+  const flagsRaw =
+    src.roleFlags != null && typeof src.roleFlags === 'object' && !Array.isArray(src.roleFlags)
+      ? src.roleFlags
+      : {};
+  const out = {};
+  for (const role of CONFIGURABLE_ACCOUNT_ROLES) {
+    const row = flagsRaw[role];
+    out[role] = {
+      dailyLogout: !!(row && typeof row === 'object' && row.dailyLogout === true),
+    };
+  }
+  return out;
+}
+
+export function setRoleFlag(rawRoleNavSections, role, flagKey, value) {
+  const src = parseNavSections(rawRoleNavSections);
+  const navOnly = parseRoleNavSections(src);
+  const flags = parseRoleFlags(src);
+  const r = normalizeAccountRoleKey(role);
+  if (!r || !CONFIGURABLE_ACCOUNT_ROLES.includes(r)) return { ...navOnly, roleFlags: flags };
+  flags[r] = { ...flags[r], [flagKey]: value === true };
+  return { ...navOnly, roleFlags: flags };
+}
+
+/** Нужен ли ежедневный принудительный выход для пользователя. */
+export function resolveDailyLogoutForUser(user, profile) {
+  if (!user) return false;
+  if (user.role === 'admin') return false;
+  if (user.is_profile_admin === true || user.isProfileAdmin === true) return false;
+  const ar = normalizeAccountRoleKey(user.account_role ?? user.accountRole);
+  if (!ar || ar === 'admin') return false;
+  const flags = parseRoleFlags(profile?.role_nav_sections ?? profile?.roleNavSections ?? {});
+  return flags[ar]?.dailyLogout === true;
+}
+
 /** Эффективные скрытые разделы для роли: сохранённые в профиле или пресет по умолчанию. */
 export function resolveNavSectionsForAccountRole(roleNavSections, accountRole) {
   const role = normalizeAccountRoleKey(accountRole) || 'editor';

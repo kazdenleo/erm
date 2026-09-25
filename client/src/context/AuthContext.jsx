@@ -15,6 +15,27 @@ import {
 
 const AuthContext = createContext(null);
 
+function calendarDayKeyFromMs(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+/** День выдачи JWT (iat) vs сегодня — для флага dailyLogout. */
+function isJwtFromPreviousCalendarDay(token) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return false;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (!payload?.iat) return false;
+    const issued = calendarDayKeyFromMs(Number(payload.iat) * 1000);
+    const today = calendarDayKeyFromMs(Date.now());
+    return issued && today && issued !== today;
+  } catch {
+    return false;
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -242,6 +263,25 @@ export function AuthProvider({ children }) {
     setHasOrganizations(null);
     setApiSessionContext({ accountId: null, organizationId: null });
   }, [applyOrganizationId]);
+
+  // Роль с флагом «выходить каждый новый день» — сбрасываем сессию при смене календарного дня.
+  useEffect(() => {
+    if (!user?.dailyLogout) return undefined;
+    const check = () => {
+      const token = localStorage.getItem('token');
+      if (token && isJwtFromPreviousCalendarDay(token)) {
+        logout();
+      }
+    };
+    check();
+    const onFocus = () => check();
+    window.addEventListener('focus', onFocus);
+    const t = setInterval(check, 60_000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(t);
+    };
+  }, [user?.dailyLogout, logout]);
 
   const profileId = useMemo(() => {
     const raw = user?.profileId ?? user?.profile_id ?? user?.profile?.id;

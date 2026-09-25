@@ -418,11 +418,15 @@ export function FboSupplyCollect({
               <div className="fbo-collect-next__label">Следующий к сборке</div>
               <div className="fbo-collect-next__name">
                 {nextItem.productName || nextItem.name || nextItem.sku || '—'}
-                {nextItem.isKit ? (
-                  <span className="fbo-collect-next__badge">комплект</span>
-                ) : null}
               </div>
               <div className="fbo-collect-next__skus">
+                <span
+                  className={`fbo-collect-next__kind${
+                    nextItem.isKit ? ' fbo-collect-next__kind--kit' : ' fbo-collect-next__kind--product'
+                  }`}
+                >
+                  {nextItem.isKit ? 'Комплект' : 'Товар'}
+                </span>
                 {nextTargets.length > 0 ? (
                   nextTargets.map((t) => (
                     <span key={t.key} className="fbo-collect-next__sku">
@@ -484,6 +488,7 @@ export function FboSupplyCollect({
               <th>Товар</th>
               <th>Комплектующие</th>
               <th className="text-center">Собрано / нужно</th>
+              <th>Собрал</th>
               <th className="text-center" style={{ width: 52 }}>
                 Печать
               </th>
@@ -492,7 +497,7 @@ export function FboSupplyCollect({
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-muted">
+                <td colSpan={6} className="text-muted">
                   {searchActive || categoryFilter ? 'Ничего не найдено' : 'Нет позиций'}
                 </td>
               </tr>
@@ -548,6 +553,9 @@ export function FboSupplyCollect({
                       <span className={`fbo-packed-cell fbo-packed-cell--${cls}`}>
                         {it.collected} / {it.planned}
                       </span>
+                    </td>
+                    <td className="fbo-collect-collector">
+                      {it.lastCollectorName || (it.collected > 0 ? '—' : '—')}
                     </td>
                     <td className="text-center">
                       <button

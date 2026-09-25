@@ -22,6 +22,7 @@ export function UsersRolesTab() {
   const [activeRole, setActiveRole] = useState('picker');
   const [rolesData, setRolesData] = useState({});
   const [navSections, setNavSections] = useState(defaultNavSectionsAllEnabled);
+  const [dailyLogout, setDailyLogout] = useState(false);
   const [configured, setConfigured] = useState(false);
 
   const load = useCallback(async () => {
@@ -46,9 +47,11 @@ export function UsersRolesTab() {
     const row = rolesData[activeRole];
     if (row) {
       setNavSections(row.navSections || defaultNavSectionsAllEnabled());
+      setDailyLogout(row.dailyLogout === true);
       setConfigured(!!row.configured);
     } else {
       setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
+      setDailyLogout(false);
       setConfigured(false);
     }
   }, [activeRole, rolesData]);
@@ -59,22 +62,25 @@ export function UsersRolesTab() {
 
   const applyDefaultPreset = () => {
     setNavSections(navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
+    setDailyLogout(false);
   };
 
   const save = async () => {
     setSaving(true);
     setError('');
     try {
-      const res = await profilesApi.updateRoleNavSection(activeRole, { navSections });
+      const res = await profilesApi.updateRoleNavSection(activeRole, { navSections, dailyLogout });
       const data = res?.data;
       setRolesData((prev) => ({
         ...prev,
         [activeRole]: {
           configured: data?.configured ?? true,
           navSections: data?.navSections ?? navSections,
+          dailyLogout: data?.dailyLogout === true,
         },
       }));
       setConfigured(true);
+      setDailyLogout(data?.dailyLogout === true);
       alert('Сохранено');
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка сохранения');
@@ -97,9 +103,11 @@ export function UsersRolesTab() {
         [activeRole]: {
           configured: false,
           navSections: data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}),
+          dailyLogout: false,
         },
       }));
       setConfigured(false);
+      setDailyLogout(false);
       setNavSections(data?.navSections ?? navSectionsToFormState(ROLE_NAV_PRESETS[activeRole] || {}));
       alert('Восстановлены стандартные настройки роли');
     } catch (err) {
@@ -150,6 +158,27 @@ export function UsersRolesTab() {
             )}
           </div>
         </div>
+
+        <div className="settings-users-nav-group" style={{ marginBottom: '1rem' }}>
+          <div className="settings-users-nav-group-title">Сессия</div>
+          <div className="settings-users-nav-toggles">
+            <label className="settings-users-nav-toggle form-check form-switch">
+              <input
+                className="form-check-input"
+                type="checkbox"
+                role="switch"
+                checked={dailyLogout}
+                onChange={(e) => setDailyLogout(e.target.checked)}
+                disabled={saving}
+              />
+              <span className="form-check-label">Выходить из аккаунта каждый новый день</span>
+            </label>
+          </div>
+          <p className="text-muted small settings-users-nav-hint" style={{ marginTop: 6 }}>
+            При включении сессия действует только в календарный день входа — на следующий день нужен повторный вход.
+          </p>
+        </div>
+
         <p className="text-muted small settings-users-nav-hint">
           Выключенный раздел скрывается в меню и недоступен по прямой ссылке.
         </p>
