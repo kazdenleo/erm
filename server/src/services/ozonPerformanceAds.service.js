@@ -792,7 +792,7 @@ class OzonPerformanceAdsService {
          INNER JOIN product_skus ps
            ON ps.marketplace = 'ozon'
           AND (
-            TRIM(COALESCE(ps.marketplace_product_id, '')) = s.offer_id
+            TRIM(COALESCE(ps.marketplace_product_id::text, '')) = s.offer_id
             OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = s.offer_id
             OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = s.offer_id
             OR TRIM(COALESCE(ps.mp_extra->>'sku', '')) = s.offer_id
@@ -822,9 +822,11 @@ class OzonPerformanceAdsService {
         marketplace: 'ozon',
       }));
     } catch (e) {
-      if (String(e.message || '').includes('ozon_ads_sku_stats')) return [];
-      if (String(e.message || '').includes('in_active_campaign')) return [];
-      throw e;
+      const msg = String(e.message || '');
+      if (msg.includes('ozon_ads_sku_stats')) return [];
+      if (msg.includes('in_active_campaign')) return [];
+      logger.warn('[Ozon Performance] listHighDrrProducts failed', { message: msg });
+      return [];
     }
   }
 

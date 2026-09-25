@@ -675,11 +675,14 @@ class MarketplaceCardWorkService {
     }
 
     let highDrrThreshold = null;
+    const profileIdNum = Number(profileId);
     try {
-      const pref = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [
-        profileId,
-      ]);
-      highDrrThreshold = parsePricePushSettings(pref.rows?.[0]?.price_push_settings).highDrrPercent;
+      if (Number.isFinite(profileIdNum) && profileIdNum >= 1) {
+        const pref = await query('SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1', [
+          profileIdNum,
+        ]);
+        highDrrThreshold = parsePricePushSettings(pref.rows?.[0]?.price_push_settings).highDrrPercent;
+      }
     } catch {
       highDrrThreshold = null;
     }
