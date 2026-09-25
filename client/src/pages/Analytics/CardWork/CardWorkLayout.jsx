@@ -24,7 +24,7 @@ export function CardWorkLayout() {
             `card-work-tabs__link${isActive ? ' card-work-tabs__link--active' : ''}`
           }
         >
-          Очередь
+          Работа с карточками
         </NavLink>
         <NavLink
           to="/card-work/hypotheses"
