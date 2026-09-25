@@ -342,6 +342,11 @@ export function formStateToNavSections(formState) {
   for (const key of NAV_SECTION_KEYS) {
     if (formState?.[key] === false) out[key] = false;
   }
+  // card_work явно true: иначе при analytics_sales: false legacy-ветка
+  // в resolveNavSectionsForAccountRole снова скроет раздел (ключ отсутствовал).
+  if (formState?.card_work === true) {
+    out.card_work = true;
+  }
   return out;
 }
 

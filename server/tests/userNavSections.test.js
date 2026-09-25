@@ -33,7 +33,22 @@ describe('navSectionsToFormState / formStateToNavSections', () => {
     expect(form.products).toBe(false);
     expect(form.orders).toBe(false);
     expect(form.prices).toBe(true);
-    expect(formStateToNavSections(form)).toEqual({ products: false, orders: false });
+    expect(formStateToNavSections(form)).toEqual({
+      products: false,
+      orders: false,
+      card_work: true,
+    });
+  });
+
+  test('keeps card_work enabled when analytics_sales is hidden', () => {
+    const form = navSectionsToFormState({ analytics_sales: false, card_work: false });
+    form.card_work = true;
+    const stored = formStateToNavSections(form);
+    expect(stored.card_work).toBe(true);
+    expect(stored.analytics_sales).toBe(false);
+    const roundTrip = roleNavSectionsToFormState({ editor: stored }, 'editor');
+    expect(roundTrip.card_work).toBe(true);
+    expect(roundTrip.analytics_sales).toBe(false);
   });
 });
 
@@ -58,6 +73,22 @@ describe('resolveNavSectionsForAccountRole', () => {
       'picker'
     );
     expect(resolved.orders).toBe(false);
+  });
+
+  test('legacy: hides card_work when analytics_sales was hidden and card_work unset', () => {
+    const resolved = resolveNavSectionsForAccountRole(
+      { editor: { analytics_sales: false } },
+      'editor'
+    );
+    expect(resolved.card_work).toBe(false);
+  });
+
+  test('does not hide card_work when explicitly enabled', () => {
+    const resolved = resolveNavSectionsForAccountRole(
+      { editor: { analytics_sales: false, card_work: true } },
+      'editor'
+    );
+    expect(resolved.card_work).toBe(true);
   });
 });
 
