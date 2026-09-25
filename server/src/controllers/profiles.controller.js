@@ -105,6 +105,18 @@ function pickAccountOwnerProfilePayload(body) {
       .toLowerCase();
     out.display_weight_unit = v === 'kg' ? 'kg' : 'g';
   }
+  if (
+    b.packing_display_attribute_id !== undefined ||
+    b.packingDisplayAttributeId !== undefined
+  ) {
+    const raw = b.packing_display_attribute_id ?? b.packingDisplayAttributeId;
+    if (raw == null || raw === '') {
+      out.packing_display_attribute_id = null;
+    } else {
+      const n = Number(raw);
+      out.packing_display_attribute_id = Number.isFinite(n) && n > 0 ? n : null;
+    }
+  }
   if (b.timezone !== undefined || b.timeZone !== undefined) {
     out.timezone = normalizeProfileTimezone(b.timezone ?? b.timeZone);
   }

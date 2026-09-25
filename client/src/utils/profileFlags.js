@@ -51,6 +51,12 @@ export function accountSettingsFromProfile(profile) {
         .toLowerCase() === 'kg'
         ? 'kg'
         : 'g',
+    packing_display_attribute_id:
+      profile.packing_display_attribute_id != null && profile.packing_display_attribute_id !== ''
+        ? String(profile.packing_display_attribute_id)
+        : profile.packingDisplayAttributeId != null && profile.packingDisplayAttributeId !== ''
+          ? String(profile.packingDisplayAttributeId)
+          : '',
     timezone: String(profile.timezone ?? profile.timeZone ?? 'Europe/Moscow').trim() || 'Europe/Moscow',
     card_quality_settings: parseClientCardQualitySettings(
       profile.card_quality_settings ?? profile.cardQualitySettings

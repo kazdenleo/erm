@@ -301,6 +301,10 @@ export const authController = {
                   String(profile.display_weight_unit || 'g').trim().toLowerCase() === 'kg'
                     ? 'kg'
                     : 'g',
+                packing_display_attribute_id:
+                  profile.packing_display_attribute_id != null
+                    ? Number(profile.packing_display_attribute_id)
+                    : null,
               }
             : null,
           features: buildUserNavFeatures(resolveNavSectionsForUser(user, profile)),

@@ -13,8 +13,12 @@ import {
   aggregateKitComponents,
   flattenKitBomToLeaves,
 } from './kitStock.service.js';
+import {
+  loadPackingDisplayAttributeId,
+  loadProductAttributeDisplayMap,
+} from '../utils/productAttributeDisplay.js';
 
-async function loadProductBriefMap(productIds) {
+async function loadProductBriefMap(productIds, { displayAttributeId = null } = {}) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
   const map = new Map();
   if (!ids.length) return map;
@@ -22,21 +26,40 @@ async function loadProductBriefMap(productIds) {
     `SELECT id, sku, name FROM products WHERE id = ANY($1::bigint[])`,
     [ids]
   );
+  const attrMap = await loadProductAttributeDisplayMap(ids, displayAttributeId);
   for (const row of r.rows || []) {
-    map.set(Number(row.id), row);
+    const id = Number(row.id);
+    map.set(id, {
+      ...row,
+      displayAttributeValue: attrMap.get(id) || null,
+    });
   }
   return map;
 }
 
+async function withDisplayAttributeOpts(opts = {}) {
+  if (opts.displayAttributeId !== undefined) return opts;
+  const profileId = opts.profileId ?? null;
+  const displayAttributeId = await loadPackingDisplayAttributeId(profileId);
+  return { ...opts, displayAttributeId };
+}
+
+function briefAttrExtra(brief) {
+  const v = brief?.displayAttributeValue;
+  return v ? { displayAttributeValue: v } : {};
+}
+
 function orderRowToAssemblyItem(order, productId, productName, quantity, extra = {}) {
   const oid = order.orderId ?? order.order_id;
+  const { displayAttributeValue, ...rest } = extra || {};
   return {
     productId,
     productName: productName || order.productName || order.product_name || '—',
     quantity: Math.max(1, parseInt(quantity, 10) || 1),
-    offerId: order.offerId ?? order.offer_id ?? extra.offerId ?? null,
+    offerId: order.offerId ?? order.offer_id ?? rest.offerId ?? null,
     orderLineId: oid != null ? String(oid) : null,
-    ...extra
+    displayAttributeValue: displayAttributeValue ?? null,
+    ...rest,
   };
 }
 
@@ -89,7 +112,9 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
   const qty = Math.max(1, parseInt(kitsNeeded, 10) || 1);
 
   if (await canUseWholeKitAssemblyLine(kitId, qty, order, opts)) {
-    const brief = await loadProductBriefMap([kitId]);
+    const brief = await loadProductBriefMap([kitId], {
+      displayAttributeId: opts.displayAttributeId,
+    });
     const b = brief.get(kitId);
     const isRoot = kitId === root;
     return [
@@ -99,6 +124,7 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
         isKitWhole: isRoot,
         isSubKitWhole: !isRoot,
         subKitProductId: isRoot ? null : kitId,
+        ...briefAttrExtra(b),
       }),
     ];
   }
@@ -106,7 +132,10 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
   const aggregated = aggregateKitComponents(await getKitComponents(kitId));
   if (!aggregated.length) return [];
 
-  const nameMap = await loadProductBriefMap(aggregated.map((c) => c.component_product_id));
+  const nameMap = await loadProductBriefMap(
+    aggregated.map((c) => c.component_product_id),
+    { displayAttributeId: opts.displayAttributeId }
+  );
   const lines = [];
 
   for (const { component_product_id, quantity: perKit } of aggregated) {
@@ -118,13 +147,20 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
       const subWhole = await canUseWholeKitAssemblyLine(compPid, lineQty, order, opts);
 
       if (subWhole) {
-        const brief = nameMap.get(compPid) ?? (await loadProductBriefMap([compPid])).get(compPid);
+        const brief =
+          nameMap.get(compPid) ??
+          (
+            await loadProductBriefMap([compPid], {
+              displayAttributeId: opts.displayAttributeId,
+            })
+          ).get(compPid);
         lines.push(
           orderRowToAssemblyItem(order, compPid, brief?.name ?? '—', lineQty, {
             offerId: brief?.sku ?? null,
             kitProductId: root,
             isSubKitWhole: true,
             subKitProductId: compPid,
+            ...briefAttrExtra(brief),
           })
         );
       } else {
@@ -144,6 +180,7 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
           kitProductId: root,
           isKitComponent: true,
           subKitProductId: null,
+          ...briefAttrExtra(brief),
         })
       );
     }
@@ -159,7 +196,8 @@ export async function expandKitOrderToAssemblyItems(order, kitProductId, opts = 
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return [];
   const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
-  return resolveKitAssemblyScanLines(kitId, orderQty, order, opts);
+  const resolvedOpts = await withDisplayAttributeOpts(opts);
+  return resolveKitAssemblyScanLines(kitId, orderQty, order, resolvedOpts);
 }
 
 /**
@@ -169,17 +207,21 @@ async function resolveKitAssemblyItems(order, kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return [];
 
+  const resolvedOpts = await withDisplayAttributeOpts(opts);
   const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
-  const lines = await resolveKitAssemblyScanLines(kitId, orderQty, order, opts);
+  const lines = await resolveKitAssemblyScanLines(kitId, orderQty, order, resolvedOpts);
   if (lines.length) return lines;
 
-  const brief = await loadProductBriefMap([kitId]);
+  const brief = await loadProductBriefMap([kitId], {
+    displayAttributeId: resolvedOpts.displayAttributeId,
+  });
   const b = brief.get(kitId);
   return [
     orderRowToAssemblyItem(order, kitId, b?.name ?? order.productName ?? order.product_name, orderQty, {
       offerId: b?.sku ?? order.offerId ?? order.offer_id ?? null,
       kitProductId: kitId,
       isKitWhole: true,
+      ...briefAttrExtra(b),
     }),
   ];
 }
@@ -278,10 +320,11 @@ export async function buildAssemblyCompositionLinesForOrder(order, ordersService
 export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
   if (!order) return [];
 
-  const kitId = await resolveKitProductIdForOrder(order, ordersService, opts);
+  const resolvedOpts = await withDisplayAttributeOpts(opts);
+  const kitId = await resolveKitProductIdForOrder(order, ordersService, resolvedOpts);
 
   if (kitId != null) {
-    const kitItems = await resolveKitAssemblyItems(order, kitId, opts);
+    const kitItems = await resolveKitAssemblyItems(order, kitId, resolvedOpts);
     if (kitItems.length) return kitItems;
   }
 
@@ -291,12 +334,18 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
   }
   const resolvedPid = linePid != null ? linePid : null;
   const n = resolvedPid != null ? Number(resolvedPid) : NaN;
+  const briefMap =
+    Number.isFinite(n) && n > 0
+      ? await loadProductBriefMap([n], { displayAttributeId: resolvedOpts.displayAttributeId })
+      : new Map();
+  const brief = Number.isFinite(n) && n > 0 ? briefMap.get(n) : null;
   return [
     orderRowToAssemblyItem(
       order,
       Number.isNaN(n) ? resolvedPid : n,
-      order.productName || order.product_name,
-      order.quantity ?? 1
+      order.productName || order.product_name || brief?.name,
+      order.quantity ?? 1,
+      briefAttrExtra(brief)
     ),
   ];
 }
@@ -342,12 +391,13 @@ export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersServic
   const rows = Array.isArray(groupOrders) ? groupOrders : [];
   if (!rows.length) return [];
 
-  const asKit = await tryExpandGroupAsSingleKit(rows, ordersService, opts);
+  const resolvedOpts = await withDisplayAttributeOpts(opts);
+  const asKit = await tryExpandGroupAsSingleKit(rows, ordersService, resolvedOpts);
   if (asKit?.length) return asKit;
 
   const items = [];
   for (const o of rows) {
-    const part = await buildAssemblyOrderItems(o, ordersService, opts);
+    const part = await buildAssemblyOrderItems(o, ordersService, resolvedOpts);
     items.push(...part);
   }
   return items;

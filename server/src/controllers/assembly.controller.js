@@ -186,7 +186,8 @@ class AssemblyController {
       if (order.orderGroupId) {
         const groupOrders = await ordersService.getByOrderGroupId(order.orderGroupId);
         orderItems = await buildAssemblyOrderItemsFromGroup(groupOrders, ordersService, {
-          scannedProductId: product.id
+          scannedProductId: product.id,
+          profileId: req.user?.profileId ?? null,
         });
         if (!orderItems.length) {
           orderItems = await Promise.all(
@@ -212,7 +213,8 @@ class AssemblyController {
         }
       } else {
         orderItems = await buildAssemblyOrderItems(order, ordersService, {
-          scannedProductId: product.id
+          scannedProductId: product.id,
+          profileId: req.user?.profileId ?? null,
         });
         if (!orderItems.length) {
           let linePid = order.productId ?? order.product_id;

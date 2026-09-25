@@ -702,7 +702,12 @@ export function FboSupplyPacking({
                           <tbody>
                             {(cargo.contents || []).map((line) => (
                               <tr key={line.id}>
-                                <td>{line.productName || line.sku || '—'}</td>
+                                <td>
+                                  {line.productName || line.sku || '—'}
+                                  {line.displayAttributeValue ? (
+                                    <span className="text-muted"> · {line.displayAttributeValue}</span>
+                                  ) : null}
+                                </td>
                                 <td>{line.sku || '—'}</td>
                                 <td className="text-end">
                                   <strong>{line.quantity}</strong>
@@ -814,9 +819,17 @@ export function FboSupplyPacking({
               const planned = stat?.planned ?? it.quantity ?? 0;
               const packed = stat?.packed ?? 0;
               const complete = isSupplyItemPackingComplete(stat, it);
+              const displayAttr =
+                stat?.displayAttributeValue ||
+                it.displayAttributeValue ||
+                it.display_attribute_value ||
+                '';
               return (
                 <tr key={it.id} className={complete ? 'fbo-item-row--complete' : ''}>
-                  <td>{it.productName || it.name || '—'}</td>
+                  <td>
+                    {it.productName || it.name || '—'}
+                    {displayAttr ? <span className="text-muted"> · {displayAttr}</span> : null}
+                  </td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
                   {isOzon ? (

@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
+import { productAttributesApi } from '../../services/productAttributes.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
 import {
   NOTIFICATION_CHANNEL_MODES,
@@ -66,6 +67,7 @@ export function Settings() {
     allow_product_supplier_binding: false,
     display_length_unit: 'mm',
     display_weight_unit: 'g',
+    packing_display_attribute_id: '',
     timezone: 'Europe/Moscow',
     card_quality_settings: {
       showInCardWork: false,
@@ -75,15 +77,21 @@ export function Settings() {
   });
   const [accountUsers, setAccountUsers] = useState([]);
   const [accountUsersLoading, setAccountUsersLoading] = useState(false);
+  const [productAttributes, setProductAttributes] = useState([]);
 
   const loadAccount = useCallback(async () => {
     if (!canEditAccount) return;
     setLoading(true);
     setError('');
     try {
-      const res = await profilesApi.getMe();
+      const [res, attrsRes] = await Promise.all([
+        profilesApi.getMe(),
+        productAttributesApi.getAll().catch(() => null),
+      ]);
       const nextForm = accountSettingsFromProfile(res?.data);
       if (nextForm) setForm(nextForm);
+      const attrsRaw = attrsRes?.data;
+      setProductAttributes(Array.isArray(attrsRaw) ? attrsRaw : []);
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Не удалось загрузить данные аккаунта');
     } finally {
@@ -196,6 +204,9 @@ export function Settings() {
         allow_product_supplier_binding: form.allow_product_supplier_binding,
         display_length_unit: form.display_length_unit === 'cm' ? 'cm' : 'mm',
         display_weight_unit: form.display_weight_unit === 'kg' ? 'kg' : 'g',
+        packing_display_attribute_id: form.packing_display_attribute_id
+          ? Number(form.packing_display_attribute_id)
+          : null,
         timezone: form.timezone || 'Europe/Moscow',
         card_quality_settings: {
           showInCardWork: form.card_quality_settings?.showInCardWork === true,
@@ -681,6 +692,37 @@ export function Settings() {
                       <option value="kg">кг</option>
                     </select>
                   </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16, marginBottom: 8 }}>
+                <strong>Атрибут в упаковке и сборке</strong>
+                <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                  Выбранный атрибут товара показывается рядом с названием в упаковке поставок FBO и в составе
+                  заказа при сборке FBS.
+                </span>
+                <div className="mt-2" style={{ maxWidth: 420 }}>
+                  <label className="text-muted small mb-1 d-block" htmlFor="settings-packing-display-attribute">
+                    Атрибут
+                  </label>
+                  <select
+                    id="settings-packing-display-attribute"
+                    className="form-select form-select-sm"
+                    value={form.packing_display_attribute_id || ''}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        packing_display_attribute_id: e.target.value || '',
+                      }))
+                    }
+                  >
+                    <option value="">Не показывать</option>
+                    {productAttributes.map((attr) => (
+                      <option key={attr.id} value={String(attr.id)}>
+                        {attr.name || `Атрибут #${attr.id}`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

@@ -530,6 +530,18 @@ class ProfilesRepositoryPG {
         .toLowerCase();
       set('display_weight_unit', v === 'kg' ? 'kg' : 'g');
     }
+    if (
+      updates.packing_display_attribute_id !== undefined ||
+      updates.packingDisplayAttributeId !== undefined
+    ) {
+      const raw = updates.packing_display_attribute_id ?? updates.packingDisplayAttributeId;
+      if (raw == null || raw === '') {
+        set('packing_display_attribute_id', null);
+      } else {
+        const n = Number(raw);
+        set('packing_display_attribute_id', Number.isFinite(n) && n > 0 ? n : null);
+      }
+    }
     if (updates.timezone !== undefined || updates.timeZone !== undefined) {
       set('timezone', normalizeProfileTimezone(updates.timezone ?? updates.timeZone));
     }

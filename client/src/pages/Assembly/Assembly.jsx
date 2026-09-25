@@ -244,11 +244,13 @@ function groupAssemblyRowsBySessionKey(rows) {
 function formatAssemblyCompositionLine(item) {
   const externalId = String(item.offerId ?? item.orderLineId ?? '').trim();
   const name = item.productName || item.product_name || '—';
+  const attr = String(item.displayAttributeValue ?? item.display_attribute_value ?? '').trim();
+  const nameWithAttr = attr ? `${name} · ${attr}` : name;
   const q = item.quantity ?? 1;
   if (externalId) {
-    return `${externalId}, ${name} - ${q}шт`;
+    return `${externalId}, ${nameWithAttr} - ${q}шт`;
   }
-  return `${name} - ${q}шт`;
+  return `${nameWithAttr} - ${q}шт`;
 }
 
 function assemblyLineProductId(item) {
@@ -261,11 +263,15 @@ function assemblyLineProductId(item) {
 function assemblyCompositionParts(item, quantityOverride) {
   const externalId = String(item.offerId ?? item.orderLineId ?? '').trim();
   const name = item.productName || item.product_name || '—';
+  const displayAttributeValue = String(
+    item.displayAttributeValue ?? item.display_attribute_value ?? ''
+  ).trim();
   const q = quantityOverride ?? item.quantity ?? 1;
   const productId = assemblyLineProductId(item);
   return {
     externalId,
     name,
+    displayAttributeValue,
     q,
     productId,
     fallbackText: formatAssemblyCompositionLine({ ...item, quantity: q })
@@ -1225,6 +1231,9 @@ export function Assembly() {
                         >
                           {line.name}
                         </Link>
+                        {line.displayAttributeValue ? (
+                          <span className="text-muted"> · {line.displayAttributeValue}</span>
+                        ) : null}
                         {` - ${line.q}шт`}
                       </>
                     ) : (
