@@ -126,7 +126,7 @@ export function SettingsUsers() {
   const openEdit = (u) => {
     setEditing(u);
     setForm({
-      email: u.email,
+      email: u.email ?? '',
       password: '',
       lastName: u.last_name ?? '',
       firstName: u.first_name ?? '',
@@ -147,7 +147,8 @@ export function SettingsUsers() {
   };
 
   const save = async () => {
-    if (!form.phone.trim()) {
+    const phone = String(form.phone ?? '').trim();
+    if (!phone) {
       alert('Введите телефон (логин)');
       return;
     }
@@ -157,12 +158,12 @@ export function SettingsUsers() {
     }
     try {
       const payload = {
-        email: form.email.trim() || null,
-        lastName: form.lastName.trim(),
-        firstName: form.firstName.trim(),
-        middleName: form.middleName.trim(),
-        phone: form.phone.trim(),
-        birthDate: form.birthDate.trim() || null,
+        email: String(form.email ?? '').trim() || null,
+        lastName: String(form.lastName ?? '').trim(),
+        firstName: String(form.firstName ?? '').trim(),
+        middleName: String(form.middleName ?? '').trim(),
+        phone,
+        birthDate: String(form.birthDate ?? '').trim() || null,
         role: 'user',
       };
       if (form.password) payload.password = form.password;
