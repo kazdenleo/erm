@@ -1614,6 +1614,17 @@ class WarehouseReceiptsService {
           profileId: effectiveProfileId,
         });
       }
+      // На случай, если складской документ ещё остался (отменённые PR без orphan-cleanup).
+      const still = await this.receiptsRepo.findById(numId);
+      if (still) {
+        const stillLinked = await query(
+          `SELECT 1 FROM purchase_receipts WHERE warehouse_receipt_id = $1 LIMIT 1`,
+          [numId]
+        );
+        if ((stillLinked.rows?.length ?? 0) === 0) {
+          await this.receiptsRepo.delete(numId);
+        }
+      }
       return { deleted: true, id: numId, viaPurchaseReceipt: true, ...(lastResult || {}) };
     }
 

@@ -4471,15 +4471,21 @@ class PurchasesService {
       if (st === 'completed') {
         const pids = await reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId);
         for (const x of pids) trimProducts.add(x);
+        // Снимаем связь со складским документом, иначе он остаётся в списке приёмок
+        // после «успешного» удаления (остатки уже откатили, документ — нет).
         await client.query(
           `UPDATE purchase_receipts
            SET status = 'cancelled',
+               warehouse_receipt_id = NULL,
                cancelled_at = CURRENT_TIMESTAMP,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,
           [rid]
         );
         await recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId);
+        if (whId) {
+          await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
+        }
       } else {
         const pids = await deleteScanningPurchaseReceiptInTx(client, rid);
         for (const x of pids) trimProducts.add(x);
