@@ -26,6 +26,27 @@ const OZON_STATUS_LABELS = {
   on_moderation: 'На проверке',
 };
 
+const YM_STATUS_LABELS = {
+  ACTIVE: 'Действует на YM',
+  VALIDATING: 'Проверяется на YM',
+  WAITING_FIXES: 'Ждёт исправлений',
+  NOT_FOUND: 'Не найден в реестре',
+  EXPIRED: 'Истёк на YM',
+  REVOKED: 'Отозван на YM',
+};
+
+const YM_DOC_TYPE_DEFAULTS = [
+  { code: 'CONFORMITY_CERTIFICATE', label: 'Сертификат соответствия' },
+  { code: 'CONFORMITY_DECLARATION', label: 'Декларация о соответствии' },
+  { code: 'STATE_REGISTRATION_CERTIFICATE', label: 'Свидетельство гос. регистрации' },
+];
+
+function defaultYmDocType(documentType) {
+  if (documentType === 'declaration') return 'CONFORMITY_DECLARATION';
+  if (documentType === 'registration') return 'STATE_REGISTRATION_CERTIFICATE';
+  return 'CONFORMITY_CERTIFICATE';
+}
+
 function toDateOnly(v) {
   if (!v) return '';
   const s = String(v);
@@ -244,6 +265,16 @@ export function Certificates() {
   const [ozonBusy, setOzonBusy] = useState(false);
   const [ozonError, setOzonError] = useState('');
   const [ozonResult, setOzonResult] = useState(null);
+  const [ymModalCert, setYmModalCert] = useState(null);
+  const [ymDocumentTypes, setYmDocumentTypes] = useState([]);
+  const [ymForm, setYmForm] = useState({
+    documentType: 'CONFORMITY_CERTIFICATE',
+    bindProducts: true,
+    forceCreate: false,
+  });
+  const [ymBusy, setYmBusy] = useState(false);
+  const [ymError, setYmError] = useState('');
+  const [ymResult, setYmResult] = useState(null);
 
   const brandNameById = useMemo(() => {
     const map = {};
@@ -424,6 +455,53 @@ export function Certificates() {
     }
   };
 
+  const openYmPush = async (c) => {
+    setYmModalCert(c);
+    setYmError('');
+    setYmResult(null);
+    setYmForm({
+      documentType: c.ym_document_type || defaultYmDocType(c.document_type),
+      bindProducts: true,
+      forceCreate: false,
+    });
+    if (ymDocumentTypes.length === 0) {
+      try {
+        const res = await certificatesApi.ymDocumentTypes();
+        setYmDocumentTypes(res?.data || []);
+      } catch (_) {
+        setYmDocumentTypes(YM_DOC_TYPE_DEFAULTS);
+      }
+    }
+  };
+
+  const closeYmPush = () => {
+    if (ymBusy) return;
+    setYmModalCert(null);
+    setYmError('');
+    setYmResult(null);
+  };
+
+  const handleYmPush = async (e) => {
+    e?.preventDefault?.();
+    if (!ymModalCert?.id) return;
+    setYmBusy(true);
+    setYmError('');
+    setYmResult(null);
+    try {
+      const res = await certificatesApi.pushToYm(ymModalCert.id, {
+        documentType: ymForm.documentType || undefined,
+        bindProducts: !!ymForm.bindProducts,
+        forceCreate: !!ymForm.forceCreate,
+      });
+      setYmResult(res?.data || res);
+      await load();
+    } catch (err) {
+      setYmError(err?.response?.data?.message || err?.message || 'Ошибка отправки на Яндекс.Маркет');
+    } finally {
+      setYmBusy(false);
+    }
+  };
+
   const pageLoading = loading || brandsLoading || categoriesLoading;
 
   if (pageLoading && list.length === 0) {
@@ -438,7 +516,7 @@ export function Certificates() {
       <h1 className="title">Сертификаты</h1>
       <p className="subtitle">
         Документы соответствия с привязкой бренд + категория.
-        Кнопка «На Ozon» создаёт сертификат в кабинете продавца и привязывает товары с этой парой бренд/категория.
+        Кнопки Ozon / ЯМ создают документ в кабинете маркетплейса и привязывают товары с этой парой бренд/категория.
       </p>
 
       <div className="certificates-toolbar">
@@ -485,7 +563,8 @@ export function Certificates() {
                 <th>Окончание</th>
                 <th>Срок</th>
                 <th>Ozon</th>
-                <th style={{ width: 140 }}></th>
+                <th>Яндекс</th>
+                <th style={{ width: 190 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -494,6 +573,7 @@ export function Certificates() {
                 const expired = days != null && days < 0;
                 const expSoon = days != null && days >= 0 && days <= 30;
                 const ozonStatus = String(c.ozon_status_code || '').toLowerCase();
+                const ymStatus = String(c.ym_status_code || '').toUpperCase();
                 return (
                   <tr
                     key={c.id}
@@ -553,6 +633,29 @@ export function Certificates() {
                         <span className="muted">не отправлен</span>
                       )}
                     </td>
+                    <td>
+                      {c.ym_document_id || c.ym_status_code ? (
+                        <div className="ozon-sync-cell">
+                          <span
+                            className={
+                              ymStatus === 'ACTIVE'
+                                ? 'status-ozon-ok'
+                                : ymStatus === 'NOT_FOUND' || ymStatus === 'EXPIRED' || ymStatus === 'REVOKED'
+                                  ? 'status-expired'
+                                  : 'status-ozon-pending'
+                            }
+                          >
+                            {YM_STATUS_LABELS[ymStatus]
+                              || (c.ym_document_id ? `ID ${c.ym_document_id}` : ymStatus)}
+                          </span>
+                          {c.ym_last_error ? (
+                            <span className="muted ozon-error-hint" title={c.ym_last_error}>есть ошибка</span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="muted">не отправлен</span>
+                      )}
+                    </td>
                     <td className="certificates-actions-cell">
                       <div className="certificates-actions">
                         <Button
@@ -564,6 +667,16 @@ export function Certificates() {
                           aria-label="Отправить на Ozon"
                         >
                           Ozon
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => openYmPush(c)}
+                          title="Отправить на Яндекс.Маркет"
+                          className="btn-icon btn-ym-push"
+                          aria-label="Отправить на Яндекс.Маркет"
+                        >
+                          ЯМ
                         </Button>
                         <Button
                           variant="secondary"
@@ -694,6 +807,76 @@ export function Certificates() {
                 {ozonBusy ? 'Отправка…' : ozonModalCert.ozon_certificate_id && !ozonForm.forceCreate
                   ? 'Привязать товары'
                   : 'Отправить на Ozon'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!ymModalCert}
+        onClose={closeYmPush}
+        title="Отправить сертификат на Яндекс.Маркет"
+        size="medium"
+      >
+        {ymModalCert && (
+          <form className="certificate-form" onSubmit={handleYmPush}>
+            <p className="form-hint">
+              Документ <strong>{ymModalCert.certificate_number}</strong> будет создан в
+              «Товары → Документы» кабинета Яндекс.Маркета (организация из шапки). API принимает номер, тип и сроки;
+              скан при необходимости загружается в кабинете Маркета.
+            </p>
+            {ymError && <div className="form-error">{ymError}</div>}
+            {ymResult && (
+              <div className="ozon-push-result">
+                {ymResult.created ? 'Создан на Яндекс.Маркете. ' : 'Использован уже созданный документ. '}
+                {ymResult.ym_document_id != null ? `ID: ${ymResult.ym_document_id}. ` : ''}
+                Статус: {ymResult.status_code || '—'}.
+                {' '}Найдено товаров: {ymResult.products_found ?? 0}, привязано: {ymResult.products_bound ?? 0}.
+                {Array.isArray(ymResult.bind_errors) && ymResult.bind_errors.length > 0
+                  ? ` Ошибки привязки: ${ymResult.bind_errors.length}.`
+                  : ''}
+              </div>
+            )}
+            <div className="form-group">
+              <label>Тип документа на Яндекс.Маркете</label>
+              <select
+                value={ymForm.documentType}
+                onChange={(e) => setYmForm((p) => ({ ...p, documentType: e.target.value }))}
+              >
+                {(ymDocumentTypes.length ? ymDocumentTypes : YM_DOC_TYPE_DEFAULTS).map((t) => (
+                  <option key={t.code} value={t.code}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={ymForm.bindProducts}
+                onChange={(e) => setYmForm((p) => ({ ...p, bindProducts: e.target.checked }))}
+              />
+              <span>Привязать товары с этим брендом и категориями (у которых есть артикул YM / offerId)</span>
+            </label>
+            {ymModalCert.ym_document_id ? (
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={ymForm.forceCreate}
+                  onChange={(e) => setYmForm((p) => ({ ...p, forceCreate: e.target.checked }))}
+                />
+                <span>
+                  Создать заново (сейчас на YM ID {ymModalCert.ym_document_id})
+                </span>
+              </label>
+            ) : null}
+            <div className="form-actions">
+              <Button type="button" variant="secondary" onClick={closeYmPush} disabled={ymBusy}>
+                {ymResult ? 'Закрыть' : 'Отмена'}
+              </Button>
+              <Button type="submit" variant="primary" disabled={ymBusy}>
+                {ymBusy ? 'Отправка…' : ymModalCert.ym_document_id && !ymForm.forceCreate
+                  ? 'Привязать товары'
+                  : 'Отправить на Яндекс'}
               </Button>
             </div>
           </form>
