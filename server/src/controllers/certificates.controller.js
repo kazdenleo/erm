@@ -7,8 +7,10 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import certificatesService from '../services/certificates.service.js';
 import ozonCertificatesPushService from '../services/ozonCertificatesPush.service.js';
+import ymCertificatesPushService from '../services/ymCertificatesPush.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { OZON_ACCORDANCE_TYPES } from '../utils/ozonCertificateMap.js';
+import { YM_DOCUMENT_TYPES } from '../utils/ymCertificateMap.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -182,6 +184,33 @@ class CertificatesController {
     try {
       this._requireProfile(req);
       return res.status(200).json({ ok: true, data: OZON_ACCORDANCE_TYPES });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async pushToYm(req, res, next) {
+    try {
+      const profileId = this._requireProfile(req);
+      const { id } = req.params;
+      const body = req.body || {};
+      const result = await ymCertificatesPushService.pushCertificate(id, {
+        profileId,
+        organizationId: this._organizationId(req),
+        bindProducts: body.bindProducts !== false && body.bind_products !== false,
+        forceCreate: body.forceCreate === true || body.force_create === true,
+        documentType: body.documentType ?? body.document_type ?? null,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async ymDocumentTypes(req, res, next) {
+    try {
+      this._requireProfile(req);
+      return res.status(200).json({ ok: true, data: YM_DOCUMENT_TYPES });
     } catch (e) {
       next(e);
     }

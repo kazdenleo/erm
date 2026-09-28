@@ -52,5 +52,15 @@ export const certificatesApi = {
     const res = await api.get('/certificates/ozon/accordance-types');
     return res.data;
   },
+
+  pushToYm: async (id, body = {}) => {
+    const res = await api.post(`/certificates/${id}/push-ym`, body, { timeout: 180000 });
+    return res.data;
+  },
+
+  ymDocumentTypes: async () => {
+    const res = await api.get('/certificates/ym/document-types');
+    return res.data;
+  },
 };
 

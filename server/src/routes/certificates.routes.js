@@ -15,6 +15,10 @@ router.get(
   '/ozon/accordance-types',
   wrapAsync(certificatesController.ozonAccordanceTypes.bind(certificatesController))
 );
+router.get(
+  '/ym/document-types',
+  wrapAsync(certificatesController.ymDocumentTypes.bind(certificatesController))
+);
 router.get('/:id', wrapAsync(certificatesController.getById.bind(certificatesController)));
 router.post('/', wrapAsync(certificatesController.create.bind(certificatesController)));
 router.put('/:id', wrapAsync(certificatesController.update.bind(certificatesController)));
@@ -31,6 +35,11 @@ router.delete('/:id/photo', wrapAsync(certificatesController.deletePhoto.bind(ce
 router.post(
   '/:id/push-ozon',
   wrapAsync(certificatesController.pushToOzon.bind(certificatesController))
+);
+
+router.post(
+  '/:id/push-ym',
+  wrapAsync(certificatesController.pushToYm.bind(certificatesController))
 );
 
 export default router;
