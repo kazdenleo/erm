@@ -41,6 +41,16 @@ export const certificatesApi = {
   deletePhoto: async (id) => {
     const res = await api.delete(`/certificates/${id}/photo`);
     return res.data;
-  }
+  },
+
+  pushToOzon: async (id, body = {}) => {
+    const res = await api.post(`/certificates/${id}/push-ozon`, body, { timeout: 180000 });
+    return res.data;
+  },
+
+  ozonAccordanceTypes: async () => {
+    const res = await api.get('/certificates/ozon/accordance-types');
+    return res.data;
+  },
 };
 

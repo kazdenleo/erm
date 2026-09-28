@@ -146,7 +146,7 @@
 }
 
 .certificates-actions-cell {
-  width: 88px;
+  width: 140px;
   white-space: nowrap;
   vertical-align: middle;
 }
@@ -168,6 +168,45 @@
   height: 34px;
   padding: 0;
   line-height: 1;
+}
+
+.certificates-actions .btn-ozon-push {
+  min-width: 52px;
+  height: 34px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.ozon-sync-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.status-ozon-ok {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.status-ozon-pending {
+  color: #a16207;
+  font-weight: 600;
+}
+
+.ozon-error-hint {
+  font-size: 11px;
+}
+
+.ozon-push-result {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  font-size: 13px;
+  margin-bottom: 12px;
 }
 
 .certificates-table .cell-strong {

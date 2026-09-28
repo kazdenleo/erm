@@ -3621,13 +3621,7 @@ class IntegrationsService {
     return flatCategories;
   }
 
-  /**
-   * Внутренний запрос к API Ozon Seller (POST).
-   * @param {string} path - путь без базового URL, например '/v1/description-category/attribute'
-   * @param {object} body - тело запроса
-   * @returns {Promise<object>} - ответ result или весь data
-   */
-  async _ozonApiPost(path, body, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+  async _resolveOzonCredentials({ profileId = null, organizationId = null, ozonOverride = null } = {}) {
     let client_id;
     let api_key;
     if (ozonOverride && typeof ozonOverride === 'object') {
@@ -3648,8 +3642,59 @@ class IntegrationsService {
         'Необходимы Client ID и API Key для Ozon. Укажите их в «Интеграции» для выбранной организации (или в кабинете Ozon организации) и выберите ту же организацию в шапке сайта.'
       );
     }
+    return { client_id, api_key };
+  }
+
+  _ozonSellerUrl(path) {
+    return path.startsWith('http')
+      ? path
+      : `https://api-seller.ozon.ru${path.startsWith('/') ? path : '/' + path}`;
+  }
+
+  _ozonFetchNetworkError(fetchErr) {
+    const code = fetchErr?.cause?.code || fetchErr?.code || '';
+    if (code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT') {
+      return new Error('Таймаут соединения с API Ozon. Проверьте интернет или попробуйте позже.');
+    }
+    if (code === 'ENOTFOUND' || code === 'ECONNREFUSED') {
+      return new Error('Не удалось подключиться к API Ozon. Проверьте интернет и доступность api-seller.ozon.ru.');
+    }
+    return new Error('Не удалось связаться с API Ozon. Проверьте интернет и настройки интеграции.');
+  }
+
+  async _ozonParseResponse(response) {
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errMsg = `Ozon API ${response.status}`;
+      try {
+        const j = JSON.parse(errorText);
+        if (j.message) errMsg += ': ' + j.message;
+      } catch (_) {
+        if (errorText) errMsg += ': ' + errorText.substring(0, 200);
+      }
+      const err = new Error(errMsg);
+      err.statusCode = response.status;
+      throw err;
+    }
+    const text = await response.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return { result: text };
+    }
+  }
+
+  /**
+   * Внутренний запрос к API Ozon Seller (POST).
+   * @param {string} path - путь без базового URL, например '/v1/description-category/attribute'
+   * @param {object} body - тело запроса
+   * @returns {Promise<object>} - ответ result или весь data
+   */
+  async _ozonApiPost(path, body, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+    const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
-    const url = path.startsWith('http') ? path : `https://api-seller.ozon.ru${path.startsWith('/') ? path : '/' + path}`;
+    const url = this._ozonSellerUrl(path);
     let response;
     try {
       response = await fetch(url, {
@@ -3664,26 +3709,61 @@ class IntegrationsService {
         timeout: 30000
       });
     } catch (fetchErr) {
-      const code = fetchErr.cause?.code || fetchErr.code || '';
-      const msg = code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT'
-        ? 'Таймаут соединения с API Ozon. Проверьте интернет или попробуйте позже.'
-        : code === 'ENOTFOUND' || code === 'ECONNREFUSED'
-          ? 'Не удалось подключиться к API Ozon. Проверьте интернет и доступность api-seller.ozon.ru.'
-          : 'Не удалось связаться с API Ozon. Проверьте интернет и настройки интеграции.';
-      throw new Error(msg);
+      throw this._ozonFetchNetworkError(fetchErr);
     }
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errMsg = `Ozon API ${response.status}`;
-      try {
-        const j = JSON.parse(errorText);
-        if (j.message) errMsg += ': ' + j.message;
-      } catch (_) {
-        if (errorText) errMsg += ': ' + errorText.substring(0, 200);
-      }
-      throw new Error(errMsg);
+    return this._ozonParseResponse(response);
+  }
+
+  /**
+   * GET к Ozon Seller API (справочники сертификатов и т.п.).
+   */
+  async _ozonApiGet(path, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+    const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
+    const fetch = (await import('node-fetch')).default;
+    const url = this._ozonSellerUrl(path);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'Client-Id': String(client_id),
+          'Api-Key': String(api_key),
+        },
+        timeout: 30000,
+      });
+    } catch (fetchErr) {
+      throw this._ozonFetchNetworkError(fetchErr);
     }
-    return response.json();
+    return this._ozonParseResponse(response);
+  }
+
+  /**
+   * multipart/form-data POST (создание сертификата на Ozon).
+   * @param {string} path
+   * @param {FormData} formData — нативный FormData (Node 18+)
+   */
+  async _ozonApiMultipartPost(path, formData, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+    const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
+    const fetch = (await import('node-fetch')).default;
+    const url = this._ozonSellerUrl(path);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Client-Id': String(client_id),
+          'Api-Key': String(api_key),
+          // Content-Type с boundary выставляет fetch по FormData
+        },
+        body: formData,
+        timeout: 120000,
+      });
+    } catch (fetchErr) {
+      throw this._ozonFetchNetworkError(fetchErr);
+    }
+    return this._ozonParseResponse(response);
   }
 
   /**
