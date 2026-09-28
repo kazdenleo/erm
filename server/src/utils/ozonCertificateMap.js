@@ -49,11 +49,27 @@ export function needsAccordanceType(typeCode) {
 /** Дата → ISO UTC полуночи (как ожидает Ozon). */
 export function toOzonDateTime(dateOnly) {
   if (dateOnly == null || dateOnly === '') return null;
+  if (dateOnly instanceof Date) {
+    if (Number.isNaN(dateOnly.getTime())) return null;
+    const y = dateOnly.getUTCFullYear();
+    const m = String(dateOnly.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(dateOnly.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}T00:00:00.000Z`;
+  }
   const s = String(dateOnly).trim();
   if (!s) return null;
-  const day = s.includes('T') ? s.slice(0, 10) : s.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
-  return `${day}T00:00:00.000Z`;
+  // ISO / DATE: 2024-01-15 или 2024-01-15T...
+  const isoDay = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDay) return `${isoDay[1]}T00:00:00.000Z`;
+  // Date#toString() и подобные — через Date.parse
+  const parsed = new Date(s);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getUTCFullYear();
+    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}T00:00:00.000Z`;
+  }
+  return null;
 }
 
 export function buildOzonCertificateName(cert = {}) {
