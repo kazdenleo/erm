@@ -295,7 +295,8 @@ class OzonCertificatesPushService {
         await persistOzonFields(cert.id, { ozon_last_error: msg.slice(0, 2000) }, profileId);
       } catch (_) {}
       if (e?.statusCode) throw e;
-      throw httpError(msg, 502);
+      const status = /Client ID|API Key/i.test(msg) ? 400 : 502;
+      throw httpError(msg, status);
     }
   }
 }

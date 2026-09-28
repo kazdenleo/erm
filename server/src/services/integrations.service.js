@@ -3656,9 +3656,11 @@ class IntegrationsService {
       api_key = ozonIntegration?.config?.api_key || ozonIntegration?.config?.apiKey;
     }
     if (!client_id || !api_key) {
-      throw new Error(
+      const err = new Error(
         'Необходимы Client ID и API Key для Ozon. Укажите их в «Интеграции» для выбранной организации (или в кабинете Ozon организации) и выберите ту же организацию в шапке сайта.'
       );
+      err.statusCode = 400;
+      throw err;
     }
     return { client_id, api_key };
   }
