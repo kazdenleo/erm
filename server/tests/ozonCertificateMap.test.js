@@ -31,6 +31,7 @@ describe('ozonCertificateMap', () => {
   test('formats Ozon datetime', () => {
     expect(toOzonDateTime('2024-01-15')).toBe('2024-01-15T00:00:00.000Z');
     expect(toOzonDateTime('2024-01-15T12:00:00Z')).toBe('2024-01-15T00:00:00.000Z');
+    expect(toOzonDateTime(new Date('2024-01-15T00:00:00.000Z'))).toBe('2024-01-15T00:00:00.000Z');
     expect(toOzonDateTime('')).toBeNull();
   });
 
