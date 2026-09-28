@@ -1,6 +1,7 @@
 /**
  * Certificates Page
  * Настройки → Сертификаты: реестр сертификатов/деклараций с привязкой бренд + категория.
+ * Отправка в раздел «Сертификаты» кабинета Ozon (Certification API).
  */
 
 import React, { useMemo, useState, useEffect } from 'react';
@@ -15,6 +16,14 @@ const DOC_TYPE_LABELS = {
   certificate: 'Сертификат соответствия',
   declaration: 'Декларация',
   registration: 'Свидетельство гос. регистрации',
+};
+
+const OZON_STATUS_LABELS = {
+  approved: 'Одобрен на Ozon',
+  rejected: 'Отклонён на Ozon',
+  pending: 'Ожидает проверки',
+  awaiting_moderation: 'Ожидает проверки',
+  on_moderation: 'На проверке',
 };
 
 function toDateOnly(v) {
@@ -224,6 +233,17 @@ export function Certificates() {
   const [saving, setSaving] = useState(false);
   const [filterBrandId, setFilterBrandId] = useState('');
   const [filterDocType, setFilterDocType] = useState('');
+  const [ozonModalCert, setOzonModalCert] = useState(null);
+  const [ozonAccordanceTypes, setOzonAccordanceTypes] = useState([]);
+  const [ozonForm, setOzonForm] = useState({
+    name: '',
+    accordanceTypeCode: 'technical_regulations_cu',
+    bindProducts: true,
+    forceCreate: false,
+  });
+  const [ozonBusy, setOzonBusy] = useState(false);
+  const [ozonError, setOzonError] = useState('');
+  const [ozonResult, setOzonResult] = useState(null);
 
   const brandNameById = useMemo(() => {
     const map = {};
@@ -351,6 +371,59 @@ export function Certificates() {
     }
   };
 
+  const openOzonPush = async (c) => {
+    setOzonModalCert(c);
+    setOzonError('');
+    setOzonResult(null);
+    setOzonForm({
+      name: c.ozon_name || '',
+      accordanceTypeCode: c.ozon_accordance_type_code || 'technical_regulations_cu',
+      bindProducts: true,
+      forceCreate: false,
+    });
+    if (ozonAccordanceTypes.length === 0) {
+      try {
+        const res = await certificatesApi.ozonAccordanceTypes();
+        setOzonAccordanceTypes(res?.data || []);
+      } catch (_) {
+        setOzonAccordanceTypes([
+          { code: 'technical_regulations_cu', label: 'Технический регламент ТС' },
+          { code: 'technical_regulations_rf', label: 'Технический регламент РФ' },
+          { code: 'gost', label: 'ГОСТ' },
+        ]);
+      }
+    }
+  };
+
+  const closeOzonPush = () => {
+    if (ozonBusy) return;
+    setOzonModalCert(null);
+    setOzonError('');
+    setOzonResult(null);
+  };
+
+  const handleOzonPush = async (e) => {
+    e?.preventDefault?.();
+    if (!ozonModalCert?.id) return;
+    setOzonBusy(true);
+    setOzonError('');
+    setOzonResult(null);
+    try {
+      const res = await certificatesApi.pushToOzon(ozonModalCert.id, {
+        name: ozonForm.name?.trim() || undefined,
+        accordanceTypeCode: ozonForm.accordanceTypeCode || undefined,
+        bindProducts: !!ozonForm.bindProducts,
+        forceCreate: !!ozonForm.forceCreate,
+      });
+      setOzonResult(res?.data || res);
+      await load();
+    } catch (err) {
+      setOzonError(err?.response?.data?.message || err?.message || 'Ошибка отправки на Ozon');
+    } finally {
+      setOzonBusy(false);
+    }
+  };
+
   const pageLoading = loading || brandsLoading || categoriesLoading;
 
   if (pageLoading && list.length === 0) {
@@ -365,7 +438,7 @@ export function Certificates() {
       <h1 className="title">Сертификаты</h1>
       <p className="subtitle">
         Документы соответствия с привязкой бренд + категория.
-        В товары с этой парой подставятся данные и уйдут на маркетплейсы вместе с характеристиками.
+        Кнопка «На Ozon» создаёт сертификат в кабинете продавца и привязывает товары с этой парой бренд/категория.
       </p>
 
       <div className="certificates-toolbar">
@@ -410,8 +483,9 @@ export function Certificates() {
                 <th>Категории</th>
                 <th>Начало</th>
                 <th>Окончание</th>
-                <th>Статус</th>
-                <th style={{ width: 88 }}></th>
+                <th>Срок</th>
+                <th>Ozon</th>
+                <th style={{ width: 140 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -419,6 +493,7 @@ export function Certificates() {
                 const days = daysUntil(c.valid_to);
                 const expired = days != null && days < 0;
                 const expSoon = days != null && days >= 0 && days <= 30;
+                const ozonStatus = String(c.ozon_status_code || '').toLowerCase();
                 return (
                   <tr
                     key={c.id}
@@ -456,8 +531,40 @@ export function Certificates() {
                         <span className="muted">Ок</span>
                       )}
                     </td>
+                    <td>
+                      {c.ozon_certificate_id ? (
+                        <div className="ozon-sync-cell">
+                          <span
+                            className={
+                              ozonStatus === 'approved'
+                                ? 'status-ozon-ok'
+                                : ozonStatus === 'rejected'
+                                  ? 'status-expired'
+                                  : 'status-ozon-pending'
+                            }
+                          >
+                            {OZON_STATUS_LABELS[ozonStatus] || `ID ${c.ozon_certificate_id}`}
+                          </span>
+                          {c.ozon_last_error ? (
+                            <span className="muted ozon-error-hint" title={c.ozon_last_error}>есть ошибка</span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="muted">не отправлен</span>
+                      )}
+                    </td>
                     <td className="certificates-actions-cell">
                       <div className="certificates-actions">
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => openOzonPush(c)}
+                          title="Отправить на Ozon"
+                          className="btn-icon btn-ozon-push"
+                          aria-label="Отправить на Ozon"
+                        >
+                          Ozon
+                        </Button>
                         <Button
                           variant="secondary"
                           size="small"
@@ -509,6 +616,88 @@ export function Certificates() {
           onCancel={closeModal}
           saving={saving}
         />
+      </Modal>
+
+      <Modal
+        isOpen={!!ozonModalCert}
+        onClose={closeOzonPush}
+        title="Отправить сертификат на Ozon"
+        size="medium"
+      >
+        {ozonModalCert && (
+          <form className="certificate-form" onSubmit={handleOzonPush}>
+            <p className="form-hint">
+              Документ <strong>{ozonModalCert.certificate_number}</strong> будет создан в разделе
+              «Сертификаты» кабинета Ozon (организация из шапки сайта). Нужны файл jpg/png/pdf и дата начала.
+            </p>
+            {ozonError && <div className="form-error">{ozonError}</div>}
+            {ozonResult && (
+              <div className="ozon-push-result">
+                {ozonResult.created ? 'Создан на Ozon. ' : 'Использован уже созданный сертификат. '}
+                ID: {ozonResult.ozon_certificate_id}.
+                {' '}Найдено товаров: {ozonResult.products_found ?? 0}, привязано: {ozonResult.products_bound ?? 0}.
+                {Array.isArray(ozonResult.bind_errors) && ozonResult.bind_errors.length > 0
+                  ? ` Ошибки привязки: ${ozonResult.bind_errors.length}.`
+                  : ''}
+              </div>
+            )}
+            <div className="form-group">
+              <label>Название на Ozon</label>
+              <input
+                type="text"
+                maxLength={100}
+                value={ozonForm.name}
+                onChange={(e) => setOzonForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Например: Сертификат Miles"
+              />
+              <p className="form-hint">Если пусто — соберём из типа, бренда и номера.</p>
+            </div>
+            <div className="form-group">
+              <label>Тип соответствия</label>
+              <select
+                value={ozonForm.accordanceTypeCode}
+                onChange={(e) => setOzonForm((p) => ({ ...p, accordanceTypeCode: e.target.value }))}
+              >
+                {(ozonAccordanceTypes.length
+                  ? ozonAccordanceTypes
+                  : [{ code: 'technical_regulations_cu', label: 'Технический регламент ТС' }]
+                ).map((t) => (
+                  <option key={t.code} value={t.code}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={ozonForm.bindProducts}
+                onChange={(e) => setOzonForm((p) => ({ ...p, bindProducts: e.target.checked }))}
+              />
+              <span>Привязать товары с этим брендом и категориями (у которых есть ID в каталоге Ozon)</span>
+            </label>
+            {ozonModalCert.ozon_certificate_id ? (
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={ozonForm.forceCreate}
+                  onChange={(e) => setOzonForm((p) => ({ ...p, forceCreate: e.target.checked }))}
+                />
+                <span>
+                  Создать заново (сейчас на Ozon ID {ozonModalCert.ozon_certificate_id})
+                </span>
+              </label>
+            ) : null}
+            <div className="form-actions">
+              <Button type="button" variant="secondary" onClick={closeOzonPush} disabled={ozonBusy}>
+                {ozonResult ? 'Закрыть' : 'Отмена'}
+              </Button>
+              <Button type="submit" variant="primary" disabled={ozonBusy}>
+                {ozonBusy ? 'Отправка…' : ozonModalCert.ozon_certificate_id && !ozonForm.forceCreate
+                  ? 'Привязать товары'
+                  : 'Отправить на Ozon'}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

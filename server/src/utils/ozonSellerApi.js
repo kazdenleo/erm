@@ -61,3 +61,55 @@ export async function ozonApiPostWithRetry(
   ozonSellerApiQueue = run.catch(() => {});
   return run;
 }
+
+async function ozonApiCallWithRetryInner(
+  callFn,
+  { maxAttempts = 6, minGapMs = OZON_SELLER_API_MIN_GAP_MS } = {}
+) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (minGapMs > 0) {
+      const wait = ozonSellerApiLastAt + minGapMs - Date.now();
+      if (wait > 0) await sleep(wait);
+    }
+    ozonSellerApiLastAt = Date.now();
+    try {
+      return await callFn();
+    } catch (e) {
+      if (!isOzonRateLimitError(e) || attempt >= maxAttempts - 1) {
+        if (isOzonRateLimitError(e)) {
+          const err = new Error(
+            'Ozon временно ограничил частоту запросов. Подождите 10–20 секунд и повторите отправку.'
+          );
+          err.statusCode = 429;
+          err.code = 'OZON_RATE_LIMIT';
+          err.cause = e;
+          throw err;
+        }
+        throw e;
+      }
+      await sleep(1000 * 2 ** attempt);
+    }
+  }
+}
+
+export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
+  const run = ozonSellerApiQueue.then(() =>
+    ozonApiCallWithRetryInner(
+      () => integrationsService._ozonApiGet(path, ozonApiOpts),
+      opts
+    )
+  );
+  ozonSellerApiQueue = run.catch(() => {});
+  return run;
+}
+
+export async function ozonApiMultipartPostWithRetry(path, formData, ozonApiOpts, opts = {}) {
+  const run = ozonSellerApiQueue.then(() =>
+    ozonApiCallWithRetryInner(
+      () => integrationsService._ozonApiMultipartPost(path, formData, ozonApiOpts),
+      { maxAttempts: opts.maxAttempts ?? 4, minGapMs: opts.minGapMs ?? OZON_SELLER_API_MIN_GAP_MS }
+    )
+  );
+  ozonSellerApiQueue = run.catch(() => {});
+  return run;
+}
