@@ -97,6 +97,7 @@ class StockMovementsRepositoryPG {
                    SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
                    FROM stock_movements sm
                    WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+                     AND ($6::bigint IS NULL OR sm.warehouse_id = $6::bigint)
                  ), 0)
                  + CASE
                    WHEN $2::varchar = 'reserve' AND $3::int < 0 THEN (-$3::int)
@@ -110,7 +111,8 @@ class StockMovementsRepositoryPG {
                  SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
                  FROM stock_movements sm
                  WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
-               ), COALESCE(p.reserved_quantity, 0), 0)::int
+                   AND ($6::bigint IS NULL OR sm.warehouse_id = $6::bigint)
+               ), CASE WHEN $6::bigint IS NULL THEN COALESCE(p.reserved_quantity, 0) ELSE 0 END, 0)::int
              END,
              $4, $5::jsonb, $6,
              COALESCE($7::bigint, p.profile_id)

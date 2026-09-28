@@ -171,6 +171,7 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
   if (inc == null && t === 'incoming' && balDb != null && !hasNew) {
     inc = balDb;
   }
+  // reserved_after при warehouse_id — снимок резерва склада движения (не глобальный).
   let res = resDb;
   let bal = whBal != null ? whBal : isWarehouseScopedReturn && movementWarehouseId(m) ? null : balDb;
 
@@ -189,6 +190,20 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
     res: res != null ? res : null,
     bal: bal != null ? bal : null,
   };
+}
+
+/** Резерв строки истории: снимок склада, иначе prev / 0 (без подмешивания других складов). */
+function historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes = null) {
+  if (dbRes != null && !Number.isNaN(Number(dbRes))) {
+    return Number(dbRes);
+  }
+  if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+    return Number(prevLineBelow.res);
+  }
+  if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+    return 0;
+  }
+  return 0;
 }
 
 /** Наличие после возврата поставщику: предыдущая строка + quantity_change. */
@@ -946,9 +961,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         item.kind === 'unreserveGroup' ||
         (item.kind === 'single' && movementTypeLower(item.m) === 'unreserve');
 
-    // При фильтре склада нельзя брать глобальный reserved_after: между видимыми
-    // строками бывают скрытые FBO/резервы других складов → ложный большой +Δ.
-    if (warehouseScoped && prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+    // reserved_after при warehouse_id — снимок резерва склада; без снимка — цепочка Δ.
+    if (dbRes != null) {
+      out.res = dbRes;
+    } else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
       if (useKitUnits) {
         const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
         out.res = isUnreserve
@@ -962,8 +978,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         out.res = Number(prevLineBelow.res);
       }
     } else if (warehouseScoped) {
-      // Нижняя (самая старая) видимая строка: стартуем с 0 + Δ этой строки.
-      // Иначе reserved_after с FBO «прилипает» к фильтру другого склада.
       if (useKitUnits) {
         const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
         out.res = isUnreserve ? 0 : kitUnits;
@@ -972,8 +986,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       } else {
         out.res = 0;
       }
-    } else if (dbRes != null) {
-      out.res = dbRes;
     } else if (useKitUnits && prevLineBelow?.res != null) {
       const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
       out.res = isUnreserve
@@ -1012,8 +1024,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     } else if (dbInc != null) {
       out.inc = dbInc;
     }
-    // Резерв: при отгрузке снимается; если нет снимка — отталкиваемся от строки ниже.
-    if (dbRes != null && !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')) {
+    // Резерв: снимок склада в reserved_after; если нет — отталкиваемся от строки ниже.
+    if (dbRes != null) {
       out.res = dbRes;
     } else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
       const unreserveSum = item.movements
@@ -1022,8 +1034,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       out.res = Math.max(0, Number(prevLineBelow.res) - unreserveSum);
     } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
       out.res = 0;
-    } else if (dbRes != null) {
-      out.res = dbRes;
     }
     // Наличие: при фильтре склада — warehouse_balance_after, не products.quantity (все склады).
     if (whBal != null) {
@@ -1066,12 +1076,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       const dbInc = movementNum(head, 'incoming_after');
       out.inc = dbInc != null ? dbInc : 0;
     }
-    if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-      out.res = Number(prevLineBelow.res);
-    } else {
-      const dbRes = movementNum(head, 'reserved_after');
-      out.res = dbRes != null ? dbRes : 0;
-    }
+    out.res = historyReservedCarryForward(
+      prevLineBelow,
+      warehouseFilterId,
+      movementNum(head, 'reserved_after')
+    );
     const asmLost = kitAssemblableUnitsLostFromReturnMovements(ms);
     if (asmLost > 0) out._kitAssemblableUnitsLost = asmLost;
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
@@ -1114,9 +1123,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     else if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
       out.inc = Number(prevLineBelow.inc);
     }
-    if (dbRes != null) out.res = dbRes;
-    else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-      out.res = Number(prevLineBelow.res);
+    if (dbRes != null && !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')) {
+      out.res = dbRes;
+    } else {
+      out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes);
     }
     if (whBal != null) out.bal = whBal;
     else if (dbBal != null) out.bal = dbBal;
@@ -1247,19 +1257,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         out.inc = Math.max(0, Number(prevLineBelow.inc) - moveQty);
       } else if (dbInc != null) out.inc = dbInc;
       else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
-      const prevRes =
-        prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))
-          ? Number(prevLineBelow.res)
-          : null;
-      // Приёмка сама по себе резерв не меняет. Не подставляем глобальный reserved_after:
-      // при фильтре по складу он часто «прыгает» из‑за резервов на других складах / вне видимой истории.
-      if (prevRes != null) {
-        out.res = prevRes;
-      } else if (dbRes != null && !warehouseFilterId) {
-        out.res = dbRes;
-      } else {
-        out.res = 0;
-      }
+      // Приёмка резерв не меняет — берём снимок склада или строку ниже.
+      out.res = historyReservedCarryForward(prevLineBelow, warehouseFilterId, dbRes);
       // Наличие: при фильтре склада — остаток склада (meta) или prev + qty; не products.quantity (все склады).
       if (whBal != null) {
         out.bal = whBal;
@@ -1288,15 +1287,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         const dbInc = movementNum(m, 'incoming_after');
         out.inc = dbInc != null ? dbInc : 0;
       }
-      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-        out.res = Number(prevLineBelow.res);
-      } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
-        // Не тянем глобальный reserved_after (FBO и др. склады) при фильтре склада.
-        out.res = 0;
-      } else {
-        const dbRes = movementNum(m, 'reserved_after');
-        out.res = dbRes != null ? dbRes : 0;
-      }
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
       return out;
     }
     if (isKitAssemblyReceiptMovement(m)) {
@@ -1339,12 +1334,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
         const dbInc = movementNum(m, 'incoming_after');
         out.inc = dbInc != null ? dbInc : 0;
       }
-      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-        out.res = Number(prevLineBelow.res);
-      } else {
-        const dbRes = movementNum(m, 'reserved_after');
-        out.res = dbRes != null ? dbRes : 0;
-      }
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
       return out;
     }
     if (t === 'writeoff') {
@@ -1368,11 +1362,11 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       } else if (out.inc == null || Number.isNaN(Number(out.inc))) {
         out.inc = 0;
       }
-      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
-        out.res = Number(prevLineBelow.res);
-      } else if (out.res == null || Number.isNaN(Number(out.res))) {
-        out.res = 0;
-      }
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
       return out;
     }
     if (t === 'return_to_supplier' || t === 'customer_return') {
@@ -1432,10 +1426,7 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     }
     if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
-      if (
-        dbRes != null &&
-        !(warehouseFilterId != null && String(warehouseFilterId).trim() !== '')
-      ) {
+      if (dbRes != null) {
         out.res = dbRes;
       } else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
         const qc = Number(m.quantity_change) || 0;
@@ -1446,8 +1437,6 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       } else if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
         const qc = Number(m.quantity_change) || 0;
         out.res = t === 'unreserve' || qc > 0 ? 0 : Math.abs(qc);
-      } else if (dbRes != null) {
-        out.res = dbRes;
       }
       if (prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
         out.inc = prevLineBelow.inc;
@@ -1455,7 +1444,22 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       if (prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
         out.bal = prevLineBelow.bal;
       }
+    } else if (out.res == null || Number.isNaN(Number(out.res))) {
+      // manual / opening_balance / прочие: снимок склада или перенос со строки ниже.
+      out.res = historyReservedCarryForward(
+        prevLineBelow,
+        warehouseFilterId,
+        movementNum(m, 'reserved_after')
+      );
     }
+  }
+
+  if (out.res == null || Number.isNaN(Number(out.res))) {
+    out.res = historyReservedCarryForward(
+      prevLineBelow,
+      warehouseFilterId,
+      item.kind === 'single' ? movementNum(item.m, 'reserved_after') : null
+    );
   }
 
   return out;

@@ -391,11 +391,19 @@ class StockMovementsService {
     const profId = product.profile_id ?? product.profileId ?? null;
     const incAfter =
       productAfter?.incoming_quantity != null ? Number(productAfter.incoming_quantity) : 0;
-    const resAfter =
-      productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
+    // reserved_after — снимок резерва склада движения (не глобальный products.reserved_quantity).
+    let resAfter = 0;
+    try {
+      const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+      resAfter = await getReservedQuantityFromMovements(idNum, { warehouseId });
+    } catch {
+      resAfter =
+        productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
+    }
 
     metaOut.warehouse_balance_before = currentWh;
     metaOut.warehouse_balance_after = newWh;
+    metaOut.warehouse_reserved_after = Number.isFinite(resAfter) ? resAfter : 0;
 
     if (typeNormEarly === 'manual') {
       try {
@@ -1781,9 +1789,10 @@ class StockMovementsService {
              SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
              FROM stock_movements
              WHERE product_id = $1 AND type IN ('reserve', 'unreserve')
+               AND ($3::bigint IS NULL OR warehouse_id = $3::bigint)
            ), 0)
            WHERE sm.id = $2`,
-          [pid, movementId]
+          [pid, movementId, warehouseId]
         );
       }
       await client.query(
@@ -3036,9 +3045,10 @@ class StockMovementsService {
                  SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
                  FROM stock_movements
                  WHERE product_id = $1 AND type IN ('reserve', 'unreserve')
+                   AND ($3::bigint IS NULL OR warehouse_id = $3::bigint)
                ), 0)
                WHERE sm.id = $2`,
-              [pid, movementId]
+              [pid, movementId, reserveWarehouseId]
             );
           }
           await client.query(
