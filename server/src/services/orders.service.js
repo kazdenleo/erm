@@ -58,6 +58,7 @@ import {
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
 import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurementStatus.js';
+import { assemblyListOrderIndex, pickFirstByAssemblyListOrder } from '../utils/assemblyListOrder.js';
 import logger from '../utils/logger.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import {
@@ -5009,13 +5010,33 @@ class OrdersService {
    * Найти первый по списку заказ на сборке (status in_assembly), содержащий товар с productId.
    * При PostgreSQL учитывает и совпадение по product_skus (для заказов WB без product_id — по nmId/offer_id/product_name).
    * @param {number|string} productId
-   * @param {{ marketplace?: string|null }} [options] marketplace — фильтр UI (ozon|wildberries|yandex|all)
+   * @param {{ marketplace?: string|null, listOrder?: Array<{ marketplace: string, orderId: string }> }} [options]
+   *   marketplace — фильтр UI (ozon|wildberries|yandex|all);
+   *   listOrder — порядок строк таблицы «Сборка»: берём первый заказ из неё, иначе created_at DESC
    * @returns {Promise<object|null>} заказ или null
    */
   async findFirstAssembledByProductId(productId, options = {}) {
     if (productId == null) return null;
     const marketplaces = this.normalizeAssemblyMarketplaceFilter(options.marketplace);
     const repoOpts = marketplaces ? { marketplaces } : {};
+    const listOrder = assemblyListOrderIndex(options.listOrder);
+    if (repositoryFactory.isUsingPostgreSQL() && listOrder.size > 0) {
+      const candidates = await this.repository.findAllAssembledByProductIdOrSku(productId, repoOpts);
+      const pid = Number(productId);
+      if (Number.isFinite(pid) && pid > 0) {
+        const kitsRes = await query(
+          `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+          [pid]
+        );
+        for (const row of kitsRes.rows || []) {
+          if (row.kit_product_id == null) continue;
+          candidates.push(
+            ...(await this.repository.findAllAssembledByProductIdOrSku(row.kit_product_id, repoOpts))
+          );
+        }
+      }
+      return pickFirstByAssemblyListOrder(candidates, listOrder);
+    }
     if (repositoryFactory.isUsingPostgreSQL()) {
       let order = await this.repository.findFirstAssembledByProductIdOrSku(productId, repoOpts);
       if (order) return order;

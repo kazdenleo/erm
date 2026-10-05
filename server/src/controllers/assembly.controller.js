@@ -51,13 +51,15 @@ class AssemblyController {
    * Найти заказ на сборке с данным штрихкодом.
    * Если передан preferOrderId и этот заказ ещё на сборке и содержит товар — вернуть его
    * (не переключать сборщика на другой заказ с тем же SKU при частичном прогрессе).
-   * Иначе — первый по списку (created_at DESC).
+   * Иначе — первый заказ с этим товаром по порядку таблицы сборки (POST body.listOrder),
+   * без listOrder — created_at DESC.
    * marketplace (опционально) — только заказы выбранного МП (как фильтр на странице сборки).
    * Возвращает заказ, товар и список позиций заказа (для отображения «осталось дособрать»).
    */
   async findOrderByBarcode(req, res, next) {
     try {
-      const barcode = String(req.query.barcode ?? '')
+      const params = { ...(req.query || {}), ...(req.body && typeof req.body === 'object' ? req.body : {}) };
+      const barcode = String(params.barcode ?? '')
         .trim()
         .replace(/[\r\n\t]+/g, '');
       if (!barcode) {
@@ -67,16 +69,17 @@ class AssemblyController {
         });
       }
 
-      const marketplaceFilterRaw = String(req.query.marketplace ?? '')
+      const marketplaceFilterRaw = String(params.marketplace ?? '')
         .trim()
         .toLowerCase();
       const marketplaceFilter =
         !marketplaceFilterRaw || marketplaceFilterRaw === 'all' ? null : marketplaceFilterRaw;
+      const listOrder = Array.isArray(params.listOrder) ? params.listOrder : null;
 
-      const preferOrderId = String(req.query.preferOrderId ?? req.query.prefer_order_id ?? '')
+      const preferOrderId = String(params.preferOrderId ?? params.prefer_order_id ?? '')
         .trim();
       const preferMarketplaceRaw = String(
-        req.query.preferMarketplace ?? req.query.prefer_marketplace ?? ''
+        params.preferMarketplace ?? params.prefer_marketplace ?? ''
       )
         .trim()
         .toLowerCase();
@@ -146,7 +149,8 @@ class AssemblyController {
       // общие названия («Салонный фильтр») давали ложные совпадения с чужими заказами.
       if (!order) {
         order = await ordersService.findFirstAssembledByProductId(product.id, {
-          marketplace: marketplaceFilter
+          marketplace: marketplaceFilter,
+          listOrder,
         });
       }
       if (!order) {

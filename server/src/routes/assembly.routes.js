@@ -15,6 +15,11 @@ router.get(
   '/find-by-barcode',
   wrapAsync(assemblyController.findOrderByBarcode.bind(assemblyController))
 );
+// То же, но с порядком таблицы сборки в body.listOrder (список не влезает в query)
+router.post(
+  '/find-by-barcode',
+  wrapAsync(assemblyController.findOrderByBarcode.bind(assemblyController))
+);
 
 // Отметить заказ как собранный (убрать из списка сборки) — фиксируем пользователя и время
 router.post(

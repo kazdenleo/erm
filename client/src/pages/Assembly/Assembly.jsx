@@ -306,6 +306,8 @@ export function Assembly() {
   const orderKeyRef = useRef('');
   const currentOrderDataRef = useRef(null);
   const scannedQuantitiesRef = useRef({});
+  /** Порядок строк таблицы сборки — при скане берём первый заказ из неё с этим товаром */
+  const assemblyListOrderRef = useRef([]);
   const markedCollectedKeyRef = useRef('');
   const autoFinishKeyRef = useRef('');
   /** Пока идёт markCollected + печать — игнорируем сканы (иначе сканер шлёт второй ввод и открывается чужой заказ с тем же товаром → вторая этикетка). */
@@ -792,6 +794,7 @@ export function Assembly() {
 
       const data = await assemblyApi.findOrderByBarcode(trimmed, {
         marketplace: marketplaceFilter,
+        listOrder: assemblyListOrderRef.current,
         ...(preferIncomplete
           ? {
               preferOrderId: String(cur.order.orderId),
@@ -1145,6 +1148,13 @@ export function Assembly() {
   const assemblyTableGroups = useMemo(
     () => groupAssemblyRowsBySessionKey(filtered),
     [filtered]
+  );
+  assemblyListOrderRef.current = useMemo(
+    () =>
+      assemblyTableGroups.flatMap(({ rows }) =>
+        rows.map((o) => ({ marketplace: o.marketplace, orderId: String(o.orderId ?? o.order_id ?? '') }))
+      ),
+    [assemblyTableGroups]
   );
 
   const collectedFiltered = useMemo(() => {

@@ -315,6 +315,13 @@ export const assemblyApi = {
         .toLowerCase();
       if (preferMp && preferMp !== 'all') params.preferMarketplace = preferMp;
     }
+    if (Array.isArray(options.listOrder) && options.listOrder.length > 0) {
+      const response = await api.post('/assembly/find-by-barcode', {
+        ...params,
+        listOrder: options.listOrder,
+      });
+      return response.data?.data ?? response.data;
+    }
     const response = await api.get('/assembly/find-by-barcode', { params });
     return response.data?.data ?? response.data;
   },

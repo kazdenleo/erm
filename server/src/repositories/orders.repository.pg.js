@@ -1471,18 +1471,31 @@ class OrdersRepositoryPG {
    *   marketplaces — если задан, ищем только среди этих значений orders.marketplace
    */
   async findFirstAssembledByProductIdOrSku(productId, options = {}) {
-    if (productId == null) return null;
+    const rows = await this.findAllAssembledByProductIdOrSku(productId, { ...options, limit: 1 });
+    return rows[0] || null;
+  }
+
+  /**
+   * Все заказы на сборке с товаром productId (порядок: created_at DESC).
+   * @param {number|string} productId
+   * @param {{ marketplaces?: string[]|null, limit?: number }} [options]
+   */
+  async findAllAssembledByProductIdOrSku(productId, options = {}) {
+    if (productId == null) return [];
     const pid = Number(productId);
-    if (Number.isNaN(pid)) return null;
+    if (Number.isNaN(pid)) return [];
     const marketplaces = Array.isArray(options.marketplaces)
       ? options.marketplaces.map((m) => String(m || '').trim().toLowerCase()).filter(Boolean)
       : [];
+    const limit = Math.min(Math.max(Number(options.limit) || 500, 1), 2000);
     const params = [pid];
     let mpClause = '';
     if (marketplaces.length > 0) {
       params.push(marketplaces);
       mpClause = ` AND LOWER(TRIM(o.marketplace)) = ANY($${params.length}::text[])`;
     }
+    params.push(limit);
+    const limitParam = `$${params.length}`;
     const sql = `
       SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
@@ -1502,10 +1515,10 @@ class OrdersRepositoryPG {
         AND ${orderLineMatchesCatalogProductIdSql()}
         ${mpClause}
       ORDER BY o.created_at DESC, o.in_process_at DESC
-      LIMIT 1
+      LIMIT ${limitParam}
     `;
     const result = await query(sql, params);
-    return result.rows[0] ? rowToCamel(result.rows[0]) : null;
+    return (result.rows || []).map(rowToCamel);
   }
 
   /** Строка заказа (orders.id) сопоставлена с товаром каталога productId. */
