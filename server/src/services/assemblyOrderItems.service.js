@@ -275,24 +275,47 @@ function articleFromOrderOrProduct(order, productBrief) {
 
 /**
  * Состав для колонки «Состав»: листовой BOM (вложенные комплекты разворачиваются).
+ * Дополнительно: productId, name, displayAttributeValue (атрибут «как упаковывать»).
  */
 export async function buildAssemblyCompositionLinesForOrder(order, ordersService) {
   if (!order) return [];
+
+  const resolvedOpts = await withDisplayAttributeOpts({
+    profileId: order.profileId ?? order.profile_id ?? null,
+  });
+  const displayAttributeId = resolvedOpts.displayAttributeId ?? null;
 
   const kitId = await resolveKitProductIdForOrder(order, ordersService);
   if (kitId != null) {
     const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
     const leaves = await flattenKitBomToLeaves(kitId, orderQty);
     if (leaves.length) {
-      const nameMap = await loadProductBriefMap(leaves.map((l) => l.component_product_id));
+      const nameMap = await loadProductBriefMap(
+        leaves.map((l) => l.component_product_id),
+        { displayAttributeId }
+      );
+      const kitBriefMap = await loadProductBriefMap([kitId], { displayAttributeId });
+      const kitBrief = kitBriefMap.get(Number(kitId));
+      order.isKit = true;
+      order.is_kit = true;
+      order.packingDisplayValue = kitBrief?.displayAttributeValue || null;
+      order.packing_display_value = order.packingDisplayValue;
       return leaves.map((item) => {
         const brief = nameMap.get(Number(item.component_product_id));
+        const article = articleFromOrderOrProduct(
+          { offerId: brief?.sku ?? null },
+          { sku: brief?.sku, name: brief?.name }
+        );
         return {
-          article: articleFromOrderOrProduct(
-            { offerId: brief?.sku ?? null },
-            { sku: brief?.sku, name: brief?.name }
-          ),
+          article,
+          sku: brief?.sku ?? null,
+          productId: Number(item.component_product_id) || null,
+          product_id: Number(item.component_product_id) || null,
+          name: brief?.name ?? null,
+          productName: brief?.name ?? null,
           quantity: Math.max(1, Number(item.quantity) || 1),
+          displayAttributeValue: brief?.displayAttributeValue || null,
+          display_attribute_value: brief?.displayAttributeValue || null,
         };
       });
     }
@@ -304,12 +327,25 @@ export async function buildAssemblyCompositionLinesForOrder(order, ordersService
   }
   const pid = linePid != null ? Number(linePid) : NaN;
   const briefMap =
-    Number.isFinite(pid) && pid > 0 ? await loadProductBriefMap([pid]) : new Map();
+    Number.isFinite(pid) && pid > 0
+      ? await loadProductBriefMap([pid], { displayAttributeId })
+      : new Map();
   const brief = Number.isFinite(pid) && pid > 0 ? briefMap.get(pid) : null;
+  order.isKit = false;
+  order.is_kit = false;
+  order.packingDisplayValue = brief?.displayAttributeValue || null;
+  order.packing_display_value = order.packingDisplayValue;
   return [
     {
       article: articleFromOrderOrProduct(order, brief),
+      sku: brief?.sku ?? null,
+      productId: Number.isFinite(pid) && pid > 0 ? pid : null,
+      product_id: Number.isFinite(pid) && pid > 0 ? pid : null,
+      name: brief?.name ?? order.productName ?? order.product_name ?? null,
+      productName: brief?.name ?? order.productName ?? order.product_name ?? null,
       quantity: Math.max(1, parseInt(order.quantity, 10) || 1),
+      displayAttributeValue: brief?.displayAttributeValue || null,
+      display_attribute_value: brief?.displayAttributeValue || null,
     },
   ];
 }
