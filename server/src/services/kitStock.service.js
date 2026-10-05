@@ -3178,13 +3178,18 @@ async function batchIncomingMap(productIds, opts = {}) {
       [ids, wid]
     ),
     query(
-      `SELECT product_id,
+      `SELECT sm.product_id,
               ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND LOWER(TRIM(type::text)) = 'incoming'
-         AND warehouse_id IS NULL
-       GROUP BY product_id`,
+       FROM stock_movements sm
+       LEFT JOIN purchases p ON p.id::text = TRIM(sm.meta->>'purchase_id')
+       WHERE sm.product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(sm.type::text)) = 'incoming'
+         AND sm.warehouse_id IS NULL
+         AND NOT (
+           COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'
+           AND (p.id IS NULL OR p.status IS DISTINCT FROM 'open')
+         )
+       GROUP BY sm.product_id`,
       [ids]
     ),
     query(

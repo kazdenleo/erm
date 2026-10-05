@@ -181,8 +181,13 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     ),
     run(
       `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
-       FROM stock_movements
-       WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id IS NULL`,
+       FROM stock_movements sm
+       LEFT JOIN purchases p ON p.id::text = TRIM(sm.meta->>'purchase_id')
+       WHERE sm.product_id = $1 AND LOWER(TRIM(sm.type::text)) = 'incoming' AND sm.warehouse_id IS NULL
+         AND NOT (
+           COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'
+           AND (p.id IS NULL OR p.status IS DISTINCT FROM 'open')
+         )`,
       [pid]
     ),
     run(
