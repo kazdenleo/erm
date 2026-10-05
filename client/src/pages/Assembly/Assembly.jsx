@@ -1241,11 +1241,10 @@ export function Assembly() {
             </h3>
             {isAssemblyLikeStatus(currentOrderData.order.status) ? (
               <p className="assembly-current-sticker text-muted small mb-2">
-                {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
+                {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
+                normMarketplace(currentOrderData.order.marketplace) === 'ozon'
                   ? 'Стикер'
-                  : normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-                    ? 'Заказ / стикер'
-                    : 'Номер заказа'}
+                  : 'Номер заказа'}
                 :{' '}
                 <OrderStickerDisplay order={currentOrderData.order} />
               </p>
@@ -1331,11 +1330,10 @@ export function Assembly() {
                   {orderStickerCellValue(currentOrderData.order) !== '—' ? (
                     <>
                       .{' '}
-                      {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
+                      {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
+                      normMarketplace(currentOrderData.order.marketplace) === 'ozon'
                         ? 'Стикер'
-                        : normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-                          ? 'Заказ / стикер'
-                          : 'Заказ'}
+                        : 'Заказ'}
                       : <OrderStickerDisplay order={currentOrderData.order} />
                     </>
                   ) : null}

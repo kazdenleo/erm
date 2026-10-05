@@ -246,7 +246,7 @@ class OrdersLabelsService {
       }, 0);
     }
 
-    // Ozon: номер с этикетки / order_number нужен в колонке «Стикер» сразу — не только после PDF.
+    // Ozon: ШК этикетки нужен в колонке «Стикер» сразу — не только после PDF.
     if (!hasSticker && mp === 'ozon') {
       try {
         const sn = await fetchOzonStickerNumber(order, { organizationId });

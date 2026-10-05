@@ -37,23 +37,8 @@ export function ozonStickerNumberFromPosting(posting) {
 
 /**
  * Что сохранить в assembly_sticker_number для Ozon:
- * приоритет — ШК этикетки, иначе order_number из ответа API.
+ * только ШК этикетки. Номер заказа/отправления — в колонке заказа, не в стикере.
  */
 export function ozonAssemblyStickerFromPosting(posting) {
-  const fromBarcode = ozonStickerNumberFromPosting(posting);
-  if (fromBarcode) return fromBarcode;
-  const orderNumber =
-    posting?.order_number != null
-      ? String(posting.order_number).trim()
-      : posting?.orderNumber != null
-        ? String(posting.orderNumber).trim()
-        : '';
-  if (orderNumber) return orderNumber;
-  const postingNumber =
-    posting?.posting_number != null
-      ? String(posting.posting_number).trim()
-      : posting?.postingNumber != null
-        ? String(posting.postingNumber).trim()
-        : '';
-  return ozonOrderNumberFromPostingNumber(postingNumber) || null;
+  return ozonStickerNumberFromPosting(posting);
 }
