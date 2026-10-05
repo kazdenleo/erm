@@ -46,7 +46,7 @@ describe('ozonStickerNumberFromPosting', () => {
 });
 
 describe('ozonAssemblyStickerFromPosting', () => {
-  test('prefers barcode over order_number', () => {
+  test('returns barcode only', () => {
     expect(
       ozonAssemblyStickerFromPosting({
         order_number: '74369038-0308',
@@ -56,12 +56,12 @@ describe('ozonAssemblyStickerFromPosting', () => {
     ).toBe('201026795970000');
   });
 
-  test('falls back to order_number', () => {
+  test('does not fall back to order_number or posting', () => {
     expect(
       ozonAssemblyStickerFromPosting({
         order_number: '74369038-0308',
         posting_number: '74369038-0308-1',
       })
-    ).toBe('74369038-0308');
+    ).toBeNull();
   });
 });

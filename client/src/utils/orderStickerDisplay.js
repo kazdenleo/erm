@@ -44,9 +44,8 @@ export function ozonOrderNumberFromPostingNumber(postingNumberRaw) {
 
 /**
  * Значение для колонки «Стикер» на сборке/собранных:
- * WB — номер стикера;
- * Ozon — номер отправления + номер с этикетки (ШК) или номер заказа Ozon;
- * Я.Маркет — номер заказа (order_group_id или order_id).
+ * WB / Ozon — только номер стикера (ШК этикетки), без номера заказа/отправления;
+ * Я.Маркет — номер заказа (отдельного стикера нет).
  */
 export function orderStickerCellValue(order, { groupOrders = null } = {}) {
   if (!order) return '—';
@@ -59,22 +58,17 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
     return stickers.length ? stickers.join(', ') : '—';
   }
 
-  const oid = orderIdForSticker(order);
   if (mp === 'ozon') {
-    const stickers = stickerNumbersFromOrders(list).filter((s) => s !== oid);
+    const oid = orderIdForSticker(order);
     const orderNumber = ozonOrderNumberFromPostingNumber(oid);
-    const second =
-      stickers.length > 0
-        ? stickers.join(', ')
-        : orderNumber && orderNumber !== oid
-          ? orderNumber
-          : '';
-    if (oid && second) return `${oid} · ${second}`;
-    if (second) return second;
-    return oid || '—';
+    // Не подставляем posting/order_number: колонка «Стикер» — только ШК этикетки.
+    const stickers = stickerNumbersFromOrders(list).filter(
+      (s) => s && s !== oid && s !== orderNumber
+    );
+    return stickers.length ? stickers.join(', ') : '—';
   }
 
-  return oid || '—';
+  return orderIdForSticker(order) || '—';
 }
 
 /** Разбивает номер стикера WB: основная часть + последние 4 цифры (полужирные в UI). */
