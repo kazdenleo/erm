@@ -5,6 +5,13 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/opt/erm}"
 PM2_NAME="${PM2_NAME:-erm-api}"
+LOCK_FILE="${LOCK_FILE:-/tmp/erm-deploy.lock}"
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "ERROR: деплой уже идёт (lock: $LOCK_FILE)"
+  exit 1
+fi
 
 cd "$APP_ROOT"
 echo "==> git pull"
@@ -51,10 +58,11 @@ cd "$APP_ROOT/server"
 NODE_HEAP_MB="${NODE_HEAP_MB:-3072}"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=${NODE_HEAP_MB}}"
 echo "    NODE_OPTIONS=$NODE_OPTIONS"
-if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
-  pm2 restart "$PM2_NAME" --update-env
+# 9>&- : иначе демон pm2, если он стартует здесь, унаследует lock и следующий деплой не запустится
+if pm2 describe "$PM2_NAME" >/dev/null 2>&1 9>&-; then
+  pm2 restart "$PM2_NAME" --update-env 9>&-
 else
-  pm2 start server.js --name "$PM2_NAME" --cwd "$APP_ROOT/server"
+  pm2 start server.js --name "$PM2_NAME" --cwd "$APP_ROOT/server" 9>&-
 fi
 pm2 save
 pm2 list
