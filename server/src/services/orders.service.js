@@ -1963,7 +1963,7 @@ class OrdersService {
       reason = `${reasonBase} (комплектующие, ${kitUnits} компл.)`;
     }
 
-    const snapBeforeReserve = await getProductSupplySnapshotWithClient(
+    let snapBeforeReserve = await getProductSupplySnapshotWithClient(
       null,
       productId,
       reserveSnapshotOptsFromMeta(meta)
@@ -1973,6 +1973,23 @@ class OrdersService {
     const orderRowForIncoming =
       meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
     const allowIncoming = kitReserveIncomingAllowed(meta);
+    // Перед сплитом: свободное наличие сначала закрывает уже стоящие «в пути»-резервы
+    // (FIFO), иначе headroom=0 из‑за них и новый заказ снова уходит «с пути».
+    if (allowIncoming) {
+      try {
+        await this.promoteIncomingOrderReservesToOnHand({
+          productIds: [productId],
+          reason: 'Перед резервом: «в пути» → со склада при наличии на складе',
+        });
+        snapBeforeReserve = await getProductSupplySnapshotWithClient(
+          null,
+          productId,
+          reserveSnapshotOptsFromMeta(meta)
+        );
+      } catch {
+        /* ignore */
+      }
+    }
     let reserveFromOnHand;
     let reserveFromIncoming;
       if (hasKitPrealloc) {
@@ -3360,6 +3377,16 @@ class OrdersService {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
+    // Сначала переводим «в пути»→«со склада» на свободном наличии (в т.ч. после отмены
+    // другого заказа), иначе headroom=0 и новый резерв снова помечается «с пути».
+    try {
+      await this.promoteIncomingOrderReservesToOnHand({
+        productIds: [pid],
+        reason: 'Дозарезервирование: резерв «в пути» → со склада при появлении наличия',
+      });
+    } catch {
+      /* не блокируем очередь резерва */
+    }
     const exclude = new Set(
       (excludeOrderDbIds || [])
         .map((id) => Number(id))

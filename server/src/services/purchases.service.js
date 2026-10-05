@@ -578,25 +578,21 @@ async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
   const pid = normalizeProfileId(profileId);
   if (!purId || Number.isNaN(purId) || pid == null) return;
   const items = await query(
-    'SELECT product_id, source_orders FROM purchase_items WHERE purchase_id = $1',
+    'SELECT product_id FROM purchase_items WHERE purchase_id = $1',
     [purId]
   );
   const productIds = new Set();
-  const sourceRefs = [];
   for (const row of items.rows || []) {
     const p = parseInt(row.product_id, 10);
     if (Number.isFinite(p) && p > 0) productIds.add(p);
-    for (const o of parseSourceOrdersJson(row.source_orders)) {
-      if (o?.marketplace != null && o?.orderId != null) {
-        sourceRefs.push({ marketplace: o.marketplace, orderId: String(o.orderId) });
-      }
-    }
   }
   if (productIds.size > 0) {
     try {
+      // Без фильтра sourceOrders: иначе резерв «с пути» у нового заказа (не из source_orders
+      // этой закупки) не переводится на наличие, когда на склад пришла единица от
+      // отменённого/другого заказа. Бюджет on_hand по FIFO и так безопасен.
       await ordersService.promoteIncomingOrderReservesToOnHand({
         productIds: [...productIds],
-        sourceOrders: sourceRefs,
         profileId: pid,
         reason: `Приёмка по закупке №${purId}: резерв «в пути» → со склада`,
       });
