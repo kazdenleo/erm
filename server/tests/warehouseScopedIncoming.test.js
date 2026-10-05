@@ -186,6 +186,38 @@ describe('allocateWarehouseScopedIncoming', () => {
     ).toBe(1);
   });
 
+  test('глобальный снимок incoming_after не переносит «в пути» другого склада (MK-5014)', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 0,
+        nullRaw: 0,
+        globalJournalNet: 18,
+        whOnHand: 21,
+        totalOnHand: 21,
+        globalIncoming: 18,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true,
+        warehouseIncomingSnapshot: 18
+      })
+    ).toBe(0);
+  });
+
+  test('снимок не раздувает положительный журнал склада чужим «в пути»', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 5,
+        nullRaw: -2,
+        globalJournalNet: 21,
+        whOnHand: 3,
+        totalOnHand: 3,
+        globalIncoming: 21,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true,
+        warehouseIncomingSnapshot: 21
+      })
+    ).toBe(5);
+  });
+
   test('результат никогда не отрицательный', () => {
     expect(
       allocateWarehouseScopedIncoming({

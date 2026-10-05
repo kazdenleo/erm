@@ -121,15 +121,15 @@ export function allocateWarehouseScopedIncoming({
     if (hasWarehouseIncomingJournal) {
       const strictPositive = Math.max(0, strict);
       const globalCap = Math.max(0, journalNetGlobal, globalInc);
-      if (snapshotInc != null) {
-        // Снимок incoming_after с отгрузки/резерва часто устаревший (глобальный на момент операции).
-        // Не даём складу показать «в пути» больше, чем есть глобально в журнале/products.
-        let fromSnap =
-          strict < 0 ? snapshotInc : Math.max(strictPositive, snapshotInc);
-        fromSnap = Math.min(fromSnap, globalCap);
-        return clampStockMetric(fromSnap);
+      if (snapshotInc == null) return strictPositive;
+      // incoming_after пишется глобальным (сумма по всем складам): при неотрицательном журнале склада
+      // снимок может добавить только legacy-движения без склада, иначе на склад попадает «в пути» других складов.
+      if (strict < 0) {
+        return clampStockMetric(Math.min(snapshotInc, globalCap));
       }
-      return strictPositive;
+      const legacyNullPositive = Math.max(0, nullSum);
+      const extraFromSnap = Math.min(Math.max(0, snapshotInc - strictPositive), legacyNullPositive);
+      return clampStockMetric(Math.min(strictPositive + extraFromSnap, Math.max(strictPositive, globalCap)));
     }
     if (journalNetGlobal <= 0) return 0;
     const whPositive = Math.max(0, strict);

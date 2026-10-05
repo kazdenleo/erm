@@ -1299,6 +1299,37 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       }
       return out;
     }
+    if (t === 'manual') {
+      // incoming_after/reserved_after у ручной правки — по товару на всех складах; корректировка меняет только наличие.
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
+      const dbBal = movementNum(m, 'balance_after');
+      const qc = Number(m.quantity_change);
+      if (whBal != null) {
+        out.bal = whBal;
+      } else if (prevLineBelow?.bal != null && Number.isFinite(qc)) {
+        out.bal = Math.max(0, Number(prevLineBelow.bal) + qc);
+      } else if (dbBal != null) {
+        out.bal = dbBal;
+      }
+      const whFiltered = warehouseFilterId != null && String(warehouseFilterId).trim() !== '';
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else if (whFiltered) {
+        out.inc = 0;
+      } else {
+        const dbInc = movementNum(m, 'incoming_after');
+        out.inc = dbInc != null ? dbInc : 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else if (whFiltered) {
+        out.res = 0;
+      } else {
+        const dbRes = movementNum(m, 'reserved_after');
+        out.res = dbRes != null ? dbRes : 0;
+      }
+      return out;
+    }
     if (isKitAssemblyReceiptMovement(m)) {
       const moveQty = Math.max(0, Number(m.quantity_change) || 0);
       const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
