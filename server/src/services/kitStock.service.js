@@ -3035,11 +3035,12 @@ async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
   const wid = parseWarehouseIdFromOpts({ warehouseId });
   const pendingMap = new Map();
   const docNetMap = new Map();
+  const closedNetMap = new Map();
   if (!ids.length || wid == null) {
-    return { pendingMap, docNetMap };
+    return { pendingMap, docNetMap, closedNetMap };
   }
 
-  const [pendingR, docNetR] = await Promise.all([
+  const [pendingR, docNetR, closedNetR] = await Promise.all([
     query(
       `SELECT pi.product_id,
               SUM(
@@ -3069,6 +3070,19 @@ async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
        GROUP BY sm.product_id`,
       [ids, wid]
     ),
+    query(
+      `SELECT sm.product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+       FROM stock_movements sm
+       LEFT JOIN purchases p
+         ON p.id::text = TRIM(sm.meta->>'purchase_id')
+       WHERE sm.product_id = ANY($1::bigint[])
+         AND sm.warehouse_id = $2
+         AND LOWER(TRIM(sm.type::text)) = 'incoming'
+         AND COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'
+         AND (p.id IS NULL OR p.status IS DISTINCT FROM 'open')
+       GROUP BY sm.product_id`,
+      [ids, wid]
+    ),
   ]);
 
   for (const row of pendingR.rows || []) {
@@ -3077,7 +3091,10 @@ async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
   for (const row of docNetR.rows || []) {
     docNetMap.set(Number(row.product_id), Number(row.net) || 0);
   }
-  return { pendingMap, docNetMap };
+  for (const row of closedNetR.rows || []) {
+    closedNetMap.set(Number(row.product_id), Number(row.net) || 0);
+  }
+  return { pendingMap, docNetMap, closedNetMap };
 }
 
 async function batchIncomingMap(productIds, opts = {}) {
@@ -3229,7 +3246,11 @@ async function batchIncomingMap(productIds, opts = {}) {
     ),
     batchPurchaseIncomingOnWarehouseMaps(ids, wid),
   ]);
-  const { pendingMap: purchasePendingMap, docNetMap: purchaseDocNetMap } = purchaseMaps;
+  const {
+    pendingMap: purchasePendingMap,
+    docNetMap: purchaseDocNetMap,
+    closedNetMap: purchaseClosedNetMap,
+  } = purchaseMaps;
 
   const strictMap = new Map(
     (strictR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
@@ -3298,6 +3319,7 @@ async function batchIncomingMap(productIds, opts = {}) {
         journalIncoming,
         purchaseDocNet: purchaseDocNetMap.get(pid) ?? 0,
         purchasePending: purchasePendingMap.get(pid) ?? 0,
+        purchaseClosedNet: purchaseClosedNetMap.get(pid) ?? 0,
       })
     );
   }

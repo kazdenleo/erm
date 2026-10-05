@@ -162,13 +162,17 @@ export function allocateWarehouseScopedIncoming({
  * purchaseDocNet должен быть нетто incoming только по открытым закупкам
  * (не по всей истории purchase_id — иначе закрытые +1/−1 обнуляют docNet и pending
  * двойным счётом раздувает «в пути»).
+ *
+ * purchaseClosedNet — нетто incoming по закрытым/удалённым закупкам: ожидания по ним уже нет,
+ * а остаток в журнале склада (сиротские сторно) иначе висит фантомным «в пути».
  */
 export function reconcileWarehouseIncomingWithPurchasePending({
   journalIncoming = 0,
   purchaseDocNet = 0,
   purchasePending = 0,
+  purchaseClosedNet = 0,
 } = {}) {
-  const journal = clampStockMetric(journalIncoming);
+  const journal = Math.max(0, clampStockMetric(journalIncoming) - clampStockMetric(purchaseClosedNet));
   const docNet = clampStockMetric(purchaseDocNet);
   const pending = clampStockMetric(purchasePending);
   const otherIncoming = Math.max(0, journal - docNet);

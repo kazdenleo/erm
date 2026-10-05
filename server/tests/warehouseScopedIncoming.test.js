@@ -296,4 +296,37 @@ describe('reconcileWarehouseIncomingWithPurchasePending', () => {
       })
     ).toBe(2);
   });
+
+  test('сиротский incoming удалённой закупки не даёт фантомного «в пути» (TG-5127)', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 135,
+        purchaseDocNet: 47,
+        purchasePending: 47,
+        purchaseClosedNet: 88,
+      })
+    ).toBe(47);
+  });
+
+  test('остаток архивной закупки без открытых — «в пути» 0 (TG-5286)', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 56,
+        purchaseDocNet: 0,
+        purchasePending: 0,
+        purchaseClosedNet: 56,
+      })
+    ).toBe(0);
+  });
+
+  test('прочий incoming без закупки сохраняется при сиротских закрытых', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 15,
+        purchaseDocNet: 5,
+        purchasePending: 5,
+        purchaseClosedNet: 7,
+      })
+    ).toBe(8);
+  });
 });

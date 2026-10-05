@@ -86,9 +86,27 @@ async function readOpenPurchaseIncomingMaps(run, productId, warehouseId = null) 
           [pid]
         );
 
+  let closedNet = 0;
+  if (wh != null) {
+    const closedR = await run(
+      `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+       FROM stock_movements sm
+       LEFT JOIN purchases p
+         ON p.id::text = TRIM(sm.meta->>'purchase_id')
+       WHERE sm.product_id = $1
+         AND sm.warehouse_id = $2
+         AND LOWER(TRIM(sm.type::text)) = 'incoming'
+         AND COALESCE(sm.meta->>'purchase_id', '') ~ '^[0-9]+$'
+         AND (p.id IS NULL OR p.status IS DISTINCT FROM 'open')`,
+      [pid, wh]
+    );
+    closedNet = Number(closedR.rows?.[0]?.net ?? 0) || 0;
+  }
+
   return {
     pending: Number(pendingR.rows?.[0]?.pending ?? 0) || 0,
     docNet: Number(docNetR.rows?.[0]?.net ?? 0) || 0,
+    closedNet,
   };
 }
 
@@ -97,6 +115,7 @@ function applyOpenPurchaseIncomingReconcile(journalIncoming, maps) {
     journalIncoming,
     purchaseDocNet: maps?.docNet ?? 0,
     purchasePending: maps?.pending ?? 0,
+    purchaseClosedNet: maps?.closedNet ?? 0,
   });
 }
 
