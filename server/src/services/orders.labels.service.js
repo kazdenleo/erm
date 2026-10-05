@@ -15,6 +15,7 @@ import ordersService from './orders.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { ozonStickerNumberFromPosting } from '../utils/ozonPosting.js';
 
 // Используем централизованную конфигурацию путей
 const DATA_DIR = config.paths.dataDir;
@@ -124,6 +125,8 @@ class OrdersLabelsService {
    */
   async ensureLabelFile(order, { organizationId = null } = {}) {
     const filePath = getOrderLabelPath(order);
+    const hasSticker =
+      String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? '').trim() !== '';
 
     if (!fs.existsSync(filePath)) {
       try {
@@ -157,6 +160,17 @@ class OrdersLabelsService {
         err.statusCode = e.statusCode || 502;
         throw err;
       }
+    } else if (!hasSticker && normalizeMarketplaceForLabel(order?.marketplace) === 'ozon') {
+      // Этикетка уже в кэше, но номер с ярлыка (lower_barcode) ещё не сохранён — догружаем.
+      try {
+        const stickerNumber = await fetchOzonStickerNumber(order, { organizationId });
+        if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+          const profileId = order?.profileId ?? order?.profile_id ?? null;
+          await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+        }
+      } catch {
+        /* ignore */
+      }
     }
 
     const size = fs.statSync(filePath).size;
@@ -173,11 +187,14 @@ class OrdersLabelsService {
     const filePath = getOrderLabelPath(order);
     const exists = fs.existsSync(filePath);
 
+    const hasSticker =
+      String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? '').trim() !== '';
+    const mp = normalizeMarketplaceForLabel(order?.marketplace);
+
     if (!exists) {
       // Качаем в фоне, ответ не ждёт. Для WB возможны 409 (этикетка ещё не готова) и 429 (rate limit).
       // Делаем несколько попыток с бэкоффом, чтобы «На сборке» почти всегда прогревало этикетку.
       setTimeout(async () => {
-        const mp = normalizeMarketplaceForLabel(order?.marketplace);
         const isWB = mp === 'wildberries';
         const isOzon = mp === 'ozon';
         const isYandex = mp === 'yandex';
@@ -225,6 +242,18 @@ class OrdersLabelsService {
           }
         }
       }, 0);
+    } else if (!hasSticker && mp === 'ozon') {
+      setTimeout(async () => {
+        try {
+          const stickerNumber = await fetchOzonStickerNumber(order, { organizationId });
+          if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+            const profileId = order?.profileId ?? order?.profile_id ?? null;
+            await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+          }
+        } catch {
+          /* ignore */
+        }
+      }, 0);
     }
 
     return { exists };
@@ -250,10 +279,20 @@ class OrdersLabelsService {
       if (fs.existsSync(filePath)) continue;
       try {
         logLabelEvent(`Fetching ${order.marketplace}:${order.orderId}`);
-        const buf = await fetchMarketplaceLabel(order, { organizationId });
+        const out = await fetchMarketplaceLabel(order, { organizationId });
+        const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
+        const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
         if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
           fs.writeFileSync(filePath, buf);
           logLabelEvent(`Cached ${order.marketplace}:${order.orderId}`);
+        }
+        if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+          try {
+            const profileId = order?.profileId ?? order?.profile_id ?? null;
+            await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+          } catch {
+            /* ignore */
+          }
         }
       } catch (e) {
         logLabelEvent(`Error ${order.marketplace}:${order.orderId} -> ${e.message}`);
@@ -283,29 +322,59 @@ async function fetchMarketplaceLabel(order) {
   const mp = normalizeMarketplaceForLabel(order.marketplace);
   const ctx = arguments.length >= 2 && arguments[1] && typeof arguments[1] === 'object' ? arguments[1] : {};
   const organizationId = ctx.organizationId ?? null;
-  if (mp === 'ozon') return { buffer: await fetchOzonLabel(order, { organizationId }), stickerNumber: null };
+  if (mp === 'ozon') return fetchOzonLabel(order, { organizationId });
   if (mp === 'wildberries') return fetchWBLabel(order, { organizationId });
   if (mp === 'yandex') return { buffer: await fetchYMLabel(order, { organizationId }), stickerNumber: null };
   return null;
 }
 
+async function getOzonIntegrationConfig(order, organizationId = null) {
+  const profileId = orderProfileId(order);
+  let ozon = null;
+  try {
+    ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
+  } catch (_) {}
+  // В мульти-кабинетах нельзя падать обратно на глобальный readData('ozon'):
+  // это приводит к "чужому кабинету" и 404 по стикерам.
+  if ((!ozon?.client_id || !ozon?.api_key) && profileId == null) ozon = await readData('ozon');
+  if (!ozon || !ozon.client_id || !ozon.api_key) {
+    const err = new Error(
+      'Ozon: не настроены ключи кабинета для запроса этикетки (Client-Id / Api-Key). Проверьте интеграцию Ozon для этого аккаунта.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return ozon;
+}
+
+/** Номер с этикетки Ozon (lower_barcode) без скачивания PDF — для догрузки в кэш стикера. */
+async function fetchOzonStickerNumber(order, { organizationId = null } = {}) {
+  const ozon = await getOzonIntegrationConfig(order, organizationId);
+  const postingNumber = labelCacheFileId(order);
+  if (!postingNumber) return null;
+  const check = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
+    method: 'POST',
+    headers: {
+      'Client-Id': String(ozon.client_id),
+      'Api-Key': String(ozon.api_key),
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({
+      posting_number: postingNumber,
+      with: { analytics_data: false, financial_data: false, barcodes: true }
+    })
+  });
+  if (!check.ok) return null;
+  const checkData = await check.json();
+  const postingResult = checkData?.result;
+  const posting = Array.isArray(postingResult) ? postingResult[0] : postingResult;
+  return ozonStickerNumberFromPosting(posting);
+}
+
 async function fetchOzonLabel(order, { organizationId = null } = {}) {
   try {
-    const profileId = orderProfileId(order);
-    let ozon = null;
-    try {
-      ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
-    } catch (_) {}
-    // В мульти-кабинетах нельзя падать обратно на глобальный readData('ozon'):
-    // это приводит к "чужому кабинету" и 404 по стикерам.
-    if ((!ozon?.client_id || !ozon?.api_key) && profileId == null) ozon = await readData('ozon');
-    if (!ozon || !ozon.client_id || !ozon.api_key) {
-      const err = new Error(
-        'Ozon: не настроены ключи кабинета для запроса этикетки (Client-Id / Api-Key). Проверьте интеграцию Ozon для этого аккаунта.'
-      );
-      err.statusCode = 400;
-      throw err;
-    }
+    const ozon = await getOzonIntegrationConfig(order, organizationId);
 
     const postingNumber = labelCacheFileId(order);
     if (!postingNumber) {
@@ -313,7 +382,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
       throw new Error('Некорректный номер отправления');
     }
 
-    // 1) Проверка постинга (v3/get возвращает result как объект, не массив)
+    // 1) Проверка постинга (v3/get возвращает result как объект, не массив) + ШК этикетки
     const check = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
       method: 'POST',
       headers: {
@@ -324,7 +393,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
       },
       body: JSON.stringify({
         posting_number: postingNumber,
-        with: { analytics_data: false, financial_data: false }
+        with: { analytics_data: false, financial_data: false, barcodes: true }
       })
     });
     if (!check.ok) {
@@ -352,6 +421,8 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
       err.statusCode = 404;
       throw err;
     }
+    const posting = Array.isArray(postingResult) ? postingResult[0] : postingResult;
+    const stickerNumber = ozonStickerNumberFromPosting(posting);
 
     const ozonHeaders = {
       'Client-Id': String(ozon.client_id),
@@ -394,7 +465,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
                 const fileResp = await fetch(fileUrl);
                 if (fileResp.ok) {
                   const arr = await fileResp.arrayBuffer();
-                  return Buffer.from(arr);
+                  return { buffer: Buffer.from(arr), stickerNumber };
                 }
                 logLabelEvent(`[Ozon] create/get file_url download error ${fileResp.status}`);
                 break;

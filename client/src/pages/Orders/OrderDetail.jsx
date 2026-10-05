@@ -373,7 +373,7 @@ function OrderAssemblySection({ assembly }) {
             <dd>{formatAssemblyWho(assembly)}</dd>
           </>
         ) : null}
-        <dt>Номер стикера</dt>
+        <dt>Номер стикера / этикетки</dt>
         <dd>{assembly.assemblyStickerNumber || '—'}</dd>
       </dl>
     </section>
@@ -1129,7 +1129,11 @@ export function OrderDetail() {
       <OrderAssemblySection assembly={data?.assembly} />
 
       {mpKey === 'ozon' && detail && (
-        <OzonDetail detail={detail} localLines={localLines} />
+        <OzonDetail
+          detail={detail}
+          localLines={localLines}
+          assemblyStickerNumber={data?.assembly?.assemblyStickerNumber}
+        />
       )}
       {(mpKey === 'wildberries' || mpKey === 'wb') && detail && (
         <WildberriesDetail
@@ -1307,11 +1311,15 @@ export function OrderDetailContent({
   );
 }
 
-export function OzonDetail({ detail, localLines }) {
+export function OzonDetail({ detail, localLines, assemblyStickerNumber = null }) {
   const dm = detail.delivery_method || {};
   const addressee = detail.addressee || {};
   const products = detail.products || [];
   const cancellation = detail.cancellation || {};
+  const sticker =
+    assemblyStickerNumber != null && String(assemblyStickerNumber).trim() !== ''
+      ? String(assemblyStickerNumber).trim()
+      : '';
 
   return (
     <div className="order-detail-sections">
@@ -1320,6 +1328,12 @@ export function OzonDetail({ detail, localLines }) {
         <dl className="detail-dl">
           <dt>Номер отправления</dt><dd>{detail.posting_number}</dd>
           <dt>Номер заказа</dt><dd>{detail.order_number}</dd>
+          {sticker ? (
+            <>
+              <dt>Номер с этикетки</dt>
+              <dd>{sticker}</dd>
+            </>
+          ) : null}
           <dt>Статус</dt><dd>{getOrderStatusLabel(detail.status)}</dd>
           {detail.substatus && <><dt>Подстатус</dt><dd>{detail.substatus}</dd></>}
           <dt>Время появления на маркетплейсе</dt><dd>{(detail.created_at || detail.in_process_at) ? new Date(detail.created_at || detail.in_process_at).toLocaleString('ru-RU') : '—'}</dd>

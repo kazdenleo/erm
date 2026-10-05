@@ -1211,7 +1211,9 @@ export function Assembly() {
               <p className="assembly-current-sticker text-muted small mb-2">
                 {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
                   ? 'Стикер'
-                  : 'Номер заказа'}
+                  : normMarketplace(currentOrderData.order.marketplace) === 'ozon'
+                    ? 'Заказ / стикер'
+                    : 'Номер заказа'}
                 :{' '}
                 <OrderStickerDisplay order={currentOrderData.order} />
               </p>
@@ -1299,7 +1301,9 @@ export function Assembly() {
                       .{' '}
                       {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
                         ? 'Стикер'
-                        : 'Заказ'}
+                        : normMarketplace(currentOrderData.order.marketplace) === 'ozon'
+                          ? 'Заказ / стикер'
+                          : 'Заказ'}
                       : <OrderStickerDisplay order={currentOrderData.order} />
                     </>
                   ) : null}
