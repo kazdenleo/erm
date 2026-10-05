@@ -740,7 +740,7 @@ async function getOrCreateOpenShipment(
     code === 'manual' && warehouseId != null && warehouseId !== ''
       ? Number(warehouseId)
       : null;
-  const open = shipments.find(s => {
+  const openCandidates = shipments.filter((s) => {
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== code || s.closed === true) return false;
     if (!isOpenShipmentReusable(s)) return false;
@@ -752,7 +752,19 @@ async function getOrCreateOpenShipment(
     }
     return shipmentsMatchMarketplaceWarehouse(s, marketplaceWarehouseId);
   });
-  if (open) return normalizeShipment(open);
+  if (openCandidates.length) {
+    // Как overflow при закрытии: сначала непустые (туда уже перенесли несобранные), потом меньше заказов.
+    openCandidates.sort((a, b) => {
+      const ca = Array.isArray(a.orderIds) ? a.orderIds.length : 0;
+      const cb = Array.isArray(b.orderIds) ? b.orderIds.length : 0;
+      const aEmpty = ca === 0 ? 1 : 0;
+      const bEmpty = cb === 0 ? 1 : 0;
+      if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+      if (ca !== cb) return ca - cb;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    });
+    return normalizeShipment(openCandidates[0]);
+  }
   const dateLabel = new Date().toLocaleDateString('ru-RU');
   const whLabel = marketplaceWarehouseLabel(marketplaceWarehouseId);
   const baseName =
@@ -1003,6 +1015,8 @@ async function closeShipment(
     ...new Set((ship.orderIds || []).map((id) => String(id).trim()).filter(Boolean))
   ];
   const manuallyRemovedOrderIds = new Set();
+  /** Overflow-поставка, куда ушли несобранные WB при закрытии с «перенести». */
+  let closeRelocatedShipment = null;
 
   const staleCleanup = await removeStaleOrdersFromShipment(ship, profileId, organizationId);
   if (staleCleanup.ship) {
@@ -1026,6 +1040,7 @@ async function closeShipment(
 
     const { default: ordersService } = await import('./orders.service.js');
     const mp = ship.marketplace;
+    const isWb = mp === 'wildberries' || mp === 'wb';
 
     if (hasNotAssembled && notAssembledAction === 'assemble') {
       for (const item of preview.notAssembled) {
@@ -1038,22 +1053,46 @@ async function closeShipment(
       }
     }
 
-    const toRemove = [];
+    // Несобранные WB: снять с закрываемой supply и перенести в overflow (локально + на WB).
+    // На WB заказ после «в сборку» обязан оставаться в поставке — просто удалить нельзя.
     if (hasNotAssembled && notAssembledAction === 'remove') {
-      toRemove.push(...preview.notAssembled.map((i) => i.orderId));
-    }
-    if (hasCancelled && cancelledAction === 'remove') {
-      toRemove.push(...preview.cancelled.map((i) => i.orderId));
-    }
-    if (toRemove.length) {
-      for (const oid of toRemove) {
-        const key = String(oid).trim();
-        if (key) manuallyRemovedOrderIds.add(key);
+      const notAssembledIds = [
+        ...new Set(
+          preview.notAssembled
+            .map((i) => String(i.orderId ?? '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      for (const key of notAssembledIds) manuallyRemovedOrderIds.add(key);
+      if (notAssembledIds.length) {
+        const removeResult = await removeOrdersFromShipment(shipmentId, notAssembledIds, {
+          profileId,
+          organizationId,
+          relocateWbToNewSupply: isWb,
+        });
+        if (removeResult?.relocatedShipment) {
+          closeRelocatedShipment = removeResult.relocatedShipment;
+        }
       }
-      await removeOrdersFromShipment(shipmentId, [...new Set(toRemove)], {
-        profileId,
-        organizationId
-      });
+    }
+
+    // Отменённые: только убрать из поставки (на WB и локально), без переноса в новую.
+    if (hasCancelled && cancelledAction === 'remove') {
+      const cancelledIds = [
+        ...new Set(
+          preview.cancelled
+            .map((i) => String(i.orderId ?? '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      for (const key of cancelledIds) manuallyRemovedOrderIds.add(key);
+      if (cancelledIds.length) {
+        await removeOrdersFromShipment(shipmentId, cancelledIds, {
+          profileId,
+          organizationId,
+          relocateWbToNewSupply: false,
+        });
+      }
     }
   }
 
@@ -1112,6 +1151,9 @@ async function closeShipment(
 
   const out = normalizeShipment(shipToClose);
   if (stockClose) out.stockClose = stockClose;
+  if (closeRelocatedShipment) {
+    out.relocatedShipment = closeRelocatedShipment;
+  }
   if (stockOrderIdsNoCancelled.length > 0 && shipToClose.marketplace) {
     import('./chestnyZnakOps.service.js')
       .then(({ default: chestnyZnakOps }) =>
@@ -1857,7 +1899,9 @@ async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { pr
 
 /**
  * Удалить заказы из поставки.
- * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply — в overflow (reuse/create).
+ * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply —
+ * в overflow (reuse/create) и на WB, и в ERP. Закрытие WB с несобранными вызывает
+ * remove с relocateWbToNewSupply=true — на WB заказ после сборки обязан быть в поставке.
  */
 async function removeOrdersFromShipment(
   shipmentId,

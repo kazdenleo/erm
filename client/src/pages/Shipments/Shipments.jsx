@@ -150,11 +150,26 @@ export function Shipments() {
     if (updated?.qrStickerPath) {
       window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
     }
+    const relocated = updated?.relocatedShipment;
     setCloseConfirm(null);
     setCloseNotAssembledAction('');
     setCloseCancelledAction('');
-    if (openShipmentDetail?.id === shipment.id) {
+    setOpenDetailError(null);
+    if (relocated) {
+      const label =
+        relocated.externalId ||
+        relocated.name ||
+        relocated.id ||
+        'новая отгрузка';
+      setOpenDetailMessage(
+        isWbShipment(shipment)
+          ? `Несобранные заказы перенесены в поставку на WB и в ERP: ${label}. Новые заказы на сборку будут добавляться в неё.`
+          : `Несобранные заказы перенесены в отгрузку: ${label}`
+      );
+      setOpenShipmentDetail(relocated);
+    } else if (openShipmentDetail?.id === shipment.id) {
       setOpenShipmentDetail(updated);
+      setOpenDetailMessage(null);
     }
     await loadShipments();
   };
@@ -415,7 +430,9 @@ export function Shipments() {
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Несобранные заказы</h3>
                 <p className="shipments-close-hint">
-                  В отгрузке есть заказы, которые ещё не в статусе «Собран». Выберите действие:
+                  {isWbShipment(closeConfirm.shipment)
+                    ? 'В отгрузке есть заказы, которые ещё не в статусе «Собран». На Wildberries заказ после отправки в сборку должен оставаться в поставке — при снятии заказы будут перенесены в новую (или уже открытую) поставку на WB и в ERP.'
+                    : 'В отгрузке есть заказы, которые ещё не в статусе «Собран». Выберите действие:'}
                 </p>
                 <ul className="shipments-close-order-list">
                   {closeConfirm.preview.notAssembled.map((o) => (
@@ -445,7 +462,9 @@ export function Shipments() {
                       checked={closeNotAssembledAction === 'remove'}
                       onChange={() => setCloseNotAssembledAction('remove')}
                     />
-                    Удалить из отгрузки
+                    {isWbShipment(closeConfirm.shipment)
+                      ? 'Перенести в новую поставку на WB и закрыть'
+                      : 'Удалить из отгрузки'}
                   </label>
                 </div>
               </section>
