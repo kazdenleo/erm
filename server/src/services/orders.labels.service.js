@@ -15,7 +15,7 @@ import ordersService from './orders.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
-import { ozonStickerNumberFromPosting } from '../utils/ozonPosting.js';
+import { ozonAssemblyStickerFromPosting, ozonStickerNumberFromPosting } from '../utils/ozonPosting.js';
 
 // Используем централизованную конфигурацию путей
 const DATA_DIR = config.paths.dataDir;
@@ -187,8 +187,10 @@ class OrdersLabelsService {
     const filePath = getOrderLabelPath(order);
     const exists = fs.existsSync(filePath);
 
-    const hasSticker =
-      String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? '').trim() !== '';
+    let stickerNumber =
+      order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? null;
+    if (stickerNumber != null) stickerNumber = String(stickerNumber).trim() || null;
+    const hasSticker = Boolean(stickerNumber);
     const mp = normalizeMarketplaceForLabel(order?.marketplace);
 
     if (!exists) {
@@ -204,15 +206,15 @@ class OrdersLabelsService {
           try {
             const out = await fetchMarketplaceLabel(order, { organizationId });
             const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
-            const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
+            const sn = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
             if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
               fs.writeFileSync(filePath, buf);
               logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}`);
             }
             try {
-              if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+              if (sn != null && String(sn).trim() !== '') {
                 const profileId = order?.profileId ?? order?.profile_id ?? null;
-                await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+                await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, sn, profileId);
               }
             } catch {
               /* ignore */
@@ -242,21 +244,27 @@ class OrdersLabelsService {
           }
         }
       }, 0);
-    } else if (!hasSticker && mp === 'ozon') {
-      setTimeout(async () => {
-        try {
-          const stickerNumber = await fetchOzonStickerNumber(order, { organizationId });
-          if (stickerNumber != null && String(stickerNumber).trim() !== '') {
-            const profileId = order?.profileId ?? order?.profile_id ?? null;
-            await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
-          }
-        } catch {
-          /* ignore */
-        }
-      }, 0);
     }
 
-    return { exists };
+    // Ozon: номер с этикетки / order_number нужен в колонке «Стикер» сразу — не только после PDF.
+    if (!hasSticker && mp === 'ozon') {
+      try {
+        const sn = await fetchOzonStickerNumber(order, { organizationId });
+        if (sn != null && String(sn).trim() !== '') {
+          stickerNumber = String(sn).trim();
+          try {
+            const profileId = order?.profileId ?? order?.profile_id ?? null;
+            await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return { exists, stickerNumber: stickerNumber || null };
   }
 
   /**
@@ -368,8 +376,8 @@ async function fetchOzonStickerNumber(order, { organizationId = null } = {}) {
   if (!check.ok) return null;
   const checkData = await check.json();
   const postingResult = checkData?.result;
-  const posting = Array.isArray(postingResult) ? postingResult[0] : postingResult;
-  return ozonStickerNumberFromPosting(posting);
+    const posting = Array.isArray(postingResult) ? postingResult[0] : postingResult;
+  return ozonAssemblyStickerFromPosting(posting);
 }
 
 async function fetchOzonLabel(order, { organizationId = null } = {}) {
@@ -422,7 +430,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
       throw err;
     }
     const posting = Array.isArray(postingResult) ? postingResult[0] : postingResult;
-    const stickerNumber = ozonStickerNumberFromPosting(posting);
+    const stickerNumber = ozonAssemblyStickerFromPosting(posting);
 
     const ozonHeaders = {
       'Client-Id': String(ozon.client_id),

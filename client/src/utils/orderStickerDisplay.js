@@ -32,9 +32,20 @@ function stickerNumbersFromOrders(list) {
 }
 
 /**
+ * Номер заказа Ozon (без суффикса отправления): `74369038-0308-1` → `74369038-0308`.
+ * На этикетке Ozon обычно крупно этот номер, а в ERP в ID лежит posting_number.
+ */
+export function ozonOrderNumberFromPostingNumber(postingNumberRaw) {
+  const s = String(postingNumberRaw ?? '').trim();
+  if (!s) return '';
+  const m = s.match(/^(.*)-\d+$/);
+  return m && m[1] ? m[1] : '';
+}
+
+/**
  * Значение для колонки «Стикер» на сборке/собранных:
  * WB — номер стикера;
- * Ozon — номер заказа (отправления) + номер с этикетки (lower_barcode), если уже загружен;
+ * Ozon — номер отправления + номер с этикетки (ШК) или номер заказа Ozon;
  * Я.Маркет — номер заказа (order_group_id или order_id).
  */
 export function orderStickerCellValue(order, { groupOrders = null } = {}) {
@@ -50,9 +61,16 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
 
   const oid = orderIdForSticker(order);
   if (mp === 'ozon') {
-    const stickers = stickerNumbersFromOrders(list);
-    if (oid && stickers.length) return `${oid} · ${stickers.join(', ')}`;
-    if (stickers.length) return stickers.join(', ');
+    const stickers = stickerNumbersFromOrders(list).filter((s) => s !== oid);
+    const orderNumber = ozonOrderNumberFromPostingNumber(oid);
+    const second =
+      stickers.length > 0
+        ? stickers.join(', ')
+        : orderNumber && orderNumber !== oid
+          ? orderNumber
+          : '';
+    if (oid && second) return `${oid} · ${second}`;
+    if (second) return second;
     return oid || '—';
   }
 

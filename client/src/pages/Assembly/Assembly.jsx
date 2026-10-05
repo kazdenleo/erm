@@ -463,10 +463,32 @@ export function Assembly() {
           timeout: 15000,
           signal: ac.signal,
         });
-        const exists = r?.data?.data?.exists === true || r?.data?.exists === true;
-        if (!exists) return;
+        const payload = r?.data?.data ?? r?.data ?? {};
+        const exists = payload.exists === true;
+        const stickerNumber =
+          payload.stickerNumber != null && String(payload.stickerNumber).trim() !== ''
+            ? String(payload.stickerNumber).trim()
+            : null;
         if (cancelled) return;
-        setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+        if (exists) {
+          setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+        }
+        if (stickerNumber) {
+          const patchSticker = (o) => {
+            if (!o) return o;
+            if (String(o.orderId ?? o.order_id ?? '') !== id) return o;
+            const cur = String(o.assemblyStickerNumber ?? o.assembly_sticker_number ?? '').trim();
+            if (cur === stickerNumber) return o;
+            return { ...o, assemblyStickerNumber: stickerNumber, assembly_sticker_number: stickerNumber };
+          };
+          setAssemblyOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
+          setCollectedOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
+          setCurrentOrderData((prev) => {
+            if (!prev?.order) return prev;
+            const nextOrder = patchSticker(prev.order);
+            return nextOrder === prev.order ? prev : { ...prev, order: nextOrder };
+          });
+        }
       } catch {
         // ignore
       }

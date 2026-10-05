@@ -1,4 +1,9 @@
-import { ozonPostingNumberFromOrderId, ozonStickerNumberFromPosting } from '../src/utils/ozonPosting.js';
+import {
+  ozonAssemblyStickerFromPosting,
+  ozonOrderNumberFromPostingNumber,
+  ozonPostingNumberFromOrderId,
+  ozonStickerNumberFromPosting,
+} from '../src/utils/ozonPosting.js';
 
 describe('ozonPostingNumberFromOrderId', () => {
   test('strips multi-line suffix', () => {
@@ -7,6 +12,13 @@ describe('ozonPostingNumberFromOrderId', () => {
 
   test('keeps plain posting number', () => {
     expect(ozonPostingNumberFromOrderId('12345-0001-1')).toBe('12345-0001-1');
+  });
+});
+
+describe('ozonOrderNumberFromPostingNumber', () => {
+  test('strips posting index', () => {
+    expect(ozonOrderNumberFromPostingNumber('74369038-0308-1')).toBe('74369038-0308');
+    expect(ozonOrderNumberFromPostingNumber('71110719-0219-1')).toBe('71110719-0219');
   });
 });
 
@@ -30,5 +42,26 @@ describe('ozonStickerNumberFromPosting', () => {
   test('returns null without barcodes', () => {
     expect(ozonStickerNumberFromPosting({ posting_number: '1-1' })).toBeNull();
     expect(ozonStickerNumberFromPosting(null)).toBeNull();
+  });
+});
+
+describe('ozonAssemblyStickerFromPosting', () => {
+  test('prefers barcode over order_number', () => {
+    expect(
+      ozonAssemblyStickerFromPosting({
+        order_number: '74369038-0308',
+        posting_number: '74369038-0308-1',
+        barcodes: { lower_barcode: '201026795970000' },
+      })
+    ).toBe('201026795970000');
+  });
+
+  test('falls back to order_number', () => {
+    expect(
+      ozonAssemblyStickerFromPosting({
+        order_number: '74369038-0308',
+        posting_number: '74369038-0308-1',
+      })
+    ).toBe('74369038-0308');
   });
 });

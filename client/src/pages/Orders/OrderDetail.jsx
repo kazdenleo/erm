@@ -1255,7 +1255,11 @@ export function OrderDetailContent({
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
-        <OzonDetail detail={detail} localLines={localLines} />
+        <OzonDetail
+          detail={detail}
+          localLines={localLines}
+          assemblyStickerNumber={assembly?.assemblyStickerNumber}
+        />
       </>
     );
   if ((mpNorm === 'wildberries' || mpNorm === 'wb') && detail) {

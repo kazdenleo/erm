@@ -10,6 +10,17 @@ export function ozonPostingNumberFromOrderId(orderIdRaw) {
 }
 
 /**
+ * Номер заказа Ozon (order_number) из номера отправления:
+ * `74369038-0308-1` → `74369038-0308`.
+ */
+export function ozonOrderNumberFromPostingNumber(postingNumberRaw) {
+  const s = String(postingNumberRaw ?? '').trim();
+  if (!s) return '';
+  const m = s.match(/^(.*)-\d+$/);
+  return m && m[1] ? m[1] : '';
+}
+
+/**
  * Номер с этикетки Ozon FBS (нижний ШК отправления) — аналог стикера WB.
  * Берём lower_barcode, иначе upper_barcode.
  */
@@ -22,4 +33,27 @@ export function ozonStickerNumberFromPosting(posting) {
   if (raw == null) return null;
   const s = String(raw).trim();
   return s || null;
+}
+
+/**
+ * Что сохранить в assembly_sticker_number для Ozon:
+ * приоритет — ШК этикетки, иначе order_number из ответа API.
+ */
+export function ozonAssemblyStickerFromPosting(posting) {
+  const fromBarcode = ozonStickerNumberFromPosting(posting);
+  if (fromBarcode) return fromBarcode;
+  const orderNumber =
+    posting?.order_number != null
+      ? String(posting.order_number).trim()
+      : posting?.orderNumber != null
+        ? String(posting.orderNumber).trim()
+        : '';
+  if (orderNumber) return orderNumber;
+  const postingNumber =
+    posting?.posting_number != null
+      ? String(posting.posting_number).trim()
+      : posting?.postingNumber != null
+        ? String(posting.postingNumber).trim()
+        : '';
+  return ozonOrderNumberFromPostingNumber(postingNumber) || null;
 }

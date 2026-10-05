@@ -15,7 +15,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
 import ordersService, { orderEligibleForProcurement, isOrderTerminalNoReserve } from './orders.service.js';
 import logger from '../utils/logger.js';
-import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+import { ozonAssemblyStickerFromPosting, ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 /**
@@ -1365,6 +1365,7 @@ class OrdersSyncService {
         await attachResolvedProductIds(toUpsert);
         await attachResolvedWarehouseIds(toUpsert);
         await ordersRepo.upsertFromSyncBatch(toUpsert);
+        await persistOzonAssemblyStickersFromSyncRows(toUpsert, profileId);
       } catch (err) {
         console.error('[Orders Sync] Batch upsert failed:', err.message);
         throw err;
@@ -1909,7 +1910,7 @@ async function fetchOzonOrderDetailRaw(config, postingNumberRaw) {
       posting_number: String(posting_number),
       with: {
         analytics_data: false,
-        barcodes: false,
+        barcodes: true,
         financial_data: false,
         legal_info: false,
         product_exemplars: false,
@@ -1952,7 +1953,8 @@ async function fetchOzonOrderByPostingNumber(config, postingNumberRaw) {
       with: {
         analytics_data: false,
         financial_data: false,
-        transliteration: false
+        transliteration: false,
+        barcodes: true
       }
     })
   });
@@ -2057,6 +2059,7 @@ function mapOzonPostingToSyncRows(order) {
 
   const multi = lines.length > 1;
   const groupId = multi ? postingNumber : null;
+  const assemblySticker = ozonAssemblyStickerFromPosting(order);
 
   return lines.map((p, idx) => {
     const orderId = !multi ? postingNumber : idx === 0 ? postingNumber : `${postingNumber}~${idx}`;
@@ -2083,7 +2086,8 @@ function mapOzonPostingToSyncRows(order) {
       deliveryAddress: marketplaceWarehouseBindKey(
         order?.delivery_method?.warehouse_id ?? order?.delivery_method?.warehouseId,
         order?.delivery_method?.warehouse_name ?? order?.delivery_method?.warehouseName
-      )
+      ),
+      ...(assemblySticker ? { assemblyStickerNumber: assemblySticker } : {})
     };
   });
 }
@@ -2092,6 +2096,30 @@ function mapOzonPostingToSyncRows(order) {
  * v3/posting/fbs/list для одного интервала since..to: все страницы (offset), до limit записей на страницу.
  * @throws {Error} при HTTP-ошибке Ozon
  */
+/**
+ * После upsert: сохранить номер с этикетки / order_number Ozon в assembly_sticker_number.
+ * upsertFromSyncBatch само поле не обновляет (чтобы не затирать стикер WB).
+ */
+async function persistOzonAssemblyStickersFromSyncRows(rows, profileId = null) {
+  const list = Array.isArray(rows) ? rows : [];
+  const seen = new Set();
+  for (const o of list) {
+    if (!o || String(o.marketplace || '').toLowerCase() !== 'ozon') continue;
+    const sn = o.assemblyStickerNumber ?? o.assembly_sticker_number;
+    if (sn == null || String(sn).trim() === '') continue;
+    const oid = o.orderId ?? o.order_id;
+    if (oid == null || String(oid).trim() === '') continue;
+    const key = `${profileId ?? ''}|${String(oid)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    try {
+      await ordersService.setAssemblyStickerNumber('ozon', String(oid), String(sn).trim(), profileId);
+    } catch (e) {
+      logger.debug(`[Ozon] sticker save ${oid}: ${e?.message || e}`);
+    }
+  }
+}
+
 async function fetchOzonFbsListForPeriod(config, since, to) {
   const { client_id, api_key } = config;
   const acc = [];
@@ -2116,7 +2144,8 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
         with: {
           analytics_data: false,
           financial_data: false,
-          transliteration: false
+          transliteration: false,
+          barcodes: true
         }
       })
     });
