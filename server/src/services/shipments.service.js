@@ -1899,7 +1899,9 @@ async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { pr
 
 /**
  * Удалить заказы из поставки.
- * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply — в overflow (reuse/create).
+ * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply —
+ * в overflow (reuse/create) и на WB, и в ERP. Закрытие WB с несобранными вызывает
+ * remove с relocateWbToNewSupply=true — на WB заказ после сборки обязан быть в поставке.
  */
 async function removeOrdersFromShipment(
   shipmentId,
