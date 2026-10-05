@@ -3240,12 +3240,12 @@ async function batchIncomingMap(productIds, opts = {}) {
       [ids]
     ),
     query(
-      `SELECT DISTINCT ON (product_id) product_id, incoming_after::int AS inc
+      `SELECT DISTINCT ON (product_id) product_id, COALESCE(wh_incoming_after, incoming_after)::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND warehouse_id = $2
          AND LOWER(TRIM(type::text)) = 'incoming'
-         AND incoming_after IS NOT NULL
+         AND COALESCE(wh_incoming_after, incoming_after) IS NOT NULL
        ORDER BY product_id, created_at DESC, id DESC`,
       [ids, wid]
     ),

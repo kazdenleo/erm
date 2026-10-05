@@ -232,11 +232,11 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
       [pid]
     ),
     run(
-      `SELECT incoming_after::int AS inc
+      `SELECT COALESCE(wh_incoming_after, incoming_after)::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND warehouse_id = $2
          AND LOWER(TRIM(type::text)) = 'incoming'
-         AND incoming_after IS NOT NULL
+         AND COALESCE(wh_incoming_after, incoming_after) IS NOT NULL
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
       [pid, wh]
@@ -273,6 +273,28 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
   } catch {
     return allocated;
   }
+}
+
+/**
+ * Остатки одного склада после движения (наличие / в пути / резерв) — те же расчёты, что в таблице по складу.
+ * @param {Function} run — query или client.query (внутри транзакции движения)
+ */
+export async function computeWarehouseMovementSnapshotWithClient(run, productId, warehouseId) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  const wh = parseStockMovementWarehouseId(warehouseId);
+  if (!Number.isFinite(pid) || pid < 1 || wh == null) return null;
+  const balR = await run(
+    `SELECT COALESCE(quantity, 0)::int AS qty
+     FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
+    [pid, wh]
+  );
+  const incoming = await readWarehouseScopedIncomingWithClient(run, pid, wh);
+  const reserved = await queryWarehouseScopedReservedFromMovements(run, pid, wh);
+  return {
+    balance: clampStockMetric(Number(balR.rows?.[0]?.qty ?? 0) || 0),
+    incoming: clampStockMetric(incoming),
+    reserved: clampStockMetric(reserved),
+  };
 }
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */

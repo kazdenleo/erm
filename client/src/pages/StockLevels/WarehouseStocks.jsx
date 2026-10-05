@@ -1492,6 +1492,29 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
   return out;
 }
 
+/** Снимок склада (wh_*) последнего движения строки истории; null — у старых записей его нет. */
+function warehouseSnapshotFromDisplayItem(item, warehouseFilterId) {
+  if (warehouseFilterId == null || String(warehouseFilterId).trim() === '') return null;
+  const ms = item?.kind === 'single' ? [item.m] : Array.isArray(item?.movements) ? item.movements : [];
+  let latest = null;
+  for (const m of ms) {
+    if (!m || !movementMatchesWarehouseFilter(m, warehouseFilterId)) continue;
+    if (
+      !latest ||
+      String(m.created_at) > String(latest.created_at) ||
+      (String(m.created_at) === String(latest.created_at) && Number(m.id) > Number(latest.id))
+    ) {
+      latest = m;
+    }
+  }
+  if (!latest) return null;
+  const inc = movementNum(latest, 'wh_incoming_after');
+  const res = movementNum(latest, 'wh_reserved_after');
+  const bal = movementNum(latest, 'wh_balance_after');
+  if (inc == null || res == null || bal == null) return null;
+  return { inc, res, bal, _whSnapshot: true };
+}
+
 /** Снимки строк истории с enrich; индекс 0 — самая новая строка, prev для строки i = enriched[i+1]. */
 function buildHistoryDisplaySnapshots(
   displayRows,
@@ -1506,7 +1529,12 @@ function buildHistoryDisplaySnapshots(
     const item = displayRows[i];
     const raw = snapshotAfterDisplayItem(item, warehouseFilterId);
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
-    enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId);
+    const whSnap = isKitProduct(kitProduct)
+      ? null
+      : warehouseSnapshotFromDisplayItem(item, warehouseFilterId);
+    enriched[i] = whSnap
+      ? { ...enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId), ...whSnap }
+      : enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId);
   }
   // При фильтре склада цепочка строится с 0 снизу (без глобального reserved_after).
   // Подтягиваем верх к актуальному резерву склада, чтобы цифры совпали с колонкой таблицы.
@@ -1514,6 +1542,7 @@ function buildHistoryDisplaySnapshots(
     warehouseFilterId != null && String(warehouseFilterId).trim() !== '';
   if (
     warehouseScoped &&
+    !enriched[0]?._whSnapshot &&
     currentNetReserved != null &&
     Number.isFinite(Number(currentNetReserved)) &&
     enriched[0]?.res != null &&
@@ -1524,6 +1553,7 @@ function buildHistoryDisplaySnapshots(
     const offset = target - top;
     if (offset !== 0) {
       for (let i = 0; i < n; i++) {
+        if (enriched[i]?._whSnapshot) continue;
         if (enriched[i]?.res == null || Number.isNaN(Number(enriched[i].res))) continue;
         enriched[i] = {
           ...enriched[i],

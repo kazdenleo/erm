@@ -1590,6 +1590,7 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
     `SELECT product_id, expected_quantity, received_quantity FROM purchase_items WHERE purchase_id = $1 FOR UPDATE`,
     [purchaseId]
   );
+  const movements = [];
   for (const row of lines.rows || []) {
     const productId = Number(row.product_id);
     const expected = row.expected_quantity != null ? Number(row.expected_quantity) : 0;
@@ -1604,7 +1605,7 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       `UPDATE products SET incoming_quantity = GREATEST(0, $1::int), updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
       [newIncoming, productId]
     );
-    await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    const movement = await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
       productId,
       type: 'incoming',
       quantityChange: -rem,
@@ -1613,7 +1614,9 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       warehouseId: purchaseWarehouseId,
       profileId: profileIdForMove,
     });
+    if (movement) movements.push(movement);
   }
+  return movements;
 }
 
 async function collectAllSourceOrdersFromPurchaseInTx(client, purchaseId) {
@@ -1855,6 +1858,14 @@ async function applyPurchaseReceiptStockByProductInTx(
     let newIncoming = incoming - moveFromIncoming;
     if (newIncoming < 0) newIncoming = 0;
 
+    // До записи движений: снимок «в пути» по складу в строке списания учитывает непринятый остаток закупки.
+    if (pi.rows?.[0] && moveFromIncoming > 0) {
+      await client.query(
+        'UPDATE purchase_items SET received_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = $2 AND product_id = $3',
+        [received + moveFromIncoming, purchaseId, productId]
+      );
+    }
+
     if (dwId && stockQty > 0) {
       const pwsBefore = await client.query(
         `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
@@ -1977,14 +1988,6 @@ async function applyPurchaseReceiptStockByProductInTx(
           [unitCost, productId]
         );
       }
-    }
-
-    if (pi.rows?.[0] && moveFromIncoming > 0) {
-      const newReceived = received + moveFromIncoming;
-      await client.query(
-        'UPDATE purchase_items SET received_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = $2 AND product_id = $3',
-        [newReceived, purchaseId, productId]
-      );
     }
 
     deltas.push({
@@ -4750,7 +4753,7 @@ class PurchasesService {
         }
       }
 
-      await removeRemainingIncomingForPurchaseInTx(client, id);
+      const removalMovements = await removeRemainingIncomingForPurchaseInTx(client, id);
 
       sourceList = await collectAllSourceOrdersFromPurchaseInTx(client, id);
       await revertInProcurementOrdersFromSourceListInTx(client, sourceList, {
@@ -4758,6 +4761,10 @@ class PurchasesService {
         excludePurchaseId: id,
       });
       await client.query(`DELETE FROM purchases WHERE id = $1`, [id]);
+      // Пока закупка не удалена, её непринятое ожидание ещё считается «в пути» склада.
+      for (const m of removalMovements) {
+        await stockMovementsRepositoryPG.refreshWarehouseSnapshot(client, m);
+      }
     });
 
     schedulePurchaseReserveCleanup({

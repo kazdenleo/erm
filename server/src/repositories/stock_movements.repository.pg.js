@@ -12,7 +12,56 @@ function normalizeProfileId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * Записать в движение снимок остатков его склада (wh_*). Сбой расчёта не отменяет само движение:
+ * внутри транзакции откатываемся к savepoint, иначе ошибка прервала бы всю транзакцию вызывающего кода.
+ */
+async function fillWarehouseSnapshot(client, movement) {
+  if (!movement || movement.warehouse_id == null) return movement;
+  const inTx = client && typeof client.query === 'function';
+  const run = inTx ? client.query.bind(client) : query;
+  let savepoint = false;
+  if (inTx) {
+    try {
+      await run('SAVEPOINT sm_wh_snapshot');
+      savepoint = true;
+    } catch {
+      savepoint = false;
+    }
+  }
+  try {
+    const { computeWarehouseMovementSnapshotWithClient } = await import(
+      '../services/sellableQuantity.service.js'
+    );
+    const snap = await computeWarehouseMovementSnapshotWithClient(
+      run,
+      movement.product_id,
+      movement.warehouse_id
+    );
+    if (!snap) return movement;
+    const r = await run(
+      `UPDATE stock_movements
+       SET wh_balance_after = $2, wh_incoming_after = $3, wh_reserved_after = $4
+       WHERE id = $1
+       RETURNING *`,
+      [movement.id, snap.balance, snap.incoming, snap.reserved]
+    );
+    if (savepoint) await run('RELEASE SAVEPOINT sm_wh_snapshot');
+    return r.rows?.[0] || movement;
+  } catch {
+    if (savepoint) {
+      await run('ROLLBACK TO SAVEPOINT sm_wh_snapshot').catch(() => {});
+    }
+    return movement;
+  }
+}
+
 class StockMovementsRepositoryPG {
+  /** Пересчитать снимок склада у уже записанного движения (после изменений документов в той же транзакции). */
+  async refreshWarehouseSnapshot(client, movement) {
+    return fillWarehouseSnapshot(client, movement);
+  }
+
   /**
    * Создать запись движения остатков
    * @param {object} params
@@ -55,7 +104,7 @@ class StockMovementsRepositoryPG {
       profId,
     ];
     const result = await query(sql, params);
-    return result.rows[0] || null;
+    return fillWarehouseSnapshot(null, result.rows[0] || null);
   }
 
   /**
@@ -135,7 +184,7 @@ class StockMovementsRepositoryPG {
         [productId]
       );
     }
-    return movement;
+    return fillWarehouseSnapshot(client, movement);
   }
 
   /**
@@ -175,7 +224,8 @@ class StockMovementsRepositoryPG {
     const limitIdx = params.length;
 
     const sql = `
-      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after, meta, warehouse_id
+      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after,
+             wh_balance_after, wh_incoming_after, wh_reserved_after, meta, warehouse_id
       FROM stock_movements
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
