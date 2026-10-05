@@ -18,6 +18,7 @@ import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
+import { buildAssemblyNextRecommendation } from '../../utils/assemblyNextRecommendation';
 import {
   orderGroupKey,
   singleOrderListGroupKey,
@@ -35,6 +36,8 @@ import {
   isKitSkuScanForOrder,
   isRootKitSkuScanForOrder,
 } from '../../utils/assemblyKitScan.js';
+import { stockMovementsApi } from '../../services/stockMovements.api';
+import { useWarehouses } from '../../hooks/useWarehouses';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -280,6 +283,7 @@ function assemblyCompositionParts(item, quantityOverride) {
 
 export function Assembly() {
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
+  const { warehouses } = useWarehouses();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -301,6 +305,9 @@ export function Assembly() {
   /** orderId -> true, если файл этикетки уже загружен на сервер (можно показывать иконку печати) */
   const [labelReadyByOrderId, setLabelReadyByOrderId] = useState(() => ({}));
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
+  /** Остаток на складе рекомендации (следующий к сборке) */
+  const [nextHintStock, setNextHintStock] = useState(null);
+  const [nextHintStockLoading, setNextHintStockLoading] = useState(false);
   const barcodeInputRef = useRef(null);
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
@@ -1157,6 +1164,51 @@ export function Assembly() {
     [assemblyTableGroups]
   );
 
+  /** Рекомендация: первый товар из отфильтрованного списка (как «Следующий к сборке» на FBO). */
+  const nextRecommendation = useMemo(
+    () => buildAssemblyNextRecommendation(assemblyTableGroups[0] || null),
+    [assemblyTableGroups]
+  );
+
+  const warehouseNameById = useMemo(() => {
+    const map = new Map();
+    for (const w of warehouses || []) {
+      const id = Number(w.id ?? w.warehouseId ?? w.warehouse_id);
+      if (!Number.isFinite(id) || id < 1) continue;
+      const name = String(w.name ?? w.title ?? '').trim();
+      map.set(id, name || `Склад #${id}`);
+    }
+    return map;
+  }, [warehouses]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const productId = nextRecommendation?.productId;
+    const warehouseId = nextRecommendation?.warehouseId;
+    if (!productId || !warehouseId) {
+      setNextHintStock(null);
+      setNextHintStockLoading(false);
+      return undefined;
+    }
+    setNextHintStockLoading(true);
+    stockMovementsApi
+      .getWarehouseStock(productId, warehouseId)
+      .then((data) => {
+        if (cancelled) return;
+        const qty = Math.max(0, Math.floor(Number(data?.quantity) || 0));
+        setNextHintStock(qty);
+      })
+      .catch(() => {
+        if (!cancelled) setNextHintStock(null);
+      })
+      .finally(() => {
+        if (!cancelled) setNextHintStockLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [nextRecommendation?.productId, nextRecommendation?.warehouseId, nextRecommendation?.groupKey]);
+
   const collectedFiltered = useMemo(() => {
     let list = collectedOrdersSorted;
     if (marketplaceFilter !== 'all') {
@@ -1207,31 +1259,123 @@ export function Assembly() {
       )}
       <h1 className="title">🔧 Сборка заказов</h1>
 
-      <div className="assembly-scan-block">
-        <div className="assembly-scan-form">
-          <label htmlFor="assembly-barcode" className="assembly-scan-label">
-            Штрихкод товара
-          </label>
-          <FastScanInput
-            id="assembly-barcode"
-            inputRef={barcodeInputRef}
-            className="assembly-scan-input"
-            placeholder={
-              chestnyZnakEnabled
-                ? 'Штрихкод или код маркировки — поиск автоматически'
-                : 'Отсканируйте или введите штрихкод — поиск автоматически'
-            }
-            onScan={handleAssemblyScan}
-            debounceMs={400}
-            enableGlobalCapture
-            disabled={scanLoading}
-          />
-        </div>
-        {scanError && <p className="assembly-scan-error">{scanError}</p>}
-        {labelPrintError && <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>}
+      <div
+        className={`assembly-next${
+          !nextRecommendation && assemblyTableGroups.length === 0 ? ' assembly-next--empty' : ''
+        }`}
+        aria-live="polite"
+      >
+        <div className="assembly-next__row">
+          <div className="assembly-next__scan">
+            <label htmlFor="assembly-barcode" className="assembly-scan-label">
+              Штрихкод товара
+            </label>
+            <FastScanInput
+              id="assembly-barcode"
+              inputRef={barcodeInputRef}
+              className="assembly-scan-input"
+              placeholder={
+                chestnyZnakEnabled
+                  ? 'Штрихкод или код маркировки — поиск автоматически'
+                  : 'Отсканируйте или введите штрихкод — поиск автоматически'
+              }
+              onScan={handleAssemblyScan}
+              debounceMs={400}
+              enableGlobalCapture
+              disabled={scanLoading}
+            />
+            <p className="assembly-next__scan-hint muted-hint">
+              Рекомендация справа — первый заказ из фильтра. Скан другого товара откроет другой заказ из
+              списка.
+            </p>
+            {scanError && <p className="assembly-scan-error">{scanError}</p>}
+            {labelPrintError && (
+              <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
+            )}
+          </div>
 
-        {currentOrderData && (
-          <div className="assembly-current-order">
+          {nextRecommendation ? (
+            <div className="assembly-next__body">
+              <div className="assembly-next__label">Следующий к сборке</div>
+              <div className="assembly-next__name">{nextRecommendation.productName}</div>
+              <div className="assembly-next__skus">
+                <span
+                  className={`assembly-next__kind${
+                    nextRecommendation.isKit
+                      ? ' assembly-next__kind--kit'
+                      : ' assembly-next__kind--product'
+                  }`}
+                >
+                  {nextRecommendation.isKit ? 'Комплект' : 'Товар'}
+                </span>
+                <span className="assembly-next__sku">
+                  {nextRecommendation.article}
+                  {nextRecommendation.quantity > 1 ? (
+                    <span className="assembly-next__qty">×{nextRecommendation.quantity}</span>
+                  ) : null}
+                </span>
+              </div>
+              {nextRecommendation.isKit && nextRecommendation.components.length > 0 ? (
+                <div className="assembly-next__components">
+                  <span className="assembly-next__components-label">Комплектующие:</span>
+                  <span className="assembly-next__components-list">
+                    {nextRecommendation.components.map((c, i) => (
+                      <span key={`${c.article}-${i}`} className="assembly-next__sku">
+                        {c.article}
+                        {c.quantity > 0 ? (
+                          <span className="assembly-next__qty">×{c.quantity}</span>
+                        ) : null}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ) : null}
+              {nextRecommendation.packingDisplayValue ? (
+                <div className="assembly-next__packing">
+                  <span className="assembly-next__packing-label">Упаковка:</span>{' '}
+                  {nextRecommendation.packingDisplayValue}
+                </div>
+              ) : null}
+              <div className="assembly-next__stock muted-hint">
+                {nextRecommendation.warehouseId ? (
+                  <>
+                    На складе{' '}
+                    {warehouseNameById.get(nextRecommendation.warehouseId) ||
+                      `#${nextRecommendation.warehouseId}`}
+                    :{' '}
+                    {nextHintStockLoading
+                      ? '…'
+                      : nextHintStock != null
+                        ? `${nextHintStock} шт.`
+                        : '—'}
+                  </>
+                ) : (
+                  'Склад заказа не указан — остаток не показан'
+                )}
+              </div>
+              <div className="assembly-next__order muted-hint">
+                Заказ{' '}
+                {marketplaceOrderIdForApi(
+                  nextRecommendation.rows,
+                  nextRecommendation.order.marketplace
+                ) || nextRecommendation.order.orderId}
+                {mpDisplay(nextRecommendation.order.marketplace)
+                  ? ` · ${mpDisplay(nextRecommendation.order.marketplace).name}`
+                  : ''}
+              </div>
+            </div>
+          ) : (
+            <div className="assembly-next__body">
+              <div className="assembly-next__skus assembly-next__skus--done">
+                Нет заказов на сборке по текущему фильтру
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {currentOrderData && (
+          <div className="assembly-current-order assembly-current-order--panel">
             <h3 className="assembly-current-title">
               {curAssemblyMp ? `${curAssemblyMp.icon} ` : ''}
               Заказ {currentOrderData.order.orderId}
@@ -1354,7 +1498,6 @@ export function Assembly() {
             )}
           </div>
         )}
-      </div>
 
       <div className="assembly-toolbar">
         <div className="erp-filter-row" role="group" aria-label="Фильтр по маркетплейсу" style={{ marginBottom: 0 }}>
