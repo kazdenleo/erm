@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const clientDir = path.join(__dirname, '..');
-const buildDir = path.join(clientDir, 'build');
+const buildDir = path.resolve(clientDir, process.env.BUILD_PATH || 'build');
 
 function fixPerms(targetPath, isDir) {
   try {
@@ -35,4 +35,4 @@ if (!fs.existsSync(buildDir)) {
 }
 
 walk(buildDir);
-console.log('[fix-build-perms] client/ 755; build/ permissions set to 755/644');
+console.log(`[fix-build-perms] client/ 755; ${path.basename(buildDir)}/ permissions set to 755/644`);

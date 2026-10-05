@@ -8,6 +8,8 @@ node_modules/
 
 # Production
 /build
+/build.new
+/build.old
 
 # Misc
 .DS_Store

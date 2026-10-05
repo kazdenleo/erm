@@ -45,9 +45,21 @@ if [ -d "$APP_ROOT/client/build/static/js" ]; then
 fi
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
 umask 022
-npm run build
+# Сборка в build.new и подмена в конце: react-scripts очищает каталог сборки в начале,
+# при сборке прямо в build/ сайт без фронтенда всё время сборки (и навсегда, если она упала).
+BUILD_DIR="$APP_ROOT/client/build"
+BUILD_NEW="$APP_ROOT/client/build.new"
+BUILD_OLD="$APP_ROOT/client/build.old"
+rm -rf "$BUILD_NEW"
+BUILD_PATH=build.new npm run build
 # Сохраняем предыдущие main.*.js — иначе после деплоя F5 с закэшированным index.html даёт 404 и белый экран
-cp -f "$JS_ARCHIVE/"main.*.js "$APP_ROOT/client/build/static/js/" 2>/dev/null || true
+cp -f "$JS_ARCHIVE/"main.*.js "$BUILD_NEW/static/js/" 2>/dev/null || true
+chmod -R a+rX "$BUILD_NEW"
+rm -rf "$BUILD_OLD"
+if [ -d "$BUILD_DIR" ]; then mv "$BUILD_DIR" "$BUILD_OLD"; fi
+mv "$BUILD_NEW" "$BUILD_DIR"
+rm -rf "$BUILD_OLD"
+echo "    client build swapped in"
 # postbuild в package.json тоже выставляет права; дублируем на случай старого package.json
 bash "$APP_ROOT/scripts/vps-fix-client-build-perms.sh" 2>/dev/null \
   || { chmod 755 "$APP_ROOT/client"; chmod -R a+rX "$APP_ROOT/client/build"; } 2>/dev/null \
