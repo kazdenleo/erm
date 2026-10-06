@@ -114,10 +114,11 @@ export function AssemblyHintCard({
           </>
         ) : null}
       </div>
-      <div className="assembly-next__packing">
-        <span className="assembly-next__packing-label">Упаковка:</span>{' '}
-        {packing || '—'}
-      </div>
+      {packing ? (
+        <div className="assembly-next__packing">
+          <span className="assembly-next__packing-label">Упаковка:</span> {packing}
+        </div>
+      ) : null}
       <div className="assembly-next__stock muted-hint">
         {recommendation.warehouseId ? (
           stockLoading ? (

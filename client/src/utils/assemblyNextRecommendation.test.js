@@ -153,6 +153,23 @@ describe('buildAssemblyNextRecommendation', () => {
     expect(hint.packingDisplayValue).toBe('Пакет zip');
   });
 
+  test('без значения атрибута упаковка пустая', () => {
+    const order = {
+      orderId: '4',
+      marketplace: 'wildberries',
+      productId: 40,
+      productName: 'Товар',
+      offerId: 'SKU-4',
+      isKit: false,
+    };
+    const hint = buildAssemblyNextRecommendation({
+      key: 'wb|o:4',
+      rows: [order],
+      primary: order,
+    });
+    expect(hint.packingDisplayValue).toBe('');
+  });
+
   test('пустая группа — null', () => {
     expect(buildAssemblyNextRecommendation(null)).toBeNull();
   });
