@@ -1,6 +1,6 @@
 /**
  * Assembly Page
- * Сборка FBS: блок «Следующий к сборке» (рекомендация из фильтра) + скан штрихкода.
+ * Сборка FBS: слева текущий заказ, справа следующий; скан в карточках.
  * Скан ищет первый заказ из отфильтрованного списка с этим товаром; другой товар —
  * другой заказ. Пока текущий состав не закрыт, сессия остаётся на нём.
  */
@@ -19,7 +19,11 @@ import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
-import { buildAssemblyNextRecommendation } from '../../utils/assemblyNextRecommendation';
+import {
+  buildAssemblyNextRecommendation,
+  pickAssemblyStageGroups,
+  assemblyStageLabel,
+} from '../../utils/assemblyNextRecommendation';
 import { stockCountsLabel, nextRecommendationScanOverlay } from '../../utils/assemblyWarehouseStock';
 import { AssemblyHintCard } from './AssemblyHintCard';
 import {
@@ -282,6 +286,145 @@ function assemblyCompositionParts(item, quantityOverride) {
     productId,
     fallbackText: formatAssemblyCompositionLine({ ...item, quantity: q })
   };
+}
+
+function AssemblySessionPanel({
+  currentOrderData,
+  compositionLines,
+  remainingItems,
+  showScanStickerFinish,
+  waitingForOrderLabel,
+  finishScanSubmitting,
+  onFinish,
+  labelReadyByOrderId,
+  onPrintLabel,
+}) {
+  if (!currentOrderData) return null;
+  const assembled = String(currentOrderData.order?.status ?? '').toLowerCase() === 'assembled';
+  return (
+    <div className="assembly-current-order assembly-current-order--embedded">
+      {isAssemblyLikeStatus(currentOrderData.order.status) ? (
+        <p className="assembly-current-sticker text-muted small mb-2">
+          {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
+          normMarketplace(currentOrderData.order.marketplace) === 'ozon'
+            ? 'Стикер'
+            : 'Номер заказа'}
+          : <OrderStickerDisplay order={currentOrderData.order} />
+        </p>
+      ) : null}
+      <div className="assembly-composition">
+        <span className="assembly-composition-label">Состав заказа:</span>
+        <ul className="assembly-composition-list">
+          {compositionLines.map((line, idx) => (
+            <li key={`${line.key}-${idx}`}>
+              {line.productId ? (
+                <>
+                  {line.externalId ? `${line.externalId}, ` : ''}
+                  <Link
+                    to={productCardPath(line.productId)}
+                    className="assembly-product-link"
+                    title="Открыть карточку товара"
+                  >
+                    {line.name}
+                  </Link>
+                  {line.displayAttributeValue ? (
+                    <span className="text-muted"> · {line.displayAttributeValue}</span>
+                  ) : null}
+                  {` - ${line.q}шт`}
+                </>
+              ) : (
+                line.fallbackText
+              )}
+              {line.remaining > 0 && (
+                <span className="assembly-composition-progress">
+                  {' '}
+                  (осталось отсканировать: {line.remaining})
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {remainingItems.length > 0 && (
+        <p className="assembly-remaining-hint">Отсканируйте следующий товар по штрихкоду.</p>
+      )}
+      {showScanStickerFinish && (
+        <div className="assembly-sticker-finish">
+          <p className="assembly-ready-text">
+            {waitingForOrderLabel
+              ? 'Все позиции отсканированы. Загружаем этикетку с маркетплейса — сборка начнётся автоматически, как только стикер будет готов.'
+              : finishScanSubmitting
+                ? 'Все позиции отсканированы. Отмечаем собранным и отправляем этикетку на печать…'
+                : 'Все позиции отсканированы. Этикетка отправляется в печать автоматически…'}
+          </p>
+          {waitingForOrderLabel && currentOrderData.order && (
+            <p
+              className="assembly-label-wait-hint"
+              style={{ marginTop: 8, fontSize: '0.92rem', opacity: 0.9 }}
+            >
+              {labelNotReadyAssemblyMessage(currentOrderData.order.marketplace)}
+            </p>
+          )}
+          <div
+            style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}
+          >
+            <Button
+              variant="primary"
+              onClick={() => void onFinish()}
+              disabled={finishScanSubmitting || waitingForOrderLabel}
+              title={waitingForOrderLabel ? 'Дождитесь загрузки этикетки' : undefined}
+            >
+              {finishScanSubmitting
+                ? '…'
+                : waitingForOrderLabel
+                  ? 'Ожидание этикетки…'
+                  : 'Завершить сборку и напечатать'}
+            </Button>
+            {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
+              <button
+                type="button"
+                className="assembly-label-link assembly-label-link-inline"
+                title="Только печать этикетки (без смены статуса)"
+                aria-label="Печать этикетки заказа"
+                disabled={finishScanSubmitting}
+                onClick={() => onPrintLabel(currentOrderData.order.orderId)}
+              >
+                <OrderLabelIcon size={20} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {assembled && (
+        <div className="assembly-ready">
+          <p className="assembly-ready-text">
+            Заказ собран
+            {orderStickerCellValue(currentOrderData.order) !== '—' ? (
+              <>
+                .{' '}
+                {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
+                normMarketplace(currentOrderData.order.marketplace) === 'ozon'
+                  ? 'Стикер'
+                  : 'Заказ'}
+                : <OrderStickerDisplay order={currentOrderData.order} />
+              </>
+            ) : null}{' '}
+            {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
+              <button
+                type="button"
+                className="assembly-label-link assembly-label-link-inline"
+                title="Печать этикетки"
+                aria-label="Печать этикетки заказа"
+                onClick={() => onPrintLabel(currentOrderData.order.orderId)}
+              >
+                <OrderLabelIcon size={20} />
+              </button>
+            )}
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function useAssemblyHintStock(recommendation, epoch) {
@@ -1257,27 +1400,36 @@ export function Assembly() {
     if (g) setLastAssembledGroup(g);
   }, [currentOrderKey, assemblyTableGroups]);
 
-  /** Слева: следующий заказ (если идёт сборка — следующий после текущего, иначе первый в списке). */
-  const nextRecommendation = useMemo(() => {
-    if (currentOrderKey) {
-      const other = assemblyTableGroups.find((g) => g.key !== currentOrderKey);
-      if (other) return buildAssemblyNextRecommendation(other);
-    }
-    return buildAssemblyNextRecommendation(assemblyTableGroups[0] || null);
-  }, [assemblyTableGroups, currentOrderKey]);
+  const currentOrderAssembled =
+    String(currentOrderData?.order?.status ?? '').toLowerCase() === 'assembled';
 
-  /** Справа: текущая сессия сборки или последний собранный. */
-  const previousRecommendation = useMemo(() => {
-    if (currentOrderKey) {
-      const live =
-        assemblyTableGroups.find((g) => g.key === currentOrderKey) ||
-        collectedTableGroups.find((g) => g.key === currentOrderKey) ||
-        (lastAssembledGroup?.key === currentOrderKey ? lastAssembledGroup : null);
-      if (live) return buildAssemblyNextRecommendation(live);
-    }
-    const lastCollected = collectedTableGroups[0] || lastAssembledGroup;
-    return buildAssemblyNextRecommendation(lastCollected || null);
-  }, [assemblyTableGroups, collectedTableGroups, currentOrderKey, lastAssembledGroup]);
+  /** Слева текущий, справа следующий; после сборки текущий → предыдущий, на его месте следующий. */
+  const stage = useMemo(
+    () =>
+      pickAssemblyStageGroups({
+        assemblyGroups: assemblyTableGroups,
+        collectedGroups: collectedTableGroups,
+        currentOrderKey,
+        lastAssembledGroup,
+        currentOrderAssembled,
+      }),
+    [
+      assemblyTableGroups,
+      collectedTableGroups,
+      currentOrderKey,
+      lastAssembledGroup,
+      currentOrderAssembled,
+    ]
+  );
+
+  const currentRecommendation = useMemo(
+    () => buildAssemblyNextRecommendation(stage.currentGroup),
+    [stage.currentGroup]
+  );
+  const sideRecommendation = useMemo(
+    () => buildAssemblyNextRecommendation(stage.sideGroup),
+    [stage.sideGroup]
+  );
 
   const warehouseNameById = useMemo(() => {
     const map = new Map();
@@ -1290,36 +1442,36 @@ export function Assembly() {
     return map;
   }, [warehouses]);
 
-  const { stock: nextHintStock, loading: nextHintStockLoading } = useAssemblyHintStock(
-    nextRecommendation,
+  const { stock: currentHintStock, loading: currentHintStockLoading } = useAssemblyHintStock(
+    currentRecommendation,
     nextStockEpoch
   );
-  const { stock: prevHintStock, loading: prevHintStockLoading } = useAssemblyHintStock(
-    previousRecommendation,
+  const { stock: sideHintStock, loading: sideHintStockLoading } = useAssemblyHintStock(
+    sideRecommendation,
     nextStockEpoch
   );
 
-  const nextScanOverlay = useMemo(
+  const currentScanOverlay = useMemo(
     () =>
       nextRecommendationScanOverlay({
-        recommendation: nextRecommendation,
+        recommendation: currentRecommendation,
         currentOrderKey,
         orderItems: currentOrderData?.orderItems,
         scannedQuantities,
         scannedQtyForLine: scannedQtyForAssemblyLine,
       }),
-    [nextRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
+    [currentRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
   );
-  const prevScanOverlay = useMemo(
+  const sideScanOverlay = useMemo(
     () =>
       nextRecommendationScanOverlay({
-        recommendation: previousRecommendation,
+        recommendation: sideRecommendation,
         currentOrderKey,
         orderItems: currentOrderData?.orderItems,
         scannedQuantities,
         scannedQtyForLine: scannedQtyForAssemblyLine,
       }),
-    [previousRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
+    [sideRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
   );
 
   if (loading) {
@@ -1359,188 +1511,128 @@ export function Assembly() {
 
       <div
         className={`assembly-next${
-          !nextRecommendation && !previousRecommendation ? ' assembly-next--empty' : ''
+          !currentRecommendation && !sideRecommendation ? ' assembly-next--empty' : ''
         }`}
         aria-live="polite"
       >
-        <div className="assembly-next__scan assembly-next__scan--bar">
-          <label htmlFor="assembly-barcode" className="assembly-scan-label">
-            Штрихкод товара
-          </label>
-          <FastScanInput
-            id="assembly-barcode"
-            inputRef={barcodeInputRef}
-            className="assembly-scan-input"
-            placeholder={
-              chestnyZnakEnabled
-                ? 'Штрихкод или код маркировки — поиск автоматически'
-                : 'Отсканируйте или введите штрихкод — поиск автоматически'
-            }
-            onScan={handleAssemblyScan}
-            debounceMs={400}
-            enableGlobalCapture
-            disabled={scanLoading}
-          />
-          <p className="assembly-next__scan-hint muted-hint">
-            Слева — следующий заказ из фильтра. Справа — текущая или предыдущая сборка. Скан другого
-            товара откроет другой заказ из списка.
-          </p>
-          {scanError && <p className="assembly-scan-error">{scanError}</p>}
-          {labelPrintError && (
-            <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
-          )}
-        </div>
-
         <div className="assembly-stage__split">
-          <div className="assembly-stage__next">
+          <div className="assembly-stage__current">
             <AssemblyHintCard
-              label="Следующий к сборке"
-              recommendation={nextRecommendation}
-              hintStock={nextHintStock}
-              stockLoading={nextHintStockLoading}
-              overlay={nextScanOverlay}
+              label={assemblyStageLabel(stage.currentRole)}
+              recommendation={currentRecommendation}
+              hintStock={currentHintStock}
+              stockLoading={currentHintStockLoading}
+              overlay={currentScanOverlay}
               warehouseNameById={warehouseNameById}
               mpDisplay={mpDisplay}
               emptyText="Нет заказов на сборке по текущему фильтру"
-            />
+              scan={
+                <div className="assembly-next__scan assembly-next__scan--in-card">
+                  <label htmlFor="assembly-barcode" className="assembly-scan-label">
+                    Штрихкод товара
+                  </label>
+                  <FastScanInput
+                    id="assembly-barcode"
+                    inputRef={barcodeInputRef}
+                    className="assembly-scan-input"
+                    placeholder={
+                      chestnyZnakEnabled
+                        ? 'Штрихкод или код маркировки — поиск автоматически'
+                        : 'Отсканируйте или введите штрихкод — поиск автоматически'
+                    }
+                    onScan={handleAssemblyScan}
+                    debounceMs={400}
+                    enableGlobalCapture
+                    disabled={scanLoading}
+                  />
+                  <p className="assembly-next__scan-hint muted-hint">
+                    Скан в текущем заказе. После сборки он станет предыдущим, слева появится
+                    следующий.
+                  </p>
+                  {scanError && <p className="assembly-scan-error">{scanError}</p>}
+                  {labelPrintError && (
+                    <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
+                  )}
+                  {lastScanStock ? (
+                    <div className="assembly-next__scan-stock">
+                      Скан {lastScanStock.sku}
+                      {lastScanStock.name ? ` · ${lastScanStock.name}` : ''}:{' '}
+                      {lastScanStock.stock
+                        ? stockCountsLabel(lastScanStock.stock)
+                        : 'остаток обновляется'}
+                    </div>
+                  ) : null}
+                </div>
+              }
+            >
+              {currentOrderData && currentRecommendation?.groupKey === currentOrderKey ? (
+                <AssemblySessionPanel
+                  currentOrderData={currentOrderData}
+                  compositionLines={compositionLines}
+                  remainingItems={remainingItems}
+                  showScanStickerFinish={showScanStickerFinish}
+                  waitingForOrderLabel={waitingForOrderLabel}
+                  finishScanSubmitting={finishScanSubmitting}
+                  onFinish={handleFinishScanAssembly}
+                  labelReadyByOrderId={labelReadyByOrderId}
+                  onPrintLabel={requestLabelPrint}
+                />
+              ) : null}
+            </AssemblyHintCard>
           </div>
-          <div className="assembly-stage__prev">
+          <div
+            className={`assembly-stage__side${
+              stage.sideRole === 'previous' ? ' assembly-stage__side--previous' : ''
+            }`}
+          >
             <AssemblyHintCard
-              label={currentOrderData ? 'Текущая сборка' : 'Предыдущий собранный'}
-              recommendation={previousRecommendation}
-              hintStock={prevHintStock}
-              stockLoading={prevHintStockLoading}
-              overlay={prevScanOverlay}
+              label={assemblyStageLabel(stage.sideRole === 'empty' ? 'next' : stage.sideRole)}
+              recommendation={sideRecommendation}
+              hintStock={sideHintStock}
+              stockLoading={sideHintStockLoading}
+              overlay={sideScanOverlay}
               warehouseNameById={warehouseNameById}
               mpDisplay={mpDisplay}
-              emptyText="Соберите заказ — он появится здесь"
-            />
-            {lastScanStock ? (
-              <div className="assembly-next__scan-stock">
-                Скан {lastScanStock.sku}
-                {lastScanStock.name ? ` · ${lastScanStock.name}` : ''}:{' '}
-                {lastScanStock.stock
-                  ? stockCountsLabel(lastScanStock.stock)
-                  : 'остаток обновляется'}
-              </div>
-            ) : null}
-            {currentOrderData ? (
-              <div className="assembly-current-order assembly-current-order--embedded">
-                {isAssemblyLikeStatus(currentOrderData.order.status) ? (
-                  <p className="assembly-current-sticker text-muted small mb-2">
-                    {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
-                    normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-                      ? 'Стикер'
-                      : 'Номер заказа'}
-                    :{' '}
-                    <OrderStickerDisplay order={currentOrderData.order} />
-                  </p>
-                ) : null}
-            <div className="assembly-composition">
-              <span className="assembly-composition-label">Состав заказа:</span>
-              <ul className="assembly-composition-list">
-                {compositionLines.map((line, idx) => (
-                  <li key={`${line.key}-${idx}`}>
-                    {line.productId ? (
-                      <>
-                        {line.externalId ? `${line.externalId}, ` : ''}
-                        <Link
-                          to={productCardPath(line.productId)}
-                          className="assembly-product-link"
-                          title="Открыть карточку товара"
-                        >
-                          {line.name}
-                        </Link>
-                        {line.displayAttributeValue ? (
-                          <span className="text-muted"> · {line.displayAttributeValue}</span>
-                        ) : null}
-                        {` - ${line.q}шт`}
-                      </>
-                    ) : (
-                      line.fallbackText
-                    )}
-                    {line.remaining > 0 && (
-                      <span className="assembly-composition-progress">
-                        {' '}
-                        (осталось отсканировать: {line.remaining})
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            {remainingItems.length > 0 && (
-              <p className="assembly-remaining-hint">Отсканируйте следующий товар по штрихкоду.</p>
-            )}
-            {showScanStickerFinish && (
-              <div className="assembly-sticker-finish">
-                <p className="assembly-ready-text">
-                  {waitingForOrderLabel
-                    ? 'Все позиции отсканированы. Загружаем этикетку с маркетплейса — сборка начнётся автоматически, как только стикер будет готов.'
-                    : finishScanSubmitting
-                      ? 'Все позиции отсканированы. Отмечаем собранным и отправляем этикетку на печать…'
-                      : 'Все позиции отсканированы. Этикетка отправляется в печать автоматически…'}
-                </p>
-                {waitingForOrderLabel && currentOrderData?.order && (
-                  <p className="assembly-label-wait-hint" style={{ marginTop: 8, fontSize: '0.92rem', opacity: 0.9 }}>
-                    {labelNotReadyAssemblyMessage(currentOrderData.order.marketplace)}
-                  </p>
-                )}
-                <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Button
-                    variant="primary"
-                    onClick={() => void handleFinishScanAssembly()}
-                    disabled={finishScanSubmitting || waitingForOrderLabel}
-                    title={waitingForOrderLabel ? 'Дождитесь загрузки этикетки' : undefined}
-                  >
-                    {finishScanSubmitting ? '…' : waitingForOrderLabel ? 'Ожидание этикетки…' : 'Завершить сборку и напечатать'}
-                  </Button>
-                  {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
-                    <button
-                      type="button"
-                      className="assembly-label-link assembly-label-link-inline"
-                      title="Только печать этикетки (без смены статуса)"
-                      aria-label="Печать этикетки заказа"
-                      disabled={finishScanSubmitting}
-                      onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
-                    >
-                      <OrderLabelIcon size={20} />
-                    </button>
-                  )}
+              emptyText={
+                stage.sideRole === 'previous'
+                  ? 'Соберите заказ — он появится здесь'
+                  : 'Нет следующего заказа'
+              }
+              scan={
+                <div className="assembly-next__scan assembly-next__scan--in-card">
+                  <label htmlFor="assembly-barcode-next" className="assembly-scan-label">
+                    Штрихкод товара
+                  </label>
+                  <FastScanInput
+                    id="assembly-barcode-next"
+                    className="assembly-scan-input"
+                    placeholder={
+                      chestnyZnakEnabled
+                        ? 'Штрихкод или код маркировки — поиск автоматически'
+                        : 'Отсканируйте или введите штрихкод — поиск автоматически'
+                    }
+                    onScan={handleAssemblyScan}
+                    debounceMs={400}
+                    autoFocus={false}
+                    disabled={scanLoading}
+                  />
                 </div>
-              </div>
-            )}
-            {String(currentOrderData?.order?.status ?? '').toLowerCase() === 'assembled' && (
-              <div className="assembly-ready">
-                <p className="assembly-ready-text">
-                  Заказ собран
-                  {orderStickerCellValue(currentOrderData.order) !== '—' ? (
-                    <>
-                      .{' '}
-                      {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
-                      normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-                        ? 'Стикер'
-                        : 'Заказ'}
-                      : <OrderStickerDisplay order={currentOrderData.order} />
-                    </>
-                  ) : null}
-                  {' '}
-                  {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
-                    <button
-                      type="button"
-                      className="assembly-label-link assembly-label-link-inline"
-                      title="Печать этикетки"
-                      aria-label="Печать этикетки заказа"
-                      onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
-                    >
-                      <OrderLabelIcon size={20} />
-                    </button>
-                  )}
-                </p>
-              </div>
-            )}
-              </div>
-            ) : null}
+              }
+            >
+              {currentOrderData && sideRecommendation?.groupKey === currentOrderKey ? (
+                <AssemblySessionPanel
+                  currentOrderData={currentOrderData}
+                  compositionLines={compositionLines}
+                  remainingItems={remainingItems}
+                  showScanStickerFinish={showScanStickerFinish}
+                  waitingForOrderLabel={waitingForOrderLabel}
+                  finishScanSubmitting={finishScanSubmitting}
+                  onFinish={handleFinishScanAssembly}
+                  labelReadyByOrderId={labelReadyByOrderId}
+                  onPrintLabel={requestLabelPrint}
+                />
+              ) : null}
+            </AssemblyHintCard>
           </div>
         </div>
       </div>

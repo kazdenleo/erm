@@ -46,12 +46,16 @@ export function AssemblyHintCard({
   warehouseNameById,
   mpDisplay,
   emptyText,
+  scan = null,
+  children = null,
 }) {
   if (!recommendation) {
     return (
       <div className="assembly-hint-card">
         <div className="assembly-next__label">{label}</div>
         <div className="assembly-next__skus assembly-next__skus--done">{emptyText}</div>
+        {scan}
+        {children}
       </div>
     );
   }
@@ -134,6 +138,8 @@ export function AssemblyHintCard({
           recommendation.order.orderId}
         {mp ? ` · ${mp.name}` : ''}
       </div>
+      {scan}
+      {children}
     </div>
   );
 }

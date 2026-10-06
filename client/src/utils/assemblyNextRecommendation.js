@@ -1,8 +1,95 @@
 /**
- * Рекомендация «следующий к сборке» для FBS: первый заказ из отфильтрованного списка.
+ * Рекомендация текущего / следующего заказа для FBS.
  */
 
 import { getAssemblyOrderCompositionLines, orderLineArticle } from './assemblyOrderComposition.js';
+
+/**
+ * Слева — текущий заказ; справа — следующий.
+ * После сборки текущий становится предыдущим, на его месте — следующий из очереди.
+ *
+ * @returns {{
+ *   currentGroup: object|null,
+ *   currentRole: 'current'|'previous'|'empty',
+ *   sideGroup: object|null,
+ *   sideRole: 'next'|'previous'|'empty',
+ * }}
+ */
+export function pickAssemblyStageGroups({
+  assemblyGroups = [],
+  collectedGroups = [],
+  currentOrderKey = '',
+  lastAssembledGroup = null,
+  currentOrderAssembled = false,
+} = {}) {
+  const queue = Array.isArray(assemblyGroups) ? assemblyGroups : [];
+  const collected = Array.isArray(collectedGroups) ? collectedGroups : [];
+
+  const findByKey = (key) => {
+    if (!key) return null;
+    return (
+      queue.find((g) => g.key === key) ||
+      collected.find((g) => g.key === key) ||
+      (lastAssembledGroup?.key === key ? lastAssembledGroup : null) ||
+      null
+    );
+  };
+
+  const sessionGroup = currentOrderKey ? findByKey(currentOrderKey) : null;
+
+  if (sessionGroup && !currentOrderAssembled) {
+    const nextGroup = queue.find((g) => g.key !== sessionGroup.key) || null;
+    return {
+      currentGroup: sessionGroup,
+      currentRole: 'current',
+      sideGroup: nextGroup,
+      sideRole: nextGroup ? 'next' : 'empty',
+    };
+  }
+
+  if (sessionGroup && currentOrderAssembled) {
+    const nextGroup = queue.find((g) => g.key !== sessionGroup.key) || null;
+    if (nextGroup) {
+      return {
+        currentGroup: nextGroup,
+        currentRole: 'current',
+        sideGroup: sessionGroup,
+        sideRole: 'previous',
+      };
+    }
+    return {
+      currentGroup: sessionGroup,
+      currentRole: 'previous',
+      sideGroup: null,
+      sideRole: 'empty',
+    };
+  }
+
+  if (queue.length > 0) {
+    const prev = collected[0] || lastAssembledGroup || null;
+    const nextGroup = queue[1] || null;
+    return {
+      currentGroup: queue[0],
+      currentRole: 'current',
+      sideGroup: nextGroup || prev,
+      sideRole: nextGroup ? 'next' : prev ? 'previous' : 'empty',
+    };
+  }
+
+  const prev = collected[0] || lastAssembledGroup || null;
+  return {
+    currentGroup: prev,
+    currentRole: prev ? 'previous' : 'empty',
+    sideGroup: null,
+    sideRole: 'empty',
+  };
+}
+
+export function assemblyStageLabel(role) {
+  if (role === 'previous') return 'Предыдущий собранный';
+  if (role === 'next') return 'Следующий к сборке';
+  return 'Текущий заказ';
+}
 
 function orderProductId(order) {
   const raw = order?.productId ?? order?.product_id;
