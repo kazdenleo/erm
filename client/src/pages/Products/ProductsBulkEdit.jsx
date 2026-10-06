@@ -4987,7 +4987,8 @@ function overlayBulkRowEdits(freshRow, original, current) {
   let next = freshRow;
   const keys = new Set([...Object.keys(original), ...Object.keys(current)]);
   for (const k of keys) {
-    if (k === 'id' || k.startsWith('_')) continue;
+    // Служебные поля строки — «_xxx»; колонки атрибутов («__erpAttr__…», «__mpAttr__…») переносим.
+    if (k === 'id' || /^_[^_]/.test(k)) continue;
     if (JSON.stringify(original[k] ?? null) === JSON.stringify(current[k] ?? null)) continue;
     if (next === freshRow) next = { ...freshRow };
     next[k] = current[k];
