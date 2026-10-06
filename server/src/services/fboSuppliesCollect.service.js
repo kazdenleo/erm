@@ -12,6 +12,10 @@ import {
   aggregateKitComponents,
 } from './kitStock.service.js';
 import fboSupplyReserveService from './fboSupplyReserve.service.js';
+import {
+  loadPackingDisplayAttributeId,
+  loadProductAttributeDisplayMap,
+} from '../utils/productAttributeDisplay.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -701,6 +705,32 @@ class FboSuppliesCollectService {
       });
     } catch (e) {
       console.warn('[FboCollect] stock enrich:', e?.message || e);
+    }
+
+    try {
+      const displayAttrId = await loadPackingDisplayAttributeId(
+        normalizeProfileId(profileId) ?? supply.profile_id ?? null
+      );
+      if (displayAttrId) {
+        const pids = [];
+        for (const it of items) {
+          if (it.productId) pids.push(it.productId);
+          for (const c of it.kitComponents || []) pids.push(c.productId);
+        }
+        const attrMap = await loadProductAttributeDisplayMap(pids, displayAttrId);
+        items = items.map((it) => ({
+          ...it,
+          displayAttributeValue: attrMap.get(Number(it.productId)) || null,
+          kitComponents: it.kitComponents
+            ? it.kitComponents.map((c) => ({
+                ...c,
+                displayAttributeValue: attrMap.get(Number(c.productId)) || null,
+              }))
+            : it.kitComponents,
+        }));
+      }
+    } catch (e) {
+      console.warn('[FboCollect] display attribute enrich:', e?.message || e);
     }
 
     // Кто последний сканировал по каждой строке (для колонки «Собрал»).

@@ -696,10 +696,10 @@ export function Settings() {
               </div>
 
               <div style={{ marginTop: 16, marginBottom: 8 }}>
-                <strong>Атрибут в упаковке и сборке</strong>
+                <strong>Атрибут на сборке</strong>
                 <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
-                  Выбранный атрибут товара показывается рядом с названием в упаковке поставок FBO и в составе
-                  заказа при сборке FBS.
+                  Выбранный атрибут товара показывается рядом с названием на сборке поставок FBO и при сборке
+                  заказов FBS.
                 </span>
                 <div className="mt-2" style={{ maxWidth: 420 }}>
                   <label className="text-muted small mb-1 d-block" htmlFor="settings-packing-display-attribute">

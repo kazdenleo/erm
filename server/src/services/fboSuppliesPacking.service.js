@@ -23,10 +23,6 @@ import {
 } from '../constants/ozonPlacementZones.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
-import {
-  loadPackingDisplayAttributeId,
-  loadProductAttributeDisplayMap,
-} from '../utils/productAttributeDisplay.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -76,7 +72,6 @@ function mapContentLine(row) {
     productName: row.product_name,
     sku: row.sku,
     barcode: row.item_barcode,
-    displayAttributeValue: row.display_attribute_value || null,
     productBarcode:
       row.product_barcode != null && String(row.product_barcode).trim() !== ''
         ? String(row.product_barcode).trim()
@@ -327,25 +322,6 @@ class FboSuppliesPackingService {
       });
     }
 
-    const displayAttrId = await loadPackingDisplayAttributeId(
-      profileId ?? supply.profile_id ?? supply.profileId
-    );
-    const productIdsForAttr = [
-      ...(contentsR.rows || []).map((r) => r.product_id),
-      ...(itemsR.rows || []).map((r) => r.product_id),
-    ];
-    const attrMap = await loadProductAttributeDisplayMap(productIdsForAttr, displayAttrId);
-    if (attrMap.size) {
-      for (const list of contentsByCargo.values()) {
-        for (const line of list) {
-          const pid = Number(line.productId);
-          if (Number.isFinite(pid) && attrMap.has(pid)) {
-            line.displayAttributeValue = attrMap.get(pid);
-          }
-        }
-      }
-    }
-
     const cargoUnits = (cargoR.rows || []).map((row) => {
       const cargo = mapCargoRow(row);
       const contents = contentsByCargo.get(row.id) || [];
@@ -371,7 +347,6 @@ class FboSuppliesPackingService {
       const placementZone =
         row.placement_zone != null ? String(row.placement_zone).trim() : null;
       const ozonTags = parseOzonTagsJson(row.ozon_tags);
-      const pid = row.product_id != null ? Number(row.product_id) : null;
       return {
         supplyItemId,
         productId: row.product_id,
@@ -385,17 +360,10 @@ class FboSuppliesPackingService {
         placementZone,
         ozonTags,
         placementKindLabel: ozonPlacementZoneLabel(placementZone, ozonTags),
-        displayAttributeValue:
-          Number.isFinite(pid) && pid > 0 ? attrMap.get(pid) || null : null,
       };
     });
 
-    return {
-      cargoUnits,
-      itemStats,
-      weightLimits,
-      packingDisplayAttributeId: displayAttrId,
-    };
+    return { cargoUnits, itemStats, weightLimits };
   }
 
   async updateCargoUnit(supplyId, cargoUnitId, patch = {}, { profileId } = {}) {

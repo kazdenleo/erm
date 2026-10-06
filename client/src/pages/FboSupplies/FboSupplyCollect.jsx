@@ -254,6 +254,11 @@ export function FboSupplyCollect({
       const planned = data?.item?.planned;
       const sku = data?.item?.sku || data?.print?.title || '';
       const kitProg = data?.kitProgress;
+      const scannedRow =
+        data?.item?.id != null
+          ? (data?.state?.items || []).find((it) => Number(it.id) === Number(data.item.id))
+          : null;
+      const attr = data?.item?.displayAttributeValue || scannedRow?.displayAttributeValue || '';
       let msg = data?.message || data?.warning || null;
       if (!msg) {
         if (data?.action === 'kit_progress' && kitProg) {
@@ -261,6 +266,7 @@ export function FboSupplyCollect({
         } else {
           msg = `Собрано ${collected} из ${planned}: ${sku}`;
         }
+        if (attr) msg = `${msg} · ${attr}`;
       }
       setLastMsg(msg);
       playEventSound(SOUND_EVENTS.scan_ok);
@@ -418,6 +424,9 @@ export function FboSupplyCollect({
               <div className="fbo-collect-next__label">Следующий к сборке</div>
               <div className="fbo-collect-next__name">
                 {nextItem.productName || nextItem.name || nextItem.sku || '—'}
+                {nextItem.displayAttributeValue ? (
+                  <span className="fbo-collect-attr">{nextItem.displayAttributeValue}</span>
+                ) : null}
               </div>
               <div className="fbo-collect-next__skus">
                 <span
@@ -528,6 +537,9 @@ export function FboSupplyCollect({
                     <td>
                       <div className="fbo-collect-item-name">
                         {it.productName || it.name || '—'}
+                        {it.displayAttributeValue ? (
+                          <span className="fbo-collect-attr">{it.displayAttributeValue}</span>
+                        ) : null}
                         {outOfStock ? (
                           <span className="fbo-collect-out-of-stock-badge">нет на складе</span>
                         ) : null}
@@ -544,6 +556,9 @@ export function FboSupplyCollect({
                                 ×{c.need}
                                 {c.got > 0 ? ` (${c.got}/${c.need})` : ''}
                               </span>
+                              {c.displayAttributeValue ? (
+                                <span className="fbo-collect-attr">{c.displayAttributeValue}</span>
+                              ) : null}
                             </li>
                           ))}
                         </ul>
