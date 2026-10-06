@@ -4948,6 +4948,33 @@ function cloneRow(r) {
 const NEW_BULK_ROW_PREFIX = 'new:';
 const CREATE_MODE_INITIAL_ROWS = 5;
 
+function compactSearchText(v) {
+  return str(v).toLowerCase().replace(/[^0-9a-zа-яё]+/gi, '');
+}
+
+function bulkRowMatchesLocalSearch(row, query) {
+  const q = str(query).trim().toLowerCase();
+  if (!q) return true;
+  const qCompact = compactSearchText(q);
+  const fields = [
+    row.sku,
+    row.name,
+    row.barcodes,
+    row.sku_ozon,
+    row.sku_wb,
+    row.sku_ym,
+    row.ozon_product_id,
+    row.mp_wb_vendor_code,
+    row.ym_vendor_code,
+  ];
+  return fields.some((f) => {
+    const s = str(f).toLowerCase();
+    if (!s) return false;
+    if (s.includes(q)) return true;
+    return qCompact !== '' && compactSearchText(s).includes(qCompact);
+  });
+}
+
 function isNewBulkRowId(id) {
   return String(id || '').startsWith(NEW_BULK_ROW_PREFIX);
 }
@@ -5499,6 +5526,11 @@ export function ProductsBulkEdit() {
     const v = initialBulkFilters?.search;
     return v != null ? String(v) : '';
   });
+  /** Поиск, с которым загружен текущий список; пока listSearch от него отличается — фильтруем загруженные строки. */
+  const [loadedListSearch, setLoadedListSearch] = useState(() => {
+    const v = initialBulkFilters?.search;
+    return v != null ? String(v).trim() : '';
+  });
   /** ERP-категории всей выборки по фильтрам (не только текущая страница) — для столбцов МП. */
   const [filterScopeCategoryIds, setFilterScopeCategoryIds] = useState([]);
   const [filtersOpen, setFiltersOpen] = useState(() => initialBulkFilters?.filtersOpen === true);
@@ -6007,8 +6039,15 @@ export function ProductsBulkEdit() {
     [displayColumns, pinnedColumnKeys, columnWidths]
   );
 
+  const localSearchQuery =
+    !createMode && listSearch.trim() !== loadedListSearch ? listSearch.trim() : '';
+  const tableRows = useMemo(
+    () => (localSearchQuery ? rows.filter((r) => bulkRowMatchesLocalSearch(r, localSearchQuery)) : rows),
+    [rows, localSearchQuery]
+  );
+
   const bulkVirtRange = useMemo(() => {
-    const n = rows.length;
+    const n = tableRows.length;
     if (n === 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
     const top = Math.max(0, Number(bulkViewport.top) || 0);
     const h = Math.max(160, Number(bulkViewport.height) || 640);
@@ -6020,11 +6059,11 @@ export function ProductsBulkEdit() {
       padTop: start * BULK_ROW_ESTIMATE_PX,
       padBottom: Math.max(0, (n - end) * BULK_ROW_ESTIMATE_PX),
     };
-  }, [rows.length, bulkViewport]);
+  }, [tableRows.length, bulkViewport]);
 
   const visibleRows = useMemo(
-    () => rows.slice(bulkVirtRange.start, bulkVirtRange.end),
-    [rows, bulkVirtRange.start, bulkVirtRange.end]
+    () => tableRows.slice(bulkVirtRange.start, bulkVirtRange.end),
+    [tableRows, bulkVirtRange.start, bulkVirtRange.end]
   );
 
   const toggleColumnHidden = useCallback((colKey, visible) => {
@@ -6402,6 +6441,7 @@ export function ProductsBulkEdit() {
       }
       setRows(nextRows);
       setOriginals(orig);
+      setLoadedListSearch(search);
       clearChangedForPush();
       clearDirty();
       setOzonBulkDictOptions({});
@@ -6811,7 +6851,7 @@ export function ProductsBulkEdit() {
     setListSearch(v);
     if (createMode) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    // С несохранёнными правками автопоиск не запускаем: окно «Сохранить?» всплывало бы посреди ввода.
+    // С несохранёнными правками список не перезагружаем — фильтруются уже загруженные строки (tableRows).
     if (hasUnsavedChangesRef.current) return;
     listSearchDebounceRef.current = setTimeout(() => {
       if (hasUnsavedChangesRef.current) return;
@@ -6822,6 +6862,7 @@ export function ProductsBulkEdit() {
   const handleListSearchKeyDown = (e) => {
     if (e.key !== 'Enter' || createMode) return;
     e.preventDefault();
+    if (hasUnsavedChangesRef.current) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     applyListSearch(e.currentTarget.value);
   };
@@ -7162,7 +7203,8 @@ export function ProductsBulkEdit() {
     const col = bulkModal.column;
     if (!col) return;
     const key = col.key;
-    markChangedForPush(rows.map((r) => r.id));
+    const targetIds = new Set(tableRows.map((r) => r.id));
+    markChangedForPush([...targetIds]);
     markDirty();
     const ctx = {
       erpAttrColumnDefs,
@@ -7171,7 +7213,9 @@ export function ProductsBulkEdit() {
       weightUnit,
       ozonDictOptions: ozonBulkDictOptionsRef.current,
     };
-    setRows((prev) => prev.map((r) => applyOneBulkCellChange(r, key, bulkDraft, ctx)));
+    setRows((prev) =>
+      prev.map((r) => (targetIds.has(r.id) ? applyOneBulkCellChange(r, key, bulkDraft, ctx) : r))
+    );
     setBulkModal({ open: false, column: null });
   };
 
@@ -8043,10 +8087,11 @@ export function ProductsBulkEdit() {
         ? `${n} строк · ${draftCount} новых (заполните название и SKU, затем «Сохранить»)`
         : `${n} строк`;
     }
+    const shown = localSearchQuery ? `показано ${tableRows.length} из ${n} · ` : '';
     const sel = appliedSelectedIds.length;
-    if (sel > 0) return `${n} на странице из ${sel} выбранных`;
-    return `${n} на странице`;
-  }, [categoryScopeReady, createMode, rows, appliedSelectedIds.length]);
+    if (sel > 0) return `${shown}${n} на странице из ${sel} выбранных`;
+    return `${shown}${n} на странице`;
+  }, [categoryScopeReady, createMode, rows, appliedSelectedIds.length, localSearchQuery, tableRows.length]);
 
   const renderInput = (col, row) => {
     const orig = originals[row.id];
@@ -8676,7 +8721,7 @@ export function ProductsBulkEdit() {
                           createMode
                             ? 'Поиск недоступен при добавлении новых товаров'
                             : hasUnsavedChanges
-                              ? 'Есть несохранённые правки — нажмите Enter для поиска'
+                              ? 'Есть несохранённые правки — поиск идёт по загруженным строкам. Сохраните, чтобы искать по всем товарам'
                               : undefined
                         }
                       />
@@ -9789,7 +9834,15 @@ export function ProductsBulkEdit() {
         {bulkModalCol ? (
           <div>
             <p className="text-muted small">
-              Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
+              {localSearchQuery ? (
+                <>
+                  Значение будет применено к строкам, найденным поиском ({tableRows.length} из {rows.length} товаров).
+                </>
+              ) : (
+                <>
+                  Значение будет применено ко <strong>всем</strong> строкам в таблице ({rows.length} товаров).
+                </>
+              )}
             </p>
             {bulkModalCol.input === 'checkbox' ? (
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
