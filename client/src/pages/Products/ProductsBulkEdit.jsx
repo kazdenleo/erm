@@ -1438,6 +1438,8 @@ function isBulkEditPageReload() {
 /** Начальные фильтры: при F5 — только storage (history.state.filters устаревает). */
 function resolveInitialBulkFilters(locationState) {
   const stored = readBulkEditFiltersStorage();
+  // Поиск по артикулу не переживает перезагрузку; в старых записях storage он ещё мог остаться.
+  if (stored && typeof stored === 'object') delete stored.search;
   if (isBulkEditPageReload() && stored && typeof stored === 'object') {
     return { ...stored };
   }
@@ -4979,6 +4981,27 @@ function isNewBulkRowId(id) {
   return String(id || '').startsWith(NEW_BULK_ROW_PREFIX);
 }
 
+/** Перенести правки (current против original) на свежезагруженную строку того же товара. */
+function overlayBulkRowEdits(freshRow, original, current) {
+  if (!freshRow || !original || !current) return freshRow;
+  let next = freshRow;
+  const keys = new Set([...Object.keys(original), ...Object.keys(current)]);
+  for (const k of keys) {
+    if (k === 'id' || k.startsWith('_')) continue;
+    if (JSON.stringify(original[k] ?? null) === JSON.stringify(current[k] ?? null)) continue;
+    if (next === freshRow) next = { ...freshRow };
+    next[k] = current[k];
+  }
+  const manual = current._erpAttrManualSession;
+  if (manual && Object.keys(manual).length > 0) {
+    next = {
+      ...next,
+      _erpAttrManualSession: { ...(freshRow._erpAttrManualSession || {}), ...manual },
+    };
+  }
+  return next;
+}
+
 function isBulkCreateRowSavable(row) {
   return str(row?.name).trim() !== '' && str(row?.sku).trim() !== '';
 }
@@ -5552,7 +5575,6 @@ export function ProductsBulkEdit() {
       categoryId: categoryIdFromScopePick(categoryPickDraft),
       categoryPickDraft: categoryPickDraft || CATEGORY_SCOPE_UNSET,
       productType: filterProductType || '',
-      search: listSearch || '',
       unlinkedMp: [...filterUnlinkedMp],
       linkedMp: [...filterLinkedMp],
       filtersOpen: !!filtersOpen,
@@ -5563,7 +5585,6 @@ export function ProductsBulkEdit() {
     filterCategoryId,
     categoryPickDraft,
     filterProductType,
-    listSearch,
     bulkFilterUnlinkedKey,
     bulkFilterLinkedKey,
     filtersOpen,
@@ -5611,6 +5632,9 @@ export function ProductsBulkEdit() {
   const leaveBypassRef = useRef(false);
   const hasUnsavedChangesRef = useRef(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  /** Несохранённые правки товаров, ушедших из списка при смене фильтров/страницы: id → { original, current, mpCols, erpCols, lengthUnit, weightUnit }. */
+  const offListEditsRef = useRef(new Map());
+  const [offListEditsCount, setOffListEditsCount] = useState(0);
   const bulkScrollRef = useRef(null);
   const [bulkViewport, setBulkViewport] = useState({ top: 0, height: 640 });
   /** id товаров, изменённых в этой сессии (после успешного push снимаются) */
@@ -6018,9 +6042,11 @@ export function ProductsBulkEdit() {
     const q = String(columnsSearch || '').trim();
     const ordered = orderColumnsWithPins(visibleColumns, pinnedColumnKeys, columnOrderKeys).filter(
       (c) => {
-        if (ALWAYS_VISIBLE_COL_KEYS.has(c.key) || pinned.has(c.key)) return true;
+        if (ALWAYS_VISIBLE_COL_KEYS.has(c.key)) return true;
+        if (hidden.has(c.key)) return false;
+        if (pinned.has(c.key)) return true;
         if (q) return columnMatchesSearchQuery(c, q);
-        return !hidden.has(c.key);
+        return true;
       }
     );
     const out = [SELECT_COL];
@@ -6069,6 +6095,7 @@ export function ProductsBulkEdit() {
   const toggleColumnHidden = useCallback((colKey, visible) => {
     const key = String(colKey || '');
     if (!key || ALWAYS_VISIBLE_COL_KEYS.has(key)) return;
+    if (!visible) setPinnedColumnKeys((prev) => prev.filter((k) => k !== key));
     setHiddenColumnKeys((prev) => {
       if (visible) return prev.filter((k) => k !== key);
       return prev.includes(key) ? prev : [...prev, key];
@@ -6268,6 +6295,36 @@ export function ProductsBulkEdit() {
     setCurrentPage(1);
   };
 
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const originalsRef = useRef(originals);
+  originalsRef.current = originals;
+  const mpAttrColumnDefsRef = useRef(mpAttrColumnDefs);
+  mpAttrColumnDefsRef.current = mpAttrColumnDefs;
+  const erpAttrColumnDefsRef = useRef(erpAttrColumnDefs);
+  erpAttrColumnDefsRef.current = erpAttrColumnDefs;
+
+  /** Отложить правки строк текущего списка перед его заменой (смена фильтров/страницы). */
+  const stashDirtyRows = useCallback(() => {
+    if (!hasUnsavedChangesRef.current) return;
+    const stash = offListEditsRef.current;
+    const origById = originalsRef.current || {};
+    const mpCols = mpAttrColumnDefsRef.current || [];
+    const erpCols = erpAttrColumnDefsRef.current || [];
+    for (const r of rowsRef.current || []) {
+      const id = str(r?.id);
+      if (!id || isNewBulkRowId(id)) continue;
+      const o = origById[r.id];
+      if (!o) continue;
+      const payload = buildUpdatePayload(o, r, mpCols, lengthUnit, weightUnit, erpCols);
+      if (Object.keys(payload).length > 0) {
+        stash.set(id, { original: o, current: r, mpCols, erpCols, lengthUnit, weightUnit });
+      } else {
+        stash.delete(id);
+      }
+    }
+  }, [lengthUnit, weightUnit]);
+
   const loadProducts = useCallback(async (partial = {}) => {
     const gen = ++loadGenRef.current;
     setLoading(true);
@@ -6435,15 +6492,30 @@ export function ProductsBulkEdit() {
       const nextRows = list.filter(Boolean).map((p) =>
         productToRow(p, mpCols, lengthUnit, weightUnit, erpCols, cats || [])
       );
+      stashDirtyRows();
+      const stash = offListEditsRef.current;
       const orig = {};
-      for (const r of nextRows) {
+      let overlaid = false;
+      const shownRows = nextRows.map((r) => {
         orig[r.id] = cloneRow(r);
-      }
-      setRows(nextRows);
+        const pending = stash.get(str(r.id));
+        if (!pending) return r;
+        stash.delete(str(r.id));
+        overlaid = true;
+        return overlayBulkRowEdits(r, pending.original, pending.current);
+      });
+      const keptNewRows = (rowsRef.current || []).filter(
+        (r) => isNewBulkRowId(r.id) && originalsRef.current?.[r.id]
+      );
+      for (const r of keptNewRows) orig[r.id] = originalsRef.current[r.id];
+      setRows(keptNewRows.length > 0 ? [...shownRows, ...keptNewRows] : shownRows);
       setOriginals(orig);
+      setOffListEditsCount(stash.size);
       setLoadedListSearch(search);
-      clearChangedForPush();
-      clearDirty();
+      if (!overlaid && stash.size === 0 && keptNewRows.length === 0) {
+        clearChangedForPush();
+        clearDirty();
+      }
       setOzonBulkDictOptions({});
 
       queueMicrotask(() => {
@@ -6529,11 +6601,13 @@ export function ProductsBulkEdit() {
     } catch (e) {
       if (gen !== loadGenRef.current) return;
       setLoadError(e?.response?.data?.message || e?.message || 'Ошибка загрузки');
+      stashDirtyRows();
+      setOffListEditsCount(offListEditsRef.current.size);
       setRows([]);
       setOriginals({});
       setMpAttrColumnDefs([]);
       setOzonBulkDictOptions({});
-      clearChangedForPush();
+      if (offListEditsRef.current.size === 0) clearChangedForPush();
       setShowUncategorizedCategoryOption(false);
       setTotalProducts(0);
     } finally {
@@ -6556,6 +6630,7 @@ export function ProductsBulkEdit() {
     weightUnit,
     clearChangedForPush,
     clearDirty,
+    stashDirtyRows,
   ]);
   const loadProductsRef = useRef(loadProducts);
   loadProductsRef.current = loadProducts;
@@ -6563,15 +6638,12 @@ export function ProductsBulkEdit() {
   const handleCategoryScopeChange = (e) => {
     const v = e.target.value;
     if (v === CATEGORY_SCOPE_UNSET) return;
-    requestLeaveGuard(() => {
-      setAppliedSelectedIds((prev) => (prev.length ? [] : prev));
-      clearDirty();
-      applyCategoryScope(v);
-      void loadProductsRef.current({
-        categoryId: v === CATEGORY_SCOPE_ALL ? CATEGORY_SCOPE_ALL : v,
-        page: 1,
-        selectedIds: [],
-      });
+    setAppliedSelectedIds((prev) => (prev.length ? [] : prev));
+    applyCategoryScope(v);
+    void loadProductsRef.current({
+      categoryId: v === CATEGORY_SCOPE_ALL ? CATEGORY_SCOPE_ALL : v,
+      page: 1,
+      selectedIds: [],
     });
   };
 
@@ -6776,74 +6848,64 @@ export function ProductsBulkEdit() {
     }
   }, [showUncategorizedCategoryOption, filterCategoryId, createMode]);
 
+  // Смена фильтров/страницы не спрашивает о сохранении: loadProducts переносит несохранённые
+  // правки (offListEditsRef), «Сохранить» отправляет их все разом.
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
-    requestLeaveGuard(() => {
-      setFilterOrganizationId(v);
-      setCurrentPage(1);
-      if (createMode) return;
-      void loadProducts({ organizationId: v, page: 1 });
-    });
+    setFilterOrganizationId(v);
+    setCurrentPage(1);
+    if (createMode) return;
+    void loadProducts({ organizationId: v, page: 1 });
   };
 
   const handleFilterBrandChange = (e) => {
     const v = e.target.value;
-    requestLeaveGuard(() => {
-      setFilterBrandId(v);
-      setCurrentPage(1);
-      currentPageRef.current = 1;
-      if (createMode) return;
-      void loadProducts({ brandId: v, page: 1 });
-    });
+    setFilterBrandId(v);
+    setCurrentPage(1);
+    currentPageRef.current = 1;
+    if (createMode) return;
+    void loadProducts({ brandId: v, page: 1 });
   };
 
   const handleFilterProductTypeChange = (e) => {
     const v = e.target.value;
-    requestLeaveGuard(() => {
-      setFilterProductType(v);
-      setCurrentPage(1);
-      if (createMode) return;
-      void loadProducts({ productType: v, page: 1 });
-    });
+    setFilterProductType(v);
+    setCurrentPage(1);
+    if (createMode) return;
+    void loadProducts({ productType: v, page: 1 });
   };
 
   const toggleUnlinkedMpFilter = (mpCode) => {
-    requestLeaveGuard(() => {
-      const code = String(mpCode || '').toLowerCase();
-      const nextUnlinked = new Set(filterUnlinkedMp);
-      if (nextUnlinked.has(code)) nextUnlinked.delete(code);
-      else nextUnlinked.add(code);
-      const nextLinked = new Set(filterLinkedMp);
-      nextLinked.delete(code);
-      setFilterUnlinkedMp(nextUnlinked);
-      setFilterLinkedMp(nextLinked);
-      setCurrentPage(1);
-      if (createMode) return;
-      void loadProducts({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
-    });
+    const code = String(mpCode || '').toLowerCase();
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    if (nextUnlinked.has(code)) nextUnlinked.delete(code);
+    else nextUnlinked.add(code);
+    const nextLinked = new Set(filterLinkedMp);
+    nextLinked.delete(code);
+    setFilterUnlinkedMp(nextUnlinked);
+    setFilterLinkedMp(nextLinked);
+    setCurrentPage(1);
+    if (createMode) return;
+    void loadProducts({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
 
   const toggleLinkedMpFilter = (mpCode) => {
-    requestLeaveGuard(() => {
-      const code = String(mpCode || '').toLowerCase();
-      const nextLinked = new Set(filterLinkedMp);
-      if (nextLinked.has(code)) nextLinked.delete(code);
-      else nextLinked.add(code);
-      const nextUnlinked = new Set(filterUnlinkedMp);
-      nextUnlinked.delete(code);
-      setFilterLinkedMp(nextLinked);
-      setFilterUnlinkedMp(nextUnlinked);
-      setCurrentPage(1);
-      if (createMode) return;
-      void loadProducts({ linkedMp: nextLinked, unlinkedMp: nextUnlinked, page: 1 });
-    });
+    const code = String(mpCode || '').toLowerCase();
+    const nextLinked = new Set(filterLinkedMp);
+    if (nextLinked.has(code)) nextLinked.delete(code);
+    else nextLinked.add(code);
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    nextUnlinked.delete(code);
+    setFilterLinkedMp(nextLinked);
+    setFilterUnlinkedMp(nextUnlinked);
+    setCurrentPage(1);
+    if (createMode) return;
+    void loadProducts({ linkedMp: nextLinked, unlinkedMp: nextUnlinked, page: 1 });
   };
 
   const applyListSearch = (v) => {
-    requestLeaveGuard(() => {
-      setCurrentPage(1);
-      void loadProducts({ search: v, page: 1 });
-    });
+    setCurrentPage(1);
+    void loadProducts({ search: v, page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -6851,35 +6913,27 @@ export function ProductsBulkEdit() {
     setListSearch(v);
     if (createMode) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
-    // С несохранёнными правками список не перезагружаем — фильтруются уже загруженные строки (tableRows).
-    if (hasUnsavedChangesRef.current) return;
-    listSearchDebounceRef.current = setTimeout(() => {
-      if (hasUnsavedChangesRef.current) return;
-      applyListSearch(v);
-    }, 400);
+    listSearchDebounceRef.current = setTimeout(() => applyListSearch(v), 400);
   };
 
   const handleListSearchKeyDown = (e) => {
     if (e.key !== 'Enter' || createMode) return;
     e.preventDefault();
-    if (hasUnsavedChangesRef.current) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     applyListSearch(e.currentTarget.value);
   };
 
   const applyClearListFilters = () => {
-    requestLeaveGuard(() => {
-      clearListFilters();
-      if (createMode) return;
-      void loadProducts({
-        organizationId: '',
-        brandId: '',
-        productType: '',
-        unlinkedMp: [],
-        linkedMp: [],
-        search: '',
-        page: 1,
-      });
+    clearListFilters();
+    if (createMode) return;
+    void loadProducts({
+      organizationId: '',
+      brandId: '',
+      productType: '',
+      unlinkedMp: [],
+      linkedMp: [],
+      search: '',
+      page: 1,
     });
   };
 
@@ -6889,26 +6943,22 @@ export function ProductsBulkEdit() {
     if (createMode) return;
     const next = Math.min(Math.max(1, page), totalPages);
     if (next === currentPage) return;
-    requestLeaveGuard(() => {
-      setCurrentPage(next);
-      void loadProducts({ page: next });
-    });
+    setCurrentPage(next);
+    void loadProducts({ page: next });
   };
 
   const handlePageSizeChange = (e) => {
     if (createMode) return;
     const next = parseInt(e.target.value, 10);
     if (!BULK_PAGE_SIZES.includes(next)) return;
-    requestLeaveGuard(() => {
-      try {
-        if (typeof localStorage !== 'undefined') localStorage.setItem(BULK_PAGE_SIZE_LS, String(next));
-      } catch {
-        /* ignore */
-      }
-      setPageSize(next);
-      setCurrentPage(1);
-      void loadProducts({ page: 1, limit: next });
-    });
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(BULK_PAGE_SIZE_LS, String(next));
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+    void loadProducts({ page: 1, limit: next });
   };
 
   const renderAddRowsButtons = () => {
@@ -7578,10 +7628,15 @@ export function ProductsBulkEdit() {
 
   const handleSave = async (opts = {}) => {
     const suppressPushOffer = opts?.suppressPushOffer === true;
+    const shownRowIds = new Set(rows.map((r) => str(r.id)));
+    const offListEdits = [...offListEditsRef.current.entries()].filter(([id]) => !shownRowIds.has(id));
     if (!opts?.skipLimitConfirm) {
-      const limitViolations = rows.flatMap((r) =>
-        collectBulkRowLimitViolations(r, limitsForRow(r), { mpAttrColumnDefs })
-      );
+      const limitViolations = [
+        ...rows.flatMap((r) => collectBulkRowLimitViolations(r, limitsForRow(r), { mpAttrColumnDefs })),
+        ...offListEdits.flatMap(([, e]) =>
+          collectBulkRowLimitViolations(e.current, limitsForRow(e.current), { mpAttrColumnDefs: e.mpCols })
+        ),
+      ];
       if (!confirmFieldLimitViolations(limitViolations, 'сохранить')) {
         return { ok: 0, errorCount: 0, cancelled: true };
       }
@@ -7622,6 +7677,11 @@ export function ProductsBulkEdit() {
         const payload = buildUpdatePayload(orig, r, mpAttrColumnDefs, lengthUnit, weightUnit, erpAttrColumnDefs);
         if (Object.keys(payload).length === 0) continue;
         workItems.push({ type: 'update', row: r, payload });
+      }
+      for (const [, e] of offListEdits) {
+        const payload = buildUpdatePayload(e.original, e.current, e.mpCols, e.lengthUnit, e.weightUnit, e.erpCols);
+        if (Object.keys(payload).length === 0) continue;
+        workItems.push({ type: 'update', row: e.current, payload, offList: true });
       }
 
       const offPage = Array.isArray(offPageAiRef.current) ? offPageAiRef.current : [];
@@ -7710,7 +7770,12 @@ export function ProductsBulkEdit() {
                 };
                 // Если API по какой-то причине не вернул габариты — не затираем только что сохранённые значения в таблице
                 nextRow = preserveBulkDimFieldsAfterSave(nextRow, r, item.payload, lengthUnit, weightUnit);
-                updateResults.push({ id: r.id, nextRow, u });
+                if (item.offList) {
+                  offListEditsRef.current.delete(str(r.id));
+                  markChangedForPush(r.id);
+                } else {
+                  updateResults.push({ id: r.id, nextRow, u });
+                }
                 savedIds.push(str(r.id));
                 ok += 1;
               }
@@ -7726,6 +7791,7 @@ export function ProductsBulkEdit() {
           })
         )
       );
+      setOffListEditsCount(offListEditsRef.current.size);
 
       if (!opts?.skipTableRefresh && (createResults.length > 0 || updateResults.length > 0)) {
         setOriginals((o) => {
@@ -8554,10 +8620,20 @@ export function ProductsBulkEdit() {
             {categoryScopeReady && !loading ? (
               <>
                 {hasUnsavedChanges ? (
-                  <span className="text-warning small d-none d-md-inline">Есть изменения</span>
+                  <span
+                    className="text-warning small d-none d-md-inline"
+                    title={
+                      offListEditsCount > 0
+                        ? 'Правки товаров, которых нет в текущем списке, тоже сохранятся по кнопке «Сохранить»'
+                        : undefined
+                    }
+                  >
+                    Есть изменения
+                    {offListEditsCount > 0 ? ` (ещё ${offListEditsCount} вне списка)` : ''}
+                  </span>
                 ) : null}
                 {renderAddRowsButtons()}
-                {rows.length > 0 ? (
+                {rows.length > 0 || offListEditsCount > 0 ? (
                 <Button
                   className="btn-shadow"
                   variant="primary"
@@ -8718,11 +8794,7 @@ export function ProductsBulkEdit() {
                         aria-busy={loading}
                         disabled={createMode}
                         title={
-                          createMode
-                            ? 'Поиск недоступен при добавлении новых товаров'
-                            : hasUnsavedChanges
-                              ? 'Есть несохранённые правки — поиск идёт по загруженным строкам. Сохраните, чтобы искать по всем товарам'
-                              : undefined
+                          createMode ? 'Поиск недоступен при добавлении новых товаров' : undefined
                         }
                       />
                     </div>
