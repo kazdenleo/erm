@@ -5484,8 +5484,11 @@ export function ProductsBulkEdit() {
   useEffect(() => {
     if (!kitsEnabled && filterProductType) {
       setFilterProductType('');
+      if (categoryScopeReady && !createMode) {
+        void loadProductsRef.current?.({ productType: '', page: 1 });
+      }
     }
-  }, [kitsEnabled, filterProductType]);
+  }, [kitsEnabled, filterProductType, categoryScopeReady, createMode]);
   const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() =>
     mpFilterSetFromState(initialBulkFilters?.unlinkedMp)
   );
@@ -6690,13 +6693,17 @@ export function ProductsBulkEdit() {
   }, [categoryPickDraft, filterCategoryId]);
 
   useEffect(() => {
-    if (!categoryScopeReady) return;
-    if (createMode) {
-      initCreateRows();
-    } else {
-      loadProducts();
-    }
-  }, [loadProducts, initCreateRows, categoryScopeReady, createMode]);
+    if (!categoryScopeReady || !createMode) return;
+    initCreateRows();
+  }, [initCreateRows, categoryScopeReady, createMode]);
+
+  // loadProducts пересоздаётся на каждое изменение фильтров/поиска: зависимость от него
+  // перезагружала таблицу мимо requestLeaveGuard и молча стирала несохранённые правки.
+  // Смена фильтров грузит список явно через обработчики.
+  useEffect(() => {
+    if (!categoryScopeReady || createMode) return;
+    void loadProductsRef.current();
+  }, [categoryScopeReady, createMode, lengthUnit, weightUnit]);
 
   useEffect(() => {
     const el = bulkScrollRef.current;
@@ -6725,8 +6732,9 @@ export function ProductsBulkEdit() {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
       setFilterCategoryId('');
       setCategoryPickDraft(CATEGORY_SCOPE_ALL);
+      if (!createMode) void loadProductsRef.current({ categoryId: CATEGORY_SCOPE_ALL, page: 1 });
     }
-  }, [showUncategorizedCategoryOption, filterCategoryId]);
+  }, [showUncategorizedCategoryOption, filterCategoryId, createMode]);
 
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
@@ -6791,17 +6799,31 @@ export function ProductsBulkEdit() {
     });
   };
 
+  const applyListSearch = (v) => {
+    requestLeaveGuard(() => {
+      setCurrentPage(1);
+      void loadProducts({ search: v, page: 1 });
+    });
+  };
+
   const handleListSearchChange = (e) => {
     const v = e.target.value;
     setListSearch(v);
     if (createMode) return;
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    // С несохранёнными правками автопоиск не запускаем: окно «Сохранить?» всплывало бы посреди ввода.
+    if (hasUnsavedChangesRef.current) return;
     listSearchDebounceRef.current = setTimeout(() => {
-      requestLeaveGuard(() => {
-        setCurrentPage(1);
-        void loadProducts({ search: v, page: 1 });
-      });
+      if (hasUnsavedChangesRef.current) return;
+      applyListSearch(v);
     }, 400);
+  };
+
+  const handleListSearchKeyDown = (e) => {
+    if (e.key !== 'Enter' || createMode) return;
+    e.preventDefault();
+    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    applyListSearch(e.currentTarget.value);
   };
 
   const applyClearListFilters = () => {
@@ -8645,11 +8667,18 @@ export function ProductsBulkEdit() {
                         placeholder="Название, артикул, штрихкод…"
                         value={listSearch}
                         onChange={handleListSearchChange}
+                        onKeyDown={handleListSearchKeyDown}
                         autoComplete="off"
                         aria-label="Поиск по названию, артикулу или штрихкоду"
                         aria-busy={loading}
                         disabled={createMode}
-                        title={createMode ? 'Поиск недоступен при добавлении новых товаров' : undefined}
+                        title={
+                          createMode
+                            ? 'Поиск недоступен при добавлении новых товаров'
+                            : hasUnsavedChanges
+                              ? 'Есть несохранённые правки — нажмите Enter для поиска'
+                              : undefined
+                        }
                       />
                     </div>
                       <div className="products-bulk-columns-menu" ref={columnsMenuRef}>
