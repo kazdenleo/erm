@@ -21,6 +21,11 @@ import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderSt
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import { buildAssemblyNextRecommendation } from '../../utils/assemblyNextRecommendation';
 import {
+  formatAssemblyWarehouseStock,
+  mergeComponentStock,
+  stockCountsLabel,
+} from '../../utils/assemblyWarehouseStock';
+import {
   orderGroupKey,
   singleOrderListGroupKey,
   marketplaceOrderIdForApi,
@@ -309,6 +314,8 @@ export function Assembly() {
   /** Остаток на складе рекомендации (следующий к сборке) */
   const [nextHintStock, setNextHintStock] = useState(null);
   const [nextHintStockLoading, setNextHintStockLoading] = useState(false);
+  const [nextStockEpoch, setNextStockEpoch] = useState(0);
+  const [lastScanStock, setLastScanStock] = useState(null);
   const barcodeInputRef = useRef(null);
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
@@ -734,6 +741,7 @@ export function Assembly() {
         }
         const collected = await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
         afterSuccess?.(trimmed || null);
+        setNextStockEpoch((n) => n + 1);
         void loadOrders({ silent: true });
         const labelCached =
           labelReadyByOrderId?.[oid] === true || collected?.labelReady === true;
@@ -879,6 +887,31 @@ export function Assembly() {
           const base = isSameOrder ? prev : {};
           return applyAssemblyBarcodeScan(base, data.product, orderItems);
         });
+        setNextStockEpoch((n) => n + 1);
+        const scannedPid = Number(data.product?.id ?? data.product?.productId);
+        const scanWh = Number(order.warehouseId ?? order.warehouse_id);
+        if (Number.isFinite(scannedPid) && scannedPid > 0 && Number.isFinite(scanWh) && scanWh > 0) {
+          stockMovementsApi
+            .getWarehouseStock(scannedPid, scanWh)
+            .then((stock) => {
+              setLastScanStock({
+                sku:
+                  data.product?.sku ||
+                  data.product?.article ||
+                  data.product?.offerId ||
+                  `#${scannedPid}`,
+                name: data.product?.name || data.product?.productName || '',
+                stock,
+              });
+            })
+            .catch(() => {
+              setLastScanStock({
+                sku: data.product?.sku || `#${scannedPid}`,
+                name: data.product?.name || '',
+                stock: null,
+              });
+            });
+        }
         clearScanField(barcodeInputRef.current);
       } else {
         clearScanField(barcodeInputRef.current);
@@ -1065,6 +1098,7 @@ export function Assembly() {
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
     setScanError(null);
+    setLastScanStock(null);
     clearScanField(barcodeInputRef.current);
     if (barcodeInputRef.current) barcodeInputRef.current.focus();
   };
@@ -1075,6 +1109,7 @@ export function Assembly() {
       setReturnToNewLoadingKey(key);
       await ordersApi.returnToNew(marketplace, orderId);
       await loadOrders({ silent: true });
+      setNextStockEpoch((n) => n + 1);
       if (currentOrderKey === key) handleClearCurrentOrder();
     } catch (e) {
       console.error('Ошибка возврата в «Новый»:', e);
@@ -1196,8 +1231,7 @@ export function Assembly() {
       .getWarehouseStock(productId, warehouseId)
       .then((data) => {
         if (cancelled) return;
-        const qty = Math.max(0, Math.floor(Number(data?.quantity) || 0));
-        setNextHintStock(qty);
+        setNextHintStock(data && typeof data === 'object' ? data : { quantity: 0 });
       })
       .catch(() => {
         if (!cancelled) setNextHintStock(null);
@@ -1208,7 +1242,12 @@ export function Assembly() {
     return () => {
       cancelled = true;
     };
-  }, [nextRecommendation?.productId, nextRecommendation?.warehouseId, nextRecommendation?.groupKey]);
+  }, [
+    nextRecommendation?.productId,
+    nextRecommendation?.warehouseId,
+    nextRecommendation?.groupKey,
+    nextStockEpoch,
+  ]);
 
   const collectedFiltered = useMemo(() => {
     let list = collectedOrdersSorted;
@@ -1320,11 +1359,21 @@ export function Assembly() {
                 <div className="assembly-next__components">
                   <span className="assembly-next__components-label">Комплектующие:</span>
                   <span className="assembly-next__components-list">
-                    {nextRecommendation.components.map((c, i) => (
-                      <span key={`${c.article}-${i}`} className="assembly-next__sku">
-                        {c.article}
-                        {c.quantity > 0 ? (
-                          <span className="assembly-next__qty">×{c.quantity}</span>
+                    {mergeComponentStock(
+                      nextRecommendation.components,
+                      nextHintStock?.components
+                    ).map((c, i) => (
+                      <span key={`${c.article}-${i}`} className="assembly-next__comp-line">
+                        <span className="assembly-next__sku">
+                          {c.article}
+                          {c.quantity > 0 ? (
+                            <span className="assembly-next__qty">×{c.quantity}</span>
+                          ) : null}
+                        </span>
+                        {c.stock ? (
+                          <span className="assembly-next__comp-stock muted-hint">
+                            {stockCountsLabel(c.stock)}
+                          </span>
                         ) : null}
                       </span>
                     ))}
@@ -1339,21 +1388,34 @@ export function Assembly() {
               ) : null}
               <div className="assembly-next__stock muted-hint">
                 {nextRecommendation.warehouseId ? (
-                  <>
-                    На складе{' '}
-                    {warehouseNameById.get(nextRecommendation.warehouseId) ||
-                      `#${nextRecommendation.warehouseId}`}
-                    :{' '}
-                    {nextHintStockLoading
-                      ? '…'
-                      : nextHintStock != null
-                        ? `${nextHintStock} шт.`
-                        : '—'}
-                  </>
+                  nextHintStockLoading ? (
+                    <>
+                      На складе{' '}
+                      {warehouseNameById.get(nextRecommendation.warehouseId) ||
+                        `#${nextRecommendation.warehouseId}`}
+                      : …
+                    </>
+                  ) : (
+                    formatAssemblyWarehouseStock(nextHintStock, {
+                      warehouseName:
+                        warehouseNameById.get(nextRecommendation.warehouseId) ||
+                        `#${nextRecommendation.warehouseId}`,
+                      isKit: nextRecommendation.isKit,
+                    })
+                  )
                 ) : (
                   'Склад заказа не указан — остаток не показан'
                 )}
               </div>
+              {lastScanStock ? (
+                <div className="assembly-next__scan-stock">
+                  Скан {lastScanStock.sku}
+                  {lastScanStock.name ? ` · ${lastScanStock.name}` : ''}:{' '}
+                  {lastScanStock.stock
+                    ? stockCountsLabel(lastScanStock.stock)
+                    : 'остаток обновляется'}
+                </div>
+              ) : null}
               <div className="assembly-next__order muted-hint">
                 Заказ{' '}
                 {marketplaceOrderIdForApi(

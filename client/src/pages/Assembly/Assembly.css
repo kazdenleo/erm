@@ -161,6 +161,24 @@
   gap: 4px 8px;
 }
 
+.assembly-next__comp-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.assembly-next__comp-stock {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.assembly-next__scan-stock {
+  font-size: 13px;
+  color: #166534;
+  font-weight: 600;
+}
+
 .assembly-next__packing {
   font-size: 13px;
   color: var(--text, #334155);

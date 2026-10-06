@@ -75,6 +75,7 @@ export function buildAssemblyNextRecommendation(group) {
       components.push({
         article: String(art).trim() || '—',
         quantity: qty,
+        productId: Number(line.productId ?? line.product_id) || null,
         name: String(line.name ?? line.productName ?? line.product_name ?? '').trim(),
         displayAttributeValue: String(
           line.displayAttributeValue ?? line.display_attribute_value ?? ''
@@ -86,9 +87,9 @@ export function buildAssemblyNextRecommendation(group) {
     for (const line of composition) {
       const m = String(line).match(/^(.*?)\s+-\s+(\d+)\s*$/);
       if (m) {
-        components.push({ article: m[1], quantity: Number(m[2]) || 1, name: '', displayAttributeValue: '' });
+        components.push({ article: m[1], quantity: Number(m[2]) || 1, productId: null, name: '', displayAttributeValue: '' });
       } else {
-        components.push({ article: String(line), quantity: 1, name: '', displayAttributeValue: '' });
+        components.push({ article: String(line), quantity: 1, productId: null, name: '', displayAttributeValue: '' });
       }
     }
   }
