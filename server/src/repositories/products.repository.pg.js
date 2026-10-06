@@ -826,20 +826,21 @@ function buildFindAllFilters(options = {}) {
     const effectiveTokens = tokens.length > 0 ? tokens : [String(search).trim()];
     for (const token of effectiveTokens) {
       const searchParam = `%${token}%`;
+      // Штрихкод — только полное совпадение: часть цифр (например «5286») цепляет чужие штрихкоды.
       whereSql += ` AND (
         p.name ILIKE $${paramIndex}
         OR p.sku ILIKE $${paramIndex}
         OR EXISTS (
           SELECT 1 FROM barcodes bc
-          WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
+          WHERE bc.product_id = p.id AND TRIM(bc.barcode) = $${paramIndex + 1}
         )
         OR EXISTS (
           SELECT 1 FROM product_skus ps
           WHERE ps.product_id = p.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
         )
       )`;
-      params.push(searchParam);
-      paramIndex++;
+      params.push(searchParam, token);
+      paramIndex += 2;
     }
   }
 
@@ -3866,15 +3867,15 @@ class ProductsRepositoryPG {
           OR sku ILIKE $${paramIndex}
           OR EXISTS (
             SELECT 1 FROM barcodes bc
-            WHERE bc.product_id = products.id AND bc.barcode ILIKE $${paramIndex}
+            WHERE bc.product_id = p.id AND TRIM(bc.barcode) = $${paramIndex + 1}
           )
           OR EXISTS (
             SELECT 1 FROM product_skus ps
-            WHERE ps.product_id = products.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
+            WHERE ps.product_id = p.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
           )
         )`;
-        params.push(sp);
-        paramIndex += 1;
+        params.push(sp, token);
+        paramIndex += 2;
       }
     }
 

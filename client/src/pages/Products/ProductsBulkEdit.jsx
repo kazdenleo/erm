@@ -4958,10 +4958,11 @@ function bulkRowMatchesLocalSearch(row, query) {
   const q = str(query).trim().toLowerCase();
   if (!q) return true;
   const qCompact = compactSearchText(q);
+  // Штрихкод — только полное совпадение, как в серверном поиске.
+  if (parseBarcodesCell(row.barcodes).some((b) => str(b).trim().toLowerCase() === q)) return true;
   const fields = [
     row.sku,
     row.name,
-    row.barcodes,
     row.sku_ozon,
     row.sku_wb,
     row.sku_ym,
