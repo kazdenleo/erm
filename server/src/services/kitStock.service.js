@@ -3538,6 +3538,111 @@ export async function attachKitDisplayMetrics(products, options = {}) {
 /** @deprecated Используйте attachKitDisplayMetrics */
 export const attachKitWarehouseSplitMetrics = attachKitDisplayMetrics;
 
+function clampStockInt(n) {
+  return Math.max(0, Math.floor(Number(n) || 0));
+}
+
+/**
+ * Остаток на складе для сборки FBS: у товара — наличие/резерв/доступно;
+ * у комплекта — целые SKU + собираемость из комплектующих и строки комплектующих.
+ */
+export async function getWarehouseStockBreakdown(productId, warehouseId) {
+  const pid = Number(productId);
+  const whId = Number(warehouseId);
+  const empty = {
+    warehouseId: Number.isFinite(whId) && whId > 0 ? whId : null,
+    quantity: 0,
+    isKit: false,
+    onHand: 0,
+    reserved: 0,
+    available: 0,
+    wholeOnHand: 0,
+    assemblableFromComponents: 0,
+    availableTotal: 0,
+    reservedFromComponents: 0,
+    components: [],
+  };
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(whId) || whId < 1) {
+    return empty;
+  }
+
+  const snapOpts = { warehouseId: whId };
+  const snap = await getProductSupplySnapshotWithClient(null, pid, snapOpts);
+  const onHand = clampStockInt(snap.onHand);
+  const reserved = clampStockInt(snap.reserved ?? snap.reservedRaw);
+  const available = clampStockInt(snap.available);
+  const kit = await isKitProductId(pid);
+
+  if (!kit) {
+    return {
+      ...empty,
+      warehouseId: whId,
+      quantity: onHand,
+      isKit: false,
+      onHand,
+      reserved,
+      available,
+      wholeOnHand: onHand,
+      availableTotal: available,
+    };
+  }
+
+  const display = await computeKitDisplayMetricsFromDb(pid, {
+    warehouseId: whId,
+    supplierSyncEnabled: false,
+  });
+  const wholeOnHand = clampStockInt(display.whole_on_hand);
+  const wholeAvail = clampStockInt(display.whole_available);
+  const assemblable = clampStockInt(display.assemblable_from_components);
+  const availableTotal = clampStockInt(display.marketplace_available);
+  const reservedOnSku = clampStockInt(display.reserved_on_sku);
+  const reservedFromComponents = clampStockInt(display.reserved_from_components);
+
+  const bom = aggregateKitComponents(await getKitComponents(pid));
+  const compIds = bom.map((c) => Number(c.component_product_id)).filter((id) => id > 0);
+  const nameMap = new Map();
+  if (compIds.length) {
+    const names = await query(
+      `SELECT id, sku, name FROM products WHERE id = ANY($1::bigint[])`,
+      [compIds]
+    );
+    for (const row of names.rows || []) {
+      nameMap.set(Number(row.id), { sku: row.sku || null, name: row.name || null });
+    }
+  }
+
+  const components = [];
+  for (const c of bom) {
+    const cid = Number(c.component_product_id);
+    if (!Number.isFinite(cid) || cid < 1) continue;
+    const cs = await getProductSupplySnapshotWithClient(null, cid, snapOpts);
+    const brief = nameMap.get(cid) || {};
+    components.push({
+      productId: cid,
+      sku: brief.sku || null,
+      name: brief.name || null,
+      perKit: Math.max(1, parseInt(c.quantity, 10) || 1),
+      onHand: clampStockInt(cs.onHand),
+      reserved: clampStockInt(cs.reserved ?? cs.reservedRaw),
+      available: clampStockInt(cs.available),
+    });
+  }
+
+  return {
+    warehouseId: whId,
+    quantity: wholeOnHand,
+    isKit: true,
+    onHand: wholeOnHand,
+    reserved: reservedOnSku,
+    available: wholeAvail,
+    wholeOnHand,
+    assemblableFromComponents: assemblable,
+    availableTotal,
+    reservedFromComponents,
+    components,
+  };
+}
+
 export default {
   isKitProductType,
   isKitCatalogProduct,
@@ -3607,6 +3712,7 @@ export default {
   kitDisplayReservedFromContext,
   attachKitDisplayMetrics,
   attachKitWarehouseSplitMetrics,
+  getWarehouseStockBreakdown,
   computeAssemblableFromComponents,
   getComponentAssemblableUnits,
   computeKitSupplierUnitsFromComponents,

@@ -27,8 +27,8 @@ describe('buildAssemblyNextRecommendation', () => {
     expect(hint.warehouseId).toBe(5);
     expect(hint.packingDisplayValue).toBe('Пакет zip');
     expect(hint.components).toEqual([
-      { article: 'A1', quantity: 1, name: 'Фильтр A', displayAttributeValue: '' },
-      { article: 'B2', quantity: 2, name: 'Фильтр B', displayAttributeValue: '' },
+      { article: 'A1', quantity: 1, productId: null, name: 'Фильтр A', displayAttributeValue: '' },
+      { article: 'B2', quantity: 2, productId: null, name: 'Фильтр B', displayAttributeValue: '' },
     ]);
   });
 
