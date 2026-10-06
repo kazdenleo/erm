@@ -9,9 +9,12 @@ export const stockMovementsApi = {
   /**
    * Получить историю движений по товару
    */
-  getWarehouseStock: async (productId, warehouseId) => {
+  getWarehouseStock: async (productId, warehouseId, { orderDbId, orderId } = {}) => {
+    const params = { warehouseId };
+    if (orderDbId != null && String(orderDbId).trim() !== '') params.orderDbId = orderDbId;
+    if (orderId != null && String(orderId).trim() !== '') params.orderId = orderId;
     const response = await api.get(`/products/${productId}/warehouse-stock`, {
-      params: { warehouseId }
+      params
     });
     return response.data?.data ?? response.data;
   },

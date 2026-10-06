@@ -81,7 +81,12 @@ class StockMovementsController {
         return res.status(400).json({ ok: false, message: 'Склад не найден' });
       }
       const { getWarehouseStockBreakdown } = await import('../services/kitStock.service.js');
-      const breakdown = await getWarehouseStockBreakdown(id, whId);
+      const orderDbId = req.query.orderDbId ?? req.query.order_db_id ?? null;
+      const marketplaceOrderId = req.query.orderId ?? req.query.order_id ?? null;
+      const breakdown = await getWarehouseStockBreakdown(id, whId, {
+        orderDbId,
+        marketplaceOrderId,
+      });
       return res.status(200).json({
         ok: true,
         data: {

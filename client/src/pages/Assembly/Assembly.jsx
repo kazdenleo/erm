@@ -24,6 +24,9 @@ import {
   formatAssemblyWarehouseStock,
   mergeComponentStock,
   stockCountsLabel,
+  orderReserveAvailableLabel,
+  orderHintAvailable,
+  nextRecommendationScanOverlay,
 } from '../../utils/assemblyWarehouseStock';
 import {
   orderGroupKey,
@@ -1228,7 +1231,10 @@ export function Assembly() {
     }
     setNextHintStockLoading(true);
     stockMovementsApi
-      .getWarehouseStock(productId, warehouseId)
+      .getWarehouseStock(productId, warehouseId, {
+        orderDbId: nextRecommendation.orderDbId,
+        orderId: nextRecommendation.marketplaceOrderId,
+      })
       .then((data) => {
         if (cancelled) return;
         setNextHintStock(data && typeof data === 'object' ? data : { quantity: 0 });
@@ -1246,8 +1252,22 @@ export function Assembly() {
     nextRecommendation?.productId,
     nextRecommendation?.warehouseId,
     nextRecommendation?.groupKey,
+    nextRecommendation?.orderDbId,
+    nextRecommendation?.marketplaceOrderId,
     nextStockEpoch,
   ]);
+
+  const nextScanOverlay = useMemo(
+    () =>
+      nextRecommendationScanOverlay({
+        recommendation: nextRecommendation,
+        currentOrderKey,
+        orderItems: currentOrderData?.orderItems,
+        scannedQuantities,
+        scannedQtyForLine: scannedQtyForAssemblyLine,
+      }),
+    [nextRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
+  );
 
   const collectedFiltered = useMemo(() => {
     let list = collectedOrdersSorted;
@@ -1354,6 +1374,17 @@ export function Assembly() {
                     <span className="assembly-next__qty">×{nextRecommendation.quantity}</span>
                   ) : null}
                 </span>
+                {nextHintStock ? (
+                  <span className="assembly-next__comp-stock muted-hint">
+                    {orderReserveAvailableLabel({
+                      reservedForOrder: nextHintStock.reservedForOrder,
+                      available: orderHintAvailable(nextHintStock, {
+                        isKit: nextRecommendation.isKit,
+                      }),
+                      scanned: nextScanOverlay.kitScanned,
+                    })}
+                  </span>
+                ) : null}
               </div>
               {nextRecommendation.isKit && nextRecommendation.components.length > 0 ? (
                 <div className="assembly-next__components">
@@ -1362,21 +1393,32 @@ export function Assembly() {
                     {mergeComponentStock(
                       nextRecommendation.components,
                       nextHintStock?.components
-                    ).map((c, i) => (
-                      <span key={`${c.article}-${i}`} className="assembly-next__comp-line">
-                        <span className="assembly-next__sku">
-                          {c.article}
-                          {c.quantity > 0 ? (
-                            <span className="assembly-next__qty">×{c.quantity}</span>
+                    ).map((c, i) => {
+                      const pid = Number(c.productId ?? c.product_id ?? c.stock?.productId);
+                      const scanned =
+                        Number.isFinite(pid) && pid > 0
+                          ? nextScanOverlay.byPid.get(pid) || 0
+                          : 0;
+                      return (
+                        <span key={`${c.article}-${i}`} className="assembly-next__comp-line">
+                          <span className="assembly-next__sku">
+                            {c.article}
+                            {c.quantity > 0 ? (
+                              <span className="assembly-next__qty">×{c.quantity}</span>
+                            ) : null}
+                          </span>
+                          {c.stock ? (
+                            <span className="assembly-next__comp-stock muted-hint">
+                              {orderReserveAvailableLabel({
+                                reservedForOrder: c.stock.reservedForOrder,
+                                available: c.stock.available,
+                                scanned,
+                              })}
+                            </span>
                           ) : null}
                         </span>
-                        {c.stock ? (
-                          <span className="assembly-next__comp-stock muted-hint">
-                            {stockCountsLabel(c.stock)}
-                          </span>
-                        ) : null}
-                      </span>
-                    ))}
+                      );
+                    })}
                   </span>
                 </div>
               ) : null}

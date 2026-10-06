@@ -3,6 +3,7 @@ import { buildAssemblyNextRecommendation } from './assemblyNextRecommendation.js
 describe('buildAssemblyNextRecommendation', () => {
   test('берёт первый заказ группы: комплект и упаковка', () => {
     const order = {
+      id: 42,
       orderId: '1',
       marketplace: 'ozon',
       productId: 10,
@@ -26,6 +27,9 @@ describe('buildAssemblyNextRecommendation', () => {
     expect(hint.productName).toBe('Набор фильтров');
     expect(hint.warehouseId).toBe(5);
     expect(hint.packingDisplayValue).toBe('Пакет zip');
+    expect(hint.orderDbId).toBe(42);
+    expect(hint.orderDbIds).toEqual([42]);
+    expect(hint.marketplaceOrderId).toBe('1');
     expect(hint.components).toEqual([
       { article: 'A1', quantity: 1, productId: null, name: 'Фильтр A', displayAttributeValue: '' },
       { article: 'B2', quantity: 2, productId: null, name: 'Фильтр B', displayAttributeValue: '' },

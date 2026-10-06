@@ -106,5 +106,14 @@ export function buildAssemblyNextRecommendation(group) {
     isKit,
     packingDisplayValue,
     components,
+    orderDbId: Number(order.id) || null,
+    orderDbIds: [
+      ...new Set(
+        rows
+          .map((r) => Number(r.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ],
+    marketplaceOrderId: String(order.orderId ?? order.order_id ?? '').trim() || null,
   };
 }

@@ -3545,8 +3545,9 @@ function clampStockInt(n) {
 /**
  * Остаток на складе для сборки FBS: у товара — наличие/резерв/доступно;
  * у комплекта — целые SKU + собираемость из комплектующих и строки комплектующих.
+ * Если передан заказ — ещё reservedForOrder (нетто-резерв именно этого заказа).
  */
-export async function getWarehouseStockBreakdown(productId, warehouseId) {
+export async function getWarehouseStockBreakdown(productId, warehouseId, orderOpts = {}) {
   const pid = Number(productId);
   const whId = Number(warehouseId);
   const empty = {
@@ -3556,6 +3557,7 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
     onHand: 0,
     reserved: 0,
     available: 0,
+    reservedForOrder: 0,
     wholeOnHand: 0,
     assemblableFromComponents: 0,
     availableTotal: 0,
@@ -3565,6 +3567,39 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
   if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(whId) || whId < 1) {
     return empty;
   }
+
+  const orderDbIds = [
+    ...new Set(
+      (Array.isArray(orderOpts.orderDbIds) ? orderOpts.orderDbIds : [orderOpts.orderDbId])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  const marketplaceOrderId =
+    orderOpts.marketplaceOrderId != null && String(orderOpts.marketplaceOrderId).trim() !== ''
+      ? String(orderOpts.marketplaceOrderId).trim()
+      : null;
+
+  const sumOrderReserve = async (productIdForReserve) => {
+    if (!orderDbIds.length && !marketplaceOrderId) return 0;
+    // Номер МП уже уникален: не суммируем по нескольким orders.id, иначе один резерв
+    // попадёт в сумму столько раз, сколько строк в группе.
+    if (marketplaceOrderId) {
+      return clampStockInt(
+        await getNetReservedForOrderProduct(
+          orderDbIds[0] ?? null,
+          productIdForReserve,
+          marketplaceOrderId,
+          whId
+        )
+      );
+    }
+    let sum = 0;
+    for (const oid of orderDbIds) {
+      sum += await getNetReservedForOrderProduct(oid, productIdForReserve, null, whId);
+    }
+    return clampStockInt(sum);
+  };
 
   const snapOpts = { warehouseId: whId };
   const snap = await getProductSupplySnapshotWithClient(null, pid, snapOpts);
@@ -3582,6 +3617,7 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
       onHand,
       reserved,
       available,
+      reservedForOrder: await sumOrderReserve(pid),
       wholeOnHand: onHand,
       availableTotal: available,
     };
@@ -3611,6 +3647,19 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
     }
   }
 
+  let kitReservedFromComponents = 0;
+  const kitReserveOrderIds = marketplaceOrderId
+    ? orderDbIds.slice(0, 1)
+    : orderDbIds;
+  for (const oid of kitReserveOrderIds) {
+    kitReservedFromComponents += await getReservedKitUnitsFromComponentsForOrder(pid, oid, {
+      warehouseId: whId,
+    });
+  }
+  const reservedForOrder = clampStockInt(
+    (await sumOrderReserve(pid)) + kitReservedFromComponents
+  );
+
   const components = [];
   for (const c of bom) {
     const cid = Number(c.component_product_id);
@@ -3625,6 +3674,7 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
       onHand: clampStockInt(cs.onHand),
       reserved: clampStockInt(cs.reserved ?? cs.reservedRaw),
       available: clampStockInt(cs.available),
+      reservedForOrder: await sumOrderReserve(cid),
     });
   }
 
@@ -3635,6 +3685,7 @@ export async function getWarehouseStockBreakdown(productId, warehouseId) {
     onHand: wholeOnHand,
     reserved: reservedOnSku,
     available: wholeAvail,
+    reservedForOrder,
     wholeOnHand,
     assemblableFromComponents: assemblable,
     availableTotal,
