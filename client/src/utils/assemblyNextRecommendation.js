@@ -49,7 +49,7 @@ export function buildAssemblyNextRecommendation(group) {
     order.isKit === true ||
     order.is_kit === true ||
     composition.length > 1;
-  const packingDisplayValue = String(
+  let packingDisplayValue = String(
     order.packingDisplayValue ??
       order.packing_display_value ??
       order.displayAttributeValue ??
@@ -92,6 +92,15 @@ export function buildAssemblyNextRecommendation(group) {
         components.push({ article: String(line), quantity: 1, productId: null, name: '', displayAttributeValue: '' });
       }
     }
+  }
+
+  if (!packingDisplayValue) {
+    const fromComps = [];
+    for (const c of components) {
+      const v = String(c.displayAttributeValue ?? '').trim();
+      if (v && !fromComps.includes(v)) fromComps.push(v);
+    }
+    packingDisplayValue = fromComps.join(', ');
   }
 
   return {

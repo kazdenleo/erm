@@ -56,6 +56,27 @@ describe('buildAssemblyNextRecommendation', () => {
     expect(hint.components.length).toBe(1);
   });
 
+  test('упаковка с комплектующих, если у комплекта пусто', () => {
+    const order = {
+      orderId: '3',
+      marketplace: 'wildberries',
+      productId: 30,
+      productName: 'Комплект',
+      offerId: 'KIT-2',
+      isKit: true,
+      assemblyCompositionLines: [
+        { article: 'A', quantity: 1, name: 'A', displayAttributeValue: 'Пакет zip' },
+        { article: 'B', quantity: 1, name: 'B', displayAttributeValue: 'Пакет zip' },
+      ],
+    };
+    const hint = buildAssemblyNextRecommendation({
+      key: 'wb|o:3',
+      rows: [order],
+      primary: order,
+    });
+    expect(hint.packingDisplayValue).toBe('Пакет zip');
+  });
+
   test('пустая группа — null', () => {
     expect(buildAssemblyNextRecommendation(null)).toBeNull();
   });
