@@ -67,22 +67,32 @@
 }
 
 .assembly-hint-lines {
-  display: block;
+  display: flex !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
   width: 100%;
-  list-style: none;
+  max-width: 100%;
   margin: 6px 0 4px;
   padding: 0;
+  list-style: none;
 }
 
 .assembly-hint-line {
-  display: flex;
-  width: 100%;
+  display: flex !important;
+  flex-direction: row;
+  flex: 0 0 auto;
+  flex-basis: 100%;
+  width: 100% !important;
+  max-width: 100%;
   box-sizing: border-box;
+  float: none !important;
+  clear: both;
   flex-wrap: nowrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px 12px;
-  padding: 5px 0;
+  padding: 6px 0;
   border-bottom: 1px solid #e2e8f0;
 }
 

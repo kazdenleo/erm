@@ -14,7 +14,7 @@ import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
 
 function HintLine({ kind, article, quantity, stockLabel }) {
   return (
-    <li className="assembly-hint-line">
+    <div className="assembly-hint-line">
       <span className="assembly-hint-line__left">
         {kind ? (
           <span
@@ -33,7 +33,7 @@ function HintLine({ kind, article, quantity, stockLabel }) {
       {stockLabel ? (
         <span className="assembly-next__comp-stock muted-hint">{stockLabel}</span>
       ) : null}
-    </li>
+    </div>
   );
 }
 
@@ -68,7 +68,7 @@ export function AssemblyHintCard({
     <div className="assembly-hint-card">
       <div className="assembly-next__label">{label}</div>
       <div className="assembly-next__name">{recommendation.productName}</div>
-      <ul className="assembly-hint-lines">
+      <div className="assembly-hint-lines">
         <HintLine
           kind={recommendation.isKit ? 'Комплект' : 'Товар'}
           article={recommendation.article}
@@ -85,7 +85,7 @@ export function AssemblyHintCard({
         />
         {recommendation.isKit && merged.length > 0 ? (
           <>
-            <li className="assembly-hint-line assembly-hint-line--section">Комплектующие</li>
+            <div className="assembly-hint-line assembly-hint-line--section">Комплектующие</div>
             {merged.map((c, i) => {
               const pid = Number(c.productId ?? c.product_id ?? c.stock?.productId);
               const scanned =
@@ -109,7 +109,7 @@ export function AssemblyHintCard({
             })}
           </>
         ) : null}
-      </ul>
+      </div>
       <div className="assembly-next__packing">
         <span className="assembly-next__packing-label">Упаковка:</span>{' '}
         {packing || '—'}
