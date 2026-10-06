@@ -14,24 +14,26 @@ import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
 
 function HintLine({ kind, article, quantity, stockLabel }) {
   return (
-    <div className="assembly-hint-line">
-      {kind ? (
-        <span
-          className={`assembly-next__kind${
-            kind === 'Комплект' ? ' assembly-next__kind--kit' : ' assembly-next__kind--product'
-          }`}
-        >
-          {kind}
+    <li className="assembly-hint-line">
+      <span className="assembly-hint-line__left">
+        {kind ? (
+          <span
+            className={`assembly-next__kind${
+              kind === 'Комплект' ? ' assembly-next__kind--kit' : ' assembly-next__kind--product'
+            }`}
+          >
+            {kind}
+          </span>
+        ) : null}
+        <span className="assembly-next__sku">
+          {article}
+          {quantity > 0 ? <span className="assembly-next__qty">×{quantity}</span> : null}
         </span>
-      ) : null}
-      <span className="assembly-next__sku">
-        {article}
-        {quantity > 0 ? <span className="assembly-next__qty">×{quantity}</span> : null}
       </span>
       {stockLabel ? (
         <span className="assembly-next__comp-stock muted-hint">{stockLabel}</span>
       ) : null}
-    </div>
+    </li>
   );
 }
 
@@ -66,7 +68,7 @@ export function AssemblyHintCard({
     <div className="assembly-hint-card">
       <div className="assembly-next__label">{label}</div>
       <div className="assembly-next__name">{recommendation.productName}</div>
-      <div className="assembly-hint-lines">
+      <ul className="assembly-hint-lines">
         <HintLine
           kind={recommendation.isKit ? 'Комплект' : 'Товар'}
           article={recommendation.article}
@@ -81,8 +83,10 @@ export function AssemblyHintCard({
               : null
           }
         />
-        {recommendation.isKit
-          ? merged.map((c, i) => {
+        {recommendation.isKit && merged.length > 0 ? (
+          <>
+            <li className="assembly-hint-line assembly-hint-line--section">Комплектующие</li>
+            {merged.map((c, i) => {
               const pid = Number(c.productId ?? c.product_id ?? c.stock?.productId);
               const scanned =
                 Number.isFinite(pid) && pid > 0 ? overlaySafe.byPid.get(pid) || 0 : 0;
@@ -102,12 +106,13 @@ export function AssemblyHintCard({
                   }
                 />
               );
-            })
-          : null}
-        <div className="assembly-next__packing">
-          <span className="assembly-next__packing-label">Упаковка:</span>{' '}
-          {packing || '—'}
-        </div>
+            })}
+          </>
+        ) : null}
+      </ul>
+      <div className="assembly-next__packing">
+        <span className="assembly-next__packing-label">Упаковка:</span>{' '}
+        {packing || '—'}
       </div>
       <div className="assembly-next__stock muted-hint">
         {recommendation.warehouseId ? (
