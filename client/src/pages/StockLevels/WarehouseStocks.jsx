@@ -1848,6 +1848,13 @@ function pickPrimaryMarketplaceStockWarehouseId(mappings) {
   return best?.wid ?? '';
 }
 
+function mpPushWarehouseLabel(w, fallbackId) {
+  const name = String(w?.name || '').trim();
+  const address = String(w?.address || '').trim();
+  if (name && address && name !== address) return `${name} (${address})`;
+  return name || address || `склад #${fallbackId}`;
+}
+
 function buildSupplierBreakdownMap(rows) {
   const map = {};
   for (const row of rows || []) {
@@ -2257,6 +2264,7 @@ export function WarehouseStocks() {
   /** error | confirm | force | working | result — панель на странице (не window.alert) */
   const [mpPushPanel, setMpPushPanel] = useState(null);
   const [mpLinkedWarehouseId, setMpLinkedWarehouseId] = useState('');
+  const [mpLinkedWarehouseIds, setMpLinkedWarehouseIds] = useState([]);
   const [stockResetOpen, setStockResetOpen] = useState(false);
   const [stockResetProduct, setStockResetProduct] = useState(null);
   const [stockResetForm, setStockResetForm] = useState({ incoming: 0, onHand: 0, reserved: 0 });
@@ -2313,21 +2321,32 @@ export function WarehouseStocks() {
         if (cancelled) return;
         const rows = Array.isArray(list) ? list : [];
         setMpLinkedWarehouseId(pickPrimaryMarketplaceStockWarehouseId(rows));
+        setMpLinkedWarehouseIds([
+          ...new Set(
+            rows.map((m) => String(m.warehouse_id ?? m.warehouseId ?? '').trim()).filter(Boolean)
+          )
+        ]);
       })
       .catch(() => {
-        if (!cancelled) setMpLinkedWarehouseId('');
+        if (cancelled) return;
+        setMpLinkedWarehouseId('');
+        setMpLinkedWarehouseIds([]);
       });
     return () => {
       cancelled = true;
     };
   }, [profileId]);
 
-  const mpLinkedWarehouse = useMemo(
+  const mpPushWarehouseId =
+    stockWarehouseId && mpLinkedWarehouseIds.includes(String(stockWarehouseId))
+      ? String(stockWarehouseId)
+      : '';
+  const mpPushWarehouse = useMemo(
     () =>
-      mpLinkedWarehouseId && Array.isArray(warehouses)
-        ? warehouses.find((w) => String(w.id) === String(mpLinkedWarehouseId))
+      mpPushWarehouseId && Array.isArray(warehouses)
+        ? warehouses.find((w) => String(w.id) === mpPushWarehouseId)
         : null,
-    [mpLinkedWarehouseId, warehouses]
+    [mpPushWarehouseId, warehouses]
   );
 
   /** По умолчанию таблица — склад с привязками к МП (Электролитный и т.п.). */
@@ -2633,14 +2652,31 @@ export function WarehouseStocks() {
     if (!filterOrganizationId) {
       return 'Выберите организацию в фильтре (не «Все») — остатки уходят в кабинет этой организации.';
     }
-    if (!mpLinkedWarehouseId) {
+    if (mpLinkedWarehouseIds.length === 0) {
       return 'Нет привязки складов ERP ↔ маркетплейсы. Настройте в разделе «Склады».';
+    }
+    if (!stockWarehouseId) {
+      return 'Выберите склад в фильтре — остатки отправляются с выбранного склада.';
+    }
+    if (!mpPushWarehouseId) {
+      const wh = Array.isArray(warehouses)
+        ? warehouses.find((w) => String(w.id) === String(stockWarehouseId))
+        : null;
+      const label = mpPushWarehouseLabel(wh, stockWarehouseId);
+      return `Склад «${label}» не сопоставлен со складами Ozon / WB / Яндекс — отправлять с него нечего. Настройте сопоставление в разделе «Склады».`;
     }
     if (filteredProductsCountForMpPush === 0) {
       return 'В таблице нет товаров для отправки. Измените фильтры или нажмите «Обновить склад».';
     }
     return null;
-  }, [filterOrganizationId, mpLinkedWarehouseId, filteredProductsCountForMpPush]);
+  }, [
+    filterOrganizationId,
+    mpLinkedWarehouseIds,
+    stockWarehouseId,
+    mpPushWarehouseId,
+    warehouses,
+    filteredProductsCountForMpPush
+  ]);
 
   const buildMpPushFilterHint = useCallback(() => {
     const filterParts = [];
@@ -2728,7 +2764,7 @@ export function WarehouseStocks() {
         const res = await marketplaceStockApi.syncBulk({
           organizationId: filterOrganizationId,
           productIds,
-          warehouseId: mpLinkedWarehouseId,
+          warehouseId: mpPushWarehouseId,
           warehouseScoped: true,
           force
         });
@@ -2769,7 +2805,7 @@ export function WarehouseStocks() {
     [
       filterOrganizationId,
       fetchAllFilteredProductIdsForMpPush,
-      mpLinkedWarehouseId,
+      mpPushWarehouseId,
       refreshMpStockPushStatus,
       formatMpPushResultDetails
     ]
@@ -2783,8 +2819,7 @@ export function WarehouseStocks() {
         setMpPushPanel({ type: 'error', message: mpPushBlockReason });
         return;
       }
-      const whLabel =
-        mpLinkedWarehouse?.address || mpLinkedWarehouse?.name || `склад #${mpLinkedWarehouseId}`;
+      const whLabel = mpPushWarehouseLabel(mpPushWarehouse, mpPushWarehouseId);
       const orgLabel =
         organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
         filterOrganizationId;
@@ -3548,9 +3583,9 @@ export function WarehouseStocks() {
               disabled={supplierStocksRefreshing}
               style={{ marginLeft: 8 }}
               title={
-                mpLinkedWarehouse
-                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
-                  : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
+                mpPushWarehouse
+                  ? `Отправить «Доступно» со склада «${mpPushWarehouseLabel(mpPushWarehouse, mpPushWarehouseId)}» на Ozon, WB и Яндекс`
+                  : 'Отправить остатки со склада, выбранного в фильтре (он должен быть сопоставлен со складами МП)'
               }
             >
               {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
