@@ -180,7 +180,7 @@ async function mapSupplierRows(rows, { priorityFrom = 'index' } = {}) {
 /**
  * Поставщики, доступные для закупки на склад заказа:
  * 1) warehouse_suppliers — явные переопределения (priority);
- * 2) warehouses.type = 'supplier' + main_warehouse_id (как в UI «Склады»);
+ * 2) warehouses.type = 'supplier', привязанные к складу (main_warehouse_id или supplier_warehouse_main_links);
  * 3) все активные поставщики профиля.
  */
 async function loadSuppliersForWarehouse(profileId, warehouseId) {
@@ -225,7 +225,13 @@ async function loadSuppliersForWarehouse(profileId, warehouseId) {
      FROM warehouses w
      INNER JOIN suppliers s ON s.id = w.supplier_id
      WHERE w.type = 'supplier'
-       AND w.main_warehouse_id = $2
+       AND (
+         w.main_warehouse_id = $2
+         OR EXISTS (
+           SELECT 1 FROM supplier_warehouse_main_links l
+           WHERE l.supplier_warehouse_id = w.id AND l.main_warehouse_id = $2
+         )
+       )
        AND w.supplier_id IS NOT NULL
        AND COALESCE(s.is_active, true) = true
        AND (w.profile_id = $1 OR w.profile_id IS NULL)

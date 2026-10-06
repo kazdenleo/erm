@@ -28,6 +28,7 @@ import {
   parseYandexWarehouseMapping,
 } from '../../utils/yandexWarehouseMapping';
 import { warehouseDisplayLabel } from '../../utils/stockDestinationDefaults';
+import { supplierWarehouseMainIds } from '../../utils/supplierWarehouseLinks.js';
 
 export function Warehouses() {
   const { warehouses, loading, error, createWarehouse, updateWarehouse, deleteWarehouse, loadWarehouses } = useWarehouses();
@@ -361,7 +362,7 @@ export function Warehouses() {
                 <th>Название</th>
                 <th>Адрес</th>
                 <th>Поставщик</th>
-                <th>Основной склад</th>
+                <th>Наши склады</th>
                 <th>Склад Wildberries</th>
                 <th>Выходные</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
@@ -375,7 +376,18 @@ export function Warehouses() {
                   <td>{warehouseDisplayLabel(w)}</td>
                   <td>{w.address || '—'}</td>
                   <td>{w.supplierId ? suppliers.find(s => s.id === w.supplierId)?.name || w.supplierId : '—'}</td>
-                  <td>{w.mainWarehouseId || '—'}</td>
+                  <td>
+                    {(() => {
+                      const ids = supplierWarehouseMainIds(w);
+                      if (ids.length === 0) return '—';
+                      return ids
+                        .map((id) => {
+                          const main = warehouses.find((x) => String(x.id) === id);
+                          return main ? warehouseDisplayLabel(main) : `#${id}`;
+                        })
+                        .join(', ');
+                    })()}
+                  </td>
                   <td>{w.type === 'warehouse' && w.wbWarehouseName ? w.wbWarehouseName : '—'}</td>
                   <td>
                     {w.type === 'warehouse'

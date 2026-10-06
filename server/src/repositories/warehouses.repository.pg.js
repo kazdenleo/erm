@@ -11,6 +11,23 @@ function normalizeProfileId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+const MAIN_WAREHOUSE_IDS_SELECT_SQL = `
+        ARRAY(
+          SELECT l.main_warehouse_id
+          FROM supplier_warehouse_main_links l
+          WHERE l.supplier_warehouse_id = w.id
+          ORDER BY l.main_warehouse_id
+        ) AS main_warehouse_ids`;
+
+function normalizeMainWarehouseIds(row) {
+  const raw = Array.isArray(row.main_warehouse_ids) ? row.main_warehouse_ids : [];
+  const ids = raw.map((v) => String(v)).filter((v) => v !== '' && v !== 'null');
+  if (ids.length === 0 && row.main_warehouse_id != null && row.main_warehouse_id !== '') {
+    ids.push(String(row.main_warehouse_id));
+  }
+  return [...new Set(ids)];
+}
+
 function mapWarehouseRow(row) {
   if (!row) return null;
   const parsePush = (v) => {
@@ -23,6 +40,7 @@ function mapWarehouseRow(row) {
     ...row,
     supplierId: row.supplier_id,
     mainWarehouseId: row.main_warehouse_id,
+    mainWarehouseIds: normalizeMainWarehouseIds(row),
     organizationId: row.organization_id,
     supplierName: row.supplier_name,
     supplierCode: row.supplier_code,
@@ -54,7 +72,7 @@ class WarehousesRepositoryPG {
         s.name as supplier_name,
         s.code as supplier_code,
         mw.address as main_warehouse_address,
-        COALESCE(ex.cnt, 0)::int AS stock_sync_exclusion_count
+        COALESCE(ex.cnt, 0)::int AS stock_sync_exclusion_count,${MAIN_WAREHOUSE_IDS_SELECT_SQL}
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
@@ -79,7 +97,14 @@ class WarehousesRepositoryPG {
     }
     
     if (mainWarehouseId) {
-      sql += ` AND w.main_warehouse_id = $${paramIndex++}`;
+      sql += ` AND (
+        w.main_warehouse_id = $${paramIndex}
+        OR EXISTS (
+          SELECT 1 FROM supplier_warehouse_main_links l
+          WHERE l.supplier_warehouse_id = w.id AND l.main_warehouse_id = $${paramIndex}
+        )
+      )`;
+      paramIndex += 1;
       params.push(mainWarehouseId);
     }
     
@@ -129,7 +154,7 @@ class WarehousesRepositoryPG {
         mw.address as main_warehouse_address,
         COALESCE((
           SELECT COUNT(*)::int FROM warehouse_marketplace_stock_exclusions e WHERE e.warehouse_id = w.id
-        ), 0) AS stock_sync_exclusion_count
+        ), 0) AS stock_sync_exclusion_count,${MAIN_WAREHOUSE_IDS_SELECT_SQL}
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
@@ -143,7 +168,7 @@ class WarehousesRepositoryPG {
         mw.address as main_warehouse_address,
         COALESCE((
           SELECT COUNT(*)::int FROM warehouse_marketplace_stock_exclusions e WHERE e.warehouse_id = w.id
-        ), 0) AS stock_sync_exclusion_count
+        ), 0) AS stock_sync_exclusion_count,${MAIN_WAREHOUSE_IDS_SELECT_SQL}
       FROM warehouses w
       LEFT JOIN suppliers s ON w.supplier_id = s.id
       LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
@@ -395,6 +420,37 @@ class WarehousesRepositoryPG {
     }
   }
   
+  /**
+   * Заменить список наших складов, к которым относится склад поставщика.
+   * @param {string|number} supplierWarehouseId
+   * @param {Array<string|number>} mainWarehouseIds
+   */
+  async setMainWarehouseLinks(supplierWarehouseId, mainWarehouseIds) {
+    const sid = Number(supplierWarehouseId);
+    if (!Number.isFinite(sid) || sid < 1) return;
+    const ids = [
+      ...new Set(
+        (Array.isArray(mainWarehouseIds) ? mainWarehouseIds : [])
+          .map((v) => Number(v))
+          .filter((n) => Number.isFinite(n) && n > 0 && n !== sid)
+      ),
+    ];
+    await transaction(async (client) => {
+      await client.query(
+        'DELETE FROM supplier_warehouse_main_links WHERE supplier_warehouse_id = $1',
+        [sid]
+      );
+      if (ids.length > 0) {
+        await client.query(
+          `INSERT INTO supplier_warehouse_main_links (supplier_warehouse_id, main_warehouse_id)
+           SELECT $1, UNNEST($2::bigint[])
+           ON CONFLICT DO NOTHING`,
+          [sid, ids]
+        );
+      }
+    });
+  }
+
   /**
    * Удалить склад
    */

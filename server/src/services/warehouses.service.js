@@ -75,6 +75,17 @@ async function applyFboStockExclusive(warehouseId, isFbo, profileId) {
   }
 }
 
+/** undefined — список в запросе не передан. */
+function parseMainWarehouseIdsPayload(data) {
+  const has =
+    Object.prototype.hasOwnProperty.call(data || {}, 'mainWarehouseIds') ||
+    Object.prototype.hasOwnProperty.call(data || {}, 'main_warehouse_ids');
+  if (!has) return undefined;
+  const raw = data.mainWarehouseIds ?? data.main_warehouse_ids;
+  const list = Array.isArray(raw) ? raw : raw == null || raw === '' ? [] : [raw];
+  return [...new Set(list.map((v) => String(v).trim()).filter((v) => v !== ''))];
+}
+
 function parseWeekendDaysPayload(data, existing = null) {
   if (data?.hasOwnProperty('weekendDays') || data?.hasOwnProperty('weekend_days')) {
     const raw = data.weekendDays ?? data.weekend_days;
@@ -123,11 +134,20 @@ class WarehousesService {
     
     // Обрабатываем mainWarehouseId: преобразуем пустую строку в null
     let mainWarehouseIdValue = null;
+    let mainWarehouseIdsValue = [];
     if (type === 'supplier') {
       const mainWarehouseId = data.mainWarehouseId || data.main_warehouse_id;
-      if (mainWarehouseId && mainWarehouseId.trim() !== '') {
+      if (mainWarehouseId && String(mainWarehouseId).trim() !== '') {
         mainWarehouseIdValue = String(mainWarehouseId).trim();
       }
+      const idsFromPayload = parseMainWarehouseIdsPayload(data);
+      mainWarehouseIdsValue =
+        idsFromPayload !== undefined
+          ? idsFromPayload
+          : mainWarehouseIdValue
+            ? [mainWarehouseIdValue]
+            : [];
+      mainWarehouseIdValue = mainWarehouseIdsValue[0] ?? null;
     }
     
     // Обрабатываем orderAcceptanceTime: только для складов поставщиков
@@ -191,6 +211,14 @@ class WarehousesService {
     if (isFbo && created?.id) {
       await applyFboStockExclusive(created.id, true, profileId ?? payload.profile_id);
     }
+    if (
+      type === 'supplier' &&
+      created?.id &&
+      typeof this.repository.setMainWarehouseLinks === 'function'
+    ) {
+      await this.repository.setMainWarehouseLinks(created.id, mainWarehouseIdsValue);
+      return (await this.repository.findById(created.id)) || created;
+    }
     return created;
   }
 
@@ -214,7 +242,13 @@ class WarehousesService {
 
     // Обрабатываем mainWarehouseId: преобразуем пустую строку в null
     let mainWarehouseIdValue = null;
-    if (type === 'supplier') {
+    /** undefined — связи не меняем. */
+    let mainWarehouseIdsValue;
+    const idsFromPayload = parseMainWarehouseIdsPayload(data);
+    if (type === 'supplier' && idsFromPayload !== undefined) {
+      mainWarehouseIdsValue = idsFromPayload;
+      mainWarehouseIdValue = idsFromPayload[0] ?? null;
+    } else if (type === 'supplier') {
       // Проверяем, было ли поле явно передано в запросе
       if (data.hasOwnProperty('mainWarehouseId') || data.hasOwnProperty('main_warehouse_id')) {
         const mainWarehouseId = data.mainWarehouseId ?? data.main_warehouse_id;
@@ -229,6 +263,11 @@ class WarehousesService {
         // Если поле не передано, сохраняем существующее значение
         mainWarehouseIdValue = existing.main_warehouse_id;
       }
+      if (data.hasOwnProperty('mainWarehouseId') || data.hasOwnProperty('main_warehouse_id')) {
+        mainWarehouseIdsValue = mainWarehouseIdValue ? [String(mainWarehouseIdValue)] : [];
+      }
+    } else {
+      mainWarehouseIdsValue = [];
     }
 
     // Обрабатываем orderAcceptanceTime: только для складов поставщиков
@@ -376,6 +415,14 @@ class WarehousesService {
     }
     if (payload.is_fbo_stock !== undefined) {
       await applyFboStockExclusive(id, !!payload.is_fbo_stock, profileId ?? existing.profile_id);
+    }
+    if (
+      mainWarehouseIdsValue !== undefined &&
+      typeof this.repository.setMainWarehouseLinks === 'function'
+    ) {
+      await this.repository.setMainWarehouseLinks(id, mainWarehouseIdsValue);
+      const refreshed = await this.repository.findById(id, profileId);
+      if (refreshed) Object.assign(updated, { mainWarehouseIds: refreshed.mainWarehouseIds });
     }
     if (type === 'warehouse' && _stockSyncBefore && _stockSyncAfter) {
       const { marketplacesNeedingStockResync } = await import(

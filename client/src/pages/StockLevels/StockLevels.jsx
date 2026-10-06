@@ -9,6 +9,7 @@ import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { Button } from '../../components/common/Button/Button';
+import { isSupplierWarehouseLinkedTo } from '../../utils/supplierWarehouseLinks.js';
 import './StockLevels.css';
 
 const STOCK_PAGE_SIZE = 200;
@@ -102,7 +103,7 @@ export function StockLevels() {
         // Используем строковое сравнение для надежности
         const mainWarehouseIdStr = String(mainWarehouse.id);
         const attachedSupplierWarehouses = warehouses.filter(
-          w => w.supplierId && w.type === 'supplier' && String(w.mainWarehouseId) === mainWarehouseIdStr
+          w => w.supplierId && w.type === 'supplier' && isSupplierWarehouseLinkedTo(w, mainWarehouseIdStr)
         );
         console.log(`[StockLevels] Found ${attachedSupplierWarehouses.length} attached supplier warehouses:`, 
           attachedSupplierWarehouses.map(w => ({ id: w.id, supplierId: w.supplierId, mainWarehouseId: w.mainWarehouseId, address: w.address })));
@@ -223,7 +224,7 @@ export function StockLevels() {
           w =>
             w.supplierId &&
             w.type === 'supplier' &&
-            String(w.mainWarehouseId) === mainWarehouseIdStr
+            isSupplierWarehouseLinkedTo(w, mainWarehouseIdStr)
         )
       : [];
 

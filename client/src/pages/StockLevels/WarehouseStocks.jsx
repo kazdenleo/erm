@@ -37,6 +37,7 @@ import { authApi } from '../../services/auth.api.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
+import { supplierWarehouseMainIds } from '../../utils/supplierWarehouseLinks.js';
 import './StockLevels.css';
 
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
@@ -1878,8 +1879,7 @@ function isSupplierWarehouseRecord(w) {
   const sid = warehouseSupplierId(w);
   if (!sid) return false;
   const t = String(w.type || '').toLowerCase();
-  const mainId = String(w.mainWarehouseId ?? w.main_warehouse_id ?? '').trim();
-  return t === 'supplier' || Boolean(mainId);
+  return t === 'supplier' || supplierWarehouseMainIds(w).length > 0;
 }
 
 /** Подписи складов поставщиков для всплывающего списка (данные уже отфильтрованы API при наличии mainWarehouseId). */
@@ -1894,9 +1894,9 @@ function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
   const warehouseLabelBySupplierId = {};
   for (const w of warehouses || []) {
     if (!isSupplierWarehouseRecord(w)) continue;
-    const attachedMainId = String(w.mainWarehouseId ?? w.main_warehouse_id ?? '').trim();
-    if (!attachedMainId) continue;
-    if (mwId && attachedMainId !== mwId) continue;
+    const attachedMainIds = supplierWarehouseMainIds(w);
+    if (attachedMainIds.length === 0) continue;
+    if (mwId && !attachedMainIds.includes(mwId)) continue;
     const supplierId = warehouseSupplierId(w);
     if (!supplierId) continue;
     if (!warehouseLabelBySupplierId[supplierId]) {

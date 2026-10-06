@@ -14,6 +14,7 @@ const baseWarehouseSchema = z.object({
   organizationId: z.union([z.string(), z.number()]).optional().nullable(),
   supplierId: z.string().optional().nullable(),
   mainWarehouseId: z.string().optional().nullable(),
+  mainWarehouseIds: z.array(z.union([z.string(), z.number()])).optional().nullable(),
   name: z.string().max(200).optional().nullable(),
   orderAcceptanceTime: z.string().regex(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/, 'Неверный формат времени (HH:MM)').optional().nullable(),
   wbWarehouseName: z.string().optional().nullable(),

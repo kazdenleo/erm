@@ -44,6 +44,14 @@ function coerceStockPushFlag(value, defaultTrue = true) {
   return defaultTrue;
 }
 
+function readMainWarehouseIds(warehouse = {}) {
+  const list = Array.isArray(warehouse.mainWarehouseIds) ? warehouse.mainWarehouseIds : [];
+  const ids = list.map((v) => String(v)).filter(Boolean);
+  const single = warehouse.mainWarehouseId ?? warehouse.main_warehouse_id;
+  if (ids.length === 0 && single != null && single !== '') ids.push(String(single));
+  return [...new Set(ids)];
+}
+
 function readWarehouseStockPushFlags(warehouse = {}) {
   return {
     pushMarketplaceStock: coerceStockPushFlag(
@@ -62,7 +70,7 @@ const EMPTY_WAREHOUSE_FORM = {
   address: '',
   organizationId: '',
   supplierId: '',
-  mainWarehouseId: '',
+  mainWarehouseIds: [],
   wbWarehouseName: '',
   isFboStock: false,
   pushMarketplaceStock: true,
@@ -332,7 +340,7 @@ export function WarehouseForm({
         address: warehouse.address || '',
         organizationId: warehouse.organizationId != null ? String(warehouse.organizationId) : (warehouse.organization_id != null ? String(warehouse.organization_id) : ''),
         supplierId: warehouse.supplierId ? String(warehouse.supplierId) : '',
-        mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
+        mainWarehouseIds: readMainWarehouseIds(warehouse),
         wbWarehouseName: warehouse.wbWarehouseName || '',
         isFboStock: warehouse.isFboStock === true || warehouse.is_fbo_stock === true,
         ...stockFlags,
@@ -616,7 +624,11 @@ export function WarehouseForm({
       address: formData.address.trim() || null,
       organizationId: formData.organizationId && formData.organizationId.trim() !== '' ? formData.organizationId : null,
       supplierId: formData.type === 'supplier' ? (formData.supplierId || null) : null,
-      mainWarehouseId: formData.type === 'supplier' ? (formData.mainWarehouseId || null) : null,
+      mainWarehouseIds: formData.type === 'supplier' ? formData.mainWarehouseIds : [],
+      mainWarehouseId:
+        formData.type === 'supplier' && formData.mainWarehouseIds.length > 0
+          ? formData.mainWarehouseIds[0]
+          : null,
       orderAcceptanceTime: null,
       wbWarehouseName:
         formData.type === 'warehouse'
@@ -996,25 +1008,41 @@ export function WarehouseForm({
           </div>
 
           <div className="mt-3">
-            <label className="form-label" htmlFor="mainWarehouseSelect">Основной склад</label>
+            <div className="form-label">Наши склады</div>
             <div className="text-muted small mb-2">
-              Выберите основной склад, к которому относится этот склад поставщика. Итого по основному складу будет включать остатки на основном складе и всех прикрепленных складах поставщиков.
+              Отметьте наши склады, к которым относится этот склад поставщика. Остатки поставщика будут учитываться в «Доступно» и закупках по каждому отмеченному складу.
             </div>
-            <select
-              id="mainWarehouseSelect"
-              className="form-select form-select-sm"
-              value={formData.mainWarehouseId}
-              onChange={(e) => handleChange('mainWarehouseId', e.target.value)}
-            >
-              <option value="">-- Выберите основной склад --</option>
-              {warehouses
-                .filter(w => w.type === 'warehouse')
-                .map(warehouse => (
-                  <option key={warehouse.id} value={warehouse.id}>
-                    {warehouseDisplayLabel(warehouse)}
-                  </option>
-                ))}
-            </select>
+            {warehouses.filter((w) => w.type === 'warehouse').length === 0 ? (
+              <div className="text-muted small">Нет наших складов — сначала создайте склад.</div>
+            ) : (
+              <div className="d-flex flex-column gap-1">
+                {warehouses
+                  .filter((w) => w.type === 'warehouse')
+                  .map((w) => {
+                    const wid = String(w.id);
+                    const checked = formData.mainWarehouseIds.includes(wid);
+                    return (
+                      <label key={wid} className="form-check mb-0" htmlFor={`mainWarehouse-${wid}`}>
+                        <input
+                          id={`mainWarehouse-${wid}`}
+                          type="checkbox"
+                          className="form-check-input"
+                          checked={checked}
+                          onChange={() =>
+                            handleChange(
+                              'mainWarehouseIds',
+                              checked
+                                ? formData.mainWarehouseIds.filter((x) => x !== wid)
+                                : [...formData.mainWarehouseIds, wid]
+                            )
+                          }
+                        />
+                        <span className="form-check-label">{warehouseDisplayLabel(w)}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+            )}
           </div>
 
           <p className="text-muted small mt-2 mb-0">

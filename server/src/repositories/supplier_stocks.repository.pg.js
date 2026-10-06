@@ -142,7 +142,13 @@ class SupplierStocksRepositoryPG {
     if (mainWarehouseId) {
       params.push(mainWarehouseId);
       warehouseFilterSql += `
-          AND w.main_warehouse_id = $${params.length}`;
+          AND (
+            w.main_warehouse_id = $${params.length}
+            OR EXISTS (
+              SELECT 1 FROM supplier_warehouse_main_links l
+              WHERE l.supplier_warehouse_id = w.id AND l.main_warehouse_id = $${params.length}
+            )
+          )`;
     }
     if (profileId) {
       params.push(profileId);
