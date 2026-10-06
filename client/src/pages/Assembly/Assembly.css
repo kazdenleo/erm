@@ -285,8 +285,11 @@
 }
 
 .assembly-next__packing {
-  align-self: flex-start;
-  margin: 4px 0;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  align-self: stretch;
+  margin: 8px 0 4px;
   padding: 6px 16px;
   font-size: 16px;
   font-weight: 700;
