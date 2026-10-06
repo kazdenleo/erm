@@ -424,9 +424,6 @@ export function FboSupplyCollect({
               <div className="fbo-collect-next__label">Следующий к сборке</div>
               <div className="fbo-collect-next__name">
                 {nextItem.productName || nextItem.name || nextItem.sku || '—'}
-                {nextItem.displayAttributeValue ? (
-                  <span className="fbo-collect-attr">{nextItem.displayAttributeValue}</span>
-                ) : null}
               </div>
               <div className="fbo-collect-next__skus">
                 <span
@@ -451,6 +448,12 @@ export function FboSupplyCollect({
                   </span>
                 )}
               </div>
+              {nextItem.displayAttributeValue ? (
+                <div className="fbo-collect-next__attr">
+                  <span className="fbo-collect-next__attr-label">Упаковка:</span>{' '}
+                  {nextItem.displayAttributeValue}
+                </div>
+              ) : null}
               <div className="fbo-collect-next__progress muted-hint">
                 {nextItem.collected} / {nextItem.planned}
               </div>
@@ -537,9 +540,6 @@ export function FboSupplyCollect({
                     <td>
                       <div className="fbo-collect-item-name">
                         {it.productName || it.name || '—'}
-                        {it.displayAttributeValue ? (
-                          <span className="fbo-collect-attr">{it.displayAttributeValue}</span>
-                        ) : null}
                         {outOfStock ? (
                           <span className="fbo-collect-out-of-stock-badge">нет на складе</span>
                         ) : null}
@@ -556,9 +556,6 @@ export function FboSupplyCollect({
                                 ×{c.need}
                                 {c.got > 0 ? ` (${c.got}/${c.need})` : ''}
                               </span>
-                              {c.displayAttributeValue ? (
-                                <span className="fbo-collect-attr">{c.displayAttributeValue}</span>
-                              ) : null}
                             </li>
                           ))}
                         </ul>
