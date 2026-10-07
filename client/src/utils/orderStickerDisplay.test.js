@@ -1,6 +1,7 @@
 import {
   orderStickerCellValue,
   ozonOrderNumberFromPostingNumber,
+  ozonStickerMissing,
 } from './orderStickerDisplay.js';
 
 describe('ozonOrderNumberFromPostingNumber', () => {
@@ -41,6 +42,14 @@ describe('orderStickerCellValue', () => {
         assemblyStickerNumber: '74369038-0308',
       })
     ).toBe('—');
+  });
+
+  test('ozonStickerMissing: нужен догруз для старого lower_barcode, не нужен для ii…', () => {
+    const base = { marketplace: 'ozon', status: 'assembled', orderId: '0231280304-0006-1' };
+    expect(ozonStickerMissing({ ...base, assemblyStickerNumber: '302085861110000' })).toBe(true);
+    expect(ozonStickerMissing(base)).toBe(true);
+    expect(ozonStickerMissing({ ...base, assemblyStickerNumber: 'ii50048401925' })).toBe(false);
+    expect(ozonStickerMissing({ ...base, marketplace: 'wildberries' })).toBe(false);
   });
 
   test('Ozon: без ШК — прочерк', () => {

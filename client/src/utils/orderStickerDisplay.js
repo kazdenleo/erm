@@ -72,6 +72,12 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
   return orderIdForSticker(order) || '—';
 }
 
+/** Заказ Ozon на сборке/собран, но номера с этикетки ещё нет — нужно догрузить через label/status. */
+export function ozonStickerMissing(order) {
+  if (!order || normalizeMarketplaceForUI(order.marketplace) !== 'ozon') return false;
+  return orderStickerCellValue(order) === '—' && isAssemblyLikeStatus(order.status);
+}
+
 /** Разбивает номер стикера WB/Ozon: основная часть + последние 4 цифры (полужирные в UI). */
 export function splitStickerEmphasis(text) {
   const s = String(text ?? '').trim();

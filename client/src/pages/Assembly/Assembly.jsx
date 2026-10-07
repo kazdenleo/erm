@@ -17,7 +17,7 @@ import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
-import { isAssemblyLikeStatus } from '../../utils/orderStickerDisplay';
+import { isAssemblyLikeStatus, ozonStickerMissing } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import {
   buildAssemblyNextRecommendation,
@@ -495,6 +495,7 @@ export function Assembly() {
   /** Пока идёт markCollected + печать — игнорируем сканы (иначе сканер шлёт второй ввод и открывается чужой заказ с тем же товаром → вторая этикетка). */
   const printingFlowRef = useRef(false);
   const scanLoadingRef = useRef(false);
+  const stickerFetchTriedRef = useRef(new Set());
   orderKeyRef.current = currentOrderKey;
   currentOrderDataRef.current = currentOrderData;
   scannedQuantitiesRef.current = scannedQuantities;
@@ -618,21 +619,20 @@ export function Assembly() {
 
   // Фоновая проверка: показываем иконку печати только если файл этикетки уже кэширован на сервере.
   useEffect(() => {
-    const ids = new Set();
-    for (const o of assemblyOrders || []) {
+    const ordersById = new Map();
+    const addOrder = (o) => {
       const oid = o?.orderId ?? o?.order_id;
-      if (oid != null && String(oid).trim() !== '') ids.add(String(oid));
-    }
-    for (const o of collectedOrders || []) {
-      const oid = o?.orderId ?? o?.order_id;
-      if (oid != null && String(oid).trim() !== '') ids.add(String(oid));
-    }
-    const cur = currentOrderData?.order?.orderId;
-    if (cur != null && String(cur).trim() !== '') ids.add(String(cur));
+      if (oid != null && String(oid).trim() !== '') ordersById.set(String(oid), o);
+    };
+    for (const o of assemblyOrders || []) addOrder(o);
+    for (const o of collectedOrders || []) addOrder(o);
+    if (currentOrderData?.order) addOrder(currentOrderData.order);
 
+    // Номер стикера Ozon приходит только из label/status — запрашиваем и при готовой этикетке (один раз).
     const toFetch = [];
-    for (const id of ids) {
-      if (labelReadyByOrderId?.[id] === true) continue;
+    for (const [id, o] of ordersById) {
+      const needSticker = ozonStickerMissing(o) && !stickerFetchTriedRef.current.has(id);
+      if (labelReadyByOrderId?.[id] === true && !needSticker) continue;
       toFetch.push(id);
     }
     if (toFetch.length === 0) return;
@@ -648,6 +648,7 @@ export function Assembly() {
           timeout: 15000,
           signal: ac.signal,
         });
+        stickerFetchTriedRef.current.add(id);
         const payload = r?.data?.data ?? r?.data ?? {};
         const exists = payload.exists === true;
         const stickerNumber =
@@ -675,7 +676,7 @@ export function Assembly() {
           });
         }
       } catch {
-        // ignore
+        if (!ac.signal.aborted) stickerFetchTriedRef.current.add(id);
       }
     };
 
@@ -693,7 +694,7 @@ export function Assembly() {
       cancelled = true;
       try { ac.abort(); } catch { /* ignore */ }
     };
-  }, [assemblyOrders, collectedOrders, currentOrderData?.order?.orderId, labelReadyByOrderId]);
+  }, [assemblyOrders, collectedOrders, currentOrderData?.order, labelReadyByOrderId]);
 
   const waitLabelCachedOnServer = useCallback(async (orderId, { maxMs = LABEL_STATUS_POLL_MS } = {}) => {
     const path = `/orders/${encodeURIComponent(orderId)}/label/status`;
