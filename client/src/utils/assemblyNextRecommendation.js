@@ -5,14 +5,15 @@
 import { getAssemblyOrderCompositionLines, orderLineArticle } from './assemblyOrderComposition.js';
 
 /**
- * Слева — текущий заказ; справа — следующий.
- * После сборки текущий становится предыдущим, на его месте — следующий из очереди.
+ * Слева — следующий заказ (после скана становится текущим).
+ * Справа — всегда последний собранный.
+ * После сборки заказ уходит вправо, слева появляется следующий из очереди.
  *
  * @returns {{
  *   currentGroup: object|null,
- *   currentRole: 'current'|'previous'|'empty',
+ *   currentRole: 'current'|'next'|'empty',
  *   sideGroup: object|null,
- *   sideRole: 'next'|'previous'|'empty',
+ *   sideRole: 'previous'|'empty',
  * }}
  */
 export function pickAssemblyStageGroups({
@@ -35,58 +36,50 @@ export function pickAssemblyStageGroups({
     );
   };
 
-  const sessionGroup = currentOrderKey ? findByKey(currentOrderKey) : null;
-  const prevCollected = () => {
-    const skipKey = sessionGroup?.key || currentOrderKey || '';
-    return (
-      collected.find((g) => g.key !== skipKey) ||
-      (lastAssembledGroup && lastAssembledGroup.key !== skipKey ? lastAssembledGroup : null) ||
-      null
-    );
+  const lastAssembled = (skipKey = '') => {
+    const fromCollected = collected.find((g) => !skipKey || g.key !== skipKey);
+    if (fromCollected) return fromCollected;
+    if (lastAssembledGroup && (!skipKey || lastAssembledGroup.key !== skipKey)) {
+      return lastAssembledGroup;
+    }
+    return null;
   };
 
-  /** Слева всегда слот текущего; предыдущий — только справа. */
+  const sessionGroup = currentOrderKey ? findByKey(currentOrderKey) : null;
+
+  /** Идёт сканирование: слева текущий, справа последний ранее собранный. */
   if (sessionGroup && !currentOrderAssembled) {
-    const nextGroup = queue.find((g) => g.key !== sessionGroup.key) || null;
-    const prev = nextGroup ? null : prevCollected();
+    const prev = lastAssembled(sessionGroup.key);
     return {
       currentGroup: sessionGroup,
       currentRole: 'current',
-      sideGroup: nextGroup || prev,
-      sideRole: nextGroup ? 'next' : prev ? 'previous' : 'empty',
+      sideGroup: prev,
+      sideRole: prev ? 'previous' : 'empty',
     };
   }
 
+  /** Только что собрали: справа этот заказ, слева следующий из очереди. */
   if (sessionGroup && currentOrderAssembled) {
     const nextGroup = queue.find((g) => g.key !== sessionGroup.key) || null;
-    if (nextGroup) {
-      return {
-        currentGroup: nextGroup,
-        currentRole: 'current',
-        sideGroup: sessionGroup,
-        sideRole: 'previous',
-      };
-    }
     return {
-      currentGroup: null,
-      currentRole: 'empty',
+      currentGroup: nextGroup,
+      currentRole: nextGroup ? 'next' : 'empty',
       sideGroup: sessionGroup,
       sideRole: 'previous',
     };
   }
 
+  /** Нет активной сессии: слева следующий из очереди, справа последний собранный. */
+  const prev = lastAssembled();
   if (queue.length > 0) {
-    const prev = collected[0] || lastAssembledGroup || null;
-    const nextGroup = queue[1] || null;
     return {
       currentGroup: queue[0],
-      currentRole: 'current',
-      sideGroup: nextGroup || prev,
-      sideRole: nextGroup ? 'next' : prev ? 'previous' : 'empty',
+      currentRole: 'next',
+      sideGroup: prev,
+      sideRole: prev ? 'previous' : 'empty',
     };
   }
 
-  const prev = collected[0] || lastAssembledGroup || null;
   return {
     currentGroup: null,
     currentRole: 'empty',
@@ -96,8 +89,9 @@ export function pickAssemblyStageGroups({
 }
 
 export function assemblyStageLabel(role) {
-  if (role === 'previous') return 'Предыдущий собранный';
+  if (role === 'previous') return 'Последний собранный';
   if (role === 'next') return 'Следующий к сборке';
+  if (role === 'empty') return 'Следующий к сборке';
   return 'Текущий заказ';
 }
 

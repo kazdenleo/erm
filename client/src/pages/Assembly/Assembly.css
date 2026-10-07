@@ -83,9 +83,14 @@
   min-width: 0;
   text-align: left;
   padding: 10px 12px;
-  background: linear-gradient(180deg, #f0fdf4 0%, #f8fafc 100%);
-  border: 1px solid #86efac;
+  background: linear-gradient(180deg, #eff6ff 0%, #f8fafc 100%);
+  border: 1px solid #93c5fd;
   border-radius: 8px;
+}
+
+.assembly-stage__current--active {
+  background: linear-gradient(180deg, #f0fdf4 0%, #f8fafc 100%);
+  border-color: #86efac;
 }
 
 .assembly-stage__side {
@@ -93,8 +98,8 @@
   min-width: 0;
   text-align: left;
   padding: 10px 12px;
-  background: linear-gradient(180deg, #eff6ff 0%, #f8fafc 100%);
-  border: 1px solid #93c5fd;
+  background: linear-gradient(180deg, #f8fafc 0%, #f8fafc 100%);
+  border: 1px solid #cbd5e1;
   border-radius: 8px;
 }
 

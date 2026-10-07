@@ -1516,11 +1516,13 @@ export function Assembly() {
         aria-live="polite"
       >
         <div className="assembly-stage__split">
-          <div className="assembly-stage__current">
+          <div
+            className={`assembly-stage__current${
+              stage.currentRole === 'current' ? ' assembly-stage__current--active' : ''
+            }`}
+          >
             <AssemblyHintCard
-              label={assemblyStageLabel(
-                stage.currentRole === 'empty' ? 'current' : stage.currentRole
-              )}
+              label={assemblyStageLabel(stage.currentRole)}
               recommendation={currentRecommendation}
               hintStock={currentHintStock}
               stockLoading={currentHintStockLoading}
@@ -1582,18 +1584,14 @@ export function Assembly() {
             }`}
           >
             <AssemblyHintCard
-              label={assemblyStageLabel(stage.sideRole === 'empty' ? 'next' : stage.sideRole)}
+              label={assemblyStageLabel('previous')}
               recommendation={sideRecommendation}
               hintStock={sideHintStock}
               stockLoading={sideHintStockLoading}
               overlay={sideScanOverlay}
               warehouseNameById={warehouseNameById}
               mpDisplay={mpDisplay}
-              emptyText={
-                stage.sideRole === 'previous'
-                  ? 'Соберите заказ — он появится здесь'
-                  : 'Нет следующего заказа'
-              }
+              emptyText="Соберите заказ — он появится здесь"
             >
               {currentOrderData && sideRecommendation?.groupKey === currentOrderKey ? (
                 <AssemblySessionPanel
