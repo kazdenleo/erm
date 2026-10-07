@@ -1518,7 +1518,9 @@ export function Assembly() {
         <div className="assembly-stage__split">
           <div className="assembly-stage__current">
             <AssemblyHintCard
-              label={assemblyStageLabel(stage.currentRole)}
+              label={assemblyStageLabel(
+                stage.currentRole === 'empty' ? 'current' : stage.currentRole
+              )}
               recommendation={currentRecommendation}
               hintStock={currentHintStock}
               stockLoading={currentHintStockLoading}

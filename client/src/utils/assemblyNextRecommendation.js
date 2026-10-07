@@ -36,14 +36,24 @@ export function pickAssemblyStageGroups({
   };
 
   const sessionGroup = currentOrderKey ? findByKey(currentOrderKey) : null;
+  const prevCollected = () => {
+    const skipKey = sessionGroup?.key || currentOrderKey || '';
+    return (
+      collected.find((g) => g.key !== skipKey) ||
+      (lastAssembledGroup && lastAssembledGroup.key !== skipKey ? lastAssembledGroup : null) ||
+      null
+    );
+  };
 
+  /** Слева всегда слот текущего; предыдущий — только справа. */
   if (sessionGroup && !currentOrderAssembled) {
     const nextGroup = queue.find((g) => g.key !== sessionGroup.key) || null;
+    const prev = nextGroup ? null : prevCollected();
     return {
       currentGroup: sessionGroup,
       currentRole: 'current',
-      sideGroup: nextGroup,
-      sideRole: nextGroup ? 'next' : 'empty',
+      sideGroup: nextGroup || prev,
+      sideRole: nextGroup ? 'next' : prev ? 'previous' : 'empty',
     };
   }
 
@@ -58,10 +68,10 @@ export function pickAssemblyStageGroups({
       };
     }
     return {
-      currentGroup: sessionGroup,
-      currentRole: 'previous',
-      sideGroup: null,
-      sideRole: 'empty',
+      currentGroup: null,
+      currentRole: 'empty',
+      sideGroup: sessionGroup,
+      sideRole: 'previous',
     };
   }
 
@@ -78,10 +88,10 @@ export function pickAssemblyStageGroups({
 
   const prev = collected[0] || lastAssembledGroup || null;
   return {
-    currentGroup: prev,
-    currentRole: prev ? 'previous' : 'empty',
-    sideGroup: null,
-    sideRole: 'empty',
+    currentGroup: null,
+    currentRole: 'empty',
+    sideGroup: prev,
+    sideRole: prev ? 'previous' : 'empty',
   };
 }
 

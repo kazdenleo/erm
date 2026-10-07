@@ -46,16 +46,28 @@ describe('pickAssemblyStageGroups', () => {
     expect(stage.sideRole).toBe('previous');
   });
 
-  test('собрали последний: слева предыдущий собранный', () => {
+  test('собрали последний: слева пустой текущий, справа предыдущий', () => {
     const stage = pickAssemblyStageGroups({
       assemblyGroups: [],
       collectedGroups: [a],
       currentOrderKey: 'a',
       currentOrderAssembled: true,
     });
-    expect(stage.currentGroup.key).toBe('a');
-    expect(stage.currentRole).toBe('previous');
-    expect(stage.sideRole).toBe('empty');
+    expect(stage.currentGroup).toBeNull();
+    expect(stage.currentRole).toBe('empty');
+    expect(stage.sideGroup.key).toBe('a');
+    expect(stage.sideRole).toBe('previous');
+  });
+
+  test('очередь пуста, есть собранный: слева текущий пустой, справа предыдущий', () => {
+    const stage = pickAssemblyStageGroups({
+      assemblyGroups: [],
+      collectedGroups: [a],
+    });
+    expect(stage.currentGroup).toBeNull();
+    expect(stage.currentRole).toBe('empty');
+    expect(stage.sideGroup.key).toBe('a');
+    expect(stage.sideRole).toBe('previous');
   });
 
   test('один в очереди и есть собранный: справа предыдущий', () => {
@@ -68,8 +80,21 @@ describe('pickAssemblyStageGroups', () => {
     expect(stage.sideRole).toBe('previous');
   });
 
+  test('сборка последнего: слева текущий, справа предыдущий из собранных', () => {
+    const stage = pickAssemblyStageGroups({
+      assemblyGroups: [a],
+      collectedGroups: [c],
+      currentOrderKey: 'a',
+    });
+    expect(stage.currentGroup.key).toBe('a');
+    expect(stage.currentRole).toBe('current');
+    expect(stage.sideGroup.key).toBe('c');
+    expect(stage.sideRole).toBe('previous');
+  });
+
   test('подписи ролей', () => {
     expect(assemblyStageLabel('current')).toBe('Текущий заказ');
+    expect(assemblyStageLabel('empty')).toBe('Текущий заказ');
     expect(assemblyStageLabel('next')).toBe('Следующий к сборке');
     expect(assemblyStageLabel('previous')).toBe('Предыдущий собранный');
   });
