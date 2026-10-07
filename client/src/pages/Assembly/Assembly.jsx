@@ -24,7 +24,10 @@ import {
   pickAssemblyStageGroups,
   assemblyStageLabel,
 } from '../../utils/assemblyNextRecommendation';
-import { stockCountsLabel, nextRecommendationScanOverlay } from '../../utils/assemblyWarehouseStock';
+import {
+  applyPickedToStock,
+  nextRecommendationScanOverlay,
+} from '../../utils/assemblyWarehouseStock';
 import { AssemblyHintCard } from './AssemblyHintCard';
 import {
   orderGroupKey,
@@ -291,8 +294,6 @@ function assemblyCompositionParts(item, quantityOverride) {
 
 function AssemblySessionPanel({
   currentOrderData,
-  compositionLines,
-  remainingItems,
   showScanStickerFinish,
   waitingForOrderLabel,
   finishScanSubmitting,
@@ -300,46 +301,9 @@ function AssemblySessionPanel({
   labelReadyByOrderId,
   onPrintLabel,
 }) {
-  if (!currentOrderData) return null;
-  const assembled = String(currentOrderData.order?.status ?? '').toLowerCase() === 'assembled';
+  if (!currentOrderData || !showScanStickerFinish) return null;
   return (
     <div className="assembly-current-order assembly-current-order--embedded">
-      <div className="assembly-composition">
-        <span className="assembly-composition-label">Состав заказа:</span>
-        <ul className="assembly-composition-list">
-          {compositionLines.map((line, idx) => (
-            <li key={`${line.key}-${idx}`}>
-              {line.productId ? (
-                <>
-                  {line.externalId ? `${line.externalId}, ` : ''}
-                  <Link
-                    to={productCardPath(line.productId)}
-                    className="assembly-product-link"
-                    title="Открыть карточку товара"
-                  >
-                    {line.name}
-                  </Link>
-                  {line.displayAttributeValue ? (
-                    <span className="text-muted"> · {line.displayAttributeValue}</span>
-                  ) : null}
-                  {` - ${line.q}шт`}
-                </>
-              ) : (
-                line.fallbackText
-              )}
-              {line.remaining > 0 && (
-                <span className="assembly-composition-progress">
-                  {' '}
-                  (осталось отсканировать: {line.remaining})
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-      {remainingItems.length > 0 && (
-        <p className="assembly-remaining-hint">Отсканируйте следующий товар по штрихкоду.</p>
-      )}
       {showScanStickerFinish && (
         <div className="assembly-sticker-finish">
           <p className="assembly-ready-text">
@@ -387,68 +351,42 @@ function AssemblySessionPanel({
           </div>
         </div>
       )}
-      {assembled && (
-        <div className="assembly-ready">
-          <p className="assembly-ready-text">
-            Заказ собран{' '}
-            {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
-              <button
-                type="button"
-                className="assembly-label-link assembly-label-link-inline"
-                title="Печать этикетки"
-                aria-label="Печать этикетки заказа"
-                onClick={() => onPrintLabel(currentOrderData.order.orderId)}
-              >
-                <OrderLabelIcon size={20} />
-              </button>
-            )}
-          </p>
-        </div>
-      )}
     </div>
   );
 }
 
-function useAssemblyHintStock(recommendation, epoch) {
+/**
+ * Остатки «на полке» по товару и складу. cache — общий для обеих карточек: заказ, переехавший
+ * вправо после сборки, сразу показывает известный остаток, свежий подтягивается в фоне.
+ * cache.generation растёт при локальной правке кеша — ответы, запрошенные раньше, не затирают её.
+ */
+function useAssemblyHintStock(recommendation, epoch, cache) {
   const [stock, setStock] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const productId = recommendation?.productId;
+  const warehouseId = recommendation?.warehouseId;
   useEffect(() => {
     let cancelled = false;
-    const productId = recommendation?.productId;
-    const warehouseId = recommendation?.warehouseId;
     if (!productId || !warehouseId) {
       setStock(null);
-      setLoading(false);
       return undefined;
     }
-    setLoading(true);
+    const key = `${productId}|${warehouseId}`;
+    setStock(cache.entries.get(key) ?? null);
+    const generation = cache.generation;
     stockMovementsApi
-      .getWarehouseStock(productId, warehouseId, {
-        orderDbId: recommendation.orderDbId,
-        orderId: recommendation.marketplaceOrderId,
-      })
+      .getWarehouseStock(productId, warehouseId)
       .then((data) => {
-        if (cancelled) return;
-        setStock(data && typeof data === 'object' ? data : { quantity: 0 });
+        if (cancelled || generation !== cache.generation) return;
+        const next = data && typeof data === 'object' ? data : { quantity: 0 };
+        cache.entries.set(key, next);
+        setStock(next);
       })
-      .catch(() => {
-        if (!cancelled) setStock(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [
-    recommendation?.productId,
-    recommendation?.warehouseId,
-    recommendation?.groupKey,
-    recommendation?.orderDbId,
-    recommendation?.marketplaceOrderId,
-    epoch,
-  ]);
-  return { stock, loading };
+  }, [productId, warehouseId, epoch, cache]);
+  return { stock };
 }
 
 export function Assembly() {
@@ -478,7 +416,7 @@ export function Assembly() {
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
   /** Остаток на складе рекомендации (следующий к сборке) */
   const [nextStockEpoch, setNextStockEpoch] = useState(0);
-  const [lastScanStock, setLastScanStock] = useState(null);
+  const stockCacheRef = useRef({ entries: new Map(), generation: 0 });
   const [lastAssembledGroup, setLastAssembledGroup] = useState(null);
   /** Ключ группы, собранной последней на этой странице (скан или кнопка в таблице). */
   const [lastCollectedKey, setLastCollectedKey] = useState('');
@@ -917,6 +855,18 @@ export function Assembly() {
           pickedItems,
         });
         afterSuccess?.(trimmed || null);
+        if (Array.isArray(pickedItems) && pickedItems.length) {
+          const picked = {};
+          for (const p of pickedItems) picked[Number(p.productId)] = Number(p.quantity) || 0;
+          const orderWh = Number(orderForLabel?.warehouseId ?? orderForLabel?.warehouse_id);
+          const cache = stockCacheRef.current;
+          cache.generation += 1;
+          for (const [key, s] of cache.entries) {
+            const [pid, wh] = key.split('|').map(Number);
+            if (Number.isFinite(orderWh) && orderWh > 0 && wh !== orderWh) continue;
+            cache.entries.set(key, applyPickedToStock(s, pid, picked));
+          }
+        }
         setNextStockEpoch((n) => n + 1);
         void loadOrders({ silent: true });
         const labelCached =
@@ -1075,31 +1025,6 @@ export function Assembly() {
             kitUnits,
           })
         );
-        setNextStockEpoch((n) => n + 1);
-        const scannedPid = Number(data.product?.id ?? data.product?.productId);
-        const scanWh = Number(order.warehouseId ?? order.warehouse_id);
-        if (Number.isFinite(scannedPid) && scannedPid > 0 && Number.isFinite(scanWh) && scanWh > 0) {
-          stockMovementsApi
-            .getWarehouseStock(scannedPid, scanWh)
-            .then((stock) => {
-              setLastScanStock({
-                sku:
-                  data.product?.sku ||
-                  data.product?.article ||
-                  data.product?.offerId ||
-                  `#${scannedPid}`,
-                name: data.product?.name || data.product?.productName || '',
-                stock,
-              });
-            })
-            .catch(() => {
-              setLastScanStock({
-                sku: data.product?.sku || `#${scannedPid}`,
-                name: data.product?.name || '',
-                stock: null,
-              });
-            });
-        }
         clearScanField(barcodeInputRef.current);
       } else {
         clearScanField(barcodeInputRef.current);
@@ -1289,7 +1214,6 @@ export function Assembly() {
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
     setScanError(null);
-    setLastScanStock(null);
     clearScanField(barcodeInputRef.current);
     if (barcodeInputRef.current) barcodeInputRef.current.focus();
   };
@@ -1444,8 +1368,16 @@ export function Assembly() {
     [stage.sideGroup]
   );
 
-  const { stock: currentHintStock } = useAssemblyHintStock(currentRecommendation, nextStockEpoch);
-  const { stock: sideHintStock } = useAssemblyHintStock(sideRecommendation, nextStockEpoch);
+  const { stock: currentHintStock } = useAssemblyHintStock(
+    currentRecommendation,
+    nextStockEpoch,
+    stockCacheRef.current
+  );
+  const { stock: sideHintStock } = useAssemblyHintStock(
+    sideRecommendation,
+    nextStockEpoch,
+    stockCacheRef.current
+  );
 
   // Собранный заказ сервер уже вычел из «на полке» — сканы сессии повторно не вычитаем.
   const overlayOrderKey = currentOrderAssembled ? '' : currentOrderKey;
@@ -1467,6 +1399,21 @@ export function Assembly() {
       }),
     [sideRecommendation, overlayOrderKey, pickedQuantities]
   );
+
+  /** Сколько осталось отсканировать по productId — только у собираемого (не собранного) заказа. */
+  const currentRemainingByPid = useMemo(() => {
+    if (!overlayOrderKey || currentRecommendation?.groupKey !== overlayOrderKey) return null;
+    const map = new Map();
+    for (const line of compositionLines) {
+      const pid = Number(line.productId);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      map.set(pid, (map.get(pid) || 0) + (Number(line.remaining) || 0));
+    }
+    return map;
+  }, [overlayOrderKey, currentRecommendation?.groupKey, compositionLines]);
+
+  const sideLabelOrderId =
+    sideRecommendation?.order?.orderId != null ? String(sideRecommendation.order.orderId) : '';
 
   if (loading) {
     return (
@@ -1536,22 +1483,15 @@ export function Assembly() {
                   disabled={scanLoading}
                 />
               }
+              remainingByPid={currentRemainingByPid}
+              showPacking
               scan={
-                scanError || labelPrintError || lastScanStock ? (
+                scanError || labelPrintError ? (
                 <div className="assembly-next__scan assembly-next__scan--in-card">
                   {scanError && <p className="assembly-scan-error">{scanError}</p>}
                   {labelPrintError && (
                     <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
                   )}
-                  {lastScanStock ? (
-                    <div className="assembly-next__scan-stock">
-                      Скан {lastScanStock.sku}
-                      {lastScanStock.name ? ` · ${lastScanStock.name}` : ''}:{' '}
-                      {lastScanStock.stock
-                        ? stockCountsLabel(lastScanStock.stock)
-                        : 'остаток обновляется'}
-                    </div>
-                  ) : null}
                 </div>
                 ) : null
               }
@@ -1559,8 +1499,6 @@ export function Assembly() {
               {currentOrderData && currentRecommendation?.groupKey === currentOrderKey ? (
                 <AssemblySessionPanel
                   currentOrderData={currentOrderData}
-                  compositionLines={compositionLines}
-                  remainingItems={remainingItems}
                   showScanStickerFinish={showScanStickerFinish}
                   waitingForOrderLabel={waitingForOrderLabel}
                   finishScanSubmitting={finishScanSubmitting}
@@ -1579,21 +1517,20 @@ export function Assembly() {
               overlay={sideScanOverlay}
               mpDisplay={mpDisplay}
               emptyText="Соберите заказ — он появится здесь"
-            >
-              {currentOrderData && sideRecommendation?.groupKey === currentOrderKey ? (
-                <AssemblySessionPanel
-                  currentOrderData={currentOrderData}
-                  compositionLines={compositionLines}
-                  remainingItems={remainingItems}
-                  showScanStickerFinish={showScanStickerFinish}
-                  waitingForOrderLabel={waitingForOrderLabel}
-                  finishScanSubmitting={finishScanSubmitting}
-                  onFinish={handleFinishScanAssembly}
-                  labelReadyByOrderId={labelReadyByOrderId}
-                  onPrintLabel={requestLabelPrint}
-                />
-              ) : null}
-            </AssemblyHintCard>
+              stickerAction={
+                sideLabelOrderId && labelReadyByOrderId?.[sideLabelOrderId] === true ? (
+                  <button
+                    type="button"
+                    className="assembly-label-link assembly-label-link-inline"
+                    title="Печать этикетки"
+                    aria-label="Печать этикетки заказа"
+                    onClick={() => requestLabelPrint(sideLabelOrderId)}
+                  >
+                    <OrderLabelIcon size={18} />
+                  </button>
+                ) : null
+              }
+            />
           </div>
         </div>
       </div>

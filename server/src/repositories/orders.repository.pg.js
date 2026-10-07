@@ -235,7 +235,7 @@ class OrdersRepositoryPG {
     }
 
     const sqlWithJoin = `
-      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -270,7 +270,7 @@ class OrdersRepositoryPG {
         const paramsSimple = [];
         let pi = 1;
         let sqlSimple = `
-          SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+          SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
             COALESCE(p.name, o.product_name) AS product_name,
             o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
             o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -506,7 +506,7 @@ class OrdersRepositoryPG {
   async findById(id) {
     const result = await query(`
       SELECT 
-        o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -571,7 +571,7 @@ class OrdersRepositoryPG {
     const pick = async (mp, idStr) => {
       const result = await query(
         `
-        SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id,
+        SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id,
                o.marketplace_sku, o.product_name, o.quantity, o.status, o.delivery_address
         FROM orders o
         WHERE o.marketplace = $1 AND o.order_id = $2${pid ? ' AND o.profile_id = $3' : ''}
@@ -615,7 +615,7 @@ class OrdersRepositoryPG {
 
     const selectFull = `
       SELECT 
-        o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -1044,7 +1044,7 @@ class OrdersRepositoryPG {
     const pid = normalizeProfileId(profileId);
     const result = await query(
       `
-      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -1429,7 +1429,7 @@ class OrdersRepositoryPG {
     // need_qty колонки нет; для комплектов need хранится в reserve_need_qty (шт. комплекта).
     const needExpr = `COALESCE(NULLIF(o.reserve_need_qty, 0), GREATEST(1, COALESCE(o.quantity, 1)))`;
     const result = await query(
-      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      `SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
@@ -1469,7 +1469,7 @@ class OrdersRepositoryPG {
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 500), 500);
     const byProductMatch = orderLineMatchesCatalogProductIdSql();
     const result = await query(
-      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      `SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
@@ -1530,7 +1530,7 @@ class OrdersRepositoryPG {
     params.push(limit);
     const limitParam = `$${params.length}`;
     const sql = `
-      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,

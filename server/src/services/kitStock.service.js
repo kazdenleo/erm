@@ -15,6 +15,7 @@ import {
   orderReserveMovementMatchSql,
   orderReserveMovementMatchOrderRowSql,
   parseStockMovementWarehouseId,
+  stockMovementMetaOrderKeySql,
   warehouseScopedOnHandForAllocation
 } from '../constants/netReservedStockSql.js';
 import {
@@ -3572,23 +3573,37 @@ async function batchAssembledOrdersQtyMap(productIds, warehouseId) {
        GROUP BY 1`,
       [ids, whId]
     ),
+    // Ключ движения (meta order_id) = orders.id или номер МП; join по равенству вместо
+    // коррелированного OR-подзапроса на каждое движение (иначе секунды на проде).
     query(
-      `SELECT t.product_id, SUM(t.rv)::int AS qty
-       FROM (
-         SELECT sm.product_id, ao.ao_marketplace, ao.ao_order_id, ${NET_RESERVED_SUM_EXPR_SQL} AS rv
-         FROM stock_movements sm
-         CROSS JOIN LATERAL (
-           SELECT o.marketplace AS ao_marketplace, o.order_id AS ao_order_id
+      `WITH ao AS (
+         SELECT DISTINCT ON (k) k, ao_marketplace, ao_order_id
+         FROM (
+           SELECT o.id::text AS k, o.marketplace AS ao_marketplace, o.order_id AS ao_order_id, o.id
            FROM orders o
-           WHERE LOWER(o.status) = 'assembled'
-             AND o.assembly_picked_items IS NULL
-             AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
-           LIMIT 1
-         ) ao
+           WHERE LOWER(o.status) = 'assembled' AND o.assembly_picked_items IS NULL
+           UNION ALL
+           SELECT TRIM(o.order_id), o.marketplace, o.order_id, o.id
+           FROM orders o
+           WHERE LOWER(o.status) = 'assembled' AND o.assembly_picked_items IS NULL
+             AND o.order_id IS NOT NULL AND TRIM(o.order_id) <> ''
+         ) s
+         ORDER BY k, id
+       ),
+       mv AS (
+         SELECT sm.product_id, sm.type, sm.quantity_change,
+                TRIM(${stockMovementMetaOrderKeySql('sm.')}) AS k
+         FROM stock_movements sm
          WHERE sm.product_id = ANY($1::bigint[])
            AND sm.type IN ('reserve', 'unreserve')
            AND (sm.warehouse_id = $2 OR sm.warehouse_id IS NULL)
-         GROUP BY sm.product_id, ao.ao_marketplace, ao.ao_order_id
+       )
+       SELECT t.product_id, SUM(t.rv)::int AS qty
+       FROM (
+         SELECT mv.product_id, ao.ao_marketplace, ao.ao_order_id, ${NET_RESERVED_SUM_EXPR_SQL} AS rv
+         FROM mv
+         JOIN ao ON ao.k = mv.k
+         GROUP BY mv.product_id, ao.ao_marketplace, ao.ao_order_id
        ) t
        GROUP BY t.product_id`,
       [ids, whId]

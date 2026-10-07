@@ -1,6 +1,7 @@
 /**
  * Карточка заказа на сборке FBS в две колонки: слева SKU комплекта и комплектующих
- * с остатком «на полке», справа маркетплейс, номер заказа и стикер.
+ * с остатком «на полке» (и сколько осталось отсканировать), справа маркетплейс, номер заказа,
+ * стикер и упаковка.
  */
 
 import React from 'react';
@@ -24,7 +25,7 @@ function KindBadge({ kind }) {
   );
 }
 
-function HintLine({ article, quantity, stockLabel }) {
+function HintLine({ article, quantity, stockLabel, remaining = null }) {
   return (
     <div className="assembly-hint-line">
       <span className="assembly-hint-line__left">
@@ -32,12 +33,28 @@ function HintLine({ article, quantity, stockLabel }) {
           {article}
           {quantity > 0 ? <span className="assembly-next__qty">×{quantity}</span> : null}
         </span>
+        {remaining != null ? (
+          <span
+            className={`assembly-hint-line__remaining${
+              remaining > 0 ? '' : ' assembly-hint-line__remaining--done'
+            }`}
+          >
+            {remaining > 0 ? `осталось ${remaining}` : 'готово'}
+          </span>
+        ) : null}
       </span>
       {stockLabel ? (
         <span className="assembly-next__comp-stock muted-hint">{stockLabel}</span>
       ) : null}
     </div>
   );
+}
+
+function remainingFor(map, productId) {
+  if (!(map instanceof Map)) return null;
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || !map.has(pid)) return null;
+  return map.get(pid);
 }
 
 export function AssemblyHintCard({
@@ -49,6 +66,9 @@ export function AssemblyHintCard({
   emptyText,
   headerScan = null,
   scan = null,
+  remainingByPid = null,
+  showPacking = false,
+  stickerAction = null,
   children = null,
 }) {
   const header = (
@@ -60,7 +80,7 @@ export function AssemblyHintCard({
 
   if (!recommendation) {
     return (
-      <div className="assembly-hint-card">
+      <div className="assembly-hint-card assembly-hint-card--empty">
         {header}
         <div className="assembly-next__skus assembly-next__skus--done">{emptyText}</div>
         {scan}
@@ -92,6 +112,7 @@ export function AssemblyHintCard({
             <HintLine
               article={recommendation.article}
               quantity={recommendation.quantity}
+              remaining={remainingFor(remainingByPid, recommendation.productId)}
               stockLabel={
                 hintStock
                   ? onShelfLabel({
@@ -113,6 +134,7 @@ export function AssemblyHintCard({
                       key={`${c.article}-${i}`}
                       article={c.article}
                       quantity={c.quantity}
+                      remaining={remainingFor(remainingByPid, pid)}
                       stockLabel={
                         c.stock
                           ? onShelfLabel({
@@ -127,11 +149,6 @@ export function AssemblyHintCard({
               </>
             ) : null}
           </div>
-          {packing ? (
-            <div className="assembly-next__packing">
-              <span className="assembly-next__packing-label">Упаковка:</span> {packing}
-            </div>
-          ) : null}
         </div>
         <dl className="assembly-hint-cols__order">
           <div className="assembly-hint-meta">
@@ -152,10 +169,17 @@ export function AssemblyHintCard({
           </div>
           <div className="assembly-hint-meta">
             <dt>Стикер</dt>
-            <dd>
+            <dd className="assembly-hint-meta__sticker">
               <OrderStickerDisplay order={recommendation.order} groupOrders={recommendation.rows} />
+              {stickerAction}
             </dd>
           </div>
+          {showPacking ? (
+            <div className="assembly-hint-meta">
+              <dt>Упаковка</dt>
+              <dd>{packing || '—'}</dd>
+            </div>
+          ) : null}
         </dl>
       </div>
       {scan}

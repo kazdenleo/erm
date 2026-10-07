@@ -101,11 +101,53 @@
   border-color: #cbd5e1;
 }
 
+.assembly-stage__current,
+.assembly-stage__side {
+  display: flex;
+  flex-direction: column;
+}
+
 .assembly-hint-card {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 4px;
   min-width: 0;
+}
+
+.assembly-hint-card--empty .assembly-next__skus--done {
+  flex: 1 1 auto;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  min-height: 56px;
+}
+
+.assembly-hint-line__remaining {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.assembly-hint-line__remaining--done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.assembly-hint-meta__sticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assembly-hint-meta__sticker .assembly-label-link-inline {
+  margin: 0;
+  padding: 0;
+  line-height: 0;
 }
 
 .assembly-hint-lines {

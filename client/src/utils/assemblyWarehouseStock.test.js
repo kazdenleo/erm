@@ -7,7 +7,27 @@ import {
   scannedQtyByProductId,
   kitScannedUnitsFromComponents,
   nextRecommendationScanOverlay,
+  applyPickedToStock,
 } from './assemblyWarehouseStock.js';
+
+describe('applyPickedToStock', () => {
+  test('снятое с полки уходит в «собрано в заказах» у комплекта и комплектующих', () => {
+    const stock = {
+      onHand: 1,
+      assembledInOrders: 0,
+      onShelf: 1,
+      components: [
+        { productId: 574, onHand: 8, assembledInOrders: 0, onShelf: 8 },
+        { productId: 575, onHand: 7, assembledInOrders: 0, onShelf: 7 },
+      ],
+    };
+    const out = applyPickedToStock(stock, 431, { 574: 1, 575: 1 });
+    expect(out.onShelf).toBe(1);
+    expect(out.components.map((c) => c.onShelf)).toEqual([7, 6]);
+    expect(out.components.map((c) => c.assembledInOrders)).toEqual([1, 1]);
+    expect(applyPickedToStock(stock, 431, { 431: 1 }).onShelf).toBe(0);
+  });
+});
 
 describe('stockCountsLabel', () => {
   test('наличие / в собранных заказах / на полке', () => {

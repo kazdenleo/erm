@@ -24,6 +24,29 @@ export function onShelfLabel({ onShelf = 0, scanned = 0 } = {}) {
   return `на полке ${Math.max(0, n(onShelf) - n(scanned))}`;
 }
 
+/**
+ * Остаток после «Собран»: снятое с полки (productId → шт) уходит в «собрано в заказах».
+ * Нужен, чтобы карточка не ждала повторный запрос остатков.
+ */
+export function applyPickedToStock(stock, productId, picked) {
+  if (!stock || !picked || typeof picked !== 'object') return stock;
+  const adjust = (s, pid) => {
+    const q = n(picked[pid]);
+    if (!s || !q) return s;
+    return {
+      ...s,
+      assembledInOrders: n(s.assembledInOrders) + q,
+      onShelf: Math.max(0, stockOnShelf(s) - q),
+    };
+  };
+  const out = adjust(stock, Number(productId));
+  if (!Array.isArray(stock.components)) return out;
+  return {
+    ...out,
+    components: stock.components.map((c) => adjust(c, Number(c?.productId))),
+  };
+}
+
 export function scannedQtyByProductId(orderItems, scannedQuantities, scannedQtyForLine) {
   const map = new Map();
   const items = Array.isArray(orderItems) ? orderItems : [];
