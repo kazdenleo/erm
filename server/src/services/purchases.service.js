@@ -2012,6 +2012,100 @@ async function applyPurchaseReceiptStockByProductInTx(
   return { deltas, extras };
 }
 
+function sourceOrderKey(marketplace, orderId) {
+  return `${orderMarketplaceToDb(marketplace)}|${String(orderId ?? '').trim().toLowerCase()}`;
+}
+
+/**
+ * Склад резерва заказов из source_orders (как в ordersService), ключ — order_id и order_group_id.
+ */
+async function loadSourceOrderWarehouseMapInTx(client, profileId, sourceOrders) {
+  const ids = [
+    ...new Set(
+      (sourceOrders || []).map((o) => String(o.orderId ?? '').trim()).filter((v) => v !== '')
+    ),
+  ];
+  const map = new Map();
+  if (!ids.length) return map;
+  const r = await client.query(
+    `SELECT *
+     FROM orders
+     WHERE profile_id = $1
+       AND (order_id::text = ANY($2::text[]) OR order_group_id::text = ANY($2::text[]))`,
+    [profileId, ids]
+  );
+  for (const row of r.rows || []) {
+    let wh = null;
+    try {
+      wh = Number(await ordersService._resolveWarehouseIdForOrderReserve(row, row.product_id));
+    } catch {
+      wh = null;
+    }
+    if (!Number.isFinite(wh) || wh < 1) wh = Number(row.warehouse_id);
+    if (!Number.isFinite(wh) || wh < 1) continue;
+    for (const key of [row.order_id, row.order_group_id]) {
+      if (key == null || String(key).trim() === '') continue;
+      map.set(sourceOrderKey(row.marketplace, key), wh);
+    }
+  }
+  return map;
+}
+
+/**
+ * Закупка того же поставщика на другой склад: открытая с той же меткой окна приезда
+ * ([auto-arrival:…]) или новая с копией шапки исходной закупки.
+ */
+async function findOrCreateWarehouseSplitPurchaseInTx(client, source, warehouseId, profileId) {
+  const marker = String(source.note || '').match(/^\[auto-arrival:[^\]]+\]/)?.[0] || null;
+  if (marker) {
+    const existing = await client.query(
+      `SELECT id FROM purchases
+       WHERE profile_id = $1
+         AND supplier_id IS NOT DISTINCT FROM $2
+         AND warehouse_id = $3
+         AND status = 'open'
+         AND id <> $4
+         AND note LIKE $5
+       ORDER BY id DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [profileId, source.supplier_id, warehouseId, source.id, `${marker}%`]
+    );
+    if (existing.rows?.[0]) return { purchaseId: Number(existing.rows[0].id), created: false };
+  }
+
+  const orgRes = await client.query(`SELECT organization_id FROM warehouses WHERE id = $1`, [
+    warehouseId,
+  ]);
+  const organizationId = orgRes.rows?.[0]?.organization_id ?? source.organization_id ?? null;
+  const baseNote = String(source.note || '').trim();
+  const note = `${baseNote ? `${baseNote} · ` : ''}выделено из закупки №${source.id}`;
+  const ins = await client.query(
+    `INSERT INTO purchases (
+       status, supplier_id, organization_id, profile_id, created_by_user_id, note, warehouse_id,
+       ship_date, planned_delivery_date, supplier_warehouse_name, supplier_submitted_at,
+       supplier_order_ref, ordered_at, created_at
+     ) VALUES ('open', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING id`,
+    [
+      source.supplier_id,
+      organizationId,
+      profileId,
+      source.created_by_user_id ?? null,
+      note,
+      warehouseId,
+      source.ship_date ?? null,
+      source.planned_delivery_date ?? null,
+      source.supplier_warehouse_name ?? null,
+      source.supplier_submitted_at ?? null,
+      source.supplier_order_ref ?? null,
+      source.ordered_at ?? null,
+      source.created_at ?? new Date(),
+    ]
+  );
+  return { purchaseId: Number(ins.rows[0].id), created: true };
+}
+
 class PurchasesService {
   async updatePurchase(
     purchaseId,
@@ -2135,6 +2229,242 @@ class PurchasesService {
 
       return { ok: true, id };
     });
+  }
+
+  /**
+   * Позиции заказов, чей склад резерва отличается от склада закупки, переезжают в закупку
+   * того же поставщика на склад заказа вместе с ожидаемым поступлением; резерв пересчитывается.
+   * Частично принятые позиции и закупки с начатой приёмкой не трогаем.
+   */
+  async splitPurchaseByOrderWarehouse(purchaseId, { profileId, scheduleReserve = true } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const id = parseInt(purchaseId, 10);
+    if (!id || Number.isNaN(id)) {
+      const err = new Error('Некорректный ID закупки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const movedForReserve = [];
+    const result = await transaction(async (client) => {
+      await assertPurchaseInProfile(client, id, pid);
+      const head = await client.query(`SELECT * FROM purchases WHERE id = $1 FOR UPDATE`, [id]);
+      const source = head.rows?.[0];
+      const base = { purchaseId: id, moved: [], targets: [], skipped: null };
+      if (!source || String(source.status) !== 'open') {
+        return { ...base, skipped: 'Закупка не открыта' };
+      }
+      const sourceWarehouseId = Number(source.warehouse_id);
+      if (!Number.isFinite(sourceWarehouseId) || sourceWarehouseId < 1) {
+        return { ...base, skipped: 'У закупки не указан склад' };
+      }
+      const receipts = await client.query(
+        `SELECT 1 FROM purchase_receipts
+         WHERE purchase_id = $1 AND status IN ('expected', 'scanning', 'completed')
+         LIMIT 1`,
+        [id]
+      );
+      if (receipts.rows?.length) {
+        return { ...base, skipped: 'По закупке уже начата приёмка' };
+      }
+
+      const withPrice = await hasPurchasePriceColumn((t, p) => client.query(t, p));
+      const itemsRes = await client.query(
+        `SELECT id, product_id, expected_quantity, received_quantity, source_orders
+                ${withPrice ? ', purchase_price' : ''}
+         FROM purchase_items
+         WHERE purchase_id = $1
+         ORDER BY id
+         FOR UPDATE`,
+        [id]
+      );
+      const items = (itemsRes.rows || []).map((row) => ({
+        ...row,
+        sources: parseSourceOrdersJson(row.source_orders),
+      }));
+      const warehouseByOrder = await loadSourceOrderWarehouseMapInTx(
+        client,
+        pid,
+        items.flatMap((it) => it.sources)
+      );
+
+      const targetByWarehouse = new Map();
+      for (const it of items) {
+        if (Number(it.received_quantity) > 0 || !it.sources.length) continue;
+        const productId = Number(it.product_id);
+        let remaining = Math.max(0, parseInt(it.expected_quantity, 10) || 0);
+        const stay = [];
+        const byWarehouse = new Map();
+        for (const s of it.sources) {
+          const wh = warehouseByOrder.get(sourceOrderKey(s.marketplace, s.orderId));
+          if (wh && wh !== sourceWarehouseId) {
+            if (!byWarehouse.has(wh)) byWarehouse.set(wh, []);
+            byWarehouse.get(wh).push(s);
+          } else {
+            stay.push(s);
+          }
+        }
+        if (!byWarehouse.size) continue;
+
+        for (const [wh, entries] of byWarehouse) {
+          const wanted = entries.reduce(
+            (sum, s) => sum + Math.max(1, Math.floor(Number(s.quantity)) || 1),
+            0
+          );
+          const qty = Math.min(wanted, remaining);
+          if (qty <= 0) {
+            stay.push(...entries);
+            continue;
+          }
+          let target = targetByWarehouse.get(wh);
+          if (!target) {
+            target = await findOrCreateWarehouseSplitPurchaseInTx(client, source, wh, pid);
+            targetByWarehouse.set(wh, { ...target, warehouseId: wh });
+          }
+
+          await subtractIncomingForPurchaseLineRemovalInTx(client, id, productId, qty, {
+            reason: `Закупка №${id} — перенос на склад закупки №${target.purchaseId}`,
+          });
+          const sourcesJson = JSON.stringify(entries);
+          const targetItem = withPrice
+            ? await client.query(
+                `INSERT INTO purchase_items
+                   (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+                 VALUES ($1, $2, $3, 0, $4::jsonb, $5)
+                 ON CONFLICT (purchase_id, product_id) DO UPDATE
+                 SET expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+                     purchase_price = COALESCE(purchase_items.purchase_price, EXCLUDED.purchase_price),
+                     updated_at = CURRENT_TIMESTAMP
+                 RETURNING id`,
+                [target.purchaseId, productId, qty, sourcesJson, it.purchase_price ?? null]
+              )
+            : await client.query(
+                `INSERT INTO purchase_items
+                   (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+                 VALUES ($1, $2, $3, 0, $4::jsonb)
+                 ON CONFLICT (purchase_id, product_id) DO UPDATE
+                 SET expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+                     updated_at = CURRENT_TIMESTAMP
+                 RETURNING id`,
+                [target.purchaseId, productId, qty, sourcesJson]
+              );
+          await mergeSourceOrdersInTx(client, target.purchaseId, productId, entries);
+          await client.query(
+            `UPDATE order_fulfillment_lines
+             SET purchase_item_id = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE purchase_item_id = $2
+               AND order_db_id IN (
+                 SELECT id FROM orders
+                 WHERE profile_id = $3
+                   AND (order_id::text = ANY($4::text[]) OR order_group_id::text = ANY($4::text[]))
+               )`,
+            [
+              targetItem.rows[0].id,
+              it.id,
+              pid,
+              entries.map((s) => String(s.orderId).trim()),
+            ]
+          );
+          await addIncomingDeltaForPurchaseInTx(client, target.purchaseId, productId, qty, pid, {
+            skipProductAssert: true,
+          });
+
+          remaining -= qty;
+          base.moved.push({
+            productId,
+            quantity: qty,
+            toPurchaseId: target.purchaseId,
+            warehouseId: wh,
+            orders: entries.map((s) => s.orderId),
+          });
+          movedForReserve.push({ productId, sourceOrders: entries });
+        }
+
+        if (remaining <= 0) {
+          await client.query(
+            `UPDATE order_fulfillment_lines SET purchase_item_id = NULL WHERE purchase_item_id = $1`,
+            [it.id]
+          );
+          await client.query(`DELETE FROM purchase_items WHERE id = $1`, [it.id]);
+        } else {
+          await client.query(
+            `UPDATE purchase_items
+             SET expected_quantity = $2, source_orders = $3::jsonb, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [it.id, remaining, JSON.stringify(stay)]
+          );
+        }
+      }
+
+      if (!base.moved.length) return base;
+
+      const left = await client.query(
+        `SELECT EXISTS (SELECT 1 FROM purchase_items WHERE purchase_id = $1) AS v`,
+        [id]
+      );
+      const sourceDeleted = !left.rows?.[0]?.v;
+      if (sourceDeleted) {
+        await client.query(`DELETE FROM purchases WHERE id = $1`, [id]);
+      } else {
+        await client.query(`UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+      }
+      for (const t of targetByWarehouse.values()) {
+        await client.query(`UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [
+          t.purchaseId,
+        ]);
+      }
+      return { ...base, sourceDeleted, targets: [...targetByWarehouse.values()] };
+    });
+
+    if (movedForReserve.length) {
+      if (scheduleReserve) {
+        scheduleReapplyReserveForPurchaseSourceOrders(movedForReserve, {
+          label: 'purchase-split-by-warehouse-reserve',
+        });
+      }
+      logger.info('[Purchases] split by order warehouse', {
+        purchaseId: id,
+        moved: result.moved.length,
+        targets: result.targets,
+      });
+    }
+    return result;
+  }
+
+  /** splitPurchaseByOrderWarehouse для всех открытых закупок профиля. */
+  async splitOpenPurchasesByOrderWarehouse({ profileId, scheduleReserve = true } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const r = await query(
+      `SELECT id FROM purchases WHERE profile_id = $1 AND status = 'open' ORDER BY id`,
+      [pid]
+    );
+    const results = [];
+    for (const row of r.rows || []) {
+      try {
+        const res = await this.splitPurchaseByOrderWarehouse(row.id, {
+          profileId: pid,
+          scheduleReserve,
+        });
+        if (res.moved.length) results.push(res);
+      } catch (e) {
+        results.push({ purchaseId: Number(row.id), moved: [], targets: [], error: e?.message || String(e) });
+      }
+    }
+    return {
+      checked: r.rows?.length || 0,
+      split: results.filter((x) => x.moved.length).length,
+      results,
+    };
   }
 
   async updatePurchaseItem(purchaseId, itemId, { purchasePrice } = {}, { profileId } = {}) {
