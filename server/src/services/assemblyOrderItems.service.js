@@ -439,10 +439,18 @@ export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersServic
   return items;
 }
 
-/** Колонка «Состав» в списке сборки (для light-обогащения без полного reserveLines). */
-export async function enrichOrdersAssemblyCompositionLines(orders, ordersService) {
+/**
+ * Колонка «Состав» в списке сборки (для light-обогащения без полного reserveLines).
+ * statuses — для каких статусов строить состав (собранные — только по запросу страницы сборки).
+ */
+export async function enrichOrdersAssemblyCompositionLines(
+  orders,
+  ordersService,
+  { statuses = ['in_assembly'] } = {}
+) {
   if (!Array.isArray(orders) || !orders.length || !ordersService) return;
-  const targets = orders.filter((o) => String(o?.status || '').trim().toLowerCase() === 'in_assembly');
+  const wanted = new Set(statuses.map((s) => String(s).trim().toLowerCase()));
+  const targets = orders.filter((o) => wanted.has(String(o?.status || '').trim().toLowerCase()));
   if (!targets.length) return;
   await Promise.all(
     targets.map(async (o) => {

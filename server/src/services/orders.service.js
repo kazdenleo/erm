@@ -3461,14 +3461,21 @@ class OrdersService {
     }
   }
 
+  /** Состав для списка: «На сборке» всегда; «Собран» — только при фильтре status=assembled (страница сборки). */
+  async _enrichListAssemblyComposition(items, options = {}) {
+    const statuses = ['in_assembly'];
+    if (String(options.status || '').trim().toLowerCase() === 'assembled') statuses.push('assembled');
+    const wanted = new Set(statuses);
+    if (!items.some((o) => wanted.has(String(o?.status || '').toLowerCase()))) return;
+    await enrichOrdersAssemblyCompositionLines(items, this, { statuses });
+  }
+
   async getAll(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       let items = await this.repository.findAll(options);
       items = await this._expandOrderGroupSiblings(items, options.profileId);
       // Список: снимок резерва уже в строках БД (без тяжёлого enrich).
-      if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
-        await enrichOrdersAssemblyCompositionLines(items, this);
-      }
+      await this._enrichListAssemblyComposition(items, options);
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       return items;
     } else {
@@ -4082,9 +4089,7 @@ class OrdersService {
       // Снимок резерва уже в колонках orders.*; авторезерв при открытии списка отключён
       // (делается при синке нового заказа / поступлении остатка).
       const items = await this._expandOrderGroupSiblings(rawItems, options.profileId);
-      if (items.some((o) => String(o?.status || '').toLowerCase() === 'in_assembly')) {
-        await enrichOrdersAssemblyCompositionLines(items, this);
-      }
+      await this._enrichListAssemblyComposition(items, options);
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       return { items, total: total ?? items.length };
     }
