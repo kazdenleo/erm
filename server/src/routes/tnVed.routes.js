@@ -9,6 +9,9 @@ import { wrapAsync } from '../middleware/errorHandler.js';
 const router = express.Router();
 
 router.get('/codes', wrapAsync(tnVedController.searchCodes.bind(tnVedController)));
+router.get('/codes/:code', wrapAsync(tnVedController.getCode.bind(tnVedController)));
+router.get('/directory', wrapAsync(tnVedController.getDirectoryInfo.bind(tnVedController)));
+router.get('/compatibility', wrapAsync(tnVedController.checkCompatibility.bind(tnVedController)));
 router.get('/bindings', wrapAsync(tnVedController.getBindings.bind(tnVedController)));
 router.get('/bindings/:id', wrapAsync(tnVedController.getBindingById.bind(tnVedController)));
 router.post('/bindings', wrapAsync(tnVedController.createBinding.bind(tnVedController)));

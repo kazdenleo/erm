@@ -904,6 +904,19 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
     };
   }, [category?.id, formData.ozonCategoryId, formData.wbCategoryId, formData.ymCategoryId, selectedOrganizationId]);
 
+  const tnVedMarketplaceContext = useMemo(() => {
+    const { descId, typeId } = parseOzonCompositeId(formData.ozonCategoryId);
+    const wbSubjectId = Number(formData.wbCategoryId) || null;
+    if (!category?.id && !wbSubjectId && !(descId && typeId)) return null;
+    return {
+      userCategoryId: category?.id || null,
+      wbSubjectId,
+      ozonDescId: descId,
+      ozonTypeId: typeId,
+      organizationId: selectedOrganizationId || null,
+    };
+  }, [category?.id, formData.wbCategoryId, formData.ozonCategoryId, selectedOrganizationId]);
+
   const handleChange = (field, value) => {
     markDirty();
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -1119,7 +1132,8 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           id="categoryTnVedCode"
           value={formData.tn_ved_code || ''}
           onChange={(code) => handleChange('tn_ved_code', code)}
-          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено."
+          marketplaceContext={tnVedMarketplaceContext}
+          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. Под кодом — проверка, примут ли его WB и Ozon для выбранных категорий."
         />
       </div>
 

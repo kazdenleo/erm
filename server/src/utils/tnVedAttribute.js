@@ -13,8 +13,8 @@ export function normalizeCategoryTnVedCode(raw) {
   if (raw == null || String(raw).trim() === '') return null;
   const digits = normalizeTnVedDigits(raw);
   if (!digits) return null;
-  if (!isKnownTnVedCode(digits)) {
-    const err = new Error('Код ТН ВЭД должен быть выбран из справочника');
+  if (digits.length > 10 || !isKnownTnVedCode(digits)) {
+    const err = new Error('Код ТН ВЭД — 10 цифр: выберите из списка или введите код полностью');
     err.statusCode = 400;
     throw err;
   }

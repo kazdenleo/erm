@@ -69,8 +69,9 @@ describe('normalizeCategoryTnVedCode', () => {
     expect(normalizeCategoryTnVedCode('8708299009')).toBe('8708299009');
   });
 
-  test('rejects unknown codes', () => {
-    expect(() => normalizeCategoryTnVedCode('0000000001')).toThrow(/справочника/);
+  test('rejects codes that are not 10 digits', () => {
+    expect(() => normalizeCategoryTnVedCode('960350')).toThrow(/10 цифр/);
+    expect(() => normalizeCategoryTnVedCode('96035000009')).toThrow(/10 цифр/);
   });
 });
 

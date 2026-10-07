@@ -1,10 +1,36 @@
 /**
- * Выбор кода ТН ВЭД из справочника ЕАЭС (поиск по коду или названию).
+ * Выбор кода ТН ВЭД из классификатора ЕАЭС (поиск по коду или названию)
+ * и проверка, подходит ли код для предмета WB / типа товара Ozon.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { tnVedApi } from '../../../services/tnVed.api';
 import './TnVedCodePicker.css';
+
+const MP_LABELS = { wb: 'WB', ozon: 'Ozon' };
+
+function compatBadge(mp, res) {
+  const label = MP_LABELS[mp];
+  if (!res || res.status === 'no_mapping') return null;
+  switch (res.status) {
+    case 'ok':
+      return {
+        tone: 'ok',
+        text: `${label}: подходит${res.isKiz ? ' (нужна маркировка)' : ''}`,
+        title: res.value || '',
+      };
+    case 'not_allowed':
+      return {
+        tone: 'bad',
+        text: mp === 'wb' ? `${label}: не разрешён для предмета` : `${label}: нет в справочнике типа`,
+        title: 'Маркетплейс не примет этот код для выбранной категории',
+      };
+    case 'no_attribute':
+      return { tone: 'muted', text: `${label}: поле ТН ВЭД не требуется`, title: '' };
+    default:
+      return { tone: 'muted', text: `${label}: не удалось проверить`, title: res.message || '' };
+  }
+}
 
 export function TnVedCodePicker({
   value,
@@ -13,13 +39,16 @@ export function TnVedCodePicker({
   required = false,
   id = 'tnVedCode',
   label = 'Код ТН ВЭД',
-  hint = 'Выберите код из справочника ТН ВЭД ЕАЭС (поиск по коду или названию).',
+  hint = 'Выберите код из классификатора ТН ВЭД ЕАЭС (поиск по коду или названию).',
+  marketplaceContext = null,
 }) {
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [resolvedLabel, setResolvedLabel] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [compat, setCompat] = useState(null);
+  const [compatLoading, setCompatLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,32 +71,54 @@ export function TnVedCodePicker({
 
   useEffect(() => {
     if (!value) {
-      setResolvedLabel('');
+      setSelected(null);
       return undefined;
     }
     let cancelled = false;
     tnVedApi
-      .searchCodes({ q: value, limit: 10 })
+      .getCode(value)
       .then((res) => {
-        if (cancelled) return;
-        const list = res?.data || [];
-        const hit = list.find((o) => o.code === value);
-        setResolvedLabel(hit ? `${hit.code} — ${hit.name}` : '');
+        if (!cancelled) setSelected(res?.data ? { ...res.data, found: true } : { code: value, found: false });
       })
       .catch(() => {
-        if (!cancelled) setResolvedLabel('');
+        if (!cancelled) setSelected(null);
       });
     return () => {
       cancelled = true;
     };
   }, [value]);
 
-  const selectedLabel = useMemo(() => {
-    if (!value) return '';
+  const contextKey = marketplaceContext ? JSON.stringify(marketplaceContext) : '';
+
+  useEffect(() => {
+    setCompat(null);
+    if (!value || !/^\d{10}$/.test(value) || !contextKey) return undefined;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setCompatLoading(true);
+      try {
+        const res = await tnVedApi.checkCompatibility({ ...JSON.parse(contextKey), code: value });
+        if (!cancelled) setCompat(res?.data || null);
+      } catch {
+        if (!cancelled) setCompat(null);
+      } finally {
+        if (!cancelled) setCompatLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [value, contextKey]);
+
+  const selectedInfo = useMemo(() => {
+    if (!value) return null;
+    if (selected && selected.code === value) return selected;
     const hit = options.find((o) => o.code === value);
-    if (hit) return `${hit.code} — ${hit.name}`;
-    return resolvedLabel || value;
-  }, [value, options, resolvedLabel]);
+    return hit ? { ...hit, found: true } : null;
+  }, [value, selected, options]);
+
+  const badges = compat ? [compatBadge('wb', compat.wb), compatBadge('ozon', compat.ozon)].filter(Boolean) : [];
 
   return (
     <div className="tnved-picker">
@@ -78,7 +129,31 @@ export function TnVedCodePicker({
       {hint ? <p className="tnved-picker__hint">{hint}</p> : null}
       {value ? (
         <div className="tnved-selected">
-          <span>{selectedLabel || value}</span>
+          <div className="tnved-selected__body">
+            <span>
+              <strong>{value}</strong>
+              {selectedInfo?.name ? ` — ${selectedInfo.name}` : ''}
+            </span>
+            {selectedInfo?.positionName ? (
+              <span className="tnved-selected__position">{selectedInfo.positionName}</span>
+            ) : null}
+            {selectedInfo && selectedInfo.found === false ? (
+              <span className="tnved-selected__warn">Кода нет в классификаторе ТН ВЭД ЕАЭС — выберите действующий код</span>
+            ) : null}
+            {selectedInfo && selectedInfo.found && selectedInfo.active === false ? (
+              <span className="tnved-selected__warn">Код исключён из классификатора — выберите действующий код</span>
+            ) : null}
+            {compatLoading ? <span className="tnved-selected__position">Проверка WB / Ozon…</span> : null}
+            {badges.length ? (
+              <div className="tnved-badges">
+                {badges.map((b) => (
+                  <span key={b.text} className={`tnved-badge tnved-badge--${b.tone}`} title={b.title}>
+                    {b.text}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
             className="tnved-clear"
@@ -107,7 +182,14 @@ export function TnVedCodePicker({
           {loading ? (
             <div className="tnved-picker__muted">Поиск…</div>
           ) : options.length === 0 ? (
-            <div className="tnved-picker__muted">Ничего не найдено</div>
+            <div className="tnved-picker__muted">
+              {(() => {
+                const digits = query.replace(/\D/g, '');
+                if (digits.length > 10) return 'Код ТН ВЭД — 10 цифр, введено больше';
+                if (digits.length === 10) return 'Кода нет в классификаторе ТН ВЭД ЕАЭС — проверьте цифры';
+                return 'Ничего не найдено';
+              })()}
+            </div>
           ) : (
             options.map((row) => (
               <button
@@ -122,6 +204,7 @@ export function TnVedCodePicker({
               >
                 <strong>{row.code}</strong>
                 <span>{row.name}</span>
+                {row.positionName ? <small className="tnved-option__position">{row.positionName}</small> : null}
               </button>
             ))
           )}

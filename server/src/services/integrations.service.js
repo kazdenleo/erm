@@ -2322,6 +2322,24 @@ class IntegrationsService {
   }
 
   /**
+   * Коды ТН ВЭД, разрешённые WB для предмета.
+   * GET /content/v2/directory/tnved?subjectID=&search=
+   * @returns {Promise<Array<{ tnved: string, isKiz: boolean }>>}
+   */
+  async getWildberriesTnVedCodes(subjectId, search = '', opts = {}) {
+    const subjectIdNum = Number(subjectId) || 0;
+    if (subjectIdNum <= 0) throw new Error('Для запроса ТН ВЭД WB нужен subjectID предмета');
+    const qs = new URLSearchParams({ subjectID: String(subjectIdNum), locale: 'ru' });
+    const s = String(search || '').replace(/\D/g, '');
+    if (s) qs.set('search', s);
+    const data = await this._wbContentApiGet(`/content/v2/directory/tnved?${qs.toString()}`, opts);
+    const list = Array.isArray(data?.data) ? data.data : [];
+    return list
+      .map((x) => ({ tnved: String(x?.tnved ?? '').replace(/\D/g, ''), isKiz: x?.isKiz === true }))
+      .filter((x) => x.tnved);
+  }
+
+  /**
    * Живой поиск в API справочника WB (без локального кэша).
    * @returns {Promise<Array<{ name: string, id: string|null }>>}
    */

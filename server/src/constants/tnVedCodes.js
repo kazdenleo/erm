@@ -105,9 +105,19 @@ export const TN_VED_CODES = [
   { code: '9029203100', name: 'Спидометры' },
   { code: '9031803800', name: 'Приборы и устройства измерительные/контрольные прочие' },
   { code: '9032890000', name: 'Приборы автоматического регулирования прочие' },
+
+  // Группа 96 — разные готовые изделия
+  { code: '9603500009', name: 'Щетки прочие, являющиеся частями механизмов, приборов или транспортных средств' },
 ];
 
 const byCode = new Map(TN_VED_CODES.map((x) => [x.code, x]));
+
+export const TN_VED_MANUAL_CODE_NAME = 'Нет в списке — код указан вручную (проверьте по ТН ВЭД ЕАЭС)';
+
+/** Код ТН ВЭД ЕАЭС — ровно 10 цифр. */
+export function isValidTnVedCodeFormat(code) {
+  return /^\d{10}$/.test(String(code || '').replace(/\D/g, ''));
+}
 
 export function findTnVedByCode(code) {
   const c = String(code || '').replace(/\D/g, '');
@@ -129,9 +139,13 @@ export function searchTnVedCodes(query = '', limit = 50) {
       if (results.length >= max) break;
     }
   }
+  if (isValidTnVedCodeFormat(digits) && !byCode.has(digits)) {
+    results.unshift({ code: digits, name: TN_VED_MANUAL_CODE_NAME, manual: true });
+  }
   return results;
 }
 
+/** Код из списка или любой корректный 10-значный код. */
 export function isKnownTnVedCode(code) {
-  return Boolean(findTnVedByCode(code));
+  return Boolean(findTnVedByCode(code)) || isValidTnVedCodeFormat(code);
 }

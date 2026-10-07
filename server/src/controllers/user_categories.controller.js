@@ -18,6 +18,7 @@ import {
   serializeCategoryDedicatedCharcLinks,
 } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
+import tnVedDirectoryService from '../services/tnVedDirectory.service.js';
 import { normalizeCategoryTnVedCode, normalizeTnVedDigits } from '../utils/tnVedAttribute.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
@@ -393,6 +394,7 @@ class UserCategoriesController {
       if (!name) {
         return res.status(400).json({ ok: false, message: 'Название категории обязательно' });
       }
+      await tnVedDirectoryService.assertActiveCode(tnVedCode);
       
       const result = await query(
         `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links, tn_ved_code)
@@ -442,13 +444,14 @@ class UserCategoriesController {
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
-      const owner = await query('SELECT profile_id FROM user_categories WHERE id = $1', [id]);
+      const owner = await query('SELECT profile_id, tn_ved_code FROM user_categories WHERE id = $1', [id]);
       if (owner.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Категория не найдена' });
       }
       if (Number(owner.rows[0].profile_id) !== Number(tid)) {
         return res.status(403).json({ ok: false, message: 'Нет доступа' });
       }
+      await tnVedDirectoryService.assertActiveCode(tnVedCode, { allowCode: owner.rows[0].tn_ved_code });
       
       const updateFields = [];
       const params = [];

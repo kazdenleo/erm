@@ -4,15 +4,41 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
+import integrationsService from './integrations.service.js';
+import tnVedDirectoryService from './tnVedDirectory.service.js';
+import { resolveOzonDescTypePair } from './productsExport.service.js';
+import { findTnVedByCode } from '../constants/tnVedCodes.js';
 import {
-  findTnVedByCode,
-  isKnownTnVedCode,
-  searchTnVedCodes,
-} from '../constants/tnVedCodes.js';
+  collectTnVedMpKeys,
+  matchOzonTnVedDictEntry,
+  normalizeTnVedDigits,
+} from '../utils/tnVedAttribute.js';
+
+const COMPAT_CACHE_MS = 60 * 60 * 1000;
+
+function parseMarketplaceMappings(raw) {
+  let mm = raw;
+  if (mm == null) return {};
+  if (typeof mm === 'string') {
+    try {
+      mm = JSON.parse(mm || '{}');
+    } catch {
+      mm = {};
+    }
+  }
+  return mm && typeof mm === 'object' && !Array.isArray(mm) ? mm : {};
+}
+
+function positiveInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+}
 
 class TnVedService {
   constructor() {
     this.repo = null;
+    this._compatCache = new Map();
   }
 
   _getRepo() {
@@ -22,12 +48,16 @@ class TnVedService {
     return this.repo;
   }
 
-  searchCodes(opts = {}) {
-    return searchTnVedCodes(opts.q || opts.query || '', opts.limit);
+  async searchCodes(opts = {}) {
+    return tnVedDirectoryService.search({ q: opts.q || opts.query || '', limit: opts.limit });
   }
 
-  getCode(code) {
-    return findTnVedByCode(code);
+  async getCode(code) {
+    return tnVedDirectoryService.getCode(code);
+  }
+
+  async getDirectoryInfo() {
+    return tnVedDirectoryService.getMeta();
   }
 
   async getBindings(options = {}) {
@@ -44,7 +74,7 @@ class TnVedService {
     return item;
   }
 
-  _normalizePayload(data = {}) {
+  async _normalizePayload(data = {}, opts = {}) {
     const brand_id = data.brand_id ?? data.brandId ?? null;
     if (brand_id == null || brand_id === '') {
       const err = new Error('Бренд обязателен');
@@ -58,13 +88,8 @@ class TnVedService {
       err.statusCode = 400;
       throw err;
     }
-    if (!isKnownTnVedCode(rawCode)) {
-      const err = new Error('Код ТН ВЭД должен быть выбран из справочника');
-      err.statusCode = 400;
-      throw err;
-    }
-    const known = findTnVedByCode(rawCode);
-    const tn_ved_code = known?.code || rawCode;
+    const tn_ved_code = findTnVedByCode(rawCode)?.code || rawCode;
+    await tnVedDirectoryService.assertActiveCode(tn_ved_code, { allowCode: opts.allowCode });
 
     const user_category_ids = (
       Array.isArray(data.user_category_ids)
@@ -86,7 +111,7 @@ class TnVedService {
   }
 
   async createBinding(data) {
-    const payload = this._normalizePayload(data);
+    const payload = await this._normalizePayload(data);
     const created = await this._getRepo().create(payload);
     await this._syncDenorm(created);
     return created;
@@ -120,7 +145,7 @@ class TnVedService {
         data.userCategoryIds ??
         existing.user_category_ids,
     };
-    const payload = this._normalizePayload(merged);
+    const payload = await this._normalizePayload(merged, { allowCode: existing.tn_ved_code });
     const updated = await this._getRepo().update(id, payload);
     await this._syncDenorm(updated);
     return updated;
@@ -150,6 +175,112 @@ class TnVedService {
     } catch (_) {
       // не ломаем основной поток
     }
+  }
+
+  async _cached(key, fn) {
+    const hit = this._compatCache.get(key);
+    if (hit && Date.now() - hit.at < COMPAT_CACHE_MS) return hit.value;
+    const value = await fn();
+    if (value.status !== 'error') this._compatCache.set(key, { at: Date.now(), value });
+    return value;
+  }
+
+  async _checkWb(code, subjectId, scope) {
+    if (!subjectId) return { status: 'no_mapping' };
+    return this._cached(`wb:${scope.organizationId || scope.profileId || ''}:${subjectId}:${code}`, async () => {
+      try {
+        const list = await integrationsService.getWildberriesTnVedCodes(subjectId, code, scope);
+        const hit = list.find((x) => x.tnved === code);
+        if (hit) return { status: 'ok', isKiz: hit.isKiz };
+        return { status: 'not_allowed', subjectId };
+      } catch (e) {
+        logger.warn('[TN VED] WB compatibility check failed', { subjectId, code, err: e?.message });
+        return { status: 'error', message: e?.message || 'Ошибка запроса к WB' };
+      }
+    });
+  }
+
+  async _checkOzon(code, descId, typeId, scope) {
+    if (!descId || !typeId) return { status: 'no_mapping' };
+    return this._cached(`ozon:${scope.organizationId || scope.profileId || ''}:${descId}:${typeId}:${code}`, async () => {
+      try {
+        const attrs = await integrationsService.getOzonCategoryAttributes(descId, typeId, scope);
+        const attrIds = collectTnVedMpKeys(attrs, 'ozon');
+        if (!attrIds.length) return { status: 'no_attribute' };
+        const found = await integrationsService.searchOzonAttributeValues(attrIds[0], descId, typeId, code, scope);
+        const entry = matchOzonTnVedDictEntry(found, code);
+        if (entry) return { status: 'ok', value: String(entry.value ?? entry.name ?? '') };
+        return { status: 'not_allowed' };
+      } catch (e) {
+        logger.warn('[TN VED] Ozon compatibility check failed', { descId, typeId, code, err: e?.message });
+        return { status: 'error', message: e?.message || 'Ошибка запроса к Ozon' };
+      }
+    });
+  }
+
+  /**
+   * Подходит ли код ТН ВЭД для предмета WB и типа товара Ozon категории.
+   * Параметры сопоставления из формы имеют приоритет над сохранёнными в категории.
+   */
+  async checkMarketplaceCompatibility(opts = {}) {
+    const code = normalizeTnVedDigits(opts.code);
+    if (code.length !== 10) {
+      const err = new Error('Код ТН ВЭД — 10 цифр');
+      err.statusCode = 400;
+      throw err;
+    }
+    const scope = {
+      profileId: opts.profileId ?? null,
+      organizationId: opts.organizationId ?? null,
+    };
+
+    let mm = {};
+    const categoryId = positiveInt(opts.userCategoryId);
+    if (categoryId) {
+      const r = await query('SELECT profile_id, marketplace_mappings FROM user_categories WHERE id = $1', [categoryId]);
+      const row = r.rows[0];
+      if (row && (scope.profileId == null || Number(row.profile_id) === Number(scope.profileId))) {
+        mm = parseMarketplaceMappings(row.marketplace_mappings);
+      }
+    }
+
+    const wbSubjectId = positiveInt(opts.wbSubjectId) || positiveInt(mm.wb ?? mm.wb_subject_id ?? mm.wbSubjectId);
+
+    let descId = positiveInt(opts.ozonDescId);
+    let typeId = positiveInt(opts.ozonTypeId);
+    if (!descId || !typeId) {
+      descId = positiveInt(mm.ozon_description_category_id ?? mm.ozonDescriptionCategoryId);
+      typeId = positiveInt(mm.ozon_type_id ?? mm.ozonTypeId);
+      const composite = mm.ozon != null ? String(mm.ozon).trim() : '';
+      if ((!descId || !typeId) && composite.includes('_')) {
+        const [a, b] = composite.split('_');
+        descId = descId || positiveInt(a);
+        typeId = typeId || positiveInt(b);
+      }
+      if ((!descId || !typeId) && Object.keys(mm).length) {
+        let flatOzon = [];
+        try {
+          flatOzon = await integrationsService.getOzonCategories({ dbOnly: true });
+        } catch {
+          flatOzon = [];
+        }
+        const pair = resolveOzonDescTypePair(mm, flatOzon);
+        descId = descId || pair.descId || 0;
+        typeId = typeId || pair.typeId || 0;
+      }
+    }
+
+    const [directory, wb, ozon] = await Promise.all([
+      tnVedDirectoryService.getCode(code),
+      this._checkWb(code, wbSubjectId, scope),
+      this._checkOzon(code, descId, typeId, scope),
+    ]);
+    return {
+      code,
+      directory: directory ? { found: true, active: directory.active, name: directory.name, positionName: directory.positionName || null } : { found: false },
+      wb,
+      ozon,
+    };
   }
 }
 
