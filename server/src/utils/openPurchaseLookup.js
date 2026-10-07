@@ -42,10 +42,19 @@ async function loadSupplierWarehouseForWindow(client, { profileId, supplierId, n
 
 /**
  * @param {import('pg').PoolClient | { query: Function }} client
+ * @param {object} opts
+ * @param {number|null} [opts.warehouseId] — склад получателя: закупки разных складов не смешиваем
  */
 export async function findOpenAutoPurchaseId(
   client,
-  { profileId, supplierId, arrivalBucket, now = new Date(), warehouseWeekendDays = null }
+  {
+    profileId,
+    supplierId,
+    arrivalBucket,
+    warehouseId = null,
+    now = new Date(),
+    warehouseWeekendDays = null,
+  }
 ) {
   const bucket = normalizeArrivalBucket(arrivalBucket);
   if (!isProcurementBucketOpenForNewOrders(bucket, now, warehouseWeekendDays)) {
@@ -59,13 +68,21 @@ export async function findOpenAutoPurchaseId(
     now,
   });
 
+  const params = [profileId, supplierId, markerLike];
+  let warehouseFilter = '';
+  const wid = Number(warehouseId);
+  if (Number.isFinite(wid) && wid > 0) {
+    params.push(wid);
+    warehouseFilter = ` AND warehouse_id = $${params.length}`;
+  }
+
   const exact = await client.query(
     `SELECT id, note, created_at FROM purchases
      WHERE profile_id = $1 AND supplier_id = $2 AND status = 'open'
-       AND note LIKE $3
+       AND note LIKE $3${warehouseFilter}
      ORDER BY created_at DESC, id DESC
      LIMIT 1`,
-    [profileId, supplierId, markerLike]
+    params
   );
   const exactRow = exact.rows?.[0];
   if (exactRow) {

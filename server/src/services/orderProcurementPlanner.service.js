@@ -79,7 +79,8 @@ async function loadOrderRows(profileId, marketplace, orderId) {
 
   const head = await query(
     `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
-            o.profile_id, o.offer_id, o.marketplace_sku, o.product_name
+            o.profile_id, o.offer_id, o.marketplace_sku, o.product_name,
+            o.warehouse_id, o.delivery_address
      FROM orders o
      WHERE o.profile_id = $1 AND o.marketplace = $2 AND o.order_id = $3
      LIMIT 1`,
@@ -92,7 +93,8 @@ async function loadOrderRows(profileId, marketplace, orderId) {
   if (gid) {
     const group = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
-              o.profile_id, o.offer_id, o.marketplace_sku, o.product_name
+              o.profile_id, o.offer_id, o.marketplace_sku, o.product_name,
+              o.warehouse_id, o.delivery_address
        FROM orders o
        WHERE o.profile_id = $1 AND o.order_group_id = $2
        ORDER BY o.id ASC`,
@@ -155,6 +157,14 @@ async function resolveOrderWarehouseId(orderRows, defaultWarehouseId) {
     if (mapped != null && Number(mapped) > 0) return Number(mapped);
   }
   return defaultWarehouseId;
+}
+
+async function resolveWarehouseOrganizationId(warehouseId, fallbackOrganizationId) {
+  const wid = Number(warehouseId);
+  if (!Number.isFinite(wid) || wid < 1) return fallbackOrganizationId;
+  const r = await query(`SELECT organization_id FROM warehouses WHERE id = $1 LIMIT 1`, [wid]);
+  const orgId = r.rows?.[0]?.organization_id != null ? Number(r.rows[0].organization_id) : null;
+  return Number.isFinite(orgId) && orgId > 0 ? orgId : fallbackOrganizationId;
 }
 
 async function mapSupplierRows(rows, { priorityFrom = 'index' } = {}) {
@@ -767,6 +777,7 @@ async function pickSupplierForDeficit(
     client,
     profileId,
     profileRow,
+    warehouseId = null,
     warehouseWeekendDays = null,
     ignoreMinOrderForApiSuppliers = false,
     now = new Date(),
@@ -795,6 +806,7 @@ async function pickSupplierForDeficit(
         profileId,
         supplierId: cand.id,
         arrivalBucket: bucket,
+        warehouseId,
         now,
         warehouseWeekendDays,
       });
@@ -881,8 +893,9 @@ class OrderProcurementPlannerService {
       };
     }
 
-    const { organizationId, warehouseId: defaultWarehouseId } = await resolveDefaultOrgAndWarehouse(pid);
-    if (!organizationId || !defaultWarehouseId) {
+    const { organizationId: defaultOrganizationId, warehouseId: defaultWarehouseId } =
+      await resolveDefaultOrgAndWarehouse(pid);
+    if (!defaultOrganizationId || !defaultWarehouseId) {
       return {
         ok: false,
         error: 'no_org_warehouse',
@@ -892,6 +905,10 @@ class OrderProcurementPlannerService {
 
     const orderWarehouseId =
       (await resolveOrderWarehouseId(eligibleRows, defaultWarehouseId)) || defaultWarehouseId;
+    const organizationId = await resolveWarehouseOrganizationId(
+      orderWarehouseId,
+      defaultOrganizationId
+    );
     const warehouseWeekendDays = await loadWarehouseWeekendDays(orderWarehouseId, pid);
     const suppliers = await loadSuppliersForWarehouse(pid, orderWarehouseId);
     if (!suppliers.length) {
@@ -1008,6 +1025,7 @@ class OrderProcurementPlannerService {
             client,
             profileId: pid,
             profileRow,
+            warehouseId: orderWarehouseId,
             warehouseWeekendDays,
             ignoreMinOrderForApiSuppliers: true,
             now,
@@ -1532,8 +1550,13 @@ class OrderProcurementPlannerService {
 
     const { organizationId: defaultOrg, warehouseId: defaultWh } =
       await resolveDefaultOrgAndWarehouse(pid);
-    const orgId = Number(organizationId) || defaultOrg;
-    const whId = Number(warehouseId) || defaultWh;
+    let whId = Number(warehouseId) || null;
+    if (!whId) {
+      const orderRows = await loadOrderRows(pid, marketplace, orderId);
+      whId = (await resolveOrderWarehouseId(orderRows, defaultWh)) || defaultWh;
+    }
+    const orgId =
+      Number(organizationId) || (await resolveWarehouseOrganizationId(whId, defaultOrg));
     if (!orgId || !whId) {
       return {
         ok: false,

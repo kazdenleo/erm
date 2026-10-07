@@ -444,8 +444,32 @@ async function resolveDefaultOrgAndWarehouse(profileId) {
   return { organizationId, warehouseId };
 }
 
-function groupKey(supplierId, arrivalBucket) {
-  return `${supplierId}|${arrivalBucket}`;
+/** Склад заказа (как для резерва): warehouse_mappings по складу МП / склад ручного заказа. */
+async function resolveOrderWarehouseId(orderRows, defaultWarehouseId) {
+  for (const row of orderRows) {
+    try {
+      const mapped = await ordersService._resolveWarehouseIdForOrderReserve(row, row.product_id);
+      if (mapped != null && Number(mapped) > 0) return Number(mapped);
+    } catch (e) {
+      logger.warn('[AutoProcurement] resolve order warehouse failed', {
+        orderId: row?.order_id,
+        message: e?.message || String(e),
+      });
+    }
+  }
+  return defaultWarehouseId;
+}
+
+async function resolveWarehouseOrganizationId(warehouseId, fallbackOrganizationId) {
+  const wid = Number(warehouseId);
+  if (!Number.isFinite(wid) || wid < 1) return fallbackOrganizationId;
+  const r = await query(`SELECT organization_id FROM warehouses WHERE id = $1 LIMIT 1`, [wid]);
+  const orgId = r.rows?.[0]?.organization_id != null ? Number(r.rows[0].organization_id) : null;
+  return Number.isFinite(orgId) && orgId > 0 ? orgId : fallbackOrganizationId;
+}
+
+function groupKey(supplierId, arrivalBucket, warehouseId) {
+  return `${supplierId}|${arrivalBucket}|${warehouseId}`;
 }
 
 async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
@@ -454,7 +478,8 @@ async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
   if (!dbMp || !oid) return [];
 
   const head = await query(
-    `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status
+    `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
+            o.profile_id, o.warehouse_id, o.delivery_address
      FROM orders o
      WHERE o.profile_id = $1
        AND o.marketplace = $2
@@ -468,7 +493,8 @@ async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
   const gid = row.order_group_id != null ? String(row.order_group_id).trim() : '';
   if (gid) {
     const group = await query(
-      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status
+      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
+              o.profile_id, o.warehouse_id, o.delivery_address
        FROM orders o
        WHERE o.profile_id = $1
          AND o.order_group_id = $2
@@ -502,6 +528,7 @@ async function procureGroupForSupplierOrder(
       profileId,
       supplierId: g.supplierId,
       arrivalBucket: g.arrivalBucket,
+      warehouseId,
       now,
       warehouseWeekendDays,
     })
@@ -603,17 +630,29 @@ class AutoProcurementService {
       return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, suppliers: 0 };
     }
 
-    const { organizationId, warehouseId } = await resolveDefaultOrgAndWarehouse(pid);
-    if (!organizationId || !warehouseId) {
+    const { organizationId: defaultOrganizationId, warehouseId: defaultWarehouseId } =
+      await resolveDefaultOrgAndWarehouse(pid);
+    if (!defaultOrganizationId || !defaultWarehouseId) {
       logger.warn('[AutoProcurement] skip profile: no org/warehouse', { profileId: pid });
       return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, error: 'no_org_warehouse' };
     }
-    const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
-    const pickOpts = { warehouseWeekendDays, now };
+
+    const warehouseCtxById = new Map();
+    const loadWarehouseCtx = async (warehouseId) => {
+      if (!warehouseCtxById.has(warehouseId)) {
+        warehouseCtxById.set(warehouseId, {
+          warehouseId,
+          organizationId: await resolveWarehouseOrganizationId(warehouseId, defaultOrganizationId),
+          warehouseWeekendDays: await loadWarehouseWeekendDays(warehouseId, pid),
+        });
+      }
+      return warehouseCtxById.get(warehouseId);
+    };
 
     const ordersRes = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
-              o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id
+              o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id,
+              o.delivery_address
        FROM orders o
        WHERE o.profile_id = $1
          AND (
@@ -661,6 +700,10 @@ class AutoProcurementService {
         });
       }
 
+      const orderWarehouseId = await resolveOrderWarehouseId([resolvedRow], defaultWarehouseId);
+      const whCtx = await loadWarehouseCtx(orderWarehouseId);
+      const pickOpts = { warehouseWeekendDays: whCtx.warehouseWeekendDays, now };
+
       const demandLines = await expandDemandForOrderRow(resolvedRow, autoSuppliers, pickOpts);
       if (!demandLines.length) {
         skipped += 1;
@@ -686,14 +729,17 @@ class AutoProcurementService {
         const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
           supplier.apiConfig,
           now,
-          warehouseWeekendDays,
+          whCtx.warehouseWeekendDays,
           supplier.code
         );
-        const key = groupKey(supplier.id, arrivalBucket);
+        const key = groupKey(supplier.id, arrivalBucket, whCtx.warehouseId);
         if (!groups.has(key)) {
           groups.set(key, {
             supplierId: supplier.id,
             arrivalBucket,
+            warehouseId: whCtx.warehouseId,
+            organizationId: whCtx.organizationId,
+            warehouseWeekendDays: whCtx.warehouseWeekendDays,
             minOrderAmount: supplier.minOrderAmount,
             items: [],
             procurementItems: [],
@@ -734,8 +780,9 @@ class AutoProcurementService {
           profileId: pid,
           supplierId: g.supplierId,
           arrivalBucket: g.arrivalBucket,
+          warehouseId: g.warehouseId,
           now,
-          warehouseWeekendDays,
+          warehouseWeekendDays: g.warehouseWeekendDays,
         })
       );
 
@@ -779,8 +826,8 @@ class AutoProcurementService {
         payload.existingPurchaseId = purchaseId;
       } else {
         payload.supplierId = g.supplierId;
-        payload.organizationId = organizationId;
-        payload.warehouseId = warehouseId;
+        payload.organizationId = g.organizationId;
+        payload.warehouseId = g.warehouseId;
       }
 
       try {
@@ -864,21 +911,25 @@ class AutoProcurementService {
       };
     }
 
-    const { organizationId, warehouseId } = await resolveDefaultOrgAndWarehouse(pid);
-    if (!organizationId || !warehouseId) {
+    const { organizationId: defaultOrganizationId, warehouseId: defaultWarehouseId } =
+      await resolveDefaultOrgAndWarehouse(pid);
+    if (!defaultOrganizationId || !defaultWarehouseId) {
       return {
         ok: false,
         error: 'no_org_warehouse',
         message: 'Укажите организацию и склад (хотя бы по одному на аккаунт)',
       };
     }
-    const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
-    const pickOpts = { warehouseWeekendDays, now };
 
     const orderRows = await loadOrderRowsForSupplierOrder(pid, marketplace, orderId);
     if (!orderRows.length) {
       return { ok: false, error: 'order_not_found', message: 'Заказ не найден' };
     }
+
+    const warehouseId = await resolveOrderWarehouseId(orderRows, defaultWarehouseId);
+    const organizationId = await resolveWarehouseOrganizationId(warehouseId, defaultOrganizationId);
+    const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
+    const pickOpts = { warehouseWeekendDays, now };
 
     const ineligible = orderRows.filter((row) => {
       const st = String(row.status ?? '').trim().toLowerCase();
