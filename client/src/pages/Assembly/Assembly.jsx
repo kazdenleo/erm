@@ -1527,28 +1527,22 @@ export function Assembly() {
               mpDisplay={mpDisplay}
               emptyText="Нет заказов на сборке по текущему фильтру"
               scan={
-                <div className="assembly-next__scan assembly-next__scan--in-card">
+                <div className="assembly-next__scan assembly-next__scan--in-card assembly-next__scan--compact">
                   <label htmlFor="assembly-barcode" className="assembly-scan-label">
-                    Штрихкод товара
+                    Штрихкод
                   </label>
                   <FastScanInput
                     id="assembly-barcode"
                     inputRef={barcodeInputRef}
                     className="assembly-scan-input"
                     placeholder={
-                      chestnyZnakEnabled
-                        ? 'Штрихкод или код маркировки — поиск автоматически'
-                        : 'Отсканируйте или введите штрихкод — поиск автоматически'
+                      chestnyZnakEnabled ? 'ШК или код маркировки' : 'Штрихкод товара'
                     }
                     onScan={handleAssemblyScan}
                     debounceMs={400}
                     enableGlobalCapture
                     disabled={scanLoading}
                   />
-                  <p className="assembly-next__scan-hint muted-hint">
-                    Скан в текущем заказе. После сборки он станет предыдущим, слева появится
-                    следующий.
-                  </p>
                   {scanError && <p className="assembly-scan-error">{scanError}</p>}
                   {labelPrintError && (
                     <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
@@ -1597,26 +1591,6 @@ export function Assembly() {
                 stage.sideRole === 'previous'
                   ? 'Соберите заказ — он появится здесь'
                   : 'Нет следующего заказа'
-              }
-              scan={
-                <div className="assembly-next__scan assembly-next__scan--in-card">
-                  <label htmlFor="assembly-barcode-next" className="assembly-scan-label">
-                    Штрихкод товара
-                  </label>
-                  <FastScanInput
-                    id="assembly-barcode-next"
-                    className="assembly-scan-input"
-                    placeholder={
-                      chestnyZnakEnabled
-                        ? 'Штрихкод или код маркировки — поиск автоматически'
-                        : 'Отсканируйте или введите штрихкод — поиск автоматически'
-                    }
-                    onScan={handleAssemblyScan}
-                    debounceMs={400}
-                    autoFocus={false}
-                    disabled={scanLoading}
-                  />
-                </div>
               }
             >
               {currentOrderData && sideRecommendation?.groupKey === currentOrderKey ? (
