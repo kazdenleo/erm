@@ -2027,7 +2027,10 @@ class OrdersService {
       const freeIncoming = freeIncomingFromSupply({
         onHand: snapBeforeReserve.onHand,
         incoming: snapBeforeReserve.incoming,
-        reserved: snapBeforeReserve.reservedRaw ?? snapBeforeReserve.reserved,
+        reserved:
+          snapOpts.warehouseId != null
+            ? snapBeforeReserve.reserved
+            : snapBeforeReserve.reservedRaw ?? snapBeforeReserve.reserved,
       });
       const clamped = clampReserveSplitToFreeIncoming(qty, {
         reserveFromOnHand,
