@@ -237,13 +237,17 @@
   color: #1e40af;
 }
 
-.assembly-stage__current .assembly-next__label,
+.assembly-stage__current .assembly-next__label {
+  color: #1e40af;
+}
+
+.assembly-stage__current--active .assembly-next__label,
 .assembly-stage__side--previous .assembly-next__label {
   color: #166534;
 }
 
 .assembly-stage__side:not(.assembly-stage__side--previous) .assembly-next__label {
-  color: #1e40af;
+  color: #64748b;
 }
 
 .assembly-next__name {
