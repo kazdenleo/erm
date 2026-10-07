@@ -1,6 +1,6 @@
 /**
  * Assembly Page
- * Сборка FBS: слева текущий заказ, справа следующий; скан в карточках.
+ * Сборка FBS: слева следующий заказ (со сканом — текущий), справа последний собранный.
  * Скан ищет первый заказ из отфильтрованного списка с этим товаром; другой товар —
  * другой заказ. Пока текущий состав не закрыт, сессия остаётся на нём.
  */
@@ -17,7 +17,7 @@ import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
-import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
+import { isAssemblyLikeStatus } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import {
   buildAssemblyNextRecommendation,
@@ -36,6 +36,8 @@ import {
   assemblyLineScanKey,
   scannedQtyForAssemblyLine,
   applyAssemblyBarcodeScan,
+  applyAssemblyPickScan,
+  assemblyPickedItemsList,
   isAssemblyCompositionComplete,
   scannedProductStillNeededOnOrder,
   shouldPreferCurrentAssemblyOrder,
@@ -44,7 +46,6 @@ import {
   isRootKitSkuScanForOrder,
 } from '../../utils/assemblyKitScan.js';
 import { stockMovementsApi } from '../../services/stockMovements.api';
-import { useWarehouses } from '../../hooks/useWarehouses';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -303,15 +304,6 @@ function AssemblySessionPanel({
   const assembled = String(currentOrderData.order?.status ?? '').toLowerCase() === 'assembled';
   return (
     <div className="assembly-current-order assembly-current-order--embedded">
-      {isAssemblyLikeStatus(currentOrderData.order.status) ? (
-        <p className="assembly-current-sticker text-muted small mb-2">
-          {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
-          normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-            ? 'Стикер'
-            : 'Номер заказа'}
-          : <OrderStickerDisplay order={currentOrderData.order} />
-        </p>
-      ) : null}
       <div className="assembly-composition">
         <span className="assembly-composition-label">Состав заказа:</span>
         <ul className="assembly-composition-list">
@@ -398,17 +390,7 @@ function AssemblySessionPanel({
       {assembled && (
         <div className="assembly-ready">
           <p className="assembly-ready-text">
-            Заказ собран
-            {orderStickerCellValue(currentOrderData.order) !== '—' ? (
-              <>
-                .{' '}
-                {normMarketplace(currentOrderData.order.marketplace) === 'wildberries' ||
-                normMarketplace(currentOrderData.order.marketplace) === 'ozon'
-                  ? 'Стикер'
-                  : 'Заказ'}
-                : <OrderStickerDisplay order={currentOrderData.order} />
-              </>
-            ) : null}{' '}
+            Заказ собран{' '}
             {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
               <button
                 type="button"
@@ -471,7 +453,6 @@ function useAssemblyHintStock(recommendation, epoch) {
 
 export function Assembly() {
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
-  const { warehouses } = useWarehouses();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -485,6 +466,8 @@ export function Assembly() {
   const [currentOrderKey, setCurrentOrderKey] = useState(''); // marketplace|orderId или marketplace|g:groupId
   // Счётчики сканов по строкам состава (assemblyLineScanKey) или по productId, если состав пуст
   const [scannedQuantities, setScannedQuantities] = useState(() => ({}));
+  /** Снято с полки в текущей сессии: productId → шт (комплект целиком или комплектующие). */
+  const [pickedQuantities, setPickedQuantities] = useState(() => ({}));
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState('');
   const [finishScanSubmitting, setFinishScanSubmitting] = useState(false);
   /** URL локального Print Helper для тихой печати (с сервера или из env) — один билд для всех ПК */
@@ -497,11 +480,14 @@ export function Assembly() {
   const [nextStockEpoch, setNextStockEpoch] = useState(0);
   const [lastScanStock, setLastScanStock] = useState(null);
   const [lastAssembledGroup, setLastAssembledGroup] = useState(null);
+  /** Ключ группы, собранной последней на этой странице (скан или кнопка в таблице). */
+  const [lastCollectedKey, setLastCollectedKey] = useState('');
   const barcodeInputRef = useRef(null);
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
   const currentOrderDataRef = useRef(null);
   const scannedQuantitiesRef = useRef({});
+  const pickedQuantitiesRef = useRef({});
   /** Порядок строк таблицы сборки — при скане берём первый заказ из неё с этим товаром */
   const assemblyListOrderRef = useRef([]);
   const markedCollectedKeyRef = useRef('');
@@ -512,6 +498,7 @@ export function Assembly() {
   orderKeyRef.current = currentOrderKey;
   currentOrderDataRef.current = currentOrderData;
   scannedQuantitiesRef.current = scannedQuantities;
+  pickedQuantitiesRef.current = pickedQuantities;
   scanLoadingRef.current = scanLoading;
 
   const loadOrders = useCallback(async ({ silent = false } = {}) => {
@@ -896,7 +883,12 @@ export function Assembly() {
 
   /** Отметка «Собран» + печать этикетки (общая для скана и таблицы). */
   const runMarkCollectedFlow = useCallback(
-    async (marketplace, orderId, stickerRaw = null, { afterSuccess, order: orderHint = null } = {}) => {
+    async (
+      marketplace,
+      orderId,
+      stickerRaw = null,
+      { afterSuccess, order: orderHint = null, pickedItems = null } = {}
+    ) => {
       const trimmed = stickerRaw != null ? String(stickerRaw).trim() : '';
       const oid = orderId != null ? String(orderId) : '';
       const orderForLabel =
@@ -920,7 +912,9 @@ export function Assembly() {
             return false;
           }
         }
-        const collected = await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
+        const collected = await assemblyApi.markCollected(marketplace, orderId, trimmed || null, {
+          pickedItems,
+        });
         afterSuccess?.(trimmed || null);
         setNextStockEpoch((n) => n + 1);
         void loadOrders({ silent: true });
@@ -965,6 +959,7 @@ export function Assembly() {
     setCurrentOrderData(null);
     setCurrentOrderKey('');
     setScannedQuantities({});
+    setPickedQuantities({});
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
     setScanError('Фильтр маркетплейса изменён — текущая сборка сброшена');
@@ -1064,10 +1059,21 @@ export function Assembly() {
         const isSameOrder = newKey === prevKey;
         setCurrentOrderData({ order, product: data.product, orderItems });
         setCurrentOrderKey(newKey);
+        const scannedBefore = isSameOrder ? qty : {};
+        const scannedPidForKit = Number(data.product?.id);
+        const kitUnits =
+          Number(order.productId ?? order.product_id) === scannedPidForKit
+            ? Number(order.quantity) || 1
+            : 1;
         setScannedQuantities((prev) => {
           const base = isSameOrder ? prev : {};
           return applyAssemblyBarcodeScan(base, data.product, orderItems);
         });
+        setPickedQuantities((prev) =>
+          applyAssemblyPickScan(isSameOrder ? prev : {}, data.product, orderItems, scannedBefore, {
+            kitUnits,
+          })
+        );
         setNextStockEpoch((n) => n + 1);
         const scannedPid = Number(data.product?.id ?? data.product?.productId);
         const scanWh = Number(order.warehouseId ?? order.warehouse_id);
@@ -1251,8 +1257,10 @@ export function Assembly() {
     setFinishScanSubmitting(true);
     try {
       await runMarkCollectedFlow(marketplace, orderId, currentOrderData?.order?.assemblyStickerNumber ?? null, {
+        pickedItems: assemblyPickedItemsList(pickedQuantitiesRef.current),
         afterSuccess: () => {
           markedCollectedKeyRef.current = currentOrderKey;
+          setLastCollectedKey(currentOrderKey);
           setCurrentOrderData((prev) =>
             prev
               ? {
@@ -1276,6 +1284,7 @@ export function Assembly() {
     setCurrentOrderData(null);
     setCurrentOrderKey('');
     setScannedQuantities({});
+    setPickedQuantities({});
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
     setScanError(null);
@@ -1320,6 +1329,7 @@ export function Assembly() {
     void runMarkCollectedFlow(marketplace, orderId, o.assemblyStickerNumber ?? o.assembly_sticker_number ?? null, {
       order: o,
       afterSuccess: () => {
+        setLastCollectedKey(rowKey);
         if (currentOrderKey === rowKey) handleClearCurrentOrder();
       },
     });
@@ -1403,7 +1413,7 @@ export function Assembly() {
   const currentOrderAssembled =
     String(currentOrderData?.order?.status ?? '').toLowerCase() === 'assembled';
 
-  /** Слева текущий, справа следующий; после сборки текущий → предыдущий, на его месте следующий. */
+  /** Слева следующий (со сканом — текущий), справа последний собранный. */
   const stage = useMemo(
     () =>
       pickAssemblyStageGroups({
@@ -1412,6 +1422,7 @@ export function Assembly() {
         currentOrderKey,
         lastAssembledGroup,
         currentOrderAssembled,
+        lastCollectedKey,
       }),
     [
       assemblyTableGroups,
@@ -1419,6 +1430,7 @@ export function Assembly() {
       currentOrderKey,
       lastAssembledGroup,
       currentOrderAssembled,
+      lastCollectedKey,
     ]
   );
 
@@ -1431,47 +1443,28 @@ export function Assembly() {
     [stage.sideGroup]
   );
 
-  const warehouseNameById = useMemo(() => {
-    const map = new Map();
-    for (const w of warehouses || []) {
-      const id = Number(w.id ?? w.warehouseId ?? w.warehouse_id);
-      if (!Number.isFinite(id) || id < 1) continue;
-      const name = String(w.name ?? w.title ?? '').trim();
-      map.set(id, name || `Склад #${id}`);
-    }
-    return map;
-  }, [warehouses]);
+  const { stock: currentHintStock } = useAssemblyHintStock(currentRecommendation, nextStockEpoch);
+  const { stock: sideHintStock } = useAssemblyHintStock(sideRecommendation, nextStockEpoch);
 
-  const { stock: currentHintStock, loading: currentHintStockLoading } = useAssemblyHintStock(
-    currentRecommendation,
-    nextStockEpoch
-  );
-  const { stock: sideHintStock, loading: sideHintStockLoading } = useAssemblyHintStock(
-    sideRecommendation,
-    nextStockEpoch
-  );
-
+  // Собранный заказ сервер уже вычел из «на полке» — сканы сессии повторно не вычитаем.
+  const overlayOrderKey = currentOrderAssembled ? '' : currentOrderKey;
   const currentScanOverlay = useMemo(
     () =>
       nextRecommendationScanOverlay({
         recommendation: currentRecommendation,
-        currentOrderKey,
-        orderItems: currentOrderData?.orderItems,
-        scannedQuantities,
-        scannedQtyForLine: scannedQtyForAssemblyLine,
+        currentOrderKey: overlayOrderKey,
+        pickedQuantities,
       }),
-    [currentRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
+    [currentRecommendation, overlayOrderKey, pickedQuantities]
   );
   const sideScanOverlay = useMemo(
     () =>
       nextRecommendationScanOverlay({
         recommendation: sideRecommendation,
-        currentOrderKey,
-        orderItems: currentOrderData?.orderItems,
-        scannedQuantities,
-        scannedQtyForLine: scannedQtyForAssemblyLine,
+        currentOrderKey: overlayOrderKey,
+        pickedQuantities,
       }),
-    [sideRecommendation, currentOrderKey, currentOrderData?.orderItems, scannedQuantities]
+    [sideRecommendation, overlayOrderKey, pickedQuantities]
   );
 
   if (loading) {
@@ -1518,35 +1511,33 @@ export function Assembly() {
         <div className="assembly-stage__split">
           <div
             className={`assembly-stage__current${
-              stage.currentRole === 'current' ? ' assembly-stage__current--active' : ''
+              stage.currentRole === 'current' ? '' : ' assembly-stage__current--next'
             }`}
           >
             <AssemblyHintCard
               label={assemblyStageLabel(stage.currentRole)}
               recommendation={currentRecommendation}
               hintStock={currentHintStock}
-              stockLoading={currentHintStockLoading}
               overlay={currentScanOverlay}
-              warehouseNameById={warehouseNameById}
               mpDisplay={mpDisplay}
               emptyText="Нет заказов на сборке по текущему фильтру"
+              headerScan={
+                <FastScanInput
+                  id="assembly-barcode"
+                  inputRef={barcodeInputRef}
+                  className="assembly-scan-input"
+                  placeholder={
+                    chestnyZnakEnabled ? 'Штрихкод или код маркировки' : 'Отсканируйте штрихкод'
+                  }
+                  onScan={handleAssemblyScan}
+                  debounceMs={400}
+                  enableGlobalCapture
+                  disabled={scanLoading}
+                />
+              }
               scan={
-                <div className="assembly-next__scan assembly-next__scan--in-card assembly-next__scan--compact">
-                  <label htmlFor="assembly-barcode" className="assembly-scan-label">
-                    Штрихкод
-                  </label>
-                  <FastScanInput
-                    id="assembly-barcode"
-                    inputRef={barcodeInputRef}
-                    className="assembly-scan-input"
-                    placeholder={
-                      chestnyZnakEnabled ? 'ШК или код маркировки' : 'Штрихкод товара'
-                    }
-                    onScan={handleAssemblyScan}
-                    debounceMs={400}
-                    enableGlobalCapture
-                    disabled={scanLoading}
-                  />
+                scanError || labelPrintError || lastScanStock ? (
+                <div className="assembly-next__scan assembly-next__scan--in-card">
                   {scanError && <p className="assembly-scan-error">{scanError}</p>}
                   {labelPrintError && (
                     <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>
@@ -1561,6 +1552,7 @@ export function Assembly() {
                     </div>
                   ) : null}
                 </div>
+                ) : null
               }
             >
               {currentOrderData && currentRecommendation?.groupKey === currentOrderKey ? (
@@ -1578,18 +1570,12 @@ export function Assembly() {
               ) : null}
             </AssemblyHintCard>
           </div>
-          <div
-            className={`assembly-stage__side${
-              stage.sideRole === 'previous' ? ' assembly-stage__side--previous' : ''
-            }`}
-          >
+          <div className="assembly-stage__side assembly-stage__side--previous">
             <AssemblyHintCard
               label={assemblyStageLabel('previous')}
               recommendation={sideRecommendation}
               hintStock={sideHintStock}
-              stockLoading={sideHintStockLoading}
               overlay={sideScanOverlay}
-              warehouseNameById={warehouseNameById}
               mpDisplay={mpDisplay}
               emptyText="Соберите заказ — он появится здесь"
             >

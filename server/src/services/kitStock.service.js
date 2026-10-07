@@ -3543,6 +3543,69 @@ function clampStockInt(n) {
 }
 
 /**
+ * Собрано в заказах: что уже снято с полки под заказы в статусе «Собран» на складе.
+ * Сборка не списывает наличие (списание при отгрузке), поэтому эти штуки ещё в наличии,
+ * но уже не на полке.
+ * - скан-сборка: отсканированный состав (orders.assembly_picked_items), одна запись на заказ/группу;
+ * - сборка без скана: нетто-резерв заказа (по каждому заказу отдельно, затем сумма).
+ */
+async function batchAssembledOrdersQtyMap(productIds, warehouseId) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map(ids.map((id) => [id, 0]));
+  const whId = parseStockMovementWarehouseId(warehouseId);
+  if (!ids.length || whId == null) return map;
+  const [picked, reserved] = await Promise.all([
+    query(
+      `SELECT (e->>'productId')::bigint AS product_id, SUM((e->>'quantity')::int)::int AS qty
+       FROM (
+         SELECT DISTINCT ON (COALESCE(o.order_group_id::text, o.marketplace || '|' || o.order_id))
+           o.assembly_picked_items AS items
+         FROM orders o
+         WHERE LOWER(o.status) = 'assembled'
+           AND o.assembly_picked_items IS NOT NULL
+           AND o.warehouse_id = $2
+         ORDER BY COALESCE(o.order_group_id::text, o.marketplace || '|' || o.order_id), o.id
+       ) x
+       CROSS JOIN LATERAL jsonb_array_elements(x.items) e
+       WHERE (e->>'productId') ~ '^[0-9]+$'
+         AND (e->>'productId')::bigint = ANY($1::bigint[])
+       GROUP BY 1`,
+      [ids, whId]
+    ),
+    query(
+      `SELECT t.product_id, SUM(t.rv)::int AS qty
+       FROM (
+         SELECT sm.product_id, ao.ao_marketplace, ao.ao_order_id, ${NET_RESERVED_SUM_EXPR_SQL} AS rv
+         FROM stock_movements sm
+         CROSS JOIN LATERAL (
+           SELECT o.marketplace AS ao_marketplace, o.order_id AS ao_order_id
+           FROM orders o
+           WHERE LOWER(o.status) = 'assembled'
+             AND o.assembly_picked_items IS NULL
+             AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+           LIMIT 1
+         ) ao
+         WHERE sm.product_id = ANY($1::bigint[])
+           AND sm.type IN ('reserve', 'unreserve')
+           AND (sm.warehouse_id = $2 OR sm.warehouse_id IS NULL)
+         GROUP BY sm.product_id, ao.ao_marketplace, ao.ao_order_id
+       ) t
+       GROUP BY t.product_id`,
+      [ids, whId]
+    ),
+  ]);
+  for (const row of [...(picked.rows || []), ...(reserved.rows || [])]) {
+    const pid = Number(row.product_id);
+    map.set(pid, (map.get(pid) || 0) + clampStockInt(row.qty));
+  }
+  return map;
+}
+
+function onShelfQty(onHand, assembledInOrders) {
+  return clampStockInt(clampStockInt(onHand) - clampStockInt(assembledInOrders));
+}
+
+/**
  * Остаток на складе для сборки FBS: у товара — наличие/резерв/доступно;
  * у комплекта — целые SKU + собираемость из комплектующих и строки комплектующих.
  * Если передан заказ — ещё reservedForOrder (нетто-резерв именно этого заказа).
@@ -3562,6 +3625,8 @@ export async function getWarehouseStockBreakdown(productId, warehouseId, orderOp
     assemblableFromComponents: 0,
     availableTotal: 0,
     reservedFromComponents: 0,
+    assembledInOrders: 0,
+    onShelf: 0,
     components: [],
   };
   if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(whId) || whId < 1) {
@@ -3609,6 +3674,7 @@ export async function getWarehouseStockBreakdown(productId, warehouseId, orderOp
   const kit = await isKitProductId(pid);
 
   if (!kit) {
+    const assembledInOrders = (await batchAssembledOrdersQtyMap([pid], whId)).get(pid) || 0;
     return {
       ...empty,
       warehouseId: whId,
@@ -3620,6 +3686,8 @@ export async function getWarehouseStockBreakdown(productId, warehouseId, orderOp
       reservedForOrder: await sumOrderReserve(pid),
       wholeOnHand: onHand,
       availableTotal: available,
+      assembledInOrders,
+      onShelf: onShelfQty(onHand, assembledInOrders),
     };
   }
 
@@ -3660,24 +3728,31 @@ export async function getWarehouseStockBreakdown(productId, warehouseId, orderOp
     (await sumOrderReserve(pid)) + kitReservedFromComponents
   );
 
+  const assembledMap = await batchAssembledOrdersQtyMap([pid, ...compIds], whId);
+
   const components = [];
   for (const c of bom) {
     const cid = Number(c.component_product_id);
     if (!Number.isFinite(cid) || cid < 1) continue;
     const cs = await getProductSupplySnapshotWithClient(null, cid, snapOpts);
     const brief = nameMap.get(cid) || {};
+    const compOnHand = clampStockInt(cs.onHand);
+    const compAssembled = assembledMap.get(cid) || 0;
     components.push({
       productId: cid,
       sku: brief.sku || null,
       name: brief.name || null,
       perKit: Math.max(1, parseInt(c.quantity, 10) || 1),
-      onHand: clampStockInt(cs.onHand),
+      onHand: compOnHand,
       reserved: clampStockInt(cs.reserved ?? cs.reservedRaw),
       available: clampStockInt(cs.available),
       reservedForOrder: await sumOrderReserve(cid),
+      assembledInOrders: compAssembled,
+      onShelf: onShelfQty(compOnHand, compAssembled),
     });
   }
 
+  const kitAssembled = assembledMap.get(pid) || 0;
   return {
     warehouseId: whId,
     quantity: wholeOnHand,
@@ -3690,6 +3765,8 @@ export async function getWarehouseStockBreakdown(productId, warehouseId, orderOp
     assemblableFromComponents: assemblable,
     availableTotal,
     reservedFromComponents,
+    assembledInOrders: kitAssembled,
+    onShelf: onShelfQty(wholeOnHand, kitAssembled),
     components,
   };
 }

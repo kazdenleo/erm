@@ -14,18 +14,15 @@ describe('pickAssemblyStageGroups', () => {
   const b = grp('b', 'B');
   const c = grp('c', 'C');
 
-  test('без сессии: слева следующий, справа последний собранный', () => {
-    const stage = pickAssemblyStageGroups({
-      assemblyGroups: [a, b, c],
-      collectedGroups: [c],
-    });
+  test('без сессии: слева следующий из очереди, справа последний собранный', () => {
+    const stage = pickAssemblyStageGroups({ assemblyGroups: [a, b], collectedGroups: [c] });
     expect(stage.currentGroup.key).toBe('a');
     expect(stage.currentRole).toBe('next');
     expect(stage.sideGroup.key).toBe('c');
     expect(stage.sideRole).toBe('previous');
   });
 
-  test('без сессии и без собранных: слева следующий, справа пусто', () => {
+  test('без собранных: справа пусто', () => {
     const stage = pickAssemblyStageGroups({ assemblyGroups: [a, b] });
     expect(stage.currentGroup.key).toBe('a');
     expect(stage.currentRole).toBe('next');
@@ -33,22 +30,21 @@ describe('pickAssemblyStageGroups', () => {
     expect(stage.sideRole).toBe('empty');
   });
 
-  test('скан начат: слева текущий, справа последний собранный', () => {
+  test('начат скан: слева текущий (даже не первый в очереди)', () => {
     const stage = pickAssemblyStageGroups({
-      assemblyGroups: [a, b, c],
+      assemblyGroups: [a, b],
       collectedGroups: [c],
-      currentOrderKey: 'a',
+      currentOrderKey: 'b',
     });
-    expect(stage.currentGroup.key).toBe('a');
+    expect(stage.currentGroup.key).toBe('b');
     expect(stage.currentRole).toBe('current');
     expect(stage.sideGroup.key).toBe('c');
-    expect(stage.sideRole).toBe('previous');
   });
 
-  test('после сборки: слева следующий, справа только что собранный', () => {
+  test('после сборки до перезагрузки: собранный справа, слева новый следующий', () => {
     const stage = pickAssemblyStageGroups({
-      assemblyGroups: [b, c],
-      collectedGroups: [a],
+      assemblyGroups: [a, b],
+      collectedGroups: [c],
       currentOrderKey: 'a',
       currentOrderAssembled: true,
     });
@@ -56,6 +52,27 @@ describe('pickAssemblyStageGroups', () => {
     expect(stage.currentRole).toBe('next');
     expect(stage.sideGroup.key).toBe('a');
     expect(stage.sideRole).toBe('previous');
+  });
+
+  test('после сборки и перезагрузки', () => {
+    const stage = pickAssemblyStageGroups({
+      assemblyGroups: [b],
+      collectedGroups: [a, c],
+      currentOrderKey: 'a',
+      currentOrderAssembled: true,
+    });
+    expect(stage.currentGroup.key).toBe('b');
+    expect(stage.sideGroup.key).toBe('a');
+  });
+
+  test('сборка из таблицы: lastCollectedKey справа, пока заказ ещё в очереди', () => {
+    const stage = pickAssemblyStageGroups({
+      assemblyGroups: [a, b],
+      collectedGroups: [c],
+      lastCollectedKey: 'a',
+    });
+    expect(stage.currentGroup.key).toBe('b');
+    expect(stage.sideGroup.key).toBe('a');
   });
 
   test('собрали последний: слева пусто, справа собранный', () => {
@@ -71,21 +88,10 @@ describe('pickAssemblyStageGroups', () => {
     expect(stage.sideRole).toBe('previous');
   });
 
-  test('очередь пуста, есть собранный: слева пусто, справа последний', () => {
-    const stage = pickAssemblyStageGroups({
-      assemblyGroups: [],
-      collectedGroups: [a],
-    });
-    expect(stage.currentGroup).toBeNull();
-    expect(stage.currentRole).toBe('empty');
-    expect(stage.sideGroup.key).toBe('a');
-    expect(stage.sideRole).toBe('previous');
-  });
-
   test('подписи ролей', () => {
     expect(assemblyStageLabel('current')).toBe('Текущий заказ');
-    expect(assemblyStageLabel('empty')).toBe('Следующий к сборке');
-    expect(assemblyStageLabel('next')).toBe('Следующий к сборке');
+    expect(assemblyStageLabel('next')).toBe('Следующий');
+    expect(assemblyStageLabel('empty')).toBe('Следующий');
     expect(assemblyStageLabel('previous')).toBe('Последний собранный');
   });
 });

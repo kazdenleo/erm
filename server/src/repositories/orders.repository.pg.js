@@ -141,6 +141,20 @@ function normalizeProfileId(profileId) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Снятое с полки при скан-сборке → JSON для orders.assembly_picked_items (null — сборка без скана). */
+function pickedItemsJson(pickedItems) {
+  if (!Array.isArray(pickedItems)) return null;
+  const byPid = new Map();
+  for (const it of pickedItems) {
+    const pid = Number(it?.productId ?? it?.product_id);
+    const qty = Math.floor(Number(it?.quantity) || 0);
+    if (!Number.isInteger(pid) || pid < 1 || qty < 1) continue;
+    byPid.set(pid, (byPid.get(pid) || 0) + qty);
+  }
+  if (!byPid.size) return null;
+  return JSON.stringify([...byPid].map(([productId, quantity]) => ({ productId, quantity })));
+}
+
 class OrdersRepositoryPG {
   buildFindAllFilters(options = {}) {
     const { marketplace, status, productId, search, profileId, excludeManual, includeArchived, warehouseIds } = options;
@@ -1087,11 +1101,18 @@ class OrdersRepositoryPG {
   /**
    * Отметить все строки группы как собранные (дата/время и пользователь сборки).
    */
-  async markAssembledByOrderGroupId(orderGroupId, assembledByUserId, profileId = null, stickerNumber = null) {
+  async markAssembledByOrderGroupId(
+    orderGroupId,
+    assembledByUserId,
+    profileId = null,
+    stickerNumber = null,
+    pickedItems = null
+  ) {
     if (!orderGroupId) return;
     const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
     const sticker = stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    const picked = pickedItemsJson(pickedItems);
     if (pid) {
       await query(
         `
@@ -1101,10 +1122,11 @@ class OrdersRepositoryPG {
           assembled_at = CURRENT_TIMESTAMP,
           assembled_by_user_id = $2,
           assembly_sticker_number = $4,
+          assembly_picked_items = $5::jsonb,
           updated_at = CURRENT_TIMESTAMP
         WHERE order_group_id = $1 AND profile_id = $3::bigint
       `,
-        [String(orderGroupId), uid, pid, sticker]
+        [String(orderGroupId), uid, pid, sticker, picked]
       );
     } else {
       await query(
@@ -1115,10 +1137,11 @@ class OrdersRepositoryPG {
           assembled_at = CURRENT_TIMESTAMP,
           assembled_by_user_id = $2,
           assembly_sticker_number = $3,
+          assembly_picked_items = $4::jsonb,
           updated_at = CURRENT_TIMESTAMP
         WHERE order_group_id = $1
       `,
-        [String(orderGroupId), uid, sticker]
+        [String(orderGroupId), uid, sticker, picked]
       );
     }
   }
@@ -1126,11 +1149,19 @@ class OrdersRepositoryPG {
   /**
    * Одна строка заказа — собрана.
    */
-  async markAssembledByMarketplaceAndOrderId(marketplace, orderId, assembledByUserId, profileId = null, stickerNumber = null) {
+  async markAssembledByMarketplaceAndOrderId(
+    marketplace,
+    orderId,
+    assembledByUserId,
+    profileId = null,
+    stickerNumber = null,
+    pickedItems = null
+  ) {
     const dbM = normalizeMarketplaceForDb(marketplace);
     const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
     const sticker = stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    const picked = pickedItemsJson(pickedItems);
     if (pid) {
       await query(
         `
@@ -1140,10 +1171,11 @@ class OrdersRepositoryPG {
           assembled_at = CURRENT_TIMESTAMP,
           assembled_by_user_id = $3,
           assembly_sticker_number = $5,
+          assembly_picked_items = $6::jsonb,
           updated_at = CURRENT_TIMESTAMP
         WHERE marketplace = $1 AND order_id = $2 AND profile_id = $4::bigint
       `,
-        [dbM, String(orderId), uid, pid, sticker]
+        [dbM, String(orderId), uid, pid, sticker, picked]
       );
     } else {
       await query(
@@ -1154,10 +1186,11 @@ class OrdersRepositoryPG {
           assembled_at = CURRENT_TIMESTAMP,
           assembled_by_user_id = $3,
           assembly_sticker_number = $4,
+          assembly_picked_items = $5::jsonb,
           updated_at = CURRENT_TIMESTAMP
         WHERE marketplace = $1 AND order_id = $2
       `,
-        [dbM, String(orderId), uid, sticker]
+        [dbM, String(orderId), uid, sticker, picked]
       );
     }
   }

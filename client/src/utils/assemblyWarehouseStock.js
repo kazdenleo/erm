@@ -6,23 +6,22 @@ function n(v) {
   return Math.max(0, Math.floor(Number(v) || 0));
 }
 
-export function stockCountsLabel({ onHand, reserved, available } = {}) {
-  return `наличие ${n(onHand)} · резерв ${n(reserved)} · доступно ${n(available)}`;
+/** На полке = наличие − собрано в заказах (сборка не списывает наличие до отгрузки). */
+export function stockOnShelf(stock) {
+  if (!stock) return 0;
+  if (stock.onShelf != null) return n(stock.onShelf);
+  return Math.max(0, n(stock.onHand) - n(stock.assembledInOrders));
 }
 
-/**
- * Резерв этого заказа и доступность на складе.
- * scanned — сколько уже отсканировали в текущей сессии: резерв не меньше скана,
- * доступно уменьшается на скан.
- */
-export function orderReserveAvailableLabel({
-  reservedForOrder = 0,
-  available = 0,
-  scanned = 0,
-} = {}) {
-  const reserved = Math.max(n(reservedForOrder), n(scanned));
-  const avail = Math.max(0, n(available) - n(scanned));
-  return `резерв ${reserved} · доступно ${avail}`;
+export function stockCountsLabel(stock = {}) {
+  return `наличие ${n(stock?.onHand)} · в собранных заказах ${n(
+    stock?.assembledInOrders
+  )} · на полке ${stockOnShelf(stock)}`;
+}
+
+/** scanned — сколько уже отсканировали в текущей сессии: эти штуки уже сняты с полки. */
+export function onShelfLabel({ onShelf = 0, scanned = 0 } = {}) {
+  return `на полке ${Math.max(0, n(onShelf) - n(scanned))}`;
 }
 
 export function scannedQtyByProductId(orderItems, scannedQuantities, scannedQtyForLine) {
@@ -54,13 +53,6 @@ export function kitScannedUnitsFromComponents(components, scannedByPid) {
   return Number.isFinite(minK) ? minK : 0;
 }
 
-/** Доступно для подписи у SKU: у комплекта — цел. + из комплектующих. */
-export function orderHintAvailable(stock, { isKit = false } = {}) {
-  if (!stock) return 0;
-  const kit = isKit || stock.isKit === true;
-  return n(kit ? (stock.availableTotal ?? stock.available) : stock.available);
-}
-
 /**
  * Сканы текущей сессии, если она совпадает с карточкой «следующий к сборке».
  * kitScanned — сколько комплектов уже «закрыто» сканами SKU или комплектующих.
@@ -71,37 +63,26 @@ export function nextRecommendationScanOverlay({
   orderItems,
   scannedQuantities,
   scannedQtyForLine,
+  pickedQuantities = null,
 } = {}) {
   const empty = { kitScanned: 0, byPid: new Map() };
   if (!recommendation?.groupKey || !currentOrderKey) return empty;
   if (String(recommendation.groupKey) !== String(currentOrderKey)) return empty;
-  const byPid = scannedQtyByProductId(orderItems, scannedQuantities, scannedQtyForLine);
   const recPid = Number(recommendation.productId);
+  if (pickedQuantities && typeof pickedQuantities === 'object') {
+    const byPid = new Map();
+    for (const [k, v] of Object.entries(pickedQuantities)) {
+      const pid = Number(k);
+      if (Number.isFinite(pid) && pid > 0) byPid.set(pid, n(v));
+    }
+    return { kitScanned: byPid.get(recPid) || 0, byPid };
+  }
+  const byPid = scannedQtyByProductId(orderItems, scannedQuantities, scannedQtyForLine);
   const fromSku = Number.isFinite(recPid) && recPid > 0 ? byPid.get(recPid) || 0 : 0;
   const fromComps = recommendation.isKit
     ? kitScannedUnitsFromComponents(recommendation.components, byPid)
     : 0;
   return { kitScanned: Math.max(fromSku, fromComps), byPid };
-}
-
-/**
- * @param {object|null} stock  ответ GET /products/:id/warehouse-stock
- * @param {{ warehouseName?: string, isKit?: boolean }} [opts]
- */
-export function formatAssemblyWarehouseStock(stock, { warehouseName = '', isKit = false } = {}) {
-  if (!stock) return warehouseName ? `На складе ${warehouseName}: —` : '—';
-  const wh = warehouseName || (stock.warehouseId != null ? `#${stock.warehouseId}` : '');
-  const prefix = wh ? `На складе ${wh}: ` : '';
-  const kit = isKit || stock.isKit === true;
-
-  if (!kit) {
-    return `${prefix}${stockCountsLabel(stock)}`;
-  }
-
-  const whole = n(stock.wholeOnHand ?? stock.onHand ?? stock.quantity);
-  const fromParts = n(stock.assemblableFromComponents);
-  const total = n(stock.availableTotal);
-  return `${prefix}${whole} цел. + ${fromParts} из комплектующих (доступно ${total})`;
 }
 
 export function mergeComponentStock(componentsHint, stockComponents) {

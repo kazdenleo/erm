@@ -181,6 +181,62 @@ export function applyAssemblyBarcodeScan(prevQuantities, product, orderItems) {
   return next;
 }
 
+/**
+ * Учёт снятого с полки (productId → шт): скан SKU комплекта — целые комплекты,
+ * скан комплектующей — одна штука. Счётчики строк состава этого не различают.
+ * scannedBefore — счётчики строк до применения этого скана.
+ * kitUnits — сколько комплектов в заказе, если по строкам состава не определить.
+ */
+export function applyAssemblyPickScan(
+  prevPicked,
+  product,
+  orderItems,
+  scannedBefore = {},
+  { kitUnits = 1 } = {}
+) {
+  const next = { ...(prevPicked || {}) };
+  const pid = Number(product?.id);
+  if (!Number.isInteger(pid) || pid < 1) return next;
+  const items = Array.isArray(orderItems) ? orderItems : [];
+  const add = (q) => {
+    if (q > 0) next[pid] = (next[pid] || 0) + q;
+  };
+
+  if (!items.length) {
+    add(1);
+    return next;
+  }
+
+  if (isKitSkuScanForOrder(product, items) || isRootKitSkuScanForOrder(product, items)) {
+    let wholeRemaining = 0;
+    items.forEach((item, idx) => {
+      const linePid = Number(item.productId ?? item.product_id);
+      if (linePid !== pid || !(item.isKitWhole || item.isSubKitWhole)) return;
+      const need = item.quantity ?? 1;
+      const got = scannedQtyForAssemblyLine(item, idx, scannedBefore, items);
+      wholeRemaining += Math.max(0, need - got);
+    });
+    add(wholeRemaining > 0 ? wholeRemaining : Math.max(1, Math.floor(Number(kitUnits) || 1)));
+    return next;
+  }
+
+  const matched = items.some((item) => orderItemMatchesScannedProduct(item, product));
+  const legacySingleLine =
+    items.length === 1 && items[0].productId == null && items[0].product_id == null;
+  if (matched || legacySingleLine) add(1);
+  return next;
+}
+
+/** { productId: qty } → [{ productId, quantity }] для mark-collected. */
+export function assemblyPickedItemsList(picked) {
+  return Object.entries(picked || {})
+    .map(([productId, quantity]) => ({
+      productId: Number(productId),
+      quantity: Math.floor(Number(quantity) || 0),
+    }))
+    .filter((it) => Number.isInteger(it.productId) && it.productId > 0 && it.quantity > 0);
+}
+
 /** Все ли строки состава закрыты по счётчикам сканов. */
 export function isAssemblyCompositionComplete(orderItems, scannedQuantities) {
   const items = Array.isArray(orderItems) ? orderItems : [];

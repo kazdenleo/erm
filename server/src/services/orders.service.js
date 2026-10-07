@@ -5299,7 +5299,14 @@ class OrdersService {
    * Списание остатков — только при закрытии поставки (applyAssemblyStockForShipmentOrders).
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null, stickerNumber = null) {
+  async markOrderAsAssembled(
+    marketplace,
+    orderId,
+    assembledByUserId = null,
+    profileId = null,
+    stickerNumber = null,
+    pickedItems = null
+  ) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this._findOrderByMarketplaceAndOrderId(marketplace, orderId, profileId);
@@ -5310,7 +5317,8 @@ class OrdersService {
           order.orderGroupId,
           assembledByUserId,
           profileId,
-          stickerNumber
+          stickerNumber,
+          pickedItems
         );
       } else {
         await this.repository.markAssembledByMarketplaceAndOrderId(
@@ -5318,7 +5326,8 @@ class OrdersService {
           String(orderId),
           assembledByUserId,
           profileId,
-          stickerNumber
+          stickerNumber,
+          pickedItems
         );
       }
 

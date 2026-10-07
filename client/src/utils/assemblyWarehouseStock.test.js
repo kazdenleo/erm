@@ -1,55 +1,45 @@
 import { scannedQtyForAssemblyLine } from './assemblyKitScan.js';
 import {
   stockCountsLabel,
-  formatAssemblyWarehouseStock,
   mergeComponentStock,
-  orderReserveAvailableLabel,
-  orderHintAvailable,
+  onShelfLabel,
+  stockOnShelf,
   scannedQtyByProductId,
   kitScannedUnitsFromComponents,
   nextRecommendationScanOverlay,
 } from './assemblyWarehouseStock.js';
 
 describe('stockCountsLabel', () => {
-  test('наличие / резерв / доступно', () => {
-    expect(stockCountsLabel({ onHand: 4, reserved: 2, available: 2 })).toBe(
-      'наличие 4 · резерв 2 · доступно 2'
+  test('наличие / в собранных заказах / на полке', () => {
+    expect(stockCountsLabel({ onHand: 7, assembledInOrders: 1, onShelf: 6 })).toBe(
+      'наличие 7 · в собранных заказах 1 · на полке 6'
     );
   });
 });
 
-describe('orderReserveAvailableLabel', () => {
-  test('до скана: резерв заказа и доступно склада', () => {
-    expect(
-      orderReserveAvailableLabel({ reservedForOrder: 2, available: 2, scanned: 0 })
-    ).toBe('резерв 2 · доступно 2');
+describe('stockOnShelf', () => {
+  test('берёт onShelf с сервера', () => {
+    expect(stockOnShelf({ onHand: 7, assembledInOrders: 1, onShelf: 6 })).toBe(6);
   });
 
-  test('после скана доступно уменьшается', () => {
-    expect(
-      orderReserveAvailableLabel({ reservedForOrder: 2, available: 2, scanned: 2 })
-    ).toBe('резерв 2 · доступно 0');
+  test('без onShelf — наличие минус собранное, не ниже нуля', () => {
+    expect(stockOnShelf({ onHand: 7, assembledInOrders: 2 })).toBe(5);
+    expect(stockOnShelf({ onHand: 1, assembledInOrders: 3 })).toBe(0);
   });
 
-  test('скан без резерва в журнале поднимает резерв', () => {
-    expect(
-      orderReserveAvailableLabel({ reservedForOrder: 0, available: 4, scanned: 2 })
-    ).toBe('резерв 2 · доступно 2');
+  test('нет данных — 0', () => {
+    expect(stockOnShelf(null)).toBe(0);
   });
 });
 
-describe('orderHintAvailable', () => {
-  test('у комплекта берёт availableTotal', () => {
-    expect(
-      orderHintAvailable(
-        { isKit: true, available: 0, availableTotal: 1 },
-        { isKit: true }
-      )
-    ).toBe(1);
+describe('onShelfLabel', () => {
+  test('до скана', () => {
+    expect(onShelfLabel({ onShelf: 6, scanned: 0 })).toBe('на полке 6');
   });
 
-  test('у обычного товара — available', () => {
-    expect(orderHintAvailable({ available: 4, availableTotal: 9 })).toBe(4);
+  test('скан уменьшает, не ниже нуля', () => {
+    expect(onShelfLabel({ onShelf: 6, scanned: 2 })).toBe('на полке 4');
+    expect(onShelfLabel({ onShelf: 1, scanned: 3 })).toBe('на полке 0');
   });
 });
 
@@ -111,30 +101,22 @@ describe('nextRecommendationScanOverlay', () => {
     expect(overlay.byPid.get(10)).toBe(2);
     expect(overlay.kitScanned).toBe(1);
   });
-});
 
-describe('formatAssemblyWarehouseStock', () => {
-  test('обычный товар', () => {
-    expect(
-      formatAssemblyWarehouseStock(
-        { isKit: false, onHand: 4, reserved: 2, available: 2 },
-        { warehouseName: 'FBS' }
-      )
-    ).toBe('На складе FBS: наличие 4 · резерв 2 · доступно 2');
-  });
+  test('pickedQuantities: комплект только по скану его SKU', () => {
+    const fromParts = nextRecommendationScanOverlay({
+      recommendation,
+      currentOrderKey: 'ym|o:627',
+      pickedQuantities: { 10: 2 },
+    });
+    expect(fromParts.byPid.get(10)).toBe(2);
+    expect(fromParts.kitScanned).toBe(0);
 
-  test('комплект: целые + из комплектующих', () => {
-    expect(
-      formatAssemblyWarehouseStock(
-        {
-          isKit: true,
-          wholeOnHand: 0,
-          assemblableFromComponents: 1,
-          availableTotal: 1,
-        },
-        { warehouseName: 'FBS', isKit: true }
-      )
-    ).toBe('На складе FBS: 0 цел. + 1 из комплектующих (доступно 1)');
+    const whole = nextRecommendationScanOverlay({
+      recommendation,
+      currentOrderKey: 'ym|o:627',
+      pickedQuantities: { 355: 1 },
+    });
+    expect(whole.kitScanned).toBe(1);
   });
 });
 

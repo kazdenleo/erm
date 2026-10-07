@@ -290,7 +290,7 @@ class AssemblyController {
   /**
    * POST /api/assembly/mark-collected
    * Отметить заказ как собранный: статус → 'assembled', заказ убирается из списка сборки.
-   * Body: { marketplace, orderId, stickerNumber? }
+   * Body: { marketplace, orderId, stickerNumber?, pickedItems?: [{ productId, quantity }] }
    */
   async markCollected(req, res, next) {
     try {
@@ -349,12 +349,14 @@ class AssemblyController {
       }
       const assembledByUserId =
         req.user?.id != null && Number(req.user.id) > 0 ? Number(req.user.id) : null;
+      const pickedItems = Array.isArray(req.body?.pickedItems) ? req.body.pickedItems : null;
       const updated = await ordersService.markOrderAsAssembled(
         marketplace,
         String(orderId),
         assembledByUserId,
         req.user?.profileId ?? null,
-        stickerNumber
+        stickerNumber,
+        pickedItems
       );
       let labelReady = needsMpLabel ? ordersLabelsService.hasLabelCached(updated || order) : false;
       if (updated && needsMpLabel && !labelReady) {
