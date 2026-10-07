@@ -1,4 +1,5 @@
 import {
+  isOzonLabelStickerNumber,
   ozonAssemblyStickerFromPosting,
   ozonOrderNumberFromPostingNumber,
   ozonPostingNumberFromOrderId,
@@ -23,39 +24,38 @@ describe('ozonOrderNumberFromPostingNumber', () => {
 });
 
 describe('ozonStickerNumberFromPosting', () => {
-  test('prefers lower_barcode', () => {
+  test('takes scanit from label', () => {
     expect(
       ozonStickerNumberFromPosting({
-        barcodes: { lower_barcode: '201026795970000', upper_barcode: 'UP-1' },
+        scanit: 'ii50048401925',
+        barcodes: { lower_barcode: '302085861110000', upper_barcode: '302085861110000' },
       })
-    ).toBe('201026795970000');
+    ).toBe('ii50048401925');
   });
 
-  test('falls back to upper_barcode', () => {
+  test('ignores barcodes without scanit', () => {
     expect(
       ozonStickerNumberFromPosting({
-        barcodes: { upper_barcode: 'UP-1' },
+        barcodes: { lower_barcode: '302085861110000', upper_barcode: '302085861110000' },
       })
-    ).toBe('UP-1');
+    ).toBeNull();
   });
 
-  test('returns null without barcodes', () => {
+  test('returns null without data', () => {
     expect(ozonStickerNumberFromPosting({ posting_number: '1-1' })).toBeNull();
     expect(ozonStickerNumberFromPosting(null)).toBeNull();
   });
 });
 
-describe('ozonAssemblyStickerFromPosting', () => {
-  test('returns barcode only', () => {
-    expect(
-      ozonAssemblyStickerFromPosting({
-        order_number: '74369038-0308',
-        posting_number: '74369038-0308-1',
-        barcodes: { lower_barcode: '201026795970000' },
-      })
-    ).toBe('201026795970000');
+describe('isOzonLabelStickerNumber', () => {
+  test('numeric legacy barcode is not a label sticker', () => {
+    expect(isOzonLabelStickerNumber('302085861110000')).toBe(false);
+    expect(isOzonLabelStickerNumber('')).toBe(false);
+    expect(isOzonLabelStickerNumber('ii50048401925')).toBe(true);
   });
+});
 
+describe('ozonAssemblyStickerFromPosting', () => {
   test('does not fall back to order_number or posting', () => {
     expect(
       ozonAssemblyStickerFromPosting({

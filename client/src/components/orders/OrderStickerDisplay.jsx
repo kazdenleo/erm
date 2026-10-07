@@ -23,8 +23,8 @@ function WbStickerNumber({ text, className = '' }) {
 }
 
 /**
- * Стикер заказа: для WB последние 4 цифры полужирные;
- * для Ozon — только ШК этикетки; для ЯМ — номер заказа.
+ * Стикер заказа: для WB и Ozon последние 4 цифры полужирные
+ * (Ozon — номер с этикетки `ii…`); для ЯМ — номер заказа.
  */
 export function OrderStickerDisplay({
   order,

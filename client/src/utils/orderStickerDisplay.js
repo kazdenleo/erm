@@ -61,9 +61,10 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
   if (mp === 'ozon') {
     const oid = orderIdForSticker(order);
     const orderNumber = ozonOrderNumberFromPostingNumber(oid);
-    // Не подставляем posting/order_number: колонка «Стикер» — только ШК этикетки.
+    // Не подставляем posting/order_number: колонка «Стикер» — только номер с этикетки (`ii…`).
+    // Чисто цифровые значения — старый barcodes.lower_barcode, на этикетке его нет.
     const stickers = stickerNumbersFromOrders(list).filter(
-      (s) => s && s !== oid && s !== orderNumber
+      (s) => s && s !== oid && s !== orderNumber && !/^\d+$/.test(s)
     );
     return stickers.length ? stickers.join(', ') : '—';
   }
@@ -71,7 +72,7 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
   return orderIdForSticker(order) || '—';
 }
 
-/** Разбивает номер стикера WB: основная часть + последние 4 цифры (полужирные в UI). */
+/** Разбивает номер стикера WB/Ozon: основная часть + последние 4 цифры (полужирные в UI). */
 export function splitStickerEmphasis(text) {
   const s = String(text ?? '').trim();
   if (!s) return null;
@@ -79,8 +80,9 @@ export function splitStickerEmphasis(text) {
   return { prefix: s.slice(0, -4), suffix: s.slice(-4) };
 }
 
-/** Нужно ли выделять последние 4 цифры (только WB-стикеры). */
+/** Нужно ли выделять последние 4 цифры (стикеры WB и Ozon — так же на этикетке). */
 export function shouldEmphasizeStickerSuffix(order) {
   if (!order) return false;
-  return normalizeMarketplaceForUI(order.marketplace) === 'wildberries';
+  const mp = normalizeMarketplaceForUI(order.marketplace);
+  return mp === 'wildberries' || mp === 'ozon';
 }

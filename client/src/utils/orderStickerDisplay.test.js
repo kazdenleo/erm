@@ -10,15 +10,26 @@ describe('ozonOrderNumberFromPostingNumber', () => {
 });
 
 describe('orderStickerCellValue', () => {
-  test('Ozon: только ШК этикетки, без posting и order_number', () => {
+  test('Ozon: номер с этикетки, без posting и order_number', () => {
     expect(
       orderStickerCellValue({
         marketplace: 'ozon',
         status: 'in_assembly',
         orderId: '74369038-0308-1',
-        assemblyStickerNumber: '201026795970000',
+        assemblyStickerNumber: 'ii50048401925',
       })
-    ).toBe('201026795970000');
+    ).toBe('ii50048401925');
+  });
+
+  test('Ozon: старый числовой lower_barcode не показываем', () => {
+    expect(
+      orderStickerCellValue({
+        marketplace: 'ozon',
+        status: 'assembled',
+        orderId: '0231280304-0006-1',
+        assemblyStickerNumber: '302085861110000',
+      })
+    ).toBe('—');
   });
 
   test('Ozon: не подставляет order_number вместо стикера', () => {

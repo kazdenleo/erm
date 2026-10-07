@@ -15,7 +15,7 @@ import ordersService from './orders.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
-import { ozonAssemblyStickerFromPosting, ozonStickerNumberFromPosting } from '../utils/ozonPosting.js';
+import { ozonAssemblyStickerFromPosting, isOzonLabelStickerNumber } from '../utils/ozonPosting.js';
 
 // Используем централизованную конфигурацию путей
 const DATA_DIR = config.paths.dataDir;
@@ -74,6 +74,13 @@ function hasLabelCached(order) {
   return fs.existsSync(filePath);
 }
 
+function orderHasValidSticker(order) {
+  const sn = String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? '').trim();
+  if (!sn) return false;
+  if (normalizeMarketplaceForLabel(order?.marketplace) === 'ozon') return isOzonLabelStickerNumber(sn);
+  return true;
+}
+
 function logLabelEvent(message) {
   try {
     ensureDir(DATA_DIR);
@@ -125,8 +132,7 @@ class OrdersLabelsService {
    */
   async ensureLabelFile(order, { organizationId = null } = {}) {
     const filePath = getOrderLabelPath(order);
-    const hasSticker =
-      String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? '').trim() !== '';
+    const hasSticker = orderHasValidSticker(order);
 
     if (!fs.existsSync(filePath)) {
       try {
@@ -161,7 +167,7 @@ class OrdersLabelsService {
         throw err;
       }
     } else if (!hasSticker && normalizeMarketplaceForLabel(order?.marketplace) === 'ozon') {
-      // Этикетка уже в кэше, но номер с ярлыка (lower_barcode) ещё не сохранён — догружаем.
+      // Этикетка уже в кэше, но номер с ярлыка (scanit) ещё не сохранён — догружаем.
       try {
         const stickerNumber = await fetchOzonStickerNumber(order, { organizationId });
         if (stickerNumber != null && String(stickerNumber).trim() !== '') {
@@ -187,10 +193,10 @@ class OrdersLabelsService {
     const filePath = getOrderLabelPath(order);
     const exists = fs.existsSync(filePath);
 
-    let stickerNumber =
-      order?.assemblyStickerNumber ?? order?.assembly_sticker_number ?? null;
-    if (stickerNumber != null) stickerNumber = String(stickerNumber).trim() || null;
-    const hasSticker = Boolean(stickerNumber);
+    const hasSticker = orderHasValidSticker(order);
+    let stickerNumber = hasSticker
+      ? String(order?.assemblyStickerNumber ?? order?.assembly_sticker_number).trim()
+      : null;
     const mp = normalizeMarketplaceForLabel(order?.marketplace);
 
     if (!exists) {
@@ -355,7 +361,7 @@ async function getOzonIntegrationConfig(order, organizationId = null) {
   return ozon;
 }
 
-/** Номер с этикетки Ozon (lower_barcode) без скачивания PDF — для догрузки в кэш стикера. */
+/** Номер с этикетки Ozon (scanit) без скачивания PDF — для догрузки в кэш стикера. */
 async function fetchOzonStickerNumber(order, { organizationId = null } = {}) {
   const ozon = await getOzonIntegrationConfig(order, organizationId);
   const postingNumber = labelCacheFileId(order);

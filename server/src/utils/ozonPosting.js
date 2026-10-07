@@ -21,18 +21,22 @@ export function ozonOrderNumberFromPostingNumber(postingNumberRaw) {
 }
 
 /**
- * Номер с этикетки Ozon FBS (нижний ШК отправления) — аналог стикера WB.
- * Берём lower_barcode, иначе upper_barcode.
+ * Номер, напечатанный на этикетке Ozon FBS (`ii50048401925`) — аналог стикера WB.
+ * Приходит только в v3/posting/fbs/get (поле scanit); barcodes.lower/upper_barcode
+ * на этикетке не печатаются и стикером не являются.
  */
 export function ozonStickerNumberFromPosting(posting) {
   if (!posting || typeof posting !== 'object') return null;
-  const barcodes = posting.barcodes && typeof posting.barcodes === 'object' ? posting.barcodes : null;
-  const lower = barcodes?.lower_barcode ?? barcodes?.lowerBarcode ?? posting.lower_barcode ?? posting.lowerBarcode;
-  const upper = barcodes?.upper_barcode ?? barcodes?.upperBarcode ?? posting.upper_barcode ?? posting.upperBarcode;
-  const raw = lower != null && String(lower).trim() !== '' ? lower : upper;
+  const raw = posting.scanit ?? posting.scanIt ?? null;
   if (raw == null) return null;
   const s = String(raw).trim();
-  return s || null;
+  return isOzonLabelStickerNumber(s) ? s : null;
+}
+
+/** Ранее в стикер Ozon сохранялся числовой barcodes.lower_barcode — такие значения считаем отсутствующими. */
+export function isOzonLabelStickerNumber(value) {
+  const s = String(value ?? '').trim();
+  return s !== '' && !/^\d+$/.test(s);
 }
 
 /**
