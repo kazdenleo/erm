@@ -14,6 +14,11 @@ import logger from '../utils/logger.js';
 import { portalCredentialsFromConfig } from './supplierOrderAdapters/moskvorechie.adapter.js';
 import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
 
+/** В конфиге поставщика лежат пароли и API-ключи — в лог только имена ключей. */
+function configKeysForLog(config) {
+  return config && typeof config === 'object' ? Object.keys(config).join(', ') || '—' : '—';
+}
+
 class SupplierStocksService {
   /**
    * Получить остатки по одному товару от поставщика.
@@ -63,10 +68,11 @@ class SupplierStocksService {
             : await suppliersService.default.getByCode(supplier, {
                 profileId: persistCtx.profileId
               });
-        logger.info(`[Supplier Stocks] Supplier data from DB for ${supplier} (api: ${apiSupplierCode}): ${JSON.stringify(supplierData, null, 2)}`);
+        logger.info(
+          `[Supplier Stocks] Supplier data from DB for ${supplier} (api: ${apiSupplierCode}): id=${supplierData?.id ?? '—'}, apiConfig keys=${configKeysForLog(supplierData?.apiConfig)}`
+        );
         if (supplierData && supplierData.apiConfig) {
           supplierConfig = supplierData.apiConfig;
-          logger.info(`[Supplier Stocks] apiConfig for ${supplier}: ${JSON.stringify(supplierConfig, null, 2)}`);
         }
       } catch (e) {
         logger.error('[Supplier Stocks] Error getting supplier from suppliers table:', e.message);
@@ -79,13 +85,14 @@ class SupplierStocksService {
         const integrationsConfig = await integrationsService.getSupplierConfig(apiSupplierCode, {
           profileId: persistCtx.profileId
         });
-        logger.info(`[Supplier Stocks] Config from integrations for ${apiSupplierCode}: ${JSON.stringify(integrationsConfig, null, 2)}`);
         // Объединяем конфигурации: сначала из suppliers, потом из integrations
         supplierConfig = {
           ...(supplierConfig || {}),
           ...integrationsConfig
         };
-        logger.info(`[Supplier Stocks] Merged config for ${supplier}: ${JSON.stringify(supplierConfig, null, 2)}`);
+        logger.info(
+          `[Supplier Stocks] Merged config for ${supplier} (integrations: ${apiSupplierCode}): keys=${configKeysForLog(supplierConfig)}`
+        );
       } catch (e) {
         logger.error('[Supplier Stocks] Error getting supplier config from integrations:', e.message);
         if (!supplierConfig) {
@@ -733,7 +740,7 @@ async function getMoskvorechieStock(sku, config = null) {
       sku
     )}&f=&cs=utf8&avail&extstor`;
 
-    console.log('[Moskvorechie Stock] Request:', url);
+    console.log('[Moskvorechie Stock] Request:', url.replace(/([?&]p=)[^&]*/, '$1***'));
 
     const response = await fetchWithTimeout(
       url,
