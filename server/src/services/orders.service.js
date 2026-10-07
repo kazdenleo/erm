@@ -1939,13 +1939,18 @@ class OrdersService {
         ? Number(orderDbIdRaw)
         : null;
     if (Number.isFinite(orderDbId) && orderDbId > 0) {
+      const statusRes = await query(`SELECT status FROM orders WHERE id = $1 LIMIT 1`, [orderDbId]);
+      if (isOrderTerminalNoReserve(statusRes.rows?.[0]?.status)) return;
       const alreadyForOrder = await this._getReservedQtyForOrderProduct(orderDbId, productId);
       const partialLine = meta?.partial_line === true;
       if (partialLine) {
         qty = Math.min(qty, qtyWanted);
       } else {
-        if (alreadyForOrder >= qtyWanted) return;
-        qty = Math.min(qty, qtyWanted - alreadyForOrder);
+        // Наличие под заказ уже списано отгрузкой (сборка) — повторный резерв занижал бы «Доступно».
+        const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
+        const covered = alreadyForOrder + alreadyShipped;
+        if (covered >= qtyWanted) return;
+        qty = Math.min(qty, qtyWanted - covered);
       }
       if (qty <= 0) return;
     }
