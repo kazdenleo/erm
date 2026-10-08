@@ -6,7 +6,7 @@
  *
  * FBS: отметки «Собран» (orders.assembled_*, вся история) + сканы из employee_activity_events.
  * FBO-сборка: fbo_supply_item_scans. Упаковка FBO: employee_activity_events (fbo_packing_scan).
- * Приёмка: от создания до закрытия документа, без остановки на паузы.
+ * Приёмка: время от создания до закрытия документа (без остановки на паузы) ÷ принятые штуки.
  */
 
 import { query } from '../config/database.js';
@@ -64,6 +64,20 @@ function activeTime(marks, idleSec) {
 
 function perUnit(activeSec, timedUnits) {
   return timedUnits > 0 ? Math.round(activeSec / timedUnits) : null;
+}
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+/**
+ * Время приёмки на штуку. avgSec — всё время ÷ все штуки (крупная приёмка весит больше),
+ * medianSec — медиана «время ÷ штуки» по приёмкам. Приёмки без принятых штук не учитываются.
+ * @param {{ d: number, units: number }[]} list
+ */
+function receiptPerUnit(list) {
+  if (!list.length) return { avgSec: null, medianSec: null };
+  const sumD = list.reduce((s, x) => s + x.d, 0);
+  const sumU = list.reduce((s, x) => s + x.units, 0);
+  return { avgSec: round1(sumD / sumU), medianSec: round1(median(list.map((x) => x.d / x.units))) };
 }
 
 const MSK_OFFSET_MS = 3 * 3600 * 1000;
@@ -212,7 +226,7 @@ class EmployeeMetricsService {
           fboCollect: { units: 0, supplies: new Set(), marks: [] },
           packing: { units: 0, supplies: 0, marks: [] },
           scans: { assemblyOk: 0, assemblyErrors: 0, receiptOk: 0, receiptErrors: 0, receiptUnits: 0, packingErrors: 0 },
-          receipts: { receipts: 0, units: 0, diffLines: 0, durations: [], byDay: {} },
+          receipts: { receipts: 0, units: 0, diffLines: 0, timed: [], byDay: {} },
           inventory: { sessions: 0, lines: 0 },
           tasks: 0,
         });
@@ -264,11 +278,13 @@ class EmployeeMetricsService {
       u.receipts.units += Number(row.units) || 0;
       u.receipts.diffLines += Number(row.diff_lines) || 0;
       const d = Number(row.duration_sec);
-      if (Number.isFinite(d) && d > 0) u.receipts.durations.push(d);
+      const units = Number(row.units) || 0;
+      const timed = Number.isFinite(d) && d > 0 && units > 0 ? { d, units } : null;
+      if (timed) u.receipts.timed.push(timed);
       if (row.day) {
-        const day = (u.receipts.byDay[row.day] ||= { qty: 0, durations: [] });
-        day.qty += Number(row.units) || 0;
-        if (Number.isFinite(d) && d > 0) day.durations.push(d);
+        const day = (u.receipts.byDay[row.day] ||= { qty: 0, timed: [] });
+        day.qty += units;
+        if (timed) day.timed.push(timed);
       }
     }
     for (const row of inventoryRes.rows || []) {
@@ -284,7 +300,7 @@ class EmployeeMetricsService {
       fbs: { activeSec: 0, timedUnits: 0 },
       fboCollect: { activeSec: 0, timedUnits: 0 },
       packing: { activeSec: 0, timedUnits: 0 },
-      receiptDurations: [],
+      receiptsTimed: [],
     };
     const allDays = new Set();
 
@@ -306,14 +322,12 @@ class EmployeeMetricsService {
           totals[key].activeSec += t.activeSec;
           totals[key].timedUnits += t.timedUnits;
         }
-        totals.receiptDurations.push(...u.receipts.durations);
+        totals.receiptsTimed.push(...u.receipts.timed);
         const receiptDaily = {};
         for (const [d, v] of Object.entries(u.receipts.byDay)) {
-          receiptDaily[d] = {
-            qty: v.qty,
-            sec: v.durations.length ? Math.round(v.durations.reduce((s, x) => s + x, 0) / v.durations.length) : null,
-          };
+          receiptDaily[d] = { qty: v.qty, sec: receiptPerUnit(v.timed).avgSec };
         }
+        const receiptTime = receiptPerUnit(u.receipts.timed);
         const daily = {
           fbs: dailyActive(u.fbs.marks, FBS_IDLE_SEC),
           fboCollect: dailyActive(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC),
@@ -324,7 +338,6 @@ class EmployeeMetricsService {
 
         const assemblyScans = u.scans.assemblyOk + u.scans.assemblyErrors;
         const receiptScans = u.scans.receiptOk + u.scans.receiptErrors;
-        const durations = u.receipts.durations;
         return {
           userId: u.userId,
           name: u.name,
@@ -357,8 +370,8 @@ class EmployeeMetricsService {
             units: Math.max(u.receipts.units, 0),
             scannedUnits: u.scans.receiptUnits,
             diffLines: u.receipts.diffLines,
-            avgSec: durations.length ? Math.round(durations.reduce((s, d) => s + d, 0) / durations.length) : null,
-            medianSec: durations.length ? Math.round(median(durations)) : null,
+            secPerUnit: receiptTime.avgSec,
+            medianSecPerUnit: receiptTime.medianSec,
             scans: receiptScans,
             errors: u.scans.receiptErrors,
             errorRate: receiptScans > 0 ? round2((u.scans.receiptErrors / receiptScans) * 100) : null,
@@ -416,9 +429,9 @@ class EmployeeMetricsService {
     summary.fboCollectActiveHours = round2(totals.fboCollect.activeSec / 3600);
     summary.packingSecPerUnit = perUnit(totals.packing.activeSec, totals.packing.timedUnits);
     summary.packingActiveHours = round2(totals.packing.activeSec / 3600);
-    const rd = totals.receiptDurations;
-    summary.receiptAvgSec = rd.length ? Math.round(rd.reduce((s, d) => s + d, 0) / rd.length) : null;
-    summary.receiptMedianSec = rd.length ? Math.round(median(rd)) : null;
+    const receiptTotal = receiptPerUnit(totals.receiptsTimed);
+    summary.receiptSecPerUnit = receiptTotal.avgSec;
+    summary.receiptMedianSecPerUnit = receiptTotal.medianSec;
 
     const tracking = trackingRes.rows?.[0] || {};
     return {
