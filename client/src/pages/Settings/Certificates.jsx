@@ -20,7 +20,10 @@ const DOC_TYPE_LABELS = {
 
 const OZON_STATUS_LABELS = {
   approved: 'Одобрен на Ozon',
+  declined: 'Отклонён на Ozon',
   rejected: 'Отклонён на Ozon',
+  verification: 'На проверке',
+  awaiting_verification: 'Ожидает проверки',
   pending: 'Ожидает проверки',
   awaiting_moderation: 'Ожидает проверки',
   on_moderation: 'На проверке',
@@ -275,6 +278,8 @@ export function Certificates() {
   const [ymBusy, setYmBusy] = useState(false);
   const [ymError, setYmError] = useState('');
   const [ymResult, setYmResult] = useState(null);
+  const [statusSyncBusy, setStatusSyncBusy] = useState(false);
+  const [statusSyncError, setStatusSyncError] = useState('');
 
   const brandNameById = useMemo(() => {
     const map = {};
@@ -282,8 +287,8 @@ export function Certificates() {
     return map;
   }, [brands]);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const opts = {};
@@ -292,9 +297,26 @@ export function Certificates() {
       setList(res?.data || []);
     } catch (err) {
       setError(err?.message || 'Ошибка загрузки');
-      setList([]);
+      if (!silent) setList([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+    }
+  };
+
+  const syncStatuses = async ({ force = false } = {}) => {
+    setStatusSyncBusy(true);
+    setStatusSyncError('');
+    try {
+      const res = await certificatesApi.syncStatuses({ force });
+      const data = res?.data || {};
+      const errors = [data.ozon?.error && `Ozon: ${data.ozon.error}`, data.ym?.error && `Яндекс: ${data.ym.error}`]
+        .filter(Boolean);
+      if (errors.length) setStatusSyncError(errors.join('; '));
+      if (force || data.ozon?.updated || data.ym?.updated) await load({ silent: true });
+    } catch (err) {
+      setStatusSyncError(err?.response?.data?.message || err?.message || 'Не удалось обновить статусы');
+    } finally {
+      setStatusSyncBusy(false);
     }
   };
 
@@ -302,6 +324,11 @@ export function Certificates() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterBrandId]);
+
+  useEffect(() => {
+    syncStatuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filteredList = useMemo(() => {
     if (!filterDocType) return list;
@@ -542,8 +569,19 @@ export function Certificates() {
             ))}
           </select>
         </div>
-        <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
+        <div className="certificates-toolbar-actions">
+          <Button
+            variant="secondary"
+            onClick={() => syncStatuses({ force: true })}
+            disabled={statusSyncBusy}
+            title="Запросить актуальные статусы проверки на Ozon и Яндекс.Маркете"
+          >
+            {statusSyncBusy ? 'Обновляю статусы…' : 'Обновить статусы'}
+          </Button>
+          <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
+        </div>
       </div>
+      {statusSyncError ? <p className="error">{statusSyncError}</p> : null}
 
       <div className="certificates-table-wrap">
         {filteredList.length === 0 ? (
@@ -618,7 +656,7 @@ export function Certificates() {
                             className={
                               ozonStatus === 'approved'
                                 ? 'status-ozon-ok'
-                                : ozonStatus === 'rejected'
+                                : ozonStatus === 'rejected' || ozonStatus === 'declined'
                                   ? 'status-expired'
                                   : 'status-ozon-pending'
                             }

@@ -116,7 +116,48 @@ async function persistOzonFields(certId, fields, profileId) {
   return r.rows[0] || null;
 }
 
+const OZON_LIST_PAGE_SIZE = 100;
+const OZON_LIST_MAX_PAGES = 50;
+
 class OzonCertificatesPushService {
+  /** Подтягивает status_code из /v1/product/certificate/list для уже отправленных сертификатов. */
+  async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
+    const targets = (certs || []).filter((c) => Number(c.ozon_certificate_id) > 0);
+    if (!targets.length) return { checked: 0, updated: 0 };
+    const ozonApiOpts = { profileId, organizationId };
+    const byId = new Map();
+    for (let page = 1; page <= OZON_LIST_MAX_PAGES; page++) {
+      const data = await ozonApiPostWithRetry(
+        '/v1/product/certificate/list',
+        { page, page_size: OZON_LIST_PAGE_SIZE },
+        ozonApiOpts
+      );
+      const rows = data?.result?.certificates || [];
+      for (const row of rows) byId.set(Number(row.certificate_id), row);
+      const pageCount = Number(data?.result?.page_count);
+      if (rows.length < OZON_LIST_PAGE_SIZE || (Number.isFinite(pageCount) && page >= pageCount)) break;
+    }
+
+    let updated = 0;
+    for (const cert of targets) {
+      const row = byId.get(Number(cert.ozon_certificate_id));
+      if (!row?.status_code) continue;
+      const statusCode = String(row.status_code);
+      const fields = { ozon_status_code: statusCode, ozon_synced_at: new Date().toISOString() };
+      if (statusCode === 'declined') {
+        const reason = String(row.verification_comment || row.rejection_reason_code || '').trim();
+        fields.ozon_last_error = reason ? `Отклонён Ozon: ${reason}`.slice(0, 2000) : 'Отклонён Ozon';
+      } else if (String(cert.ozon_last_error || '').startsWith('Отклонён Ozon')) {
+        fields.ozon_last_error = null;
+      }
+      if (statusCode !== cert.ozon_status_code || fields.ozon_last_error !== undefined) {
+        await persistOzonFields(cert.id, fields, profileId);
+        updated++;
+      }
+    }
+    return { checked: targets.length, updated };
+  }
+
   async pushCertificate(certId, options = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       throw httpError('Отправка сертификатов на Ozon доступна только при работе с PostgreSQL', 501);

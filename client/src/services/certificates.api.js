@@ -62,5 +62,10 @@ export const certificatesApi = {
     const res = await api.get('/certificates/ym/document-types');
     return res.data;
   },
+
+  syncStatuses: async ({ force = false } = {}) => {
+    const res = await api.post('/certificates/sync-statuses', { force }, { timeout: 120000 });
+    return res.data;
+  },
 };
 

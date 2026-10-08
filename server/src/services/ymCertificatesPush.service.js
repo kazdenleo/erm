@@ -172,7 +172,43 @@ async function fetchExistingCertificatesMap(businessId, apiKey, offerIds) {
   return out;
 }
 
+const YM_STATUS_BATCH = 50;
+
 class YmCertificatesPushService {
+  /** Подтягивает status из offers/documents для уже отправленных документов. */
+  async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
+    const targets = (certs || []).filter((c) => Number(c.ym_document_id) > 0);
+    if (!targets.length) return { checked: 0, updated: 0 };
+    let ctx;
+    try {
+      ctx = await integrationsService._resolveYandexBusinessApiContext({ profileId, organizationId });
+    } catch (e) {
+      throw httpError(e?.message || 'Не настроен Яндекс.Маркет', e?.statusCode || 400);
+    }
+    const url = `https://api.partner.market.yandex.ru/v1/businesses/${encodeURIComponent(String(ctx.businessId))}/offers/documents?limit=${YM_STATUS_BATCH}`;
+    const byId = new Map();
+    for (let offset = 0; offset < targets.length; offset += YM_STATUS_BATCH) {
+      const ids = targets.slice(offset, offset + YM_STATUS_BATCH).map((c) => Number(c.ym_document_id));
+      const data = await ymFetchJson(url, { apiKey: ctx.apiKey, body: { documentIds: ids } });
+      for (const doc of data?.result?.documents || []) byId.set(Number(doc.id), doc);
+    }
+
+    let updated = 0;
+    for (const cert of targets) {
+      const doc = byId.get(Number(cert.ym_document_id));
+      if (!doc?.status) continue;
+      const statusCode = String(doc.status);
+      if (statusCode === cert.ym_status_code) continue;
+      await persistYmFields(
+        cert.id,
+        { ym_status_code: statusCode, ym_synced_at: new Date().toISOString() },
+        profileId
+      );
+      updated++;
+    }
+    return { checked: targets.length, updated };
+  }
+
   async pushCertificate(certId, options = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       throw httpError('Отправка сертификатов на Яндекс.Маркет доступна только при работе с PostgreSQL', 501);

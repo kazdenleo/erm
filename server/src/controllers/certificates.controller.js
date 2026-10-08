@@ -5,6 +5,7 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { query } from '../config/database.js';
 import certificatesService from '../services/certificates.service.js';
 import ozonCertificatesPushService from '../services/ozonCertificatesPush.service.js';
 import ymCertificatesPushService from '../services/ymCertificatesPush.service.js';
@@ -15,6 +16,8 @@ import { YM_DOCUMENT_TYPES } from '../utils/ymCertificateMap.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const STATUS_SYNC_COOLDOWN_MS = 30_000;
+
 function noAccountError() {
   const err = new Error('Нет привязки к аккаунту');
   err.statusCode = 403;
@@ -24,6 +27,7 @@ function noAccountError() {
 class CertificatesController {
   constructor() {
     this._rootDir = path.resolve(__dirname, '../../');
+    this._statusSyncAt = new Map();
   }
 
   _listScope(req) {
@@ -202,6 +206,37 @@ class CertificatesController {
         documentType: body.documentType ?? body.document_type ?? null,
       });
       return res.status(200).json({ ok: true, data: result });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async syncStatuses(req, res, next) {
+    try {
+      const profileId = this._requireProfile(req);
+      const organizationId = this._organizationId(req);
+      const cooldownKey = `${profileId}:${organizationId ?? ''}`;
+      const now = Date.now();
+      const last = this._statusSyncAt.get(cooldownKey) || 0;
+      if (now - last < STATUS_SYNC_COOLDOWN_MS && req.body?.force !== true) {
+        return res.status(200).json({ ok: true, data: { skipped: true } });
+      }
+      this._statusSyncAt.set(cooldownKey, now);
+
+      const r = await query(
+        `SELECT id, ozon_certificate_id, ozon_status_code, ozon_last_error, ym_document_id, ym_status_code
+           FROM certificates
+          WHERE profile_id = $1::bigint
+            AND (ozon_certificate_id IS NOT NULL OR ym_document_id IS NOT NULL)`,
+        [profileId]
+      );
+      const certs = r.rows || [];
+      const opts = { profileId, organizationId };
+      const [ozon, ym] = await Promise.all([
+        ozonCertificatesPushService.syncStatuses(certs, opts).catch((e) => ({ error: e?.message || String(e) })),
+        ymCertificatesPushService.syncStatuses(certs, opts).catch((e) => ({ error: e?.message || String(e) })),
+      ]);
+      return res.status(200).json({ ok: true, data: { ozon, ym } });
     } catch (e) {
       next(e);
     }

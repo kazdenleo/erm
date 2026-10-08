@@ -19,6 +19,10 @@ router.get(
   '/ym/document-types',
   wrapAsync(certificatesController.ymDocumentTypes.bind(certificatesController))
 );
+router.post(
+  '/sync-statuses',
+  wrapAsync(certificatesController.syncStatuses.bind(certificatesController))
+);
 router.get('/:id', wrapAsync(certificatesController.getById.bind(certificatesController)));
 router.post('/', wrapAsync(certificatesController.create.bind(certificatesController)));
 router.put('/:id', wrapAsync(certificatesController.update.bind(certificatesController)));
