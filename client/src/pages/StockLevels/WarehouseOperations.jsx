@@ -334,7 +334,7 @@ export function WarehouseOperations({
   }, [ownWarehouses, transferOrganizationId]);
   const transferWarehouseLabel = (w) => {
     if (!w) return '';
-    return w.address || w.name || `Склад #${w.id}`;
+    return warehouseDisplayLabel(w);
   };
   const transferFromWarehouse = useMemo(
     () => transferWarehouses.find((w) => String(w.id) === String(transferFromWarehouseId)),
@@ -3649,7 +3649,7 @@ export function WarehouseOperations({
                 </option>
                 {writeoffWarehouses.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.address || w.name || `Склад #${w.id}`}
+                  {warehouseDisplayLabel(w)}
                 </option>
               ))}
             </select>
@@ -3854,7 +3854,7 @@ export function WarehouseOperations({
                     <option value="">— Все склады —</option>
                     {writeoffFilterWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>
@@ -3962,7 +3962,7 @@ export function WarehouseOperations({
                 </option>
                 {customerReturnWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>
@@ -4250,9 +4250,12 @@ export function WarehouseOperations({
                 </label>
                 {inventoryLiveEnabled && inventoryLiveSessionId ? (
                   <div className="warehouse-ops-select" style={{ padding: '8px 0', fontSize: 14 }}>
-                    {ownWarehouses.find((w) => String(w.id) === String(inventorySessionWarehouseId))?.address ||
-                      ownWarehouses.find((w) => String(w.id) === String(inventorySessionWarehouseId))?.name ||
-                      (inventorySessionWarehouseId ? `Склад #${inventorySessionWarehouseId}` : 'Загрузка…')}
+                    {inventorySessionWarehouseId
+                      ? warehouseDisplayLabel(
+                          ownWarehouses.find((w) => String(w.id) === String(inventorySessionWarehouseId)),
+                          inventorySessionWarehouseId
+                        )
+                      : 'Загрузка…'}
                     {isInventoryLiveGuest ? (
                       <span className="muted" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
                         Склад задан создателем общей инвентаризации
@@ -4269,7 +4272,7 @@ export function WarehouseOperations({
                   <option value="">— Выберите склад —</option>
                   {ownWarehouses.map((w) => (
                     <option key={w.id} value={w.id}>
-                      {w.address || w.name || `Склад #${w.id}`}
+                      {warehouseDisplayLabel(w)}
                     </option>
                   ))}
                 </select>
@@ -4796,7 +4799,7 @@ export function WarehouseOperations({
                     <option value="">— Все склады —</option>
                     {transferFilterWarehouses.map((w) => (
                       <option key={w.id} value={w.id}>
-                        {w.address || w.name || `Склад #${w.id}`}
+                        {warehouseDisplayLabel(w)}
                       </option>
                     ))}
                   </select>
@@ -5024,7 +5027,7 @@ export function WarehouseOperations({
                 <option value="">— Выберите склад —</option>
                 {receiptEditWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>
@@ -5043,7 +5046,7 @@ export function WarehouseOperations({
                   <option value="">— Выберите склад —</option>
                   {receiptEditWarehouses.map((w) => (
                     <option key={w.id} value={w.id}>
-                      {w.address || w.name || `Склад #${w.id}`}
+                      {warehouseDisplayLabel(w)}
                     </option>
                   ))}
                 </select>
@@ -5426,7 +5429,7 @@ export function WarehouseOperations({
               <option value="">— Выберите склад —</option>
               {ownWarehouses.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.address || w.name || `Склад #${w.id}`}
+                  {warehouseDisplayLabel(w)}
                 </option>
               ))}
             </select>
@@ -5636,7 +5639,7 @@ export function WarehouseOperations({
                 </option>
                 {returnWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>

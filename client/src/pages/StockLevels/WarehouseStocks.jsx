@@ -38,6 +38,7 @@ import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import { supplierWarehouseMainIds } from '../../utils/supplierWarehouseLinks.js';
+import { warehouseDisplayLabel } from '../../utils/stockDestinationDefaults.js';
 import './StockLevels.css';
 
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
@@ -3397,7 +3398,7 @@ export function WarehouseStocks() {
     ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
     : null;
   const mainWarehouseName = selectedWarehouse
-    ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
+    ? warehouseDisplayLabel(selectedWarehouse)
     : 'Все склады (сумма)';
 
   const rows = useMemo(() => {
@@ -3607,7 +3608,7 @@ export function WarehouseStocks() {
                 <option value="">Все склады (сумма)</option>
                 {ownWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
+                    {warehouseDisplayLabel(w)}
                   </option>
                 ))}
               </select>
@@ -4551,9 +4552,10 @@ export function WarehouseStocks() {
           <p className="text-muted small mb-2">
             Склад:{' '}
             <strong>
-              {ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.address ||
-                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.name ||
-                `#${stockWarehouseId}`}
+              {warehouseDisplayLabel(
+                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId)),
+                stockWarehouseId
+              )}
             </strong>
           </p>
         )}
