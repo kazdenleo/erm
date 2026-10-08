@@ -390,6 +390,22 @@ async function retryPendingAutoSubmits(profileId, autoSuppliers) {
         purchaseId,
         supplierId,
       });
+      // Позиции попали в закупку при неудачной отправке и остались в «Новых».
+      const sentRefs = await query(
+        `SELECT DISTINCT elem->>'marketplace' AS marketplace, elem->>'orderId' AS "orderId"
+         FROM purchase_items pi
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+         WHERE pi.purchase_id = $1 AND elem ? 'supplierSubmittedAt'`,
+        [purchaseId]
+      );
+      if (sentRefs.rows?.length) {
+        await ordersService.bulkSetToProcurement(sentRefs.rows, profileId).catch((e) => {
+          logger.warn('[AutoProcurement] retry submit: set in_procurement failed', {
+            purchaseId,
+            message: e?.message || String(e),
+          });
+        });
+      }
     } else if (out?.reason && out.reason !== 'already_submitted' && !out?.skipped) {
       logger.warn('[AutoProcurement] retry submit failed', {
         profileId,
