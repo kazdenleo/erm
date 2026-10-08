@@ -6,6 +6,7 @@
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { runReserveDbLimited } from '../utils/reserveDbLimiter.js';
+import { trySessionAdvisoryLock } from '../utils/sessionAdvisoryLock.js';
 import stockMovementsService from './stockMovements.service.js';
 import { getProductSupplySnapshotWithClient } from './sellableQuantity.service.js';
 import { NET_RESERVED_MOVEMENT_ROW_CASE_SQL } from '../constants/netReservedStockSql.js';
@@ -1361,8 +1362,8 @@ class FboSupplyReserveService {
     const pid = normalizeProfileId(profileId);
     if (pid == null) return { products: 0, movements: 0 };
 
-    const lockR = await query(`SELECT pg_try_advisory_lock($1::bigint) AS ok`, [900_000_000 + pid]);
-    if (lockR.rows?.[0]?.ok !== true) {
+    const releaseLock = await trySessionAdvisoryLock(900_000_000 + pid);
+    if (!releaseLock) {
       console.warn(`[FBO rebalance] profile ${pid}: пересчёт уже выполняется, пропуск`);
       return { products: 0, movements: 0, skipped: true };
     }
@@ -1405,7 +1406,7 @@ class FboSupplyReserveService {
 
       return { products: productIds.length, movements: movAfter - movBefore };
     } finally {
-      await query(`SELECT pg_advisory_unlock($1::bigint)`, [900_000_000 + pid]).catch(() => {});
+      await releaseLock();
     }
   }
 

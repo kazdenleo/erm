@@ -22,6 +22,7 @@ import {
 import { basketItemIdsForRollback } from '../utils/supplierSubmitRollback.js';
 import { rememberSupplierAccept } from '../utils/recentSupplierAccept.js';
 import { orderMarketplaceToDb } from '../utils/orderPurchaseLookup.js';
+import { trySessionAdvisoryLock } from '../utils/sessionAdvisoryLock.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -145,15 +146,6 @@ function orderScopeSessionLockKey(orderScope) {
     orderScope?.marketplaceVariants?.[0] ?? orderScope?.marketplace ?? ''
   ).toLowerCase();
   return hashAdvisoryLockKey(`${mp}|${oid}`);
-}
-
-async function tryAcquireSessionLock(ns, key) {
-  const r = await query('SELECT pg_try_advisory_lock($1::integer, $2::integer) AS ok', [ns, key]);
-  return r.rows?.[0]?.ok === true;
-}
-
-async function releaseSessionLock(ns, key) {
-  await query('SELECT pg_advisory_unlock($1::integer, $2::integer)', [ns, key]).catch(() => {});
 }
 
 /** Все source_orders строки уже с supplierSubmittedAt (антидубль повторной отправки). */
@@ -692,23 +684,22 @@ export async function trySubmitPurchaseToSupplier({
   }
 
   const purchaseLockKey = pid % 2147483647;
-  let purchaseLockHeld = false;
-  let orderLockKey = null;
-  let orderLockHeld = false;
+  let releasePurchaseLock = null;
+  let releaseOrderLock = null;
 
   const releaseSubmitSessionLocks = async () => {
-    if (orderLockHeld && orderLockKey != null) {
-      await releaseSessionLock(ORDER_SUBMIT_LOCK_NS, orderLockKey);
-      orderLockHeld = false;
+    if (releaseOrderLock) {
+      await releaseOrderLock();
+      releaseOrderLock = null;
     }
-    if (purchaseLockHeld) {
-      await releaseSessionLock(SUPPLIER_SUBMIT_LOCK_NS, purchaseLockKey);
-      purchaseLockHeld = false;
+    if (releasePurchaseLock) {
+      await releasePurchaseLock();
+      releasePurchaseLock = null;
     }
   };
 
-  purchaseLockHeld = await tryAcquireSessionLock(SUPPLIER_SUBMIT_LOCK_NS, purchaseLockKey);
-  if (!purchaseLockHeld) {
+  releasePurchaseLock = await trySessionAdvisoryLock(SUPPLIER_SUBMIT_LOCK_NS, purchaseLockKey);
+  if (!releasePurchaseLock) {
     return {
       submitted: false,
       skipped: true,
@@ -721,9 +712,11 @@ export async function trySubmitPurchaseToSupplier({
   }
 
   if (orderScoped) {
-    orderLockKey = orderScopeSessionLockKey(orderScope);
-    orderLockHeld = await tryAcquireSessionLock(ORDER_SUBMIT_LOCK_NS, orderLockKey);
-    if (!orderLockHeld) {
+    releaseOrderLock = await trySessionAdvisoryLock(
+      ORDER_SUBMIT_LOCK_NS,
+      orderScopeSessionLockKey(orderScope)
+    );
+    if (!releaseOrderLock) {
       await releaseSubmitSessionLocks();
       const oid = String(orderScope.orderId ?? '').trim();
       return {
