@@ -1,18 +1,39 @@
 /**
  * Advisory lock + deadlock retry for FBS/FBO report line maintenance on analytics reads.
  */
-import { query } from '../config/database.js';
+import { query, getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
 
-export async function withReportMaintenanceLock(lockBase, profileId, fn) {
+/**
+ * Session-level advisory lock must be taken and released on the same connection,
+ * otherwise the unlock is a no-op and the lock stays on a pooled connection.
+ * If another request holds the lock longer than waitMs, maintenance is skipped
+ * (it is best-effort for analytics reads) and null is returned.
+ */
+export async function withReportMaintenanceLock(lockBase, profileId, fn, { waitMs = 30000 } = {}) {
   const pid = Number(profileId);
   if (!Number.isFinite(pid) || pid < 1) return fn();
   const key = Number(lockBase) + pid;
-  await query(`SELECT pg_advisory_lock($1::bigint)`, [key]);
+  const client = await getClient();
+  let locked = false;
   try {
+    await client.query(`SET lock_timeout = '${Math.max(1, Math.floor(waitMs))}ms'`);
+    try {
+      await client.query(`SELECT pg_advisory_lock($1::bigint)`, [key]);
+      locked = true;
+    } catch (e) {
+      if (e?.code !== '55P03') throw e;
+      logger.warn('[MP Reports] maintenance lock busy, skipping maintenance', { key, waitMs });
+      return null;
+    } finally {
+      await client.query(`SET lock_timeout = DEFAULT`).catch(() => {});
+    }
     return await fn();
   } finally {
-    await query(`SELECT pg_advisory_unlock($1::bigint)`, [key]).catch(() => {});
+    if (locked) {
+      await client.query(`SELECT pg_advisory_unlock($1::bigint)`, [key]).catch(() => {});
+    }
+    client.release();
   }
 }
 
