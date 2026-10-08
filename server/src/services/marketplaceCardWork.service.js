@@ -7,6 +7,7 @@
 import marketplaceTurnoverAnalyticsService from './marketplaceTurnoverAnalytics.service.js';
 import marketplaceCardQualityService from './marketplaceCardQuality.service.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
+import returnsAnalyticsService from './returnsAnalytics.service.js';
 import { query } from '../config/database.js';
 import { describePackDimensionMismatch } from '../utils/packDimensionsDiff.js';
 import { parsePricePushSettings } from '../utils/pricePushSettings.js';
@@ -457,7 +458,7 @@ async function listIdentifierDuplicates({ profileId } = {}) {
   return { groups: enriched, productCount: productIds.size };
 }
 
-async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = {}) {
+export async function listPackDimensionMismatches({ profileId, marketplace = 'all' } = {}) {
   const pid = Number(profileId);
   if (!Number.isFinite(pid) || pid < 1) return [];
   const mpFilter = String(marketplace || 'all').toLowerCase();
@@ -674,6 +675,42 @@ class MarketplaceCardWorkService {
       });
     }
 
+    let highReturnRows = [];
+    try {
+      highReturnRows = await returnsAnalyticsService.listHighReturns({ profileId, marketplace });
+    } catch {
+      highReturnRows = [];
+    }
+    for (const h of highReturnRows) {
+      const pid = Number(h.productId) || 0;
+      const mp = h.marketplace;
+      const key = rowKey(pid, h.productSku, h.productSku, mp);
+      const reasonItem = {
+        code: 'high_returns',
+        label: 'Много возвратов',
+        hint: `Возвраты ${h.returnRate}% (${h.returnedQty} из ${h.soldQty} шт. за 90 дн.). ${h.flagHint}`,
+        severity: h.returnRate >= 20 ? 'high' : 'medium',
+        marketplace: mp,
+        returnRate: h.returnRate,
+      };
+      const prev = byKey.get(key);
+      if (prev) {
+        if (!prev.reasons.some((r) => r.code === 'high_returns')) prev.reasons.push(reasonItem);
+        continue;
+      }
+      byKey.set(key, {
+        productId: pid || null,
+        sku: h.productSku,
+        erpSku: h.productSku,
+        productName: h.productName,
+        marketplace: mp,
+        reasons: [reasonItem],
+        soldQty: h.soldQty,
+        soldAmount: h.soldAmount,
+        stockQty: 0,
+      });
+    }
+
     let highDrrThreshold = null;
     const profileIdNum = Number(profileId);
     try {
@@ -755,6 +792,7 @@ class MarketplaceCardWorkService {
         lowContentRatingCount: items.filter((i) => i.reasonCodes.includes('low_content_rating')).length,
         dimMismatchCount: items.filter((i) => i.reasonCodes.includes('dim_mismatch')).length,
         highDrrCount: items.filter((i) => i.reasonCodes.includes('high_drr')).length,
+        highReturnsCount: items.filter((i) => i.reasonCodes.includes('high_returns')).length,
       },
       items,
     };

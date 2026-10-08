@@ -7,6 +7,22 @@ import purchasesService from '../services/purchases.service.js';
 import purchasesImportService from '../services/purchasesImport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
+import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
+
+function logReceiptScan(req, receiptId, { quantity = 0, code = null, error = null } = {}) {
+  logEmployeeEvent({
+    user: req.user,
+    eventType: EMPLOYEE_EVENT.RECEIPT_SCAN,
+    isError: Boolean(error),
+    entityType: 'purchase_receipt',
+    entityId: receiptId,
+    quantity: error ? 0 : quantity,
+    meta: {
+      code: code != null ? String(code).slice(0, 120) : null,
+      message: error ? String(error).slice(0, 300) : undefined,
+    },
+  });
+}
 
 class PurchasesController {
   async list(req, res, next) {
@@ -356,8 +372,15 @@ class PurchasesController {
         { productId, barcode, sku, scannerId: scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null) },
         { profileId, userId }
       );
+      logReceiptScan(req, receiptId, { quantity: 1, code: barcode || sku || productId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        logReceiptScan(req, req.params?.receiptId, {
+          code: req.body?.barcode || req.body?.sku || req.body?.productId,
+          error: e.message,
+        });
+      }
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }
@@ -400,8 +423,15 @@ class PurchasesController {
         { productId, barcode, sku, quantity, scannerId: effectiveScannerId },
         { profileId, userId }
       );
+      logReceiptScan(req, receiptId, { quantity: Number(quantity) || 1, code: barcode || sku || productId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        logReceiptScan(req, req.params?.receiptId, {
+          code: req.body?.barcode || req.body?.sku || req.body?.productId,
+          error: e.message,
+        });
+      }
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }

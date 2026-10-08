@@ -1314,6 +1314,21 @@ class SchedulerService {
         logger.info('[Scheduler] Certificates status sync disabled (CERTIFICATES_STATUS_SYNC_ENABLED)');
       }
 
+      const stockDailySnapshotCron = String(process.env.STOCK_DAILY_SNAPSHOT_CRON || '').trim() || '55 23 * * *';
+      const runStockDailySnapshot = async () => {
+        try {
+          const { default: lostRevenueAnalyticsService } = await import('./lostRevenueAnalytics.service.js');
+          const out = await lostRevenueAnalyticsService.snapshotStockDaily();
+          logger.info('[Scheduler] Product stock daily snapshot done', out);
+        } catch (error) {
+          logger.error('[Scheduler] Product stock daily snapshot failed:', error);
+        }
+      };
+      const stockDailySnapshotJob = cron.schedule(stockDailySnapshotCron, runStockDailySnapshot, {
+        scheduled: false,
+        timezone: 'Europe/Moscow',
+      });
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -1619,6 +1634,14 @@ class SchedulerService {
         });
       }
 
+      this.jobs.push({
+        name: 'product-stock-daily-snapshot',
+        job: stockDailySnapshotJob,
+        schedule: stockDailySnapshotCron,
+        description:
+          'Снимок наличия (свои склады + поставщики) для упущенной выручки и прогноза. STOCK_DAILY_SNAPSHOT_CRON, по умолчанию 55 23 * * *',
+      });
+
       if (certificatesStatusSyncJob) {
         this.jobs.push({
           name: 'certificates-status-sync',
@@ -1688,6 +1711,17 @@ class SchedulerService {
       if (certificatesStatusSyncJob) {
         certificatesStatusSyncJob.start();
       }
+      stockDailySnapshotJob.start();
+      setTimeout(() => {
+        (async () => {
+          try {
+            const { default: lostRevenueAnalyticsService } = await import('./lostRevenueAnalytics.service.js');
+            if (!(await lostRevenueAnalyticsService.hasStockSnapshotForToday())) await runStockDailySnapshot();
+          } catch (error) {
+            logger.warn('[Scheduler] Startup stock daily snapshot check failed:', error?.message || error);
+          }
+        })();
+      }, 90 * 1000);
       profileNightlyDispatchJob.start();
       this.isRunning = true;
 

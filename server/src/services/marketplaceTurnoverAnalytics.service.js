@@ -5,7 +5,15 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { sqlNormArticle, sqlOzonSkuMapCte } from '../utils/offerArticleKey.js';
+import { sqlOzonSkuMapCte } from '../utils/offerArticleKey.js';
+import {
+  SALE_LINE,
+  SQL_MP_NORM,
+  SQL_EXCLUDE_JUNK,
+  sqlOzonNameMapCte,
+  lineProductJoins,
+  skuJoinForSnapshot,
+} from '../utils/marketplaceReportLineSql.js';
 import { ensureOzonFinanceSkuLinks } from './ozonFinanceSkuLink.service.js';
 import logger from '../utils/logger.js';
 
@@ -55,130 +63,6 @@ function normalizeScheme(raw) {
   const v = String(raw || 'all').trim().toLowerCase();
   if (v === 'fbo' || v === 'fbs') return v;
   return 'all';
-}
-
-const SALE_LINE = `(
-  (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Продажа')
-  OR (LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer')
-  OR (LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
-    l.operation_type ILIKE '%Плат%покупателя%'
-    OR l.operation_type ILIKE '%платеж покупателя%'
-  ))
-)`;
-
-const SQL_MP_NORM = `CASE LOWER(TRIM(l.marketplace))
-  WHEN 'wildberries' THEN 'wb'
-  WHEN 'yandex' THEN 'ym'
-  WHEN 'yandexmarket' THEN 'ym'
-  ELSE LOWER(TRIM(l.marketplace))
-END`;
-
-function sqlOzonNameMapCte() {
-  const skuNorm = sqlNormArticle('p.sku');
-  const nameNorm = sqlNormArticle('l.product_name');
-  const coreSku = `CASE WHEN ${skuNorm} LIKE 'DT%' THEN substr(${skuNorm}, 3) ELSE ${skuNorm} END`;
-  const alnumName = `lower(regexp_replace(COALESCE(l.product_name, ''), '[^a-zA-Zа-яА-ЯёЁ0-9]+', '', 'g'))`;
-  const alnumProd = `lower(regexp_replace(COALESCE(p.name, ''), '[^a-zA-Zа-яА-ЯёЁ0-9]+', '', 'g'))`;
-  return `
-  ozon_name_map AS (
-    SELECT mp_sku, product_id
-    FROM (
-      SELECT
-        TRIM(l.sku) AS mp_sku,
-        p.id AS product_id,
-        COUNT(*) OVER (PARTITION BY TRIM(l.sku)) AS hit_cnt
-      FROM (
-        SELECT DISTINCT TRIM(sku) AS sku, MAX(product_name) AS product_name
-        FROM (
-          SELECT sku, product_name FROM marketplace_fbo_report_lines
-          WHERE profile_id = $1 AND LOWER(TRIM(marketplace)) = 'ozon'
-            AND product_id IS NULL
-            AND sku IS NOT NULL AND TRIM(sku) <> '' AND TRIM(sku) <> '0'
-            AND product_name IS NOT NULL AND TRIM(product_name) <> ''
-          UNION ALL
-          SELECT sku, product_name FROM marketplace_fbs_report_lines
-          WHERE profile_id = $1 AND LOWER(TRIM(marketplace)) = 'ozon'
-            AND product_id IS NULL
-            AND sku IS NOT NULL AND TRIM(sku) <> '' AND TRIM(sku) <> '0'
-            AND product_name IS NOT NULL AND TRIM(product_name) <> ''
-        ) raw
-        GROUP BY TRIM(sku)
-      ) l
-      JOIN products p ON p.profile_id = $1
-      WHERE NOT EXISTS (SELECT 1 FROM ozon_sku_map m0 WHERE m0.mp_sku = TRIM(l.sku))
-        AND (
-          (
-            ${coreSku} <> ''
-            AND length(${coreSku}) >= 5
-            AND ${coreSku} ~ '[A-Z]'
-            AND ${coreSku} ~ '[0-9]'
-            AND position(${coreSku} IN ${nameNorm}) > 0
-          )
-          OR (
-            length(${alnumName}) >= 45
-            AND left(${alnumProd}, 45) = left(${alnumName}, 45)
-          )
-        )
-    ) ranked
-    WHERE hit_cnt = 1
-  )`;
-}
-
-function lineProductJoins() {
-  return `
-        LEFT JOIN ozon_sku_map m ON l.product_id IS NULL
-          AND LOWER(TRIM(l.marketplace)) = 'ozon'
-          AND l.sku IS NOT NULL
-          AND TRIM(l.sku) <> ''
-          AND TRIM(l.sku) <> '0'
-          AND m.mp_sku = TRIM(l.sku)
-        LEFT JOIN ozon_name_map nm ON l.product_id IS NULL
-          AND m.product_id IS NULL
-          AND LOWER(TRIM(l.marketplace)) = 'ozon'
-          AND l.sku IS NOT NULL
-          AND TRIM(l.sku) <> ''
-          AND TRIM(l.sku) <> '0'
-          AND nm.mp_sku = TRIM(l.sku)
-        LEFT JOIN products p ON p.id = COALESCE(l.product_id, m.product_id, nm.product_id)`;
-}
-
-const SQL_EXCLUDE_JUNK = `
-  AND NOT (
-    l.product_id IS NULL
-    AND m.product_id IS NULL
-    AND nm.product_id IS NULL
-    AND (l.sku IS NULL OR TRIM(l.sku) = '' OR TRIM(l.sku) = '0')
-  )
-`;
-
-function skuJoinForSnapshot() {
-  return `
-    JOIN product_skus ps
-      ON ps.marketplace = s.norm_mp
-     AND (
-       TRIM(ps.sku) = TRIM(l.external_sku)
-       OR (
-         s.norm_mp = 'ozon'
-         AND NULLIF(ps.marketplace_product_id, 0) IS NOT NULL
-         AND TRIM(l.external_sku) ~ '^[0-9]+$'
-         AND ps.marketplace_product_id = (TRIM(l.external_sku))::bigint
-       )
-       OR (
-         s.norm_mp = 'wb'
-         AND (
-           TRIM(ps.sku) = NULLIF(split_part(TRIM(l.external_sku), ':', 1), '')
-           OR (
-             NULLIF(split_part(TRIM(l.external_sku), ':', 2), '') IS NOT NULL
-             AND TRIM(ps.sku) = NULLIF(split_part(TRIM(l.external_sku), ':', 2), '')
-           )
-           OR (
-             NULLIF(TRIM(l.wb_vendor_code), '') IS NOT NULL
-             AND LOWER(TRIM(ps.sku)) = LOWER(TRIM(l.wb_vendor_code))
-           )
-         )
-       )
-     )
-    JOIN products p ON p.id = ps.product_id AND p.profile_id = $1`;
 }
 
 function classifyTurnover({ stockQty, soldQty, avgDaily, daysOfStock }) {

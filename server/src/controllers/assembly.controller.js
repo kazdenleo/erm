@@ -14,6 +14,34 @@ import {
 } from '../services/assemblyOrderItems.service.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
 import chestnyZnakOps from '../services/chestnyZnakOps.service.js';
+import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
+
+/** Скан при сборке: успех (2xx) или ошибка сборщика (404/409) — в журнал сотрудников. */
+function trackAssemblyScan(req, res, barcode) {
+  if (!req.user?.id) return;
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    const status = res.statusCode;
+    if (status < 300 || status === 404 || status === 409) {
+      const order = body?.data?.order;
+      logEmployeeEvent({
+        user: req.user,
+        eventType: EMPLOYEE_EVENT.ASSEMBLY_SCAN,
+        isError: status >= 300,
+        entityType: 'order',
+        entityId: order?.orderId ?? order?.order_id ?? null,
+        quantity: 1,
+        meta: {
+          barcode: String(barcode).slice(0, 120),
+          marketplace: order?.marketplace ?? null,
+          productId: body?.data?.product?.id ?? null,
+          message: status >= 300 ? String(body?.message || '').slice(0, 300) : undefined,
+        },
+      });
+    }
+    return originalJson(body);
+  };
+}
 
 function norm(s) {
   return String(s || '').trim().toLowerCase();
@@ -68,6 +96,7 @@ class AssemblyController {
           message: 'Укажите штрихкод: ?barcode=...'
         });
       }
+      trackAssemblyScan(req, res, barcode);
 
       const marketplaceFilterRaw = String(params.marketplace ?? '')
         .trim()
@@ -358,6 +387,17 @@ class AssemblyController {
         stickerNumber,
         pickedItems
       );
+      if (updated) {
+        const pickedQty = (pickedItems || []).reduce((s, it) => s + (Number(it?.quantity) || 0), 0);
+        logEmployeeEvent({
+          user: req.user,
+          eventType: EMPLOYEE_EVENT.ASSEMBLY_COLLECTED,
+          entityType: 'order',
+          entityId: String(orderId),
+          quantity: pickedQty > 0 ? pickedQty : Number(order.quantity) || 1,
+          meta: { marketplace: mpNorm },
+        });
+      }
       let labelReady = needsMpLabel ? ordersLabelsService.hasLabelCached(updated || order) : false;
       if (updated && needsMpLabel && !labelReady) {
         try {
