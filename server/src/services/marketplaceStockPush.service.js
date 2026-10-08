@@ -114,10 +114,34 @@ async function resolveWildberriesStockSku({ nmId, productId, profileId, organiza
 }
 
 /**
+ * Вне production остатки на МП не отправляются: локальная база отстаёт от боевой,
+ * а ключи МП те же — dev-сервер затирал реальные остатки нулями.
+ * Включить явно: MARKETPLACE_STOCK_PUSH_ENABLED=1.
+ */
+export function isMarketplaceStockPushEnabled() {
+  const v = process.env.MARKETPLACE_STOCK_PUSH_ENABLED;
+  if (v != null && String(v).trim() !== '') {
+    return !/^(0|false|no|off)$/i.test(String(v).trim());
+  }
+  return process.env.NODE_ENV === 'production';
+}
+
+let stockPushDisabledLogged = false;
+
+/**
  * @param {{ marketplace: string, product: object, productSkus: object[], mapping: object, quantity: number, organizationId: number|string, profileId?: number|string|null }} ctx
  */
 export async function pushStockToMarketplace(ctx) {
   const mp = String(ctx.marketplace || '').toLowerCase();
+  if (!isMarketplaceStockPushEnabled()) {
+    if (!stockPushDisabledLogged) {
+      stockPushDisabledLogged = true;
+      logger.warn(
+        `[MP Stock Push] отключено (NODE_ENV=${process.env.NODE_ENV || '—'}): остатки на МП не отправляются. Включить: MARKETPLACE_STOCK_PUSH_ENABLED=1`
+      );
+    }
+    return { marketplace: mp, ok: false, skipped: true, reason: 'stock_push_disabled' };
+  }
   const qty = Math.max(0, Math.floor(Number(ctx.quantity) || 0));
   const orgId = ctx.organizationId;
   const profileId = ctx.profileId ?? ctx.product?.profile_id ?? ctx.product?.profileId ?? null;
