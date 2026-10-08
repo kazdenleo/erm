@@ -3693,7 +3693,9 @@ class IntegrationsService {
         if (errorText) errMsg += ': ' + errorText.substring(0, 200);
       }
       const err = new Error(errMsg);
-      err.statusCode = response.status;
+      // 401/403 от Ozon — это ключи интеграции, а не сессия ERP: клиент на 401 разлогинивает пользователя
+      err.statusCode = response.status === 401 || response.status === 403 ? 400 : response.status;
+      err.upstreamStatus = response.status;
       throw err;
     }
     const text = await response.text();

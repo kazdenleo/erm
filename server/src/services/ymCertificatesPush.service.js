@@ -54,7 +54,15 @@ async function ymFetchJson(url, { method = 'POST', apiKey, body } = {}) {
     if (data?.errors?.[0]?.message) msg += `: ${data.errors[0].message}`;
     else if (data?.message) msg += `: ${data.message}`;
     else if (text) msg += `: ${text.substring(0, 200)}`;
-    const err = httpError(msg, response.status >= 400 && response.status < 500 ? response.status : 502);
+    // 401/403 от Маркета — это API-ключ интеграции, а не сессия ERP: клиент на 401 разлогинивает пользователя
+    const status =
+      response.status === 401 || response.status === 403
+        ? 400
+        : response.status >= 400 && response.status < 500
+          ? response.status
+          : 502;
+    const err = httpError(msg, status);
+    err.upstreamStatus = response.status;
     err.payload = data;
     throw err;
   }
