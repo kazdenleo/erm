@@ -41,7 +41,7 @@ import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.j
 import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 /** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
-const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.address, w.wb_warehouse_name, '')), '')`;
+const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(NULLIF(TRIM(w.name), ''), w.address, w.wb_warehouse_name, '')), '')`;
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {

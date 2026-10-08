@@ -34,7 +34,7 @@ function normalizeDocTypeForInsert(documentType) {
 }
 
 function warehouseLabelSql(alias) {
-  return `NULLIF(TRIM(COALESCE(${alias}.address, ${alias}.wb_warehouse_name, '')), '')`;
+  return `NULLIF(TRIM(COALESCE(NULLIF(TRIM(${alias}.name), ''), ${alias}.address, ${alias}.wb_warehouse_name, '')), '')`;
 }
 
 function transferToWarehouseNameSql({ useWhToJoin = true } = {}) {
@@ -44,7 +44,7 @@ function transferToWarehouseNameSql({ useWhToJoin = true } = {}) {
   return `COALESCE(
       ${whToPart}
       (
-        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        SELECT ${warehouseLabelSql('wh')}
         FROM stock_movements sm
         LEFT JOIN warehouses wh ON wh.id = NULLIF(sm.meta->>'to_warehouse_id', '')::bigint
         WHERE (sm.meta->>'receipt_id')::bigint = r.id
@@ -62,12 +62,12 @@ function receiptWarehouseLabelSqlExpr({ useWhFromJoin = true } = {}) {
   return `COALESCE(
       ${whFromPart}
       (
-        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        SELECT ${warehouseLabelSql('wh')}
         FROM warehouses wh
         WHERE wh.id = r.warehouse_id
       ),
       (
-        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        SELECT ${warehouseLabelSql('wh')}
         FROM purchase_receipts pr
         JOIN purchases pur ON pur.id = pr.purchase_id
         LEFT JOIN warehouses wh ON wh.id = pur.warehouse_id
@@ -76,7 +76,7 @@ function receiptWarehouseLabelSqlExpr({ useWhFromJoin = true } = {}) {
         LIMIT 1
       ),
       (
-        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        SELECT ${warehouseLabelSql('wh')}
         FROM stock_movements sm
         LEFT JOIN warehouses wh ON wh.id = COALESCE(
           NULLIF(sm.meta->>'from_warehouse_id', '')::bigint,
@@ -222,7 +222,20 @@ class WarehouseReceiptsRepositoryPG {
     const numId = typeof id === 'string' ? parseInt(id, 10) : id;
     try {
       const r = await query(
-        `SELECT r.*, s.name AS supplier_name, s.code AS supplier_code,
+        `SELECT r.*,
+                COALESCE(
+                  s.name,
+                  (
+                    SELECT s_pur.name
+                    FROM purchase_receipts pr
+                    JOIN purchases pur ON pur.id = pr.purchase_id
+                    JOIN suppliers s_pur ON s_pur.id = pur.supplier_id
+                    WHERE pr.warehouse_receipt_id = r.id
+                    ORDER BY pr.id DESC
+                    LIMIT 1
+                  )
+                ) AS supplier_name,
+                s.code AS supplier_code,
                 COALESCE(
                   o.name,
                   (
@@ -346,11 +359,11 @@ class WarehouseReceiptsRepositoryPG {
     const listSelect = `
         SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
                 r.warehouse_id, r.to_warehouse_id, r.writeoff_reason,
-                s.name AS supplier_name, s.code AS supplier_code,
+                COALESCE(s.name, pr_link.supplier_name) AS supplier_name, s.code AS supplier_code,
                 COALESCE(o.name, o_wh.name) AS organization_name,
                 COALESCE(la.lines_count, 0)::int AS lines_count,
                 COALESCE(la.total_quantity, 0)::int AS total_quantity,
-                ${warehouseLabelSql('wh_from')} AS warehouse_name,
+                COALESCE(${warehouseLabelSql('wh_from')}, pr_link.warehouse_name) AS warehouse_name,
                 ${warehouseLabelSql('wh_to')} AS to_warehouse_name,
                 pr_link.id AS purchase_receipt_id,
                 la.total_amount_rub
@@ -374,8 +387,13 @@ class WarehouseReceiptsRepositoryPG {
            WHERE l.receipt_id = r.id
          ) la ON TRUE
          LEFT JOIN LATERAL (
-           SELECT pr.id
+           SELECT pr.id,
+                  s_pur.name AS supplier_name,
+                  ${warehouseLabelSql('wh_pur')} AS warehouse_name
            FROM purchase_receipts pr
+           LEFT JOIN purchases pur ON pur.id = pr.purchase_id
+           LEFT JOIN suppliers s_pur ON s_pur.id = pur.supplier_id
+           LEFT JOIN warehouses wh_pur ON wh_pur.id = pur.warehouse_id
            WHERE pr.warehouse_receipt_id = r.id
            ORDER BY pr.id DESC
            LIMIT 1
