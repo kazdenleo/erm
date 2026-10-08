@@ -66,6 +66,29 @@ function perUnit(activeSec, timedUnits) {
   return timedUnits > 0 ? Math.round(activeSec / timedUnits) : null;
 }
 
+const MSK_OFFSET_MS = 3 * 3600 * 1000;
+
+function mskDay(t) {
+  return new Date(t + MSK_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** По дням (МСК): qty — объём за день, sec — время на единицу за день. Перерыв через полночь не считается. */
+function dailyActive(marks, idleSec) {
+  const byDay = new Map();
+  for (const m of marks) {
+    if (!Number.isFinite(m.t)) continue;
+    const d = mskDay(m.t);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(m);
+  }
+  const out = {};
+  for (const [d, list] of byDay) {
+    const { activeSec, timedUnits } = activeTime(list, idleSec);
+    out[d] = { qty: list.reduce((s, m) => s + (Number(m.qty) || 0), 0), sec: perUnit(activeSec, timedUnits) };
+  }
+  return out;
+}
+
 class EmployeeMetricsService {
   async getMetrics({ profileId, dateFrom = null, dateTo = null } = {}) {
     const pid = requireAnalyticsProfile(profileId);
@@ -94,8 +117,7 @@ class EmployeeMetricsService {
         `SELECT o.assembled_by_user_id AS user_id,
                 COALESCE(NULLIF(o.order_group_id, ''), o.marketplace || ':' || o.order_id) AS order_key,
                 MIN(o.assembled_at) AS assembled_at,
-                SUM(GREATEST(COALESCE(o.quantity, 1), 1))::int AS qty,
-                to_char(MIN(o.assembled_at) AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day
+                SUM(GREATEST(COALESCE(o.quantity, 1), 1))::int AS qty
            FROM orders o
           WHERE o.profile_id = $1
             AND o.assembled_by_user_id IS NOT NULL
@@ -131,6 +153,7 @@ class EmployeeMetricsService {
       ),
       query(
         `SELECT pr.created_by_user_id AS user_id,
+                to_char(pr.completed_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day,
                 EXTRACT(EPOCH FROM (pr.completed_at - pr.created_at)) AS duration_sec,
                 COALESCE(it.scanned, 0)::int AS units,
                 COALESCE(it.diff_lines, 0)::int AS diff_lines
@@ -185,11 +208,11 @@ class EmployeeMetricsService {
           userId: id,
           name: `Пользователь #${id}`,
           role: null,
-          fbs: { orders: 0, units: 0, marks: [], byDay: {} },
+          fbs: { orders: 0, units: 0, marks: [] },
           fboCollect: { units: 0, supplies: new Set(), marks: [] },
           packing: { units: 0, supplies: 0, marks: [] },
           scans: { assemblyOk: 0, assemblyErrors: 0, receiptOk: 0, receiptErrors: 0, receiptUnits: 0, packingErrors: 0 },
-          receipts: { receipts: 0, units: 0, diffLines: 0, durations: [] },
+          receipts: { receipts: 0, units: 0, diffLines: 0, durations: [], byDay: {} },
           inventory: { sessions: 0, lines: 0 },
           tasks: 0,
         });
@@ -204,22 +227,22 @@ class EmployeeMetricsService {
       const u = ensure(row.user_id);
       u.fbs.orders += 1;
       u.fbs.units += Number(row.qty) || 0;
-      u.fbs.marks.push({ t: ts(row.assembled_at), units: 1 });
-      if (row.day) u.fbs.byDay[row.day] = (u.fbs.byDay[row.day] || 0) + 1;
+      u.fbs.marks.push({ t: ts(row.assembled_at), units: 1, qty: 1 });
     }
     for (const row of eventMarksRes.rows || []) {
       const u = ensure(row.user_id);
       if (row.event_type === 'fbo_packing_scan') {
-        u.packing.marks.push({ t: ts(row.created_at), units: row.is_error ? 0 : Math.max(Number(row.quantity) || 0, 0) });
+        const q = row.is_error ? 0 : Number(row.quantity) || 0;
+        u.packing.marks.push({ t: ts(row.created_at), units: Math.max(q, 0), qty: q });
       } else {
-        u.fbs.marks.push({ t: ts(row.created_at), units: 0 });
+        u.fbs.marks.push({ t: ts(row.created_at), units: 0, qty: 0 });
       }
     }
     for (const row of fboScansRes.rows || []) {
       const u = ensure(row.user_id);
       u.fboCollect.units += 1;
       u.fboCollect.supplies.add(String(row.fbo_supply_id));
-      u.fboCollect.marks.push({ t: ts(row.created_at), units: 1 });
+      u.fboCollect.marks.push({ t: ts(row.created_at), units: 1, qty: 1 });
     }
     for (const row of eventsRes.rows || []) {
       const u = ensure(row.user_id);
@@ -242,6 +265,11 @@ class EmployeeMetricsService {
       u.receipts.diffLines += Number(row.diff_lines) || 0;
       const d = Number(row.duration_sec);
       if (Number.isFinite(d) && d > 0) u.receipts.durations.push(d);
+      if (row.day) {
+        const day = (u.receipts.byDay[row.day] ||= { qty: 0, durations: [] });
+        day.qty += Number(row.units) || 0;
+        if (Number.isFinite(d) && d > 0) day.durations.push(d);
+      }
     }
     for (const row of inventoryRes.rows || []) {
       const u = ensure(row.user_id);
@@ -279,7 +307,20 @@ class EmployeeMetricsService {
           totals[key].timedUnits += t.timedUnits;
         }
         totals.receiptDurations.push(...u.receipts.durations);
-        Object.keys(u.fbs.byDay).forEach((d) => allDays.add(d));
+        const receiptDaily = {};
+        for (const [d, v] of Object.entries(u.receipts.byDay)) {
+          receiptDaily[d] = {
+            qty: v.qty,
+            sec: v.durations.length ? Math.round(v.durations.reduce((s, x) => s + x, 0) / v.durations.length) : null,
+          };
+        }
+        const daily = {
+          fbs: dailyActive(u.fbs.marks, FBS_IDLE_SEC),
+          fboCollect: dailyActive(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC),
+          packing: dailyActive(u.packing.marks, FBO_PACKING_IDLE_SEC),
+          receipts: receiptDaily,
+        };
+        Object.values(daily).forEach((m) => Object.keys(m).forEach((d) => allDays.add(d)));
 
         const assemblyScans = u.scans.assemblyOk + u.scans.assemblyErrors;
         const receiptScans = u.scans.receiptOk + u.scans.receiptErrors;
@@ -297,8 +338,8 @@ class EmployeeMetricsService {
             scans: assemblyScans,
             errors: u.scans.assemblyErrors,
             errorRate: assemblyScans > 0 ? round2((u.scans.assemblyErrors / assemblyScans) * 100) : null,
-            byDay: u.fbs.byDay,
           },
+          daily,
           fboCollect: {
             units: u.fboCollect.units,
             supplies: u.fboCollect.supplies.size,

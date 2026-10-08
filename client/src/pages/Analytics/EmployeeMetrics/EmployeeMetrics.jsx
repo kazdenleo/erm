@@ -10,7 +10,14 @@ import { salesAnalyticsApi } from '../../../services/salesAnalytics.api';
 import { AnalyticsPeriodFilters } from '../shared/AnalyticsPeriodFilters';
 import { DEFAULT_ANALYTICS_PERIOD, defaultAnalyticsRange } from '../shared/analyticsPeriod';
 import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
-import { SummaryCards, errorMessage, formatDateRu, formatPercent, formatQty } from '../shared/analyticsKit';
+import {
+  SummaryCards,
+  ToggleGroup,
+  errorMessage,
+  formatDateRu,
+  formatPercent,
+  formatQty,
+} from '../shared/analyticsKit';
 import '../SalesAnalytics/SalesAnalytics.css';
 import '../ProductDynamics/ProductDynamics.css';
 import './EmployeeMetrics.css';
@@ -37,6 +44,18 @@ const SORT_GETTERS = {
 };
 
 const COLUMN_COUNT = 14;
+
+const CHART_PROCESSES = [
+  { value: 'fbs', label: 'Сборка FBS', qtyLabel: 'Собрано заказов', secLabel: 'Время на заказ' },
+  { value: 'fboCollect', label: 'Сборка FBO', qtyLabel: 'Собрано, шт', secLabel: 'Время на штуку' },
+  { value: 'packing', label: 'Упаковка FBO', qtyLabel: 'Упаковано, шт', secLabel: 'Время на штуку' },
+  { value: 'receipts', label: 'Приёмка', qtyLabel: 'Принято, шт', secLabel: 'Среднее время приёмки' },
+];
+
+const CHART_MODES = [
+  { value: 'qty', label: 'Объём' },
+  { value: 'sec', label: 'Время' },
+];
 
 function formatDuration(sec) {
   if (sec == null || !Number.isFinite(Number(sec))) return '—';
@@ -83,6 +102,8 @@ export function EmployeeMetrics() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const { sort, toggleSort } = useTableSort('orders', 'desc');
+  const [chartProcess, setChartProcess] = useState('fbs');
+  const [chartMode, setChartMode] = useState('qty');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,24 +128,33 @@ export function EmployeeMetrics() {
   const summary = data?.summary || {};
   const idle = data?.idleThresholdsSec || {};
 
-  const chartEmployees = useMemo(
-    () =>
-      [...employees]
-        .filter((e) => Number(e.assembly?.orders) > 0)
-        .sort((a, b) => (b.assembly?.orders || 0) - (a.assembly?.orders || 0))
-        .slice(0, LINE_COLORS.length),
-    [employees]
-  );
+  const chartMeta = CHART_PROCESSES.find((p) => p.value === chartProcess) || CHART_PROCESSES[0];
+  const chartEmployees = useMemo(() => {
+    const total = (e) =>
+      Object.values(e.daily?.[chartProcess] || {}).reduce((s, v) => s + Math.abs(Number(v?.qty) || 0), 0);
+    return employees
+      .map((e) => ({ e, total: total(e) }))
+      .filter((x) => x.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, LINE_COLORS.length)
+      .map((x) => x.e);
+  }, [employees, chartProcess]);
+  const chartDays = useMemo(() => {
+    const days = new Set();
+    chartEmployees.forEach((e) => Object.keys(e.daily?.[chartProcess] || {}).forEach((d) => days.add(d)));
+    return chartMode === 'qty' ? data?.days || [] : [...days].sort();
+  }, [chartEmployees, chartProcess, chartMode, data]);
   const chartData = useMemo(
     () =>
-      (data?.days || []).map((day) => {
+      chartDays.map((day) => {
         const row = { day: formatDateRu(day).slice(0, 5) };
         chartEmployees.forEach((e) => {
-          row[`u${e.userId}`] = Number(e.assembly?.byDay?.[day]) || 0;
+          const v = e.daily?.[chartProcess]?.[day];
+          row[`u${e.userId}`] = chartMode === 'qty' ? Number(v?.qty) || 0 : v?.sec ?? null;
         });
         return row;
       }),
-    [data, chartEmployees]
+    [chartDays, chartEmployees, chartProcess, chartMode]
   );
 
   const th = (key, label, title) => (
@@ -198,14 +228,27 @@ export function EmployeeMetrics() {
       )}
 
       <div className="product-dynamics__chart-wrap">
-        <h3 className="product-dynamics__chart-title">Собрано заказов FBS по дням</h3>
+        <div className="employee-metrics__chart-head">
+          <h3 className="product-dynamics__chart-title">
+            {chartMeta.label}: {(chartMode === 'qty' ? chartMeta.qtyLabel : chartMeta.secLabel).toLowerCase()} по дням
+          </h3>
+          <div className="employee-metrics__chart-controls">
+            <ToggleGroup value={chartProcess} onChange={setChartProcess} options={CHART_PROCESSES} />
+            <ToggleGroup value={chartMode} onChange={setChartMode} options={CHART_MODES} />
+          </div>
+        </div>
         {chartData.length > 0 && chartEmployees.length > 0 ? (
           <ResponsiveContainer width="100%" height={280}>
             <LineChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-              <Tooltip />
+              <YAxis
+                tick={{ fontSize: 12 }}
+                allowDecimals={false}
+                tickFormatter={chartMode === 'sec' ? (v) => formatDuration(v) : undefined}
+                width={chartMode === 'sec' ? 72 : 48}
+              />
+              <Tooltip formatter={(v) => (chartMode === 'sec' ? formatDuration(v) : formatQty(v, 0))} />
               <Legend />
               {chartEmployees.map((e, i) => (
                 <Line
@@ -215,13 +258,16 @@ export function EmployeeMetrics() {
                   name={e.name}
                   stroke={LINE_COLORS[i % LINE_COLORS.length]}
                   strokeWidth={2}
-                  dot={false}
+                  dot={chartMode === 'sec' ? { r: 3 } : false}
+                  connectNulls={chartMode === 'sec'}
                 />
               ))}
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="product-dynamics__empty-chart">{loading ? 'Загрузка…' : 'Сборок за период нет'}</div>
+          <div className="product-dynamics__empty-chart">
+            {loading ? 'Загрузка…' : `${chartMeta.label}: за период данных нет`}
+          </div>
         )}
       </div>
 

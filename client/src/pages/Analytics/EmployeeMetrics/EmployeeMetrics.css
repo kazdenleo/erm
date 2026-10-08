@@ -2,6 +2,25 @@
   max-width: 960px;
 }
 
+.employee-metrics__chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+.employee-metrics__chart-head .product-dynamics__chart-title {
+  margin: 0;
+}
+
+.employee-metrics__chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
 .employee-metrics__total td {
   background: #f8fafc;
   font-weight: 600;
