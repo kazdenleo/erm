@@ -119,18 +119,25 @@ function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null 
   });
 }
 
-/** Ожидаемое кол-во для строки приёмки: черновик «Ожидается», иначе из закупки. */
-function receiptItemExpectedQty(it) {
+/**
+ * Ожидаемое кол-во для строки приёмки: черновик «Ожидается», иначе из закупки.
+ * В идущей приёмке received_quantity — уже принятое прошлыми приёмками, его вычитаем;
+ * в завершённой оно включает и эту приёмку.
+ */
+function receiptItemExpectedQty(it, { scanning = false } = {}) {
   const draftExpRaw = it?.draft_expected_quantity;
   const draftExp = draftExpRaw != null && draftExpRaw !== '' ? Number(draftExpRaw) : null;
   if (draftExp != null && Number.isFinite(draftExp)) return draftExp;
   const expPurchase = Number(it?.expected_quantity);
-  return Number.isFinite(expPurchase) ? expPurchase : null;
+  if (!Number.isFinite(expPurchase)) return null;
+  if (!scanning) return expPurchase;
+  const received = Math.max(0, Number(it?.received_quantity) || 0);
+  return Math.max(0, expPurchase - received);
 }
 
 /** Есть расхождение: недобор, излишек или скан без ожидания. */
-function receiptItemHasDiscrepancy(it) {
-  const expected = receiptItemExpectedQty(it);
+function receiptItemHasDiscrepancy(it, opts) {
+  const expected = receiptItemExpectedQty(it, opts);
   const scanned = Number(it?.scanned_quantity) || 0;
   if (expected == null) return scanned > 0;
   return scanned !== expected;
@@ -467,12 +474,13 @@ export function Purchases() {
       userId: currentUserId,
       scannerId,
     });
+    const expOpts = { scanning: String(receipt?.receipt?.status) === 'scanning' };
     return [...byParticipant].sort((a, b) => {
-      const da = receiptItemHasDiscrepancy(a) ? 0 : 1;
-      const db = receiptItemHasDiscrepancy(b) ? 0 : 1;
+      const da = receiptItemHasDiscrepancy(a, expOpts) ? 0 : 1;
+      const db = receiptItemHasDiscrepancy(b, expOpts) ? 0 : 1;
       return da - db;
     });
-  }, [receipt?.items, receiptScannedQtySort, scannerId, currentUserId]);
+  }, [receipt?.items, receipt?.receipt?.status, receiptScannedQtySort, scannerId, currentUserId]);
 
   useEffect(() => {
     setDetailExpectedQtySort(null);
@@ -1553,7 +1561,9 @@ export function Purchases() {
         const curItems = Array.isArray(receipt?.items) ? receipt.items : [];
         const hit = curItems.find((it) => Number(it?.product_id) === updatedProductId) || null;
         if (hit) {
-          const expected = receiptItemExpectedQty(hit);
+          const expected = receiptItemExpectedQty(hit, {
+            scanning: String(receipt?.receipt?.status) === 'scanning',
+          });
           const over = expected != null && updatedScannedQty > expected;
           setLastScanLine({
             sku: hit.product_sku || '—',
@@ -2685,7 +2695,7 @@ export function Purchases() {
                           )}
                         </td>
                         {(() => {
-                          const expected = receiptItemExpectedQty(it);
+                          const expected = receiptItemExpectedQty(it, { scanning: isReceiptScanning });
                           const scanned = Number(it.scanned_quantity) || 0;
                           const rec = Number(it.received_quantity);
                           const received = Number.isFinite(rec) ? rec : null;
