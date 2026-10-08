@@ -82,13 +82,14 @@ function hoursSub(hours) {
   return Number(hours) > 0 ? <Sub>{formatQty(hours, 1)} ч работы</Sub> : null;
 }
 
-function receiptTimeCell(avgSec, medianSec) {
-  if (avgSec == null) return '—';
+function receiptTimeCell(r) {
+  if (r?.secPerUnit == null) return '—';
   return (
-    <>
-      {formatDuration(avgSec)}
-      <Sub>медиана {formatDuration(medianSec)}</Sub>
-    </>
+    <span title={r.estimated ? 'Часть приёмок до журнала сканов — время оценено по строкам приёмки' : undefined}>
+      {r.estimated ? '≈ ' : ''}
+      {formatDuration(r.secPerUnit)}
+      {hoursSub(r.activeHours)}
+    </span>
   );
 }
 
@@ -215,12 +216,19 @@ export function EmployeeMetrics() {
               sub: `${formatQty(summary.packingBoxUnits, 0)} шт · ${formatQty(summary.packingBoxSupplies, 0)} поставок`,
             },
             {
-              label: 'Приёмка, на штуку',
+              label: 'Приёмка, работы на штуку',
               value: formatDuration(summary.receiptSecPerUnit),
+              sub: `${formatQty(summary.unitsReceived, 0)} шт · ${formatQty(summary.receipts, 0)} приёмок`,
+            },
+            {
+              label: 'Срок приёмки',
+              value: summary.receiptLeadAvgHours != null ? `${formatQty(summary.receiptLeadAvgHours, 1)} ч` : '—',
               sub:
-                summary.receiptMedianSecPerUnit != null
-                  ? `медиана ${formatDuration(summary.receiptMedianSecPerUnit)} · ${formatQty(summary.unitsReceived, 0)} шт`
-                  : `${formatQty(summary.unitsReceived, 0)} шт`,
+                summary.receiptLeadSecPerUnit != null
+                  ? `от создания до закрытия · ${formatDuration(summary.receiptLeadSecPerUnit)} на шт (медиана ${formatDuration(
+                      summary.receiptLeadMedianSecPerUnit
+                    )})`
+                  : 'от создания до закрытия',
             },
             {
               label: 'Ошибки сборки',
@@ -306,13 +314,15 @@ export function EmployeeMetrics() {
                 'Упаковка на штуку',
                 `Время работы ÷ штуки. Пауза без сканов дольше ${minutesLabel(idle.packing)} — перерыв, не считается`
               )}
-              {th('receipts', 'Приёмок')}
+              {th('receipts', 'Приёмок', 'В скольких приёмках сотрудник сканировал товар')}
               {th(
                 'receiptSec',
                 'Приёмка на штуку',
-                'Время от создания до закрытия приёмок ÷ принятые штуки. Ниже — медиана по приёмкам'
+                `Время работы сотрудника ÷ отсканированные им штуки. Пауза без сканов дольше ${minutesLabel(
+                  idle.receipts
+                )} — перерыв. «≈» — оценка по строкам приёмки (до журнала сканов)`
               )}
-              {th('receivedUnits', 'Принято, шт')}
+              {th('receivedUnits', 'Принято, шт', 'Штуки, отсканированные сотрудником (в общей приёмке — его доля)')}
               {th('receiptErrors', 'Ошибки приёмки')}
               {th('inventory', 'Инвент.')}
             </tr>
@@ -357,7 +367,7 @@ export function EmployeeMetrics() {
                     {hoursSub(p.activeHours)}
                   </td>
                   <td className="sales-analytics__num">{formatQty(r.receipts, 0)}</td>
-                  <td className="sales-analytics__num">{receiptTimeCell(r.secPerUnit, r.medianSecPerUnit)}</td>
+                  <td className="sales-analytics__num">{receiptTimeCell(r)}</td>
                   <td className="sales-analytics__num">
                     {formatQty(r.units, 0)}
                     {r.diffLines ? <Sub>расхождений: {formatQty(r.diffLines, 0)}</Sub> : null}
@@ -393,7 +403,8 @@ export function EmployeeMetrics() {
                 </td>
                 <td className="sales-analytics__num">{formatQty(summary.receipts, 0)}</td>
                 <td className="sales-analytics__num">
-                  {receiptTimeCell(summary.receiptSecPerUnit, summary.receiptMedianSecPerUnit)}
+                  {formatDuration(summary.receiptSecPerUnit)}
+                  {hoursSub(summary.receiptActiveHours)}
                 </td>
                 <td className="sales-analytics__num">{formatQty(summary.unitsReceived, 0)}</td>
                 <td className="sales-analytics__num">{formatQty(summary.receiptErrors, 0)}</td>
@@ -410,7 +421,10 @@ export function EmployeeMetrics() {
         Время работы — сумма промежутков между сканами сотрудника. Если сканов нет дольше{' '}
         {minutesLabel(idle.fbs)} на сборке FBS, {minutesLabel(idle.fboCollect)} на сборке FBO или{' '}
         {minutesLabel(idle.packing)} на упаковке, отсчёт останавливается и продолжается со следующего скана. Итог —
-        общее время всех сотрудников, делённое на все заказы или штуки. Приёмка — время от создания до закрытия документа, делённое на принятые штуки. В сборке FBO комплект
+        общее время всех сотрудников, делённое на все заказы или штуки. Приёмка по сотрудникам — время каждого по его
+        сканам (одну приёмку могут принимать несколько человек параллельно); до журнала сканов — оценка по последним
+        отметкам сотрудника в строках приёмки, перерыв дольше {minutesLabel(idle.receiptLines ?? 600)}. «Срок приёмки» —
+        от создания до закрытия документа, при параллельной работе он меньше. В сборке FBO комплект
         считается одной штукой, даже если его части сканируются по отдельности.
         <br />
         Сканы сборки FBS{' '}

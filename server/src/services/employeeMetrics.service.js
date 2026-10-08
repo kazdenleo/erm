@@ -9,7 +9,11 @@
  * скан комплекта целиком — 1 шт. Упаковка FBO: employee_activity_events (fbo_packing_scan).
  * Общая норма упаковки (без сотрудников, в т. ч. до появления журнала): по грузоместам поставки —
  * у строки «товар в коробке» есть время первого (created_at) и последнего (updated_at) скана.
- * Приёмка: время от создания до закрытия документа (без остановки на паузы) ÷ принятые штуки.
+ * Приёмка (одну приёмку могут сканировать несколько человек параллельно):
+ * — трудозатраты по сотрудникам: журнал receipt_scan (с 08.10.2026); для приёмок без журнала — оценка по
+ *   purchase_receipt_items.scan_meta.byUser (время последнего скана строки каждым сотрудником), штуки строки
+ *   делятся поровну между сканировавшими её;
+ * — срок приёмки: от создания до закрытия документа ÷ принятые штуки (при параллельной работе меньше).
  */
 
 import { query } from '../config/database.js';
@@ -20,6 +24,9 @@ const FBO_COLLECT_IDLE_SEC = 60;
 const FBO_PACKING_IDLE_SEC = 3 * 60;
 /** Между отметками коробок промежуточных сканов не видно, поэтому порог перерыва шире, чем по журналу. */
 const FBO_BOX_IDLE_SEC = 10 * 60;
+const RECEIPT_IDLE_SEC = 3 * 60;
+/** По строкам приёмки видна только последняя отметка сотрудника в строке — порог шире. */
+const RECEIPT_LINES_IDLE_SEC = 10 * 60;
 
 const ROLE_LABELS = {
   admin: 'Администратор',
@@ -91,20 +98,32 @@ function mskDay(t) {
   return new Date(t + MSK_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** По дням (МСК): qty — объём за день, sec — время на единицу за день. Перерыв через полночь не считается. */
-function dailyActive(marks, idleSec) {
-  const byDay = new Map();
-  for (const m of marks) {
-    if (!Number.isFinite(m.t)) continue;
-    const d = mskDay(m.t);
-    if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d).push(m);
+/**
+ * По дням (МСК): qty — объём за день, sec — время на единицу за день. Перерыв через полночь не считается.
+ * @param {{ marks: object[], idleSec: number }[]} sources — отметки с разными порогами перерыва
+ */
+function dailyActive(sources) {
+  const acc = new Map();
+  for (const { marks, idleSec } of sources) {
+    const byDay = new Map();
+    for (const m of marks) {
+      if (!Number.isFinite(m.t)) continue;
+      const d = mskDay(m.t);
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(m);
+    }
+    for (const [d, list] of byDay) {
+      const t = activeTime(list, idleSec);
+      const day = acc.get(d) || { qty: 0, activeSec: 0, timedUnits: 0 };
+      day.qty += list.reduce((s, m) => s + (Number(m.qty) || 0), 0);
+      day.activeSec += t.activeSec;
+      day.timedUnits += t.timedUnits;
+      acc.set(d, day);
+    }
   }
   const out = {};
-  for (const [d, list] of byDay) {
-    const { activeSec, timedUnits } = activeTime(list, idleSec);
-    const qty = list.reduce((s, m) => s + (Number(m.qty) || 0), 0);
-    out[d] = { qty: Math.round(qty * 10) / 10, sec: perUnit(activeSec, timedUnits) };
+  for (const [d, v] of acc) {
+    out[d] = { qty: round1(v.qty), sec: perUnit(v.activeSec, v.timedUnits) };
   }
   return out;
 }
@@ -154,6 +173,8 @@ class EmployeeMetricsService {
       eventMarksRes,
       fboScansRes,
       receiptsRes,
+      receiptLinesRes,
+      receiptEventsRes,
       inventoryRes,
       tasksRes,
       trackingRes,
@@ -211,7 +232,7 @@ class EmployeeMetricsService {
         params
       ),
       query(
-        `SELECT pr.created_by_user_id AS user_id,
+        `SELECT pr.id, pr.created_by_user_id AS user_id,
                 to_char(pr.completed_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day,
                 EXTRACT(EPOCH FROM (pr.completed_at - pr.created_at)) AS duration_sec,
                 COALESCE(it.scanned, 0)::int AS units,
@@ -228,8 +249,27 @@ class EmployeeMetricsService {
               WHERE i.receipt_id = pr.id
            ) it ON TRUE
           WHERE pr.status = 'completed'
-            AND pr.created_by_user_id IS NOT NULL
             AND pr.completed_at >= ${from} AND pr.completed_at < ${to}`,
+        params
+      ),
+      query(
+        `SELECT i.receipt_id, i.scanned_quantity,
+                CASE WHEN jsonb_typeof(i.scan_meta->'byUser') = 'object' THEN i.scan_meta->'byUser' END AS by_user
+           FROM purchase_receipt_items i
+           JOIN purchase_receipts pr ON pr.id = i.receipt_id
+           JOIN purchases pu ON pu.id = pr.purchase_id AND pu.profile_id = $1
+          WHERE pr.status = 'completed' AND COALESCE(i.scanned_quantity, 0) > 0
+            AND pr.completed_at >= ${from} AND pr.completed_at < ${to}`,
+        params
+      ),
+      query(
+        `SELECT e.entity_id AS receipt_id, e.user_id, e.created_at, e.quantity
+           FROM employee_activity_events e
+           JOIN purchase_receipts pr ON pr.id::text = e.entity_id
+           JOIN purchases pu ON pu.id = pr.purchase_id AND pu.profile_id = $1
+          WHERE e.event_type = 'receipt_scan' AND e.entity_type = 'purchase_receipt' AND NOT e.is_error
+            AND e.user_id IS NOT NULL
+            AND pr.status = 'completed' AND pr.completed_at >= ${from} AND pr.completed_at < ${to}`,
         params
       ),
       query(
@@ -279,7 +319,15 @@ class EmployeeMetricsService {
           fboCollect: { units: 0, supplies: new Set(), marks: [] },
           packing: { units: 0, supplies: 0, marks: [] },
           scans: { assemblyOk: 0, assemblyErrors: 0, receiptOk: 0, receiptErrors: 0, receiptUnits: 0, packingErrors: 0 },
-          receipts: { receipts: 0, units: 0, diffLines: 0, timed: [], byDay: {} },
+          receipts: {
+            created: 0,
+            ids: new Set(),
+            units: 0,
+            diffLines: 0,
+            journalMarks: [],
+            lineMarks: [],
+            estimated: false,
+          },
           inventory: { sessions: 0, lines: 0 },
           tasks: 0,
         });
@@ -326,19 +374,49 @@ class EmployeeMetricsService {
         u.scans.packingErrors += Number(row.error_count) || 0;
       }
     }
+    const receiptLead = [];
+    const receiptCreator = new Map();
     for (const row of receiptsRes.rows || []) {
-      const u = ensure(row.user_id);
-      u.receipts.receipts += 1;
-      u.receipts.units += Number(row.units) || 0;
-      u.receipts.diffLines += Number(row.diff_lines) || 0;
       const d = Number(row.duration_sec);
       const units = Number(row.units) || 0;
-      const timed = Number.isFinite(d) && d > 0 && units > 0 ? { d, units } : null;
-      if (timed) u.receipts.timed.push(timed);
-      if (row.day) {
-        const day = (u.receipts.byDay[row.day] ||= { qty: 0, timed: [] });
-        day.qty += units;
-        if (timed) day.timed.push(timed);
+      if (Number.isFinite(d) && d > 0 && units > 0) receiptLead.push({ d, units });
+      if (!row.user_id) continue;
+      receiptCreator.set(String(row.id), row.user_id);
+      const u = ensure(row.user_id);
+      u.receipts.created += 1;
+      u.receipts.diffLines += Number(row.diff_lines) || 0;
+    }
+    const journalReceipts = new Set();
+    for (const row of receiptEventsRes.rows || []) {
+      const u = ensure(row.user_id);
+      const q = Number(row.quantity) || 0;
+      journalReceipts.add(String(row.receipt_id));
+      u.receipts.ids.add(String(row.receipt_id));
+      u.receipts.units += q;
+      u.receipts.journalMarks.push({ t: ts(row.created_at), units: Math.max(q, 0), qty: q });
+    }
+    for (const row of receiptLinesRes.rows || []) {
+      const rid = String(row.receipt_id);
+      if (journalReceipts.has(rid)) continue;
+      const qty = Number(row.scanned_quantity) || 0;
+      const marks = Object.entries(row.by_user || {})
+        .map(([uid, t]) => [Number(uid), Number(t)])
+        .filter(([uid, t]) => uid > 0 && Number.isFinite(t) && t > 0);
+      if (!marks.length) {
+        const creator = receiptCreator.get(rid);
+        if (!creator) continue;
+        const u = ensure(creator);
+        u.receipts.ids.add(rid);
+        u.receipts.units += qty;
+        continue;
+      }
+      const share = qty / marks.length;
+      for (const [uid, t] of marks) {
+        const u = ensure(uid);
+        u.receipts.ids.add(rid);
+        u.receipts.units += share;
+        u.receipts.estimated = true;
+        u.receipts.lineMarks.push({ t, units: share, qty: share });
       }
     }
     for (const row of inventoryRes.rows || []) {
@@ -354,7 +432,7 @@ class EmployeeMetricsService {
       fbs: { activeSec: 0, timedUnits: 0 },
       fboCollect: { activeSec: 0, timedUnits: 0 },
       packing: { activeSec: 0, timedUnits: 0 },
-      receiptsTimed: [],
+      receipts: { activeSec: 0, timedUnits: 0 },
     };
     const allDays = new Set();
 
@@ -368,25 +446,30 @@ class EmployeeMetricsService {
         const fbsTime = activeTime(u.fbs.marks, FBS_IDLE_SEC);
         const collectTime = activeTime(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC);
         const packingTime = activeTime(u.packing.marks, FBO_PACKING_IDLE_SEC);
+        const receiptSources = [
+          { marks: u.receipts.journalMarks, idleSec: RECEIPT_IDLE_SEC },
+          { marks: u.receipts.lineMarks, idleSec: RECEIPT_LINES_IDLE_SEC },
+        ];
+        const receiptTime = receiptSources
+          .map((s) => activeTime(s.marks, s.idleSec))
+          .reduce((a, t) => ({ activeSec: a.activeSec + t.activeSec, timedUnits: a.timedUnits + t.timedUnits }), {
+            activeSec: 0,
+            timedUnits: 0,
+          });
         for (const [key, t] of [
           ['fbs', fbsTime],
           ['fboCollect', collectTime],
           ['packing', packingTime],
+          ['receipts', receiptTime],
         ]) {
           totals[key].activeSec += t.activeSec;
           totals[key].timedUnits += t.timedUnits;
         }
-        totals.receiptsTimed.push(...u.receipts.timed);
-        const receiptDaily = {};
-        for (const [d, v] of Object.entries(u.receipts.byDay)) {
-          receiptDaily[d] = { qty: v.qty, sec: receiptPerUnit(v.timed).avgSec };
-        }
-        const receiptTime = receiptPerUnit(u.receipts.timed);
         const daily = {
-          fbs: dailyActive(u.fbs.marks, FBS_IDLE_SEC),
-          fboCollect: dailyActive(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC),
-          packing: dailyActive(u.packing.marks, FBO_PACKING_IDLE_SEC),
-          receipts: receiptDaily,
+          fbs: dailyActive([{ marks: u.fbs.marks, idleSec: FBS_IDLE_SEC }]),
+          fboCollect: dailyActive([{ marks: u.fboCollect.marks, idleSec: FBO_COLLECT_IDLE_SEC }]),
+          packing: dailyActive([{ marks: u.packing.marks, idleSec: FBO_PACKING_IDLE_SEC }]),
+          receipts: dailyActive(receiptSources),
         };
         Object.values(daily).forEach((m) => Object.keys(m).forEach((d) => allDays.add(d)));
 
@@ -420,12 +503,14 @@ class EmployeeMetricsService {
             errors: u.scans.packingErrors,
           },
           receipts: {
-            receipts: u.receipts.receipts,
-            units: Math.max(u.receipts.units, 0),
+            receipts: u.receipts.ids.size,
+            created: u.receipts.created,
+            units: Math.max(Math.round(u.receipts.units), 0),
             scannedUnits: u.scans.receiptUnits,
             diffLines: u.receipts.diffLines,
-            secPerUnit: receiptTime.avgSec,
-            medianSecPerUnit: receiptTime.medianSec,
+            activeHours: round2(receiptTime.activeSec / 3600),
+            secPerUnit: receiptTime.timedUnits > 0 ? round1(receiptTime.activeSec / receiptTime.timedUnits) : null,
+            estimated: u.receipts.estimated,
             scans: receiptScans,
             errors: u.scans.receiptErrors,
             errorRate: receiptScans > 0 ? round2((u.scans.receiptErrors / receiptScans) * 100) : null,
@@ -455,8 +540,6 @@ class EmployeeMetricsService {
         acc.assemblyScans += e.assembly.scans;
         acc.fboCollectUnits += e.fboCollect.units;
         acc.packingUnits += e.packing.units;
-        acc.receipts += e.receipts.receipts;
-        acc.unitsReceived += e.receipts.units;
         acc.receiptErrors += e.receipts.errors;
         acc.inventorySessions += e.inventory.sessions;
         return acc;
@@ -469,8 +552,6 @@ class EmployeeMetricsService {
         assemblyScans: 0,
         fboCollectUnits: 0,
         packingUnits: 0,
-        receipts: 0,
-        unitsReceived: 0,
         receiptErrors: 0,
         inventorySessions: 0,
       }
@@ -487,9 +568,17 @@ class EmployeeMetricsService {
     summary.packingBoxSecPerUnit = boxNorm.secPerUnit;
     summary.packingBoxUnits = boxNorm.units;
     summary.packingBoxSupplies = boxNorm.supplies;
-    const receiptTotal = receiptPerUnit(totals.receiptsTimed);
-    summary.receiptSecPerUnit = receiptTotal.avgSec;
-    summary.receiptMedianSecPerUnit = receiptTotal.medianSec;
+    summary.receipts = (receiptsRes.rows || []).length;
+    summary.unitsReceived = (receiptsRes.rows || []).reduce((s, r) => s + (Number(r.units) || 0), 0);
+    summary.receiptSecPerUnit =
+      totals.receipts.timedUnits > 0 ? round1(totals.receipts.activeSec / totals.receipts.timedUnits) : null;
+    summary.receiptActiveHours = round2(totals.receipts.activeSec / 3600);
+    const lead = receiptPerUnit(receiptLead);
+    summary.receiptLeadSecPerUnit = lead.avgSec;
+    summary.receiptLeadMedianSecPerUnit = lead.medianSec;
+    summary.receiptLeadAvgHours = receiptLead.length
+      ? round2(receiptLead.reduce((s, r) => s + r.d, 0) / receiptLead.length / 3600)
+      : null;
 
     const tracking = trackingRes.rows?.[0] || {};
     return {
@@ -499,6 +588,8 @@ class EmployeeMetricsService {
         fboCollect: FBO_COLLECT_IDLE_SEC,
         packing: FBO_PACKING_IDLE_SEC,
         packingBoxes: FBO_BOX_IDLE_SEC,
+        receipts: RECEIPT_IDLE_SEC,
+        receiptLines: RECEIPT_LINES_IDLE_SEC,
       },
       trackingSince: tracking.since || null,
       fbsScansSince: tracking.fbs_since || null,
