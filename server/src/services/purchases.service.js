@@ -2642,7 +2642,8 @@ class PurchasesService {
                 r.warehouse_receipt_id,
                 p.warehouse_id,
                 ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
-                (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
+                (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count,
+                (SELECT COALESCE(SUM(ri.scanned_quantity), 0)::int FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS scanned_total
          FROM purchase_receipts r
          JOIN purchases p ON p.id = r.purchase_id
          LEFT JOIN warehouses w ON w.id = p.warehouse_id
@@ -2673,16 +2674,23 @@ class PurchasesService {
       }
     }
 
-    // Backfill для старых приёмок: создаём складской документ, если его не было (чтобы появился в разделе «Приёмки»).
+    // Backfill для старых приёмок: складской документ только у завершённых приёмок с принятыми товарами —
+    // черновики, отменённые и пустые приёмки не должны попадать в раздел «Приёмки» с 0 шт.
     const receiptRows = receipts.rows || [];
-    const missing = receiptRows.filter((r) => r?.id && !r.warehouse_receipt_id);
+    const missing = receiptRows.filter(
+      (r) =>
+        r?.id &&
+        !r.warehouse_receipt_id &&
+        String(r.status) === 'completed' &&
+        Number(r.scanned_total) > 0
+    );
     if (missing.length > 0) {
       try {
         await transaction(async (client) => {
           await assertPurchaseInProfile(client, id, pid);
           for (const r of missing) {
             const whId = await ensureWarehouseReceiptForPurchaseReceiptInTx(client, { purchaseId: id, purchaseReceiptId: r.id });
-            if (whId && (r.status === 'completed' || (r.items_count != null && Number(r.items_count) > 0))) {
+            if (whId) {
               await backfillWarehouseReceiptLinesFromPurchaseReceiptInTx(client, {
                 purchaseId: id,
                 purchaseReceiptId: r.id,
@@ -4615,6 +4623,11 @@ class PurchasesService {
         const qty = Math.max(0, parseInt(row.scanned_quantity, 10) || 0);
         if (!productId || qty <= 0) continue;
         byProduct.set(productId, qty);
+      }
+      if (byProduct.size === 0) {
+        const err = new Error('В приёмке нет отсканированных товаров — сохранить пустую приёмку нельзя. Отсканируйте товары или удалите приёмку.');
+        err.statusCode = 400;
+        throw err;
       }
 
       const pWh = await client.query(`SELECT warehouse_id FROM purchases WHERE id = $1`, [purchaseId]);

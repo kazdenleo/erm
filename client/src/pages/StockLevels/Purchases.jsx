@@ -2399,9 +2399,20 @@ export function Purchases() {
                         }
                         onClick={async () => {
                           const completedReceiptId = receipt.receipt.id;
-                          const res = await purchasesApi.completeReceipt(completedReceiptId, {
-                            warehouseId: receiptWarehouseId || null,
-                          });
+                          let res;
+                          try {
+                            setErr(null);
+                            res = await purchasesApi.completeReceipt(completedReceiptId, {
+                              warehouseId: receiptWarehouseId || null,
+                            });
+                          } catch (ex) {
+                            setErr(
+                              ex.response?.data?.message ||
+                                ex.message ||
+                                'Не удалось завершить приёмку'
+                            );
+                            return;
+                          }
                           syncPurchaseReceiptInUrl('');
                           setReceipt(null);
                           setScanMsg(null);
