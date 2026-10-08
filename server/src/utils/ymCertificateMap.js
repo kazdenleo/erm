@@ -3,6 +3,31 @@
  * (POST /v1/businesses/{businessId}/offers/documents/create).
  */
 
+import { normalizeOzonCertificateNumber } from './ozonCertificateMap.js';
+
+const LATIN_TO_CYRILLIC = {
+  A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х', Y: 'У',
+};
+
+function cyrillizeLookalikes(s) {
+  return [...String(s || '').toUpperCase()].map((ch) => LATIN_TO_CYRILLIC[ch] || ch).join('');
+}
+
+/**
+ * Маркет сверяет номер с реестром ФСА, где ТР ТС / ЕАЭС записаны кириллицей, кроме кодов стран:
+ * «TC RU C-CN.AB29.A.05694» → «ТС RU С-CN.АВ29.А.05694». Номера другого формата не трогаем.
+ */
+export function toYmRegistryCertificateNumber(number) {
+  const s = normalizeOzonCertificateNumber(number);
+  const m = s.match(
+    /^(ТС|ЕАЭС) (N )?([A-Za-z]{2}) ([СCДD])-([A-Za-z]{2})\.([A-Za-zА-Яа-яЁё0-9]{2,4})\.([A-Za-zА-Яа-яЁё])\.(\d{3,7}(?:\/\d{2})?)$/
+  );
+  if (!m) return s;
+  const [, prefix, nPart = '', country, kind, origin, organ, series, serial] = m;
+  const kindCyr = /[ДD]/i.test(kind) ? 'Д' : 'С';
+  return `${prefix} ${nPart}${country.toUpperCase()} ${kindCyr}-${origin.toUpperCase()}.${cyrillizeLookalikes(organ)}.${cyrillizeLookalikes(series)}.${serial}`;
+}
+
 export const YM_DOC_TYPE_BY_ERP = {
   certificate: 'CONFORMITY_CERTIFICATE',
   declaration: 'CONFORMITY_DECLARATION',

@@ -12,6 +12,7 @@ import {
   mapErpDocumentTypeToYm,
   parseYmCreateDocument,
   toYmDateOnly,
+  toYmRegistryCertificateNumber,
   ymCreateErrors,
 } from '../utils/ymCertificateMap.js';
 
@@ -184,7 +185,7 @@ class YmCertificatesPushService {
     const cert = await repo.findById(certId, profileId != null ? { profileId } : {});
     if (!cert) throw httpError('Сертификат не найден', 404);
 
-    const number = String(cert.certificate_number || '').trim();
+    const number = toYmRegistryCertificateNumber(cert.certificate_number);
     if (!number) throw httpError('У сертификата нет номера', 400);
     if (number.length > 100) throw httpError('Номер документа для Яндекс.Маркета не длиннее 100 символов', 400);
 
@@ -258,7 +259,10 @@ class YmCertificatesPushService {
             .map((e) => e?.message || e?.code || String(e))
             .filter(Boolean)
             .join('; ');
-          throw httpError(`Яндекс.Маркет не создал документ: ${msg || 'ошибка API'}`, 400);
+          const numberHint = /unsuitable document number/i.test(msg)
+            ? ` (отправлен номер «${number}»; Маркет ждёт номер как в реестре ФСА, например «ЕАЭС RU С-CN.НА72.В.00775/24»)`
+            : '';
+          throw httpError(`Яндекс.Маркет не создал документ: ${msg || 'ошибка API'}${numberHint}`, 400);
         } else {
           const parsed = parseYmCreateDocument(createData, number);
           if (!parsed) {

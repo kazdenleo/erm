@@ -3,6 +3,7 @@ import {
   mapErpDocumentTypeToYm,
   parseYmCreateDocument,
   toYmDateOnly,
+  toYmRegistryCertificateNumber,
   ymCreateErrors,
 } from '../src/utils/ymCertificateMap.js';
 
@@ -38,6 +39,14 @@ describe('ymCertificateMap', () => {
       status: 'VALIDATING',
       type: 'CONFORMITY_CERTIFICATE',
     });
+  });
+
+  test('converts number to FSA registry form', () => {
+    expect(toYmRegistryCertificateNumber('TC RU C-CN.AB29.A.05694')).toBe('ТС RU С-CN.АВ29.А.05694');
+    expect(toYmRegistryCertificateNumber('ЕАЭС RU С-CN.НА72.В.00775/24')).toBe('ЕАЭС RU С-CN.НА72.В.00775/24');
+    expect(toYmRegistryCertificateNumber('EAEU RU C-CN.HA72.B.00775/24')).toBe('ЕАЭС RU С-CN.НА72.В.00775/24');
+    expect(toYmRegistryCertificateNumber('ЕАЭС N RU Д-CN.PA01.B.12345/21')).toBe('ЕАЭС N RU Д-CN.РА01.В.12345/21');
+    expect(toYmRegistryCertificateNumber('РОСС RU.АИ37.H00124')).toBe('РОСС RU.АИ37.H00124');
   });
 
   test('detects already exists errors', () => {
