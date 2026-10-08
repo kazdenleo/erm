@@ -9,6 +9,7 @@ import { useAuth } from '../../../context/AuthContext.jsx';
 import {
   isProfileFboEnabled,
   isProfileKitsEnabled,
+  isProfilePrivateOrdersEnabled,
   isProfileProductionEnabled,
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
@@ -112,6 +113,7 @@ const menuItems = [
   { path: '/card-work', label: 'Работа с карточками', iconClass: 'pe-7s-note2', sectionKey: 'card_work' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
+  { path: '/customers', label: 'Клиенты', iconClass: 'pe-7s-users', sectionKey: 'customers', requiresPrivateOrders: true },
   { path: '/tasks', label: 'Задачи', iconClass: 'pe-7s-check', sectionKey: 'tasks' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
@@ -172,6 +174,7 @@ export function Sidebar({ onNavigate }) {
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
   const fboMenuEnabled = isProfileFboEnabled(profile);
+  const privateOrdersMenuEnabled = isProfilePrivateOrdersEnabled(profile);
   const { enabled: chestnyZnakMenuEnabled } = useChestnyZnakEnabled();
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
@@ -392,12 +395,13 @@ export function Sidebar({ onNavigate }) {
     return menuItems
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .filter((i) => !i.requiresFbo || fboMenuEnabled)
+      .filter((i) => !i.requiresPrivateOrders || privateOrdersMenuEnabled)
       .filter((i) => !i.requiresProduction || productionMenuEnabled)
       .filter((i) => !i.requiresChestnyZnak || chestnyZnakMenuEnabled)
       .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, chestnyZnakMenuEnabled, navAllowed]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, privateOrdersMenuEnabled, chestnyZnakMenuEnabled, navAllowed]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 

@@ -919,6 +919,11 @@ export function orderEligibleForProcurement(order) {
   return false;
 }
 
+function manualOrderCustomerId(meta) {
+  const n = Number(meta?.customerId ?? meta?.customer_id);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 /** Числовой orders.id для meta.order_id; Pg отдаёт bigint как string/BigInt — иначе резерв не попадает в выборку списка заказов. */
 function orderRowDbId(row) {
   const rid = row?.id;
@@ -4314,7 +4319,7 @@ class OrdersService {
   /**
    * Создать ручной заказ с несколькими товарами (одна группа).
    * @param {Array<{ productId: number, quantity: number, price?: number }>} items — price за единицу (если не передана, берётся из карточки товара)
-   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, warehouseId?: number|null }} [meta]
+   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, customerId?: number|null, deliveryAddress?: string|null, warehouseId?: number|null }} [meta]
    * @returns {Promise<object>} { orderGroupId, orders: [...] }
    */
   async createManualWithItems(items, meta = {}) {
@@ -4343,6 +4348,7 @@ class OrdersService {
       meta.customerPhone != null && String(meta.customerPhone).trim() !== ''
         ? String(meta.customerPhone).trim()
         : null;
+    const customerId = manualOrderCustomerId(meta);
     const productsService = (await import('./products.service.js')).default;
     const orderGroupId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const created = [];
@@ -4373,6 +4379,7 @@ class OrdersService {
         status: 'new',
         customer_name: customerName,
         customer_phone: customerPhone,
+        customer_id: customerId,
         warehouse_id: warehouseId,
       };
       const row = await this.repository.create(orderData);
@@ -4451,7 +4458,7 @@ class OrdersService {
    * Обновить ручной заказ (только marketplace=manual, статус «Новый»).
    * @param {string} orderGroupId — order_group_id или order_id одиночной позиции
    * @param {Array<{ id?: number, productId: number, quantity: number, price?: number }>} items
-   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, warehouseId?: number|null }} [meta]
+   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, customerId?: number|null, deliveryAddress?: string|null, warehouseId?: number|null }} [meta]
    */
   async updateManualWithItems(orderGroupId, items, meta = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -4481,6 +4488,7 @@ class OrdersService {
       meta.customerPhone != null && String(meta.customerPhone).trim() !== ''
         ? String(meta.customerPhone).trim()
         : null;
+    const customerId = manualOrderCustomerId(meta);
 
     const anchorId = String(orderGroupId ?? '').trim();
     if (!anchorId) {
@@ -4558,6 +4566,7 @@ class OrdersService {
           price,
           customer_name: customerName,
           customer_phone: customerPhone,
+          customer_id: customerId,
           warehouse_id: warehouseId
         });
         continue;
@@ -4590,6 +4599,7 @@ class OrdersService {
         status: 'new',
         customer_name: customerName,
         customer_phone: customerPhone,
+        customer_id: customerId,
         warehouse_id: warehouseId
       };
       const row = await this.repository.create(orderData);

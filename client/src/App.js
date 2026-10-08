@@ -6,7 +6,11 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
+import {
+  isProfileKitsEnabled,
+  isProfilePrivateOrdersEnabled,
+  isProfileProductionEnabled,
+} from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
 import { ErrorBoundary } from './components/common/ErrorBoundary/ErrorBoundary.jsx';
 import { Layout } from './components/layout/Layout/Layout';
@@ -37,6 +41,8 @@ import { ProductEnrichment } from './pages/Products/ProductEnrichment';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
+import { Customers } from './pages/Customers/Customers';
+import { CustomerDetail } from './pages/Customers/CustomerDetail';
 import { Questions } from './pages/Questions/Questions';
 import { Reviews } from './pages/Reviews/Reviews';
 import { OrderDetail } from './pages/Orders/OrderDetail';
@@ -97,6 +103,14 @@ function ProductionRoute() {
       <Production />
     </Layout>
   );
+}
+
+function PrivateOrdersRoute({ children }) {
+  const { profile } = useAuth();
+  if (!isProfilePrivateOrdersEnabled(profile)) {
+    return <Navigate to="/orders" replace />;
+  }
+  return <Layout>{children}</Layout>;
 }
 
 function ProductEnrichmentRoute() {
@@ -216,6 +230,8 @@ function App() {
           <Route path="/warehouses" element={<ProtectedRoute><Layout><Warehouses /></Layout></ProtectedRoute>} />
           <Route path="/suppliers" element={<ProtectedRoute><Layout><Suppliers /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
+          <Route path="/customers" element={<ProtectedRoute><PrivateOrdersRoute><Customers /></PrivateOrdersRoute></ProtectedRoute>} />
+          <Route path="/customers/:customerId" element={<ProtectedRoute><PrivateOrdersRoute><CustomerDetail /></PrivateOrdersRoute></ProtectedRoute>} />
           <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
           <Route path="/returns" element={<Navigate to="/stock-levels/warehouse?op=return_customer" replace />} />

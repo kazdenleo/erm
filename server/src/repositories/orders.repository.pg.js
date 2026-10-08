@@ -64,6 +64,7 @@ function rowToCamel(row) {
     customerName: row.customer_name,
     customerPhone: row.customer_phone,
     deliveryAddress: row.delivery_address,
+    customerId: row.customer_id != null && row.customer_id !== '' ? String(row.customer_id) : null,
     createdAt: row.created_at,
     inProcessAt: row.in_process_at,
     shipmentDate: row.shipment_date,
@@ -207,7 +208,7 @@ class OrdersRepositoryPG {
       params.push(productId);
     }
     if (search) {
-      whereSql += ` AND ( o.order_id ILIKE $${paramIndex} OR o.product_name ILIKE $${paramIndex} OR o.customer_name ILIKE $${paramIndex} )`;
+      whereSql += ` AND ( o.order_id ILIKE $${paramIndex} OR o.product_name ILIKE $${paramIndex} OR o.customer_name ILIKE $${paramIndex} OR o.customer_phone ILIKE $${paramIndex} )`;
       params.push(`%${search}%`);
       paramIndex++;
     }
@@ -238,7 +239,7 @@ class OrdersRepositoryPG {
       SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -273,7 +274,7 @@ class OrdersRepositoryPG {
           SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
             COALESCE(p.name, o.product_name) AS product_name,
             o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-            o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+            o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
             o.returned_to_new_at,
             o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
             assembler.email AS assembled_by_email,
@@ -509,7 +510,7 @@ class OrdersRepositoryPG {
         o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -618,7 +619,7 @@ class OrdersRepositoryPG {
         o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -920,8 +921,8 @@ class OrdersRepositoryPG {
       INSERT INTO orders (
         profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
-        customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        customer_phone, delivery_address, warehouse_id, created_at, in_process_at, shipment_date, customer_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       RETURNING *
     `, [
       normalizeProfileId(orderData.profile_id ?? orderData.profileId),
@@ -941,7 +942,8 @@ class OrdersRepositoryPG {
       orderData.warehouse_id ?? orderData.warehouseId ?? null,
       orderData.created_at || new Date(),
       orderData.in_process_at || null,
-      orderData.shipment_date || null
+      orderData.shipment_date || null,
+      orderData.customer_id ?? orderData.customerId ?? null
     ]);
     
     return rowToCamel(result.rows[0]);
@@ -981,7 +983,7 @@ class OrdersRepositoryPG {
       SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -1015,7 +1017,7 @@ class OrdersRepositoryPG {
       SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -1047,7 +1049,7 @@ class OrdersRepositoryPG {
       SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
@@ -1260,7 +1262,7 @@ class OrdersRepositoryPG {
       'product_id', 'offer_id', 'marketplace_sku', 'product_name',
       'quantity', 'price', 'status', 'customer_name', 'customer_phone',
       'delivery_address', 'warehouse_id', 'order_id', 'order_group_id',
-      'in_process_at', 'shipment_date'
+      'in_process_at', 'shipment_date', 'customer_id'
     ];
 
     let statusParamIdx = null;
@@ -1431,7 +1433,7 @@ class OrdersRepositoryPG {
     const result = await query(
       `SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         o.profile_id,
         COALESCE(o.reserved_qty, 0)::int AS reserved_qty,
@@ -1471,7 +1473,7 @@ class OrdersRepositoryPG {
     const result = await query(
       `SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
        FROM orders o
        WHERE o.status IN ('new', 'in_procurement', 'in_assembly', 'wb_assembly', 'assembled')
@@ -1533,7 +1535,7 @@ class OrdersRepositoryPG {
       SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
-        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.delivery_address, o.customer_id, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,

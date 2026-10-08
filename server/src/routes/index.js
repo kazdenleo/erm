@@ -14,6 +14,7 @@ import productsRoutes from './products.routes.js';
 import warehousesRoutes from './warehouses.routes.js';
 import warehouseMappingsRoutes from './warehouseMappings.routes.js';
 import suppliersRoutes from './suppliers.routes.js';
+import customersRoutes from './customers.routes.js';
 import ordersController from '../controllers/orders.controller.js';
 import ordersRoutes from './orders.routes.js';
 import {
@@ -234,6 +235,9 @@ router.use('/warehouse-mappings', warehouseMappingsRoutes);
 
 // Suppliers API
 router.use('/suppliers', suppliersRoutes);
+
+// Клиенты для частных заказов
+router.use('/customers', customersRoutes);
 
 // Orders API (явные маршруты до use('/orders'), чтобы PUT с :marketplace/:orderId точно находились)
 router.post('/orders/manual', requireAuth, wrapAsync(ordersController.createManual.bind(ordersController)));

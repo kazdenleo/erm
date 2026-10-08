@@ -9,6 +9,7 @@ export const NAV_SECTION_KEYS = [
   'card_work',
   'products',
   'orders',
+  'customers',
   'assembly',
   'shipments',
   'fbo',
@@ -47,6 +48,7 @@ export const NAV_SECTION_LABELS = {
   card_work: 'Работа с карточками',
   products: 'Товары',
   orders: 'Заказы',
+  customers: 'Клиенты (частные заказы)',
   assembly: 'Сборка',
   shipments: 'Отгрузки',
   fbo: 'Поставки FBO',
@@ -88,6 +90,7 @@ export const NAV_SECTION_GROUPS = [
       'card_work',
       'products',
       'orders',
+      'customers',
       'assembly',
       'shipments',
       'prices',
@@ -135,6 +138,7 @@ export const NAV_SECTION_GROUPS = [
 /** Пресеты при смене роли (только для подсказки в UI; админ может переопределить). */
 export const ROLE_NAV_PRESETS = {
   picker: {
+    customers: false,
     analytics: false,
     analytics_sales: false,
     card_work: false,
@@ -321,6 +325,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';
+  if (path.startsWith('/customers')) return 'customers';
   if (path.startsWith('/shipments')) return 'shipments';
   if (path.startsWith('/stock-levels/fbo-supplies') || path.startsWith('/fbo-supplies')) return 'fbo';
   if (path.startsWith('/questions')) return 'questions';

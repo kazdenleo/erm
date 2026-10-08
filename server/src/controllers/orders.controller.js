@@ -14,6 +14,7 @@ import ordersLabelsService from '../services/orders.labels.service.js';
 import shipmentsService from '../services/shipments.service.js';
 import productsService from '../services/products.service.js';
 import repositoryFactory from '../config/repository-factory.js';
+import customersRepo from '../repositories/customers.repository.pg.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import logger from '../utils/logger.js';
@@ -53,6 +54,42 @@ async function validateManualOrderWarehouseId(profileId, warehouseId, accessScop
     return 'Нет доступа к выбранному складу.';
   }
   return null;
+}
+
+/**
+ * Клиент для ручного заказа: явный customerId из базы, иначе поиск по телефону, иначе новый клиент.
+ * @returns {Promise<{ customerId: number|null, error: string|null }>}
+ */
+async function resolveManualOrderCustomer(profileId, body, customerName, customerPhone) {
+  const rawId = body?.customerId ?? body?.customer_id ?? null;
+  if (rawId != null && rawId !== '') {
+    const existing = await customersRepo.findByIdAndProfile(rawId, profileId);
+    if (!existing) return { customerId: null, error: 'Клиент не найден в базе.' };
+    if (!existing.phone && customerPhone) {
+      try {
+        await customersRepo.update(existing.id, profileId, { phone: customerPhone });
+      } catch (error) {
+        if (error?.statusCode !== 409) throw error;
+      }
+    }
+    return { customerId: Number(existing.id), error: null };
+  }
+  const byPhone = await customersRepo.findByPhone(profileId, customerPhone);
+  if (byPhone) return { customerId: Number(byPhone.id), error: null };
+  try {
+    const created = await customersRepo.create(profileId, {
+      name: customerName,
+      phone: customerPhone,
+      source: 'Заказ',
+    });
+    return { customerId: Number(created.id), error: null };
+  } catch (error) {
+    if (error?.statusCode === 409) {
+      const retry = await customersRepo.findByPhone(profileId, customerPhone);
+      if (retry) return { customerId: Number(retry.id), error: null };
+    }
+    throw error;
+  }
 }
 
 /** Без limit — не отдаём весь список (риск 504 на VPS при большом каталоге заказов). */
@@ -237,6 +274,7 @@ class OrdersController {
    * Body: { customerName, customerPhone, productId, quantity, price } — одна позиция;
    *   или { customerName, customerPhone, items: [{ productId, quantity, price }, ...] } — несколько позиций.
    * price — за единицу товара (неотрицательное число). ФИО и телефон обязательны.
+   * customerId — клиент из базы; без него клиент ищется по телефону или создаётся.
    */
   async createManual(req, res, next) {
     try {
@@ -294,10 +332,20 @@ class OrdersController {
             message: 'Укажите хотя бы одну позицию: товар, количество и цену за единицу.',
           });
         }
+        const { customerId, error: customerError } = await resolveManualOrderCustomer(
+          pid,
+          req.body,
+          customerName,
+          customerPhone
+        );
+        if (customerError) {
+          return res.status(400).json({ ok: false, message: customerError });
+        }
         const { orderGroupId, orders } = await ordersService.createManualWithItems(parsedItems, {
           profileId: pid,
           customerName,
           customerPhone,
+          customerId,
           warehouseId,
         });
         return res.status(201).json({ ok: true, data: { orderGroupId, orders } });
@@ -323,6 +371,15 @@ class OrdersController {
       if (!Number.isInteger(productIdNum) || productIdNum < 1) {
         return res.status(400).json({ ok: false, message: 'Некорректный ID товара (ожидается число).' });
       }
+      const { customerId, error: customerError } = await resolveManualOrderCustomer(
+        pid,
+        req.body,
+        customerName,
+        customerPhone
+      );
+      if (customerError) {
+        return res.status(400).json({ ok: false, message: customerError });
+      }
       const orderId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const orderData = {
         profile_id: req.user?.profileId ?? null,
@@ -337,6 +394,7 @@ class OrdersController {
         status: 'new',
         customer_name: customerName,
         customer_phone: customerPhone,
+        customer_id: customerId,
         warehouse_id: warehouseId,
       };
       const created = await ordersService.create(orderData);
@@ -351,7 +409,7 @@ class OrdersController {
 
   /**
    * PATCH /orders/manual/:orderGroupId
-   * Body: { customerName, customerPhone, warehouseId, items: [{ id?, productId, quantity, price }, ...] }
+   * Body: { customerName, customerPhone, customerId?, warehouseId, items: [{ id?, productId, quantity, price }, ...] }
    */
   async updateManual(req, res, next) {
     try {
@@ -423,6 +481,15 @@ class OrdersController {
           message: 'Укажите хотя бы одну позицию: товар, количество и цену за единицу.',
         });
       }
+      const { customerId, error: customerError } = await resolveManualOrderCustomer(
+        pid,
+        req.body,
+        customerName,
+        customerPhone
+      );
+      if (customerError) {
+        return res.status(400).json({ ok: false, message: customerError });
+      }
       const { orderGroupId: gid, orders } = await ordersService.updateManualWithItems(
         orderGroupId,
         parsedItems,
@@ -430,6 +497,7 @@ class OrdersController {
           profileId: pid,
           customerName,
           customerPhone,
+          customerId,
           warehouseId,
         }
       );

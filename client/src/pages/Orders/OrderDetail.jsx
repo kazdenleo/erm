@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { productCardPath } from '../../utils/productCardPath.js';
+import { isProfilePrivateOrdersEnabled } from '../../utils/profileFlags.js';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
@@ -1399,6 +1400,9 @@ export function OzonDetail({ detail, localLines, assemblyStickerNumber = null })
 
 /** Краткая информация о заказе из списка (для ручных заказов, Яндекс или при ошибке API) */
 export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
+  const { profile } = useAuth();
+  const customerId = orders?.[0]?.customerId ?? orders?.[0]?.customer_id ?? null;
+  const customerLinkEnabled = customerId != null && isProfilePrivateOrdersEnabled(profile);
   const mpName = marketplaceNames[marketplace] || marketplace;
   const orderId = marketplaceOrderIdForApi(orders, marketplace);
   const lineNeed = (o) => Math.max(1, Number(o.needQty ?? o.need_qty ?? o.quantity) || 1);
@@ -1463,7 +1467,14 @@ export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
         <section className="order-detail-section">
           <h3>Получатель</h3>
           <dl className="detail-dl">
-            <dt>Имя</dt><dd>{orders[0].customerName || orders[0].customer_name}</dd>
+            <dt>Имя</dt>
+            <dd>
+              {customerLinkEnabled ? (
+                <Link to={`/customers/${customerId}`}>{orders[0].customerName || orders[0].customer_name}</Link>
+              ) : (
+                orders[0].customerName || orders[0].customer_name
+              )}
+            </dd>
             {(orders[0].customerPhone || orders[0].customer_phone) && (
               <><dt>Телефон</dt><dd>{orders[0].customerPhone || orders[0].customer_phone}</dd></>
             )}

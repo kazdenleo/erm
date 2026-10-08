@@ -17,6 +17,8 @@ import { suppliersApi } from '../../services/suppliers.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
+import { CustomerSearchInput } from '../../components/common/CustomerSearchInput/CustomerSearchInput';
+import { customersApi } from '../../services/customers.api';
 import { formatProductOptionLabel } from '../../utils/productSearch';
 import { manualOrderAvailabilityLabel } from '../../utils/kitStockMetrics';
 import {
@@ -632,6 +634,8 @@ export function Orders() {
   const [editManualOrderGroupId, setEditManualOrderGroupId] = useState(null);
   const [addOrderCustomerName, setAddOrderCustomerName] = useState('');
   const [addOrderCustomerPhone, setAddOrderCustomerPhone] = useState('');
+  /** Клиент из базы, к которому привязывается ручной заказ ({ id, name, phone }) */
+  const [addOrderCustomer, setAddOrderCustomer] = useState(null);
   const [addOrderWarehouseId, setAddOrderWarehouseId] = useState('');
   const [addOrderItems, setAddOrderItems] = useState([
     { productId: '', productLabel: '', searchText: '', quantity: 1, price: '' },
@@ -1768,14 +1772,51 @@ export function Orders() {
     return Number.isFinite(pr) && pr >= 0 ? pr : '';
   };
 
-  const handleAddOrderOpen = () => {
+  const handleAddOrderSelectCustomer = (customer) => {
+    if (!customer?.id) {
+      setAddOrderCustomer(null);
+      return;
+    }
+    setAddOrderCustomer({ id: String(customer.id), name: customer.name || '', phone: customer.phone || '' });
+    setAddOrderCustomerName(customer.name || '');
+    setAddOrderCustomerPhone(customer.phone || '');
+  };
+
+  const openAddOrderModal = (customer = null) => {
     setAddOrderError(null);
     setEditManualOrderGroupId(null);
+    setAddOrderCustomer(null);
     setAddOrderCustomerName('');
     setAddOrderCustomerPhone('');
+    if (customer) handleAddOrderSelectCustomer(customer);
     setAddOrderItems([{ productId: '', productLabel: '', searchText: '', quantity: 1, price: '' }]);
     setAddOrderOpen(true);
   };
+
+  const handleAddOrderOpen = () => openAddOrderModal();
+
+  /** /orders?newOrderCustomer=ID — открыть создание заказа для клиента из карточки клиента. */
+  const newOrderCustomerParam = new URLSearchParams(location.search).get('newOrderCustomer');
+  useEffect(() => {
+    if (!newOrderCustomerParam || !allowPrivateOrders) return undefined;
+    let cancelled = false;
+    const sp = new URLSearchParams(location.search);
+    sp.delete('newOrderCustomer');
+    const rest = sp.toString();
+    navigate({ pathname: location.pathname, search: rest ? `?${rest}` : '' }, { replace: true });
+    customersApi
+      .getById(newOrderCustomerParam)
+      .then((c) => {
+        if (!cancelled) openAddOrderModal(c);
+      })
+      .catch(() => {
+        if (!cancelled) openAddOrderModal();
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newOrderCustomerParam, allowPrivateOrders]);
 
   const handleEditManualOrderOpen = (row) => {
     const ordersInGroup = ordersArrayForPurchaseRow(row);
@@ -1789,8 +1830,16 @@ export function Orders() {
     if (!groupId) return;
     setAddOrderError(null);
     setEditManualOrderGroupId(groupId);
-    setAddOrderCustomerName(String(first.customerName ?? first.customer_name ?? '').trim());
-    setAddOrderCustomerPhone(String(first.customerPhone ?? first.customer_phone ?? '').trim());
+    const firstName = String(first.customerName ?? first.customer_name ?? '').trim();
+    const firstPhone = String(first.customerPhone ?? first.customer_phone ?? '').trim();
+    const firstCustomerId = first.customerId ?? first.customer_id ?? null;
+    setAddOrderCustomerName(firstName);
+    setAddOrderCustomerPhone(firstPhone);
+    setAddOrderCustomer(
+      firstCustomerId != null && firstCustomerId !== ''
+        ? { id: String(firstCustomerId), name: firstName, phone: firstPhone }
+        : null
+    );
     const wh = first.warehouseId ?? first.warehouse_id;
     setAddOrderWarehouseId(wh != null && wh !== '' ? String(wh) : '');
     setAddOrderItems(
@@ -1943,16 +1992,18 @@ export function Orders() {
     }
     setAddOrderLoading(true);
     setAddOrderError(null);
+    const customerId = addOrderCustomer?.id ?? null;
     try {
       if (editManualOrderGroupId) {
         await ordersApi.updateManual(editManualOrderGroupId, {
           items,
           customerName,
           customerPhone,
+          customerId,
           warehouseId,
         });
       } else {
-        await ordersApi.createManual({ items, customerName, customerPhone, warehouseId });
+        await ordersApi.createManual({ items, customerName, customerPhone, customerId, warehouseId });
       }
       await refreshOrdersAndStatusCounts();
       handleManualOrderModalClose();
@@ -2669,6 +2720,39 @@ export function Orders() {
           <p className="form-hint" style={{ marginBottom: '12px' }}>
             Укажите покупателя и позиции. Поиск товара — по артикулу, штрихкоду или названию.
           </p>
+          <div className="form-group" style={{ marginBottom: '12px' }}>
+            <label className="label" htmlFor="manual-order-customer-search">Клиент из базы</label>
+            {addOrderCustomer ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
+                <span>
+                  <strong>{addOrderCustomer.name || addOrderCustomerName}</strong>
+                  {addOrderCustomer.phone ? ` · ${addOrderCustomer.phone}` : ''}
+                </span>
+                <Link to={`/customers/${addOrderCustomer.id}`} target="_blank" rel="noopener noreferrer">
+                  Карточка
+                </Link>
+                <button
+                  type="button"
+                  className="btn btn-link btn-sm p-0"
+                  onClick={() => setAddOrderCustomer(null)}
+                  disabled={addOrderLoading}
+                >
+                  Сменить
+                </button>
+              </div>
+            ) : (
+              <>
+                <CustomerSearchInput
+                  id="manual-order-customer-search"
+                  onSelect={handleAddOrderSelectCustomer}
+                  disabled={addOrderLoading}
+                />
+                <p className="text-muted small" style={{ marginTop: 6, marginBottom: 0 }}>
+                  Если клиента нет в базе, он будет добавлен автоматически по ФИО и телефону.
+                </p>
+              </>
+            )}
+          </div>
           <div
             style={{
               display: 'grid',
@@ -2695,7 +2779,16 @@ export function Orders() {
                 type="tel"
                 className="form-control"
                 value={addOrderCustomerPhone}
-                onChange={(e) => setAddOrderCustomerPhone(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setAddOrderCustomerPhone(v);
+                  if (
+                    addOrderCustomer?.phone &&
+                    v.trim() !== String(addOrderCustomer.phone).trim()
+                  ) {
+                    setAddOrderCustomer(null);
+                  }
+                }}
                 autoComplete="tel"
                 placeholder="+7 …"
               />
