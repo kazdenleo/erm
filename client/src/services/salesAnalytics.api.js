@@ -102,4 +102,29 @@ export const salesAnalyticsApi = {
     const r = await api.get('/sales-analytics/card-work/missing-cost');
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  getLostRevenue: (params = {}) => getWithParams('/sales-analytics/lost-revenue', params),
+  getReturns: (params = {}) => getWithParams('/sales-analytics/returns', params),
+  getDeadStock: (params = {}) => getWithParams('/sales-analytics/dead-stock', params),
+  getPenalties: (params = {}) => getWithParams('/sales-analytics/penalties', params),
+  getEmployees: (params = {}) => getWithParams('/sales-analytics/employees', params),
+  getPnl: (params = {}) => getWithParams('/sales-analytics/pnl', params),
+
+  listExpenses: () => getWithParams('/sales-analytics/expenses'),
+  createExpense: async (body) => unwrap(await api.post('/sales-analytics/expenses', body)),
+  updateExpense: async (id, body) => unwrap(await api.put(`/sales-analytics/expenses/${id}`, body)),
+  deleteExpense: async (id) => unwrap(await api.delete(`/sales-analytics/expenses/${id}`)),
 };
+
+function unwrap(r) {
+  return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+}
+
+async function getWithParams(url, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v != null && v !== '') search.set(k, String(v));
+  });
+  const qs = search.toString();
+  return unwrap(await api.get(`${url}${qs ? `?${qs}` : ''}`));
+}

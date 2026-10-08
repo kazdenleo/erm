@@ -39,6 +39,7 @@ const REASON_FILTERS = [
   { value: 'low_content_rating', label: 'Качество' },
   { value: 'dim_mismatch', label: 'Размеры' },
   { value: 'high_drr', label: 'Высокий ДРР' },
+  { value: 'high_returns', label: 'Много возвратов' },
   { value: 'duplicate', label: 'Дубли' },
   { value: 'missing_cost', label: 'Без себестоимости' },
 ];
@@ -348,6 +349,20 @@ export function CardWork() {
           <div className="product-dynamics__summary-card-label">Высокий ДРР</div>
           <div className="product-dynamics__summary-card-value">
             {loading && data == null ? '…' : formatQty(summary.highDrrCount)}
+          </div>
+        </div>
+        <div
+          className={`product-dynamics__summary-card${reason === 'high_returns' ? ' is-active' : ''}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => setReason('high_returns')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setReason('high_returns');
+          }}
+        >
+          <div className="product-dynamics__summary-card-label">Много возвратов</div>
+          <div className="product-dynamics__summary-card-value">
+            {loading && data == null ? '…' : formatQty(summary.highReturnsCount)}
           </div>
         </div>
         <div

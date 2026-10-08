@@ -16,6 +16,12 @@ const TABS = [
   { to: '/analytics/abc', label: 'ABC', sectionKey: 'analytics_sales' },
   { to: '/analytics/dynamics', label: 'Динамика', sectionKey: 'analytics_sales' },
   { to: '/analytics/turnover', label: 'Оборачиваемость', sectionKey: 'analytics_sales' },
+  { to: '/analytics/lost-revenue', label: 'Упущенная выручка', sectionKey: 'analytics_sales' },
+  { to: '/analytics/returns', label: 'Возвраты', sectionKey: 'analytics_sales' },
+  { to: '/analytics/dead-stock', label: 'Неликвиды', sectionKey: 'analytics_sales' },
+  { to: '/analytics/penalties', label: 'Штрафы', sectionKey: 'analytics_sales' },
+  { to: '/analytics/employees', label: 'Сотрудники', sectionKey: 'analytics_sales', adminOnly: true },
+  { to: '/analytics/pnl', label: 'ОПиУ', sectionKey: 'analytics_sales', adminOnly: true },
 ];
 
 export function AnalyticsSubNav() {
@@ -25,6 +31,7 @@ export function AnalyticsSubNav() {
   const tabs = useMemo(() => {
     return TABS.filter((tab) => {
       if (tab.requiresFbo && !fboEnabled) return false;
+      if (tab.adminOnly) return Boolean(isAccountAdmin || isAdmin);
       if (isAccountAdmin || isAdmin) return true;
       return isNavFeatureEnabled(features, tab.sectionKey);
     });

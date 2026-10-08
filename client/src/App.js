@@ -21,6 +21,12 @@ import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics
 import { AbcSalesAnalytics } from './pages/Analytics/AbcSalesAnalytics/AbcSalesAnalytics';
 import { ProductDynamics } from './pages/Analytics/ProductDynamics/ProductDynamics';
 import { ProductTurnover } from './pages/Analytics/ProductTurnover/ProductTurnover';
+import { LostRevenue } from './pages/Analytics/LostRevenue/LostRevenue';
+import { ReturnsAnalytics } from './pages/Analytics/ReturnsAnalytics/ReturnsAnalytics';
+import { DeadStock } from './pages/Analytics/DeadStock/DeadStock';
+import { Penalties } from './pages/Analytics/Penalties/Penalties';
+import { EmployeeMetrics } from './pages/Analytics/EmployeeMetrics/EmployeeMetrics';
+import { Pnl } from './pages/Analytics/Pnl/Pnl';
 import { CardWork } from './pages/Analytics/CardWork/CardWork';
 import { CardWorkLayout } from './pages/Analytics/CardWork/CardWorkLayout';
 import { Hypotheses } from './pages/Analytics/Hypotheses/Hypotheses';
@@ -159,6 +165,12 @@ function App() {
             <Route path="abc" element={<AbcSalesAnalytics />} />
             <Route path="dynamics" element={<ProductDynamics />} />
             <Route path="turnover" element={<ProductTurnover />} />
+            <Route path="lost-revenue" element={<LostRevenue />} />
+            <Route path="returns" element={<ReturnsAnalytics />} />
+            <Route path="dead-stock" element={<DeadStock />} />
+            <Route path="penalties" element={<Penalties />} />
+            <Route path="employees" element={<EmployeeMetrics />} />
+            <Route path="pnl" element={<Pnl />} />
             <Route path="card-work" element={<Navigate to="/card-work" replace />} />
             <Route path="hypotheses" element={<Navigate to="/card-work/hypotheses" replace />} />
           </Route>

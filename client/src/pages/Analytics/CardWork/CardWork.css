@@ -71,6 +71,11 @@
   color: #92400e;
 }
 
+.card-work__reason--high_returns {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .card-work__hint {
   color: #64748b;
   font-size: 13px;
