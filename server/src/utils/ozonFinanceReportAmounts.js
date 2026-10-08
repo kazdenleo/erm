@@ -46,11 +46,20 @@ export function categorizeOzonOperationKind(operationType) {
   return 'other';
 }
 
-/** @param {object} op — строка Ozon Finance API или raw_json из БД */
+/**
+ * Сторно продажи: OperationAgentStornoDeliveredToCustomer и ClientReturnAgentOperation
+ * с отрицательным accruals_for_sale (возврат после выкупа). Ozon возвращает комиссию,
+ * поэтому она хранится со знаком минус; сумма сторно — только в payout, не в логистике.
+ *
+ * @param {object} op — строка Ozon Finance API или raw_json из БД
+ */
 export function extractOzonFinanceAmounts(op) {
   const operationType = op?.operation_type ?? op?.accrued_category ?? op?.type ?? null;
   const kind = categorizeOzonOperationKind(operationType);
   const amount = toNum(op?.amount);
+  const accruals = toNum(op?.accruals_for_sale);
+  const saleCommission = Math.abs(toNum(op?.sale_commission));
+  const saleReversal = (kind === 'sale' || kind === 'return') && accruals < 0;
 
   const amounts = {
     retail_amount: 0,
@@ -73,6 +82,8 @@ export function extractOzonFinanceAmounts(op) {
       else if (cat === 'storage') amounts.storage_amount += n;
       else amounts.other_deductions += n;
     }
+  } else if (saleReversal) {
+    amounts.logistics_amount = Math.abs(toNum(op?.return_delivery_charge));
   } else {
     const abs = Math.abs(amount);
     if (kind === 'penalty') amounts.penalty_amount = abs;
@@ -82,9 +93,9 @@ export function extractOzonFinanceAmounts(op) {
     else if (kind !== 'sale') amounts.other_deductions = abs;
   }
 
-  if (kind === 'sale') {
-    const accruals = toNum(op?.accruals_for_sale);
-    const saleCommission = Math.abs(toNum(op?.sale_commission));
+  if (saleReversal) {
+    amounts.commission_amount -= saleCommission;
+  } else if (kind === 'sale') {
     if (accruals > 0) {
       amounts.retail_amount = accruals;
     } else if (amount > 0) {

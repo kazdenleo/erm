@@ -4,6 +4,9 @@
  * У продажи WB комиссия и к перечислению считаются от retail_price (цена до скидки МП),
  * а не от retail_amount (сколько заплатил покупатель после скидки).
  * payout_amount = как в отчёте (ppvz_for_pay), логистику не вычитаем.
+ *
+ * В строке «Возврат» WB отдаёт суммы положительными, хотя это сторно продажи:
+ * храним payout и комиссию со знаком минус, чтобы суммы по заказу/товару сходились.
  */
 
 function toNum(v) {
@@ -13,6 +16,12 @@ function toNum(v) {
 
 function isWbSaleOrReturn(oper) {
   return oper.includes('продаж') || oper.includes('возврат');
+}
+
+function isWbSaleReversal(row) {
+  const oper = String(row?.supplier_oper_name || '').trim().toLowerCase();
+  const doc = String(row?.doc_type_name || '').trim().toLowerCase();
+  return oper === 'возврат' || (!oper && doc === 'возврат');
 }
 
 /** База комиссии / цены продажи в аналитике. */
@@ -63,12 +72,14 @@ export function extractWbFinanceAmounts(row) {
     if (ppvzReward > 0) logistics += ppvzReward;
   }
 
-  const payout = toNum(row?.ppvz_for_pay ?? row?.for_pay);
+  const reversal = isWbSaleReversal(row);
+  const payoutRaw = toNum(row?.ppvz_for_pay ?? row?.for_pay);
+  const payout = reversal ? -Math.abs(payoutRaw) : payoutRaw;
 
   return {
     quantity: qty,
     retail_amount: isWbSaleOrReturn(oper) ? retail : 0,
-    commission_amount: Math.abs(commission),
+    commission_amount: reversal ? -Math.abs(commission) : Math.abs(commission),
     logistics_amount: Math.abs(logistics),
     storage_amount: Math.abs(storage),
     penalty_amount: Math.abs(oper.includes('штраф') ? penalty || toNum(row?.retail_amount) : penalty),

@@ -24,8 +24,8 @@ export const SQL_IS_WB_LINE = `LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries
 
 /**
  * Возврат ранее учтённой продажи (товар вернулся, выручка и комиссия сторнируются).
- * Ozon ClientReturnAgentOperation с отрицательным accruals_for_sale — возврат после выкупа
- * (в строке сохранён как «логистика» на всю сумму сторно).
+ * Ozon ClientReturnAgentOperation с отрицательным accruals_for_sale — возврат после выкупа.
+ * Суммы таких строк хранятся со знаком минус (см. wb/ozonFinanceReportAmounts.js).
  */
 export const RETURN_SALE_LINE = `(
   (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Возврат')
@@ -39,23 +39,28 @@ export const RETURN_SALE_LINE = `(
 export const SQL_RETURNED_AMOUNT = `CASE WHEN ${SQL_IS_WB_LINE} THEN ABS(l.retail_amount)
   ELSE ABS(${rawNum('accruals_for_sale')}) END`;
 
-/** Комиссия МП: по возврату продажи — со знаком минус (МП её возвращает). */
-export const SQL_COMMISSION_SIGNED = `CASE WHEN ${RETURN_SALE_LINE}
-  THEN -(CASE WHEN ${SQL_IS_WB_LINE} THEN ABS(l.commission_amount) ELSE ABS(${rawNum('sale_commission')}) END)
-  ELSE l.commission_amount END`;
+/** Выручка строки с учётом возврата: у сторно продажи — со знаком минус (retail_amount там 0 или положителен). */
+export const SQL_RETAIL_NET = `CASE WHEN ${RETURN_SALE_LINE} THEN -(${SQL_RETURNED_AMOUNT}) ELSE l.retail_amount END`;
 
-/** Логистика: у возврата продажи Ozon сумма сторно ошибочно лежит в logistics_amount — не считаем. */
-export const SQL_LOGISTICS_FEE = `CASE WHEN ${RETURN_SALE_LINE} AND NOT ${SQL_IS_WB_LINE} THEN 0 ELSE l.logistics_amount END`;
+/** Штук для себестоимости: продажа — плюс, возврат продажи — минус (товар вернулся на склад). */
+export const SQL_COST_UNITS = `CASE
+  WHEN ${SALE_LINE} THEN GREATEST(l.quantity, 0)
+  WHEN ${RETURN_SALE_LINE} THEN -GREATEST(ABS(l.quantity), 1)
+  ELSE 0
+END`;
 
-/**
- * Фактически перечислено МП по строке.
- * WB: ppvz_for_pay (у возврата — со знаком минус) − логистика − хранение − штрафы − удержания,
- * т.к. WB удерживает их отдельно от «к перечислению». Ozon / ЯМ: payout_amount уже нетто со знаком.
- */
-export const SQL_NET_TRANSFER = `CASE WHEN ${SQL_IS_WB_LINE}
-  THEN (CASE WHEN l.operation_type = 'Возврат' THEN -ABS(l.payout_amount) ELSE l.payout_amount END)
-       - l.logistics_amount - l.storage_amount - l.penalty_amount - l.other_deductions
-  ELSE l.payout_amount END`;
+/** WB удерживает логистику, хранение, штрафы и прочее отдельно от ppvz_for_pay (payout_amount). */
+export const SQL_WB_WITHHELD = `CASE WHEN ${SQL_IS_WB_LINE}
+  THEN l.logistics_amount + l.storage_amount + l.penalty_amount + l.other_deductions
+  ELSE 0 END`;
+
+/** Фактически перечислено МП по строке. Ozon / ЯМ: payout_amount уже нетто со знаком. */
+export const SQL_NET_TRANSFER = `(l.payout_amount - ${SQL_WB_WITHHELD})`;
+
+/** Тот же SQL-фрагмент для другого алиаса таблицы строк отчёта (по умолчанию — l). */
+export function withLineAlias(sql, alias) {
+  return alias === 'l' ? sql : sql.replace(/\bl\./g, `${alias}.`);
+}
 
 export const SQL_MP_NORM = `CASE LOWER(TRIM(l.marketplace))
   WHEN 'wildberries' THEN 'wb'

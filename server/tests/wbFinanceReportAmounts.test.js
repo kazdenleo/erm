@@ -46,4 +46,19 @@ describe('extractWbFinanceAmounts', () => {
     });
     expect(amounts.payout_amount).toBe(345.4);
   });
+
+  test('return line reverses sale payout and commission', () => {
+    const amounts = extractWbFinanceAmounts({
+      supplier_oper_name: 'Возврат',
+      doc_type_name: 'Возврат',
+      quantity: 1,
+      retail_price: 742,
+      retail_amount: 640,
+      commission_percent: 50,
+      ppvz_for_pay: 345.4,
+    });
+    expect(amounts.retail_amount).toBe(742);
+    expect(amounts.commission_amount).toBe(-371);
+    expect(amounts.payout_amount).toBe(-345.4);
+  });
 });

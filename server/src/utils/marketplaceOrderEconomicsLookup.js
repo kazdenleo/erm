@@ -14,6 +14,7 @@ import {
   marketplaceFilterValues,
   orderLookupKeys,
 } from './marketplaceOrderEconomics.js';
+import { SQL_COST_UNITS, SQL_RETAIL_NET } from './marketplaceReportLineSql.js';
 
 const TABLES = {
   fbs: 'marketplace_fbs_report_lines',
@@ -134,7 +135,7 @@ export async function lookupMarketplaceOrderEconomics(
       MAX(COALESCE(p.name, NULLIF(TRIM(l.product_name), ''))) AS product_name,
       MAX(p.sku) AS erp_sku,
       SUM(CASE WHEN ${SQL_SALE_LINE} THEN GREATEST(l.quantity, 0) ELSE 0 END)::int AS quantity,
-      SUM(l.retail_amount)::numeric AS retail_amount,
+      SUM(${SQL_RETAIL_NET})::numeric AS retail_amount,
       SUM(l.commission_amount)::numeric AS commission_amount,
       SUM(l.logistics_amount)::numeric AS logistics_amount,
       SUM(l.storage_amount)::numeric AS storage_amount,
@@ -142,12 +143,7 @@ export async function lookupMarketplaceOrderEconomics(
       SUM(l.acquiring_amount)::numeric AS acquiring_amount,
       SUM(l.other_deductions)::numeric AS other_deductions,
       SUM(l.payout_amount)::numeric AS payout_amount,
-      SUM(
-        CASE WHEN ${SQL_SALE_LINE}
-          THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-          ELSE 0
-        END
-      )::numeric AS cost_amount,
+      SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost_amount,
       SUM(
         CASE WHEN ${SQL_SALE_LINE}
           THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)

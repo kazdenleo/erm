@@ -37,18 +37,29 @@ export function isWbSridOrderId(orderId) {
   return s.length > 0 && !isWbNumericOrderId(s);
 }
 
+/** Удержания WB вне ppvz_for_pay: логистика, хранение, штрафы, прочие удержания. */
+export function wbWithheldFromRow(row) {
+  return (
+    (Number(row?.logisticsAmount ?? row?.logistics_amount) || 0) +
+    (Number(row?.storageAmount ?? row?.storage_amount) || 0) +
+    (Number(row?.penaltyAmount ?? row?.penalty_amount) || 0) +
+    (Number(row?.otherDeductions ?? row?.other_deductions) || 0)
+  );
+}
+
 /**
  * Выручка: пришло от МП − себестоимость − доп. расходы.
- * У WB дополнительно − логистика (в payout она не вычтена).
+ * У WB дополнительно − логистика, хранение, штрафы и удержания (в payout они не вычтены).
+ * Строки по нескольким МП передают готовую сумму WB в wbWithheldAmount.
  */
 export function marketplaceRevenueAmount(row) {
   const received = Number(row?.receivedAmount ?? row?.payoutAmount ?? row?.payout_amount) || 0;
   const costAmount = Number(row?.costAmount ?? row?.cost_amount) || 0;
   const additionalExpensesAmount = additionalExpensesFromRow(row);
-  const wbLogistics =
-    Number(row?.wbLogisticsAmount ?? row?.wb_logistics_amount) ||
-    (isWbMarketplace(row?.marketplace) ? Number(row?.logisticsAmount ?? row?.logistics_amount) || 0 : 0);
-  return received - costAmount - additionalExpensesAmount - wbLogistics;
+  const withheldRaw = row?.wbWithheldAmount ?? row?.wb_withheld_amount;
+  const wbWithheld =
+    withheldRaw != null ? Number(withheldRaw) || 0 : isWbMarketplace(row?.marketplace) ? wbWithheldFromRow(row) : 0;
+  return received - costAmount - additionalExpensesAmount - wbWithheld;
 }
 
 /** Добавляет saleAmount / costsTotal / receivedAmount к строке аналитики. */

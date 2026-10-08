@@ -95,7 +95,7 @@ export function ProductEconomicsTable({ loading, emptyMessage, items }) {
               sort={sort}
               onSort={toggleSort}
               className="sales-analytics__num"
-              title="К выплате − себестоимость − доп. расходы. У WB ещё − логистика."
+              title="К выплате − себестоимость − доп. расходы. У WB ещё − логистика, хранение, штрафы и удержания. Возвраты уменьшают выплату и себестоимость."
             >
               Выручка
             </SortableTh>

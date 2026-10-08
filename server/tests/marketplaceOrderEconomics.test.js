@@ -56,6 +56,32 @@ describe('marketplaceOrderEconomics', () => {
     expect(ozon.revenueAmount).toBe(270);
   });
 
+  test('WB revenue subtracts storage, penalties and other deductions too', () => {
+    const wb = attachOrderEconomics({
+      marketplace: 'wb',
+      payoutAmount: 345,
+      costAmount: 254,
+      logisticsAmount: 50,
+      storageAmount: 10,
+      penaltyAmount: 20,
+      otherDeductions: 5,
+      expensesTotal: 0,
+    });
+    expect(wb.revenueAmount).toBe(6);
+  });
+
+  test('wbWithheldAmount overrides per-row WB detection (mixed marketplaces)', () => {
+    const row = attachOrderEconomics({
+      marketplace: 'all',
+      payoutAmount: 1000,
+      costAmount: 300,
+      logisticsAmount: 400,
+      wbWithheldAmount: 120,
+      expensesTotal: 0,
+    });
+    expect(row.revenueAmount).toBe(580);
+  });
+
   test('attachOrderEconomics does not include additional expenses in costsTotal', () => {
     const out = attachOrderEconomics({
       retailAmount: 1000,

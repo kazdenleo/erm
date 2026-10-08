@@ -30,6 +30,14 @@ import {
   queryRetryDeadlock,
   FBO_REPORT_MAINT_LOCK_BASE,
 } from '../utils/marketplaceReportMaintenanceLock.js';
+import {
+  RETURN_SALE_LINE,
+  SQL_COST_UNITS,
+  SQL_RETAIL_NET,
+  SQL_RETURNED_AMOUNT,
+  SQL_WB_WITHHELD,
+  withLineAlias,
+} from '../utils/marketplaceReportLineSql.js';
 
 const YM_API = 'https://api.partner.market.yandex.ru';
 
@@ -1505,19 +1513,7 @@ class MarketplaceFboReportsService {
         SUM(l.acquiring_amount)::numeric AS acquiring_amount,
         SUM(l.other_deductions)::numeric AS other_deductions,
         SUM(l.payout_amount)::numeric AS payout_amount,
-        SUM(
-          CASE
-            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
-              THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-            WHEN LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer'
-              THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-            WHEN LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
-              l.operation_type ILIKE '%Плат%покупателя%'
-              OR l.operation_type ILIKE '%платеж покупателя%'
-            )             THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-            ELSE 0
-          END
-        )::numeric AS cost_amount,
+        SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost_amount,
         SUM(
           CASE
             WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
@@ -1531,9 +1527,8 @@ class MarketplaceFboReportsService {
             ELSE 0
           END
         )::numeric AS additional_expenses_amount,
-        SUM(
-          CASE WHEN l.marketplace IN ('wb', 'wildberries') THEN l.logistics_amount ELSE 0 END
-        )::numeric AS wb_logistics_amount
+        SUM(CASE WHEN ${RETURN_SALE_LINE} THEN ${SQL_RETURNED_AMOUNT} ELSE 0 END)::numeric AS returned_amount,
+        SUM(${SQL_WB_WITHHELD})::numeric AS wb_withheld_amount
       FROM marketplace_fbo_report_lines l
       LEFT JOIN products p ON p.id = l.product_id
       WHERE l.profile_id = $1
@@ -1637,7 +1632,9 @@ class MarketplaceFboReportsService {
       payoutAmount: Number(row.payout_amount) || 0,
       costAmount: Number(row.cost_amount) || 0,
       additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
-      wbLogisticsAmount: Number(row.wb_logistics_amount) || 0,
+      returnedAmount: Number(row.returned_amount) || 0,
+      retailAmount: (Number(row.sold_amount) || 0) - (Number(row.returned_amount) || 0),
+      wbWithheldAmount: Number(row.wb_withheld_amount) || 0,
       marketplace: mpFilter ? marketplace : 'all',
       expensesTotal:
         Number(row.commission_amount) +
@@ -1912,7 +1909,7 @@ class MarketplaceFboReportsService {
             MIN(m.operation_date)
           ) AS operation_date,
           SUM(CASE WHEN m.operation_type = 'Продажа' THEN GREATEST(m.quantity, 0) ELSE 0 END)::int AS quantity,
-          SUM(m.retail_amount)::numeric AS retail_amount,
+          SUM(${withLineAlias(SQL_RETAIL_NET, 'm')})::numeric AS retail_amount,
           SUM(m.commission_amount)::numeric AS commission_amount,
           SUM(m.logistics_amount)::numeric AS logistics_amount,
           SUM(m.storage_amount)::numeric AS storage_amount,
@@ -1920,18 +1917,7 @@ class MarketplaceFboReportsService {
           SUM(m.acquiring_amount)::numeric AS acquiring_amount,
           SUM(m.other_deductions)::numeric AS other_deductions,
           SUM(m.payout_amount)::numeric AS payout_amount,
-          SUM(
-            CASE
-              WHEN (LOWER(TRIM(m.marketplace)) IN ('wb', 'wildberries') AND m.operation_type = 'Продажа')
-                OR (LOWER(TRIM(m.marketplace)) = 'ozon' AND m.operation_type = 'OperationAgentDeliveredToCustomer')
-                OR (LOWER(TRIM(m.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
-                  m.operation_type ILIKE '%Плат%покупателя%'
-                  OR m.operation_type ILIKE '%платеж покупателя%'
-                ))
-              THEN GREATEST(m.quantity, 0) * COALESCE(pc.cost, 0)
-              ELSE 0
-            END
-          )::numeric AS cost_amount,
+          SUM((${withLineAlias(SQL_COST_UNITS, 'm')}) * COALESCE(pc.cost, 0))::numeric AS cost_amount,
           SUM(
             CASE
               WHEN (LOWER(TRIM(m.marketplace)) IN ('wb', 'wildberries') AND m.operation_type = 'Продажа')

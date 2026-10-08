@@ -11,6 +11,12 @@ import {
 } from '../utils/marketplaceOrderTax.js';
 import { sqlNormArticle, sqlOzonSkuMapCte } from '../utils/offerArticleKey.js';
 import { ensureOzonFinanceSkuLinks } from './ozonFinanceSkuLink.service.js';
+import {
+  RETURN_SALE_LINE,
+  SQL_COST_UNITS,
+  SQL_RETURNED_AMOUNT,
+  SQL_WB_WITHHELD,
+} from '../utils/marketplaceReportLineSql.js';
 import logger from '../utils/logger.js';
 
 function parseDateYmd(raw, fallback) {
@@ -83,18 +89,15 @@ function buildAggSelect(saleExpr) {
     SUM(l.acquiring_amount)::numeric AS acquiring_amount,
     SUM(l.other_deductions)::numeric AS other_deductions,
     SUM(l.payout_amount)::numeric AS payout_amount,
-    SUM(
-      CASE WHEN ${saleExpr}
-        THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-        ELSE 0
-      END
-    )::numeric AS cost_amount,
+    SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost_amount,
     SUM(
       CASE WHEN ${saleExpr}
         THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
         ELSE 0
       END
-    )::numeric AS additional_expenses_amount
+    )::numeric AS additional_expenses_amount,
+    SUM(CASE WHEN ${RETURN_SALE_LINE} THEN ${SQL_RETURNED_AMOUNT} ELSE 0 END)::numeric AS returned_amount,
+    SUM(${SQL_WB_WITHHELD})::numeric AS wb_withheld_amount
   `;
 }
 
@@ -118,18 +121,15 @@ function buildDayAggSelect(saleExpr, schemeLabel) {
     SUM(l.acquiring_amount)::numeric AS acquiring_amount,
     SUM(l.other_deductions)::numeric AS other_deductions,
     SUM(l.payout_amount)::numeric AS payout_amount,
-    SUM(
-      CASE WHEN ${saleExpr}
-        THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-        ELSE 0
-      END
-    )::numeric AS cost_amount,
+    SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost_amount,
     SUM(
       CASE WHEN ${saleExpr}
         THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
         ELSE 0
       END
-    )::numeric AS additional_expenses_amount
+    )::numeric AS additional_expenses_amount,
+    SUM(CASE WHEN ${RETURN_SALE_LINE} THEN ${SQL_RETURNED_AMOUNT} ELSE 0 END)::numeric AS returned_amount,
+    SUM(${SQL_WB_WITHHELD})::numeric AS wb_withheld_amount
   `;
 }
 
@@ -169,6 +169,9 @@ function mapDayEconomicsRow(row) {
     payoutAmount: Number(row.payout_amount) || 0,
     costAmount: Number(row.cost_amount) || 0,
     additionalExpensesAmount: Number(row.additional_expenses_amount) || 0,
+    returnedAmount: Number(row.returned_amount) || 0,
+    retailAmount: (Number(row.sold_amount) || 0) - (Number(row.returned_amount) || 0),
+    wbWithheldAmount: Number(row.wb_withheld_amount) || 0,
   };
 }
 
@@ -524,6 +527,9 @@ function mapProductRow(row) {
     productName: row.product_name || '—',
     soldQty: Number(row.sold_qty) || 0,
     soldAmount: Number(row.sold_amount) || 0,
+    returnedAmount: Number(row.returned_amount) || 0,
+    retailAmount: (Number(row.sold_amount) || 0) - (Number(row.returned_amount) || 0),
+    wbWithheldAmount: Number(row.wb_withheld_amount) || 0,
     costAmount,
     additionalExpensesAmount,
     expensesTotal,
@@ -573,6 +579,9 @@ function mergeProductsByIdentity(rows) {
       'expensesTotal',
       'costsTotal',
       'payoutAmount',
+      'returnedAmount',
+      'retailAmount',
+      'wbWithheldAmount',
     ];
     for (const k of amountKeys) {
       prev[k] = (Number(prev[k]) || 0) + (Number(row[k]) || 0);
@@ -679,7 +688,9 @@ class MarketplaceCategoryAnalyticsService {
         SUM(other_deductions)::numeric AS other_deductions,
         SUM(payout_amount)::numeric AS payout_amount,
         SUM(cost_amount)::numeric AS cost_amount,
-        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount
+        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount,
+        SUM(returned_amount)::numeric AS returned_amount,
+        SUM(wb_withheld_amount)::numeric AS wb_withheld_amount
       FROM (
         ${parts.join('\nUNION ALL\n')}
       ) u
@@ -1104,18 +1115,15 @@ class MarketplaceCategoryAnalyticsService {
     SUM(l.acquiring_amount)::numeric AS acquiring_amount,
     SUM(l.other_deductions)::numeric AS other_deductions,
     SUM(l.payout_amount)::numeric AS payout_amount,
-    SUM(
-      CASE WHEN ${FBO_SALE}
-        THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-        ELSE 0
-      END
-    )::numeric AS cost_amount,
+    SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost_amount,
     SUM(
       CASE WHEN ${FBO_SALE}
         THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
         ELSE 0
       END
-    )::numeric AS additional_expenses_amount
+    )::numeric AS additional_expenses_amount,
+    SUM(CASE WHEN ${RETURN_SALE_LINE} THEN ${SQL_RETURNED_AMOUNT} ELSE 0 END)::numeric AS returned_amount,
+    SUM(${SQL_WB_WITHHELD})::numeric AS wb_withheld_amount
   `;
     const hypDayGroupBy = (productIdExpr) => `
     l.operation_date::date,
@@ -1180,7 +1188,9 @@ class MarketplaceCategoryAnalyticsService {
         SUM(other_deductions)::numeric AS other_deductions,
         SUM(payout_amount)::numeric AS payout_amount,
         SUM(cost_amount)::numeric AS cost_amount,
-        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount
+        SUM(additional_expenses_amount)::numeric AS additional_expenses_amount,
+        SUM(returned_amount)::numeric AS returned_amount,
+        SUM(wb_withheld_amount)::numeric AS wb_withheld_amount
       FROM (
         ${linkedPart('marketplace_fbo_report_lines', 'fbo')}
         UNION ALL

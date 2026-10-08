@@ -22,15 +22,28 @@ export function isWbMarketplace(mp) {
   return v === 'wb' || v === 'wildberries';
 }
 
+/** Удержания WB вне «к перечислению»: логистика, хранение, штрафы, прочие удержания. */
+function wbWithheldFromRow(row) {
+  return (
+    (Number(row.logisticsAmount) || 0) +
+    (Number(row.storageAmount) || 0) +
+    (Number(row.penaltyAmount) || 0) +
+    (Number(row.otherDeductions) || 0)
+  );
+}
+
 export function marketplaceRevenueAmount(row) {
   if (!row) return 0;
   const received = Number(row.receivedAmount ?? row.payoutAmount) || 0;
   const costAmount = Number(row.costAmount) || 0;
   const additionalExpensesAmount = Number(row.additionalExpensesAmount) || 0;
-  const wbLogistics =
-    Number(row.wbLogisticsAmount) ||
-    (isWbMarketplace(row.marketplace) ? Number(row.logisticsAmount) || 0 : 0);
-  return received - costAmount - additionalExpensesAmount - wbLogistics;
+  const wbWithheld =
+    row.wbWithheldAmount != null
+      ? Number(row.wbWithheldAmount) || 0
+      : isWbMarketplace(row.marketplace)
+        ? wbWithheldFromRow(row)
+        : 0;
+  return received - costAmount - additionalExpensesAmount - wbWithheld;
 }
 
 export function orderEconomicsFromRow(row) {

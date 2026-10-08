@@ -17,8 +17,7 @@ import {
   RETURN_SALE_LINE,
   SQL_RETURNED_AMOUNT,
   SQL_NET_TRANSFER,
-  SQL_COMMISSION_SIGNED,
-  SQL_LOGISTICS_FEE,
+  SQL_COST_UNITS,
   SQL_MP_NORM,
   SQL_LINE_PRODUCT_ID,
   sqlOzonNameMapCte,
@@ -138,20 +137,15 @@ class PnlAnalyticsService {
         SUM(CASE WHEN ${SALE_LINE} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount,
         SUM(CASE WHEN ${RETURN_SALE_LINE} THEN GREATEST(ABS(l.quantity), 1) ELSE 0 END)::numeric AS returned_qty,
         SUM(CASE WHEN ${RETURN_SALE_LINE} THEN ${SQL_RETURNED_AMOUNT} ELSE 0 END)::numeric AS returned_amount,
-        SUM(${SQL_COMMISSION_SIGNED})::numeric AS commission,
-        SUM(${SQL_LOGISTICS_FEE})::numeric AS logistics,
+        SUM(l.commission_amount)::numeric AS commission,
+        SUM(l.logistics_amount)::numeric AS logistics,
         SUM(l.storage_amount)::numeric AS storage,
         SUM(l.penalty_amount)::numeric AS penalty,
         SUM(l.acquiring_amount)::numeric AS acquiring,
         SUM(l.other_deductions)::numeric AS other,
         SUM(${SQL_NET_TRANSFER})::numeric AS net_transfer,
-        SUM(CASE
-          WHEN ${SALE_LINE} THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-          WHEN ${RETURN_SALE_LINE} THEN -GREATEST(ABS(l.quantity), 1) * COALESCE(p.cost, 0)
-          ELSE 0 END)::numeric AS cost,
-        SUM(CASE
-          WHEN ${SALE_LINE} THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
-          WHEN ${RETURN_SALE_LINE} THEN -GREATEST(ABS(l.quantity), 1) * COALESCE(p.additional_expenses, 0)
+        SUM((${SQL_COST_UNITS}) * COALESCE(p.cost, 0))::numeric AS cost,
+        SUM(CASE WHEN ${SALE_LINE} THEN GREATEST(l.quantity, 0) * COALESCE(p.additional_expenses, 0)
           ELSE 0 END)::numeric AS additional
       FROM ${sqlReportLinesUnion(schemeNorm, 'AND r.operation_date >= $2::date AND r.operation_date <= $3::date')} l
       ${lineProductJoins()}

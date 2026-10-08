@@ -26,6 +26,15 @@ function pushPart(bucket, label, amount) {
   else bucket.push({ label, amount: n });
 }
 
+/** Со знаком: сторно продажи уменьшает выручку и комиссию. */
+function pushSigned(bucket, label, amount) {
+  const n = toNum(amount);
+  if (n === 0) return;
+  const existing = bucket.find((x) => x.label === label);
+  if (existing) existing.amount += n;
+  else bucket.push({ label, amount: n });
+}
+
 function mergeBuckets(partsList) {
   const out = {
     retail: [],
@@ -40,7 +49,7 @@ function mergeBuckets(partsList) {
     if (!parts) continue;
     for (const key of Object.keys(out)) {
       for (const item of parts[key] || []) {
-        pushPart(out[key], item.label, item.amount);
+        pushSigned(out[key], item.label, item.amount);
       }
     }
   }
@@ -80,6 +89,29 @@ export function buildOzonLineBreakdown(line) {
               ? parts.storage
               : parts.other;
       pushPart(bucket, label, s?.price);
+    }
+  } else if (
+    op === 'OperationAgentStornoDeliveredToCustomer' ||
+    (op === 'ClientReturnAgentOperation' && toNum(raw?.accruals_for_sale) < 0)
+  ) {
+    pushSigned(parts.retail, 'Возврат покупателя (сторно продажи)', -Math.abs(toNum(raw?.accruals_for_sale)));
+    pushSigned(parts.commission, 'Возврат комиссии Ozon', -Math.abs(toNum(raw?.sale_commission)));
+    const services = Array.isArray(raw?.services) ? raw.services : [];
+    if (services.length) {
+      for (const s of services) {
+        const cat = categorizeOzonServiceName(s?.name);
+        const bucket =
+          cat === 'commission'
+            ? parts.commission
+            : cat === 'logistics'
+              ? parts.logistics
+              : cat === 'storage'
+                ? parts.storage
+                : parts.other;
+        pushPart(bucket, OZON_SERVICE_LABELS[s?.name] || s?.name || 'Услуга Ozon', s?.price);
+      }
+    } else {
+      pushPart(parts.logistics, 'Обратная логистика', raw?.return_delivery_charge ?? line?.logistics_amount);
     }
   } else if (op === 'MarketplaceServiceBrandCommission') {
     pushPart(parts.commission, 'Продвижение бренда', line?.commission_amount || raw?.amount);
@@ -137,8 +169,8 @@ export function buildWbLineBreakdown(line) {
   } else if (op === 'Штраф') {
     pushPart(parts.penalty, 'Штраф WB', line?.penalty_amount ?? raw?.penalty);
   } else if (op === 'Возврат') {
-    pushPart(parts.retail, 'Возврат', line?.retail_amount);
-    pushPart(parts.commission, 'Комиссия по возврату', line?.commission_amount);
+    pushSigned(parts.retail, 'Возврат покупателя (сторно продажи)', -Math.abs(toNum(line?.retail_amount)));
+    pushSigned(parts.commission, 'Возврат комиссии WB', -Math.abs(toNum(line?.commission_amount)));
   } else {
     if (toNum(line?.commission_amount) > 0) pushPart(parts.commission, op, line.commission_amount);
     if (toNum(line?.logistics_amount) > 0) pushPart(parts.logistics, op, line.logistics_amount);
