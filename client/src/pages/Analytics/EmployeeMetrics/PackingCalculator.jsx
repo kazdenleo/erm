@@ -67,7 +67,7 @@ export function PackingCalculator({ summary }) {
   const [qty, setQty] = useState('');
   const [basis, setBasis] = useState('all');
   const [secPerUnit, setSecPerUnit] = useState('');
-  const [otherMin, setOtherMin] = useState('');
+  const [otherHours, setOtherHours] = useState('');
   const [start, setStart] = useState(todayYmd);
 
   const statsSec = basisSec(basis, summary);
@@ -78,13 +78,13 @@ export function PackingCalculator({ summary }) {
   const result = useMemo(() => {
     const q = Math.max(Number(qty) || 0, 0);
     const sec = Math.max(Number(String(secPerUnit).replace(',', '.')) || 0, 0);
-    const other = Math.max(Number(String(otherMin).replace(',', '.')) || 0, 0);
-    const totalSec = q * sec + other * 60;
+    const other = Math.max(Number(String(otherHours).replace(',', '.')) || 0, 0);
+    const totalSec = q * sec + other * 3600;
     if (totalSec <= 0) return null;
     const workdays = Math.max(Math.ceil(totalSec / 3600 / WORKDAY_HOURS - 1e-9), 1);
     const end = finishDate(start, workdays);
     return { totalSec, workdays, end };
-  }, [qty, secPerUnit, otherMin, start]);
+  }, [qty, secPerUnit, otherHours, start]);
 
   return (
     <div className="employee-metrics__calc">
@@ -124,12 +124,13 @@ export function PackingCalculator({ summary }) {
           />
         </label>
         <label className="sales-analytics__filter" title="Подготовка коробок, печать, погрузка и т. п.">
-          <span>Прочее, мин</span>
+          <span>Прочее, ч</span>
           <input
             type="number"
             min={0}
-            value={otherMin}
-            onChange={(e) => setOtherMin(e.target.value)}
+            step={0.5}
+            value={otherHours}
+            onChange={(e) => setOtherHours(e.target.value)}
             style={{ width: 90 }}
           />
         </label>
