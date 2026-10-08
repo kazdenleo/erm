@@ -307,6 +307,11 @@
   color: #0f766e;
 }
 
+.procurement-forecast__num--warn {
+  color: #c2410c;
+  font-weight: 600;
+}
+
 .procurement-forecast__empty {
   text-align: center;
   color: #64748b;

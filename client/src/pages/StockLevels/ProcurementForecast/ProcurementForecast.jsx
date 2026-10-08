@@ -51,6 +51,10 @@ function formatQty(n) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(n));
 }
 
+function formatCoef(n) {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n) || 0);
+}
+
 export function ProcurementForecast() {
   const initialRange = useMemo(() => defaultSalesRange(7), []);
   const { organizations } = useOrganizations();
@@ -67,6 +71,8 @@ export function ProcurementForecast() {
   const [salesDateTo, setSalesDateTo] = useState(initialRange.to);
   const [procurementDays, setProcurementDays] = useState(7);
   const [bufferPercent, setBufferPercent] = useState('');
+  const [excludeStockoutDays, setExcludeStockoutDays] = useState(true);
+  const [seasonality, setSeasonality] = useState(true);
   const [tableSupplierId, setTableSupplierId] = useState('');
   const [showZeroToPurchase, setShowZeroToPurchase] = useState(false);
   const [data, setData] = useState(null);
@@ -128,6 +134,8 @@ export function ProcurementForecast() {
       salesDateTo,
       procurementDays,
       bufferPercent: Number.isFinite(bufNum) ? bufNum : 0,
+      excludeStockoutDays: excludeStockoutDays ? 1 : 0,
+      seasonality: seasonality ? 1 : 0,
     });
     return res?.data ?? null;
   }, [
@@ -137,6 +145,8 @@ export function ProcurementForecast() {
     salesDateTo,
     procurementDays,
     bufferPercent,
+    excludeStockoutDays,
+    seasonality,
   ]);
 
   const applySalesPeriodPreset = (days) => {
@@ -461,6 +471,24 @@ export function ProcurementForecast() {
               onChange={(e) => setBufferPercent(e.target.value)}
             />
           </label>
+          <label
+            className="procurement-forecast__toggle"
+            title="Дни, когда товара не было на складе, не учитываются в темпе продаж — иначе они занижают прогноз"
+          >
+            <input
+              type="checkbox"
+              checked={excludeStockoutDays}
+              onChange={(e) => setExcludeStockoutDays(e.target.checked)}
+            />
+            <span>Без дней «нет в наличии»</span>
+          </label>
+          <label
+            className="procurement-forecast__toggle"
+            title="Поправка на сезон: как менялись продажи год назад от периода продаж к периоду закупки (по категории, иначе по всем товарам)"
+          >
+            <input type="checkbox" checked={seasonality} onChange={(e) => setSeasonality(e.target.checked)} />
+            <span>Сезонность</span>
+          </label>
           <Button variant="primary" onClick={load} disabled={loading || !canLoad}>
             {loading ? 'Расчёт…' : 'Сформировать таблицу'}
           </Button>
@@ -481,12 +509,25 @@ export function ProcurementForecast() {
               {data.summary?.linesToPurchase || 0} поз.)
             </span>
             <span className="muted">
-              Формула: (продажи / {data.salesPeriod?.days} дн.) × {data.procurementDays} дн.
+              Формула: (продажи / {data.options?.excludeStockoutDays ? 'дней в наличии' : `${data.salesPeriod?.days} дн.`})
+              {data.options?.seasonality ? ' × сезонность' : ''} × {data.procurementDays} дн.
               {Number(data.bufferPercent) > 0
                 ? ` × (1 + ${Number(data.bufferPercent)}%)`
                 : ''}{' '}
               − доступно − в пути − в комплектах
             </span>
+            {data.options?.seasonality && data.options?.profileSeasonalCoef != null ? (
+              <span
+                className="muted"
+                title={
+                  data.options?.seasonLastYear
+                    ? `Год назад: продажи ${data.options.seasonLastYear.sales?.from}–${data.options.seasonLastYear.sales?.to}, закупка ${data.options.seasonLastYear.future?.from}–${data.options.seasonLastYear.future?.to}`
+                    : undefined
+                }
+              >
+                Сезонность по всем товарам: ×{formatCoef(data.options.profileSeasonalCoef)}
+              </span>
+            ) : null}
           </div>
 
           <div className="procurement-forecast__toolbar">
@@ -545,6 +586,21 @@ export function ProcurementForecast() {
                   <th className="procurement-forecast__num">Продано</th>
                   <th
                     className="procurement-forecast__num"
+                    title="Дней в наличии из периода продаж. Темп считается только по ним"
+                  >
+                    В наличии, дн.
+                  </th>
+                  <th
+                    className="procurement-forecast__num"
+                    title="Сезонный коэффициент: К — по категории, П — по всем товарам"
+                  >
+                    Сезон
+                  </th>
+                  <th className="procurement-forecast__num" title="Прогноз продаж на период закупки">
+                    Потребность
+                  </th>
+                  <th
+                    className="procurement-forecast__num"
                     title="Свободное количество на складе: наличие минус резерв (в т.ч. собранные, но не отгруженные заказы)"
                   >
                     Доступно
@@ -562,7 +618,7 @@ export function ProcurementForecast() {
               <tbody>
                 {items.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="procurement-forecast__empty">
+                    <td colSpan={12} className="procurement-forecast__empty">
                       {allItems.length === 0
                         ? 'Нет товаров с продажами или остатками за выбранные условия'
                         : showZeroToPurchase
@@ -595,6 +651,37 @@ export function ProcurementForecast() {
                       <td>{row.productSku || '—'}</td>
                       <td>{row.supplierName || '—'}</td>
                       <td className="procurement-forecast__num">{formatQty(row.soldQty)}</td>
+                      <td
+                        className={`procurement-forecast__num${
+                          Number(row.stockoutDays) > 0 ? ' procurement-forecast__num--warn' : ''
+                        }`}
+                        title={
+                          Number(row.stockoutDays) > 0
+                            ? `Не было в наличии ${row.stockoutDays} дн.; темп считается по ${row.effectiveDays} дн.`
+                            : undefined
+                        }
+                      >
+                        {row.inStockDays != null ? formatQty(row.inStockDays) : '—'}
+                      </td>
+                      <td
+                        className="procurement-forecast__num"
+                        title={
+                          row.seasonalSource === 'category'
+                            ? 'По категории товара'
+                            : row.seasonalSource === 'profile'
+                              ? 'По всем товарам (в категории мало продаж год назад)'
+                              : 'Нет данных за прошлый год'
+                        }
+                      >
+                        {row.seasonalCoef != null && row.seasonalCoef !== 1
+                          ? `×${formatCoef(row.seasonalCoef)}${
+                              row.seasonalSource === 'category' ? ' К' : row.seasonalSource === 'profile' ? ' П' : ''
+                            }`
+                          : '—'}
+                      </td>
+                      <td className="procurement-forecast__num" title={`${row.dailyRate ?? 0} шт/день`}>
+                        {formatQty(row.projectedNeed)}
+                      </td>
                       <td
                         className="procurement-forecast__num"
                         title={

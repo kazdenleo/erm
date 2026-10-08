@@ -10,6 +10,9 @@ import {
   batchOrderAttributedReservedMap,
   mergeJournalAndOrderAttributedReserved,
 } from './orderAttributedReserve.service.js';
+import { loadOwnStockOosDays } from '../utils/stockAvailability.js';
+import { addDaysYmd } from '../utils/analyticsCommon.js';
+import { sqlOrderOfferMapCte, sqlOrderOfferJoin, sqlOrderProductId } from '../utils/orderProductSql.js';
 
 const FBS_MARKETPLACES = ['ozon', 'wb', 'wildberries', 'ym', 'yandex', 'yandexmarket'];
 
@@ -123,6 +126,130 @@ async function batchWarehouseReservedMap(productIds, warehouseId) {
   return map;
 }
 
+/** Продажи по дням (МСК), комплекты разложены на комплектующие. */
+async function batchSalesByProductDay(profileId, productIds, fromYmd, toYmd) {
+  const ids = [...new Set((productIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  const map = new Map();
+  if (!ids.length) return map;
+  const r = await query(
+    `
+    WITH raw AS (
+      SELECT o.product_id,
+             to_char(o.created_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS d,
+             SUM(GREATEST(COALESCE(o.quantity, 1), 1))::numeric AS q
+        FROM orders o
+       WHERE o.profile_id = $1
+         AND o.product_id IS NOT NULL
+         AND LOWER(TRIM(COALESCE(o.status, ''))) <> 'cancelled'
+         AND o.created_at >= ($2::date)::timestamp AT TIME ZONE 'Europe/Moscow'
+         AND o.created_at < ($3::date)::timestamp AT TIME ZONE 'Europe/Moscow' + INTERVAL '1 day'
+       GROUP BY 1, 2
+    ),
+    exploded AS (
+      SELECT kc.component_product_id AS product_id, r.d, SUM(r.q * kc.quantity) AS q
+        FROM raw r JOIN kit_components kc ON kc.kit_product_id = r.product_id
+       GROUP BY 1, 2
+      UNION ALL
+      SELECT r.product_id, r.d, r.q FROM raw r
+       WHERE NOT EXISTS (SELECT 1 FROM kit_components kc WHERE kc.kit_product_id = r.product_id)
+    )
+    SELECT product_id, d, SUM(q)::numeric AS q FROM exploded
+     WHERE product_id = ANY($4::bigint[])
+     GROUP BY 1, 2
+    `,
+    [profileId, fromYmd, toYmd, ids]
+  );
+  for (const row of r.rows || []) {
+    const id = Number(row.product_id);
+    if (!map.has(id)) map.set(id, new Map());
+    map.get(id).set(row.d, Number(row.q) || 0);
+  }
+  return map;
+}
+
+const SEASON_MIN_CATEGORY_UNITS = 10;
+const SEASON_MIN_PROFILE_UNITS = 30;
+const SEASON_COEF_MIN = 0.5;
+const SEASON_COEF_MAX = 3;
+const SEASON_MIN_FUTURE_WINDOW_DAYS = 28;
+
+/**
+ * Сезонный коэффициент: темп продаж год назад в окне будущей закупки / темп год назад в окне продаж.
+ * Сначала по категории товара, при малом объёме — по всему профилю, иначе 1.
+ */
+async function seasonalCoefficients(profileId, productIds, fromYmd, toYmd, procDays) {
+  const salesDays = daysInclusive(fromYmd, toYmd);
+  // Короткое окно закупки (7–14 дн.) год назад слишком шумное — берём не меньше 4 недель
+  const futureDays = Math.max(procDays, SEASON_MIN_FUTURE_WINDOW_DAYS);
+  const salesLyFrom = addDaysYmd(fromYmd, -365);
+  const salesLyTo = addDaysYmd(toYmd, -365);
+  const futureLyFrom = addDaysYmd(toYmd, 1 - 365);
+  const futureLyTo = addDaysYmd(toYmd, futureDays - 365);
+  const rangeFrom = salesLyFrom < futureLyFrom ? salesLyFrom : futureLyFrom;
+  const rangeTo = salesLyTo > futureLyTo ? salesLyTo : futureLyTo;
+
+  const [demandRes, catRes] = await Promise.all([
+    query(
+      `WITH ${sqlOrderOfferMapCte()}
+       SELECT COALESCE(p.user_category_id, p.category_id) AS cat,
+              SUM(GREATEST(COALESCE(o.quantity, 1), 1)) FILTER (
+                WHERE o.created_at >= ($2::date)::timestamp AT TIME ZONE 'Europe/Moscow'
+                  AND o.created_at < ($3::date)::timestamp AT TIME ZONE 'Europe/Moscow' + INTERVAL '1 day'
+              )::numeric AS sales_qty,
+              SUM(GREATEST(COALESCE(o.quantity, 1), 1)) FILTER (
+                WHERE o.created_at >= ($4::date)::timestamp AT TIME ZONE 'Europe/Moscow'
+                  AND o.created_at < ($5::date)::timestamp AT TIME ZONE 'Europe/Moscow' + INTERVAL '1 day'
+              )::numeric AS future_qty
+         FROM orders o
+         ${sqlOrderOfferJoin('o')}
+         LEFT JOIN products p ON p.id = ${sqlOrderProductId('o')}
+        WHERE o.profile_id = $1
+          AND LOWER(TRIM(COALESCE(o.status, ''))) <> 'cancelled'
+          AND o.created_at >= ($6::date)::timestamp AT TIME ZONE 'Europe/Moscow'
+          AND o.created_at < ($7::date)::timestamp AT TIME ZONE 'Europe/Moscow' + INTERVAL '1 day'
+        GROUP BY 1`,
+      [profileId, salesLyFrom, salesLyTo, futureLyFrom, futureLyTo, rangeFrom, rangeTo]
+    ),
+    query(
+      `SELECT id, COALESCE(user_category_id, category_id) AS cat FROM products WHERE id = ANY($1::bigint[])`,
+      [productIds]
+    ),
+  ]);
+
+  const coefOf = (salesQty, futureQty, minUnits) => {
+    if (salesQty < minUnits || futureQty < minUnits) return null;
+    const raw = futureQty / futureDays / (salesQty / salesDays);
+    return Math.min(SEASON_COEF_MAX, Math.max(SEASON_COEF_MIN, raw));
+  };
+
+  const byCat = new Map();
+  let totalSales = 0;
+  let totalFuture = 0;
+  for (const row of demandRes.rows || []) {
+    const s = Number(row.sales_qty) || 0;
+    const f = Number(row.future_qty) || 0;
+    totalSales += s;
+    totalFuture += f;
+    if (row.cat != null) byCat.set(String(row.cat), coefOf(s, f, SEASON_MIN_CATEGORY_UNITS));
+  }
+  const profileCoef = coefOf(totalSales, totalFuture, SEASON_MIN_PROFILE_UNITS);
+
+  const result = new Map();
+  for (const row of catRes.rows || []) {
+    const catCoef = row.cat != null ? byCat.get(String(row.cat)) : null;
+    if (catCoef != null) result.set(Number(row.id), { coef: catCoef, source: 'category' });
+    else if (profileCoef != null) result.set(Number(row.id), { coef: profileCoef, source: 'profile' });
+    else result.set(Number(row.id), { coef: 1, source: 'none' });
+  }
+  return {
+    byProduct: result,
+    profileCoef,
+    lastYear: { sales: { from: salesLyFrom, to: salesLyTo }, future: { from: futureLyFrom, to: futureLyTo } },
+  };
+}
+
+const MIN_IN_STOCK_SHARE = 0.3;
+
 class ProcurementForecastService {
   async getFbsForecast({
     profileId,
@@ -132,6 +259,8 @@ class ProcurementForecastService {
     salesDateTo = null,
     procurementDays = 7,
     bufferPercent = 0,
+    excludeStockoutDays = true,
+    seasonality = true,
   } = {}) {
     const pid = Number(profileId);
     const orgId = Number(organizationId);
@@ -254,6 +383,23 @@ class ProcurementForecastService {
     // Резерв (в т.ч. собранные, но не отгруженные заказы) — чтобы колонка была «доступно», не «наличие».
     const reservedByProduct = await batchWarehouseReservedMap(productIds, whId);
 
+    // Дни без товара занижают темп: считаем его только по дням наличия
+    let oosByProduct = new Map();
+    if (excludeStockoutDays && productIds.length) {
+      const salesByDay = await batchSalesByProductDay(pid, productIds, fromYmd, toYmd);
+      oosByProduct = await loadOwnStockOosDays({
+        profileId: pid,
+        productIds,
+        fromYmd,
+        toYmd,
+        salesByProductDay: salesByDay,
+      });
+    }
+    const season =
+      seasonality && productIds.length
+        ? await seasonalCoefficients(pid, productIds, fromYmd, toYmd, procDays)
+        : null;
+
     const items = rows.map((row) => {
       const productId = Number(row.product_id);
       const soldQty = Number(row.sold_qty) || 0;
@@ -263,7 +409,13 @@ class ProcurementForecastService {
       const available = Math.max(0, onHand - Math.min(reserved, onHand));
       const incoming = Math.max(0, Number(incomingByProduct.get(productId)) || 0);
       const onHandInKits = Math.max(0, Number(inKitsByProduct.get(productId)) || 0);
-      const dailyRate = soldQty / salesPeriodDays;
+      const stockoutDays = oosByProduct.get(productId)?.oosDays?.size || 0;
+      const inStockDays = Math.max(0, salesPeriodDays - stockoutDays);
+      // Почти весь период без товара — по таким дням темп не восстановить, считаем по всему периоду.
+      const effectiveDays =
+        stockoutDays > 0 && inStockDays >= salesPeriodDays * MIN_IN_STOCK_SHARE ? inStockDays : salesPeriodDays;
+      const seasonInfo = season?.byProduct.get(productId) || { coef: 1, source: 'none' };
+      const dailyRate = (soldQty / effectiveDays) * seasonInfo.coef;
       // Запас % увеличивает потребность относительно темпа продаж (не обязательно).
       const projectedNeed = Math.ceil(dailyRate * procDays * bufferFactor);
       const toPurchase = Math.max(0, projectedNeed - available - incoming - onHandInKits);
@@ -276,6 +428,12 @@ class ProcurementForecastService {
         isComponent: Boolean(row.is_component),
         soldQty,
         salesPeriodDays,
+        inStockDays,
+        stockoutDays,
+        effectiveDays,
+        seasonalCoef: Math.round(seasonInfo.coef * 100) / 100,
+        seasonalSource: seasonInfo.source,
+        dailyRate: Math.round(dailyRate * 100) / 100,
         procurementDays: procDays,
         bufferPercent: bufferPct,
         projectedNeed,
@@ -318,6 +476,12 @@ class ProcurementForecastService {
       salesPeriod: { dateFrom: fromYmd, dateTo: toYmd, days: salesPeriodDays },
       procurementDays: procDays,
       bufferPercent: bufferPct,
+      options: {
+        excludeStockoutDays: Boolean(excludeStockoutDays),
+        seasonality: Boolean(seasonality),
+        profileSeasonalCoef: season?.profileCoef != null ? Math.round(season.profileCoef * 100) / 100 : null,
+        seasonLastYear: season?.lastYear || null,
+      },
       summary,
       items,
     };
