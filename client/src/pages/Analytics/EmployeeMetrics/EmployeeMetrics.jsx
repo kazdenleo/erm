@@ -20,6 +20,7 @@ import {
 } from '../shared/analyticsKit';
 import '../SalesAnalytics/SalesAnalytics.css';
 import '../ProductDynamics/ProductDynamics.css';
+import { PackingCalculator } from './PackingCalculator';
 import './EmployeeMetrics.css';
 
 const LINE_COLORS = ['#2563eb', '#16a34a', '#ea580c', '#7c3aed', '#dc2626', '#0891b2', '#ca8a04', '#db2777'];
@@ -397,6 +398,8 @@ export function EmployeeMetrics() {
           )}
         </table>
       </div>
+
+      {data && <PackingCalculator summary={summary} />}
 
       <p className="sales-analytics__hint">
         Время работы — сумма промежутков между сканами сотрудника. Если сканов нет дольше{' '}

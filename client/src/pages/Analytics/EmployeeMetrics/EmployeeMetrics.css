@@ -21,6 +21,37 @@
   gap: 8px 16px;
 }
 
+.employee-metrics__calc {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.employee-metrics__calc-title {
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 8px;
+}
+
+.employee-metrics__calc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.employee-metrics__calc-result {
+  padding-bottom: 6px;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.employee-metrics__calc-empty {
+  color: #94a3b8;
+}
+
 .employee-metrics__total td {
   background: #f8fafc;
   font-weight: 600;
