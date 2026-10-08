@@ -210,6 +210,11 @@ export function EmployeeMetrics() {
               sub: `${formatQty(summary.packingUnits, 0)} шт`,
             },
             {
+              label: 'Упаковка FBO по коробкам',
+              value: formatDuration(summary.packingBoxSecPerUnit),
+              sub: `${formatQty(summary.packingBoxUnits, 0)} шт · ${formatQty(summary.packingBoxSupplies, 0)} поставок`,
+            },
+            {
               label: 'Приёмка, на штуку',
               value: formatDuration(summary.receiptSecPerUnit),
               sub:
@@ -416,7 +421,10 @@ export function EmployeeMetrics() {
         {data?.packingSince
           ? `записывается с ${formatDateRu(data.packingSince)}`
           : 'пока не записывалась — данные появятся после первых сканов упаковки'}
-        .
+        . «Упаковка по коробкам» — общая норма без разбивки по сотрудникам, в том числе за время до журнала: по
+        времени первого и последнего скана каждого товара в коробке, перерывы дольше{' '}
+        {minutesLabel(data?.idleThresholdsSec?.packingBoxes ?? 600)} не считаются. Калькулятор берёт её, если по журналу
+        упаковки за период данных нет.
       </p>
     </div>
   );

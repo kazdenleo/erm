@@ -7,6 +7,8 @@
  * FBS: отметки «Собран» (orders.assembled_*, вся история) + сканы из employee_activity_events.
  * FBO-сборка: fbo_supply_item_scans; скан комплектующей — доля комплекта (1 / штук в составе),
  * скан комплекта целиком — 1 шт. Упаковка FBO: employee_activity_events (fbo_packing_scan).
+ * Общая норма упаковки (без сотрудников, в т. ч. до появления журнала): по грузоместам поставки —
+ * у строки «товар в коробке» есть время первого (created_at) и последнего (updated_at) скана.
  * Приёмка: время от создания до закрытия документа (без остановки на паузы) ÷ принятые штуки.
  */
 
@@ -16,6 +18,8 @@ import { requireAnalyticsProfile, resolvePeriod, round2 } from '../utils/analyti
 const FBS_IDLE_SEC = 3 * 60;
 const FBO_COLLECT_IDLE_SEC = 60;
 const FBO_PACKING_IDLE_SEC = 3 * 60;
+/** Между отметками коробок промежуточных сканов не видно, поэтому порог перерыва шире, чем по журналу. */
+const FBO_BOX_IDLE_SEC = 10 * 60;
 
 const ROLE_LABELS = {
   admin: 'Администратор',
@@ -105,6 +109,36 @@ function dailyActive(marks, idleSec) {
   return out;
 }
 
+/**
+ * Норма упаковки по грузоместам. Каждая строка «товар в коробке» даёт две отметки: первый скан (1 шт)
+ * и последний (остальные штуки). Время считается по каждой поставке отдельно — разные поставки могут
+ * упаковывать параллельно.
+ */
+function boxPackingNorm(rows) {
+  const bySupply = new Map();
+  for (const row of rows) {
+    const qty = Number(row.quantity) || 0;
+    const created = new Date(row.created_at).getTime();
+    const updated = new Date(row.updated_at).getTime();
+    if (qty <= 0 || !Number.isFinite(created)) continue;
+    const key = String(row.fbo_supply_id);
+    if (!bySupply.has(key)) bySupply.set(key, []);
+    const marks = bySupply.get(key);
+    marks.push({ t: created, units: 1 });
+    if (qty > 1 && Number.isFinite(updated)) marks.push({ t: Math.max(updated, created), units: qty - 1 });
+  }
+  let activeSec = 0;
+  let timedUnits = 0;
+  let units = 0;
+  for (const marks of bySupply.values()) {
+    const t = activeTime(marks, FBO_BOX_IDLE_SEC);
+    activeSec += t.activeSec;
+    timedUnits += t.timedUnits;
+    units += marks.reduce((s, m) => s + m.units, 0);
+  }
+  return { secPerUnit: timedUnits > 0 ? round1(activeSec / timedUnits) : null, units, supplies: bySupply.size };
+}
+
 class EmployeeMetricsService {
   async getMetrics({ profileId, dateFrom = null, dateTo = null } = {}) {
     const pid = requireAnalyticsProfile(profileId);
@@ -123,6 +157,7 @@ class EmployeeMetricsService {
       inventoryRes,
       tasksRes,
       trackingRes,
+      boxContentsRes,
     ] = await Promise.all([
       query(
         `SELECT id, email, phone, full_name, first_name, last_name, account_role, role
@@ -221,6 +256,14 @@ class EmployeeMetricsService {
                 MIN(created_at) AS since
            FROM employee_activity_events WHERE profile_id = $1`,
         [pid]
+      ),
+      query(
+        `SELECT cu.fbo_supply_id, cc.created_at, cc.updated_at, cc.quantity
+           FROM fbo_supply_cargo_contents cc
+           JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
+           JOIN fbo_supplies f ON f.id = cu.fbo_supply_id AND f.profile_id = $1
+          WHERE cc.created_at >= ${from} AND cc.created_at < ${to}`,
+        params
       ),
     ]);
 
@@ -440,6 +483,10 @@ class EmployeeMetricsService {
     summary.fboCollectActiveHours = round2(totals.fboCollect.activeSec / 3600);
     summary.packingSecPerUnit = perUnit(totals.packing.activeSec, totals.packing.timedUnits);
     summary.packingActiveHours = round2(totals.packing.activeSec / 3600);
+    const boxNorm = boxPackingNorm(boxContentsRes.rows || []);
+    summary.packingBoxSecPerUnit = boxNorm.secPerUnit;
+    summary.packingBoxUnits = boxNorm.units;
+    summary.packingBoxSupplies = boxNorm.supplies;
     const receiptTotal = receiptPerUnit(totals.receiptsTimed);
     summary.receiptSecPerUnit = receiptTotal.avgSec;
     summary.receiptMedianSecPerUnit = receiptTotal.medianSec;
@@ -447,7 +494,12 @@ class EmployeeMetricsService {
     const tracking = trackingRes.rows?.[0] || {};
     return {
       period: { dateFrom: fromYmd, dateTo: toYmd, days },
-      idleThresholdsSec: { fbs: FBS_IDLE_SEC, fboCollect: FBO_COLLECT_IDLE_SEC, packing: FBO_PACKING_IDLE_SEC },
+      idleThresholdsSec: {
+        fbs: FBS_IDLE_SEC,
+        fboCollect: FBO_COLLECT_IDLE_SEC,
+        packing: FBO_PACKING_IDLE_SEC,
+        packingBoxes: FBO_BOX_IDLE_SEC,
+      },
       trackingSince: tracking.since || null,
       fbsScansSince: tracking.fbs_since || null,
       packingSince: tracking.packing_since || null,

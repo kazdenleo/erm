@@ -52,7 +52,7 @@ function formatHours(sec) {
 
 function basisSec(basis, summary) {
   const collect = Number(summary?.fboCollectSecPerUnit) || 0;
-  const packing = Number(summary?.packingSecPerUnit) || 0;
+  const packing = Number(summary?.packingSecPerUnit) || Number(summary?.packingBoxSecPerUnit) || 0;
   if (basis === 'collect') return collect;
   if (basis === 'packing') return packing;
   return collect + packing;
