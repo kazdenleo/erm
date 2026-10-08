@@ -11,6 +11,7 @@ export const EMPLOYEE_EVENT = {
   ASSEMBLY_SCAN: 'assembly_scan',
   ASSEMBLY_COLLECTED: 'assembly_collected',
   RECEIPT_SCAN: 'receipt_scan',
+  FBO_PACKING_SCAN: 'fbo_packing_scan',
 };
 
 function positiveIntOrNull(v) {

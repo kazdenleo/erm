@@ -18,6 +18,24 @@ import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketp
 import fboSupplyForecastService from '../services/fboSupplyForecast.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
+import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
+
+/** Скан упаковки FBO в журнал сотрудников: quantity — сколько штук добавлено (+1) или снято (−1). */
+function logPackingScan(req, supplyId, { quantity = 0, action = null, error = null } = {}) {
+  logEmployeeEvent({
+    user: req.user,
+    eventType: EMPLOYEE_EVENT.FBO_PACKING_SCAN,
+    isError: Boolean(error),
+    entityType: 'fbo_supply',
+    entityId: supplyId,
+    quantity,
+    meta: {
+      action,
+      barcode: String(req.body?.barcode || '').slice(0, 120),
+      message: error ? String(error).slice(0, 300) : undefined,
+    },
+  });
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_kolichestvo.xlsx');
@@ -904,9 +922,11 @@ class FboSuppliesController {
         },
         { profileId }
       );
+      logPackingScan(req, id, { quantity: data?.action === 'product_added' ? 1 : 0, action: data?.action });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        logPackingScan(req, req.params.id, { action: e.code || 'error', error: e.message });
         return res.status(e.statusCode).json({
           ok: false,
           message: e.message,
@@ -971,6 +991,7 @@ class FboSuppliesController {
         { barcode, activeCargoUnitId },
         { profileId }
       );
+      logPackingScan(req, id, { quantity: -1, action: 'remove' });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {

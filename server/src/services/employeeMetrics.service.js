@@ -1,16 +1,20 @@
 /**
- * Показатели сотрудников: сборка (заказы, штуки, темп), ошибки скана, приёмка, инвентаризация, задачи.
+ * Показатели сотрудников: сборка FBS и FBO, упаковка FBO, ошибки скана, приёмка, инвентаризация, задачи.
  *
- * Сборка и приёмка — из документов (orders.assembled_*, purchase_receipts), доступны за всю историю.
- * Ошибки скана и точное время сборки заказа — из employee_activity_events (с момента включения журнала).
+ * Время работы — сумма промежутков между соседними сканами сотрудника. Промежуток длиннее порога простоя
+ * считается перерывом (сотрудник отошёл) и не засчитывается: отсчёт стоит до следующего скана.
+ *
+ * FBS: отметки «Собран» (orders.assembled_*, вся история) + сканы из employee_activity_events.
+ * FBO-сборка: fbo_supply_item_scans. Упаковка FBO: employee_activity_events (fbo_packing_scan).
+ * Приёмка: от создания до закрытия документа, без остановки на паузы.
  */
 
 import { query } from '../config/database.js';
 import { requireAnalyticsProfile, resolvePeriod, round2 } from '../utils/analyticsCommon.js';
 
-/** Паузы дольше этого между соседними сборками считаем перерывом, а не работой. */
-const MAX_WORK_GAP_SEC = 20 * 60;
-const MAX_RECEIPT_DURATION_SEC = 8 * 3600;
+const FBS_IDLE_SEC = 3 * 60;
+const FBO_COLLECT_IDLE_SEC = 60;
+const FBO_PACKING_IDLE_SEC = 3 * 60;
 
 const ROLE_LABELS = {
   admin: 'Администратор',
@@ -39,20 +43,27 @@ function median(values) {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** Темп сборки по последовательности отметок «Собран» одного сотрудника. */
-function assemblyPace(timestampsMs) {
-  const ts = [...timestampsMs].sort((a, b) => a - b);
-  const gaps = [];
-  for (let i = 1; i < ts.length; i += 1) {
-    const gapSec = (ts[i] - ts[i - 1]) / 1000;
-    if (gapSec > 0 && gapSec <= MAX_WORK_GAP_SEC) gaps.push(gapSec);
+/**
+ * Активное время по сканам одного сотрудника.
+ * @param {{ t: number, units: number }[]} marks — units: сколько единиц работы закрывает отметка (заказ / штука)
+ * @returns {{ activeSec: number, timedUnits: number }} timedUnits — единицы, перед которыми не было перерыва
+ */
+function activeTime(marks, idleSec) {
+  const sorted = [...marks].filter((m) => Number.isFinite(m.t)).sort((a, b) => a.t - b.t);
+  let activeSec = 0;
+  let timedUnits = 0;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const gapSec = (sorted[i].t - sorted[i - 1].t) / 1000;
+    if (gapSec <= idleSec) {
+      activeSec += gapSec;
+      timedUnits += sorted[i].units;
+    }
   }
-  const activeSec = gaps.reduce((s, g) => s + g, 0);
-  return {
-    activeHours: round2(activeSec / 3600),
-    medianSecPerOrder: gaps.length ? Math.round(median(gaps)) : null,
-    ordersPerHour: activeSec > 0 ? round2(gaps.length / (activeSec / 3600)) : null,
-  };
+  return { activeSec, timedUnits };
+}
+
+function perUnit(activeSec, timedUnits) {
+  return timedUnits > 0 ? Math.round(activeSec / timedUnits) : null;
 }
 
 class EmployeeMetricsService {
@@ -63,108 +74,108 @@ class EmployeeMetricsService {
     const from = periodBoundsSql();
     const to = periodEndSql();
 
-    const [usersRes, assemblyRes, eventsRes, precisionRes, receiptsRes, inventoryRes, tasksRes, trackingRes] =
-      await Promise.all([
-        query(
-          `SELECT id, email, phone, full_name, first_name, last_name, account_role, role
-             FROM users WHERE profile_id = $1`,
-          [pid]
-        ),
-        query(
-          `SELECT o.assembled_by_user_id AS user_id,
-                  COALESCE(NULLIF(o.order_group_id, ''), o.marketplace || ':' || o.order_id) AS order_key,
-                  MIN(o.assembled_at) AS assembled_at,
-                  SUM(GREATEST(COALESCE(o.quantity, 1), 1))::int AS qty,
-                  to_char(MIN(o.assembled_at) AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day
-             FROM orders o
-            WHERE o.profile_id = $1
-              AND o.assembled_by_user_id IS NOT NULL
-              AND o.assembled_at >= ${from} AND o.assembled_at < ${to}
-            GROUP BY 1, 2`,
-          params
-        ),
-        query(
-          `SELECT user_id, event_type,
-                  COUNT(*) FILTER (WHERE NOT is_error)::int AS ok_count,
-                  COUNT(*) FILTER (WHERE is_error)::int AS error_count,
-                  COALESCE(SUM(quantity) FILTER (WHERE NOT is_error), 0)::int AS qty
-             FROM employee_activity_events
-            WHERE profile_id = $1 AND created_at >= ${from} AND created_at < ${to}
-            GROUP BY 1, 2`,
-          params
-        ),
-        query(
-          `WITH s AS (
-             SELECT user_id, entity_id, MIN(created_at) AS first_scan
-               FROM employee_activity_events
-              WHERE profile_id = $1 AND event_type = 'assembly_scan' AND NOT is_error
-                AND entity_id IS NOT NULL
-                AND created_at >= ${from} - interval '1 day' AND created_at < ${to}
-              GROUP BY 1, 2
-           ),
-           c AS (
-             SELECT user_id, entity_id, MIN(created_at) AS collected_at
-               FROM employee_activity_events
-              WHERE profile_id = $1 AND event_type = 'assembly_collected'
-                AND created_at >= ${from} AND created_at < ${to}
-              GROUP BY 1, 2
-           )
-           SELECT c.user_id,
-                  COUNT(*)::int AS orders,
-                  percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (c.collected_at - s.first_scan))
-                  ) AS median_sec
-             FROM c JOIN s ON s.user_id = c.user_id AND s.entity_id = c.entity_id
-            WHERE c.collected_at >= s.first_scan
-              AND c.collected_at - s.first_scan < interval '1 hour'
-            GROUP BY 1`,
-          params
-        ),
-        query(
-          `SELECT pr.created_by_user_id AS user_id,
-                  COUNT(DISTINCT pr.id)::int AS receipts,
-                  COALESCE(SUM(it.scanned), 0)::int AS units,
-                  COALESCE(SUM(it.diff_lines), 0)::int AS diff_lines,
-                  percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY LEAST(EXTRACT(EPOCH FROM (pr.completed_at - pr.started_at)), ${MAX_RECEIPT_DURATION_SEC})
-                  ) FILTER (WHERE pr.started_at IS NOT NULL AND pr.completed_at > pr.started_at) AS median_sec
-             FROM purchase_receipts pr
-             JOIN purchases pu ON pu.id = pr.purchase_id AND pu.profile_id = $1
-             LEFT JOIN LATERAL (
-               SELECT SUM(GREATEST(COALESCE(i.scanned_quantity, 0), 0)) AS scanned,
-                      COUNT(*) FILTER (
-                        WHERE i.expected_quantity IS NOT NULL
-                          AND COALESCE(i.scanned_quantity, 0) <> i.expected_quantity
-                      ) AS diff_lines
-                 FROM purchase_receipt_items i
-                WHERE i.receipt_id = pr.id
-             ) it ON TRUE
-            WHERE pr.status = 'completed'
-              AND pr.created_by_user_id IS NOT NULL
-              AND pr.completed_at >= ${from} AND pr.completed_at < ${to}
-            GROUP BY 1`,
-          params
-        ),
-        query(
-          `SELECT created_by_user_id AS user_id,
-                  COUNT(*)::int AS sessions,
-                  COALESCE(SUM(lines_count), 0)::int AS lines
-             FROM inventory_sessions
-            WHERE profile_id = $1 AND created_by_user_id IS NOT NULL
-              AND created_at >= ${from} AND created_at < ${to}
-            GROUP BY 1`,
-          params
-        ),
-        query(
-          `SELECT completed_by_id AS user_id, COUNT(*)::int AS tasks
-             FROM employee_tasks
-            WHERE profile_id = $1 AND completed_by_id IS NOT NULL
-              AND completed_at >= ${from} AND completed_at < ${to}
-            GROUP BY 1`,
-          params
-        ),
-        query(`SELECT MIN(created_at) AS since FROM employee_activity_events WHERE profile_id = $1`, [pid]),
-      ]);
+    const [
+      usersRes,
+      assemblyRes,
+      eventsRes,
+      eventMarksRes,
+      fboScansRes,
+      receiptsRes,
+      inventoryRes,
+      tasksRes,
+      trackingRes,
+    ] = await Promise.all([
+      query(
+        `SELECT id, email, phone, full_name, first_name, last_name, account_role, role
+           FROM users WHERE profile_id = $1`,
+        [pid]
+      ),
+      query(
+        `SELECT o.assembled_by_user_id AS user_id,
+                COALESCE(NULLIF(o.order_group_id, ''), o.marketplace || ':' || o.order_id) AS order_key,
+                MIN(o.assembled_at) AS assembled_at,
+                SUM(GREATEST(COALESCE(o.quantity, 1), 1))::int AS qty,
+                to_char(MIN(o.assembled_at) AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day
+           FROM orders o
+          WHERE o.profile_id = $1
+            AND o.assembled_by_user_id IS NOT NULL
+            AND o.assembled_at >= ${from} AND o.assembled_at < ${to}
+          GROUP BY 1, 2`,
+        params
+      ),
+      query(
+        `SELECT user_id, event_type,
+                COUNT(*) FILTER (WHERE NOT is_error)::int AS ok_count,
+                COUNT(*) FILTER (WHERE is_error)::int AS error_count,
+                COALESCE(SUM(quantity) FILTER (WHERE NOT is_error), 0)::int AS qty
+           FROM employee_activity_events
+          WHERE profile_id = $1 AND created_at >= ${from} AND created_at < ${to}
+          GROUP BY 1, 2`,
+        params
+      ),
+      query(
+        `SELECT user_id, event_type, created_at, quantity, is_error
+           FROM employee_activity_events
+          WHERE profile_id = $1
+            AND event_type IN ('assembly_scan', 'assembly_collected', 'fbo_packing_scan')
+            AND created_at >= ${from} AND created_at < ${to}`,
+        params
+      ),
+      query(
+        `SELECT s.user_id, s.created_at, s.fbo_supply_id
+           FROM fbo_supply_item_scans s
+           JOIN fbo_supplies f ON f.id = s.fbo_supply_id AND f.profile_id = $1
+          WHERE s.user_id IS NOT NULL
+            AND s.created_at >= ${from} AND s.created_at < ${to}`,
+        params
+      ),
+      query(
+        `SELECT pr.created_by_user_id AS user_id,
+                EXTRACT(EPOCH FROM (pr.completed_at - pr.created_at)) AS duration_sec,
+                COALESCE(it.scanned, 0)::int AS units,
+                COALESCE(it.diff_lines, 0)::int AS diff_lines
+           FROM purchase_receipts pr
+           JOIN purchases pu ON pu.id = pr.purchase_id AND pu.profile_id = $1
+           LEFT JOIN LATERAL (
+             SELECT SUM(GREATEST(COALESCE(i.scanned_quantity, 0), 0)) AS scanned,
+                    COUNT(*) FILTER (
+                      WHERE i.expected_quantity IS NOT NULL
+                        AND COALESCE(i.scanned_quantity, 0) <> i.expected_quantity
+                    ) AS diff_lines
+               FROM purchase_receipt_items i
+              WHERE i.receipt_id = pr.id
+           ) it ON TRUE
+          WHERE pr.status = 'completed'
+            AND pr.created_by_user_id IS NOT NULL
+            AND pr.completed_at >= ${from} AND pr.completed_at < ${to}`,
+        params
+      ),
+      query(
+        `SELECT created_by_user_id AS user_id,
+                COUNT(*)::int AS sessions,
+                COALESCE(SUM(lines_count), 0)::int AS lines
+           FROM inventory_sessions
+          WHERE profile_id = $1 AND created_by_user_id IS NOT NULL
+            AND created_at >= ${from} AND created_at < ${to}
+          GROUP BY 1`,
+        params
+      ),
+      query(
+        `SELECT completed_by_id AS user_id, COUNT(*)::int AS tasks
+           FROM employee_tasks
+          WHERE profile_id = $1 AND completed_by_id IS NOT NULL
+            AND completed_at >= ${from} AND completed_at < ${to}
+          GROUP BY 1`,
+        params
+      ),
+      query(
+        `SELECT MIN(created_at) FILTER (WHERE event_type IN ('assembly_scan', 'assembly_collected')) AS fbs_since,
+                MIN(created_at) FILTER (WHERE event_type = 'fbo_packing_scan') AS packing_since,
+                MIN(created_at) AS since
+           FROM employee_activity_events WHERE profile_id = $1`,
+        [pid]
+      ),
+    ]);
 
     const byUser = new Map();
     const ensure = (userId) => {
@@ -174,10 +185,11 @@ class EmployeeMetricsService {
           userId: id,
           name: `Пользователь #${id}`,
           role: null,
-          assembly: { orders: 0, units: 0, timestamps: [], byDay: {} },
-          scans: { assemblyOk: 0, assemblyErrors: 0, receiptOk: 0, receiptErrors: 0, receiptUnits: 0 },
-          precise: { orders: 0, medianSec: null },
-          receipts: { receipts: 0, units: 0, diffLines: 0, medianSec: null },
+          fbs: { orders: 0, units: 0, marks: [], byDay: {} },
+          fboCollect: { units: 0, supplies: new Set(), marks: [] },
+          packing: { units: 0, supplies: 0, marks: [] },
+          scans: { assemblyOk: 0, assemblyErrors: 0, receiptOk: 0, receiptErrors: 0, receiptUnits: 0, packingErrors: 0 },
+          receipts: { receipts: 0, units: 0, diffLines: 0, durations: [] },
           inventory: { sessions: 0, lines: 0 },
           tasks: 0,
         });
@@ -186,14 +198,28 @@ class EmployeeMetricsService {
     };
 
     const userInfo = new Map((usersRes.rows || []).map((u) => [Number(u.id), u]));
+    const ts = (v) => new Date(v).getTime();
 
     for (const row of assemblyRes.rows || []) {
       const u = ensure(row.user_id);
-      u.assembly.orders += 1;
-      u.assembly.units += Number(row.qty) || 0;
-      const t = new Date(row.assembled_at).getTime();
-      if (Number.isFinite(t)) u.assembly.timestamps.push(t);
-      if (row.day) u.assembly.byDay[row.day] = (u.assembly.byDay[row.day] || 0) + 1;
+      u.fbs.orders += 1;
+      u.fbs.units += Number(row.qty) || 0;
+      u.fbs.marks.push({ t: ts(row.assembled_at), units: 1 });
+      if (row.day) u.fbs.byDay[row.day] = (u.fbs.byDay[row.day] || 0) + 1;
+    }
+    for (const row of eventMarksRes.rows || []) {
+      const u = ensure(row.user_id);
+      if (row.event_type === 'fbo_packing_scan') {
+        u.packing.marks.push({ t: ts(row.created_at), units: row.is_error ? 0 : Math.max(Number(row.quantity) || 0, 0) });
+      } else {
+        u.fbs.marks.push({ t: ts(row.created_at), units: 0 });
+      }
+    }
+    for (const row of fboScansRes.rows || []) {
+      const u = ensure(row.user_id);
+      u.fboCollect.units += 1;
+      u.fboCollect.supplies.add(String(row.fbo_supply_id));
+      u.fboCollect.marks.push({ t: ts(row.created_at), units: 1 });
     }
     for (const row of eventsRes.rows || []) {
       const u = ensure(row.user_id);
@@ -204,19 +230,18 @@ class EmployeeMetricsService {
         u.scans.receiptOk += Number(row.ok_count) || 0;
         u.scans.receiptErrors += Number(row.error_count) || 0;
         u.scans.receiptUnits += Number(row.qty) || 0;
+      } else if (row.event_type === 'fbo_packing_scan') {
+        u.packing.units += Number(row.qty) || 0;
+        u.scans.packingErrors += Number(row.error_count) || 0;
       }
-    }
-    for (const row of precisionRes.rows || []) {
-      const u = ensure(row.user_id);
-      u.precise.orders = Number(row.orders) || 0;
-      u.precise.medianSec = row.median_sec != null ? Math.round(Number(row.median_sec)) : null;
     }
     for (const row of receiptsRes.rows || []) {
       const u = ensure(row.user_id);
-      u.receipts.receipts = Number(row.receipts) || 0;
-      u.receipts.units = Number(row.units) || 0;
-      u.receipts.diffLines = Number(row.diff_lines) || 0;
-      u.receipts.medianSec = row.median_sec != null ? Math.round(Number(row.median_sec)) : null;
+      u.receipts.receipts += 1;
+      u.receipts.units += Number(row.units) || 0;
+      u.receipts.diffLines += Number(row.diff_lines) || 0;
+      const d = Number(row.duration_sec);
+      if (Number.isFinite(d) && d > 0) u.receipts.durations.push(d);
     }
     for (const row of inventoryRes.rows || []) {
       const u = ensure(row.user_id);
@@ -227,7 +252,14 @@ class EmployeeMetricsService {
       ensure(row.user_id).tasks = Number(row.tasks) || 0;
     }
 
+    const totals = {
+      fbs: { activeSec: 0, timedUnits: 0 },
+      fboCollect: { activeSec: 0, timedUnits: 0 },
+      packing: { activeSec: 0, timedUnits: 0 },
+      receiptDurations: [],
+    };
     const allDays = new Set();
+
     const employees = [...byUser.values()]
       .map((u) => {
         const info = userInfo.get(u.userId);
@@ -235,32 +267,57 @@ class EmployeeMetricsService {
           u.name = userDisplayName(info);
           u.role = ROLE_LABELS[info.account_role] || (info.role === 'admin' ? 'Администратор' : null);
         }
-        const pace = assemblyPace(u.assembly.timestamps);
+        const fbsTime = activeTime(u.fbs.marks, FBS_IDLE_SEC);
+        const collectTime = activeTime(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC);
+        const packingTime = activeTime(u.packing.marks, FBO_PACKING_IDLE_SEC);
+        for (const [key, t] of [
+          ['fbs', fbsTime],
+          ['fboCollect', collectTime],
+          ['packing', packingTime],
+        ]) {
+          totals[key].activeSec += t.activeSec;
+          totals[key].timedUnits += t.timedUnits;
+        }
+        totals.receiptDurations.push(...u.receipts.durations);
+        Object.keys(u.fbs.byDay).forEach((d) => allDays.add(d));
+
         const assemblyScans = u.scans.assemblyOk + u.scans.assemblyErrors;
         const receiptScans = u.scans.receiptOk + u.scans.receiptErrors;
-        Object.keys(u.assembly.byDay).forEach((d) => allDays.add(d));
+        const durations = u.receipts.durations;
         return {
           userId: u.userId,
           name: u.name,
           role: u.role,
           assembly: {
-            orders: u.assembly.orders,
-            units: u.assembly.units,
-            activeHours: pace.activeHours,
-            ordersPerHour: pace.ordersPerHour,
-            medianSecPerOrder: u.precise.medianSec ?? pace.medianSecPerOrder,
-            paceSource: u.precise.medianSec != null ? 'scan' : pace.medianSecPerOrder != null ? 'gaps' : null,
+            orders: u.fbs.orders,
+            units: u.fbs.units,
+            activeHours: round2(fbsTime.activeSec / 3600),
+            secPerOrder: perUnit(fbsTime.activeSec, fbsTime.timedUnits),
+            ordersPerHour: fbsTime.activeSec > 0 ? round2(fbsTime.timedUnits / (fbsTime.activeSec / 3600)) : null,
             scans: assemblyScans,
             errors: u.scans.assemblyErrors,
             errorRate: assemblyScans > 0 ? round2((u.scans.assemblyErrors / assemblyScans) * 100) : null,
-            byDay: u.assembly.byDay,
+            byDay: u.fbs.byDay,
+          },
+          fboCollect: {
+            units: u.fboCollect.units,
+            supplies: u.fboCollect.supplies.size,
+            activeHours: round2(collectTime.activeSec / 3600),
+            secPerUnit: perUnit(collectTime.activeSec, collectTime.timedUnits),
+          },
+          packing: {
+            units: Math.max(u.packing.units, 0),
+            activeHours: round2(packingTime.activeSec / 3600),
+            secPerUnit: perUnit(packingTime.activeSec, packingTime.timedUnits),
+            errors: u.scans.packingErrors,
           },
           receipts: {
             receipts: u.receipts.receipts,
             units: Math.max(u.receipts.units, 0),
             scannedUnits: u.scans.receiptUnits,
             diffLines: u.receipts.diffLines,
-            medianSec: u.receipts.medianSec,
+            avgSec: durations.length ? Math.round(durations.reduce((s, d) => s + d, 0) / durations.length) : null,
+            medianSec: durations.length ? Math.round(median(durations)) : null,
             scans: receiptScans,
             errors: u.scans.receiptErrors,
             errorRate: receiptScans > 0 ? round2((u.scans.receiptErrors / receiptScans) * 100) : null,
@@ -273,12 +330,14 @@ class EmployeeMetricsService {
         (e) =>
           e.assembly.orders > 0 ||
           e.assembly.scans > 0 ||
+          e.fboCollect.units > 0 ||
+          e.packing.units > 0 ||
           e.receipts.receipts > 0 ||
           e.receipts.scans > 0 ||
           e.inventory.sessions > 0 ||
           e.tasks > 0
       )
-      .sort((a, b) => b.assembly.orders - a.assembly.orders || b.receipts.units - a.receipts.units);
+      .sort((a, b) => b.assembly.orders - a.assembly.orders || b.fboCollect.units - a.fboCollect.units);
 
     const summary = employees.reduce(
       (acc, e) => {
@@ -286,8 +345,11 @@ class EmployeeMetricsService {
         acc.unitsAssembled += e.assembly.units;
         acc.assemblyErrors += e.assembly.errors;
         acc.assemblyScans += e.assembly.scans;
+        acc.fboCollectUnits += e.fboCollect.units;
+        acc.packingUnits += e.packing.units;
         acc.receipts += e.receipts.receipts;
         acc.unitsReceived += e.receipts.units;
+        acc.receiptErrors += e.receipts.errors;
         acc.inventorySessions += e.inventory.sessions;
         return acc;
       },
@@ -297,17 +359,33 @@ class EmployeeMetricsService {
         unitsAssembled: 0,
         assemblyErrors: 0,
         assemblyScans: 0,
+        fboCollectUnits: 0,
+        packingUnits: 0,
         receipts: 0,
         unitsReceived: 0,
+        receiptErrors: 0,
         inventorySessions: 0,
       }
     );
     summary.assemblyErrorRate =
       summary.assemblyScans > 0 ? round2((summary.assemblyErrors / summary.assemblyScans) * 100) : null;
+    summary.fbsSecPerOrder = perUnit(totals.fbs.activeSec, totals.fbs.timedUnits);
+    summary.fbsActiveHours = round2(totals.fbs.activeSec / 3600);
+    summary.fboCollectSecPerUnit = perUnit(totals.fboCollect.activeSec, totals.fboCollect.timedUnits);
+    summary.fboCollectActiveHours = round2(totals.fboCollect.activeSec / 3600);
+    summary.packingSecPerUnit = perUnit(totals.packing.activeSec, totals.packing.timedUnits);
+    summary.packingActiveHours = round2(totals.packing.activeSec / 3600);
+    const rd = totals.receiptDurations;
+    summary.receiptAvgSec = rd.length ? Math.round(rd.reduce((s, d) => s + d, 0) / rd.length) : null;
+    summary.receiptMedianSec = rd.length ? Math.round(median(rd)) : null;
 
+    const tracking = trackingRes.rows?.[0] || {};
     return {
       period: { dateFrom: fromYmd, dateTo: toYmd, days },
-      trackingSince: trackingRes.rows?.[0]?.since || null,
+      idleThresholdsSec: { fbs: FBS_IDLE_SEC, fboCollect: FBO_COLLECT_IDLE_SEC, packing: FBO_PACKING_IDLE_SEC },
+      trackingSince: tracking.since || null,
+      fbsScansSince: tracking.fbs_since || null,
+      packingSince: tracking.packing_since || null,
       days: [...allDays].sort(),
       summary,
       employees,

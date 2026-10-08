@@ -1,5 +1,5 @@
 /**
- * Показатели сотрудников склада: скорость сборки, ошибки сканирования, объём приёмки.
+ * Показатели сотрудников склада: время сборки FBS / FBO, упаковки FBO, приёмки, ошибки сканирования.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -13,22 +13,30 @@ import { SortableTh, sortRows, useTableSort } from '../shared/tableSort';
 import { SummaryCards, errorMessage, formatDateRu, formatPercent, formatQty } from '../shared/analyticsKit';
 import '../SalesAnalytics/SalesAnalytics.css';
 import '../ProductDynamics/ProductDynamics.css';
+import './EmployeeMetrics.css';
 
 const LINE_COLORS = ['#2563eb', '#16a34a', '#ea580c', '#7c3aed', '#dc2626', '#0891b2', '#ca8a04', '#db2777'];
+
+const timeOrLast = (v) => (v == null ? Number.POSITIVE_INFINITY : Number(v));
 
 const SORT_GETTERS = {
   name: (r) => r.name || '',
   orders: (r) => Number(r.assembly?.orders) || 0,
   units: (r) => Number(r.assembly?.units) || 0,
-  ordersPerHour: (r) => Number(r.assembly?.ordersPerHour) || 0,
-  medianSec: (r) => (r.assembly?.medianSecPerOrder == null ? Number.POSITIVE_INFINITY : r.assembly.medianSecPerOrder),
+  fbsSec: (r) => timeOrLast(r.assembly?.secPerOrder),
   errors: (r) => Number(r.assembly?.errors) || 0,
-  errorRate: (r) => Number(r.assembly?.errorRate) || 0,
+  fboUnits: (r) => Number(r.fboCollect?.units) || 0,
+  fboSec: (r) => timeOrLast(r.fboCollect?.secPerUnit),
+  packUnits: (r) => Number(r.packing?.units) || 0,
+  packSec: (r) => timeOrLast(r.packing?.secPerUnit),
   receipts: (r) => Number(r.receipts?.receipts) || 0,
+  receiptSec: (r) => timeOrLast(r.receipts?.avgSec),
   receivedUnits: (r) => Number(r.receipts?.units) || 0,
   receiptErrors: (r) => Number(r.receipts?.errors) || 0,
   inventory: (r) => Number(r.inventory?.sessions) || 0,
 };
+
+const COLUMN_COUNT = 14;
 
 function formatDuration(sec) {
   if (sec == null || !Number.isFinite(Number(sec))) return '—';
@@ -37,6 +45,33 @@ function formatDuration(sec) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m} мин ${s % 60 ? `${s % 60} с` : ''}`.trim();
   return `${Math.floor(m / 60)} ч ${m % 60} мин`;
+}
+
+function minutesLabel(sec) {
+  const m = Math.round((Number(sec) || 0) / 60);
+  return `${m} мин`;
+}
+
+function Sub({ children }) {
+  return <div className="analytics-kit__product-name">{children}</div>;
+}
+
+function hoursSub(hours) {
+  return Number(hours) > 0 ? <Sub>{formatQty(hours, 1)} ч работы</Sub> : null;
+}
+
+function receiptTimeCell(avgSec, medianSec) {
+  if (avgSec == null) return '—';
+  return (
+    <>
+      {formatDuration(avgSec)}
+      <Sub>медиана {formatDuration(medianSec)}</Sub>
+    </>
+  );
+}
+
+function errorsCell(errors, scans, rate) {
+  return scans ? `${formatQty(errors, 0)} (${formatPercent(rate)})` : formatQty(errors, 0);
 }
 
 export function EmployeeMetrics() {
@@ -70,6 +105,7 @@ export function EmployeeMetrics() {
   const employees = useMemo(() => (Array.isArray(data?.employees) ? data.employees : []), [data]);
   const sorted = useMemo(() => sortRows(employees, sort, SORT_GETTERS), [employees, sort]);
   const summary = data?.summary || {};
+  const idle = data?.idleThresholdsSec || {};
 
   const chartEmployees = useMemo(
     () =>
@@ -91,13 +127,19 @@ export function EmployeeMetrics() {
     [data, chartEmployees]
   );
 
+  const th = (key, label, title) => (
+    <SortableTh sortKey={key} sort={sort} onSort={toggleSort} className="sales-analytics__num" title={title}>
+      {label}
+    </SortableTh>
+  );
+
   return (
-    <div className="sales-analytics">
+    <div className="sales-analytics employee-metrics">
       <PageTitle
         iconClass="pe-7s-users"
         iconBgClass="bg-premium-dark"
         title="Сотрудники"
-        subtitle="Скорость сборки, ошибки сканирования и объём приёмки по сотрудникам склада"
+        subtitle="Время сборки FBS и FBO, упаковки и приёмки, ошибки сканирования по сотрудникам склада"
       />
 
       <div className="sales-analytics__filters erp-filter-bar">
@@ -119,11 +161,28 @@ export function EmployeeMetrics() {
       {data && (
         <SummaryCards
           cards={[
-            { label: 'Сотрудников', value: formatQty(summary.employees, 0) },
             {
-              label: 'Собрано заказов',
-              value: formatQty(summary.ordersAssembled, 0),
-              sub: `${formatQty(summary.unitsAssembled, 0)} шт`,
+              label: 'Сборка FBS, на заказ',
+              value: formatDuration(summary.fbsSecPerOrder),
+              sub: `${formatQty(summary.ordersAssembled, 0)} заказов · ${formatQty(summary.unitsAssembled, 0)} шт`,
+            },
+            {
+              label: 'Сборка FBO, на штуку',
+              value: formatDuration(summary.fboCollectSecPerUnit),
+              sub: `${formatQty(summary.fboCollectUnits, 0)} шт`,
+            },
+            {
+              label: 'Упаковка FBO, на штуку',
+              value: formatDuration(summary.packingSecPerUnit),
+              sub: `${formatQty(summary.packingUnits, 0)} шт`,
+            },
+            {
+              label: 'Приёмка, в среднем',
+              value: formatDuration(summary.receiptAvgSec),
+              sub:
+                summary.receiptMedianSec != null
+                  ? `медиана ${formatDuration(summary.receiptMedianSec)} · ${formatQty(summary.receipts, 0)} приёмок`
+                  : `${formatQty(summary.receipts, 0)} приёмок`,
             },
             {
               label: 'Ошибки сборки',
@@ -134,18 +193,12 @@ export function EmployeeMetrics() {
                   ? `${formatPercent(summary.assemblyErrorRate)} от ${formatQty(summary.assemblyScans, 0)} сканов`
                   : 'нет данных о сканах',
             },
-            {
-              label: 'Приёмок',
-              value: formatQty(summary.receipts, 0),
-              sub: `${formatQty(summary.unitsReceived, 0)} шт принято`,
-            },
-            { label: 'Инвентаризаций', value: formatQty(summary.inventorySessions, 0) },
           ]}
         />
       )}
 
       <div className="product-dynamics__chart-wrap">
-        <h3 className="product-dynamics__chart-title">Собрано заказов по дням</h3>
+        <h3 className="product-dynamics__chart-title">Собрано заказов FBS по дням</h3>
         {chartData.length > 0 && chartEmployees.length > 0 ? (
           <ResponsiveContainer width="100%" height={280}>
             <LineChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
@@ -179,108 +232,134 @@ export function EmployeeMetrics() {
               <SortableTh sortKey="name" sort={sort} onSort={toggleSort}>
                 Сотрудник
               </SortableTh>
-              <SortableTh sortKey="orders" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Заказов
-              </SortableTh>
-              <SortableTh sortKey="units" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Штук
-              </SortableTh>
-              <SortableTh
-                sortKey="ordersPerHour"
-                sort={sort}
-                onSort={toggleSort}
-                className="sales-analytics__num"
-                title="Заказов за час активной работы (перерывы дольше 20 минут не учитываются)"
-              >
-                Заказов/час
-              </SortableTh>
-              <SortableTh sortKey="medianSec" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                На заказ (медиана)
-              </SortableTh>
-              <SortableTh sortKey="errors" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Ошибки сборки
-              </SortableTh>
-              <SortableTh sortKey="receipts" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Приёмок
-              </SortableTh>
-              <SortableTh sortKey="receivedUnits" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Принято, шт
-              </SortableTh>
-              <SortableTh sortKey="receiptErrors" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Ошибки приёмки
-              </SortableTh>
-              <SortableTh sortKey="inventory" sort={sort} onSort={toggleSort} className="sales-analytics__num">
-                Инвент.
-              </SortableTh>
+              {th('orders', 'FBS заказов')}
+              {th('units', 'FBS штук')}
+              {th(
+                'fbsSec',
+                'FBS на заказ',
+                `Время работы ÷ заказы. Пауза без сканов дольше ${minutesLabel(idle.fbs)} — перерыв, не считается`
+              )}
+              {th('errors', 'Ошибки сборки')}
+              {th('fboUnits', 'FBO собрано, шт')}
+              {th(
+                'fboSec',
+                'FBO на штуку',
+                `Время работы ÷ штуки. Пауза без сканов дольше ${minutesLabel(idle.fboCollect)} — перерыв, не считается`
+              )}
+              {th('packUnits', 'Упаковано, шт')}
+              {th(
+                'packSec',
+                'Упаковка на штуку',
+                `Время работы ÷ штуки. Пауза без сканов дольше ${minutesLabel(idle.packing)} — перерыв, не считается`
+              )}
+              {th('receipts', 'Приёмок')}
+              {th('receiptSec', 'Приёмка, время', 'От создания до закрытия приёмки: среднее и медиана')}
+              {th('receivedUnits', 'Принято, шт')}
+              {th('receiptErrors', 'Ошибки приёмки')}
+              {th('inventory', 'Инвент.')}
             </tr>
           </thead>
           <tbody>
             {!loading && data != null && sorted.length === 0 && (
               <tr>
-                <td colSpan={10} className="sales-analytics__empty">
+                <td colSpan={COLUMN_COUNT} className="sales-analytics__empty">
                   Нет активности сотрудников за период
                 </td>
               </tr>
             )}
             {sorted.map((e) => {
               const a = e.assembly || {};
+              const f = e.fboCollect || {};
+              const p = e.packing || {};
               const r = e.receipts || {};
               return (
                 <tr key={e.userId}>
                   <td>
                     <strong>{e.name}</strong>
-                    {e.role ? <div className="analytics-kit__product-name">{e.role}</div> : null}
+                    {e.role ? <Sub>{e.role}</Sub> : null}
                   </td>
                   <td className="sales-analytics__num">{formatQty(a.orders, 0)}</td>
                   <td className="sales-analytics__num">{formatQty(a.units, 0)}</td>
                   <td className="sales-analytics__num">
-                    {formatQty(a.ordersPerHour, 1)}
-                    {a.activeHours ? (
-                      <div className="analytics-kit__product-name">{formatQty(a.activeHours, 1)} ч активно</div>
-                    ) : null}
+                    {formatDuration(a.secPerOrder)}
+                    {hoursSub(a.activeHours)}
                   </td>
-                  <td
-                    className="sales-analytics__num"
-                    title={
-                      a.paceSource === 'scan'
-                        ? 'По сканам: от первого скана до завершения заказа'
-                        : 'По интервалам между завершёнными заказами'
-                    }
-                  >
-                    {formatDuration(a.medianSecPerOrder)}
+                  <td className="sales-analytics__num">{errorsCell(a.errors, a.scans, a.errorRate)}</td>
+                  <td className="sales-analytics__num">
+                    {formatQty(f.units, 0)}
+                    {f.supplies ? <Sub>поставок: {formatQty(f.supplies, 0)}</Sub> : null}
                   </td>
                   <td className="sales-analytics__num">
-                    {a.scans ? `${formatQty(a.errors, 0)} (${formatPercent(a.errorRate)})` : formatQty(a.errors, 0)}
+                    {formatDuration(f.secPerUnit)}
+                    {hoursSub(f.activeHours)}
                   </td>
+                  <td className="sales-analytics__num">{formatQty(p.units, 0)}</td>
                   <td className="sales-analytics__num">
-                    {formatQty(r.receipts, 0)}
-                    {r.medianSec ? (
-                      <div className="analytics-kit__product-name">медиана {formatDuration(r.medianSec)}</div>
-                    ) : null}
+                    {formatDuration(p.secPerUnit)}
+                    {hoursSub(p.activeHours)}
                   </td>
+                  <td className="sales-analytics__num">{formatQty(r.receipts, 0)}</td>
+                  <td className="sales-analytics__num">{receiptTimeCell(r.avgSec, r.medianSec)}</td>
                   <td className="sales-analytics__num">
                     {formatQty(r.units, 0)}
-                    {r.diffLines ? (
-                      <div className="analytics-kit__product-name">расхождений: {formatQty(r.diffLines, 0)}</div>
-                    ) : null}
+                    {r.diffLines ? <Sub>расхождений: {formatQty(r.diffLines, 0)}</Sub> : null}
                   </td>
-                  <td className="sales-analytics__num">
-                    {r.scans ? `${formatQty(r.errors, 0)} (${formatPercent(r.errorRate)})` : formatQty(r.errors, 0)}
-                  </td>
+                  <td className="sales-analytics__num">{errorsCell(r.errors, r.scans, r.errorRate)}</td>
                   <td className="sales-analytics__num">{formatQty(e.inventory?.sessions, 0)}</td>
                 </tr>
               );
             })}
           </tbody>
+          {sorted.length > 0 && (
+            <tfoot>
+              <tr className="employee-metrics__total">
+                <td>Итого / среднее</td>
+                <td className="sales-analytics__num">{formatQty(summary.ordersAssembled, 0)}</td>
+                <td className="sales-analytics__num">{formatQty(summary.unitsAssembled, 0)}</td>
+                <td className="sales-analytics__num">
+                  {formatDuration(summary.fbsSecPerOrder)}
+                  {hoursSub(summary.fbsActiveHours)}
+                </td>
+                <td className="sales-analytics__num">
+                  {errorsCell(summary.assemblyErrors, summary.assemblyScans, summary.assemblyErrorRate)}
+                </td>
+                <td className="sales-analytics__num">{formatQty(summary.fboCollectUnits, 0)}</td>
+                <td className="sales-analytics__num">
+                  {formatDuration(summary.fboCollectSecPerUnit)}
+                  {hoursSub(summary.fboCollectActiveHours)}
+                </td>
+                <td className="sales-analytics__num">{formatQty(summary.packingUnits, 0)}</td>
+                <td className="sales-analytics__num">
+                  {formatDuration(summary.packingSecPerUnit)}
+                  {hoursSub(summary.packingActiveHours)}
+                </td>
+                <td className="sales-analytics__num">{formatQty(summary.receipts, 0)}</td>
+                <td className="sales-analytics__num">
+                  {receiptTimeCell(summary.receiptAvgSec, summary.receiptMedianSec)}
+                </td>
+                <td className="sales-analytics__num">{formatQty(summary.unitsReceived, 0)}</td>
+                <td className="sales-analytics__num">{formatQty(summary.receiptErrors, 0)}</td>
+                <td className="sales-analytics__num">{formatQty(summary.inventorySessions, 0)}</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
       <p className="sales-analytics__hint">
-        Сборка и приёмка — по завершённым заказам и документам приёмки. Ошибки сканирования (не тот товар, лишний скан)
-        записываются{' '}
-        {data?.trackingSince
-          ? `с ${formatDateRu(data.trackingSince)}`
-          : 'с момента обновления — данные появятся после первых сканов'}
+        Время работы — сумма промежутков между сканами сотрудника. Если сканов нет дольше{' '}
+        {minutesLabel(idle.fbs)} на сборке FBS, {minutesLabel(idle.fboCollect)} на сборке FBO или{' '}
+        {minutesLabel(idle.packing)} на упаковке, отсчёт останавливается и продолжается со следующего скана. Итог —
+        общее время всех сотрудников, делённое на все заказы или штуки. Приёмка — от создания до закрытия документа.
+        <br />
+        Сканы сборки FBS{' '}
+        {data?.fbsScansSince
+          ? `записываются с ${formatDateRu(data.fbsScansSince)}; раньше время считается по отметкам «Собран»`
+          : 'пока не записывались — время считается по отметкам «Собран»'}
+        . Упаковка FBO{' '}
+        {data?.packingSince
+          ? `записывается с ${formatDateRu(data.packingSince)}`
+          : 'пока не записывалась — данные появятся после первых сканов упаковки'}
         .
       </p>
     </div>
