@@ -42,6 +42,11 @@ router.post(
 );
 
 router.post(
+  '/:id/sync-status',
+  wrapAsync(certificatesController.syncStatus.bind(certificatesController))
+);
+
+router.post(
   '/:id/push-ym',
   wrapAsync(certificatesController.pushToYm.bind(certificatesController))
 );

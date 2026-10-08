@@ -38,6 +38,24 @@ const YM_STATUS_LABELS = {
   REVOKED: 'Отозван на YM',
 };
 
+const OZON_FINAL_STATUSES = ['approved', 'declined', 'rejected'];
+const YM_PENDING_STATUSES = ['VALIDATING', 'WAITING_FIXES'];
+
+function StatusRefreshButton({ busy, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`status-refresh-btn${busy ? ' is-busy' : ''}`}
+      onClick={onClick}
+      disabled={busy}
+      title="Обновить статус проверки (автоматически — раз в час)"
+      aria-label="Обновить статус проверки"
+    >
+      ↻
+    </button>
+  );
+}
+
 const YM_DOC_TYPE_DEFAULTS = [
   { code: 'CONFORMITY_CERTIFICATE', label: 'Сертификат соответствия' },
   { code: 'CONFORMITY_DECLARATION', label: 'Декларация о соответствии' },
@@ -278,7 +296,7 @@ export function Certificates() {
   const [ymBusy, setYmBusy] = useState(false);
   const [ymError, setYmError] = useState('');
   const [ymResult, setYmResult] = useState(null);
-  const [statusSyncBusy, setStatusSyncBusy] = useState(false);
+  const [statusSyncingId, setStatusSyncingId] = useState(null);
   const [statusSyncError, setStatusSyncError] = useState('');
 
   const brandNameById = useMemo(() => {
@@ -303,20 +321,36 @@ export function Certificates() {
     }
   };
 
-  const syncStatuses = async ({ force = false } = {}) => {
-    setStatusSyncBusy(true);
+  const syncErrorsText = (data) =>
+    [data?.ozon?.error && `Ozon: ${data.ozon.error}`, data?.ym?.error && `Яндекс: ${data.ym.error}`]
+      .filter(Boolean)
+      .join('; ');
+
+  const syncStatuses = async () => {
     setStatusSyncError('');
     try {
-      const res = await certificatesApi.syncStatuses({ force });
+      const res = await certificatesApi.syncStatuses();
       const data = res?.data || {};
-      const errors = [data.ozon?.error && `Ozon: ${data.ozon.error}`, data.ym?.error && `Яндекс: ${data.ym.error}`]
-        .filter(Boolean);
-      if (errors.length) setStatusSyncError(errors.join('; '));
-      if (force || data.ozon?.updated || data.ym?.updated) await load({ silent: true });
+      const errors = syncErrorsText(data);
+      if (errors) setStatusSyncError(errors);
+      if (data.ozon?.updated || data.ym?.updated) await load({ silent: true });
     } catch (err) {
       setStatusSyncError(err?.response?.data?.message || err?.message || 'Не удалось обновить статусы');
+    }
+  };
+
+  const syncOneStatus = async (id) => {
+    setStatusSyncingId(id);
+    setStatusSyncError('');
+    try {
+      const res = await certificatesApi.syncStatus(id);
+      const errors = syncErrorsText(res?.data);
+      if (errors) setStatusSyncError(errors);
+      await load({ silent: true });
+    } catch (err) {
+      setStatusSyncError(err?.response?.data?.message || err?.message || 'Не удалось обновить статус');
     } finally {
-      setStatusSyncBusy(false);
+      setStatusSyncingId(null);
     }
   };
 
@@ -569,17 +603,7 @@ export function Certificates() {
             ))}
           </select>
         </div>
-        <div className="certificates-toolbar-actions">
-          <Button
-            variant="secondary"
-            onClick={() => syncStatuses({ force: true })}
-            disabled={statusSyncBusy}
-            title="Запросить актуальные статусы проверки на Ozon и Яндекс.Маркете"
-          >
-            {statusSyncBusy ? 'Обновляю статусы…' : 'Обновить статусы'}
-          </Button>
-          <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
-        </div>
+        <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
       </div>
       {statusSyncError ? <p className="error">{statusSyncError}</p> : null}
 
@@ -652,17 +676,25 @@ export function Certificates() {
                     <td>
                       {c.ozon_certificate_id ? (
                         <div className="ozon-sync-cell">
-                          <span
-                            className={
-                              ozonStatus === 'approved'
-                                ? 'status-ozon-ok'
-                                : ozonStatus === 'rejected' || ozonStatus === 'declined'
-                                  ? 'status-expired'
-                                  : 'status-ozon-pending'
-                            }
-                          >
-                            {OZON_STATUS_LABELS[ozonStatus] || `ID ${c.ozon_certificate_id}`}
-                          </span>
+                          <div className="status-line">
+                            <span
+                              className={
+                                ozonStatus === 'approved'
+                                  ? 'status-ozon-ok'
+                                  : ozonStatus === 'rejected' || ozonStatus === 'declined'
+                                    ? 'status-expired'
+                                    : 'status-ozon-pending'
+                              }
+                            >
+                              {OZON_STATUS_LABELS[ozonStatus] || `ID ${c.ozon_certificate_id}`}
+                            </span>
+                            {!OZON_FINAL_STATUSES.includes(ozonStatus) ? (
+                              <StatusRefreshButton
+                                busy={statusSyncingId === c.id}
+                                onClick={() => syncOneStatus(c.id)}
+                              />
+                            ) : null}
+                          </div>
                           {c.ozon_last_error ? (
                             <span className="muted ozon-error-hint" title={c.ozon_last_error}>есть ошибка</span>
                           ) : null}
@@ -674,18 +706,26 @@ export function Certificates() {
                     <td>
                       {c.ym_document_id || c.ym_status_code ? (
                         <div className="ozon-sync-cell">
-                          <span
-                            className={
-                              ymStatus === 'ACTIVE'
-                                ? 'status-ozon-ok'
-                                : ymStatus === 'NOT_FOUND' || ymStatus === 'EXPIRED' || ymStatus === 'REVOKED'
-                                  ? 'status-expired'
-                                  : 'status-ozon-pending'
-                            }
-                          >
-                            {YM_STATUS_LABELS[ymStatus]
-                              || (c.ym_document_id ? `ID ${c.ym_document_id}` : ymStatus)}
-                          </span>
+                          <div className="status-line">
+                            <span
+                              className={
+                                ymStatus === 'ACTIVE'
+                                  ? 'status-ozon-ok'
+                                  : ymStatus === 'NOT_FOUND' || ymStatus === 'EXPIRED' || ymStatus === 'REVOKED'
+                                    ? 'status-expired'
+                                    : 'status-ozon-pending'
+                              }
+                            >
+                              {YM_STATUS_LABELS[ymStatus]
+                                || (c.ym_document_id ? `ID ${c.ym_document_id}` : ymStatus)}
+                            </span>
+                            {c.ym_document_id && YM_PENDING_STATUSES.includes(ymStatus || 'VALIDATING') ? (
+                              <StatusRefreshButton
+                                busy={statusSyncingId === c.id}
+                                onClick={() => syncOneStatus(c.id)}
+                              />
+                            ) : null}
+                          </div>
                           {c.ym_last_error ? (
                             <span className="muted ozon-error-hint" title={c.ym_last_error}>есть ошибка</span>
                           ) : null}

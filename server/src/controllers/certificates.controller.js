@@ -5,8 +5,8 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { query } from '../config/database.js';
 import certificatesService from '../services/certificates.service.js';
+import certificatesStatusSyncService from '../services/certificatesStatusSync.service.js';
 import ozonCertificatesPushService from '../services/ozonCertificatesPush.service.js';
 import ymCertificatesPushService from '../services/ymCertificatesPush.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
@@ -223,20 +223,24 @@ class CertificatesController {
       }
       this._statusSyncAt.set(cooldownKey, now);
 
-      const r = await query(
-        `SELECT id, ozon_certificate_id, ozon_status_code, ozon_last_error, ym_document_id, ym_status_code
-           FROM certificates
-          WHERE profile_id = $1::bigint
-            AND (ozon_certificate_id IS NOT NULL OR ym_document_id IS NOT NULL)`,
-        [profileId]
-      );
-      const certs = r.rows || [];
-      const opts = { profileId, organizationId };
-      const [ozon, ym] = await Promise.all([
-        ozonCertificatesPushService.syncStatuses(certs, opts).catch((e) => ({ error: e?.message || String(e) })),
-        ymCertificatesPushService.syncStatuses(certs, opts).catch((e) => ({ error: e?.message || String(e) })),
-      ]);
-      return res.status(200).json({ ok: true, data: { ozon, ym } });
+      const data = await certificatesStatusSyncService.syncForProfile(profileId, { organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async syncStatus(req, res, next) {
+    try {
+      const profileId = this._requireProfile(req);
+      const { id } = req.params;
+      await certificatesService.getById(id, { profileId });
+      const sync = await certificatesStatusSyncService.syncForProfile(profileId, {
+        organizationId: this._organizationId(req),
+        certificateId: id,
+      });
+      const certificate = await certificatesService.getById(id, { profileId });
+      return res.status(200).json({ ok: true, data: { ...sync, certificate } });
     } catch (e) {
       next(e);
     }

@@ -1288,6 +1288,32 @@ class SchedulerService {
         logger.info('[Scheduler] Birthday notifications disabled (BIRTHDAY_NOTIFICATIONS_ENABLED)');
       }
 
+      let certificatesStatusSyncJob = null;
+      const certificatesStatusSyncCron =
+        String(process.env.CERTIFICATES_STATUS_SYNC_CRON || '').trim() || '20 * * * *';
+      if (!/^(0|false|no|off)$/i.test(String(process.env.CERTIFICATES_STATUS_SYNC_ENABLED ?? '1').trim())) {
+        certificatesStatusSyncJob = cron.schedule(
+          certificatesStatusSyncCron,
+          async () => {
+            try {
+              const { default: certificatesStatusSyncService } = await import(
+                './certificatesStatusSync.service.js'
+              );
+              const out = await certificatesStatusSyncService.syncAllPending();
+              if (out.profiles > 0) logger.info('[Scheduler] Certificates status sync done', out);
+            } catch (error) {
+              logger.error('[Scheduler] Certificates status sync failed:', error);
+            }
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow',
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Certificates status sync disabled (CERTIFICATES_STATUS_SYNC_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -1593,6 +1619,16 @@ class SchedulerService {
         });
       }
 
+      if (certificatesStatusSyncJob) {
+        this.jobs.push({
+          name: 'certificates-status-sync',
+          job: certificatesStatusSyncJob,
+          schedule: certificatesStatusSyncCron,
+          description:
+            'Статусы проверки сертификатов на Ozon / Яндекс.Маркете (только «на проверке»). CERTIFICATES_STATUS_SYNC_CRON, по умолчанию 20 * * * *',
+        });
+      }
+
       if (birthdayNotificationsJob) {
         this.jobs.push({
           name: 'birthday-notifications',
@@ -1648,6 +1684,9 @@ class SchedulerService {
       }
       if (birthdayNotificationsJob) {
         birthdayNotificationsJob.start();
+      }
+      if (certificatesStatusSyncJob) {
+        certificatesStatusSyncJob.start();
       }
       profileNightlyDispatchJob.start();
       this.isRunning = true;

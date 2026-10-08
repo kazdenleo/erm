@@ -63,6 +63,11 @@ export const certificatesApi = {
     return res.data;
   },
 
+  syncStatus: async (id) => {
+    const res = await api.post(`/certificates/${id}/sync-status`, {}, { timeout: 120000 });
+    return res.data;
+  },
+
   syncStatuses: async ({ force = false } = {}) => {
     const res = await api.post('/certificates/sync-statuses', { force }, { timeout: 120000 });
     return res.data;
