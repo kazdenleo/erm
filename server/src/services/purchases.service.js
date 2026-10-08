@@ -4740,6 +4740,20 @@ class PurchasesService {
       };
     });
     await reapplyInProcurementReservesForPurchase(result.purchaseId, pid).catch(() => {});
+    // Приёмка пишет остатки напрямую в транзакции (мимо stockMovements.applyChange),
+    // поэтому поставки FBO (и комплекты из принятых комплектующих) дозарезервируем здесь.
+    try {
+      const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+      for (const d of result.applied || []) {
+        const productId = Number(d?.productId);
+        if (!Number.isFinite(productId) || productId < 1 || !(Number(d?.stockQty) > 0)) continue;
+        await fboSupplyReserveService.onSupplyStockEvent(productId, result.warehouseId ?? null, {
+          profileId: pid,
+        });
+      }
+    } catch (err) {
+      logger.warn('[Purchases] FBO reserve after receipt', { message: err?.message || String(err) });
+    }
     if (result.organizationId) {
       await chestnyZnakOps
         .maybeCreateDocument({
