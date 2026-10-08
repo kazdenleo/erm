@@ -409,7 +409,9 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
         qtyPolicyReason: qtyPolicy.reason || null
       });
     } catch (e) {
-      logger.warn(`[MP Stock Push] ${mp} failed for product ${productId}:`, e?.message || e);
+      logger.warn(
+        `[MP Stock Push] ${mp} failed for product ${productId} (sku=${ctx.product?.sku ?? '—'}, qty=${pushQuantity}): ${e?.message || e}`
+      );
       results.push({
         marketplace: mp,
         ok: false,
@@ -617,7 +619,7 @@ export async function runBulkWarehouseStockSync(productIds, organizationId, opts
         }
       } catch (e) {
         summary.failed += 1;
-        logger.warn(`[MP Stock Push] bulk product ${pid}:`, e?.message || e);
+        logger.warn(`[MP Stock Push] bulk product ${pid}: ${e?.message || e}`);
       }
     }
   };
@@ -718,7 +720,7 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
           }
         } catch (e) {
           failed += 1;
-          logger.warn(`[MP Stock Push] batch product ${pid}:`, e?.message || e);
+          logger.warn(`[MP Stock Push] batch product ${pid}: ${e?.message || e}`);
         }
       }
     };

@@ -10,6 +10,7 @@ import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 import { parseMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
+import { normalizeBarcodeRows, parseBarcodesMarketplacesColumn } from '../utils/productBarcodes.js';
 
 export { parseMarketplaceWarehouseId };
 
@@ -83,10 +84,20 @@ async function resolveWildberriesStockSku({ nmId, productId, profileId, organiza
   if (extra.wb_barcode && String(extra.wb_barcode).trim()) return String(extra.wb_barcode).trim();
 
   if (productId) {
-    const bc = await query('SELECT barcode FROM barcodes WHERE product_id = $1 ORDER BY id LIMIT 1', [
+    const bc = await query('SELECT barcode, marketplaces FROM barcodes WHERE product_id = $1 ORDER BY id', [
       productId
     ]);
-    if (bc.rows[0]?.barcode) return String(bc.rows[0].barcode).trim();
+    const rows = normalizeBarcodeRows(
+      (bc.rows || []).map((r) => ({
+        barcode: r.barcode,
+        marketplaces: parseBarcodesMarketplacesColumn(r.marketplaces)
+      }))
+    );
+    // ШК с бейджем только Ozon/ЯМ WB не знает — отдаёт 409 NotFound.
+    const wbTagged = rows.find((r) => r.marketplaces.includes('wb'));
+    if (wbTagged) return wbTagged.barcode;
+    const untagged = rows.find((r) => r.marketplaces.length === 0);
+    if (untagged) return untagged.barcode;
   }
 
   try {
