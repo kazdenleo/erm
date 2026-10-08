@@ -15,7 +15,6 @@ import {
   ToggleGroup,
   errorMessage,
   formatDateRu,
-  formatPercent,
   formatQty,
 } from '../shared/analyticsKit';
 import '../SalesAnalytics/SalesAnalytics.css';
@@ -32,25 +31,29 @@ const SORT_GETTERS = {
   orders: (r) => Number(r.assembly?.orders) || 0,
   units: (r) => Number(r.assembly?.units) || 0,
   fbsSec: (r) => timeOrLast(r.assembly?.secPerOrder),
-  errors: (r) => Number(r.assembly?.errors) || 0,
   fboUnits: (r) => Number(r.fboCollect?.units) || 0,
   fboSec: (r) => timeOrLast(r.fboCollect?.secPerUnit),
   packUnits: (r) => Number(r.packing?.units) || 0,
   packSec: (r) => timeOrLast(r.packing?.secPerUnit),
-  receipts: (r) => Number(r.receipts?.receipts) || 0,
-  receiptSec: (r) => timeOrLast(r.receipts?.secPerUnit),
-  receivedUnits: (r) => Number(r.receipts?.units) || 0,
-  receiptErrors: (r) => Number(r.receipts?.errors) || 0,
-  inventory: (r) => Number(r.inventory?.sessions) || 0,
+  rcvFbsUnits: (r) => Number(r.receipts?.fbs?.units) || 0,
+  rcvFbsSec: (r) => timeOrLast(r.receipts?.fbs?.secPerUnit),
+  rcvFboUnits: (r) => Number(r.receipts?.fbo?.units) || 0,
+  rcvFboSec: (r) => timeOrLast(r.receipts?.fbo?.secPerUnit),
 };
 
-const COLUMN_COUNT = 14;
+const COLUMN_COUNT = 12;
+
+const RECEIPT_KINDS = [
+  { kind: 'fbs', label: 'Приёмка FBS' },
+  { kind: 'fbo', label: 'Приёмка FBO' },
+];
 
 const CHART_PROCESSES = [
   { value: 'fbs', label: 'Сборка FBS', qtyLabel: 'Собрано заказов', secLabel: 'Время на заказ' },
   { value: 'fboCollect', label: 'Сборка FBO', qtyLabel: 'Собрано, шт', secLabel: 'Время на штуку' },
   { value: 'packing', label: 'Упаковка FBO', qtyLabel: 'Упаковано, шт', secLabel: 'Время на штуку' },
-  { value: 'receipts', label: 'Приёмка', qtyLabel: 'Принято, шт', secLabel: 'Время на штуку' },
+  { value: 'receiptsFbs', label: 'Приёмка FBS', qtyLabel: 'Принято, шт', secLabel: 'Время на штуку' },
+  { value: 'receiptsFbo', label: 'Приёмка FBO', qtyLabel: 'Принято, шт', secLabel: 'Время на штуку' },
 ];
 
 const CHART_MODES = [
@@ -91,10 +94,6 @@ function receiptTimeCell(r) {
       {hoursSub(r.activeHours)}
     </span>
   );
-}
-
-function errorsCell(errors, scans, rate) {
-  return scans ? `${formatQty(errors, 0)} (${formatPercent(rate)})` : formatQty(errors, 0);
 }
 
 export function EmployeeMetrics() {
@@ -215,30 +214,24 @@ export function EmployeeMetrics() {
               value: formatDuration(summary.packingBoxSecPerUnit),
               sub: `${formatQty(summary.packingBoxUnits, 0)} шт · ${formatQty(summary.packingBoxSupplies, 0)} поставок`,
             },
-            {
-              label: 'Приёмка, работы на штуку',
-              value: formatDuration(summary.receiptSecPerUnit),
-              sub: `${formatQty(summary.unitsReceived, 0)} шт · ${formatQty(summary.receipts, 0)} приёмок`,
-            },
-            {
-              label: 'Срок приёмки',
-              value: summary.receiptLeadAvgHours != null ? `${formatQty(summary.receiptLeadAvgHours, 1)} ч` : '—',
-              sub:
-                summary.receiptLeadSecPerUnit != null
-                  ? `от создания до закрытия · ${formatDuration(summary.receiptLeadSecPerUnit)} на шт (медиана ${formatDuration(
-                      summary.receiptLeadMedianSecPerUnit
-                    )})`
-                  : 'от создания до закрытия',
-            },
-            {
-              label: 'Ошибки сборки',
-              value: formatQty(summary.assemblyErrors, 0),
-              tone: Number(summary.assemblyErrors) > 0 ? 'warning' : undefined,
-              sub:
-                summary.assemblyErrorRate != null
-                  ? `${formatPercent(summary.assemblyErrorRate)} от ${formatQty(summary.assemblyScans, 0)} сканов`
-                  : 'нет данных о сканах',
-            },
+            ...RECEIPT_KINDS.flatMap(({ kind, label }) => {
+              const k = summary.receiptsByKind?.[kind] || {};
+              return [
+                {
+                  label: `${label}, на штуку`,
+                  value: formatDuration(k.secPerUnit),
+                  sub: `${formatQty(k.units, 0)} шт · ${formatQty(k.receipts, 0)} приёмок`,
+                },
+                {
+                  label: `Срок: ${label.toLowerCase()}`,
+                  value: k.leadAvgHours != null ? `${formatQty(k.leadAvgHours, 1)} ч` : '—',
+                  sub:
+                    k.leadSecPerUnit != null
+                      ? `от создания до закрытия · ${formatDuration(k.leadSecPerUnit)} на шт`
+                      : 'от создания до закрытия',
+                },
+              ];
+            }),
           ]}
         />
       )}
@@ -301,7 +294,6 @@ export function EmployeeMetrics() {
                 'FBS на заказ',
                 `Время работы ÷ заказы. Пауза без сканов дольше ${minutesLabel(idle.fbs)} — перерыв, не считается`
               )}
-              {th('errors', 'Ошибки сборки')}
               {th('fboUnits', 'FBO собрано, шт')}
               {th(
                 'fboSec',
@@ -314,17 +306,22 @@ export function EmployeeMetrics() {
                 'Упаковка на штуку',
                 `Время работы ÷ штуки. Пауза без сканов дольше ${minutesLabel(idle.packing)} — перерыв, не считается`
               )}
-              {th('receipts', 'Приёмок', 'В скольких приёмках сотрудник сканировал товар')}
-              {th(
-                'receiptSec',
-                'Приёмка на штуку',
-                `Время работы сотрудника ÷ отсканированные им штуки. Пауза без сканов дольше ${minutesLabel(
-                  idle.receipts
-                )} — перерыв. «≈» — оценка по строкам приёмки (до журнала сканов)`
-              )}
-              {th('receivedUnits', 'Принято, шт', 'Штуки, отсканированные сотрудником (в общей приёмке — его доля)')}
-              {th('receiptErrors', 'Ошибки приёмки')}
-              {th('inventory', 'Инвент.')}
+              {RECEIPT_KINDS.map(({ kind, label }) => (
+                <React.Fragment key={kind}>
+                  {th(
+                    kind === 'fbo' ? 'rcvFboUnits' : 'rcvFbsUnits',
+                    `${label}, шт`,
+                    'Штуки, отсканированные сотрудником (в общей приёмке — его доля). Ниже — в скольких приёмках участвовал'
+                  )}
+                  {th(
+                    kind === 'fbo' ? 'rcvFboSec' : 'rcvFbsSec',
+                    `${label} на штуку`,
+                    `Время работы сотрудника ÷ отсканированные им штуки. Пауза без сканов дольше ${minutesLabel(
+                      idle.receipts
+                    )} — перерыв. «≈» — оценка по строкам приёмки (до журнала сканов)`
+                  )}
+                </React.Fragment>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -352,7 +349,6 @@ export function EmployeeMetrics() {
                     {formatDuration(a.secPerOrder)}
                     {hoursSub(a.activeHours)}
                   </td>
-                  <td className="sales-analytics__num">{errorsCell(a.errors, a.scans, a.errorRate)}</td>
                   <td className="sales-analytics__num">
                     {formatQty(f.units, 0)}
                     {f.supplies ? <Sub>поставок: {formatQty(f.supplies, 0)}</Sub> : null}
@@ -366,14 +362,18 @@ export function EmployeeMetrics() {
                     {formatDuration(p.secPerUnit)}
                     {hoursSub(p.activeHours)}
                   </td>
-                  <td className="sales-analytics__num">{formatQty(r.receipts, 0)}</td>
-                  <td className="sales-analytics__num">{receiptTimeCell(r)}</td>
-                  <td className="sales-analytics__num">
-                    {formatQty(r.units, 0)}
-                    {r.diffLines ? <Sub>расхождений: {formatQty(r.diffLines, 0)}</Sub> : null}
-                  </td>
-                  <td className="sales-analytics__num">{errorsCell(r.errors, r.scans, r.errorRate)}</td>
-                  <td className="sales-analytics__num">{formatQty(e.inventory?.sessions, 0)}</td>
+                  {RECEIPT_KINDS.map(({ kind }) => {
+                    const rk = r[kind] || {};
+                    return (
+                      <React.Fragment key={kind}>
+                        <td className="sales-analytics__num">
+                          {formatQty(rk.units, 0)}
+                          {rk.receipts ? <Sub>приёмок: {formatQty(rk.receipts, 0)}</Sub> : null}
+                        </td>
+                        <td className="sales-analytics__num">{receiptTimeCell(rk)}</td>
+                      </React.Fragment>
+                    );
+                  })}
                 </tr>
               );
             })}
@@ -388,9 +388,6 @@ export function EmployeeMetrics() {
                   {formatDuration(summary.fbsSecPerOrder)}
                   {hoursSub(summary.fbsActiveHours)}
                 </td>
-                <td className="sales-analytics__num">
-                  {errorsCell(summary.assemblyErrors, summary.assemblyScans, summary.assemblyErrorRate)}
-                </td>
                 <td className="sales-analytics__num">{formatQty(summary.fboCollectUnits, 0)}</td>
                 <td className="sales-analytics__num">
                   {formatDuration(summary.fboCollectSecPerUnit)}
@@ -401,14 +398,21 @@ export function EmployeeMetrics() {
                   {formatDuration(summary.packingSecPerUnit)}
                   {hoursSub(summary.packingActiveHours)}
                 </td>
-                <td className="sales-analytics__num">{formatQty(summary.receipts, 0)}</td>
-                <td className="sales-analytics__num">
-                  {formatDuration(summary.receiptSecPerUnit)}
-                  {hoursSub(summary.receiptActiveHours)}
-                </td>
-                <td className="sales-analytics__num">{formatQty(summary.unitsReceived, 0)}</td>
-                <td className="sales-analytics__num">{formatQty(summary.receiptErrors, 0)}</td>
-                <td className="sales-analytics__num">{formatQty(summary.inventorySessions, 0)}</td>
+                {RECEIPT_KINDS.map(({ kind }) => {
+                  const k = summary.receiptsByKind?.[kind] || {};
+                  return (
+                    <React.Fragment key={kind}>
+                      <td className="sales-analytics__num">
+                        {formatQty(k.units, 0)}
+                        {k.receipts ? <Sub>приёмок: {formatQty(k.receipts, 0)}</Sub> : null}
+                      </td>
+                      <td className="sales-analytics__num">
+                        {formatDuration(k.secPerUnit)}
+                        {hoursSub(k.activeHours)}
+                      </td>
+                    </React.Fragment>
+                  );
+                })}
               </tr>
             </tfoot>
           )}
@@ -421,7 +425,7 @@ export function EmployeeMetrics() {
         Время работы — сумма промежутков между сканами сотрудника. Если сканов нет дольше{' '}
         {minutesLabel(idle.fbs)} на сборке FBS, {minutesLabel(idle.fboCollect)} на сборке FBO или{' '}
         {minutesLabel(idle.packing)} на упаковке, отсчёт останавливается и продолжается со следующего скана. Итог —
-        общее время всех сотрудников, делённое на все заказы или штуки. Приёмка по сотрудникам — время каждого по его
+        общее время всех сотрудников, делённое на все заказы или штуки. Приёмка FBO — закупки на склад с отметкой «Склад FBO», остальные — FBS. Приёмка по сотрудникам — время каждого по его
         сканам (одну приёмку могут принимать несколько человек параллельно); до журнала сканов — оценка по последним
         отметкам сотрудника в строках приёмки, перерыв дольше {minutesLabel(idle.receiptLines ?? 600)}. «Срок приёмки» —
         от создания до закрытия документа, при параллельной работе он меньше. В сборке FBO комплект

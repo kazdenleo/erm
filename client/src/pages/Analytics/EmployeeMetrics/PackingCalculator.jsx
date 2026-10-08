@@ -9,9 +9,11 @@ const WORKDAY_HOURS = 8;
 const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
 const BASIS_OPTIONS = [
+  { value: 'all', label: 'Приёмка + сборка + упаковка FBO' },
   { value: 'both', label: 'Сборка + упаковка FBO' },
-  { value: 'packing', label: 'Только упаковка' },
+  { value: 'receipt', label: 'Только приёмка FBO' },
   { value: 'collect', label: 'Только сборка FBO' },
+  { value: 'packing', label: 'Только упаковка' },
 ];
 
 function toYmd(d) {
@@ -53,14 +55,17 @@ function formatHours(sec) {
 function basisSec(basis, summary) {
   const collect = Number(summary?.fboCollectSecPerUnit) || 0;
   const packing = Number(summary?.packingSecPerUnit) || Number(summary?.packingBoxSecPerUnit) || 0;
+  const receipt = Number(summary?.receiptsByKind?.fbo?.secPerUnit) || 0;
   if (basis === 'collect') return collect;
   if (basis === 'packing') return packing;
-  return collect + packing;
+  if (basis === 'receipt') return receipt;
+  if (basis === 'both') return collect + packing;
+  return receipt + collect + packing;
 }
 
 export function PackingCalculator({ summary }) {
   const [qty, setQty] = useState('');
-  const [basis, setBasis] = useState('both');
+  const [basis, setBasis] = useState('all');
   const [secPerUnit, setSecPerUnit] = useState('');
   const [otherMin, setOtherMin] = useState('');
   const [start, setStart] = useState(todayYmd);
