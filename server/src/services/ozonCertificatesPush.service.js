@@ -1,22 +1,23 @@
 /**
  * Отправка локальных сертификатов ERP в раздел «Сертификаты» Ozon Seller.
- * create (multipart) → bind product_id → сохранение ozon_certificate_id.
+ * v2 create (JSON, файл base64) → bind product_id → сохранение ozon_certificate_id.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Blob } from 'buffer';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { ozonApiMultipartPostWithRetry, ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import {
   buildOzonCertificateName,
+  buildOzonV2CertificateParams,
+  describeOzonV2CreateErrors,
   guessAccordanceTypeCode,
   isOzonCertificateFileAllowed,
   mapErpDocumentTypeToOzon,
-  mimeForCertificateFilename,
   needsAccordanceType,
+  normalizeOzonCertificateNumber,
   parseOzonCertificateCreateId,
   toOzonDateTime,
 } from '../utils/ozonCertificateMap.js';
@@ -130,6 +131,7 @@ class OzonCertificatesPushService {
 
     const number = String(cert.certificate_number || '').trim();
     if (!number) throw httpError('У сертификата нет номера', 400);
+    const ozonNumber = normalizeOzonCertificateNumber(number);
 
     const issueDate = toOzonDateTime(cert.valid_from);
     if (!issueDate) {
@@ -159,7 +161,7 @@ class OzonCertificatesPushService {
         try {
           const existing = await ozonApiPostWithRetry(
             '/v1/product/certificate/info',
-            { certificate_number: number },
+            { certificate_number: ozonNumber },
             ozonApiOpts
           );
           const existingId = Number(existing?.result?.certificate_id ?? existing?.certificate_id);
@@ -172,47 +174,42 @@ class OzonCertificatesPushService {
       }
 
       if (!ozonCertificateId || !Number.isFinite(ozonCertificateId) || ozonCertificateId <= 0) {
+        const files = [];
         const filePath = resolveLocalFilePath(cert.photo_url || cert.photoUrl);
-        if (!filePath || !fs.existsSync(filePath)) {
-          throw httpError(
-            'Нужен файл сертификата (jpg/png/pdf). Загрузите его в карточке документа перед отправкой на Ozon.',
-            400
-          );
-        }
-        const filename = path.basename(filePath);
-        if (!isOzonCertificateFileAllowed(filename)) {
-          throw httpError('Ozon принимает только jpg, jpeg, png или pdf. Пересохраните файл в одном из этих форматов.', 400);
+        if (filePath && fs.existsSync(filePath)) {
+          const filename = path.basename(filePath);
+          if (!isOzonCertificateFileAllowed(filename)) {
+            throw httpError('Ozon принимает только jpg, jpeg, png или pdf. Пересохраните файл в одном из этих форматов.', 400);
+          }
+          files.push({ name: filename, file_content: fs.readFileSync(filePath).toString('base64') });
         }
 
-        const buffer = fs.readFileSync(filePath);
-        const mime = mimeForCertificateFilename(filename);
-        const form = new FormData();
-        form.append('name', name);
-        form.append('number', number.slice(0, 100));
-        form.append('type_code', typeCode);
-        form.append('issue_date', issueDate);
-        if (expireDate) form.append('expire_date', expireDate);
-        if (needsAccordanceType(typeCode)) {
-          form.append('accordance_type_code', accordanceTypeCode);
-        }
-        // File сохраняет имя файла в multipart (Blob без имени Ozon может отклонить)
-        const filePart =
-          typeof File !== 'undefined'
-            ? new File([buffer], filename, { type: mime })
-            : new Blob([buffer], { type: mime });
-        if (typeof File !== 'undefined') {
-          form.append('files', filePart);
-        } else {
-          form.append('files', filePart, filename);
-        }
-
-        const createData = await ozonApiMultipartPostWithRetry(
-          '/v1/product/certificate/create',
-          form,
+        const createParams = buildOzonV2CertificateParams({
+          typeCode,
+          number,
+          name,
+          accordanceTypeCode,
+          issueDate,
+          expireDate,
+          files,
+        });
+        const createData = await ozonApiPostWithRetry(
+          '/v2/product/certificate/create',
+          { params: createParams },
           ozonApiOpts
         );
         ozonCertificateId = parseOzonCertificateCreateId(createData);
         if (!ozonCertificateId) {
+          const problems = describeOzonV2CreateErrors(createData);
+          if (problems.length) {
+            const needsFile = !files.length && problems.some((p) => p.startsWith('Файл'));
+            throw httpError(
+              `Ozon не принял сертификат: ${problems.join('; ')}${
+                needsFile ? '. Загрузите файл сертификата (jpg/png/pdf) в карточке документа.' : ''
+              }`,
+              400
+            );
+          }
           throw httpError(
             `Ozon не вернул ID сертификата: ${JSON.stringify(createData).slice(0, 300)}`,
             502
@@ -245,7 +242,7 @@ class OzonCertificatesPushService {
       try {
         const info = await ozonApiPostWithRetry(
           '/v1/product/certificate/info',
-          { certificate_number: number },
+          { certificate_number: ozonNumber },
           ozonApiOpts
         );
         const st = info?.result?.status_code ?? info?.status_code;
