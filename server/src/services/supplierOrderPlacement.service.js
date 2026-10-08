@@ -237,11 +237,9 @@ async function claimPurchaseForSupplierSubmit(
   const pid = Number(purchaseId);
   if (!Number.isFinite(pid) || pid < 1) return { claimed: false, reason: 'invalid_args' };
 
+  // Сессионный lock SUPPLIER_SUBMIT_LOCK_NS по этой закупке уже держит вызывающий на своём
+  // соединении: повторный xact-lock с тем же ключом здесь ждал бы сам себя до lock_timeout.
   return transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock($1::integer, $2::integer)', [
-      SUPPLIER_SUBMIT_LOCK_NS,
-      pid % 2147483647,
-    ]);
     if (orderScoped) {
       return { claimed: true, orderScoped: true };
     }
