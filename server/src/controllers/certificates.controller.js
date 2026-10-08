@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import certificatesService from '../services/certificates.service.js';
 import certificatesStatusSyncService from '../services/certificatesStatusSync.service.js';
+import certificatesImportService from '../services/certificatesImport.service.js';
 import ozonCertificatesPushService from '../services/ozonCertificatesPush.service.js';
 import ymCertificatesPushService from '../services/ymCertificatesPush.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
@@ -224,6 +225,19 @@ class CertificatesController {
       this._statusSyncAt.set(cooldownKey, now);
 
       const data = await certificatesStatusSyncService.syncForProfile(profileId, { organizationId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async importFromMarketplaces(req, res, next) {
+    try {
+      const profileId = this._requireProfile(req);
+      const data = await certificatesImportService.importFromMarketplaces({
+        profileId,
+        organizationId: this._organizationId(req),
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);

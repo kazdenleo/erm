@@ -297,6 +297,8 @@ export function Certificates() {
   const [ymError, setYmError] = useState('');
   const [ymResult, setYmResult] = useState(null);
   const [statusSyncingId, setStatusSyncingId] = useState(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importMessage, setImportMessage] = useState(null);
   const [statusSyncError, setStatusSyncError] = useState('');
 
   const brandNameById = useMemo(() => {
@@ -336,6 +338,39 @@ export function Certificates() {
       if (data.ozon?.updated || data.ym?.updated) await load({ silent: true });
     } catch (err) {
       setStatusSyncError(err?.response?.data?.message || err?.message || 'Не удалось обновить статусы');
+    }
+  };
+
+  const runImport = async () => {
+    setImportBusy(true);
+    setImportMessage(null);
+    try {
+      const res = await certificatesApi.importFromMarketplaces();
+      const d = res?.data || {};
+      const parts = [
+        `Добавлено: ${d.created || 0}`,
+        `связано с существующими: ${d.linked || 0}`,
+        `без изменений: ${d.unchanged || 0}`,
+      ];
+      let text = `Импорт завершён. ${parts.join(', ')}.`;
+      if (d.without_brand) {
+        text += ` У ${d.without_brand} не удалось определить бренд и категории — укажите их вручную.`;
+      }
+      const errs = [
+        d.errors?.ozon && `Ozon: ${d.errors.ozon}`,
+        d.errors?.ym && `Яндекс: ${d.errors.ym}`,
+        ...(d.errors?.items || []),
+      ].filter(Boolean);
+      if (errs.length) text += ` Ошибки: ${errs.join('; ')}`;
+      setImportMessage({ text, isError: false });
+      await load({ silent: true });
+    } catch (err) {
+      setImportMessage({
+        text: err?.response?.data?.message || err?.message || 'Не удалось импортировать сертификаты',
+        isError: true,
+      });
+    } finally {
+      setImportBusy(false);
     }
   };
 
@@ -603,8 +638,21 @@ export function Certificates() {
             ))}
           </select>
         </div>
-        <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
+        <div className="certificates-toolbar-actions">
+          <Button
+            variant="secondary"
+            onClick={runImport}
+            disabled={importBusy}
+            title="Загрузить сертификаты, которые уже есть в кабинетах Ozon и Яндекс.Маркета. Одинаковые номера не дублируются."
+          >
+            {importBusy ? 'Импортирую…' : 'Импорт с маркетплейсов'}
+          </Button>
+          <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
+        </div>
       </div>
+      {importMessage ? (
+        <p className={importMessage.isError ? 'error' : 'certificates-import-result'}>{importMessage.text}</p>
+      ) : null}
       {statusSyncError ? <p className="error">{statusSyncError}</p> : null}
 
       <div className="certificates-table-wrap">

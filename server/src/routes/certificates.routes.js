@@ -20,6 +20,10 @@ router.get(
   wrapAsync(certificatesController.ymDocumentTypes.bind(certificatesController))
 );
 router.post(
+  '/import-from-marketplaces',
+  wrapAsync(certificatesController.importFromMarketplaces.bind(certificatesController))
+);
+router.post(
   '/sync-statuses',
   wrapAsync(certificatesController.syncStatuses.bind(certificatesController))
 );

@@ -63,6 +63,11 @@ export const certificatesApi = {
     return res.data;
   },
 
+  importFromMarketplaces: async () => {
+    const res = await api.post('/certificates/import-from-marketplaces', {}, { timeout: 600000 });
+    return res.data;
+  },
+
   syncStatus: async (id) => {
     const res = await api.post(`/certificates/${id}/sync-status`, {}, { timeout: 120000 });
     return res.data;

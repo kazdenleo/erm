@@ -119,13 +119,13 @@ async function persistOzonFields(certId, fields, profileId) {
 const OZON_LIST_PAGE_SIZE = 100;
 const OZON_LIST_MAX_PAGES = 50;
 
+const OZON_CERT_PRODUCTS_LIMIT = 1000;
+
 class OzonCertificatesPushService {
-  /** Подтягивает status_code из /v1/product/certificate/list для уже отправленных сертификатов. */
-  async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
-    const targets = (certs || []).filter((c) => Number(c.ozon_certificate_id) > 0);
-    if (!targets.length) return { checked: 0, updated: 0 };
+  /** Все сертификаты кабинета Ozon (/v1/product/certificate/list). */
+  async listAllCertificates({ profileId = null, organizationId = null } = {}) {
     const ozonApiOpts = { profileId, organizationId };
-    const byId = new Map();
+    const out = [];
     for (let page = 1; page <= OZON_LIST_MAX_PAGES; page++) {
       const data = await ozonApiPostWithRetry(
         '/v1/product/certificate/list',
@@ -133,9 +133,32 @@ class OzonCertificatesPushService {
         ozonApiOpts
       );
       const rows = data?.result?.certificates || [];
-      for (const row of rows) byId.set(Number(row.certificate_id), row);
+      out.push(...rows);
       const pageCount = Number(data?.result?.page_count);
       if (rows.length < OZON_LIST_PAGE_SIZE || (Number.isFinite(pageCount) && page >= pageCount)) break;
+    }
+    return out;
+  }
+
+  /** product_id товаров Ozon, привязанных к сертификату (первые 1000 — для определения бренда хватает). */
+  async listCertificateProductIds(ozonCertificateId, { profileId = null, organizationId = null } = {}) {
+    const data = await ozonApiPostWithRetry(
+      '/v1/product/certificate/products/list',
+      { certificate_id: Number(ozonCertificateId), limit: OZON_CERT_PRODUCTS_LIMIT },
+      { profileId, organizationId }
+    );
+    return (data?.result?.items || [])
+      .map((it) => Number(it?.product_id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  /** Подтягивает status_code из /v1/product/certificate/list для уже отправленных сертификатов. */
+  async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
+    const targets = (certs || []).filter((c) => Number(c.ozon_certificate_id) > 0);
+    if (!targets.length) return { checked: 0, updated: 0 };
+    const byId = new Map();
+    for (const row of await this.listAllCertificates({ profileId, organizationId })) {
+      byId.set(Number(row.certificate_id), row);
     }
 
     let updated = 0;

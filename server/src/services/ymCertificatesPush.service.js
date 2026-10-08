@@ -174,7 +174,30 @@ async function fetchExistingCertificatesMap(businessId, apiKey, offerIds) {
 
 const YM_STATUS_BATCH = 50;
 
+const YM_LIST_MAX_PAGES = 100;
+
 class YmCertificatesPushService {
+  /** Все документы кабинета Маркета (offers/documents с page_token). */
+  async listAllDocuments({ profileId = null, organizationId = null } = {}) {
+    let ctx;
+    try {
+      ctx = await integrationsService._resolveYandexBusinessApiContext({ profileId, organizationId });
+    } catch (e) {
+      throw httpError(e?.message || 'Не настроен Яндекс.Маркет', e?.statusCode || 400);
+    }
+    const base = `https://api.partner.market.yandex.ru/v1/businesses/${encodeURIComponent(String(ctx.businessId))}/offers/documents?limit=${YM_STATUS_BATCH}`;
+    const out = [];
+    let pageToken = null;
+    for (let page = 0; page < YM_LIST_MAX_PAGES; page++) {
+      const url = pageToken ? `${base}&page_token=${encodeURIComponent(pageToken)}` : base;
+      const data = await ymFetchJson(url, { apiKey: ctx.apiKey, body: {} });
+      out.push(...(data?.result?.documents || []));
+      pageToken = data?.result?.paging?.nextPageToken || null;
+      if (!pageToken) break;
+    }
+    return out;
+  }
+
   /** Подтягивает status из offers/documents для уже отправленных документов. */
   async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
     const targets = (certs || []).filter((c) => Number(c.ym_document_id) > 0);
