@@ -5,7 +5,8 @@
  * считается перерывом (сотрудник отошёл) и не засчитывается: отсчёт стоит до следующего скана.
  *
  * FBS: отметки «Собран» (orders.assembled_*, вся история) + сканы из employee_activity_events.
- * FBO-сборка: fbo_supply_item_scans. Упаковка FBO: employee_activity_events (fbo_packing_scan).
+ * FBO-сборка: fbo_supply_item_scans; скан комплектующей — доля комплекта (1 / штук в составе),
+ * скан комплекта целиком — 1 шт. Упаковка FBO: employee_activity_events (fbo_packing_scan).
  * Приёмка: время от создания до закрытия документа (без остановки на паузы) ÷ принятые штуки.
  */
 
@@ -98,7 +99,8 @@ function dailyActive(marks, idleSec) {
   const out = {};
   for (const [d, list] of byDay) {
     const { activeSec, timedUnits } = activeTime(list, idleSec);
-    out[d] = { qty: list.reduce((s, m) => s + (Number(m.qty) || 0), 0), sec: perUnit(activeSec, timedUnits) };
+    const qty = list.reduce((s, m) => s + (Number(m.qty) || 0), 0);
+    out[d] = { qty: Math.round(qty * 10) / 10, sec: perUnit(activeSec, timedUnits) };
   }
   return out;
 }
@@ -158,9 +160,17 @@ class EmployeeMetricsService {
         params
       ),
       query(
-        `SELECT s.user_id, s.created_at, s.fbo_supply_id
+        `SELECT s.user_id, s.created_at, s.fbo_supply_id,
+                CASE
+                  WHEN kit.pieces IS NULL OR s.scanned_product_id = i.product_id THEN 1
+                  ELSE 1.0 / GREATEST(kit.pieces, 1)
+                END AS unit_weight
            FROM fbo_supply_item_scans s
            JOIN fbo_supplies f ON f.id = s.fbo_supply_id AND f.profile_id = $1
+           JOIN fbo_supply_items i ON i.id = s.fbo_supply_item_id
+           LEFT JOIN LATERAL (
+             SELECT SUM(kc.quantity) AS pieces FROM kit_components kc WHERE kc.kit_product_id = i.product_id
+           ) kit ON TRUE
           WHERE s.user_id IS NOT NULL
             AND s.created_at >= ${from} AND s.created_at < ${to}`,
         params
@@ -254,9 +264,10 @@ class EmployeeMetricsService {
     }
     for (const row of fboScansRes.rows || []) {
       const u = ensure(row.user_id);
-      u.fboCollect.units += 1;
+      const w = Number(row.unit_weight) || 1;
+      u.fboCollect.units += w;
       u.fboCollect.supplies.add(String(row.fbo_supply_id));
-      u.fboCollect.marks.push({ t: ts(row.created_at), units: 1, qty: 1 });
+      u.fboCollect.marks.push({ t: ts(row.created_at), units: w, qty: w });
     }
     for (const row of eventsRes.rows || []) {
       const u = ensure(row.user_id);
@@ -354,7 +365,7 @@ class EmployeeMetricsService {
           },
           daily,
           fboCollect: {
-            units: u.fboCollect.units,
+            units: Math.round(u.fboCollect.units),
             supplies: u.fboCollect.supplies.size,
             activeHours: round2(collectTime.activeSec / 3600),
             secPerUnit: perUnit(collectTime.activeSec, collectTime.timedUnits),
