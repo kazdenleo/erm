@@ -261,9 +261,11 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       setTnVedPush({
         loading: false,
         error: false,
-        message: n
-          ? `Отправляем карточки (${n}) — итог придёт уведомлением.`
-          : 'Нет товаров с этим кодом.',
+        message: res?.data?.running
+          ? 'Отправка уже идёт — дождитесь уведомления с итогом.'
+          : n
+            ? `Отправляем карточки (${n}) — займёт несколько минут, итог придёт уведомлением.`
+            : 'Нет товаров с этим кодом.',
       });
     } catch (e) {
       setTnVedPush({
@@ -949,15 +951,17 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const tnVedMarketplaceContext = useMemo(() => {
     const { descId, typeId } = parseOzonCompositeId(formData.ozonCategoryId);
     const wbSubjectId = Number(formData.wbCategoryId) || null;
-    if (!category?.id && !wbSubjectId && !(descId && typeId)) return null;
+    const ymCategoryId = Number(formData.ymCategoryId) || null;
+    if (!category?.id && !wbSubjectId && !(descId && typeId) && !ymCategoryId) return null;
     return {
       userCategoryId: category?.id || null,
       wbSubjectId,
       ozonDescId: descId,
       ozonTypeId: typeId,
+      ymCategoryId,
       organizationId: selectedOrganizationId || null,
     };
-  }, [category?.id, formData.wbCategoryId, formData.ozonCategoryId, selectedOrganizationId]);
+  }, [category?.id, formData.wbCategoryId, formData.ozonCategoryId, formData.ymCategoryId, selectedOrganizationId]);
 
   const handleChange = (field, value) => {
     markDirty();
@@ -1176,24 +1180,28 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           value={formData.tn_ved_code || ''}
           onChange={(code) => handleChange('tn_ved_code', code)}
           marketplaceContext={tnVedMarketplaceContext}
-          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. При смене кода прежний код категории в карточках заменится на новый, и карточки уйдут на маркетплейсы. Под кодом — проверка, примут ли его WB и Ozon для выбранных категорий."
+          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. При смене кода прежний код категории в карточках заменится на новый, и карточки уйдут на маркетплейсы. Под кодом — проверка, примут ли его маркетплейсы для выбранных категорий."
+          badgeActions={
+            savedTnVedCode && formTnVedDigits === savedTnVedCode ? (
+              <>
+                <button
+                  type="button"
+                  className="tnved-badge-action"
+                  onClick={handlePushTnVed}
+                  disabled={tnVedPush.loading}
+                  title="Отправить карточки товаров категории с этим кодом на Ozon, WB и Я.Маркет"
+                >
+                  {tnVedPush.loading ? 'Отправка…' : '↑ Отправить на маркетплейсы'}
+                </button>
+                {tnVedPush.message ? (
+                  <span className={`tnved-badge-note${tnVedPush.error ? ' tnved-badge-note--error' : ''}`}>
+                    {tnVedPush.message}
+                  </span>
+                ) : null}
+              </>
+            ) : null
+          }
         />
-        {savedTnVedCode && formTnVedDigits === savedTnVedCode ? (
-          <div className="d-flex align-items-center gap-2 mt-2 flex-wrap">
-            <Button
-              type="button"
-              variant="secondary"
-              size="small"
-              onClick={handlePushTnVed}
-              disabled={tnVedPush.loading}
-            >
-              {tnVedPush.loading ? 'Отправка…' : 'Отправить ТН ВЭД на маркетплейсы'}
-            </Button>
-            {tnVedPush.message ? (
-              <span className={`small ${tnVedPush.error ? 'text-danger' : 'text-muted'}`}>{tnVedPush.message}</span>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       <div className="field">

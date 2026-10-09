@@ -64,6 +64,7 @@ import {
   matchOzonTnVedDictEntry,
   normalizeTnVedDigits,
   ozonTnVedApiValuesFromDictEntry,
+  ymCommodityCodesWithTnVed,
 } from '../utils/tnVedAttribute.js';
 import {
   applyErpBarcodesToWbCardSizes,
@@ -2563,6 +2564,11 @@ async function pushYandexCard(product, categoryMm, ctx) {
   if (creating && ctx.updateOnly) {
     return { marketplace: 'ym', ok: false, skipped: true, error: UPDATE_ONLY_SKIP_MESSAGE };
   }
+  const commodityCodes = ymCommodityCodesWithTnVed(
+    existingYm?.commodityCodes,
+    productTnVedFallbackCode(product)
+  );
+  if (commodityCodes) offer.commodityCodes = commodityCodes;
   const ymBasicPrice = creating ? ymPriceObject(erpPrices) : null;
   if (ymBasicPrice) {
     offer.basicPrice = ymBasicPrice;
@@ -2993,30 +2999,47 @@ const CATEGORY_CODE_PUSH_KINDS = {
   },
 };
 const _categoryCodePushPending = new Map();
+const _categoryCodePushRunning = new Map();
+const CATEGORY_CODE_PUSH_CONCURRENCY = 3;
 
+/**
+ * @returns {'scheduled'|'running'|'disabled'|'empty'}
+ *   running — по этой категории уже идёт отправка, повторный запуск не ставится.
+ */
 function scheduleCategoryCodePush(kind, userCategoryId, productIds, opts = {}) {
-  if (!opts.force && !isCardAutoPushEnabled()) return;
+  if (!opts.force && !isCardAutoPushEnabled()) return 'disabled';
   const catId = Number(userCategoryId);
   const ids = (Array.isArray(productIds) ? productIds : [])
     .map((x) => Number(x))
     .filter((n) => Number.isFinite(n) && n > 0);
-  if (!Number.isFinite(catId) || catId < 1 || ids.length === 0) return;
+  if (!Number.isFinite(catId) || catId < 1 || ids.length === 0) return 'empty';
 
   const pendingKey = `${kind}:${catId}`;
+  if (opts.force && _categoryCodePushRunning.has(pendingKey)) return 'running';
   const pending = _categoryCodePushPending.get(pendingKey) || { ids: new Set(), timer: null };
   ids.forEach((id) => pending.ids.add(id));
   if (pending.timer) clearTimeout(pending.timer);
   pending.timer = setTimeout(() => {
     _categoryCodePushPending.delete(pendingKey);
-    runCategoryCodeCardPush(kind, catId, [...pending.ids].sort((a, b) => a - b), opts).catch((e) => {
-      logger.warn(`[MP Card Push] ${CATEGORY_CODE_PUSH_KINDS[kind].log} auto push failed`, {
-        userCategoryId: catId,
-        message: e?.message || String(e),
+    const run = runCategoryCodeCardPush(kind, catId, [...pending.ids].sort((a, b) => a - b), opts)
+      .catch((e) => {
+        logger.warn(`[MP Card Push] ${CATEGORY_CODE_PUSH_KINDS[kind].log} auto push failed`, {
+          userCategoryId: catId,
+          message: e?.message || String(e),
+        });
+      })
+      .finally(() => {
+        if (_categoryCodePushRunning.get(pendingKey) === run) _categoryCodePushRunning.delete(pendingKey);
       });
-    });
+    _categoryCodePushRunning.set(pendingKey, run);
   }, Math.max(1000, Number(opts.delayMs) || 5000));
   pending.timer.unref?.();
   _categoryCodePushPending.set(pendingKey, pending);
+  return 'scheduled';
+}
+
+export function isCategoryCodePushRunning(kind, userCategoryId) {
+  return _categoryCodePushRunning.has(`${kind}:${Number(userCategoryId)}`);
 }
 
 /**
@@ -3028,12 +3051,12 @@ function scheduleCategoryCodePush(kind, userCategoryId, productIds, opts = {}) {
  *   force — ручной запуск: игнорирует MARKETPLACE_CARD_AUTO_PUSH_ENABLED.
  */
 export function schedulePushCardsAfterTnVed(userCategoryId, productIds, opts = {}) {
-  scheduleCategoryCodePush('tn_ved', userCategoryId, productIds, opts);
+  return scheduleCategoryCodePush('tn_ved', userCategoryId, productIds, opts);
 }
 
 /** То же для ОКПД2 категории (параметры как у schedulePushCardsAfterTnVed). */
 export function schedulePushCardsAfterOkpd2(userCategoryId, productIds, opts = {}) {
-  scheduleCategoryCodePush('okpd2', userCategoryId, productIds, opts);
+  return scheduleCategoryCodePush('okpd2', userCategoryId, productIds, opts);
 }
 
 async function runCategoryCodeCardPush(kind, catId, ids, opts) {
@@ -3047,22 +3070,53 @@ async function runCategoryCodeCardPush(kind, catId, ids, opts) {
       : null;
 
   logger.info(`[MP Card Push] ${meta.log} → push cards`, { userCategoryId: catId, count: ids.length });
+  if (opts.force) {
+    await addRuntimeNotification({
+      type: meta.type,
+      severity: 'info',
+      source: meta.type,
+      title: `Отправка ${meta.label} на маркетплейсы`,
+      message: `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: отправляем карточки (${ids.length}). Займёт несколько минут, итог придёт отдельным уведомлением.`,
+      profileId,
+      meta: { user_category_id: catId },
+    }).catch(() => {});
+  }
   const okByMp = { ozon: 0, wb: 0, ym: 0 };
   let skipped = 0;
   const errors = [];
-  for (const productId of ids) {
-    try {
-      const out = await pushProductCard(productId, 'all', { profileId, updateOnly: true });
-      const sku = out?.product?.sku || `#${productId}`;
-      for (const r of out?.results || []) {
-        if (r.ok) okByMp[r.marketplace] = (okByMp[r.marketplace] || 0) + 1;
-        else if (r.skipped) skipped += 1;
-        else errors.push(`${sku} (${MP_TITLES[r.marketplace] || r.marketplace}): ${r.error || 'ошибка'}`);
+  const queue = [...ids];
+  const worker = async () => {
+    while (queue.length) {
+      const productId = queue.shift();
+      try {
+        const out = await pushProductCard(productId, 'all', { profileId, updateOnly: true });
+        const sku = out?.product?.sku || `#${productId}`;
+        for (const r of out?.results || []) {
+          if (r.ok) okByMp[r.marketplace] = (okByMp[r.marketplace] || 0) + 1;
+          else if (r.skipped) skipped += 1;
+          else {
+            errors.push(`${sku} (${MP_TITLES[r.marketplace] || r.marketplace}): ${r.error || 'ошибка'}`);
+            logger.warn(`[MP Card Push] ${meta.log} card push error`, {
+              userCategoryId: catId,
+              productId,
+              marketplace: r.marketplace,
+              error: r.error || null,
+            });
+          }
+        }
+      } catch (e) {
+        errors.push(`#${productId}: ${e?.message || String(e)}`);
+        logger.warn(`[MP Card Push] ${meta.log} card push error`, {
+          userCategoryId: catId,
+          productId,
+          error: e?.message || String(e),
+        });
       }
-    } catch (e) {
-      errors.push(`#${productId}: ${e?.message || String(e)}`);
     }
-  }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CATEGORY_CODE_PUSH_CONCURRENCY, ids.length) }, () => worker())
+  );
 
   const sent = Object.entries(okByMp)
     .filter(([, n]) => n > 0)

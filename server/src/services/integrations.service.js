@@ -3019,9 +3019,11 @@ class IntegrationsService {
     const oid = offerId != null ? String(offerId).trim() : '';
     const resolvedOfferId = String(hit?.offer?.offerId ?? hit?.offerId ?? oid).trim();
     const shopSku = hit?.offer?.shopSku ?? hit?.shopSku ?? null;
+    const commodityCodes = hit?.offer?.commodityCodes ?? hit?.commodityCodes;
     return {
       offerId: resolvedOfferId,
-      shopSku: shopSku != null ? String(shopSku).trim() : null
+      shopSku: shopSku != null ? String(shopSku).trim() : null,
+      commodityCodes: Array.isArray(commodityCodes) ? commodityCodes : [],
     };
   }
 

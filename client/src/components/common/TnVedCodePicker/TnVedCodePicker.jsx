@@ -7,7 +7,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { tnVedApi } from '../../../services/tnVed.api';
 import './TnVedCodePicker.css';
 
-const MP_LABELS = { wb: 'WB', ozon: 'Ozon' };
+const MP_LABELS = { wb: 'WB', ozon: 'Ozon', ym: 'Я.Маркет' };
 
 function compatBadge(mp, res) {
   const label = MP_LABELS[mp];
@@ -41,6 +41,8 @@ export function TnVedCodePicker({
   label = 'Код ТН ВЭД',
   hint = 'Выберите код из классификатора ТН ВЭД ЕАЭС (поиск по коду или названию).',
   marketplaceContext = null,
+  /** Рядом со значками совместимости (например, кнопка отправки на МП). */
+  badgeActions = null,
 }) {
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState([]);
@@ -118,7 +120,9 @@ export function TnVedCodePicker({
     return hit ? { ...hit, found: true } : null;
   }, [value, selected, options]);
 
-  const badges = compat ? [compatBadge('wb', compat.wb), compatBadge('ozon', compat.ozon)].filter(Boolean) : [];
+  const badges = compat
+    ? [compatBadge('wb', compat.wb), compatBadge('ozon', compat.ozon), compatBadge('ym', compat.ym)].filter(Boolean)
+    : [];
 
   return (
     <div className="tnved-picker">
@@ -143,14 +147,15 @@ export function TnVedCodePicker({
             {selectedInfo && selectedInfo.found && selectedInfo.active === false ? (
               <span className="tnved-selected__warn">Код исключён из классификатора — выберите действующий код</span>
             ) : null}
-            {compatLoading ? <span className="tnved-selected__position">Проверка WB / Ozon…</span> : null}
-            {badges.length ? (
+            {compatLoading ? <span className="tnved-selected__position">Проверка WB / Ozon / Я.Маркет…</span> : null}
+            {badges.length || badgeActions ? (
               <div className="tnved-badges">
                 {badges.map((b) => (
                   <span key={b.text} className={`tnved-badge tnved-badge--${b.tone}`} title={b.title}>
                     {b.text}
                   </span>
                 ))}
+                {badgeActions}
               </div>
             ) : null}
           </div>

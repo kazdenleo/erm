@@ -49,6 +49,7 @@ class TnVedController {
         wbSubjectId: q.wbSubjectId ?? q.wb_subject_id ?? null,
         ozonDescId: q.ozonDescId ?? q.ozon_description_category_id ?? null,
         ozonTypeId: q.ozonTypeId ?? q.ozon_type_id ?? null,
+        ymCategoryId: q.ymCategoryId ?? q.ym_category_id ?? null,
         profileId: tid,
         organizationId: q.organizationId ?? q.organization_id ?? null,
       });

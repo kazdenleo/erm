@@ -22,6 +22,7 @@ import tnVedDirectoryService from '../services/tnVedDirectory.service.js';
 import okpd2ProductApplyService from '../services/okpd2ProductApply.service.js';
 import okpd2DirectoryService from '../services/okpd2Directory.service.js';
 import {
+  isCategoryCodePushRunning,
   schedulePushCardsAfterOkpd2,
   schedulePushCardsAfterTnVed,
 } from '../services/marketplaceProductCardPush.service.js';
@@ -79,9 +80,21 @@ async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId, pre
       profileId,
       previousCode,
     });
-    if (result?.productIds?.length) {
+    const productIds = new Set(result?.productIds || []);
+    const changed =
+      previousCode != null && normalizeTnVedDigits(code) !== normalizeTnVedDigits(previousCode);
+    if (changed) {
+      // На Я.Маркет ТН ВЭД уходит полем оффера, а не характеристикой.
+      const ymLinked = await query(
+        `SELECT id FROM products
+         WHERE user_category_id = $1 AND COALESCE(TRIM(sku_ym), '') <> ''`,
+        [categoryId]
+      );
+      ymLinked.rows.forEach((row) => productIds.add(Number(row.id)));
+    }
+    if (productIds.size) {
       const pid = profileId != null && profileId !== '' && Number.isFinite(Number(profileId)) ? Number(profileId) : null;
-      schedulePushCardsAfterTnVed(categoryId, result.productIds, { profileId: pid, code });
+      schedulePushCardsAfterTnVed(categoryId, [...productIds], { profileId: pid, code });
     }
   } catch (e) {
     logger.warn('[User Categories] TN VED apply to products failed', {
@@ -640,7 +653,7 @@ class UserCategoriesController {
         tnVedCode !== undefined ? tnVedCode : normalizeTnVedDigits(category.tn_ved_code);
       if (codeToApply) {
         const previousCode =
-          tnVedCode !== undefined ? normalizeTnVedDigits(owner.rows[0].tn_ved_code) || null : null;
+          tnVedCode !== undefined ? normalizeTnVedDigits(owner.rows[0].tn_ved_code) : null;
         await applyTnVedToCategoryProductsSafe(id, codeToApply, tid, previousCode);
       }
 
@@ -681,19 +694,34 @@ class UserCategoriesController {
       if (!code) {
         return res.status(400).json({ ok: false, message: 'У категории не указан код ТН ВЭД' });
       }
+      if (isCategoryCodePushRunning('tn_ved', id)) {
+        return res.status(200).json({ ok: true, data: { code, products: 0, running: true } });
+      }
       await tnVedProductApplyService.applyToCategoryProducts(id, code, { profileId: tid });
-      const productIds = await tnVedProductApplyService.listCategoryProductIdsWithCode(id, code, {
+      const withCode = await tnVedProductApplyService.listCategoryProductIdsWithCode(id, code, {
         profileId: tid,
       });
-      if (productIds.length) {
-        schedulePushCardsAfterTnVed(id, productIds, {
-          profileId: Number(tid),
-          code,
-          delayMs: 1000,
-          force: true,
-        });
-      }
-      return res.status(200).json({ ok: true, data: { code, products: productIds.length } });
+      // На Я.Маркет ТН ВЭД уходит полем оффера, а не характеристикой — добавляем товары, связанные с ЯМ.
+      const ymLinked = await query(
+        `SELECT id FROM products
+         WHERE user_category_id = $1 AND COALESCE(TRIM(sku_ym), '') <> ''`,
+        [id]
+      );
+      const productIds = [
+        ...new Set([...withCode, ...ymLinked.rows.map((row) => Number(row.id))]),
+      ].filter((n) => Number.isFinite(n) && n > 0);
+      const status = productIds.length
+        ? schedulePushCardsAfterTnVed(id, productIds, {
+            profileId: Number(tid),
+            code,
+            delayMs: 1000,
+            force: true,
+          })
+        : 'empty';
+      return res.status(200).json({
+        ok: true,
+        data: { code, products: status === 'scheduled' ? productIds.length : 0, running: status === 'running' },
+      });
     } catch (error) {
       next(error);
     }

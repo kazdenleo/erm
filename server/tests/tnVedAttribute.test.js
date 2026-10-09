@@ -12,9 +12,30 @@ import {
   replaceTnVedKeys,
   storedTnVedDigits,
   storedTnVedValueForMarketplace,
+  ymCommodityCodesWithTnVed,
 } from '../src/utils/tnVedAttribute.js';
 
 describe('tnVedAttribute', () => {
+  test('ymCommodityCodesWithTnVed replaces customs code and keeps other types', () => {
+    expect(ymCommodityCodesWithTnVed([], '8421310000')).toEqual([
+      { code: '8421310000', type: 'CUSTOMS_COMMODITY_CODE' },
+    ]);
+    expect(
+      ymCommodityCodesWithTnVed(
+        [
+          { code: '4011201000', type: 'CUSTOMS_COMMODITY_CODE' },
+          { code: '29.32.30', type: 'OKPD2_CODE' },
+        ],
+        '8421310000'
+      )
+    ).toEqual([
+      { code: '29.32.30', type: 'OKPD2_CODE' },
+      { code: '8421310000', type: 'CUSTOMS_COMMODITY_CODE' },
+    ]);
+    expect(ymCommodityCodesWithTnVed(undefined, '')).toBeNull();
+    expect(ymCommodityCodesWithTnVed(undefined, '8421')).toBeNull();
+  });
+
   test('storedTnVedDigits reads code from stored MP values', () => {
     expect(storedTnVedDigits('8421310000')).toBe('8421310000');
     expect(storedTnVedDigits(8421310000)).toBe('8421310000');

@@ -251,6 +251,20 @@ export function replaceTnVedKeys(attrs, keys, previousCode, storedValue) {
   return changed ? next : attrs;
 }
 
+/**
+ * commodityCodes оффера Я.Маркета с кодом ТН ВЭД (CUSTOMS_COMMODITY_CODE).
+ * Поле перезаписывается целиком, поэтому коды других типов (ИКПУ, ОКПД2) берём из текущего оффера.
+ * null — передавать нечего.
+ */
+export function ymCommodityCodesWithTnVed(existing, tnVedCode) {
+  const code = normalizeTnVedDigits(tnVedCode);
+  if (code.length !== 10 && code.length !== 14) return null;
+  const others = (Array.isArray(existing) ? existing : []).filter(
+    (c) => c && c.code && c.type && c.type !== 'CUSTOMS_COMMODITY_CODE'
+  );
+  return [...others.map((c) => ({ code: String(c.code), type: c.type })), { code, type: 'CUSTOMS_COMMODITY_CODE' }];
+}
+
 export function parseMpLinksObject(raw) {
   if (raw == null) return {};
   if (typeof raw === 'string') {

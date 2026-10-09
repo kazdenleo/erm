@@ -20,7 +20,7 @@ export const tnVedApi = {
 
   checkCompatibility: async (opts = {}) => {
     const params = {};
-    for (const key of ['code', 'userCategoryId', 'wbSubjectId', 'ozonDescId', 'ozonTypeId', 'organizationId']) {
+    for (const key of ['code', 'userCategoryId', 'wbSubjectId', 'ozonDescId', 'ozonTypeId', 'ymCategoryId', 'organizationId']) {
       if (opts[key] != null && opts[key] !== '') params[key] = opts[key];
     }
     const res = await api.get('/tn-ved/compatibility', { params });

@@ -270,16 +270,21 @@ class TnVedService {
       }
     }
 
+    const ymCategoryId = positiveInt(opts.ymCategoryId) || positiveInt(mm.ym ?? mm.yandex);
+
     const [directory, wb, ozon] = await Promise.all([
       tnVedDirectoryService.getCode(code),
       this._checkWb(code, wbSubjectId, scope),
       this._checkOzon(code, descId, typeId, scope),
     ]);
+    // Я.Маркет не привязывает ТН ВЭД к категории: код уходит полем оффера commodityCodes.
+    const ym = ymCategoryId ? { status: 'ok', value: 'Передаётся в карточку товара (commodityCodes)' } : { status: 'no_mapping' };
     return {
       code,
       directory: directory ? { found: true, active: directory.active, name: directory.name, positionName: directory.positionName || null } : { found: false },
       wb,
       ozon,
+      ym,
     };
   }
 }

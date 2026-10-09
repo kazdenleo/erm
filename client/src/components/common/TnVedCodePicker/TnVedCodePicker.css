@@ -101,6 +101,40 @@
   border-color: #e5e7eb;
 }
 
+.tnved-badges {
+  align-items: center;
+}
+
+.tnved-badge-action {
+  appearance: none;
+  font-size: 11px;
+  padding: 1px 10px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.tnved-badge-action:hover:not(:disabled) {
+  background: #dbeafe;
+}
+
+.tnved-badge-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.tnved-badge-note {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+}
+
+.tnved-badge-note--error {
+  color: #b91c1c;
+}
+
 .tnved-clear {
   appearance: none;
   background: none;
