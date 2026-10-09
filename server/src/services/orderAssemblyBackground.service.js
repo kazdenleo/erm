@@ -88,6 +88,21 @@ async function addOrdersToOpenShipmentsForMarketplace(code, list, { profileId, o
         });
       } catch (e) {
         if (code === 'ozon' && e?.statusCode === 502) {
+          const failedSet = new Set((e?.failedOrderIds || []).map(String));
+          const saved = oids.filter((id) => !failedSet.has(String(id)));
+          if (e?.shipment && saved.length > 0) {
+            shipmentsUsed.push({
+              marketplace: code,
+              shipmentId: e.shipment.id,
+              shipmentName: e.shipment.name,
+              orderIds: saved,
+              localWbOnly: false
+            });
+          }
+          logger.warn('[sendToAssembly] Ozon: часть заказов не переведена в «Ожидает отгрузки»', {
+            shipmentId: shipment.id,
+            failed: [...failedSet]
+          });
           warnings.push({
             marketplace: code,
             shipmentId: shipment.id,

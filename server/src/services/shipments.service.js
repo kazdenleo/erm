@@ -1310,6 +1310,17 @@ const OZON_HEADERS = (client_id, api_key) => ({
   Accept: 'application/json'
 });
 
+/** Ozon лимитирует запросы в секунду: пачка «На сборку» без паузы ловит 429. */
+async function ozonFetchWithRetry(url, init, { attempts = 5 } = {}) {
+  let resp;
+  for (let i = 1; i <= attempts; i++) {
+    resp = await fetch(url, init);
+    if (resp.status !== 429 || i === attempts) return resp;
+    await sleep(retryAfterMsFromResponse(resp, 1000 * i));
+  }
+  return resp;
+}
+
 function ozonIsAlreadyShippedErrorText(text) {
   const t = String(text || '');
   return t.includes('POSTING_ALREADY_SHIPPED');
@@ -1323,7 +1334,7 @@ async function ozonShipWithPackages(config, postingNumber) {
   const pn = ozonPostingNumberFromOrderId(postingNumber) || String(postingNumber).trim();
   const { client_id, api_key } = config;
   const headers = OZON_HEADERS(client_id, api_key);
-  const getResp = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
+  const getResp = await ozonFetchWithRetry('https://api-seller.ozon.ru/v3/posting/fbs/get', {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1348,7 +1359,7 @@ async function ozonShipWithPackages(config, postingNumber) {
   if (products.length === 0) {
     throw new Error(`Ozon: не удалось получить product_id для постинга ${pn}`);
   }
-  const shipResp = await fetch('https://api-seller.ozon.ru/v4/posting/fbs/ship', {
+  const shipResp = await ozonFetchWithRetry('https://api-seller.ozon.ru/v4/posting/fbs/ship', {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1374,7 +1385,7 @@ async function ozonPassToAwaitingDeliver(config, postingNumber) {
   const pn = ozonPostingNumberFromOrderId(postingNumber) || String(postingNumber).trim();
   const { client_id, api_key } = config;
   const headers = OZON_HEADERS(client_id, api_key);
-  const resp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/awaiting-delivery', {
+  const resp = await ozonFetchWithRetry('https://api-seller.ozon.ru/v2/posting/fbs/awaiting-delivery', {
     method: 'POST',
     headers,
     body: JSON.stringify({ posting_number: [String(pn)] })
@@ -1428,6 +1439,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   const toAdd = uniqueRequested.filter((id) => !existing.has(String(id)));
 
   const code = ship.marketplace === 'wb' ? 'wildberries' : ship.marketplace;
+  let ozonFailedErr = null;
 
   if (code === 'ozon') {
     let ozonConfig;
@@ -1459,7 +1471,9 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
         );
         err.statusCode = 502;
         err.ozonErrors = ozonErrors;
-        throw err;
+        err.failedOrderIds = ozonErrors.map((e) => e.postingNumber);
+        // Переведённые на Ozon заказы курьер заберёт — без них в поставке закрытие не спишет наличие.
+        ozonFailedErr = err;
       }
     }
   }
@@ -1500,10 +1514,15 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   }
 
   // Всегда фиксируем, что заказ "привязан" к поставке локально, даже если повторно не добавляли в МП.
-  uniqueRequested.forEach((o) => existing.add(String(o)));
+  const ozonFailedIds = new Set(ozonFailedErr?.failedOrderIds || []);
+  uniqueRequested.filter((o) => !ozonFailedIds.has(String(o))).forEach((o) => existing.add(String(o)));
   ship.orderIds = Array.from(existing);
   await saveLocalShipments(shipments);
   const out = normalizeShipment(ship);
+  if (ozonFailedErr) {
+    ozonFailedErr.shipment = out;
+    throw ozonFailedErr;
+  }
   if (ship._lastWbPush && !ship._lastWbPush.ok) {
     const err = new Error(ship.wbLastSyncError || 'Не удалось добавить заказы в поставку WB');
     err.statusCode = ship._lastWbPush.statusCode || 409;
