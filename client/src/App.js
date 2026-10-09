@@ -40,6 +40,7 @@ import { ProductCard } from './pages/Products/ProductCard';
 import { ProductEnrichment } from './pages/Products/ProductEnrichment';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
+import { SupplierSettlements } from './pages/Suppliers/SupplierSettlements';
 import { Orders } from './pages/Orders/Orders';
 import { Customers } from './pages/Customers/Customers';
 import { CustomerDetail } from './pages/Customers/CustomerDetail';
@@ -229,6 +230,7 @@ function App() {
           </Route>
           <Route path="/warehouses" element={<ProtectedRoute><Layout><Warehouses /></Layout></ProtectedRoute>} />
           <Route path="/suppliers" element={<ProtectedRoute><Layout><Suppliers /></Layout></ProtectedRoute>} />
+          <Route path="/suppliers/:supplierId/settlements" element={<ProtectedRoute><Layout><SupplierSettlements /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
           <Route path="/customers" element={<ProtectedRoute><PrivateOrdersRoute><Customers /></PrivateOrdersRoute></ProtectedRoute>} />
           <Route path="/customers/:customerId" element={<ProtectedRoute><PrivateOrdersRoute><CustomerDetail /></PrivateOrdersRoute></ProtectedRoute>} />

@@ -36,7 +36,38 @@ export const suppliersApi = {
   delete: async (id) => {
     const response = await api.delete(`/suppliers/${id}`);
     return response.data;
-  }
+  },
+
+  /**
+   * Балансы взаиморасчётов по всем поставщикам
+   * @returns {Promise<object[]>}
+   */
+  getSettlementBalances: async () => {
+    const response = await api.get('/suppliers/settlements/balances');
+    return Array.isArray(response.data?.data) ? response.data.data : [];
+  },
+
+  /**
+   * Сводка и журнал операций по поставщику
+   * @returns {Promise<{ supplier: object, summary: object, operations: object[] }|null>}
+   */
+  getSettlements: async (id) => {
+    const response = await api.get(`/suppliers/${id}/settlements`);
+    return response.data?.data ?? null;
+  },
+
+  /**
+   * Ручная операция: { kind: 'payment'|'adjustment', amount?, targetBalance?, date?, comment? }
+   */
+  createSettlementEntry: async (id, data) => {
+    const response = await api.post(`/suppliers/${id}/settlements`, data);
+    return response.data?.data ?? null;
+  },
+
+  deleteSettlementEntry: async (id, entryId) => {
+    const response = await api.delete(`/suppliers/${id}/settlements/${entryId}`);
+    return response.data;
+  },
 };
 
 

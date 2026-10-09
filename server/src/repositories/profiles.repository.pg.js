@@ -48,6 +48,7 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
   'review_reply_templates',
   'stock_movements',
   'supplier_returns',
+  'supplier_settlement_entries',
   'suppliers',
   'support_inquiries',
   'user_categories',
@@ -89,6 +90,7 @@ const TABLE_LABELS_RU = Object.freeze({
   review_reply_templates: 'Шаблоны ответов на отзывы',
   stock_movements: 'Движения остатков',
   supplier_returns: 'Возвраты поставщикам',
+  supplier_settlement_entries: 'Взаиморасчёты с поставщиками',
   suppliers: 'Поставщики',
   support_inquiries: 'Обращения в поддержку',
   user_categories: 'Категории пользователей',
@@ -144,7 +146,7 @@ const TABLE_CATEGORIES = Object.freeze([
   {
     key: 'suppliers',
     label: 'Поставщики',
-    tables: ['suppliers'],
+    tables: ['suppliers', 'supplier_settlement_entries'],
   },
   {
     key: 'reviews',

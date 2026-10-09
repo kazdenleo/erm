@@ -1,3 +1,94 @@
 /* Общие стили наследуются из tables.css и pages.css */
 
+.suppliers-balance {
+  white-space: nowrap;
+  font-size: 13px;
+}
 
+.supplier-settlements__back {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.supplier-settlements__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.supplier-settlements__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supplier-settlements__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.supplier-settlements__stat {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.supplier-settlements__stat--main.supplier-settlements__stat--debt {
+  border-color: #ef4444;
+}
+
+.supplier-settlements__stat--main.supplier-settlements__stat--credit {
+  border-color: #22c55e;
+}
+
+.supplier-settlements__stat-label {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.supplier-settlements__stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+.supplier-settlements__stat--debt .supplier-settlements__stat-value,
+.supplier-settlements__tone--debt {
+  color: #ef4444;
+}
+
+.supplier-settlements__stat--credit .supplier-settlements__stat-value,
+.supplier-settlements__tone--credit {
+  color: #22c55e;
+}
+
+.supplier-settlements__section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 10px;
+}
+
+.supplier-settlements__table--loading {
+  opacity: 0.6;
+}
+
+.supplier-settlements__warn {
+  font-size: 12px;
+  color: #f59e0b;
+}
+
+.supplier-settlements__preview {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  font-size: 13px;
+  display: grid;
+  gap: 4px;
+}

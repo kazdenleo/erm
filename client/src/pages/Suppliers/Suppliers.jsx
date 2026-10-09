@@ -3,19 +3,58 @@
  * Страница управления поставщиками
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { SupplierForm } from '../../components/forms/SupplierForm/SupplierForm';
+import { suppliersApi } from '../../services/suppliers.api';
 import { autoOrderSettingsFromApiConfig } from '../../utils/supplierAutoOrderSettings';
 import { formatSupplierWarehouseOrderWindow } from '../../utils/supplierWarehouseArrival';
+import { describeBalance, formatMoney } from './settlementFormat';
 import './Suppliers.css';
 
 export function Suppliers() {
+  const navigate = useNavigate();
   const { suppliers, loading, error, createSupplier, updateSupplier, deleteSupplier, loadSuppliers } = useSuppliers();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState(null);
+  const [balances, setBalances] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    suppliersApi
+      .getSettlementBalances()
+      .then((rows) => {
+        if (cancelled) return;
+        setBalances(new Map(rows.map((r) => [String(r.supplierId), r])));
+      })
+      .catch((err) => {
+        console.error('Error loading supplier balances:', err);
+        if (!cancelled) setBalances(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const renderBalance = (supplierId) => {
+    if (balances == null) return <span className="text-muted">…</span>;
+    const row = balances.get(String(supplierId));
+    const b = describeBalance(row?.balance);
+    return (
+      <Link to={`/suppliers/${supplierId}/settlements`} className="suppliers-balance" title="Открыть взаиморасчёты">
+        {b.tone === 'neutral' ? (
+          <span className="text-muted">{b.label}</span>
+        ) : (
+          <span className={`supplier-settlements__tone--${b.tone}`}>
+            {b.tone === 'credit' ? 'Переплата ' : ''}{formatMoney(b.amount)}
+          </span>
+        )}
+      </Link>
+    );
+  };
 
   const handleCreate = () => {
     setEditingSupplier(null);
@@ -91,6 +130,7 @@ export function Suppliers() {
                 <th>Склады</th>
                 <th>Автозаказ</th>
                 <th>Активен</th>
+                <th style={{textAlign: 'right'}} title="Положительный — наш долг поставщику">Баланс</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
               </tr>
             </thead>
@@ -135,8 +175,18 @@ export function Suppliers() {
                     )}
                   </td>
                   <td>{s.isActive !== false && s.active !== false ? 'Да' : 'Нет'}</td>
+                  <td style={{textAlign: 'right'}}>{renderBalance(s.id)}</td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={() => navigate(`/suppliers/${s.id}/settlements`)}
+                        style={{padding: '6px 10px', fontSize: '14px'}}
+                        title="Взаиморасчёты"
+                      >
+                        💰
+                      </Button>
                       <Button 
                         variant="secondary" 
                         size="small"
