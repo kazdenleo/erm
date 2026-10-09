@@ -73,8 +73,10 @@ function formatDuration(sec) {
 }
 
 function minutesLabel(sec) {
-  const m = Math.round((Number(sec) || 0) / 60);
-  return `${m} мин`;
+  const s = Math.round(Number(sec) || 0);
+  if (s < 60) return `${s} с`;
+  const m = Math.round((s / 60) * 10) / 10;
+  return `${String(m).replace('.', ',')} мин`;
 }
 
 function Sub({ children }) {
@@ -424,7 +426,8 @@ export function EmployeeMetrics() {
       <p className="sales-analytics__hint">
         Время работы — сумма промежутков между сканами сотрудника. Если сканов нет дольше{' '}
         {minutesLabel(idle.fbs)} на сборке FBS, {minutesLabel(idle.fboCollect)} на сборке FBO или{' '}
-        {minutesLabel(idle.packing)} на упаковке, отсчёт останавливается и продолжается со следующего скана. Итог —
+        {minutesLabel(idle.packing)} на упаковке ({minutesLabel(idle.receipts)} на приёмке), отсчёт останавливается и
+        продолжается со следующего скана. Пороги меняются в «Настройки → Аккаунт». Итог —
         общее время всех сотрудников, делённое на все заказы или штуки. Приёмка FBO — закупки на склад с отметкой «Склад FBO», остальные — FBS. Приёмка по сотрудникам — время каждого по его
         сканам (одну приёмку могут принимать несколько человек параллельно); до журнала сканов — оценка по последним
         отметкам сотрудника в строках приёмки, перерыв дольше {minutesLabel(idle.receiptLines ?? 600)}. «Срок приёмки» —

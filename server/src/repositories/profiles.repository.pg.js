@@ -11,6 +11,7 @@ import { parseAiSettings } from '../utils/aiSettings.js';
 import { parsePricePushSettings } from '../utils/pricePushSettings.js';
 import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
 import { parseNotificationSettings } from '../utils/notificationSettings.js';
+import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.js';
 
 /**
  * Таблицы с profile_id (shared DB). Оценка размера аккаунта =
@@ -588,6 +589,10 @@ class ProfilesRepositoryPG {
     if (updates.notification_settings !== undefined || updates.notificationSettings !== undefined) {
       const raw = updates.notification_settings ?? updates.notificationSettings;
       set('notification_settings', JSON.stringify(parseNotificationSettings(raw)));
+    }
+    if (updates.employee_metrics_settings !== undefined || updates.employeeMetricsSettings !== undefined) {
+      const raw = updates.employee_metrics_settings ?? updates.employeeMetricsSettings;
+      set('employee_metrics_settings', JSON.stringify(parseEmployeeMetricsSettings(raw)));
     }
     if (
       updates.fbo_deduction_warehouse_id !== undefined ||

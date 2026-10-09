@@ -19,15 +19,25 @@
 
 import { query } from '../config/database.js';
 import { requireAnalyticsProfile, resolvePeriod, round2 } from '../utils/analyticsCommon.js';
+import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.js';
 
-const FBS_IDLE_SEC = 3 * 60;
-const FBO_COLLECT_IDLE_SEC = 60;
-const FBO_PACKING_IDLE_SEC = 3 * 60;
-/** Между отметками коробок промежуточных сканов не видно, поэтому порог перерыва шире, чем по журналу. */
-const FBO_BOX_IDLE_SEC = 10 * 60;
-const RECEIPT_IDLE_SEC = 3 * 60;
-/** По строкам приёмки видна только последняя отметка сотрудника в строке — порог шире. */
-const RECEIPT_LINES_IDLE_SEC = 10 * 60;
+/**
+ * Для оценок по коробкам и строкам приёмки промежуточных сканов не видно, поэтому порог перерыва
+ * не меньше 10 мин (и не меньше порога из настроек).
+ */
+const ESTIMATE_MIN_IDLE_SEC = 10 * 60;
+
+async function loadIdleSettings(profileId) {
+  try {
+    const res = await query('SELECT employee_metrics_settings FROM profiles WHERE id = $1 LIMIT 1', [profileId]);
+    return parseEmployeeMetricsSettings(res.rows?.[0]?.employee_metrics_settings).idleSec;
+  } catch (e) {
+    if (String(e?.message || '').includes('employee_metrics_settings')) {
+      return parseEmployeeMetricsSettings(null).idleSec;
+    }
+    throw e;
+  }
+}
 
 const ROLE_LABELS = {
   admin: 'Администратор',
@@ -136,10 +146,10 @@ function newReceiptAcc() {
 }
 
 /** Журнал сканов и оценка по строкам приёмки — разные пороги перерыва. */
-function receiptSources(acc) {
+function receiptSources(acc, idle) {
   return [
-    { marks: acc.journalMarks, idleSec: RECEIPT_IDLE_SEC },
-    { marks: acc.lineMarks, idleSec: RECEIPT_LINES_IDLE_SEC },
+    { marks: acc.journalMarks, idleSec: idle.receipts },
+    { marks: acc.lineMarks, idleSec: idle.receiptLines },
   ];
 }
 
@@ -159,7 +169,7 @@ const secPerUnit1 = (t) => (t.timedUnits > 0 ? round1(t.activeSec / t.timedUnits
  * и последний (остальные штуки). Время считается по каждой поставке отдельно — разные поставки могут
  * упаковывать параллельно.
  */
-function boxPackingNorm(rows) {
+function boxPackingNorm(rows, idleSec) {
   const bySupply = new Map();
   for (const row of rows) {
     const qty = Number(row.quantity) || 0;
@@ -176,7 +186,7 @@ function boxPackingNorm(rows) {
   let timedUnits = 0;
   let units = 0;
   for (const marks of bySupply.values()) {
-    const t = activeTime(marks, FBO_BOX_IDLE_SEC);
+    const t = activeTime(marks, idleSec);
     activeSec += t.activeSec;
     timedUnits += t.timedUnits;
     units += marks.reduce((s, m) => s + m.units, 0);
@@ -188,6 +198,12 @@ class EmployeeMetricsService {
   async getMetrics({ profileId, dateFrom = null, dateTo = null } = {}) {
     const pid = requireAnalyticsProfile(profileId);
     const { fromYmd, toYmd, days } = resolvePeriod(dateFrom, dateTo, 28);
+    const configured = await loadIdleSettings(pid);
+    const idle = {
+      ...configured,
+      packingBoxes: Math.max(ESTIMATE_MIN_IDLE_SEC, configured.packing),
+      receiptLines: Math.max(ESTIMATE_MIN_IDLE_SEC, configured.receipts),
+    };
     const params = [pid, fromYmd, toYmd];
     const from = periodBoundsSql();
     const to = periodEndSql();
@@ -470,12 +486,12 @@ class EmployeeMetricsService {
           u.name = userDisplayName(info);
           u.role = ROLE_LABELS[info.account_role] || (info.role === 'admin' ? 'Администратор' : null);
         }
-        const fbsTime = activeTime(u.fbs.marks, FBS_IDLE_SEC);
-        const collectTime = activeTime(u.fboCollect.marks, FBO_COLLECT_IDLE_SEC);
-        const packingTime = activeTime(u.packing.marks, FBO_PACKING_IDLE_SEC);
+        const fbsTime = activeTime(u.fbs.marks, idle.fbs);
+        const collectTime = activeTime(u.fboCollect.marks, idle.fboCollect);
+        const packingTime = activeTime(u.packing.marks, idle.packing);
         const receiptTime = {
-          fbs: sourcesTime(receiptSources(u.receipts.fbs)),
-          fbo: sourcesTime(receiptSources(u.receipts.fbo)),
+          fbs: sourcesTime(receiptSources(u.receipts.fbs, idle)),
+          fbo: sourcesTime(receiptSources(u.receipts.fbo, idle)),
         };
         for (const [key, t] of [
           ['fbs', fbsTime],
@@ -488,11 +504,11 @@ class EmployeeMetricsService {
           totals[key].timedUnits += t.timedUnits;
         }
         const daily = {
-          fbs: dailyActive([{ marks: u.fbs.marks, idleSec: FBS_IDLE_SEC }]),
-          fboCollect: dailyActive([{ marks: u.fboCollect.marks, idleSec: FBO_COLLECT_IDLE_SEC }]),
-          packing: dailyActive([{ marks: u.packing.marks, idleSec: FBO_PACKING_IDLE_SEC }]),
-          receiptsFbs: dailyActive(receiptSources(u.receipts.fbs)),
-          receiptsFbo: dailyActive(receiptSources(u.receipts.fbo)),
+          fbs: dailyActive([{ marks: u.fbs.marks, idleSec: idle.fbs }]),
+          fboCollect: dailyActive([{ marks: u.fboCollect.marks, idleSec: idle.fboCollect }]),
+          packing: dailyActive([{ marks: u.packing.marks, idleSec: idle.packing }]),
+          receiptsFbs: dailyActive(receiptSources(u.receipts.fbs, idle)),
+          receiptsFbo: dailyActive(receiptSources(u.receipts.fbo, idle)),
         };
         const receiptOut = (kind) => {
           const acc = u.receipts[kind];
@@ -594,7 +610,7 @@ class EmployeeMetricsService {
     summary.fboCollectActiveHours = round2(totals.fboCollect.activeSec / 3600);
     summary.packingSecPerUnit = perUnit(totals.packing.activeSec, totals.packing.timedUnits);
     summary.packingActiveHours = round2(totals.packing.activeSec / 3600);
-    const boxNorm = boxPackingNorm(boxContentsRes.rows || []);
+    const boxNorm = boxPackingNorm(boxContentsRes.rows || [], idle.packingBoxes);
     summary.packingBoxSecPerUnit = boxNorm.secPerUnit;
     summary.packingBoxUnits = boxNorm.units;
     summary.packingBoxSupplies = boxNorm.supplies;
@@ -623,14 +639,7 @@ class EmployeeMetricsService {
     const tracking = trackingRes.rows?.[0] || {};
     return {
       period: { dateFrom: fromYmd, dateTo: toYmd, days },
-      idleThresholdsSec: {
-        fbs: FBS_IDLE_SEC,
-        fboCollect: FBO_COLLECT_IDLE_SEC,
-        packing: FBO_PACKING_IDLE_SEC,
-        packingBoxes: FBO_BOX_IDLE_SEC,
-        receipts: RECEIPT_IDLE_SEC,
-        receiptLines: RECEIPT_LINES_IDLE_SEC,
-      },
+      idleThresholdsSec: idle,
       trackingSince: tracking.since || null,
       fbsScansSince: tracking.fbs_since || null,
       packingSince: tracking.packing_since || null,

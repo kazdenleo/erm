@@ -64,6 +64,24 @@ export function accountSettingsFromProfile(profile) {
     notification_settings: parseClientNotificationSettings(
       profile.notification_settings ?? profile.notificationSettings
     ),
+    employee_metrics_settings: parseClientEmployeeMetricsSettings(
+      profile.employee_metrics_settings ?? profile.employeeMetricsSettings
+    ),
+  };
+}
+
+export const EMPLOYEE_IDLE_DEFAULTS_SEC = { fbs: 180, fboCollect: 60, packing: 180, receipts: 180 };
+
+export function parseClientEmployeeMetricsSettings(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const idle = src.idleSec && typeof src.idleSec === 'object' ? src.idleSec : {};
+  return {
+    idleSec: Object.fromEntries(
+      Object.entries(EMPLOYEE_IDLE_DEFAULTS_SEC).map(([k, def]) => {
+        const n = Number(idle[k]);
+        return [k, Number.isFinite(n) && n > 0 ? n : def];
+      })
+    ),
   };
 }
 

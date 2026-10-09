@@ -8,7 +8,11 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { productAttributesApi } from '../../services/productAttributes.api.js';
-import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
+import {
+  accountSettingsFromProfile,
+  isProfileBoolFlag,
+  parseClientEmployeeMetricsSettings,
+} from '../../utils/profileFlags.js';
 import {
   NOTIFICATION_CHANNEL_MODES,
   NOTIFICATION_CHANNELS,
@@ -74,6 +78,7 @@ export function Settings() {
       thresholds: { ozon: 70, wb: 70, ym: 70 },
     },
     notification_settings: notificationSettingsPayload(null),
+    employee_metrics_settings: parseClientEmployeeMetricsSettings(null),
   });
   const [accountUsers, setAccountUsers] = useState([]);
   const [accountUsersLoading, setAccountUsersLoading] = useState(false);
@@ -217,6 +222,7 @@ export function Settings() {
           },
         },
         notification_settings: notificationSettingsPayload(form.notification_settings),
+        employee_metrics_settings: form.employee_metrics_settings,
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -987,6 +993,50 @@ export function Settings() {
                   </div>
                 </div>
               )}
+
+              <div className="settings-account-toggle" style={{ display: 'block' }}>
+                <strong>Показатели сотрудников: перерыв между сканами</strong>
+                <span className="text-muted small" style={{ display: 'block', marginTop: 4, marginBottom: 8 }}>
+                  Если между соседними сканами сотрудника прошло больше указанного времени, считается, что он
+                  отошёл: этот промежуток не входит во время работы.
+                </span>
+                <div className="row g-2" style={{ maxWidth: 640 }}>
+                  {[
+                    { key: 'fbs', label: 'Сборка FBS, мин' },
+                    { key: 'fboCollect', label: 'Сборка FBO, мин' },
+                    { key: 'packing', label: 'Упаковка FBO, мин' },
+                    { key: 'receipts', label: 'Приёмка, мин' },
+                  ].map((it) => (
+                    <div className="col-3" key={it.key}>
+                      <label className="text-muted small mb-1 d-block" htmlFor={`settings-employee-idle-${it.key}`}>
+                        {it.label}
+                      </label>
+                      <input
+                        id={`settings-employee-idle-${it.key}`}
+                        type="number"
+                        min={0.5}
+                        max={60}
+                        step={0.5}
+                        className="form-control form-control-sm"
+                        value={Math.round(((form.employee_metrics_settings?.idleSec?.[it.key] ?? 180) / 60) * 10) / 10}
+                        onChange={(e) => {
+                          const min = Number(String(e.target.value).replace(',', '.'));
+                          if (!Number.isFinite(min) || min < 0) return;
+                          setForm((f) => ({
+                            ...f,
+                            employee_metrics_settings: {
+                              idleSec: {
+                                ...(f.employee_metrics_settings?.idleSec || {}),
+                                [it.key]: Math.round(min * 60),
+                              },
+                            },
+                          }));
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               <div className="settings-account-actions">
                 <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>
