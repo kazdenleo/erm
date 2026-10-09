@@ -292,8 +292,8 @@ export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
               </div>
             )}
 
-            <div className="home-sales-dynamics__chart">
-              <ResponsiveContainer width="100%" height={chartHeight}>
+            <div className="home-sales-dynamics__chart" style={{ minHeight: chartHeight }}>
+              <ResponsiveContainer className="home-sales-dynamics__chart-inner" width="100%" height="100%">
                 <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis

@@ -262,7 +262,14 @@
 }
 
 .home-sales-dynamics__chart {
+  position: relative;
+  flex: 1 1 auto;
   width: 100%;
+}
+
+.home-sales-dynamics__chart-inner {
+  position: absolute;
+  inset: 0;
 }
 
 .home-sales-dynamics__info {
@@ -273,6 +280,8 @@
 }
 
 .home-sales-dynamics .card-body {
+  display: flex;
+  flex-direction: column;
   padding-top: 0.75rem;
   padding-bottom: 0.5rem;
 }
