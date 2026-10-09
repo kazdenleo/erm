@@ -2203,7 +2203,7 @@ class IntegrationsService {
           'Accept': 'application/json',
           'Authorization': `Bearer ${apiKey}`
         }
-      });
+      }, opts.timeoutMs || 25000);
     } catch (e) {
       if (e?.name === 'AbortError') {
         throw new Error('Wildberries Content API: таймаут (проверьте сеть/доступ к API).');

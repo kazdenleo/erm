@@ -46,6 +46,7 @@ import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
 import tnVedRoutes from './tnVed.routes.js';
+import okpd2Routes from './okpd2.routes.js';
 import globalSearchController from '../controllers/globalSearch.controller.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
@@ -334,6 +335,9 @@ router.use('/certificates', certificatesRoutes);
 
 // ТН ВЭД (справочник кодов для настроек категории)
 router.use('/tn-ved', tnVedRoutes);
+
+// ОКПД2 (справочник кодов для категории и карточки товара)
+router.use('/okpd2', okpd2Routes);
 
 // Приёмки на склад
 router.use('/receipts', warehouseReceiptsRoutes);

@@ -19,8 +19,14 @@ import {
 } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
 import tnVedDirectoryService from '../services/tnVedDirectory.service.js';
-import { schedulePushCardsAfterTnVed } from '../services/marketplaceProductCardPush.service.js';
+import okpd2ProductApplyService from '../services/okpd2ProductApply.service.js';
+import okpd2DirectoryService from '../services/okpd2Directory.service.js';
+import {
+  schedulePushCardsAfterOkpd2,
+  schedulePushCardsAfterTnVed,
+} from '../services/marketplaceProductCardPush.service.js';
 import { normalizeCategoryTnVedCode, normalizeTnVedDigits } from '../utils/tnVedAttribute.js';
+import { normalizeOkpd2Code, OKPD2_FORMAT_HINT } from '../utils/okpd2.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -79,6 +85,37 @@ async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId, pre
     }
   } catch (e) {
     logger.warn('[User Categories] TN VED apply to products failed', {
+      categoryId,
+      err: e?.message,
+    });
+  }
+}
+
+/** undefined — поле не передано; '' — очистить; null — неверный формат. */
+function readOkpd2CodeFromBody(body) {
+  if (!body || typeof body !== 'object') return undefined;
+  if (body.okpd2_code === undefined && body.okpd2Code === undefined) return undefined;
+  return normalizeOkpd2Code(body.okpd2_code ?? body.okpd2Code);
+}
+
+async function applyOkpd2ToCategoryProductsSafe(categoryId, code, profileId, opts = {}) {
+  if (!code) return;
+  try {
+    const result = await okpd2ProductApplyService.applyToCategoryProducts(categoryId, code, {
+      profileId,
+      previousCode: opts.previousCode ?? null,
+    });
+    if (result?.productIds?.length) {
+      const pid = profileId != null && profileId !== '' && Number.isFinite(Number(profileId)) ? Number(profileId) : null;
+      schedulePushCardsAfterOkpd2(categoryId, result.productIds, {
+        profileId: pid,
+        code,
+        delayMs: 1000,
+        force: opts.force === true,
+      });
+    }
+  } catch (e) {
+    logger.warn('[User Categories] OKPD2 apply to products failed', {
       categoryId,
       err: e?.message,
     });
@@ -402,11 +439,16 @@ class UserCategoriesController {
       if (!name) {
         return res.status(400).json({ ok: false, message: 'Название категории обязательно' });
       }
+      const okpd2Code = readOkpd2CodeFromBody(req.body);
+      if (okpd2Code === null) {
+        return res.status(400).json({ ok: false, message: OKPD2_FORMAT_HINT });
+      }
       await tnVedDirectoryService.assertActiveCode(tnVedCode);
+      await okpd2DirectoryService.assertKnownCode(okpd2Code);
       
       const result = await query(
-        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links, tn_ved_code)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync, mp_field_links, tn_ved_code, okpd2_code)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
          RETURNING *`,
         [
           tid,
@@ -419,6 +461,7 @@ class UserCategoriesController {
           skipMpStock === true,
           JSON.stringify(serializeCategoryDedicatedCharcLinks(mp_field_links)),
           tnVedCode || null,
+          okpd2Code || null,
         ]
       );
       
@@ -435,6 +478,7 @@ class UserCategoriesController {
       category.mp_field_links = normalizeCategoryDedicatedCharcLinks(category.mp_field_links);
 
       await applyTnVedToCategoryProductsSafe(category.id, tnVedCode, tid);
+      void applyOkpd2ToCategoryProductsSafe(category.id, okpd2Code, tid, { force: true });
       
       return res.status(201).json({ ok: true, data: category });
     } catch (error) {
@@ -452,7 +496,14 @@ class UserCategoriesController {
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
-      const owner = await query('SELECT profile_id, tn_ved_code FROM user_categories WHERE id = $1', [id]);
+      const okpd2Code = readOkpd2CodeFromBody(req.body);
+      if (okpd2Code === null) {
+        return res.status(400).json({ ok: false, message: OKPD2_FORMAT_HINT });
+      }
+      const owner = await query(
+        'SELECT profile_id, tn_ved_code, okpd2_code FROM user_categories WHERE id = $1',
+        [id]
+      );
       if (owner.rows.length === 0) {
         return res.status(404).json({ ok: false, message: 'Категория не найдена' });
       }
@@ -460,6 +511,8 @@ class UserCategoriesController {
         return res.status(403).json({ ok: false, message: 'Нет доступа' });
       }
       await tnVedDirectoryService.assertActiveCode(tnVedCode, { allowCode: owner.rows[0].tn_ved_code });
+      const prevOkpd2Code = normalizeOkpd2Code(owner.rows[0].okpd2_code) || null;
+      await okpd2DirectoryService.assertKnownCode(okpd2Code, { allowCode: prevOkpd2Code });
       
       const updateFields = [];
       const params = [];
@@ -524,6 +577,11 @@ class UserCategoriesController {
         updateFields.push(`tn_ved_code = $${paramIndex++}`);
         params.push(tnVedCode);
       }
+
+      if (okpd2Code !== undefined) {
+        updateFields.push(`okpd2_code = $${paramIndex++}`);
+        params.push(okpd2Code || null);
+      }
       
       if (updateFields.length === 0 && attribute_ids === undefined && attribute_mp_links === undefined && mp_field_links === undefined) {
         return res.status(400).json({ ok: false, message: 'Нет полей для обновления' });
@@ -585,6 +643,15 @@ class UserCategoriesController {
           tnVedCode !== undefined ? normalizeTnVedDigits(owner.rows[0].tn_ved_code) || null : null;
         await applyTnVedToCategoryProductsSafe(id, codeToApply, tid, previousCode);
       }
+
+      const okpd2ToApply = normalizeOkpd2Code(category.okpd2_code) || '';
+      if (okpd2ToApply) {
+        const okpd2Changed = okpd2ToApply !== (prevOkpd2Code || '');
+        void applyOkpd2ToCategoryProductsSafe(id, okpd2ToApply, tid, {
+          previousCode: okpd2Changed ? prevOkpd2Code : null,
+          force: okpd2Changed,
+        });
+      }
       
       return res.status(200).json({ ok: true, data: category });
     } catch (error) {
@@ -620,6 +687,44 @@ class UserCategoriesController {
       });
       if (productIds.length) {
         schedulePushCardsAfterTnVed(id, productIds, {
+          profileId: Number(tid),
+          code,
+          delayMs: 1000,
+          force: true,
+        });
+      }
+      return res.status(200).json({ ok: true, data: { code, products: productIds.length } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/user-categories/:id/okpd2/push
+   * Отправить на МП карточки товаров категории, у которых стоит её код ОКПД2.
+   */
+  async pushOkpd2(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const r = await query('SELECT profile_id, okpd2_code FROM user_categories WHERE id = $1', [id]);
+      if (r.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(r.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const code = normalizeOkpd2Code(r.rows[0].okpd2_code);
+      if (!code) {
+        return res.status(400).json({ ok: false, message: 'У категории не указан код ОКПД2' });
+      }
+      await okpd2ProductApplyService.applyToCategoryProducts(id, code, { profileId: tid });
+      const productIds = await okpd2ProductApplyService.listCategoryProductIdsWithCode(id, code);
+      if (productIds.length) {
+        schedulePushCardsAfterOkpd2(id, productIds, {
           profileId: Number(tid),
           code,
           delayMs: 1000,

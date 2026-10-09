@@ -6,6 +6,11 @@ import {
   storedOkpd2ValueForMarketplace,
 } from '../src/utils/okpd2.js';
 import okpd2ProductApplyService from '../src/services/okpd2ProductApply.service.js';
+import {
+  normalizeSearchText,
+  parseGithubOkpd2,
+  parseWbOkpd2,
+} from '../src/services/okpd2Directory.service.js';
 
 describe('okpd2 utils', () => {
   test('normalizes code to dotted form', () => {
@@ -96,5 +101,68 @@ describe('okpd2ProductApplyService.syncPayload', () => {
       existing: { user_category_id: 5, okpd2_code: '26.20' },
     });
     expect(payload).toEqual({ price: 100 });
+  });
+
+  describe('category code inheritance', () => {
+    let originalCategoryCode;
+    beforeAll(() => {
+      originalCategoryCode = okpd2ProductApplyService._categoryOkpd2Code;
+      okpd2ProductApplyService._categoryOkpd2Code = async () => '14.14.30.110';
+    });
+    afterAll(() => {
+      okpd2ProductApplyService._categoryOkpd2Code = originalCategoryCode;
+    });
+
+    test('new product without code inherits category code', async () => {
+      const payload = { categoryId: 5, okpd2_code: null };
+      await okpd2ProductApplyService.syncPayload(payload, {});
+      expect(payload.okpd2_code).toBe('14.14.30.110');
+      expect(payload.wb_attributes).toEqual({ 15004292: '14.14.30.110' });
+    });
+
+    test('product moved to category inherits its code', async () => {
+      const payload = { user_category_id: 5 };
+      await okpd2ProductApplyService.syncPayload(payload, { existing: { user_category_id: 3 } });
+      expect(payload.okpd2_code).toBe('14.14.30.110');
+    });
+
+    test('own product code wins over category code', async () => {
+      const payload = { categoryId: 5, okpd2_code: '26.20' };
+      await okpd2ProductApplyService.syncPayload(payload, {});
+      expect(payload.okpd2_code).toBe('26.20');
+    });
+
+    test('regular update of product without code does not inherit', async () => {
+      const payload = { price: 100 };
+      await okpd2ProductApplyService.syncPayload(payload, { existing: { user_category_id: 5 } });
+      expect(payload).toEqual({ price: 100 });
+    });
+  });
+});
+
+describe('okpd2 directory parsing', () => {
+  test('parses GitHub classifier rows', () => {
+    const rows = parseGithubOkpd2([
+      { c: '26.20.11.110', n: ' Ноутбуки ', p: '26.20.11' },
+      { c: '26', n: 'Компьютеры', p: 'C' },
+      { c: 'мусор', n: 'x' },
+    ]);
+    expect(rows.map((r) => [r.code, r.name, r.parentCode])).toEqual([
+      ['26.20.11.110', 'Ноутбуки', '26.20.11'],
+      ['26', 'Компьютеры', null],
+    ]);
+  });
+
+  test('parses WB directory rows', () => {
+    const rows = parseWbOkpd2([
+      { okpd2: '26.20.11', description: 'Компьютеры портативные' },
+      { okpd2: '01.11.1.110', description: 'нестандартная группировка' },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ code: '26.20.11', name: 'Компьютеры портативные', parentCode: '26.20' });
+  });
+
+  test('normalizes search text', () => {
+    expect(normalizeSearchText('  Ёлочные   ИГРУШКИ ')).toBe('елочные игрушки');
   });
 });

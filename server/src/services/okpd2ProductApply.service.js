@@ -5,6 +5,7 @@
  */
 
 import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
 import { loadCategoryMpAttrKeys } from './tnVedProductApply.service.js';
 import {
   collectOkpd2MpKeys,
@@ -68,21 +69,17 @@ class Okpd2ProductApplyService {
       !!existing && payloadCategory !== undefined && String(payloadCategory ?? '') !== String(existing.user_category_id ?? '');
     const hasMpMaps = Object.values(MP_ATTR_FIELDS).some((f) => isPlainObject(payload[f]));
     const cleared = hasCode && !code && !!prevCode;
+    const inheritFromCategory =
+      !code && !cleared && categoryId != null && categoryId !== '' && (!existing || categoryChanged);
 
-    if (!code && !cleared && !hasMpMaps) return payload;
+    if (!code && !cleared && !hasMpMaps && !inheritFromCategory) return payload;
     if (code && !hasCode && !categoryChanged) return payload;
 
     const keys = await this._categoryMpKeys(categoryId, opts);
     if (!keys) return payload;
 
     if (code || cleared) {
-      for (const [mp, field] of Object.entries(MP_ATTR_FIELDS)) {
-        const mpKeys = keys[mp] || [];
-        if (!mpKeys.length) continue;
-        const patch = isPlainObject(payload[field]) ? { ...payload[field] } : {};
-        for (const key of mpKeys) patch[key] = code ? storedOkpd2ValueForMarketplace(mp, code) : '';
-        payload[field] = patch;
-      }
+      this._writeMpKeys(payload, keys, code);
       return payload;
     }
 
@@ -97,7 +94,117 @@ class Okpd2ProductApplyService {
         }
       }
     }
+
+    if (inheritFromCategory) {
+      const categoryCode = await this._categoryOkpd2Code(categoryId);
+      if (categoryCode) {
+        payload.okpd2_code = categoryCode;
+        this._writeMpKeys(payload, keys, categoryCode);
+      }
+    }
     return payload;
+  }
+
+  _writeMpKeys(payload, keys, code) {
+    for (const [mp, field] of Object.entries(MP_ATTR_FIELDS)) {
+      const mpKeys = keys[mp] || [];
+      if (!mpKeys.length) continue;
+      const patch = isPlainObject(payload[field]) ? { ...payload[field] } : {};
+      for (const key of mpKeys) patch[key] = code ? storedOkpd2ValueForMarketplace(mp, code) : '';
+      payload[field] = patch;
+    }
+  }
+
+  async _categoryOkpd2Code(categoryId) {
+    const id = Number(categoryId);
+    if (!Number.isFinite(id) || id <= 0) return '';
+    const r = await query('SELECT okpd2_code FROM user_categories WHERE id = $1', [id]);
+    return normalizeOkpd2Code(r.rows[0]?.okpd2_code) || '';
+  }
+
+  /** Товары категории, у которых в карточке стоит этот код ОКПД2. */
+  async listCategoryProductIdsWithCode(categoryId, code) {
+    const id = Number(categoryId);
+    const normalized = normalizeOkpd2Code(code);
+    if (!Number.isFinite(id) || id <= 0 || !normalized) return [];
+    const r = await query('SELECT id FROM products WHERE user_category_id = $1 AND okpd2_code = $2', [
+      id,
+      normalized,
+    ]);
+    return r.rows.map((row) => Number(row.id)).filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  /**
+   * Код категории → товары категории с пустым ОКПД2 (или с прежним кодом категории)
+   * и характеристики ОКПД маркетплейсов у всех товаров категории с этим кодом.
+   * @returns {Promise<{ ok: boolean, skipped?: boolean, productIds?: number[], erpUpdated?: number, mpUpdated?: number }>}
+   */
+  async applyToCategoryProducts(categoryId, code, opts = {}) {
+    const normalized = normalizeOkpd2Code(code);
+    if (!normalized) return { ok: true, skipped: true };
+    const id = Number(categoryId);
+    if (!Number.isFinite(id) || id <= 0) return { ok: false };
+    const previousCode = normalizeOkpd2Code(opts.previousCode) || null;
+
+    const touched = new Set();
+    const erp = await query(
+      `UPDATE products
+       SET okpd2_code = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE user_category_id = $1
+         AND (okpd2_code IS NULL OR BTRIM(okpd2_code) = '' OR okpd2_code = $3)
+         AND okpd2_code IS DISTINCT FROM $2
+       RETURNING id`,
+      [id, normalized, previousCode]
+    );
+    for (const row of erp.rows) touched.add(Number(row.id));
+
+    this._keysCache.delete(String(id));
+    const keys = await this._categoryMpKeys(id, opts);
+    let mpUpdated = 0;
+    const columns = keys
+      ? Object.entries(MP_ATTR_FIELDS).filter(([mp]) => (keys[mp] || []).length)
+      : [];
+    if (columns.length) {
+      const r = await query(
+        `SELECT id, ozon_attributes, wb_attributes, ym_attributes
+         FROM products WHERE user_category_id = $1 AND okpd2_code = $2`,
+        [id, normalized]
+      );
+      for (const row of r.rows) {
+        const sets = [];
+        const params = [row.id];
+        for (const [mp, field] of columns) {
+          const current = isPlainObject(row[field]) ? row[field] : {};
+          const patch = {};
+          for (const key of keys[mp]) {
+            if (okpd2FromMpStoredValue(current[key]) !== normalized) {
+              patch[key] = storedOkpd2ValueForMarketplace(mp, normalized);
+            }
+          }
+          if (!Object.keys(patch).length) continue;
+          params.push(JSON.stringify(patch));
+          sets.push(`${field} = COALESCE(${field}, '{}'::jsonb) || $${params.length}::jsonb`);
+        }
+        if (!sets.length) continue;
+        await query(
+          `UPDATE products SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          params
+        );
+        mpUpdated += 1;
+        touched.add(Number(row.id));
+      }
+    }
+
+    const productIds = [...touched].filter((n) => Number.isFinite(n) && n > 0);
+    logger.info('[OKPD2 apply] category products updated', {
+      categoryId: id,
+      code: normalized,
+      previousCode,
+      erpUpdated: erp.rowCount || 0,
+      mpUpdated,
+      products: productIds.length,
+    });
+    return { ok: true, erpUpdated: erp.rowCount || 0, mpUpdated, productIds };
   }
 }
 

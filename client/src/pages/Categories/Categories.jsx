@@ -387,6 +387,7 @@ export function Categories() {
                       <div style={{fontSize: '12px', color: 'var(--muted)'}}>
                         Товаров: {category.productsCount || 0}
                         {category.tn_ved_code ? ` · ТН ВЭД ${category.tn_ved_code}` : ''}
+                        {category.okpd2_code ? ` · ОКПД2 ${category.okpd2_code}` : ''}
                       </div>
                       {children.length > 0 && (
                         <div style={{marginTop: '8px', paddingLeft: '20px'}}>
@@ -412,6 +413,9 @@ export function Categories() {
                               <CategoryMpBadges category={child} />
                               {child.tn_ved_code ? (
                                 <span style={{fontSize: '11px'}}>ТН ВЭД {child.tn_ved_code}</span>
+                              ) : null}
+                              {child.okpd2_code ? (
+                                <span style={{fontSize: '11px'}}>ОКПД2 {child.okpd2_code}</span>
                               ) : null}
                               {child.productsCount > 0 && (
                                 <span style={{fontSize: '11px'}}>({child.productsCount} товаров)</span>

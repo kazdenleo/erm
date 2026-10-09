@@ -2978,7 +2978,46 @@ export function schedulePushCardsForCategory(userCategoryId, opts = {}) {
 }
 
 const MP_TITLES = { ozon: 'Ozon', wb: 'WB', ym: 'Я.Маркет' };
-const _tnVedPushPending = new Map();
+const CATEGORY_CODE_PUSH_KINDS = {
+  tn_ved: {
+    label: 'ТН ВЭД',
+    log: 'TN VED',
+    type: 'tn_ved_card_push',
+    title: 'ТН ВЭД выгружен на маркетплейсы',
+  },
+  okpd2: {
+    label: 'ОКПД2',
+    log: 'OKPD2',
+    type: 'okpd2_card_push',
+    title: 'ОКПД2 выгружен на маркетплейсы',
+  },
+};
+const _categoryCodePushPending = new Map();
+
+function scheduleCategoryCodePush(kind, userCategoryId, productIds, opts = {}) {
+  if (!opts.force && !isCardAutoPushEnabled()) return;
+  const catId = Number(userCategoryId);
+  const ids = (Array.isArray(productIds) ? productIds : [])
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!Number.isFinite(catId) || catId < 1 || ids.length === 0) return;
+
+  const pendingKey = `${kind}:${catId}`;
+  const pending = _categoryCodePushPending.get(pendingKey) || { ids: new Set(), timer: null };
+  ids.forEach((id) => pending.ids.add(id));
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => {
+    _categoryCodePushPending.delete(pendingKey);
+    runCategoryCodeCardPush(kind, catId, [...pending.ids].sort((a, b) => a - b), opts).catch((e) => {
+      logger.warn(`[MP Card Push] ${CATEGORY_CODE_PUSH_KINDS[kind].log} auto push failed`, {
+        userCategoryId: catId,
+        message: e?.message || String(e),
+      });
+    });
+  }, Math.max(1000, Number(opts.delayMs) || 5000));
+  pending.timer.unref?.();
+  _categoryCodePushPending.set(pendingKey, pending);
+}
 
 /**
  * После заполнения ТН ВЭД из категории — обновить на МП карточки затронутых товаров.
@@ -2989,30 +3028,16 @@ const _tnVedPushPending = new Map();
  *   force — ручной запуск: игнорирует MARKETPLACE_CARD_AUTO_PUSH_ENABLED.
  */
 export function schedulePushCardsAfterTnVed(userCategoryId, productIds, opts = {}) {
-  if (!opts.force && !isCardAutoPushEnabled()) return;
-  const catId = Number(userCategoryId);
-  const ids = (Array.isArray(productIds) ? productIds : [])
-    .map((x) => Number(x))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (!Number.isFinite(catId) || catId < 1 || ids.length === 0) return;
-
-  const pending = _tnVedPushPending.get(catId) || { ids: new Set(), timer: null };
-  ids.forEach((id) => pending.ids.add(id));
-  if (pending.timer) clearTimeout(pending.timer);
-  pending.timer = setTimeout(() => {
-    _tnVedPushPending.delete(catId);
-    runTnVedCardPush(catId, [...pending.ids].sort((a, b) => a - b), opts).catch((e) => {
-      logger.warn('[MP Card Push] TN VED auto push failed', {
-        userCategoryId: catId,
-        message: e?.message || String(e),
-      });
-    });
-  }, Math.max(1000, Number(opts.delayMs) || 5000));
-  pending.timer.unref?.();
-  _tnVedPushPending.set(catId, pending);
+  scheduleCategoryCodePush('tn_ved', userCategoryId, productIds, opts);
 }
 
-async function runTnVedCardPush(catId, ids, opts) {
+/** То же для ОКПД2 категории (параметры как у schedulePushCardsAfterTnVed). */
+export function schedulePushCardsAfterOkpd2(userCategoryId, productIds, opts = {}) {
+  scheduleCategoryCodePush('okpd2', userCategoryId, productIds, opts);
+}
+
+async function runCategoryCodeCardPush(kind, catId, ids, opts) {
+  const meta = CATEGORY_CODE_PUSH_KINDS[kind];
   const cat = await query('SELECT name, profile_id FROM user_categories WHERE id = $1', [catId]);
   const catName = cat.rows[0]?.name || `#${catId}`;
   const profileIdRaw = opts.profileId ?? cat.rows[0]?.profile_id ?? null;
@@ -3021,7 +3046,7 @@ async function runTnVedCardPush(catId, ids, opts) {
       ? Number(profileIdRaw)
       : null;
 
-  logger.info('[MP Card Push] TN VED → push cards', { userCategoryId: catId, count: ids.length });
+  logger.info(`[MP Card Push] ${meta.log} → push cards`, { userCategoryId: catId, count: ids.length });
   const okByMp = { ozon: 0, wb: 0, ym: 0 };
   let skipped = 0;
   const errors = [];
@@ -3043,24 +3068,24 @@ async function runTnVedCardPush(catId, ids, opts) {
     .filter(([, n]) => n > 0)
     .map(([mp, n]) => `${MP_TITLES[mp]} — ${n}`);
   const parts = [
-    `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: товаров с ${opts.force ? 'этим' : 'новым'} ТН ВЭД — ${ids.length}.`,
+    `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: товаров с ${opts.force ? 'этим' : 'новым'} ${meta.label} — ${ids.length}.`,
     sent.length ? `Карточки обновлены: ${sent.join(', ')}.` : 'Ни одна карточка не обновлена.',
   ];
   if (skipped > 0) parts.push(`Пропущено (карточки нет на МП): ${skipped}.`);
   if (errors.length > 0) {
     parts.push(`Ошибок: ${errors.length}. ${errors.slice(0, 5).join('; ')}`);
   }
-  logger.info('[MP Card Push] TN VED auto push done', {
+  logger.info(`[MP Card Push] ${meta.log} auto push done`, {
     userCategoryId: catId,
     okByMp,
     skipped,
     errors: errors.length,
   });
   await addRuntimeNotification({
-    type: 'tn_ved_card_push',
+    type: meta.type,
     severity: errors.length > 0 ? 'warn' : 'info',
-    source: 'tn_ved_card_push',
-    title: 'ТН ВЭД выгружен на маркетплейсы',
+    source: meta.type,
+    title: meta.title,
     message: parts.join(' '),
     profileId,
     meta: { user_category_id: catId, product_ids: ids.slice(0, 200) },
@@ -3073,5 +3098,6 @@ export default {
   schedulePushProductCard,
   schedulePushCardsForCategory,
   schedulePushCardsAfterTnVed,
+  schedulePushCardsAfterOkpd2,
   isCardAutoPushEnabled,
 };

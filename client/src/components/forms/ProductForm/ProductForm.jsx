@@ -2696,6 +2696,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return String(cat.tn_ved_code || cat.tnVedCode || '').replace(/\D/g, '');
   }, [categoryResolvedForMappings]);
 
+  const categoryOkpd2Code = String(categoryResolvedForMappings?.okpd2_code || '');
+
   // Ozon: категория и тип (из подгруженной категории или из списка: ozon_description_category_id/ozon_type_id либо composite "descId_typeId" в ozon)
   const { ozonCategoryId, ozonTypeId } = useMemo(() => {
     const cid = formData.categoryId ? String(formData.categoryId) : '';
@@ -8387,9 +8389,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
               const code = normalizeOkpd2Code(e.target.value);
               if (code && code !== e.target.value) handleChange('okpd2_code', code);
             }}
-            placeholder="26.20.11.110"
+            placeholder={categoryOkpd2Code ? `из категории: ${categoryOkpd2Code}` : '26.20.11.110'}
             maxLength={20}
-            title="Уходит в характеристику «ОКПД» на маркетплейсах при сохранении"
+            title="Уходит в характеристику «ОКПД» на маркетплейсах при сохранении. Пустое поле нового товара заполнится кодом категории."
           />
           {errors.okpd2_code && <div className="error">{errors.okpd2_code}</div>}
         </div>

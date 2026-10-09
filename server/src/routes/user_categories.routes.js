@@ -48,6 +48,9 @@ router.put('/:id', wrapAsync(userCategoriesController.update.bind(userCategories
 // Отправить ТН ВЭД категории на маркетплейсы
 router.post('/:id/tn-ved/push', wrapAsync(userCategoriesController.pushTnVed.bind(userCategoriesController)));
 
+// Отправить ОКПД2 категории на маркетплейсы
+router.post('/:id/okpd2/push', wrapAsync(userCategoriesController.pushOkpd2.bind(userCategoriesController)));
+
 // Связь ERP-атрибута с характеристиками МП в рамках категории
 router.put(
   '/:id/attributes/:attributeId/mp-links',

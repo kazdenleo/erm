@@ -55,6 +55,11 @@ export const userCategoriesApi = {
     return response.data;
   },
 
+  async pushOkpd2(id) {
+    const response = await api.post(`/user-categories/${id}/okpd2/push`);
+    return response.data;
+  },
+
   /**
    * Связь ERP-атрибута с характеристиками Ozon/WB/ЯМ для конкретной категории.
    * @param {string|number} categoryId

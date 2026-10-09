@@ -33,6 +33,7 @@ import {
 } from '../../../utils/productMpFieldLinks.js';
 import '../../../pages/Categories/Categories.css';
 import { TnVedCodePicker } from '../../common/TnVedCodePicker/TnVedCodePicker.jsx';
+import { Okpd2CodePicker } from '../../common/Okpd2CodePicker/Okpd2CodePicker.jsx';
 import { isSystemCardAttr } from '../../../utils/systemMainFieldAttributes.js';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
@@ -229,6 +230,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
     parentId: '',
     skip_marketplace_stock_sync: false,
     tn_ved_code: '',
+    okpd2_code: '',
     wbCategoryId: '',
     ozonCategoryId: '',
     ymCategoryId: ''
@@ -265,6 +267,29 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       });
     } catch (e) {
       setTnVedPush({
+        loading: false,
+        error: true,
+        message: e?.response?.data?.message || e?.message || 'Не удалось отправить',
+      });
+    }
+  };
+  const [okpd2Push, setOkpd2Push] = useState({ loading: false, message: '', error: false });
+  const savedOkpd2Code = String(category?.okpd2_code || '');
+  const handlePushOkpd2 = async () => {
+    if (!category?.id) return;
+    setOkpd2Push({ loading: true, message: '', error: false });
+    try {
+      const res = await userCategoriesApi.pushOkpd2(category.id);
+      const n = Number(res?.data?.products) || 0;
+      setOkpd2Push({
+        loading: false,
+        error: false,
+        message: n
+          ? `Отправляем карточки (${n}) — итог придёт уведомлением.`
+          : 'Нет товаров с этим кодом.',
+      });
+    } catch (e) {
+      setOkpd2Push({
         loading: false,
         error: true,
         message: e?.response?.data?.message || e?.message || 'Не удалось отправить',
@@ -828,6 +853,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         parentId: category.parent_id || category.parentId || '',
         skip_marketplace_stock_sync: category.skip_marketplace_stock_sync === true,
         tn_ved_code: category.tn_ved_code || category.tnVedCode || '',
+        okpd2_code: category.okpd2_code || '',
         // Не сбрасываем wbCategoryId, ozonCategoryId, ymCategoryId здесь,
         // они устанавливаются в loadExistingMappings после загрузки категорий
       }));
@@ -849,6 +875,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
         parentId: '',
         skip_marketplace_stock_sync: false,
         tn_ved_code: '',
+        okpd2_code: '',
         wbCategoryId: '',
         ozonCategoryId: '',
         ymCategoryId: ''
@@ -1004,6 +1031,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
       mp_field_links: serializeCategoryDedicatedCharcLinks(dedicatedMpLinks, addedDedicatedKeys),
       skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       tn_ved_code: formData.tn_ved_code || null,
+      okpd2_code: formData.okpd2_code || null,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
         ozon: ozonCategoryId || null,
@@ -1163,6 +1191,31 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
             </Button>
             {tnVedPush.message ? (
               <span className={`small ${tnVedPush.error ? 'text-danger' : 'text-muted'}`}>{tnVedPush.message}</span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="field">
+        <Okpd2CodePicker
+          id="categoryOkpd2Code"
+          value={formData.okpd2_code || ''}
+          onChange={(code) => handleChange('okpd2_code', code)}
+          hint="Код подставится в карточки товаров категории, где ОКПД2 не заполнен или стоит прежний код категории, и в новые товары. После сохранения затронутые карточки сразу уйдут на маркетплейсы."
+        />
+        {savedOkpd2Code && formData.okpd2_code === savedOkpd2Code ? (
+          <div className="d-flex align-items-center gap-2 mt-2 flex-wrap">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              onClick={handlePushOkpd2}
+              disabled={okpd2Push.loading}
+            >
+              {okpd2Push.loading ? 'Отправка…' : 'Отправить ОКПД2 на маркетплейсы'}
+            </Button>
+            {okpd2Push.message ? (
+              <span className={`small ${okpd2Push.error ? 'text-danger' : 'text-muted'}`}>{okpd2Push.message}</span>
             ) : null}
           </div>
         ) : null}
