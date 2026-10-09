@@ -3353,6 +3353,17 @@ class OrdersService {
     for (const row of r.rows || []) {
       const orderDbId = typeof row.id === 'bigint' ? Number(row.id) : Number(row.id);
       if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
+      // МП увёз заказ раньше, чем закрыли поставку в ERP: без списания наличие осталось бы на складе.
+      if (isOrderShipmentDeductStatus(row.status)) {
+        try {
+          const full = await this.repository.findById(orderDbId);
+          if (full) await this._applyAssemblyStockForOrderRow(full);
+        } catch (e) {
+          logger.warn(
+            `[Orders] списание при терминальном статусе ${row.status} заказ ${row.order_id}: ${e?.message || e}`
+          );
+        }
+      }
       const { releasedProductLines } = await this.releaseReserveForOrderDbId(orderDbId, {
         reasonSuffix: 'терминальный статус заказа',
         orderRow: row
