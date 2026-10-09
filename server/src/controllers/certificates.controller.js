@@ -5,6 +5,7 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { query } from '../config/database.js';
 import certificatesService from '../services/certificates.service.js';
 import certificatesStatusSyncService from '../services/certificatesStatusSync.service.js';
 import certificatesImportService from '../services/certificatesImport.service.js';
@@ -112,10 +113,61 @@ class CertificatesController {
     try {
       const profileId = this._requireProfile(req);
       const { id } = req.params;
+      const deleteOzon = this._truthyQuery(req.query.deleteOzon, false);
+      const deleteYm = this._truthyQuery(req.query.deleteYm, false);
+      if (deleteOzon || deleteYm) {
+        await this._deleteOnMarketplaces(id, { profileId, organizationId: this._organizationId(req), deleteOzon, deleteYm });
+      }
       await certificatesService.delete(id, { profileId });
       return res.status(200).json({ ok: true });
     } catch (e) {
       next(e);
+    }
+  }
+
+  /** Удаляет в кабинетах; при ошибке локальный сертификат остаётся, а уже удалённая связь снимается. */
+  async _deleteOnMarketplaces(id, { profileId, organizationId, deleteOzon, deleteYm }) {
+    const cert = await certificatesService.getById(id, { profileId });
+    const opts = { profileId, organizationId };
+    const done = [];
+    const failed = [];
+
+    if (deleteOzon && cert.ozon_certificate_id) {
+      try {
+        await ozonCertificatesPushService.deleteRemote(cert.ozon_certificate_id, opts);
+        await query(
+          `UPDATE certificates
+              SET ozon_certificate_id = NULL, ozon_status_code = NULL, ozon_synced_at = NULL, ozon_last_error = NULL,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1 AND profile_id = $2::bigint`,
+          [id, profileId]
+        );
+        done.push('Ozon');
+      } catch (e) {
+        failed.push(e?.message || String(e));
+      }
+    }
+    if (deleteYm && cert.ym_document_id) {
+      try {
+        await ymCertificatesPushService.deleteRemote(cert.ym_document_id, opts);
+        await query(
+          `UPDATE certificates
+              SET ym_document_id = NULL, ym_status_code = NULL, ym_synced_at = NULL, ym_last_error = NULL,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1 AND profile_id = $2::bigint`,
+          [id, profileId]
+        );
+        done.push('Яндекс.Маркет');
+      } catch (e) {
+        failed.push(e?.message || String(e));
+      }
+    }
+
+    if (failed.length) {
+      const prefix = done.length ? `Удалён на: ${done.join(', ')}. ` : '';
+      const err = new Error(`${prefix}${failed.join('; ')}. Сертификат в ERP не удалён.`);
+      err.statusCode = 400;
+      throw err;
     }
   }
 

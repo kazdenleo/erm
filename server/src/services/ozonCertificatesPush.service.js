@@ -152,6 +152,19 @@ class OzonCertificatesPushService {
       .filter((n) => Number.isFinite(n) && n > 0);
   }
 
+  /** Удаляет сертификат в кабинете Ozon; Ozon отвечает 200 с is_delete=false, если удалить нельзя. */
+  async deleteRemote(ozonCertificateId, { profileId = null, organizationId = null } = {}) {
+    const data = await ozonApiPostWithRetry(
+      '/v1/product/certificate/delete',
+      { certificate_id: Number(ozonCertificateId) },
+      { profileId, organizationId }
+    );
+    if (data?.result?.is_delete !== true) {
+      throw httpError(`Ozon не удалил сертификат: ${data?.result?.error_message || 'причина не указана'}`, 400);
+    }
+    return true;
+  }
+
   /** Подтягивает status_code из /v1/product/certificate/list для уже отправленных сертификатов. */
   async syncStatuses(certs, { profileId = null, organizationId = null } = {}) {
     const targets = (certs || []).filter((c) => Number(c.ozon_certificate_id) > 0);

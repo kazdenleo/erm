@@ -24,8 +24,14 @@ export const certificatesApi = {
     return res.data;
   },
 
-  remove: async (id) => {
-    const res = await api.delete(`/certificates/${id}`);
+  remove: async (id, { deleteOzon = false, deleteYm = false } = {}) => {
+    const params = {};
+    if (deleteOzon) params.deleteOzon = 1;
+    if (deleteYm) params.deleteYm = 1;
+    const res = await api.delete(`/certificates/${id}`, {
+      params: Object.keys(params).length ? params : undefined,
+      timeout: 120000,
+    });
     return res.data;
   },
 

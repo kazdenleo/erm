@@ -299,6 +299,10 @@ export function Certificates() {
   const [statusSyncingId, setStatusSyncingId] = useState(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
+  const [deleteModalCert, setDeleteModalCert] = useState(null);
+  const [deleteForm, setDeleteForm] = useState({ deleteOzon: true, deleteYm: true });
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [statusSyncError, setStatusSyncError] = useState('');
 
   const brandNameById = useMemo(() => {
@@ -314,10 +318,13 @@ export function Certificates() {
       const opts = {};
       if (filterBrandId) opts.brandId = filterBrandId;
       const res = await certificatesApi.getAll(opts);
-      setList(res?.data || []);
+      const rows = res?.data || [];
+      setList(rows);
+      return rows;
     } catch (err) {
       setError(err?.message || 'Ошибка загрузки');
       if (!silent) setList([]);
+      return null;
     } finally {
       if (!silent) setLoading(false);
     }
@@ -488,13 +495,45 @@ export function Certificates() {
     }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (c) => {
+    if (c.ozon_certificate_id || c.ym_document_id) {
+      setDeleteError('');
+      setDeleteForm({ deleteOzon: Boolean(c.ozon_certificate_id), deleteYm: Boolean(c.ym_document_id) });
+      setDeleteModalCert(c);
+      return;
+    }
     if (!window.confirm('Удалить этот документ?')) return;
     try {
-      await certificatesApi.remove(id);
+      await certificatesApi.remove(c.id);
       await load();
     } catch (err) {
       alert(err?.response?.data?.message || err?.message || 'Ошибка удаления');
+    }
+  };
+
+  const closeDeleteModal = () => {
+    if (deleteBusy) return;
+    setDeleteModalCert(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteModalCert) return;
+    setDeleteBusy(true);
+    setDeleteError('');
+    try {
+      await certificatesApi.remove(deleteModalCert.id, {
+        deleteOzon: deleteForm.deleteOzon && Boolean(deleteModalCert.ozon_certificate_id),
+        deleteYm: deleteForm.deleteYm && Boolean(deleteModalCert.ym_document_id),
+      });
+      setDeleteModalCert(null);
+      await load({ silent: true });
+    } catch (err) {
+      setDeleteError(err?.response?.data?.message || err?.message || 'Ошибка удаления');
+      const fresh = await load({ silent: true });
+      const current = fresh?.find((x) => x.id === deleteModalCert.id);
+      if (current) setDeleteModalCert(current);
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -818,7 +857,7 @@ export function Certificates() {
                           variant="secondary"
                           size="small"
                           className="btn-icon btn-icon-only btn-delete"
-                          onClick={() => handleDelete(c.id)}
+                          onClick={() => handleDelete(c)}
                           title="Удалить"
                           aria-label="Удалить"
                         >
@@ -1006,6 +1045,53 @@ export function Certificates() {
               </Button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!deleteModalCert}
+        onClose={closeDeleteModal}
+        title="Удалить сертификат"
+        size="medium"
+      >
+        {deleteModalCert && (
+          <div className="certificate-form">
+            <p className="form-hint">
+              Документ <strong>{deleteModalCert.certificate_number}</strong> отправлен на маркетплейсы.
+              Удалить его и там? Без удаления он останется в кабинете маркетплейса и привязанных товарах.
+            </p>
+            {deleteError && <div className="form-error">{deleteError}</div>}
+            {deleteModalCert.ozon_certificate_id ? (
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={deleteForm.deleteOzon}
+                  onChange={(e) => setDeleteForm((p) => ({ ...p, deleteOzon: e.target.checked }))}
+                  disabled={deleteBusy}
+                />
+                <span>Удалить также на Ozon (ID {deleteModalCert.ozon_certificate_id})</span>
+              </label>
+            ) : null}
+            {deleteModalCert.ym_document_id ? (
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={deleteForm.deleteYm}
+                  onChange={(e) => setDeleteForm((p) => ({ ...p, deleteYm: e.target.checked }))}
+                  disabled={deleteBusy}
+                />
+                <span>Удалить также на Яндекс.Маркете (ID {deleteModalCert.ym_document_id})</span>
+              </label>
+            ) : null}
+            <div className="form-actions">
+              <Button type="button" variant="secondary" onClick={closeDeleteModal} disabled={deleteBusy}>
+                Отмена
+              </Button>
+              <Button type="button" variant="danger" onClick={confirmDelete} disabled={deleteBusy}>
+                {deleteBusy ? 'Удаление…' : 'Удалить'}
+              </Button>
+            </div>
+          </div>
         )}
       </Modal>
     </div>

@@ -177,6 +177,24 @@ const YM_STATUS_BATCH = 50;
 const YM_LIST_MAX_PAGES = 100;
 
 class YmCertificatesPushService {
+  /** Удаляет документ в кабинете Маркета (offers/documents/delete). */
+  async deleteRemote(ymDocumentId, { profileId = null, organizationId = null } = {}) {
+    let ctx;
+    try {
+      ctx = await integrationsService._resolveYandexBusinessApiContext({ profileId, organizationId });
+    } catch (e) {
+      throw httpError(e?.message || 'Не настроен Яндекс.Маркет', e?.statusCode || 400);
+    }
+    const url = `https://api.partner.market.yandex.ru/v1/businesses/${encodeURIComponent(String(ctx.businessId))}/offers/documents/delete`;
+    const data = await ymFetchJson(url, { apiKey: ctx.apiKey, body: { documentIds: [Number(ymDocumentId)] } });
+    const errs = ymCreateErrors(data);
+    if (data?.status && data.status !== 'OK') {
+      const msg = errs.map((e) => e?.message || e?.code).filter(Boolean).join('; ');
+      throw httpError(`Яндекс.Маркет не удалил документ: ${msg || data.status}`, 400);
+    }
+    return true;
+  }
+
   /** Все документы кабинета Маркета (offers/documents с page_token). */
   async listAllDocuments({ profileId = null, organizationId = null } = {}) {
     let ctx;
