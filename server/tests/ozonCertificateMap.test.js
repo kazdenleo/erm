@@ -49,6 +49,19 @@ describe('ozonCertificateMap', () => {
     expect(name).toContain('Miles');
   });
 
+  test('builds name from categories and brand', () => {
+    expect(
+      buildOzonCertificateName({
+        brand_name: 'Nordfil',
+        user_categories: [{ id: 1, name: 'Фильтр воздушный' }, { id: 2, name: 'Фильтр салонный' }],
+        certificate_number: 'ЕАЭС RU С-RU.АД50.В.05899/23',
+      })
+    ).toBe('Фильтр воздушный, Фильтр салонный Nordfil');
+    expect(
+      buildOzonCertificateName({ user_categories: [{ id: 1, name: 'x'.repeat(150) }], brand_name: 'B' }).length
+    ).toBe(100);
+  });
+
   test('parses create response id shapes', () => {
     expect(parseOzonCertificateCreateId({ result: 12345 })).toBe(12345);
     expect(parseOzonCertificateCreateId({ id: 99 })).toBe(99);

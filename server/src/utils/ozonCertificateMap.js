@@ -72,8 +72,14 @@ export function toOzonDateTime(dateOnly) {
   return null;
 }
 
+/** «Категория[, категория] Бренд»; без категорий и бренда — тип + номер. */
 export function buildOzonCertificateName(cert = {}) {
   const brand = String(cert.brand_name || '').trim();
+  const categories = (Array.isArray(cert.user_categories) ? cert.user_categories : [])
+    .map((cat) => String(cat?.name || '').trim())
+    .filter(Boolean)
+    .join(', ');
+  if (categories) return [categories, brand].filter(Boolean).join(' ').slice(0, 100);
   const number = String(cert.certificate_number || '').trim();
   const typeLabel =
     cert.document_type === 'declaration'

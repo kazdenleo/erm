@@ -62,6 +62,16 @@ const YM_DOC_TYPE_DEFAULTS = [
   { code: 'STATE_REGISTRATION_CERTIFICATE', label: 'Свидетельство гос. регистрации' },
 ];
 
+/** «Категория[, категория] Бренд» — название документа в кабинете маркетплейса (Ozon: до 100 символов). */
+function defaultMarketplaceCertificateName(c, brandNameById = {}) {
+  const categories = (Array.isArray(c?.user_categories) ? c.user_categories : [])
+    .map((cat) => String(cat?.name || '').trim())
+    .filter(Boolean)
+    .join(', ');
+  const brand = String(c?.brand_name || brandNameById[String(c?.brand_id)] || '').trim();
+  return [categories, brand].filter(Boolean).join(' ').slice(0, 100);
+}
+
 function defaultYmDocType(documentType) {
   if (documentType === 'declaration') return 'CONFORMITY_DECLARATION';
   if (documentType === 'registration') return 'STATE_REGISTRATION_CERTIFICATE';
@@ -542,7 +552,7 @@ export function Certificates() {
     setOzonError('');
     setOzonResult(null);
     setOzonForm({
-      name: c.ozon_name || '',
+      name: c.ozon_name || defaultMarketplaceCertificateName(c, brandNameById),
       accordanceTypeCode: c.ozon_accordance_type_code || 'technical_regulations_cu',
       bindProducts: true,
       forceCreate: false,
@@ -926,9 +936,9 @@ export function Certificates() {
                 maxLength={100}
                 value={ozonForm.name}
                 onChange={(e) => setOzonForm((p) => ({ ...p, name: e.target.value }))}
-                placeholder="Например: Сертификат Miles"
+                placeholder="Например: Фильтр воздушный Nordfil"
               />
-              <p className="form-hint">Если пусто — соберём из типа, бренда и номера.</p>
+              <p className="form-hint">Подставлено из категорий и бренда — можно изменить.</p>
             </div>
             <div className="form-group">
               <label>Тип соответствия</label>
