@@ -455,11 +455,17 @@ async function notifySupplierSubmitFailed({
     String(supplierSubmit?.message || '').trim() ||
     'Поставщик не принял позиции (ошибка API или блок заказа)';
   const name = supplierName || supplierSubmit?.supplierName || 'поставщик';
+  const orderKey = refs
+    .map((r) => String(r.orderId || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join(',');
   try {
     await addRuntimeNotification({
       type: 'supplier_order_submit_failed',
       severity: 'error',
       source: 'supplier_order_placement',
+      dedupeKey: orderKey ? `supplier_order_submit_failed|${name}|${orderKey}` : null,
       title: 'Заказы не отправлены поставщику',
       message:
         `${name}: ${reason}. Заказы остались в статусе «Новый»: ${orderLabel}.` +

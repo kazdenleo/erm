@@ -232,6 +232,17 @@ export function Notifications() {
                       }}
                     >
                       {n.marketplace ? <span>{String(n.marketplace)}</span> : null}
+                      {Number(n.repeat_count) > 1 ? (
+                        <span
+                          title={
+                            n.first_created_at
+                              ? `Впервые: ${formatNotificationDate(n.first_created_at)}`
+                              : undefined
+                          }
+                        >
+                          Повторялось: {n.repeat_count}×
+                        </span>
+                      ) : null}
                       {createdLabel ? <span title="Время создания">Создано: {createdLabel}</span> : null}
                     </div>
                   </div>

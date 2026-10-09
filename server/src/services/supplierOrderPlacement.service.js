@@ -20,6 +20,8 @@ import {
   pendingSupplierSubmitQuantity,
 } from '../utils/orderSupplierSubmitScope.js';
 import { basketItemIdsForRollback } from '../utils/supplierSubmitRollback.js';
+import { sourceOrderIdsFromPurchaseLine } from './supplierOrderAdapters/shared.js';
+import { resolveRuntimeNotificationsForOrders } from '../utils/runtime-notifications.js';
 import { rememberSupplierAccept } from '../utils/recentSupplierAccept.js';
 import { orderMarketplaceToDb } from '../utils/orderPurchaseLookup.js';
 import { trySessionAdvisoryLock } from '../utils/sessionAdvisoryLock.js';
@@ -589,6 +591,23 @@ export async function trySubmitLinesToSupplier({
   }
 }
 
+/** Заказы с принятых поставщиком позиций — их уведомления «не отправлены» уже неактуальны. */
+function acceptedOrderIds(linesToSubmit, acceptedLines, orderScope) {
+  if (orderScope?.orderId) return [String(orderScope.orderId).trim()];
+  const acceptedPids = new Set(
+    (Array.isArray(acceptedLines) ? acceptedLines : [])
+      .map((l) => Number(l?.productId ?? l?.product_id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+  const ids = new Set();
+  for (const line of linesToSubmit || []) {
+    const pid = Number(line?.product_id ?? line?.productId);
+    if (acceptedPids.size && !acceptedPids.has(pid)) continue;
+    for (const oid of sourceOrderIdsFromPurchaseLine(line)) ids.add(oid);
+  }
+  return [...ids];
+}
+
 export async function trySubmitPurchaseToSupplier({
   purchaseId,
   supplierId,
@@ -913,6 +932,11 @@ export async function trySubmitPurchaseToSupplier({
           acceptedLines: adapterResult?.lines?.length || 0,
         });
       }
+      await resolveRuntimeNotificationsForOrders({
+        type: 'supplier_order_submit_failed',
+        profileId: ctx.purchase.profile_id ?? profileId,
+        orderIds: acceptedOrderIds(linesToSubmit, adapterResult.lines, orderScoped ? orderScope : null),
+      }).catch(() => {});
       claimedWithoutForce = false;
     } else if (adapterResult?.ambiguousSuccess) {
       await rememberAcceptsFromSubmittedLines(

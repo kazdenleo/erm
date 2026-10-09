@@ -40,6 +40,8 @@ export function isRuntimeNotificationForProfile(n, profileId) {
  * Runtime-уведомления: ошибки/предупреждения фоновых задач и интеграций.
  * Храним в storage (файл), чтобы UI мог показать даже после перезапуска.
  * Обязательно передавайте profileId / profile_id — иначе уведомление не увидят пользователи аккаунтов.
+ * dedupeKey: пока такое уведомление не просмотрено, повтор обновляет его (repeat_count),
+ * а не добавляет новое — фоновые задачи с ретраями иначе засыпают ленту дублями.
  */
 export async function addRuntimeNotification(input) {
   try {
@@ -61,6 +63,11 @@ export async function addRuntimeNotification(input) {
       meta.profile_id = profileId;
     }
 
+    const dedupeKey =
+      input?.dedupeKey != null && String(input.dedupeKey).trim() !== ''
+        ? String(input.dedupeKey).trim()
+        : null;
+
     const n = {
       id: input?.id || makeId('rt'),
       type: input?.type || 'runtime',
@@ -71,12 +78,27 @@ export async function addRuntimeNotification(input) {
       source: input?.source || undefined,
       created_at: input?.created_at || now,
       ...(profileId != null ? { profile_id: profileId } : {}),
+      ...(dedupeKey ? { dedupe_key: dedupeKey } : {}),
       meta,
     };
 
     const current = (await readData(STORAGE_KEY)) || [];
     const arr = Array.isArray(current) ? current : [];
-    const next = [n, ...arr].slice(0, MAX_ITEMS);
+    let rest = arr;
+    if (dedupeKey) {
+      const prev = arr.find(
+        (x) =>
+          x?.dedupe_key === dedupeKey &&
+          notificationProfileId(x) === notificationProfileId(n)
+      );
+      if (prev) {
+        n.id = prev.id;
+        n.first_created_at = prev.first_created_at || prev.created_at;
+        n.repeat_count = (Number(prev.repeat_count) || 1) + 1;
+        rest = arr.filter((x) => x !== prev);
+      }
+    }
+    const next = [n, ...rest].slice(0, MAX_ITEMS);
     await writeData(STORAGE_KEY, next);
     return n;
   } catch (e) {
@@ -124,6 +146,41 @@ export async function clearRuntimeNotifications(options = {}) {
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Снять уведомления типа type по заказам, которые уже разрешились (например, ушли поставщику).
+ * Уведомление удаляется, только если все его meta.order_ids входят в orderIds.
+ */
+export async function resolveRuntimeNotificationsForOrders({ type, profileId = null, orderIds = [] } = {}) {
+  try {
+    const resolved = new Set(
+      (Array.isArray(orderIds) ? orderIds : [])
+        .map((x) => String(x ?? '').trim())
+        .filter(Boolean)
+    );
+    if (!type || !resolved.size) return { ok: true, removed: 0 };
+    const current = (await readData(STORAGE_KEY)) || [];
+    const arr = Array.isArray(current) ? current : [];
+    let removed = 0;
+    const kept = arr.filter((n) => {
+      if (n?.type !== type) return true;
+      if (profileId != null && profileId !== '') {
+        const np = notificationProfileId(n);
+        if (np != null && Number(np) !== Number(profileId)) return true;
+      }
+      const ids = (Array.isArray(n?.meta?.order_ids) ? n.meta.order_ids : [])
+        .map((x) => String(x ?? '').trim())
+        .filter(Boolean);
+      if (!ids.length || !ids.every((id) => resolved.has(id))) return true;
+      removed += 1;
+      return false;
+    });
+    if (removed > 0) await writeData(STORAGE_KEY, kept);
+    return { ok: true, removed };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e), removed: 0 };
   }
 }
 

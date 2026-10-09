@@ -587,6 +587,8 @@ async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, 
         type: 'supplier_order_submit_failed',
         severity: 'error',
         source: 'supplier_order_placement',
+        profileId: pid,
+        dedupeKey: `supplier_order_submit_failed|${row.supplier_name || 'Поставщик'}|${oid}`,
         title: 'Заказы не отправлены поставщику',
         message: `${row.supplier_name || 'Поставщик'}: ${
           supplierSubmit?.message || 'ошибка отправки'
@@ -1914,6 +1916,8 @@ class OrderProcurementPlannerService {
         type: 'supplier_order_submit_failed',
         severity: 'error',
         source: 'supplier_order_placement',
+        profileId: pid,
+        dedupeKey: `supplier_order_submit_failed|planner|${oid}`,
         title: 'Заказы не отправлены поставщику',
         message: `${reason || 'Не удалось отправить заказ поставщику'}. Заказ ${oid} оставлен в статусе «Новый».`,
         meta: {

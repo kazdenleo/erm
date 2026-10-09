@@ -420,6 +420,8 @@ async function retryPendingAutoSubmits(profileId, autoSuppliers) {
           type: 'supplier_order_submit_failed',
           severity: 'error',
           source: 'auto_procurement',
+          profileId,
+          dedupeKey: `supplier_order_submit_failed|retry|${purchaseId}`,
           title: 'Заказы не отправлены поставщику',
           message: `${out.supplierName || 'Поставщик'}: ${
             out.message || 'ошибка повторной отправки'
