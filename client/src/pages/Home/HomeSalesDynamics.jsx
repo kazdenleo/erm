@@ -197,7 +197,7 @@ export function HomeSalesDynamics({ profileId }) {
     : null;
 
   return (
-    <div className="card mb-3 home-sales-dynamics">
+    <div className="card mb-0 h-100 home-sales-dynamics">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-graph1 icon-gradient bg-mean-fruit me-2" />

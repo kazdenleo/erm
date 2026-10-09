@@ -289,6 +289,196 @@
   font-weight: 600;
 }
 
+/* Аналитические виджеты: сетка показателей */
+.home-kpi-card__period {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: none;
+  color: #6c757d;
+}
+
+.home-kpi-card__more {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.home-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.85rem 1.25rem;
+}
+
+.home-kpi__label {
+  font-size: 0.78rem;
+  color: #6c757d;
+  line-height: 1.25;
+}
+
+.home-kpi__value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-kpi__value--good {
+  color: #3ac47d;
+}
+
+.home-kpi__value--bad {
+  color: #d92550;
+}
+
+.home-kpi-top {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e9ecef;
+}
+
+.home-kpi-top__title {
+  font-size: 0.78rem;
+  color: #6c757d;
+  margin-bottom: 0.35rem;
+}
+
+.home-kpi-top__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.88rem;
+  line-height: 1.7;
+}
+
+.home-kpi-top__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.home-kpi-top__val {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-kpi-table th {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #6c757d;
+}
+
+/* Быстрый доступ */
+.home-quick-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.5rem;
+}
+
+.home-quick-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #e9ecef;
+  border-radius: 0.4rem;
+  color: #343a40;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.home-quick-link:hover {
+  background: #f1f4f8;
+  border-color: #cfd8e3;
+  color: #212529;
+}
+
+.home-quick-link__icon {
+  font-size: 1.35rem;
+  color: #3f6ad8;
+}
+
+/* Заметка */
+.home-note-textarea {
+  min-height: 8rem;
+  height: 100%;
+  resize: vertical;
+}
+
+/* Редактор виджетов */
+.home-widgets-editor__section-title {
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.home-widgets-editor__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.home-widgets-editor__item {
+  border: 1px solid #e9ecef;
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.home-widgets-editor__item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.home-widgets-editor__order {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.home-widgets-editor__name {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.home-widgets-editor__select {
+  width: auto;
+}
+
+.home-widgets-editor__item-settings {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #e9ecef;
+}
+
+.home-widgets-editor__catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.5rem;
+}
+
+.home-widgets-editor__catalog-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border: 1px dashed #b8c4d6;
+  border-radius: 0.4rem;
+  background: #fff;
+}
+
+.home-widgets-editor__catalog-item:hover:not(:disabled) {
+  background: #f1f4f8;
+  border-style: solid;
+}
+
+.home-widgets-editor__catalog-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* Балансы МП: колонка с названием и организацией */
 .home-balance-mp-col {
   min-width: 12rem;

@@ -15,6 +15,21 @@ export const usersApi = {
     return response.data;
   },
 
+  async getHomeWidgets() {
+    const response = await api.get('/users/me/home-widgets');
+    return response.data?.data ?? { items: null };
+  },
+
+  async saveHomeWidgets(items) {
+    const response = await api.put('/users/me/home-widgets', { items });
+    return response.data?.data ?? { items };
+  },
+
+  async resetHomeWidgets() {
+    const response = await api.put('/users/me/home-widgets', { reset: true });
+    return response.data?.data ?? { items: null };
+  },
+
   async getAll(profileId) {
     const params = profileId != null ? { profile_id: profileId } : {};
     const response = await api.get('/users', { params });
