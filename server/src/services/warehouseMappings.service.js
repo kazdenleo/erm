@@ -47,6 +47,31 @@ class WarehouseMappingsService {
     });
   }
 
+  /**
+   * Склад МП может быть привязан только к одному нашему складу аккаунта:
+   * по нему резолвятся заказы и в него уходят остатки.
+   */
+  async assertMarketplaceWarehouseFree({ warehouseId, marketplace, marketplaceWarehouseId, profileId, excludeId = null }) {
+    const pid = profileId != null && profileId !== '' ? profileId : null;
+    const rows = pid
+      ? await this.repo.findAll({ marketplace, profileId: pid })
+      : await this.repo.findByMarketplace(marketplace);
+    for (const row of rows || []) {
+      if (excludeId != null && String(row.id) === String(excludeId)) continue;
+      const stored = normalizeMarketplaceWarehouseId(marketplace, row.marketplace_warehouse_id);
+      if (!stored || stored !== marketplaceWarehouseId) continue;
+      const sameWarehouse = String(row.warehouse_id) === String(warehouseId);
+      const otherTitle = row.warehouse_name || row.warehouse_address || `#${row.warehouse_id}`;
+      const err = new Error(
+        sameWarehouse
+          ? 'Этот склад маркетплейса уже привязан к этому складу'
+          : `Этот склад маркетплейса уже привязан к складу «${otherTitle}». Сначала удалите ту привязку.`
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+
   async create({ warehouseId, marketplace, marketplaceWarehouseId, profileId = null } = {}) {
     const wid = warehouseId != null ? parseInt(warehouseId, 10) : NaN;
     if (!Number.isFinite(wid) || wid < 1) {
@@ -73,6 +98,13 @@ class WarehouseMappingsService {
       err.statusCode = 400;
       throw err;
     }
+
+    await this.assertMarketplaceWarehouseFree({
+      warehouseId: wid,
+      marketplace: mp,
+      marketplaceWarehouseId: mw,
+      profileId: w.profile_id ?? profileId,
+    });
 
     return await this.repo.create({
       warehouse_id: wid,
@@ -135,6 +167,21 @@ class WarehouseMappingsService {
       assertMarketplaceWarehouseId(mpForMw, mw);
       updates.marketplace_warehouse_id = mw;
     }
+
+    const targetWarehouseId = updates.warehouse_id ?? existing.warehouse_id;
+    const targetMarketplace = updates.marketplace ?? existing.marketplace;
+    const targetMw =
+      updates.marketplace_warehouse_id ??
+      normalizeMarketplaceWarehouseId(targetMarketplace, existing.marketplace_warehouse_id);
+    const targetWarehouse = await this.warehousesRepo.findById(targetWarehouseId);
+    await this.assertMarketplaceWarehouseFree({
+      warehouseId: targetWarehouseId,
+      marketplace: targetMarketplace,
+      marketplaceWarehouseId: targetMw,
+      profileId: targetWarehouse?.profile_id ?? profileId,
+      excludeId: mid,
+    });
+
     const updated = await this.repo.update(mid, updates);
     if (!updated) {
       const err = new Error('Маппинг не найден');

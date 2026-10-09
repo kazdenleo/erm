@@ -36,6 +36,13 @@ const MP_STOCK_CHANNELS = [
   { key: 'pushStockYm', marketplace: 'ym', label: 'YM', badgeClass: 'ym', title: 'Яндекс.Маркет' },
 ];
 
+const MAPPING_MARKETPLACES = [
+  { key: 'wb', label: 'WB' },
+  { key: 'ozon', label: 'Ozon' },
+  { key: 'ym', label: 'Яндекс.Маркет' },
+];
+const mappingMarketplaceOrder = Object.fromEntries(MAPPING_MARKETPLACES.map((mp, i) => [mp.key, i]));
+
 /** Явный false/true; иначе default (по умолчанию передаём остатки). */
 function coerceStockPushFlag(value, defaultTrue = true) {
   if (value === undefined || value === null || value === '') return defaultTrue;
@@ -370,32 +377,16 @@ export function WarehouseForm({
     return m;
   };
 
-  const upsertMarketplaceMapping = async (warehouseId, marketplace, marketplaceWarehouseId) => {
-    const mp = normalizeMp(marketplace);
-    const mw =
-      mp === 'ym'
-        ? String(marketplaceWarehouseId || '').trim()
-        : extractMarketplaceWarehouseBindId(marketplaceWarehouseId);
-    if (!mw) return;
-    const list = await warehouseMappingsApi.list({ warehouseId: String(warehouseId) });
-    const found = (Array.isArray(list) ? list : []).find((m) => normalizeMp(m.marketplace) === mp);
-    const payload = { warehouseId, marketplace: mp, marketplaceWarehouseId: mw };
-    if (found?.id) {
-      const cur = String(found.marketplace_warehouse_id ?? found.marketplaceWarehouseId ?? '').trim();
-      if (cur === mw) return;
-      await warehouseMappingsApi.update(found.id, payload);
+  const saveMarketplaceMapping = async (warehouseId, editor, marketplaceWarehouseId) => {
+    const payload = {
+      warehouseId,
+      marketplace: normalizeMp(editor.marketplace),
+      marketplaceWarehouseId,
+    };
+    if (editor.id) {
+      await warehouseMappingsApi.update(editor.id, payload);
     } else {
-      try {
-        await warehouseMappingsApi.create(payload);
-      } catch (e) {
-        const list2 = await warehouseMappingsApi.list({ warehouseId: String(warehouseId) });
-        const found2 = (Array.isArray(list2) ? list2 : []).find((m) => normalizeMp(m.marketplace) === mp);
-        if (found2?.id) {
-          await warehouseMappingsApi.update(found2.id, payload);
-        } else {
-          throw e;
-        }
-      }
+      await warehouseMappingsApi.create(payload);
     }
   };
 
@@ -446,7 +437,7 @@ export function WarehouseForm({
     }
     setMappingBusy(true);
     try {
-      await upsertMarketplaceMapping(warehouse.id, mappingEditor.marketplace, mw);
+      await saveMarketplaceMapping(warehouse.id, mappingEditor, mw);
       setMappingEditor(null);
       await loadMappings(warehouse.id);
     } catch (e) {
@@ -471,12 +462,26 @@ export function WarehouseForm({
     }
   };
 
-  const boundMarketplaces = new Set(existingMappings.map((m) => normalizeMp(m.marketplace)));
-  const missingMarketplaces = [
-    { key: 'wb', label: 'WB' },
-    { key: 'ozon', label: 'Ozon' },
-    { key: 'ym', label: 'Яндекс.Маркет' },
-  ].filter((mp) => !boundMarketplaces.has(mp.key));
+  const sortedMappings = [...existingMappings].sort((a, b) => {
+    const oa = mappingMarketplaceOrder[normalizeMp(a.marketplace)] ?? 99;
+    const ob = mappingMarketplaceOrder[normalizeMp(b.marketplace)] ?? 99;
+    return oa !== ob ? oa - ob : Number(a.id) - Number(b.id);
+  });
+
+  /** ID складов МП, уже привязанных к этому складу (кроме редактируемой привязки). */
+  const boundMarketplaceWarehouseIds = new Set(
+    existingMappings
+      .filter(
+        (m) =>
+          mappingEditor &&
+          normalizeMp(m.marketplace) === mappingEditor.marketplace &&
+          String(m.id) !== String(mappingEditor.id ?? '')
+      )
+      .map((m) =>
+        extractMarketplaceWarehouseBindId(m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)
+      )
+      .filter(Boolean)
+  );
 
   useEffect(() => {
     console.log('[WarehouseForm] Suppliers:', suppliers);
@@ -885,7 +890,9 @@ export function WarehouseForm({
         <div className="mt-3">
           <label className="form-label">Привязки маркетплейсов</label>
           <div className="text-muted small mb-2">
-            Одна привязка на маркетплейс. Нажмите «Изменить», чтобы выбрать другой склад МП или удалить связь.
+            К складу можно привязать несколько складов каждого маркетплейса: заказы с любого из них
+            попадут на этот склад, а остатки будут передаваться в каждый. Нажмите «Изменить», чтобы
+            выбрать другой склад МП или удалить связь.
           </div>
           {!canManageMappings ? (
             <div className="alert alert-secondary py-2">
@@ -910,7 +917,7 @@ export function WarehouseForm({
                       </tr>
                     </thead>
                     <tbody>
-                      {existingMappings.map((m) => (
+                      {sortedMappings.map((m) => (
                         <tr key={m.id}>
                           <td>{m.id}</td>
                           <td>{String(m.marketplace || '').toUpperCase()}</td>
@@ -940,23 +947,21 @@ export function WarehouseForm({
                   </table>
                 </div>
               )}
-              {missingMarketplaces.length > 0 && (
-                <div className="d-flex flex-wrap gap-2 align-items-center mt-2">
-                  <span className="text-muted small">Добавить:</span>
-                  {missingMarketplaces.map((mp) => (
-                    <Button
-                      key={mp.key}
-                      type="button"
-                      variant="secondary"
-                      size="small"
-                      disabled={mappingBusy}
-                      onClick={() => openCreateMapping(mp.key)}
-                    >
-                      {mp.label}
-                    </Button>
-                  ))}
-                </div>
-              )}
+              <div className="d-flex flex-wrap gap-2 align-items-center mt-2">
+                <span className="text-muted small">Добавить:</span>
+                {MAPPING_MARKETPLACES.map((mp) => (
+                  <Button
+                    key={mp.key}
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    disabled={mappingBusy}
+                    onClick={() => openCreateMapping(mp.key)}
+                  >
+                    {mp.label}
+                  </Button>
+                ))}
+              </div>
               <div className="mt-2">
                 <Button
                   type="button"
@@ -1131,11 +1136,18 @@ export function WarehouseForm({
                         {mappingEditor.marketplaceWarehouseId} (нет ID — выберите склад из списка)
                       </option>
                     ) : null}
-                    {wbOffices.map((o) => (
-                      <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id)}>
-                        {String(o.name)}{o.address ? ` · ${o.address}` : ''}
-                      </option>
-                    ))}
+                    {wbOffices.map((o) => {
+                      const bound = boundMarketplaceWarehouseIds.has(String(o.bindValue ?? o.id));
+                      return (
+                        <option
+                          key={String(o.id ?? o.bindValue ?? o.name)}
+                          value={String(o.bindValue ?? o.id)}
+                          disabled={bound}
+                        >
+                          {String(o.name)}{o.address ? ` · ${o.address}` : ''}{bound ? ' (уже привязан)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 ) : (
                   <input
@@ -1205,11 +1217,14 @@ export function WarehouseForm({
                         {mappingEditor.marketplaceWarehouseId} (нет ID — выберите склад из списка)
                       </option>
                     ) : null}
-                    {ozonWarehouses.map((w, i) => (
-                      <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id)}>
-                        {String(w.name)}
-                      </option>
-                    ))}
+                    {ozonWarehouses.map((w, i) => {
+                      const bound = boundMarketplaceWarehouseIds.has(String(w.bindValue ?? w.id));
+                      return (
+                        <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id)} disabled={bound}>
+                          {String(w.name)}{bound ? ' (уже привязан)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 ) : (
                   <input

@@ -28,6 +28,7 @@ class WarehouseMappingsRepositoryPG {
       sql = `
       SELECT 
         wm.*,
+        w.name as warehouse_name,
         w.address as warehouse_address,
         w.type as warehouse_type,
         w.is_fbo_stock
@@ -40,6 +41,7 @@ class WarehouseMappingsRepositoryPG {
       sql = `
       SELECT 
         wm.*,
+        w.name as warehouse_name,
         w.address as warehouse_address,
         w.type as warehouse_type,
         w.is_fbo_stock
@@ -94,6 +96,8 @@ class WarehouseMappingsRepositoryPG {
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1 AND wm.marketplace = $2
+      ORDER BY wm.id ASC
+      LIMIT 1
     `, [warehouseId, marketplace]);
     
     return result.rows[0] || null;
@@ -113,7 +117,7 @@ class WarehouseMappingsRepositoryPG {
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1
-      ORDER BY wm.marketplace
+      ORDER BY wm.marketplace, wm.id
     `, [warehouseId]);
     
     return result.rows;
@@ -130,6 +134,7 @@ class WarehouseMappingsRepositoryPG {
     const result = await query(`
       SELECT 
         wm.*,
+        w.name as warehouse_name,
         w.address as warehouse_address,
         w.type as warehouse_type
       FROM warehouse_mappings wm
