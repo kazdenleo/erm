@@ -52,26 +52,48 @@ export function hasAnyWbCommission(reportItem) {
   return getWbCommissionSchemeValues(reportItem).some((s) => s.display != null);
 }
 
-/** Поле raw_data / wb_commissions, которое идёт в расчёт мин. цен WB (FBO/FBW) */
-export const WB_PRICE_CALC_SCHEME_KEY = 'paidStorageKgvp';
-
 export function getWbCommissionSchemesForDisplay(reportItem) {
   const schemes = getWbCommissionSchemeValues(reportItem).filter((s) => s.display);
   return {
     schemes,
-    priceCalcSchemeKey: WB_PRICE_CALC_SCHEME_KEY,
     note: schemes.length
-      ? 'В расчёте мин. цен — FBO/FBW (paidStorageKgvp из wb_commissions по subjectID категории); FBS/остальные — справочно'
+      ? null
       : 'Комиссии WB не найдены — обновите отчёт в Интеграциях → Wildberries → Комиссия',
   };
 }
 
-/** Схема комиссии, используемая в calculateMinPrice для Ozon/YM */
-export function getMpPriceCalcSchemeKey(marketplace) {
+/** Ключи схем комиссии FBS / FBO в данных каждого маркетплейса */
+const MP_SCHEME_KEYS = {
+  wb: { fbs: 'kgvpMarketplace', fbo: 'paidStorageKgvp' },
+  ozon: { fbs: 'FBS', fbo: 'FBO' },
+  ym: { fbs: 'FBS', fbo: 'FBY' },
+};
+
+/**
+ * Схемы комиссии, по которым работает аккаунт (Настройки → «Работать по FBS / FBO»).
+ * @param {string} marketplace
+ * @param {{ fbs?: boolean, fbo?: boolean }} flags
+ * @returns {string[]}
+ */
+export function getMpWorkingSchemeKeys(marketplace, { fbs = true, fbo = false } = {}) {
   const mp = String(marketplace || '').toLowerCase();
-  if (mp === 'ozon') return 'FBS';
-  if (mp === 'ym' || mp === 'yandex') return 'FBS';
-  return null;
+  const map = MP_SCHEME_KEYS[mp === 'wildberries' ? 'wb' : mp === 'yandex' ? 'ym' : mp];
+  if (!map) return [];
+  return [fbs && map.fbs, fbo && map.fbo].filter(Boolean);
+}
+
+export function describeWorkingSchemes({ fbs = true, fbo = false } = {}) {
+  if (fbs && fbo) return 'Работаете по FBS и FBO — эти комиссии идут в мин. цены (Настройки аккаунта).';
+  if (fbs) return 'Работаете по FBS — эта комиссия идёт в мин. цены (Настройки аккаунта).';
+  if (fbo) return 'Работаете по FBO — эта комиссия идёт в мин. цены (Настройки аккаунта).';
+  return 'В Настройках аккаунта не включены ни FBS, ни FBO.';
+}
+
+/** Убирает из пояснения устаревшую фразу о схеме для мин. цен (приходит из кэша комиссий). */
+export function stripPriceCalcSchemeNote(note) {
+  if (!note) return note;
+  const out = String(note).replace(/\s*В расчёте мин\. цен[\s\S]*$/, '').trim();
+  return out || null;
 }
 
 /** Собрать уникальные id категорий Ozon/YM из обогащённого списка ERP-категорий */

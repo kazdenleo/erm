@@ -119,12 +119,13 @@
 }
 
 .category-mp-commission-chip--price-calc {
-  border-color: rgba(34, 197, 94, 0.55);
+  border-color: rgba(22, 163, 74, 0.6);
   background: rgba(34, 197, 94, 0.12);
 }
 
 .category-mp-commission-chip--price-calc .category-mp-commission-chip-label {
-  color: #86efac;
+  color: #15803d;
+  font-weight: 600;
 }
 
 .category-mp-commission-chip--empty {

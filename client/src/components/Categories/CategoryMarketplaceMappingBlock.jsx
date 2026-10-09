@@ -1,9 +1,13 @@
 import React from 'react';
 import {
   getWbCommissionSchemesForDisplay,
-  getMpPriceCalcSchemeKey,
+  getMpWorkingSchemeKeys,
+  describeWorkingSchemes,
+  stripPriceCalcSchemeNote,
   resolveMpCommissionEntry,
 } from '../../utils/marketplaceCategoryCommissions';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
 
 const MP_BADGE_CLASS = {
   wb: 'wb',
@@ -18,21 +22,28 @@ function mpBadgeClass(marketplace) {
   return MP_BADGE_CLASS[mp] || mp;
 }
 
-export function CommissionSchemesRow({ schemes, note, priceCalcSchemeKey = null }) {
+export function CommissionSchemesRow({ marketplace, schemes, note }) {
+  const { profile } = useAuth();
+  const flags = { fbs: isProfileFbsEnabled(profile), fbo: isProfileFboEnabled(profile) };
   const hasSchemes = schemes?.length > 0;
-  if (!hasSchemes && !note) return null;
+  const workingKeys = new Set(getMpWorkingSchemeKeys(marketplace, flags));
+  const sourceNote = stripPriceCalcSchemeNote(note);
+  const fullNote = hasSchemes
+    ? [sourceNote, describeWorkingSchemes(flags)].filter(Boolean).join(' ')
+    : sourceNote;
+  if (!hasSchemes && !fullNote) return null;
   return (
     <div className="category-mp-commissions">
       {(schemes || []).map((s) => {
-        const isPriceCalc = priceCalcSchemeKey && s.key === priceCalcSchemeKey;
+        const isWorking = workingKeys.has(s.key);
         return (
           <span
             key={s.key}
-            className={`category-mp-commission-chip${s.display ? '' : ' category-mp-commission-chip--empty'}${isPriceCalc ? ' category-mp-commission-chip--price-calc' : ''}`}
+            className={`category-mp-commission-chip${s.display ? '' : ' category-mp-commission-chip--empty'}${isWorking ? ' category-mp-commission-chip--price-calc' : ''}`}
             title={
-              isPriceCalc
-                ? `${s.label} — используется в расчёте минимальной цены`
-                : s.label
+              isWorking
+                ? `${s.label} — ваша схема работы, используется в расчёте минимальной цены`
+                : `${s.label} — справочно`
             }
           >
             <span className="category-mp-commission-chip-label">{s.shortLabel}</span>
@@ -40,7 +51,7 @@ export function CommissionSchemesRow({ schemes, note, priceCalcSchemeKey = null 
           </span>
         );
       })}
-      {note && <span className="category-mp-commissions-note">{note}</span>}
+      {fullNote && <span className="category-mp-commissions-note">{fullNote}</span>}
     </div>
   );
 }
@@ -60,19 +71,16 @@ export function CategoryMarketplaceMappingBlock({
 
   let schemes = [];
   let note = null;
-  let priceCalcSchemeKey = null;
 
   if (mp === 'wb' || mp === 'wildberries') {
     const row = categoryId != null ? wbCommissionsByCategoryId?.get(String(categoryId)) : null;
     const wb = getWbCommissionSchemesForDisplay(row);
     schemes = wb.schemes;
     note = wb.note;
-    priceCalcSchemeKey = wb.priceCalcSchemeKey;
   } else {
     const entry = resolveMpCommissionEntry(mpCommissionsPreview, mp, categoryId);
     schemes = entry?.schemes || [];
     note = entry?.note || null;
-    priceCalcSchemeKey = getMpPriceCalcSchemeKey(mp);
     if (!schemes.length) {
       note = note || 'Нет данных в кэше комиссий';
     }
@@ -84,7 +92,7 @@ export function CategoryMarketplaceMappingBlock({
         <span className={`mp-badge ${mpBadgeClass(mp)}`}>{mpBadgeClass(mp)}</span>
         <span className="category-mp-name">{categoryName}</span>
       </div>
-      <CommissionSchemesRow schemes={schemes} note={note} priceCalcSchemeKey={priceCalcSchemeKey} />
+      <CommissionSchemesRow marketplace={mp} schemes={schemes} note={note} />
     </div>
   );
 }

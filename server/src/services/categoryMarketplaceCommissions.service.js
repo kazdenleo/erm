@@ -499,7 +499,7 @@ async function getOzonCategoryCommissionsLive(ozonCategoryId, scope, userCategor
     note:
       schemes.length === 0
         ? 'Комиссия не получена из калькулятора Ozon (проверьте артикул и интеграцию)'
-        : `Из API Ozon v5 (товар ${sample.offer_id}). В расчёте мин. цен — FBS; FBO справочно (как WB показывает FBO для мин. цен).`,
+        : `Из API Ozon v5 (товар ${sample.offer_id}).`,
     sampleOfferId: sample.offer_id,
   };
 
@@ -667,7 +667,7 @@ function ymCommissionResultFromCalculator(calc, sampleOfferId) {
   return {
     schemes,
     note: sampleOfferId
-      ? `Из тарифа YM FEE (товар ${sampleOfferId}). В расчёте мин. цен — FBS.`
+      ? `Из тарифа YM FEE (товар ${sampleOfferId}).`
       : null,
     sampleOfferId: sampleOfferId || null,
   };
@@ -841,7 +841,7 @@ async function getYmCategoryCommissionsLive(ymCategoryId, scope, userCategoryId 
     const result = {
       schemes,
       note:
-        'Из тарифа YM FEE по категории (POST /v2/tariffs/calculate). В расчёте мин. цен — FBS; FBY справочно. Без оверлея early-ship (0 = не применяется).',
+        'Из тарифа YM FEE по категории (POST /v2/tariffs/calculate). Без оверлея early-ship (0 = не применяется).',
       sampleOfferId: null,
       source: 'ym_category_tariff',
     };

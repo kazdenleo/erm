@@ -15,7 +15,6 @@ import { CommissionSchemesRow } from '../../Categories/CategoryMarketplaceMappin
 import {
   buildWbCommissionsMap,
   getWbCommissionSchemesForDisplay,
-  getMpPriceCalcSchemeKey,
   resolveMpCommissionEntry,
 } from '../../../utils/marketplaceCategoryCommissions';
 import api from '../../../services/api';
@@ -461,15 +460,11 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const getMpCommissionSchemes = (marketplace, categoryId) => {
     const mp = String(marketplace || '').toLowerCase();
     const id = categoryId != null ? String(categoryId) : '';
-    if (!id) return { schemes: [], note: null, priceCalcSchemeKey: null };
+    if (!id) return { schemes: [], note: null };
     if (mp === 'wb' || mp === 'wildberries') {
       const row = wbCommissionsByCategoryId.get(id);
       const wb = getWbCommissionSchemesForDisplay(row);
-      return {
-        schemes: wb.schemes,
-        note: wb.note,
-        priceCalcSchemeKey: wb.priceCalcSchemeKey,
-      };
+      return { schemes: wb.schemes, note: wb.note };
     }
     const entry = resolveMpCommissionEntry(mpCommissionsPreview, mp, id);
     const schemes = (entry?.schemes || []).map((s) => ({
@@ -483,11 +478,7 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           ? 'Нет данных о комиссии — нажмите «Обновить комиссии Ozon/YM из API»'
           : null;
     }
-    return {
-      schemes,
-      note,
-      priceCalcSchemeKey: getMpPriceCalcSchemeKey(mp),
-    };
+    return { schemes, note };
   };
 
   const toggleMpEdit = (mp) => {
@@ -534,9 +525,9 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const renderMpSummaryRow = (mp, badgeClass, mpLabel, categoryId) => {
     const name = mpDisplayName(mp);
     const mapped = Boolean(categoryId);
-    const { schemes, note, priceCalcSchemeKey } = mapped
+    const { schemes, note } = mapped
       ? getMpCommissionSchemes(mp, categoryId)
-      : { schemes: [], note: null, priceCalcSchemeKey: null };
+      : { schemes: [], note: null };
     const commissionNote = mpCommissionsLoading && mapped && (mp === 'ozon' || mp === 'ym')
       ? 'Загрузка комиссий…'
       : note;
@@ -557,9 +548,9 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
             </div>
             {mapped && (
               <CommissionSchemesRow
+                marketplace={mp}
                 schemes={schemes}
                 note={commissionNote}
-                priceCalcSchemeKey={priceCalcSchemeKey}
               />
             )}
           </div>
