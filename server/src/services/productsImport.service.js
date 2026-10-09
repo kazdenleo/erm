@@ -19,6 +19,8 @@ const HEADER_TO_KEY_FALLBACK = {
   Организация: 'organization_name',
   'Тип товара': 'product_type',
   'Страна производства': 'country_of_origin',
+  ОКПД2: 'okpd2_code',
+  'ОКПД 2': 'okpd2_code',
   Описание: 'description',
   Себестоимость: 'cost',
   'Доп. расходы': 'additional_expenses',
@@ -332,6 +334,7 @@ export function mapImportRowToApiPayload(row, lookups) {
   setStr('brand', 'brand');
   setStr('product_type', 'product_type');
   setStr('country_of_origin', 'country_of_origin');
+  setStr('okpd2_code', 'okpd2_code');
   setStr('description', 'description');
 
   // Блок WB — отдельные поля карточки МП (не ERP name/sku/brand/description)

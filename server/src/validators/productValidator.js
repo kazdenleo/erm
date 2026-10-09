@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 import { normalizeMpFieldLinks } from '../utils/productMpFieldLinks.js';
+import { normalizeOkpd2Code, OKPD2_FORMAT_HINT } from '../utils/okpd2.js';
 
 // Приведение к числу (строка/число с фронта), пусто -> null
 const optionalNum = () => z.union([z.string(), z.number()]).optional().nullable().transform(v => {
@@ -106,6 +107,15 @@ export const createProductSchema = z.object({
     if (v == null || v === '') return null;
     const s = String(v).trim();
     return s === '' ? null : s;
+  }),
+  okpd2_code: z.union([z.string(), z.number()]).optional().nullable().transform((v, ctx) => {
+    if (v === undefined) return undefined;
+    const code = normalizeOkpd2Code(v);
+    if (code === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: OKPD2_FORMAT_HINT });
+      return z.NEVER;
+    }
+    return code || null;
   }),
   brand: z.string().optional().nullable(),
   quantity: z.union([z.string(), z.number()]).optional().default(0).transform(v => {

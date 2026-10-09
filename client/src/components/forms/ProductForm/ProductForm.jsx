@@ -75,6 +75,7 @@ import {
   matchOzonTnVedDictEntry,
   ozonStoredTnVedSearchCode,
 } from '../../../utils/productTnVedAttributeAutofill.js';
+import { isOkpd2AttributeName, normalizeOkpd2Code, OKPD2_FORMAT_HINT } from '../../../utils/okpd2.js';
 import {
   BARCODE_MP_TOGGLES,
   EMPTY_BARCODE_ROW,
@@ -381,6 +382,7 @@ function wbCharcName(a) {
 function isWbCharcVisibleInForm(a) {
   const name = wbCharcName(a);
   if (isWbCharcDuplicatingDedicatedField(name)) return false;
+  if (isOkpd2AttributeName(name)) return false;
   return true;
 }
 
@@ -1088,6 +1090,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     supplierId: '',
     brand: '',
   country_of_origin: '',
+  okpd2_code: '',
     cost: '',
   additionalExpenses: '',
     minPrice: '',
@@ -2090,6 +2093,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               : '',
         brand: currentProduct.brand || '',
         country_of_origin: currentProduct.country_of_origin || '',
+        okpd2_code: currentProduct.okpd2_code || '',
         cost: currentProduct.cost || '',
         additionalExpenses: (() => {
           const v = currentProduct.additionalExpenses ?? currentProduct.additional_expenses;
@@ -3539,9 +3543,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
       (a) =>
         !['__ym_name__', '__ym_description__', '__ym_shop_sku__', '__ym_vendor_code__', '__ym_vendor__', '__ym_barcodes__', '__ym_manufacturer__', '__ym_country__'].includes(
           String(a?.id || '')
-        ) && !isYmPackOfferFieldId(a?.id)
+        ) &&
+        !isYmPackOfferFieldId(a?.id) &&
+        !isOkpd2AttributeName(a?.name)
     );
     const byId = new Map(schema.map((a) => [String(a.id), a]));
+    const okpd2Ids = new Set(
+      (ymCategoryAttributes || []).filter((a) => isOkpd2AttributeName(a?.name)).map((a) => String(a.id))
+    );
     const fetchedNames = new Map();
     if (Array.isArray(ymFetchedProduct?.parameterValues)) {
       for (const pv of ymFetchedProduct.parameterValues) {
@@ -3552,11 +3561,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
     }
     for (const [key, raw] of Object.entries(ymAttributeValues || {})) {
-      if (byId.has(key)) continue;
+      if (byId.has(key) || okpd2Ids.has(key)) continue;
       if (raw === undefined || raw === null || String(raw).trim() === '') continue;
       if (isYmPackOfferFieldId(key)) continue;
       const nameHint = fetchedNames.get(key);
       if (nameHint && (isYmParamDuplicatingDedicatedField(nameHint) || isYmPackOfferParam(nameHint))) continue;
+      if (nameHint && isOkpd2AttributeName(nameHint)) continue;
       byId.set(key, {
         id: key,
         name: nameHint || `Параметр ${key}`,
@@ -6847,6 +6857,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
     if (!formData.categoryId) {
       newErrors.categoryId = 'Выберите категорию';
     }
+    if (normalizeOkpd2Code(formData.okpd2_code) === null) {
+      newErrors.okpd2_code = OKPD2_FORMAT_HINT;
+    }
     // Себестоимость не обязательна - она будет обновляться автоматически при синхронизации с поставщиками
     if (formData.cost && parseFloat(formData.cost) < 0) {
       newErrors.cost = 'Себестоимость не может быть отрицательной';
@@ -7111,6 +7124,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         : {}),
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
+      okpd2_code: normalizeOkpd2Code(formData.okpd2_code) || null,
       // У комплекта cost пересчитывается на сервере по комплектующим — не шлём ручное значение.
       ...(formData.product_type === 'kit'
         ? {}
@@ -8359,6 +8373,25 @@ export const ProductForm = React.forwardRef(function ProductForm({
               <option key={country} value={country} />
             ))}
           </datalist>
+        </div>
+        <div className="col-md-4">
+          <label className="form-label" htmlFor="okpd2_code">ОКПД2</label>
+          <input
+            id="okpd2_code"
+            type="text"
+            inputMode="decimal"
+            className={`form-control form-control-sm product-form-short${errors.okpd2_code ? ' is-invalid' : ''}`}
+            value={formData.okpd2_code}
+            onChange={(e) => handleChange('okpd2_code', e.target.value)}
+            onBlur={(e) => {
+              const code = normalizeOkpd2Code(e.target.value);
+              if (code && code !== e.target.value) handleChange('okpd2_code', code);
+            }}
+            placeholder="26.20.11.110"
+            maxLength={20}
+            title="Уходит в характеристику «ОКПД» на маркетплейсах при сохранении"
+          />
+          {errors.okpd2_code && <div className="error">{errors.okpd2_code}</div>}
         </div>
       </div>
       </div>

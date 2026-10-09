@@ -52,6 +52,7 @@ import {
 import { omitEmptyMpCardTextFromProductPatch } from '../utils/productAttrPatch.js';
 import { applyLinkedOzonCardTextOnUpdate } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from './tnVedProductApply.service.js';
+import okpd2ProductApplyService from './okpd2ProductApply.service.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
@@ -1283,6 +1284,11 @@ class ProductsService {
     } catch (e) {
       console.warn('[Products Service] TN VED enrich on create:', e?.message || e);
     }
+    try {
+      await okpd2ProductApplyService.syncPayload(productData, { profileId: createProfileId });
+    } catch (e) {
+      console.warn('[Products Service] OKPD2 sync on create:', e?.message || e);
+    }
 
     const createdProduct = await this.repository.create(productData);
     if (!createdProduct || createdProduct.id == null) {
@@ -1573,6 +1579,11 @@ class ProductsService {
       });
     } catch (e) {
       console.warn('[Products Service] TN VED enrich on update:', e?.message || e);
+    }
+    try {
+      await okpd2ProductApplyService.syncPayload(updates, { existing: existingForKits });
+    } catch (e) {
+      console.warn('[Products Service] OKPD2 sync on update:', e?.message || e);
     }
 
     const updated = await this.repository.update(id, updates);

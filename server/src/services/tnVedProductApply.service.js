@@ -80,6 +80,73 @@ function mpValueIsEmptySql(column, keyParam) {
   )`;
 }
 
+/**
+ * Ключи характеристик Ozon / WB / YM категории, отобранные `collect(list, marketplace)`.
+ * Схемы берутся из кэша интеграций.
+ */
+export async function loadCategoryMpAttrKeys(categoryRow, collect, opts = {}) {
+  const logTag = opts.logTag || '[TN VED apply]';
+  const mm = parseMarketplaceMappings(categoryRow?.marketplace_mappings);
+  const keys = { ozon: [], wb: [], ym: [] };
+  const fetchOpts = {
+    forceRefresh: false,
+    profileId: opts.profileId ?? null,
+    organizationId: opts.organizationId ?? null,
+  };
+
+  try {
+    let descId = Number(mm.ozon_description_category_id ?? mm.ozonDescriptionCategoryId ?? 0) || 0;
+    let typeId = Number(mm.ozon_type_id ?? mm.ozonTypeId ?? 0) || 0;
+    const composite = mm.ozon != null ? String(mm.ozon).trim() : '';
+    if ((!descId || !typeId) && composite.includes('_')) {
+      const [a, b] = composite.split('_');
+      const d = Number(String(a || '').trim());
+      const t = Number(String(b || '').trim());
+      if (Number.isFinite(d) && d > 0) descId = d;
+      if (Number.isFinite(t) && t > 0) typeId = t;
+    }
+    if (!descId || !typeId) {
+      let flatOzon = [];
+      try {
+        flatOzon = await integrationsService.getOzonCategories({ dbOnly: true });
+      } catch {
+        flatOzon = [];
+      }
+      const pair = resolveOzonDescTypePair(mm, flatOzon);
+      if (pair.descId > 0) descId = pair.descId;
+      if (pair.typeId > 0) typeId = pair.typeId;
+    }
+    if (descId && typeId) {
+      const list = await integrationsService.getOzonCategoryAttributes(descId, typeId, fetchOpts);
+      keys.ozon = collect(list, 'ozon');
+    }
+  } catch (e) {
+    logger.warn(`${logTag} Ozon attributes skipped`, { err: e?.message });
+  }
+
+  try {
+    const subjectId = Number(mm.wb ?? mm.wb_subject_id ?? mm.wbSubjectId ?? 0) || 0;
+    if (subjectId > 0) {
+      const list = await integrationsService.getWildberriesCategoryAttributes(subjectId, fetchOpts);
+      keys.wb = collect(list, 'wb');
+    }
+  } catch (e) {
+    logger.warn(`${logTag} WB attributes skipped`, { err: e?.message });
+  }
+
+  try {
+    const ymId = mm.ym != null ? String(mm.ym).trim().replace(/\s+/g, '') : '';
+    if (ymId && /^\d+$/.test(ymId)) {
+      const list = await integrationsService.getYandexCategoryContentParameters(ymId, fetchOpts);
+      keys.ym = collect(list, 'ym');
+    }
+  } catch (e) {
+    logger.warn(`${logTag} YM attributes skipped`, { err: e?.message });
+  }
+
+  return keys;
+}
+
 class TnVedProductApplyService {
   constructor() {
     this._targetsCache = new Map();
@@ -131,68 +198,6 @@ class TnVedProductApplyService {
     };
   }
 
-  async _loadMpSchemaKeys(categoryRow, opts = {}) {
-    const mm = parseMarketplaceMappings(categoryRow?.marketplace_mappings);
-    const keys = { ozon: [], wb: [], ym: [] };
-    const fetchOpts = {
-      forceRefresh: false,
-      profileId: opts.profileId ?? null,
-      organizationId: opts.organizationId ?? null,
-    };
-
-    try {
-      let descId = Number(mm.ozon_description_category_id ?? mm.ozonDescriptionCategoryId ?? 0) || 0;
-      let typeId = Number(mm.ozon_type_id ?? mm.ozonTypeId ?? 0) || 0;
-      const composite = mm.ozon != null ? String(mm.ozon).trim() : '';
-      if ((!descId || !typeId) && composite.includes('_')) {
-        const [a, b] = composite.split('_');
-        const d = Number(String(a || '').trim());
-        const t = Number(String(b || '').trim());
-        if (Number.isFinite(d) && d > 0) descId = d;
-        if (Number.isFinite(t) && t > 0) typeId = t;
-      }
-      if (!descId || !typeId) {
-        let flatOzon = [];
-        try {
-          flatOzon = await integrationsService.getOzonCategories({ dbOnly: true });
-        } catch {
-          flatOzon = [];
-        }
-        const pair = resolveOzonDescTypePair(mm, flatOzon);
-        if (pair.descId > 0) descId = pair.descId;
-        if (pair.typeId > 0) typeId = pair.typeId;
-      }
-      if (descId && typeId) {
-        const list = await integrationsService.getOzonCategoryAttributes(descId, typeId, fetchOpts);
-        keys.ozon = collectTnVedMpKeys(list, 'ozon');
-      }
-    } catch (e) {
-      logger.warn('[TN VED apply] Ozon attributes skipped', { err: e?.message });
-    }
-
-    try {
-      const subjectId = Number(mm.wb ?? mm.wb_subject_id ?? mm.wbSubjectId ?? 0) || 0;
-      if (subjectId > 0) {
-        const list = await integrationsService.getWildberriesCategoryAttributes(subjectId, fetchOpts);
-        keys.wb = collectTnVedMpKeys(list, 'wb');
-      }
-    } catch (e) {
-      logger.warn('[TN VED apply] WB attributes skipped', { err: e?.message });
-    }
-
-    try {
-      const ymId = mm.ym != null ? String(mm.ym).trim().replace(/\s+/g, '') : '';
-      if (ymId && /^\d+$/.test(ymId)) {
-        const list = await integrationsService.getYandexCategoryContentParameters(ymId, fetchOpts);
-        keys.ym = collectTnVedMpKeys(list, 'ym');
-      }
-    } catch (e) {
-      logger.warn('[TN VED apply] YM attributes skipped', { err: e?.message });
-    }
-
-    return keys;
-  }
-
   async _resolveTargets(categoryId, opts = {}) {
     const cacheKey = String(categoryId);
     const cached = this._targetsCache.get(cacheKey);
@@ -200,7 +205,7 @@ class TnVedProductApplyService {
     const category = await this._loadCategoryRow(categoryId);
     if (!category) return null;
     const erp = await this._loadErpTnVedTargets(categoryId);
-    const schema = await this._loadMpSchemaKeys(category, opts);
+    const schema = await loadCategoryMpAttrKeys(category, collectTnVedMpKeys, opts);
     const result = {
       category,
       erpIds: erp.erpIds,

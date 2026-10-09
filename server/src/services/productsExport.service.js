@@ -1853,6 +1853,7 @@ function productToRowObject(p) {
     organization_name: toCell(p.organization_name),
     product_type: toCell(p.product_type),
     country_of_origin: toCell(p.country_of_origin),
+    okpd2_code: toCell(p.okpd2_code),
     description: toCell(p.description),
     cost: p.cost != null && p.cost !== '' ? Number(p.cost) : '',
     additional_expenses:
@@ -1950,6 +1951,7 @@ const SYSTEM_COLS_TAIL = [
   { header: 'Организация', key: 'organization_name', width: 24 },
   { header: 'Тип товара', key: 'product_type', width: 12 },
   { header: 'Страна производства', key: 'country_of_origin', width: 22 },
+  { header: 'ОКПД2', key: 'okpd2_code', width: 16 },
   { header: 'Описание', key: 'description', width: 40 },
   { header: 'Себестоимость', key: 'cost', width: 14 },
   { header: 'Доп. расходы', key: 'additional_expenses', width: 14 },
