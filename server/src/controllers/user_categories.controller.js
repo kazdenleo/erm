@@ -66,10 +66,13 @@ function readTnVedCodeFromBody(body) {
   return normalizeCategoryTnVedCode(body.tn_ved_code ?? body.tnVedCode);
 }
 
-async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId) {
+async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId, previousCode = null) {
   if (!code) return;
   try {
-    const result = await tnVedProductApplyService.applyToCategoryProducts(categoryId, code, { profileId });
+    const result = await tnVedProductApplyService.applyToCategoryProducts(categoryId, code, {
+      profileId,
+      previousCode,
+    });
     if (result?.productIds?.length) {
       const pid = profileId != null && profileId !== '' && Number.isFinite(Number(profileId)) ? Number(profileId) : null;
       schedulePushCardsAfterTnVed(categoryId, result.productIds, { profileId: pid, code });
@@ -578,10 +581,52 @@ class UserCategoriesController {
       const codeToApply =
         tnVedCode !== undefined ? tnVedCode : normalizeTnVedDigits(category.tn_ved_code);
       if (codeToApply) {
-        await applyTnVedToCategoryProductsSafe(id, codeToApply, tid);
+        const previousCode =
+          tnVedCode !== undefined ? normalizeTnVedDigits(owner.rows[0].tn_ved_code) || null : null;
+        await applyTnVedToCategoryProductsSafe(id, codeToApply, tid, previousCode);
       }
       
       return res.status(200).json({ ok: true, data: category });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/user-categories/:id/tn-ved/push
+   * Отправить на МП карточки товаров категории, у которых стоит её код ТН ВЭД.
+   */
+  async pushTnVed(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const r = await query('SELECT profile_id, tn_ved_code FROM user_categories WHERE id = $1', [id]);
+      if (r.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(r.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const code = normalizeTnVedDigits(r.rows[0].tn_ved_code);
+      if (!code) {
+        return res.status(400).json({ ok: false, message: 'У категории не указан код ТН ВЭД' });
+      }
+      await tnVedProductApplyService.applyToCategoryProducts(id, code, { profileId: tid });
+      const productIds = await tnVedProductApplyService.listCategoryProductIdsWithCode(id, code, {
+        profileId: tid,
+      });
+      if (productIds.length) {
+        schedulePushCardsAfterTnVed(id, productIds, {
+          profileId: Number(tid),
+          code,
+          delayMs: 1000,
+          force: true,
+        });
+      }
+      return res.status(200).json({ ok: true, data: { code, products: productIds.length } });
     } catch (error) {
       next(error);
     }

@@ -49,6 +49,12 @@ export const userCategoriesApi = {
     return response.data;
   },
 
+  /** Отправить на МП карточки товаров категории с её кодом ТН ВЭД. */
+  async pushTnVed(id) {
+    const response = await api.post(`/user-categories/${id}/tn-ved/push`);
+    return response.data;
+  },
+
   /**
    * Связь ERP-атрибута с характеристиками Ozon/WB/ЯМ для конкретной категории.
    * @param {string|number} categoryId

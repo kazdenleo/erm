@@ -213,6 +213,44 @@ export function fillEmptyTnVedKeys(attrs, keys, storedValue) {
   return changed ? next : attrs;
 }
 
+/**
+ * 10-значный код из сохранённого значения характеристики:
+ * '8421310000', { value: '8421310000' }, '8421310000 - Воздушные фильтры…->971399513', [..].
+ */
+export function storedTnVedDigits(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return storedTnVedDigits(v[0]);
+  if (typeof v === 'object') {
+    const fromText = storedTnVedDigits(v.value ?? v.values);
+    if (fromText) return fromText;
+    const did = String(v.dictionary_value_id ?? '').trim();
+    return /^\d{10}$/.test(did) ? did : '';
+  }
+  const s = String(v).trim();
+  return leadingTnVedDigits(s) || (/^[\d\s.]+$/.test(s) ? normalizeTnVedDigits(s) : '');
+}
+
+/**
+ * Заменяет прежний код категории на новый (и заполняет пустые ключи).
+ * Значения с другим кодом — выставленные вручную — не трогает.
+ */
+export function replaceTnVedKeys(attrs, keys, previousCode, storedValue) {
+  const prev = normalizeTnVedDigits(previousCode);
+  if (!storedValue || !Array.isArray(keys) || keys.length === 0) return attrs;
+  const src = attrs && typeof attrs === 'object' && !Array.isArray(attrs) ? attrs : {};
+  let changed = false;
+  const next = { ...src };
+  for (const key of keys) {
+    if (!key) continue;
+    const cur = next[key];
+    if (isEmptyMpStoredValue(cur) || (prev && storedTnVedDigits(cur) === prev)) {
+      next[key] = storedValue;
+      changed = true;
+    }
+  }
+  return changed ? next : attrs;
+}
+
 export function parseMpLinksObject(raw) {
   if (raw == null) return {};
   if (typeof raw === 'string') {

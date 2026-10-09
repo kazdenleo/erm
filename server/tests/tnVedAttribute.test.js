@@ -9,10 +9,40 @@ import {
   normalizeCategoryTnVedCode,
   ozonStoredTnVedSearchCode,
   ozonTnVedApiValuesFromDictEntry,
+  replaceTnVedKeys,
+  storedTnVedDigits,
   storedTnVedValueForMarketplace,
 } from '../src/utils/tnVedAttribute.js';
 
 describe('tnVedAttribute', () => {
+  test('storedTnVedDigits reads code from stored MP values', () => {
+    expect(storedTnVedDigits('8421310000')).toBe('8421310000');
+    expect(storedTnVedDigits(8421310000)).toBe('8421310000');
+    expect(storedTnVedDigits({ value: '8421310000' })).toBe('8421310000');
+    expect(
+      storedTnVedDigits('8421310000 - Воздушные фильтры для двигателей внутреннего сгорания->971399513')
+    ).toBe('8421310000');
+    expect(storedTnVedDigits([{ dictionary_value_id: 971399513, value: '8421310000 – Фильтры' }])).toBe(
+      '8421310000'
+    );
+    expect(storedTnVedDigits({ dictionary_value_id: 971399513 })).toBe('');
+    expect(storedTnVedDigits('Фильтр')).toBe('');
+    expect(storedTnVedDigits(null)).toBe('');
+  });
+
+  test('replaceTnVedKeys replaces previous category code and fills empty, keeps manual codes', () => {
+    const attrs = { a: '8421310000', b: '', c: '4011201000', d: 'x' };
+    const next = replaceTnVedKeys(attrs, ['a', 'b', 'c'], '8421310000', '8421390000');
+    expect(next).toEqual({ a: '8421390000', b: '8421390000', c: '4011201000', d: 'x' });
+    const ozon = { 22232: '8421310000 - Воздушные фильтры->971399513' };
+    expect(replaceTnVedKeys(ozon, ['22232'], '8421310000', { value: '8421390000' })).toEqual({
+      22232: { value: '8421390000' },
+    });
+    const same = { a: '4011201000' };
+    expect(replaceTnVedKeys(same, ['a'], '8421310000', '8421390000')).toBe(same);
+    expect(replaceTnVedKeys(null, ['a'], null, '8421390000')).toEqual({ a: '8421390000' });
+  });
+
   test('matches TN VED / HS code attribute names', () => {
     expect(isTnVedAttributeName('ТН ВЭД')).toBe(true);
     expect(isTnVedAttributeName('Код ТН ВЭД')).toBe(true);

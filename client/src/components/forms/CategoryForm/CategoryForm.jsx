@@ -247,6 +247,30 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
   const [errors, setErrors] = useState({});
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leavePromptSaving, setLeavePromptSaving] = useState(false);
+  const [tnVedPush, setTnVedPush] = useState({ loading: false, message: '', error: false });
+  const savedTnVedCode = String(category?.tn_ved_code || category?.tnVedCode || '').replace(/\D/g, '');
+  const formTnVedDigits = String(formData.tn_ved_code || '').replace(/\D/g, '');
+  const handlePushTnVed = async () => {
+    if (!category?.id) return;
+    setTnVedPush({ loading: true, message: '', error: false });
+    try {
+      const res = await userCategoriesApi.pushTnVed(category.id);
+      const n = Number(res?.data?.products) || 0;
+      setTnVedPush({
+        loading: false,
+        error: false,
+        message: n
+          ? `Отправляем карточки (${n}) — итог придёт уведомлением.`
+          : 'Нет товаров с этим кодом.',
+      });
+    } catch (e) {
+      setTnVedPush({
+        loading: false,
+        error: true,
+        message: e?.response?.data?.message || e?.message || 'Не удалось отправить',
+      });
+    }
+  };
   const isDirtyRef = useRef(false);
   const markDirty = () => {
     isDirtyRef.current = true;
@@ -1124,8 +1148,24 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
           value={formData.tn_ved_code || ''}
           onChange={(code) => handleChange('tn_ved_code', code)}
           marketplaceContext={tnVedMarketplaceContext}
-          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. Под кодом — проверка, примут ли его WB и Ozon для выбранных категорий."
+          hint="Один раз для категории: код подставится в карточки существующих и новых товаров, если поле ещё не заполнено. При смене кода прежний код категории в карточках заменится на новый, и карточки уйдут на маркетплейсы. Под кодом — проверка, примут ли его WB и Ozon для выбранных категорий."
         />
+        {savedTnVedCode && formTnVedDigits === savedTnVedCode ? (
+          <div className="d-flex align-items-center gap-2 mt-2 flex-wrap">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              onClick={handlePushTnVed}
+              disabled={tnVedPush.loading}
+            >
+              {tnVedPush.loading ? 'Отправка…' : 'Отправить ТН ВЭД на маркетплейсы'}
+            </Button>
+            {tnVedPush.message ? (
+              <span className={`small ${tnVedPush.error ? 'text-danger' : 'text-muted'}`}>{tnVedPush.message}</span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="field">

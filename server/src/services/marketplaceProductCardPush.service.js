@@ -2985,10 +2985,11 @@ const _tnVedPushPending = new Map();
  * Только существующие карточки и только МП, с которыми товар связан; итог — runtime-уведомлением.
  * @param {number|string} userCategoryId
  * @param {Array<number|string>} productIds
- * @param {{ profileId?: number|string|null, code?: string, delayMs?: number }} [opts]
+ * @param {{ profileId?: number|string|null, code?: string, delayMs?: number, force?: boolean }} [opts]
+ *   force — ручной запуск: игнорирует MARKETPLACE_CARD_AUTO_PUSH_ENABLED.
  */
 export function schedulePushCardsAfterTnVed(userCategoryId, productIds, opts = {}) {
-  if (!isCardAutoPushEnabled()) return;
+  if (!opts.force && !isCardAutoPushEnabled()) return;
   const catId = Number(userCategoryId);
   const ids = (Array.isArray(productIds) ? productIds : [])
     .map((x) => Number(x))
@@ -3042,7 +3043,7 @@ async function runTnVedCardPush(catId, ids, opts) {
     .filter(([, n]) => n > 0)
     .map(([mp, n]) => `${MP_TITLES[mp]} — ${n}`);
   const parts = [
-    `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: товаров с новым ТН ВЭД — ${ids.length}.`,
+    `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: товаров с ${opts.force ? 'этим' : 'новым'} ТН ВЭД — ${ids.length}.`,
     sent.length ? `Карточки обновлены: ${sent.join(', ')}.` : 'Ни одна карточка не обновлена.',
   ];
   if (skipped > 0) parts.push(`Пропущено (карточки нет на МП): ${skipped}.`);

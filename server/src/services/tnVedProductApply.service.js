@@ -1,6 +1,6 @@
 /**
  * Подстановка кода ТН ВЭД категории в карточки товаров (ERP-атрибуты и характеристики МП).
- * Заполняются только пустые поля.
+ * Заполняются пустые поля; при смене кода категории прежний код заменяется на новый.
  */
 
 import { query } from '../config/database.js';
@@ -16,6 +16,8 @@ import {
   normalizeCategoryTnVedCode,
   normalizeTnVedDigits,
   parseMpLinksObject,
+  replaceTnVedKeys,
+  storedTnVedDigits,
   storedTnVedValueForMarketplace,
 } from '../utils/tnVedAttribute.js';
 
@@ -290,6 +292,105 @@ class TnVedProductApplyService {
     return total;
   }
 
+  async _replaceErpPreviousCode(categoryId, attrIds, previousCode, code, touchedIds) {
+    const ids = (attrIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return 0;
+    const r = await query(
+      `UPDATE product_attribute_values pav
+       SET value = $4
+       FROM products p
+       WHERE p.id = pav.product_id
+         AND p.user_category_id = $1
+         AND pav.attribute_id = ANY($2::bigint[])
+         AND regexp_replace(COALESCE(pav.value, ''), '\\D', '', 'g') = $3
+       RETURNING pav.product_id`,
+      [categoryId, ids, previousCode, code]
+    );
+    for (const row of r.rows || []) touchedIds.add(Number(row.product_id));
+    return r.rowCount || 0;
+  }
+
+  async _replaceMpPreviousCode(categoryId, targets, previousCode, code, touchedIds) {
+    const columns = [
+      ['ozon_attributes', 'ozon', targets.ozonKeys],
+      ['wb_attributes', 'wb', targets.wbKeys],
+      ['ym_attributes', 'ym', targets.ymKeys],
+    ].filter(([, , keys]) => keys.length);
+    const counts = { ozon: 0, wb: 0, ym: 0 };
+    if (!columns.length) return counts;
+
+    const r = await query(
+      `SELECT id, ozon_attributes, wb_attributes, ym_attributes
+       FROM products WHERE user_category_id = $1`,
+      [categoryId]
+    );
+    for (const row of r.rows || []) {
+      for (const [column, marketplace, keys] of columns) {
+        const current = row[column];
+        if (current != null && (typeof current !== 'object' || Array.isArray(current))) continue;
+        const next = replaceTnVedKeys(
+          current,
+          keys,
+          previousCode,
+          storedTnVedValueForMarketplace(marketplace, code)
+        );
+        if (next === current) continue;
+        await query(
+          `UPDATE products SET ${column} = $2::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [row.id, JSON.stringify(next)]
+        );
+        counts[marketplace] += 1;
+        touchedIds.add(Number(row.id));
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * Товары категории, у которых в карточке (ERP или характеристиках МП) стоит этот код ТН ВЭД.
+   */
+  async listCategoryProductIdsWithCode(categoryId, code, opts = {}) {
+    const id = Number(categoryId);
+    const digits = normalizeTnVedDigits(code);
+    if (!Number.isFinite(id) || id <= 0 || !digits) return [];
+    const targets = await this._resolveTargets(id, opts);
+    if (!targets) return [];
+
+    const found = new Set();
+    const erpIds = targets.erpIds.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (erpIds.length) {
+      const r = await query(
+        `SELECT DISTINCT pav.product_id
+         FROM product_attribute_values pav
+         JOIN products p ON p.id = pav.product_id
+         WHERE p.user_category_id = $1
+           AND pav.attribute_id = ANY($2::bigint[])
+           AND regexp_replace(COALESCE(pav.value, ''), '\\D', '', 'g') = $3`,
+        [id, erpIds, digits]
+      );
+      for (const row of r.rows || []) found.add(Number(row.product_id));
+    }
+
+    const r = await query(
+      `SELECT id, ozon_attributes, wb_attributes, ym_attributes
+       FROM products WHERE user_category_id = $1`,
+      [id]
+    );
+    const columns = [
+      ['ozon_attributes', targets.ozonKeys],
+      ['wb_attributes', targets.wbKeys],
+      ['ym_attributes', targets.ymKeys],
+    ];
+    for (const row of r.rows || []) {
+      const hit = columns.some(([column, keys]) => {
+        const attrs = parseJsonObject(row[column]);
+        return keys.some((key) => storedTnVedDigits(attrs[key]) === digits);
+      });
+      if (hit) found.add(Number(row.id));
+    }
+    return [...found].filter((n) => Number.isFinite(n) && n > 0);
+  }
+
   async applyToCategoryProducts(categoryId, code, opts = {}) {
     const normalized = normalizeCategoryTnVedCode(code);
     if (!normalized) return { ok: true, skipped: true };
@@ -301,34 +402,59 @@ class TnVedProductApplyService {
     if (!targets) return { ok: false };
 
     const touchedIds = new Set();
-    const erpUpdated = await this._insertEmptyErpTnVedValues(id, targets.erpIds, normalized, touchedIds);
+    const previousCode = normalizeTnVedDigits(opts.previousCode);
+    let replaced = { erp: 0, ozon: 0, wb: 0, ym: 0 };
+    if (previousCode && previousCode !== normalized) {
+      replaced.erp = await this._replaceErpPreviousCode(
+        id,
+        targets.erpIds,
+        previousCode,
+        normalized,
+        touchedIds
+      );
+      replaced = {
+        ...replaced,
+        ...(await this._replaceMpPreviousCode(id, targets, previousCode, normalized, touchedIds)),
+      };
+    }
 
-    const ozonUpdated = await this._applyMpKeys(
-      id,
-      'ozon_attributes',
-      targets.ozonKeys,
-      storedTnVedValueForMarketplace('ozon', normalized),
-      touchedIds
-    );
-    const wbUpdated = await this._applyMpKeys(
-      id,
-      'wb_attributes',
-      targets.wbKeys,
-      storedTnVedValueForMarketplace('wb', normalized),
-      touchedIds
-    );
-    const ymUpdated = await this._applyMpKeys(
-      id,
-      'ym_attributes',
-      targets.ymKeys,
-      storedTnVedValueForMarketplace('ym', normalized),
-      touchedIds
-    );
+    const erpUpdated =
+      replaced.erp +
+      (await this._insertEmptyErpTnVedValues(id, targets.erpIds, normalized, touchedIds));
+
+    const ozonUpdated =
+      replaced.ozon +
+      (await this._applyMpKeys(
+        id,
+        'ozon_attributes',
+        targets.ozonKeys,
+        storedTnVedValueForMarketplace('ozon', normalized),
+        touchedIds
+      ));
+    const wbUpdated =
+      replaced.wb +
+      (await this._applyMpKeys(
+        id,
+        'wb_attributes',
+        targets.wbKeys,
+        storedTnVedValueForMarketplace('wb', normalized),
+        touchedIds
+      ));
+    const ymUpdated =
+      replaced.ym +
+      (await this._applyMpKeys(
+        id,
+        'ym_attributes',
+        targets.ymKeys,
+        storedTnVedValueForMarketplace('ym', normalized),
+        touchedIds
+      ));
     const productIds = [...touchedIds].filter((n) => Number.isFinite(n) && n > 0);
 
     logger.info('[TN VED apply] category products updated', {
       categoryId: id,
       code: normalized,
+      previousCode: previousCode || null,
       erpUpdated,
       ozonUpdated,
       wbUpdated,
