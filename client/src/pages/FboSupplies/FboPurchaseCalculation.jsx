@@ -12,6 +12,7 @@ import { Button } from '../../components/common/Button/Button';
 import {
   calcPurchaseTotals,
   componentQtyToKitUnits,
+  filterPurchaseRows,
   getPurchaseRowDisplayName,
   isPurchasablePurchaseRow,
   kitUnitsToComponentQty,
@@ -99,6 +100,7 @@ export function FboPurchaseCalculation() {
   const [exportLoading, setExportLoading] = useState(false);
   const [filterSupplierId, setFilterSupplierId] = useState('');
   const [restoringCell, setRestoringCell] = useState(null);
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
     if (!sessionIdFromUrl && !supplyIds.length) {
@@ -179,8 +181,19 @@ export function FboPurchaseCalculation() {
     [calc?.rows]
   );
 
+  const visibleRows = useMemo(
+    () => filterPurchaseRows(calc?.rows || [], search),
+    [calc?.rows, search]
+  );
+
+  const visibleSelectableRows = useMemo(
+    () => visibleRows.filter(isRowSelectable),
+    [visibleRows]
+  );
+
   const allSelectableSelected =
-    selectableRows.length > 0 && selectableRows.every((r) => selectedRowKeys.has(r.key));
+    visibleSelectableRows.length > 0 &&
+    visibleSelectableRows.every((r) => selectedRowKeys.has(r.key));
 
   const toggleRowSelected = (rowKey) => {
     setSelectedRowKeys((prev) => {
@@ -192,11 +205,14 @@ export function FboPurchaseCalculation() {
   };
 
   const toggleSelectAll = () => {
-    if (allSelectableSelected) {
-      setSelectedRowKeys(new Set());
-      return;
-    }
-    setSelectedRowKeys(new Set(selectableRows.map((r) => r.key)));
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      for (const r of visibleSelectableRows) {
+        if (allSelectableSelected) next.delete(r.key);
+        else next.add(r.key);
+      }
+      return next;
+    });
   };
 
   const handleSupplyQtyChange = (rowKey, supplyId, raw) => {
@@ -688,23 +704,33 @@ export function FboPurchaseCalculation() {
         </p>
       ) : null}
 
-      {supplierBindingEnabled ? (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <span className="muted" style={{ fontSize: 13 }}>Фильтр по поставщику</span>
-          <select
-            className="warehouse-ops-select"
-            value={filterSupplierId}
-            onChange={(e) => setFilterSupplierId(e.target.value)}
-          >
-            <option value="">Все товары</option>
-            {(suppliers || []).map((s) => (
-              <option key={s.id} value={String(s.id)}>
-                {s.name || `Поставщик #${s.id}`}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : null}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input
+          type="search"
+          className="form-control form-control-sm"
+          style={{ width: 280 }}
+          placeholder="Поиск по названию или артикулу"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        {supplierBindingEnabled ? (
+          <>
+            <span className="muted" style={{ fontSize: 13 }}>Фильтр по поставщику</span>
+            <select
+              className="warehouse-ops-select"
+              value={filterSupplierId}
+              onChange={(e) => setFilterSupplierId(e.target.value)}
+            >
+              <option value="">Все товары</option>
+              {(suppliers || []).map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.name || `Поставщик #${s.id}`}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : null}
+      </div>
 
       {purchaseLinks.length > 0 ? (
         <div className="fbo-packing-hint" style={{ marginBottom: 12 }}>
@@ -734,7 +760,7 @@ export function FboPurchaseCalculation() {
                   <input
                     type="checkbox"
                     checked={allSelectableSelected}
-                    disabled={!selectableRows.length}
+                    disabled={!visibleSelectableRows.length}
                     onChange={toggleSelectAll}
                     title="Выбрать все к закупке"
                   />
@@ -756,7 +782,14 @@ export function FboPurchaseCalculation() {
               </tr>
             </thead>
             <tbody ref={rowsBodyRef} onBlur={handleRowsBlur}>
-              {calc.rows.map((row) => {
+              {search.trim() && !visibleRows.length ? (
+                <tr>
+                  <td colSpan={10 + calc.supplies.length} className="text-center text-muted">
+                    Ничего не найдено
+                  </td>
+                </tr>
+              ) : null}
+              {visibleRows.map((row) => {
                 const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
                 const isComponent = row.rowType === 'component';
                 const selectable = isRowSelectable(row);
@@ -809,11 +842,8 @@ export function FboPurchaseCalculation() {
                   </td>
                   <td>{row.sku || '—'}</td>
                   <td>
-                    {isKitHeader ? (
-                      <span className="text-muted">—</span>
-                    ) : (
-                      <strong>{row.supplyQtyTotal ?? 0}</strong>
-                    )}
+                    <strong>{row.supplyQtyTotal ?? 0}</strong>
+                    {isKitHeader ? <span className="text-muted small"> компл.</span> : null}
                   </td>
                   <td>
                     {isKitHeader ? (

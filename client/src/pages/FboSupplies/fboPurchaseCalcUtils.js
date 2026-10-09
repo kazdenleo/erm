@@ -170,9 +170,22 @@ function groupFullyCleared(group) {
   return row ? isRowFullyCleared(row) : true;
 }
 
+const nameCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
+
+function comparePurchaseRowsByName(a, b) {
+  return (
+    nameCollator.compare(getPurchaseRowDisplayName(a), getPurchaseRowDisplayName(b)) ||
+    nameCollator.compare(String(a?.sku || ''), String(b?.sku || ''))
+  );
+}
+
+function compareGroupsByName(a, b) {
+  return comparePurchaseRowsByName(a.header || a.components[0], b.header || b.components[0]);
+}
+
 /**
- * Стабильная сортировка: очищенные группы (все поставки = 0) вниз,
- * внутри активных/очищенных порядок не меняется — курсор не прыгает при правках.
+ * Очищенные группы (все поставки = 0) вниз, внутри активных/очищенных — по алфавиту.
+ * Комплектующие остаются под своим комплектом.
  */
 export function sortPurchaseRowsWithProgress(rows) {
   const groups = partitionPurchaseGroups(rows);
@@ -182,11 +195,33 @@ export function sortPurchaseRowsWithProgress(rows) {
     if (groupFullyCleared(g)) cleared.push(g);
     else active.push(g);
   }
+  active.sort(compareGroupsByName);
+  cleared.sort(compareGroupsByName);
 
   const out = [];
   for (const g of [...active, ...cleared]) {
     if (g.header) out.push(g.header);
-    out.push(...g.components);
+    out.push(...[...g.components].sort(comparePurchaseRowsByName));
+  }
+  return out;
+}
+
+function normalizeSearchText(v) {
+  return String(v ?? '').toLowerCase().replace(/ё/g, 'е');
+}
+
+function rowMatchesSearch(row, needle) {
+  return [row?.productName, row?.sku].some((v) => normalizeSearchText(v).includes(needle));
+}
+
+/** Поиск по названию и артикулу; комплект показывается целиком, если совпала любая его строка. */
+export function filterPurchaseRows(rows, search) {
+  const needle = normalizeSearchText(search).trim();
+  if (!needle) return rows;
+  const out = [];
+  for (const g of partitionPurchaseGroups(rows)) {
+    const groupRows = g.header ? [g.header, ...g.components] : g.components;
+    if (groupRows.some((r) => rowMatchesSearch(r, needle))) out.push(...groupRows);
   }
   return out;
 }
