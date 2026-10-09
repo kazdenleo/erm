@@ -209,6 +209,86 @@
   font-size: 0.95rem;
 }
 
+/* Динамика продаж */
+.home-sales-dynamics__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.home-sales-dynamics__controls .form-select {
+  width: auto;
+}
+
+.home-sales-dynamics__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.home-sales-dynamics__summary-label {
+  font-size: 0.8rem;
+  color: #6c757d;
+}
+
+.home-sales-dynamics__summary-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.home-sales-dynamics__chart {
+  width: 100%;
+  min-height: 320px;
+}
+
+.home-sales-tooltip {
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  font-size: 12px;
+  min-width: 220px;
+}
+
+.home-sales-tooltip__title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.home-sales-tooltip__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.6;
+}
+
+.home-sales-tooltip__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.home-sales-tooltip__name {
+  flex: 1 1 auto;
+}
+
+.home-sales-tooltip__val {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-sales-tooltip__total {
+  border-top: 1px solid #e9ecef;
+  margin-top: 3px;
+  padding-top: 3px;
+  font-weight: 600;
+}
+
 /* Балансы МП: колонка с названием и организацией */
 .home-balance-mp-col {
   min-width: 12rem;

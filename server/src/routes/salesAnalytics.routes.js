@@ -8,6 +8,7 @@ const router = express.Router();
 
 router.use(requireAuth);
 
+router.get('/home-dynamics', wrapAsync(controller.getHomeDynamics));
 router.get('/fbs-by-product', wrapAsync(controller.getFbsByProduct));
 router.get('/by-category', wrapAsync(controller.getByCategory));
 router.get('/abc', wrapAsync(controller.getAbcAnalysis));

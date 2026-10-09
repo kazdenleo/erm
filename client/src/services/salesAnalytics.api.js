@@ -1,6 +1,16 @@
 import api from './api';
 
 export const salesAnalyticsApi = {
+  /** Динамика продаж для главной: FBS по МП, частные заказы и FBO. */
+  getHomeDynamics: async ({ dateFrom, dateTo, granularity = 'day' } = {}) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (granularity) params.set('granularity', granularity);
+    const r = await api.get(`/sales-analytics/home-dynamics?${params.toString()}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
+
   /** @returns {Promise<{ ok?: boolean, data?: { summary, items, period, marketplace } }>} */
   getFbsByProduct: async ({ dateFrom, dateTo, marketplace = 'all' } = {}) => {
     const params = new URLSearchParams();

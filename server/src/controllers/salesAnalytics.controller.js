@@ -9,6 +9,14 @@ import lostRevenueAnalyticsService from '../services/lostRevenueAnalytics.servic
 import returnsAnalyticsService from '../services/returnsAnalytics.service.js';
 import deadStockAnalyticsService from '../services/deadStockAnalytics.service.js';
 import penaltiesAnalyticsService from '../services/penaltiesAnalytics.service.js';
+import homeSalesDynamicsService from '../services/homeSalesDynamics.service.js';
+
+export async function getHomeDynamics(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const { dateFrom, dateTo, granularity } = req.query || {};
+  const data = await homeSalesDynamicsService.getDynamics({ profileId, dateFrom, dateTo, granularity });
+  return res.json({ ok: true, data });
+}
 
 export async function getFbsByProduct(req, res) {
   const profileId = req.user?.profileId ?? null;

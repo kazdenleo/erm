@@ -16,6 +16,7 @@ import { marketplaceReturnsApi } from '../../services/marketplaceReturns.api';
 import { integrationsApi } from '../../services/integrations.api';
 import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { MarketplaceInventorySummary } from '../../components/MarketplaceInventorySummary/MarketplaceInventorySummary.jsx';
+import { HomeSalesDynamics } from './HomeSalesDynamics.jsx';
 import './Home.css';
 
 /** Плашка «Нужно обработать»: новые + на сборке (ещё не «Собран») */
@@ -256,7 +257,7 @@ export function Home() {
         iconClass="pe-7s-home"
         iconBgClass="bg-mean-fruit"
         title="Главная"
-        subtitle="Сводка по заказам, вопросам, возвратам и остаткам"
+        subtitle="Сводка по заказам, продажам, вопросам, возвратам и остаткам"
         actions={(
           <>
             <Button className="btn-shadow me-2" variant="secondary" size="small">
@@ -440,6 +441,12 @@ export function Home() {
               </div>
             </div>
           )}
+        </div>
+
+        <div className="row mb-3">
+          <div className="col-12">
+            <HomeSalesDynamics profileId={profileId} />
+          </div>
         </div>
 
         {isAccountAdmin && (
@@ -705,71 +712,6 @@ export function Home() {
           )}
         </Modal>
       )}
-
-      <div className="row">
-        <div className="col-md-12 col-lg-6">
-          <div className="mb-3 card">
-            <div className="card-header-tab card-header-tab-animation card-header">
-              <div className="card-header-title">
-                <i className="header-icon lnr-apartment icon-gradient bg-love-kiss" /> Sales Report
-              </div>
-              <div className="btn-actions-pane-right">
-                <div className="nav" role="tablist">
-                  <Button className="btn-pill btn-wide btn-transition active me-1" variant="secondary" size="small">Last</Button>
-                  <Button className="btn-pill btn-wide btn-transition" variant="secondary" size="small">Current</Button>
-                </div>
-              </div>
-            </div>
-            <div className="card-body">
-              <div className="text-muted small">
-                Здесь будет график/виджеты — сейчас оставил блок как на демо, но данные подключим позже.
-              </div>
-              <div className="mt-3 d-flex gap-2 flex-wrap">
-                <Button variant="primary" size="small">Добавить товар</Button>
-                <Button variant="secondary" size="small">Создать заказ</Button>
-                <Button variant="success" size="small">Синхронизировать</Button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="col-md-12 col-lg-6">
-          <div className="mb-3 card">
-            <div className="card-header">
-              Active Users
-              <div className="btn-actions-pane-right">
-                <div role="group" className="btn-group-sm btn-group">
-                  <Button className="active" variant="secondary" size="small">Last Week</Button>
-                  <Button variant="secondary" size="small">All Month</Button>
-                </div>
-              </div>
-            </div>
-            <div className="table-responsive">
-              <table className="align-middle mb-0 table table-borderless table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th className="text-center">#</th>
-                    <th>Событие</th>
-                    <th className="text-center">Статус</th>
-                    <th className="text-center">Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td className="text-center text-muted">#—</td>
-                    <td>Пример строки</td>
-                    <td className="text-center"><div className="badge bg-warning">Pending</div></td>
-                    <td className="text-center"><Button variant="primary" size="small">Details</Button></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div className="d-block text-center card-footer">
-              <Button className="btn-wide" variant="success" size="small">Save</Button>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
