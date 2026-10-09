@@ -18,8 +18,32 @@ import {
 import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
-function SalesDynamicsWidget({ profileId }) {
-  return <HomeSalesDynamics profileId={profileId} />;
+const CHART_HEIGHTS = [
+  { value: 'compact', label: 'Низкий график', px: 220 },
+  { value: 'normal', label: 'Средний график', px: 320 },
+  { value: 'tall', label: 'Высокий график', px: 440 },
+];
+
+function SalesDynamicsWidget({ profileId, settings }) {
+  const h = CHART_HEIGHTS.find((x) => x.value === settings?.chartHeight) || CHART_HEIGHTS[0];
+  return <HomeSalesDynamics profileId={profileId} chartHeight={h.px} />;
+}
+
+function SalesDynamicsSettings({ settings, onChange }) {
+  return (
+    <select
+      className="form-select form-select-sm w-auto"
+      value={settings?.chartHeight || 'compact'}
+      onChange={(e) => onChange({ ...settings, chartHeight: e.target.value })}
+      aria-label="Высота графика"
+    >
+      {CHART_HEIGHTS.map((h) => (
+        <option key={h.value} value={h.value}>
+          {h.label}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 function MarketplaceInventoryWidget() {
@@ -27,6 +51,7 @@ function MarketplaceInventoryWidget() {
 }
 
 export const WIDGET_SIZES = [
+  { value: 'xs', label: 'Четверть', colClass: 'col-12 col-sm-6 col-xl-3' },
   { value: 'sm', label: 'Узкий (1/3)', colClass: 'col-12 col-md-6 col-xl-4' },
   { value: 'md', label: 'Половина', colClass: 'col-12 col-lg-6' },
   { value: 'lg', label: 'Во всю ширину', colClass: 'col-12' },
@@ -43,7 +68,7 @@ export const WIDGETS = {
     title: 'Заказы в работе',
     description: 'Новые и на сборке',
     group: 'ops',
-    defaultSize: 'sm',
+    defaultSize: 'xs',
     sectionKey: 'orders',
     Component: OrdersWidget,
   },
@@ -51,7 +76,7 @@ export const WIDGETS = {
     title: 'Вопросы покупателей',
     description: 'Без ответа продавца',
     group: 'ops',
-    defaultSize: 'sm',
+    defaultSize: 'xs',
     sectionKey: 'questions',
     Component: QuestionsWidget,
   },
@@ -59,14 +84,14 @@ export const WIDGETS = {
     title: 'Возвраты к выдаче',
     description: 'По маркетплейсам',
     group: 'ops',
-    defaultSize: 'sm',
+    defaultSize: 'xs',
     Component: ReturnsWidget,
   },
   products: {
     title: 'Товары',
     description: 'Количество товаров в системе',
     group: 'ops',
-    defaultSize: 'md',
+    defaultSize: 'xs',
     sectionKey: 'products',
     Component: ProductsWidget,
   },
@@ -84,6 +109,7 @@ export const WIDGETS = {
     group: 'analytics',
     defaultSize: 'lg',
     Component: SalesDynamicsWidget,
+    SettingsComponent: SalesDynamicsSettings,
   },
   mp_inventory: {
     title: 'Остатки на маркетплейсах',
@@ -212,5 +238,5 @@ export function defaultLayout() {
 }
 
 export function sizeColClass(size) {
-  return (WIDGET_SIZES.find((s) => s.value === size) || WIDGET_SIZES[1]).colClass;
+  return (WIDGET_SIZES.find((s) => s.value === size) || WIDGET_SIZES[2]).colClass;
 }

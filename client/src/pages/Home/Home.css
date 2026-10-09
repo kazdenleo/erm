@@ -4,6 +4,28 @@
   overflow-x: visible;
 }
 
+/* Компактные плашки на главной */
+.home-dashboard-widgets .widget-content {
+  padding: 0.6rem 0.9rem;
+}
+
+.home-dashboard-widgets .widget-content .widget-heading {
+  font-size: 0.92rem;
+}
+
+.home-dashboard-widgets .widget-content .widget-subheading {
+  font-size: 0.75rem;
+}
+
+.home-dashboard-widgets .widget-content .widget-numbers {
+  font-size: 1.6rem;
+  line-height: 1.1;
+}
+
+.home-dashboard-widgets .home-returns-mp-count {
+  font-size: 1.15rem;
+}
+
 /* Плашка «Заказы» */
 .home-orders-plate-link,
 .home-products-plate-link {
@@ -224,24 +246,35 @@
 .home-sales-dynamics__summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 2rem;
-  margin-bottom: 0.75rem;
+  gap: 1.5rem;
+  margin-bottom: 0.4rem;
 }
 
 .home-sales-dynamics__summary-label {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: #6c757d;
 }
 
 .home-sales-dynamics__summary-value {
-  font-size: 1.35rem;
+  font-size: 1.1rem;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .home-sales-dynamics__chart {
   width: 100%;
-  min-height: 320px;
+}
+
+.home-sales-dynamics__info {
+  font-size: 1.1rem;
+  color: #6c757d;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.home-sales-dynamics .card-body {
+  padding-top: 0.75rem;
+  padding-bottom: 0.5rem;
 }
 
 .home-sales-tooltip {

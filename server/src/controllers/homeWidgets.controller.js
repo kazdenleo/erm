@@ -5,7 +5,7 @@
 import { query } from '../config/database.js';
 
 const MAX_ITEMS = 40;
-const SIZES = new Set(['sm', 'md', 'lg']);
+const SIZES = new Set(['xs', 'sm', 'md', 'lg']);
 const KEY_RE = /^[a-z0-9_-]{1,40}$/i;
 const MAX_SETTINGS_JSON = 4000;
 

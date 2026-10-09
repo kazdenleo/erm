@@ -47,8 +47,8 @@ function useStockSummary(profileId) {
 
 function PlateLink({ to, title, linkClass, blockClass, children }) {
   return (
-    <Link to={to} className={`text-decoration-none d-block h-100 ${linkClass}`} title={title}>
-      <div className={`card mb-0 h-100 widget-content ${blockClass}`}>{children}</div>
+    <Link to={to} className={`text-decoration-none d-block ${linkClass}`} title={title}>
+      <div className={`card mb-0 widget-content ${blockClass}`}>{children}</div>
     </Link>
   );
 }
@@ -270,7 +270,7 @@ export function StockWidget({ profileId }) {
 
   return (
     <>
-      <div className="card mb-0 h-100 widget-content bg-grow-early home-stock-plate-block" title="Остатки по складам">
+      <div className="card mb-0 widget-content bg-grow-early home-stock-plate-block" title="Остатки по складам">
         <div className="widget-content-wrapper text-white home-stock-plate-stack">
           <div className="home-stock-plate-head">
             <div className="widget-heading">Остатки</div>

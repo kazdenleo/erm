@@ -124,7 +124,7 @@ function ChartTooltip({ active, payload, label, metric, granularity }) {
   );
 }
 
-export function HomeSalesDynamics({ profileId }) {
+export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
   const [periodDays, setPeriodDays] = useState(30);
   const [granularity, setGranularity] = useState('day');
   const [metric, setMetric] = useState('qty');
@@ -205,12 +205,22 @@ export function HomeSalesDynamics({ profileId }) {
       .join(', ');
   })();
 
+  const sourcesNote =
+    'FBS и частные заказы — по дате оформления, без отменённых; сумма — цена продажи × количество. ' +
+    (fboLiveNote
+      ? `FBO — заказы со склада маркетплейса в реальном времени (обновление каждые 30 минут; ${fboLiveNote}); более ранние даты — из финансовых отчётов`
+      : 'FBO — продажи со склада маркетплейса из финансовых отчётов (по дате продажи)') +
+    (fboLastDate ? `, отчёты загружены по ${fboLastDate}` : ', отчёты ещё не загружались') +
+    (fboLiveNote ? '.' : ': за последние дни FBO может быть неполным.') +
+    ' Нажмите на пункт легенды, чтобы скрыть или показать ряд.';
+
   return (
     <div className="card mb-0 h-100 home-sales-dynamics">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-graph1 icon-gradient bg-mean-fruit me-2" />
           Динамика продаж
+          <i className="pe-7s-info home-sales-dynamics__info ms-2" title={sourcesNote} aria-label={sourcesNote} />
         </div>
         <div className="home-sales-dynamics__controls">
           <select
@@ -283,7 +293,7 @@ export function HomeSalesDynamics({ profileId }) {
             )}
 
             <div className="home-sales-dynamics__chart">
-              <ResponsiveContainer width="100%" height={320}>
+              <ResponsiveContainer width="100%" height={chartHeight}>
                 <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis
@@ -322,16 +332,6 @@ export function HomeSalesDynamics({ profileId }) {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-
-            <p className="text-muted small mb-0 mt-2">
-              FBS и частные заказы — по дате оформления, без отменённых; сумма — цена продажи × количество.
-              {fboLiveNote
-                ? `FBO — заказы со склада маркетплейса в реальном времени (обновление каждые 30 минут; ${fboLiveNote}); более ранние даты — из финансовых отчётов`
-                : 'FBO — продажи со склада маркетплейса из финансовых отчётов (по дате продажи)'}
-              {fboLastDate ? `, отчёты загружены по ${fboLastDate}` : ', отчёты ещё не загружались'}
-              {fboLiveNote ? '.' : ': за последние дни FBO может быть неполным.'} Нажмите на пункт легенды,
-              чтобы скрыть или показать ряд.
-            </p>
           </>
         )}
       </div>
