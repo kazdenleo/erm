@@ -196,6 +196,15 @@ export function HomeSalesDynamics({ profileId }) {
     ? parseYmd(data.fboLastDate).toLocaleDateString('ru-RU')
     : null;
 
+  const fboLiveNote = (() => {
+    const entries = Object.entries(data?.fboLive || {}).filter(([, v]) => v?.liveFrom);
+    if (!entries.length) return null;
+    const labels = { ozon: 'Ozon', wb: 'WB', ym: 'Я.Маркет' };
+    return entries
+      .map(([mp, v]) => `${labels[mp] || mp} — с ${parseYmd(v.liveFrom).toLocaleDateString('ru-RU')}`)
+      .join(', ');
+  })();
+
   return (
     <div className="card mb-0 h-100 home-sales-dynamics">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
@@ -316,9 +325,12 @@ export function HomeSalesDynamics({ profileId }) {
 
             <p className="text-muted small mb-0 mt-2">
               FBS и частные заказы — по дате оформления, без отменённых; сумма — цена продажи × количество.
-              FBO — продажи со склада маркетплейса из финансовых отчётов (по дате продажи)
-              {fboLastDate ? `, отчёты загружены по ${fboLastDate}` : ', отчёты ещё не загружались'}: за
-              последние дни FBO может быть неполным. Нажмите на пункт легенды, чтобы скрыть или показать ряд.
+              {fboLiveNote
+                ? `FBO — заказы со склада маркетплейса в реальном времени (обновление каждые 30 минут; ${fboLiveNote}); более ранние даты — из финансовых отчётов`
+                : 'FBO — продажи со склада маркетплейса из финансовых отчётов (по дате продажи)'}
+              {fboLastDate ? `, отчёты загружены по ${fboLastDate}` : ', отчёты ещё не загружались'}
+              {fboLiveNote ? '.' : ': за последние дни FBO может быть неполным.'} Нажмите на пункт легенды,
+              чтобы скрыть или показать ряд.
             </p>
           </>
         )}

@@ -114,6 +114,33 @@ function getReturnClaimsSyncCronExpression() {
   return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
 }
 
+/**
+ * Заказы FBO почти в реальном времени (Ozon / WB Statistics / Яндекс FBY).
+ * По умолчанию только в production: у WB Statistics лимит 1 запрос/мин на токен, общий с продом.
+ * Явно: MARKETPLACE_FBO_ORDERS_SYNC_ENABLED=1|0
+ */
+function isFboOrdersSyncEnabled() {
+  const v = process.env.MARKETPLACE_FBO_ORDERS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return process.env.NODE_ENV === 'production';
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию каждые 30 мин; MARKETPLACE_FBO_ORDERS_SYNC_CRON */
+function getFboOrdersSyncCronExpression() {
+  const c = process.env.MARKETPLACE_FBO_ORDERS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/30 * * * *';
+}
+
+async function runFboOrdersSync() {
+  try {
+    const { default: marketplaceFboOrdersService } = await import('./marketplaceFboOrders.service.js');
+    const out = await marketplaceFboOrdersService.syncAllProfiles();
+    logger.info('[Scheduler] FBO orders sync done', out);
+  } catch (error) {
+    logger.error('[Scheduler] FBO orders sync failed:', error);
+  }
+}
+
 async function getSchedulerProfiles() {
   let profiles = [{ id: null }];
   try {
@@ -1314,6 +1341,17 @@ class SchedulerService {
         logger.info('[Scheduler] Certificates status sync disabled (CERTIFICATES_STATUS_SYNC_ENABLED)');
       }
 
+      let fboOrdersSyncJob = null;
+      const fboOrdersSyncCron = getFboOrdersSyncCronExpression();
+      if (isFboOrdersSyncEnabled()) {
+        fboOrdersSyncJob = cron.schedule(fboOrdersSyncCron, runFboOrdersSync, {
+          scheduled: false,
+          timezone: 'Europe/Moscow',
+        });
+      } else {
+        logger.info('[Scheduler] FBO orders sync disabled (MARKETPLACE_FBO_ORDERS_SYNC_ENABLED / not production)');
+      }
+
       const stockDailySnapshotCron = String(process.env.STOCK_DAILY_SNAPSHOT_CRON || '').trim() || '55 23 * * *';
       const runStockDailySnapshot = async () => {
         try {
@@ -1652,6 +1690,16 @@ class SchedulerService {
         });
       }
 
+      if (fboOrdersSyncJob) {
+        this.jobs.push({
+          name: 'marketplace-fbo-orders-sync',
+          job: fboOrdersSyncJob,
+          schedule: fboOrdersSyncCron,
+          description:
+            'Заказы FBO (Ozon, WB, Яндекс FBY) почти в реальном времени. MARKETPLACE_FBO_ORDERS_SYNC_CRON, по умолчанию */30 * * * *; по умолчанию только production',
+        });
+      }
+
       if (birthdayNotificationsJob) {
         this.jobs.push({
           name: 'birthday-notifications',
@@ -1710,6 +1758,10 @@ class SchedulerService {
       }
       if (certificatesStatusSyncJob) {
         certificatesStatusSyncJob.start();
+      }
+      if (fboOrdersSyncJob) {
+        fboOrdersSyncJob.start();
+        setTimeout(runFboOrdersSync, 180 * 1000);
       }
       stockDailySnapshotJob.start();
       setTimeout(() => {

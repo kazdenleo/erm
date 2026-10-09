@@ -1,11 +1,13 @@
 /**
  * Динамика продаж для главной: заказы FBS по маркетплейсам и частные заказы (по дате оформления,
- * без отменённых) + продажи FBO из финансовых отчётов (по дате операции).
+ * без отменённых) + FBO. FBO — из marketplace_fbo_orders (по дате оформления, без отменённых)
+ * начиная с live_from маркетплейса; раньше этой даты и без синхронизации — из финансовых отчётов.
  */
 
 import { query } from '../config/database.js';
 import { requireAnalyticsProfile, resolvePeriod, round2, toNum } from '../utils/analyticsCommon.js';
 import { SALE_LINE, SQL_MP_NORM } from '../utils/marketplaceReportLineSql.js';
+import marketplaceFboOrdersService from './marketplaceFboOrders.service.js';
 
 const GRANULARITIES = new Set(['day', 'week', 'month']);
 const MAX_PERIOD_DAYS = 731;
@@ -59,7 +61,12 @@ class HomeSalesDynamicsService {
          AND LOWER(TRIM(COALESCE(o.status, ''))) NOT IN ('cancelled', 'canceled', 'заказ удалён')
        GROUP BY 1, 2`;
 
-    const fboSql = `
+    const fboLive = await marketplaceFboOrdersService.getCoverage(pid);
+    const liveFromParams = [fboLive.ozon?.liveFrom ?? null, fboLive.wb?.liveFrom ?? null, fboLive.ym?.liveFrom ?? null];
+    const liveFromFor = (mpExpr) =>
+      `CASE ${mpExpr} WHEN 'ozon' THEN $4::date WHEN 'wb' THEN $5::date WHEN 'ym' THEN $6::date END`;
+
+    const fboReportsSql = `
       SELECT to_char(date_trunc('${gran}', l.operation_date), 'YYYY-MM-DD') AS bucket,
              ${SQL_MP_NORM} AS mp,
              SUM(GREATEST(l.quantity, 0))::numeric AS qty,
@@ -69,6 +76,20 @@ class HomeSalesDynamicsService {
          AND l.operation_date >= $2::date
          AND l.operation_date <= $3::date
          AND ${SALE_LINE}
+         AND (${liveFromFor(SQL_MP_NORM)} IS NULL OR l.operation_date < ${liveFromFor(SQL_MP_NORM)})
+       GROUP BY 1, 2`;
+
+    const fboLiveSql = `
+      SELECT to_char(date_trunc('${gran}', f.ordered_at AT TIME ZONE 'Europe/Moscow'), 'YYYY-MM-DD') AS bucket,
+             f.marketplace AS mp,
+             SUM(f.quantity)::numeric AS qty,
+             SUM(f.quantity * f.price)::numeric AS amount
+        FROM marketplace_fbo_orders f
+       WHERE f.profile_id = $1
+         AND f.ordered_at >= ${mskStart('$2')}
+         AND f.ordered_at < ${mskStart('$3')} + INTERVAL '1 day'
+         AND NOT f.is_cancelled
+         AND (f.ordered_at AT TIME ZONE 'Europe/Moscow')::date >= ${liveFromFor('f.marketplace')}
        GROUP BY 1, 2`;
 
     const fboLastSql = `
@@ -76,10 +97,12 @@ class HomeSalesDynamicsService {
         FROM marketplace_fbo_report_lines
        WHERE profile_id = $1`;
 
-    const [bucketsRes, ordersRes, fboRes, fboLastRes] = await Promise.all([
+    const fboParams = [pid, fromYmd, toYmd, ...liveFromParams];
+    const [bucketsRes, ordersRes, fboReportsRes, fboLiveRes, fboLastRes] = await Promise.all([
       query(bucketsSql, [fromYmd, toYmd]),
       query(ordersSql, [pid, fromYmd, toYmd]),
-      query(fboSql, [pid, fromYmd, toYmd]),
+      query(fboReportsSql, fboParams),
+      query(fboLiveSql, fboParams),
       query(fboLastSql, [pid]),
     ]);
 
@@ -102,7 +125,7 @@ class HomeSalesDynamicsService {
     for (const row of ordersRes.rows || []) {
       add(row.bucket, row.series, toNum(row.qty), toNum(row.amount));
     }
-    for (const row of fboRes.rows || []) {
+    for (const row of [...(fboReportsRes.rows || []), ...(fboLiveRes.rows || [])]) {
       const qty = toNum(row.qty);
       const amount = toNum(row.amount);
       add(row.bucket, 'fbo', qty, amount);
@@ -135,6 +158,7 @@ class HomeSalesDynamicsService {
       total: { qty: Math.round(totalAll.qty), amount: round2(totalAll.amount) },
       fboByMarketplace: roundSeries(fboByMarketplace),
       fboLastDate: fboLastRes.rows?.[0]?.last_date || null,
+      fboLive,
     };
   }
 }
