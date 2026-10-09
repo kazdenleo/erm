@@ -215,7 +215,7 @@ export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
     ' Нажмите на пункт легенды, чтобы скрыть или показать ряд.';
 
   return (
-    <div className="card mb-0 h-100 home-sales-dynamics">
+    <div className="card mb-0 home-sales-dynamics">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-graph1 icon-gradient bg-mean-fruit me-2" />
@@ -292,8 +292,8 @@ export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
               </div>
             )}
 
-            <div className="home-sales-dynamics__chart" style={{ minHeight: chartHeight }}>
-              <ResponsiveContainer className="home-sales-dynamics__chart-inner" width="100%" height="100%">
+            <div className="home-sales-dynamics__chart">
+              <ResponsiveContainer width="100%" height={chartHeight}>
                 <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis
