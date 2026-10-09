@@ -2,7 +2,7 @@
  * Расчёт закупки по выбранным поставкам FBO
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { useSuppliers } from '../../hooks/useSuppliers';
@@ -148,15 +148,25 @@ export function FboPurchaseCalculation() {
     load();
   }, [load]);
 
+  const rowsBodyRef = useRef(null);
+
+  // Пока фокус в таблице, порядок строк не меняем — иначе строка с полем ввода
+  // уезжает вниз и браузер прокручивает страницу за ней.
   const updateRows = useCallback((updater) => {
+    const keepOrder = Boolean(rowsBodyRef.current?.contains(document.activeElement));
     setCalc((prev) => {
       if (!prev) return prev;
       const nextRows = typeof updater === 'function' ? updater(prev.rows) : updater;
-      const rows = sortPurchaseRowsWithProgress(
-        mergePurchasedProgress(recalcPurchaseRows(nextRows), prev.rows)
-      );
+      let rows = mergePurchasedProgress(recalcPurchaseRows(nextRows), prev.rows);
+      if (!keepOrder) rows = sortPurchaseRowsWithProgress(rows);
       return { ...prev, rows, totals: calcPurchaseTotals(rows) };
     });
+  }, []);
+
+  const handleRowsBlur = useCallback((e) => {
+    const fromRow = e.target.closest('tr');
+    if (fromRow && e.relatedTarget && fromRow.contains(e.relatedTarget)) return;
+    setCalc((prev) => (prev ? { ...prev, rows: sortPurchaseRowsWithProgress(prev.rows) } : prev));
   }, []);
 
   const supplyIdsForExport = useMemo(
@@ -745,7 +755,7 @@ export function FboPurchaseCalculation() {
                 <th>Итого себест.</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody ref={rowsBodyRef} onBlur={handleRowsBlur}>
               {calc.rows.map((row) => {
                 const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
                 const isComponent = row.rowType === 'component';
