@@ -7,6 +7,7 @@ import {
   mapErpDocumentTypeToOzon,
   needsAccordanceType,
   normalizeOzonCertificateNumber,
+  ozonCertificateCountry,
   parseOzonCertificateCreateId,
   toOzonDateTime,
 } from '../src/utils/ozonCertificateMap.js';
@@ -93,6 +94,17 @@ describe('ozonCertificateMap', () => {
     expect(dated.accordance_type).toBe('NATIONAL');
     expect(dated.expired_date).toEqual({ date: { year: 2029, month: 1, day: 14 } });
     expect(dated.files).toBeUndefined();
+  });
+
+  test('extracts certification country from number', () => {
+    expect(ozonCertificateCountry('ЕАЭС RU С-CN.НА72.В.00775/24')).toBe('RU');
+    expect(ozonCertificateCountry('ЕАЭС KG417/039.RU.02.06810')).toBe('KG');
+    expect(ozonCertificateCountry('ЕАЭС КG417/039.RU.02.06810')).toBe('KG');
+    expect(ozonCertificateCountry('ЕАЭС.KZ.1234567.01.01.12345')).toBe('KZ');
+    expect(ozonCertificateCountry('ЕАЭС № BY/112 02.01. ТР010 003 12345')).toBe('BY');
+    expect(ozonCertificateCountry('ЕАЭС N RU Д-CN.РА01.В.12345/21')).toBe('RU');
+    expect(ozonCertificateCountry('РОСС RU.АИ37.H00124')).toBe('RU');
+    expect(ozonCertificateCountry('ABC-123')).toBe('RU');
   });
 
   test('describes v2 create validation errors', () => {

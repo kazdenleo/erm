@@ -155,9 +155,21 @@ export function toOzonV2AccordanceType(normalizedNumber, accordanceTypeCode) {
   return String(accordanceTypeCode || '') === 'technical_regulations_cu' ? 'EAEU' : 'NATIONAL';
 }
 
+const CYRILLIC_TO_LATIN_LOOKALIKE = Object.fromEntries(
+  Object.entries(LATIN_TO_CYRILLIC_LOOKALIKE).map(([lat, cyr]) => [cyr, lat])
+);
+
+/**
+ * Страна органа сертификации из номера: «ЕАЭС RU С-…» → RU, «ЕАЭС KG417/039…» → KG, «ЕАЭС.KZ.…» → KZ.
+ * Ozon проверяет номер по маскам выбранной страны.
+ */
 export function ozonCertificateCountry(normalizedNumber) {
-  const m = String(normalizedNumber || '').match(/^(?:ТС|ЕАЭС|РОСС)\s+(?:N\s+)?([A-Z]{2})\b/);
-  return m ? m[1] : 'RU';
+  const m = String(normalizedNumber || '')
+    .toUpperCase()
+    .match(/^(?:ТС|ЕАЭС|РОСС)[\s.]*(?:№\s*|N\s+)?([A-ZА-ЯЁ]{2})(?![A-ZА-ЯЁ])/);
+  if (!m) return 'RU';
+  const code = [...m[1]].map((ch) => CYRILLIC_TO_LATIN_LOOKALIKE[ch] || ch).join('');
+  return /^[A-Z]{2}$/.test(code) ? code : 'RU';
 }
 
 /** 2024-01-15 → { year: 2024, month: 1, day: 15 } (google.type.Date в expired_date.date). */
