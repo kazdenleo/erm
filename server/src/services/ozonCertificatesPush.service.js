@@ -21,6 +21,7 @@ import {
   parseOzonCertificateCreateId,
   toOzonDateTime,
 } from '../utils/ozonCertificateMap.js';
+import { summarizeOzonBinding } from '../utils/certificateBindingReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,7 +42,8 @@ function resolveLocalFilePath(photoUrl) {
   return path.resolve(ROOT_DIR, rel);
 }
 
-async function findOzonProductIdsForCertificate(cert, { profileId, organizationId }) {
+/** Товары ERP бренда и категорий сертификата, у которых есть product_id Ozon. */
+async function findOzonProductsForCertificate(cert, { profileId, organizationId }) {
   const brandId = cert.brand_id != null ? Number(cert.brand_id) : null;
   const categoryIds = (Array.isArray(cert.user_category_ids) ? cert.user_category_ids : [])
     .map((x) => Number(x))
@@ -50,7 +52,8 @@ async function findOzonProductIdsForCertificate(cert, { profileId, organizationI
 
   const params = [brandId, categoryIds];
   let sql = `
-    SELECT DISTINCT ps.marketplace_product_id::bigint AS ozon_product_id
+    SELECT DISTINCT ON (ps.marketplace_product_id::bigint)
+      ps.marketplace_product_id::bigint AS ozon_product_id, p.id AS product_id, p.sku
     FROM products p
     INNER JOIN product_skus ps
       ON ps.product_id = p.id
@@ -70,13 +73,17 @@ async function findOzonProductIdsForCertificate(cert, { profileId, organizationI
     sql += ` AND (p.organization_id = $${i++}::bigint OR p.organization_id IS NULL)`;
     params.push(organizationId);
   }
-  sql += ` ORDER BY ozon_product_id`;
+  sql += ` ORDER BY ps.marketplace_product_id::bigint, p.id`;
 
   try {
     const r = await query(sql, params);
     return (r.rows || [])
-      .map((row) => Number(row.ozon_product_id))
-      .filter((n) => Number.isFinite(n) && n > 0);
+      .map((row) => ({
+        productId: Number(row.product_id),
+        sku: row.sku || null,
+        ozonProductId: Number(row.ozon_product_id),
+      }))
+      .filter((it) => Number.isFinite(it.ozonProductId) && it.ozonProductId > 0);
   } catch (e) {
     // product_skus / is_archived могут отсутствовать на старых схемах
     if (/does not exist|column/i.test(String(e?.message || ''))) {
@@ -84,6 +91,26 @@ async function findOzonProductIdsForCertificate(cert, { profileId, organizationI
     }
     throw e;
   }
+}
+
+function chunks(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+function bindingErrorText(report) {
+  if (!report) return null;
+  const parts = [];
+  if (report.missing_count > 0) {
+    const held = report.held_by_other_count
+      ? ` (${report.held_by_other_count} — привязаны к другому сертификату)`
+      : '';
+    parts.push(`Не привязано на Ozon: ${report.missing_count} из ${report.expected}${held}`);
+  }
+  const declined = report.statuses?.declined || 0;
+  if (declined > 0) parts.push(`Ozon отклонил привязку ${declined} товаров`);
+  return parts.length ? parts.join('. ') : null;
 }
 
 async function persistOzonFields(certId, fields, profileId) {
@@ -120,6 +147,7 @@ const OZON_LIST_PAGE_SIZE = 100;
 const OZON_LIST_MAX_PAGES = 50;
 
 const OZON_CERT_PRODUCTS_LIMIT = 1000;
+const OZON_HOLDER_SCAN_LIMIT = 80;
 
 class OzonCertificatesPushService {
   /** Все сертификаты кабинета Ozon (/v1/product/certificate/list). */
@@ -150,6 +178,98 @@ class OzonCertificatesPushService {
     return (data?.result?.items || [])
       .map((it) => Number(it?.product_id))
       .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  /** Все товары сертификата на Ozon со статусом проверки: [{ product_id, product_status_code, sku }]. */
+  async listCertificateProducts(ozonCertificateId, { profileId = null, organizationId = null } = {}) {
+    const opts = { profileId, organizationId };
+    const id = Number(ozonCertificateId);
+    const out = [];
+    let lastId = null;
+    for (let page = 1; page <= OZON_LIST_MAX_PAGES; page++) {
+      const body = { certificate_id: id, limit: OZON_CERT_PRODUCTS_LIMIT };
+      if (lastId != null) body.last_id = String(lastId);
+      const data = await ozonApiPostWithRetry('/v1/product/certificate/products/list', body, opts);
+      const items = data?.result?.items || [];
+      out.push(...items);
+      const total = Number(data?.result?.count);
+      const nextId = items.at(-1)?.product_id;
+      if (
+        items.length < OZON_CERT_PRODUCTS_LIMIT ||
+        (Number.isFinite(total) && out.length >= total) ||
+        nextId == null ||
+        String(nextId) === String(lastId)
+      ) break;
+      lastId = nextId;
+    }
+    return out;
+  }
+
+  /**
+   * К каким сертификатам кабинета Ozon привязаны товары: Map(product_id → { certificateId, number }).
+   * Ozon держит товар только в одном сертификате и молча не привязывает его к новому.
+   */
+  async findCertificateHolders(ozonProductIds, { excludeCertificateId = null, profileId = null, organizationId = null } = {}) {
+    const wanted = new Set((ozonProductIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0));
+    const out = new Map();
+    if (!wanted.size) return out;
+    const certs = await this.listAllCertificates({ profileId, organizationId });
+    const candidates = certs
+      .filter((c) => Number(c.certificate_id) !== Number(excludeCertificateId))
+      .filter((c) => c.products_count == null || Number(c.products_count) > 0)
+      .slice(0, OZON_HOLDER_SCAN_LIMIT);
+    for (const c of candidates) {
+      const items = await this.listCertificateProducts(c.certificate_id, { profileId, organizationId });
+      for (const it of items) {
+        const pid = Number(it?.product_id);
+        if (!wanted.has(pid) || out.has(pid)) continue;
+        out.set(pid, { certificateId: Number(c.certificate_id), number: c.certificate_number || null });
+      }
+      if (out.size >= wanted.size) break;
+    }
+    return out;
+  }
+
+  /** Отвязывает товары от сертификата Ozon; возвращает тексты ошибок по товарам. */
+  async unbindProducts(ozonCertificateId, productIds, { profileId = null, organizationId = null } = {}) {
+    const errors = [];
+    for (const chunk of chunks(productIds, BIND_CHUNK)) {
+      const data = await ozonApiPostWithRetry(
+        '/v1/product/certificate/unbind',
+        { certificate_id: Number(ozonCertificateId), product_id: chunk },
+        { profileId, organizationId }
+      );
+      for (const r of Array.isArray(data?.result) ? data.result : []) {
+        if (r?.error) errors.push(`${r.product_id}: ${r.error}`);
+      }
+    }
+    return errors;
+  }
+
+  async _buildBindingReport(cert, ozonCertificateId, expected, { profileId, organizationId }) {
+    const opts = { profileId, organizationId };
+    const bound = await this.listCertificateProducts(ozonCertificateId, opts);
+    const boundIds = new Set(bound.map((it) => Number(it.product_id)));
+    const missingIds = expected.map((it) => it.ozonProductId).filter((id) => !boundIds.has(id));
+    const heldBy = missingIds.length
+      ? await this.findCertificateHolders(missingIds, { ...opts, excludeCertificateId: ozonCertificateId })
+      : new Map();
+    return { report: summarizeOzonBinding({ expected, bound, heldBy }), heldBy };
+  }
+
+  /** Сверка: какие товары ERP привязаны к сертификату на Ozon и почему остальные — нет. */
+  async bindingReport(certId, { profileId = null, organizationId = null } = {}) {
+    const repo = repositoryFactory.getCertificatesRepository();
+    const cert = await repo.findById(certId, profileId != null ? { profileId } : {});
+    if (!cert) throw httpError('Сертификат не найден', 404);
+    const ozonCertificateId = Number(cert.ozon_certificate_id);
+    if (!Number.isFinite(ozonCertificateId) || ozonCertificateId <= 0) return null;
+    const expected = await findOzonProductsForCertificate(cert, { profileId, organizationId });
+    const { report } = await this._buildBindingReport(cert, ozonCertificateId, expected, {
+      profileId,
+      organizationId,
+    });
+    return report;
   }
 
   /** Удаляет сертификат в кабинете Ozon; Ozon отвечает 200 с is_delete=false, если удалить нельзя. */
@@ -201,6 +321,7 @@ class OzonCertificatesPushService {
     const profileId = options.profileId ?? options.profile_id ?? null;
     const organizationId = options.organizationId ?? options.organization_id ?? null;
     const bindProducts = options.bindProducts !== false;
+    const rebindFromOther = bindProducts && options.rebindFromOther === true;
     const forceCreate = options.forceCreate === true;
     const repo = repositoryFactory.getCertificatesRepository();
     const cert = await repo.findById(certId, profileId != null ? { profileId } : {});
@@ -295,23 +416,55 @@ class OzonCertificatesPushService {
         created = true;
       }
 
-      let productIds = [];
-      let boundCount = 0;
+      let expected = [];
       const bindErrors = [];
-      if (bindProducts) {
-        productIds = await findOzonProductIdsForCertificate(cert, { profileId, organizationId });
-        for (let offset = 0; offset < productIds.length; offset += BIND_CHUNK) {
-          const chunk = productIds.slice(offset, offset + BIND_CHUNK);
+      let rebound = 0;
+      let bindingReport = null;
+      const bindChunks = async (ids) => {
+        for (const chunk of chunks(ids, BIND_CHUNK)) {
           try {
             await ozonApiPostWithRetry(
               '/v1/product/certificate/bind',
               { certificate_id: ozonCertificateId, product_id: chunk },
               ozonApiOpts
             );
-            boundCount += chunk.length;
           } catch (e) {
             bindErrors.push(e?.message || String(e));
           }
+        }
+      };
+      if (bindProducts) {
+        expected = await findOzonProductsForCertificate(cert, { profileId, organizationId });
+        await bindChunks(expected.map((it) => it.ozonProductId));
+        try {
+          const first = await this._buildBindingReport(cert, ozonCertificateId, expected, ozonApiOpts);
+          bindingReport = first.report;
+          if (rebindFromOther && first.heldBy.size > 0) {
+            const byHolder = new Map();
+            for (const [pid, holder] of first.heldBy) {
+              const list = byHolder.get(holder.certificateId) || [];
+              list.push(pid);
+              byHolder.set(holder.certificateId, list);
+            }
+            const moved = [];
+            for (const [holderId, ids] of byHolder) {
+              try {
+                const errs = await this.unbindProducts(holderId, ids, ozonApiOpts);
+                if (errs.length) bindErrors.push(`Отвязка от ${holderId}: ${errs.slice(0, 3).join('; ')}`);
+                moved.push(...ids);
+              } catch (e) {
+                bindErrors.push(`Отвязка от ${holderId}: ${e?.message || String(e)}`);
+              }
+            }
+            if (moved.length) {
+              await bindChunks(moved);
+              rebound = moved.length;
+              bindingReport = (await this._buildBindingReport(cert, ozonCertificateId, expected, ozonApiOpts))
+                .report;
+            }
+          }
+        } catch (e) {
+          bindErrors.push(`Проверка привязки: ${e?.message || String(e)}`);
         }
       }
 
@@ -333,9 +486,13 @@ class OzonCertificatesPushService {
       }
 
       const syncedAt = new Date().toISOString();
-      const lastError = bindErrors.length
-        ? `Привязка частично не удалась: ${bindErrors.slice(0, 3).join('; ')}`
-        : null;
+      const lastError =
+        [
+          bindErrors.length ? `Привязка частично не удалась: ${bindErrors.slice(0, 3).join('; ')}` : null,
+          bindingErrorText(bindingReport),
+        ]
+          .filter(Boolean)
+          .join('. ') || null;
 
       await persistOzonFields(
         cert.id,
@@ -358,9 +515,11 @@ class OzonCertificatesPushService {
         status_code: statusCode,
         name,
         accordance_type_code: accordanceTypeCode,
-        products_found: productIds.length,
-        products_bound: boundCount,
+        products_found: expected.length,
+        products_bound: bindingReport ? bindingReport.bound : 0,
+        products_rebound: rebound,
         bind_errors: bindErrors,
+        binding_report: bindingReport,
         certificate: updated,
       };
     } catch (e) {

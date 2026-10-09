@@ -15,6 +15,7 @@ import {
   toYmRegistryCertificateNumber,
   ymCreateErrors,
 } from '../utils/ymCertificateMap.js';
+import { summarizeYmBinding, ymOfferMappingErrors } from '../utils/certificateBindingReport.js';
 
 const BIND_CHUNK = 50;
 
@@ -70,7 +71,8 @@ async function ymFetchJson(url, { method = 'POST', apiKey, body } = {}) {
   return data;
 }
 
-async function findYmOfferIdsForCertificate(cert, { profileId, organizationId }) {
+/** Товары ERP бренда и категорий сертификата с offerId Маркета: [{ productId, sku, offerId }]. */
+async function findYmOffersForCertificate(cert, { profileId, organizationId }) {
   const brandId = cert.brand_id != null ? Number(cert.brand_id) : null;
   const categoryIds = (Array.isArray(cert.user_category_ids) ? cert.user_category_ids : [])
     .map((x) => Number(x))
@@ -79,7 +81,7 @@ async function findYmOfferIdsForCertificate(cert, { profileId, organizationId })
 
   const params = [brandId, categoryIds];
   let sql = `
-    SELECT DISTINCT TRIM(ps.sku) AS offer_id
+    SELECT DISTINCT ON (TRIM(ps.sku)) TRIM(ps.sku) AS offer_id, p.id AS product_id, p.sku
     FROM products p
     INNER JOIN product_skus ps
       ON ps.product_id = p.id
@@ -99,13 +101,17 @@ async function findYmOfferIdsForCertificate(cert, { profileId, organizationId })
     sql += ` AND (p.organization_id = $${i++}::bigint OR p.organization_id IS NULL)`;
     params.push(organizationId);
   }
-  sql += ` ORDER BY offer_id`;
+  sql += ` ORDER BY TRIM(ps.sku), p.id`;
 
   try {
     const r = await query(sql, params);
     return (r.rows || [])
-      .map((row) => String(row.offer_id || '').trim())
-      .filter(Boolean);
+      .map((row) => ({
+        productId: Number(row.product_id),
+        sku: row.sku || null,
+        offerId: String(row.offer_id || '').trim(),
+      }))
+      .filter((it) => it.offerId);
   } catch (e) {
     if (/does not exist|column/i.test(String(e?.message || ''))) return [];
     throw e;
@@ -141,14 +147,17 @@ async function persistYmFields(certId, fields, profileId) {
   return r.rows[0] || null;
 }
 
-async function fetchExistingCertificatesMap(businessId, apiKey, offerIds) {
+const OFFER_LOOKUP_CHUNK = 100;
+
+/** Номера документов у офферов, найденных на Маркете: Map(offerId → string[]). Офферов нет на Маркете — нет в Map. */
+async function fetchOfferCertificates(businessId, apiKey, offerIds) {
   const out = new Map();
-  if (!offerIds.length) return out;
   const url = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(businessId))}/offer-mappings`;
-  try {
+  for (let i = 0; i < offerIds.length; i += OFFER_LOOKUP_CHUNK) {
+    const chunk = offerIds.slice(i, i + OFFER_LOOKUP_CHUNK);
     const data = await ymFetchJson(url, {
       apiKey,
-      body: { offerIds, limit: Math.min(100, Math.max(offerIds.length, 1)) },
+      body: { offerIds: chunk, limit: Math.min(OFFER_LOOKUP_CHUNK, Math.max(chunk.length, 1)) },
     });
     const mappings =
       data?.result?.offerMappings ||
@@ -166,10 +175,26 @@ async function fetchExistingCertificatesMap(businessId, apiKey, offerIds) {
           .filter(Boolean)
       );
     }
-  } catch (_) {
-    // без merge всё равно отправим наш номер
   }
   return out;
+}
+
+async function fetchExistingCertificatesMap(businessId, apiKey, offerIds) {
+  if (!offerIds.length) return new Map();
+  try {
+    return await fetchOfferCertificates(businessId, apiKey, offerIds);
+  } catch (_) {
+    // без merge всё равно отправим наш номер
+    return new Map();
+  }
+}
+
+function ymBindingErrorText(report) {
+  if (!report || !report.missing_count) return null;
+  const absent = report.not_on_marketplace_count
+    ? ` (${report.not_on_marketplace_count} — оффера нет на Маркете)`
+    : '';
+  return `Не привязано на Я.Маркете: ${report.missing_count} из ${report.expected}${absent}`;
 }
 
 const YM_STATUS_BATCH = 50;
@@ -214,6 +239,28 @@ class YmCertificatesPushService {
       if (!pageToken) break;
     }
     return out;
+  }
+
+  /** Сверка: у каких офферов ERP документ стоит на Маркете и почему у остальных — нет. */
+  async bindingReport(certId, { profileId = null, organizationId = null } = {}) {
+    const repo = repositoryFactory.getCertificatesRepository();
+    const cert = await repo.findById(certId, profileId != null ? { profileId } : {});
+    if (!cert) throw httpError('Сертификат не найден', 404);
+    if (!(Number(cert.ym_document_id) > 0)) return null;
+    let ctx;
+    try {
+      ctx = await integrationsService._resolveYandexBusinessApiContext({ profileId, organizationId });
+    } catch (e) {
+      throw httpError(e?.message || 'Не настроен Яндекс.Маркет', e?.statusCode || 400);
+    }
+    const number = toYmRegistryCertificateNumber(cert.certificate_number);
+    const expected = await findYmOffersForCertificate(cert, { profileId, organizationId });
+    const certificatesByOffer = await fetchOfferCertificates(
+      ctx.businessId,
+      ctx.apiKey,
+      expected.map((it) => it.offerId)
+    );
+    return summarizeYmBinding({ expected, certificatesByOffer, number });
   }
 
   /** Подтягивает status из offers/documents для уже отправленных документов. */
@@ -354,29 +401,48 @@ class YmCertificatesPushService {
         }
       }
 
-      let offerIds = [];
-      let boundCount = 0;
+      let expected = [];
       const bindErrors = [];
+      const offerErrors = new Map();
+      let bindingReport = null;
       if (bindProducts) {
-        offerIds = await findYmOfferIdsForCertificate(cert, { profileId, organizationId });
+        expected = await findYmOffersForCertificate(cert, { profileId, organizationId });
+        const offerIds = expected.map((it) => it.offerId);
         const updateUrl = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(ctx.businessId))}/offer-mappings/update`;
         for (let offset = 0; offset < offerIds.length; offset += BIND_CHUNK) {
-          const chunk = offerIds.slice(offset, offset + BIND_CHUNK);
+          let chunk = offerIds.slice(offset, offset + BIND_CHUNK);
           const existingMap = await fetchExistingCertificatesMap(ctx.businessId, ctx.apiKey, chunk);
-          const offerMappings = chunk.map((offerId) => {
-            const prev = existingMap.get(offerId) || [];
-            const merged = Array.from(new Set([...prev, number]));
-            return { offer: { offerId, certificates: merged } };
-          });
-          try {
-            await ymFetchJson(updateUrl, {
-              apiKey: ctx.apiKey,
-              body: { offerMappings },
+          // Маркет не применяет запрос целиком, если ошибка хотя бы у одного оффера, — повторяем без проблемных.
+          for (let attempt = 0; attempt < 3 && chunk.length; attempt++) {
+            const offerMappings = chunk.map((offerId) => {
+              const prev = existingMap.get(offerId) || [];
+              const merged = Array.from(new Set([...prev, number]));
+              return { offer: { offerId, certificates: merged } };
             });
-            boundCount += chunk.length;
-          } catch (e) {
-            bindErrors.push(e?.message || String(e));
+            let errs;
+            try {
+              const data = await ymFetchJson(updateUrl, {
+                apiKey: ctx.apiKey,
+                body: { offerMappings },
+              });
+              errs = ymOfferMappingErrors(data);
+            } catch (e) {
+              errs = ymOfferMappingErrors(e?.payload);
+              if (!errs.size) {
+                bindErrors.push(e?.message || String(e));
+                break;
+              }
+            }
+            if (!errs.size) break;
+            for (const [offerId, msg] of errs) offerErrors.set(offerId, msg);
+            chunk = chunk.filter((offerId) => !errs.has(offerId));
           }
+        }
+        try {
+          const certificatesByOffer = await fetchOfferCertificates(ctx.businessId, ctx.apiKey, offerIds);
+          bindingReport = summarizeYmBinding({ expected, certificatesByOffer, number, offerErrors });
+        } catch (e) {
+          bindErrors.push(`Проверка привязки: ${e?.message || String(e)}`);
         }
       }
 
@@ -395,9 +461,13 @@ class YmCertificatesPushService {
       } catch (_) {}
 
       const syncedAt = new Date().toISOString();
-      const lastError = bindErrors.length
-        ? `Привязка частично не удалась: ${bindErrors.slice(0, 3).join('; ')}`
-        : null;
+      const lastError =
+        [
+          bindErrors.length ? `Привязка частично не удалась: ${bindErrors.slice(0, 3).join('; ')}` : null,
+          ymBindingErrorText(bindingReport),
+        ]
+          .filter(Boolean)
+          .join('. ') || null;
 
       await persistYmFields(
         cert.id,
@@ -418,9 +488,10 @@ class YmCertificatesPushService {
         ym_document_id: ymDocumentId,
         status_code: statusCode,
         document_type: documentType,
-        products_found: offerIds.length,
-        products_bound: boundCount,
+        products_found: expected.length,
+        products_bound: bindingReport ? bindingReport.bound : 0,
         bind_errors: bindErrors,
+        binding_report: bindingReport,
         certificate: updated,
       };
     } catch (e) {

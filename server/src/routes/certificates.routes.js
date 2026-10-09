@@ -45,6 +45,11 @@ router.post(
   wrapAsync(certificatesController.pushToOzon.bind(certificatesController))
 );
 
+router.get(
+  '/:id/binding-report',
+  wrapAsync(certificatesController.bindingReport.bind(certificatesController))
+);
+
 router.post(
   '/:id/sync-status',
   wrapAsync(certificatesController.syncStatus.bind(certificatesController))

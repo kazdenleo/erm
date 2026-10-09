@@ -50,7 +50,7 @@ export const certificatesApi = {
   },
 
   pushToOzon: async (id, body = {}) => {
-    const res = await api.post(`/certificates/${id}/push-ozon`, body, { timeout: 180000 });
+    const res = await api.post(`/certificates/${id}/push-ozon`, body, { timeout: 600000 });
     return res.data;
   },
 
@@ -71,6 +71,11 @@ export const certificatesApi = {
 
   importFromMarketplaces: async () => {
     const res = await api.post('/certificates/import-from-marketplaces', {}, { timeout: 600000 });
+    return res.data;
+  },
+
+  bindingReport: async (id) => {
+    const res = await api.get(`/certificates/${id}/binding-report`, { timeout: 300000 });
     return res.data;
   },
 

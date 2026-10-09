@@ -2613,6 +2613,17 @@ async function pushYandexCard(product, categoryMm, ctx) {
     } catch {
       payload = {};
     }
+    const offerErrors = (Array.isArray(payload?.results) ? payload.results : [])
+      .flatMap((r) => (Array.isArray(r?.errors) ? r.errors : []))
+      .map((e) => e?.message || e?.type)
+      .filter(Boolean);
+    if (offerErrors.length) {
+      return {
+        marketplace: 'ym',
+        ok: false,
+        error: `Яндекс.Маркет отклонил карточку: ${offerErrors.join('; ')}`,
+      };
+    }
     if (!response.ok) {
       let msg = `Яндекс.Маркет API ${response.status}`;
       if (payload?.errors?.[0]?.message) msg += `: ${payload.errors[0].message}`;

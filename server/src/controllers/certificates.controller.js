@@ -227,6 +227,7 @@ class CertificatesController {
         profileId,
         organizationId: this._organizationId(req),
         bindProducts: body.bindProducts !== false && body.bind_products !== false,
+        rebindFromOther: body.rebindFromOther === true || body.rebind_from_other === true,
         forceCreate: body.forceCreate === true || body.force_create === true,
         name: body.name ?? null,
         accordanceTypeCode: body.accordanceTypeCode ?? body.accordance_type_code ?? null,
@@ -307,6 +308,30 @@ class CertificatesController {
       });
       const certificate = await certificatesService.getById(id, { profileId });
       return res.status(200).json({ ok: true, data: { ...sync, certificate } });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  /** GET /certificates/:id/binding-report — какие товары реально привязаны на Ozon и Маркете. */
+  async bindingReport(req, res, next) {
+    try {
+      const profileId = this._requireProfile(req);
+      const { id } = req.params;
+      const scope = { profileId, organizationId: this._organizationId(req) };
+      await certificatesService.getById(id, { profileId });
+      const settle = async (fn) => {
+        try {
+          return { report: await fn() };
+        } catch (e) {
+          return { error: e?.message || String(e) };
+        }
+      };
+      const [ozon, ym] = await Promise.all([
+        settle(() => ozonCertificatesPushService.bindingReport(id, scope)),
+        settle(() => ymCertificatesPushService.bindingReport(id, scope)),
+      ]);
+      return res.status(200).json({ ok: true, data: { ozon, ym } });
     } catch (e) {
       next(e);
     }

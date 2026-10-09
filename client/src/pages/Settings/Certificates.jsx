@@ -10,6 +10,7 @@ import { useBrands } from '../../hooks/useBrands';
 import { useUserCategories } from '../../hooks/useUserCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { CertificateBindingReport } from './CertificateBindingReport';
 import './Certificates.css';
 
 const DOC_TYPE_LABELS = {
@@ -306,6 +307,11 @@ export function Certificates() {
   const [ymBusy, setYmBusy] = useState(false);
   const [ymError, setYmError] = useState('');
   const [ymResult, setYmResult] = useState(null);
+  const [bindingCert, setBindingCert] = useState(null);
+  const [bindingData, setBindingData] = useState(null);
+  const [bindingBusy, setBindingBusy] = useState(false);
+  const [bindingError, setBindingError] = useState('');
+  const [rebindBusy, setRebindBusy] = useState(false);
   const [statusSyncingId, setStatusSyncingId] = useState(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
@@ -555,6 +561,7 @@ export function Certificates() {
       name: c.ozon_name || defaultMarketplaceCertificateName(c, brandNameById),
       accordanceTypeCode: c.ozon_accordance_type_code || 'technical_regulations_cu',
       bindProducts: true,
+      rebindFromOther: false,
       forceCreate: false,
     });
     if (ozonAccordanceTypes.length === 0) {
@@ -589,6 +596,7 @@ export function Certificates() {
         name: ozonForm.name?.trim() || undefined,
         accordanceTypeCode: ozonForm.accordanceTypeCode || undefined,
         bindProducts: !!ozonForm.bindProducts,
+        rebindFromOther: !!ozonForm.bindProducts && !!ozonForm.rebindFromOther,
         forceCreate: !!ozonForm.forceCreate,
       });
       setOzonResult(res?.data || res);
@@ -597,6 +605,51 @@ export function Certificates() {
       setOzonError(err?.response?.data?.message || err?.message || 'Ошибка отправки на Ozon');
     } finally {
       setOzonBusy(false);
+    }
+  };
+
+  const loadBindingReport = async (c) => {
+    setBindingBusy(true);
+    setBindingError('');
+    try {
+      const res = await certificatesApi.bindingReport(c.id);
+      setBindingData(res?.data || null);
+    } catch (err) {
+      setBindingError(err?.response?.data?.message || err?.message || 'Не удалось проверить привязку');
+    } finally {
+      setBindingBusy(false);
+    }
+  };
+
+  const openBindingReport = (c) => {
+    setBindingCert(c);
+    setBindingData(null);
+    loadBindingReport(c);
+  };
+
+  const closeBindingReport = () => {
+    if (rebindBusy) return;
+    setBindingCert(null);
+    setBindingData(null);
+    setBindingError('');
+  };
+
+  const handleRebindOzon = async () => {
+    if (!bindingCert?.id) return;
+    setRebindBusy(true);
+    setBindingError('');
+    try {
+      const res = await certificatesApi.pushToOzon(bindingCert.id, {
+        bindProducts: true,
+        rebindFromOther: true,
+      });
+      const report = res?.data?.binding_report || null;
+      setBindingData((prev) => ({ ...(prev || {}), ozon: { report } }));
+      await load({ silent: true });
+    } catch (err) {
+      setBindingError(err?.response?.data?.message || err?.message || 'Не удалось перепривязать товары');
+    } finally {
+      setRebindBusy(false);
     }
   };
 
@@ -793,7 +846,14 @@ export function Certificates() {
                             ) : null}
                           </div>
                           {c.ozon_last_error ? (
-                            <span className="muted ozon-error-hint" title={c.ozon_last_error}>есть ошибка</span>
+                            <button
+                              type="button"
+                              className="muted ozon-error-hint ozon-error-hint--link"
+                              title={c.ozon_last_error}
+                              onClick={() => openBindingReport(c)}
+                            >
+                              есть ошибка
+                            </button>
                           ) : null}
                         </div>
                       ) : (
@@ -824,7 +884,14 @@ export function Certificates() {
                             ) : null}
                           </div>
                           {c.ym_last_error ? (
-                            <span className="muted ozon-error-hint" title={c.ym_last_error}>есть ошибка</span>
+                            <button
+                              type="button"
+                              className="muted ozon-error-hint ozon-error-hint--link"
+                              title={c.ym_last_error}
+                              onClick={() => openBindingReport(c)}
+                            >
+                              есть ошибка
+                            </button>
                           ) : null}
                         </div>
                       ) : (
@@ -853,6 +920,18 @@ export function Certificates() {
                         >
                           ЯМ
                         </Button>
+                        {c.ozon_certificate_id || c.ym_document_id ? (
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            onClick={() => openBindingReport(c)}
+                            title="Проверить, какие товары привязаны на маркетплейсах"
+                            className="btn-icon btn-icon-only"
+                            aria-label="Привязка товаров"
+                          >
+                            🔗
+                          </Button>
+                        ) : null}
                         <Button
                           variant="secondary"
                           size="small"
@@ -924,11 +1003,15 @@ export function Certificates() {
                 {ozonResult.created ? 'Создан на Ozon. ' : 'Использован уже созданный сертификат. '}
                 ID: {ozonResult.ozon_certificate_id}.
                 {' '}Найдено товаров: {ozonResult.products_found ?? 0}, привязано: {ozonResult.products_bound ?? 0}.
+                {ozonResult.products_rebound ? ` Перепривязано с других сертификатов: ${ozonResult.products_rebound}.` : ''}
                 {Array.isArray(ozonResult.bind_errors) && ozonResult.bind_errors.length > 0
-                  ? ` Ошибки привязки: ${ozonResult.bind_errors.length}.`
+                  ? ` Ошибки: ${ozonResult.bind_errors.join('; ')}.`
                   : ''}
               </div>
             )}
+            {ozonResult?.binding_report ? (
+              <CertificateBindingReport marketplace="ozon" report={ozonResult.binding_report} />
+            ) : null}
             <div className="form-group">
               <label>Название на Ozon</label>
               <input
@@ -962,6 +1045,19 @@ export function Certificates() {
               />
               <span>Привязать товары с этим брендом и категориями (у которых есть ID в каталоге Ozon)</span>
             </label>
+            {ozonForm.bindProducts ? (
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={!!ozonForm.rebindFromOther}
+                  onChange={(e) => setOzonForm((p) => ({ ...p, rebindFromOther: e.target.checked }))}
+                />
+                <span>
+                  Перепривязать товары, которые на Ozon привязаны к другим сертификатам (Ozon держит товар только
+                  в одном сертификате: товар будет отвязан от старого)
+                </span>
+              </label>
+            ) : null}
             {ozonModalCert.ozon_certificate_id ? (
               <label className="checkbox-label">
                 <input
@@ -1007,12 +1103,14 @@ export function Certificates() {
                 {ymResult.created ? 'Создан на Яндекс.Маркете. ' : 'Использован уже созданный документ. '}
                 {ymResult.ym_document_id != null ? `ID: ${ymResult.ym_document_id}. ` : ''}
                 Статус: {ymResult.status_code || '—'}.
-                {' '}Найдено товаров: {ymResult.products_found ?? 0}, привязано: {ymResult.products_bound ?? 0}.
                 {Array.isArray(ymResult.bind_errors) && ymResult.bind_errors.length > 0
-                  ? ` Ошибки привязки: ${ymResult.bind_errors.length}.`
+                  ? ` Ошибки: ${ymResult.bind_errors.join('; ')}.`
                   : ''}
               </div>
             )}
+            {ymResult?.binding_report ? (
+              <CertificateBindingReport marketplace="ym" report={ymResult.binding_report} />
+            ) : null}
             <div className="form-group">
               <label>Тип документа на Яндекс.Маркете</label>
               <select
@@ -1055,6 +1153,59 @@ export function Certificates() {
               </Button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!bindingCert}
+        onClose={closeBindingReport}
+        title="Привязка товаров на маркетплейсах"
+        size="medium"
+      >
+        {bindingCert && (
+          <div className="certificate-form">
+            <p className="form-hint">
+              Сверка для <strong>{bindingCert.certificate_number}</strong>: товары ERP с этим брендом и категориями
+              против того, что реально привязано в кабинетах.
+            </p>
+            {bindingError ? <div className="form-error">{bindingError}</div> : null}
+            {bindingBusy ? (
+              <p className="muted">Проверяем привязку на Ozon и Яндекс.Маркете…</p>
+            ) : bindingData ? (
+              <>
+                <CertificateBindingReport
+                  marketplace="ozon"
+                  report={bindingData.ozon?.report}
+                  error={bindingData.ozon?.error}
+                />
+                <CertificateBindingReport
+                  marketplace="ym"
+                  report={bindingData.ym?.report}
+                  error={bindingData.ym?.error}
+                />
+              </>
+            ) : null}
+            <div className="form-actions">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => loadBindingReport(bindingCert)}
+                disabled={bindingBusy || rebindBusy}
+              >
+                Проверить снова
+              </Button>
+              {bindingData?.ozon?.report?.held_by_other_count > 0 ? (
+                <Button type="button" variant="primary" onClick={handleRebindOzon} disabled={bindingBusy || rebindBusy}>
+                  {rebindBusy
+                    ? 'Перепривязываем…'
+                    : `Перепривязать на Ozon (${bindingData.ozon.report.held_by_other_count})`}
+                </Button>
+              ) : null}
+              <Button type="button" variant="secondary" onClick={closeBindingReport} disabled={rebindBusy}>
+                Закрыть
+              </Button>
+            </div>
+          </div>
         )}
       </Modal>
 
