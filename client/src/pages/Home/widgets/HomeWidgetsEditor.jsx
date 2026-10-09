@@ -138,7 +138,9 @@ export function HomeWidgetsEditor({ isOpen, items, canUseWidget, canUseLink, sav
                         {disabled ? '✓ ' : '+ '}
                         {def.title}
                       </span>
-                      <span className="text-muted small">{def.description}</span>
+                      <span className="text-muted small">
+                        {disabled ? 'Уже на главной — убрать можно в списке выше' : def.description}
+                      </span>
                     </button>
                   );
                 })}

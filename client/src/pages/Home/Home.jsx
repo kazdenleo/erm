@@ -83,6 +83,10 @@ export function Home() {
     persist((items || []).map((it) => (it.uid === uid ? { ...it, settings } : it)));
   };
 
+  const removeWidget = (uid) => {
+    persist((items || []).filter((it) => it.uid !== uid));
+  };
+
   const visible = (items || []).filter((it) => WIDGETS[it.type] && canAccess(WIDGETS[it.type]));
 
   return (
@@ -125,9 +129,19 @@ export function Home() {
       ) : (
         <div className="row g-3 home-dashboard-widgets mb-3">
           {visible.map((it) => {
-            const { Component } = WIDGETS[it.type];
+            const { Component, title } = WIDGETS[it.type];
             return (
-              <div key={it.uid} className={sizeColClass(it.size)}>
+              <div key={it.uid} className={`${sizeColClass(it.size)} home-widget-slot`}>
+                <button
+                  type="button"
+                  className="home-widget-remove"
+                  title={`Убрать «${title}» с главной (вернуть — «Настроить главную»)`}
+                  aria-label={`Убрать «${title}» с главной`}
+                  disabled={saving}
+                  onClick={() => removeWidget(it.uid)}
+                >
+                  ×
+                </button>
                 <Component
                   settings={it.settings || {}}
                   profileId={profileId}

@@ -4,6 +4,47 @@
   overflow-x: visible;
 }
 
+/* Кнопка «убрать виджет» в углу при наведении */
+.home-widget-slot {
+  position: relative;
+}
+
+.home-widget-remove {
+  position: absolute;
+  top: -0.55rem;
+  right: calc(var(--bs-gutter-x, 1rem) * 0.5 - 0.55rem);
+  z-index: 5;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 1px solid #ced4da;
+  border-radius: 50%;
+  background: #fff;
+  color: #6c757d;
+  font-size: 1rem;
+  line-height: 1.2rem;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.home-widget-slot:hover > .home-widget-remove,
+.home-widget-remove:focus-visible {
+  opacity: 1;
+}
+
+.home-widget-remove:hover {
+  color: #d92550;
+  border-color: #d92550;
+}
+
+@media (hover: none) {
+  .home-widget-remove {
+    opacity: 0.85;
+  }
+}
+
 /* Компактные плашки на главной */
 .home-dashboard-widgets .widget-content {
   padding: 0.6rem 0.9rem;
