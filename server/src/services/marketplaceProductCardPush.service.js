@@ -10,6 +10,7 @@ import {
 } from './productsExport.service.js';
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import {
   gramsToKg,
@@ -142,6 +143,18 @@ async function loadCategoryPushContext(userCategoryId) {
         ? row.attribute_mp_links
         : {},
   };
+}
+
+/** Автовыгрузка только обновляет существующие карточки и не создаёт новые на МП. */
+const UPDATE_ONLY_SKIP_MESSAGE = 'Карточки нет на маркетплейсе — автовыгрузка новые карточки не создаёт';
+
+function isLinkedToMp(product, mp) {
+  try {
+    assertLinked(product, mp);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function assertLinked(product, mp) {
@@ -1345,6 +1358,9 @@ async function pushOzonCard(product, categoryMm, ctx) {
       error: e?.message || String(e),
     });
   }
+  if (!ozonExisted && ctx.updateOnly) {
+    return { marketplace: 'ozon', ok: false, skipped: true, error: UPDATE_ONLY_SKIP_MESSAGE };
+  }
   if (!ozonExisted && item.price == null) {
     applyErpPricesToOzonImportItem(item, erpPrices, {});
   }
@@ -2140,6 +2156,9 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
 
   const existingNm = wbCardNmId(existing);
   const creating = !existingNm;
+  if (creating && ctx.updateOnly) {
+    return { marketplace: 'wb', ok: false, skipped: true, error: UPDATE_ONLY_SKIP_MESSAGE };
+  }
 
   if (creating) {
     if (!vendorCode) {
@@ -2541,6 +2560,9 @@ async function pushYandexCard(product, categoryMm, ctx) {
     logger.warn('[YM push] lookup before update:', e?.message || e);
   }
   const creating = !existingYm;
+  if (creating && ctx.updateOnly) {
+    return { marketplace: 'ym', ok: false, skipped: true, error: UPDATE_ONLY_SKIP_MESSAGE };
+  }
   const ymBasicPrice = creating ? ymPriceObject(erpPrices) : null;
   if (ymBasicPrice) {
     offer.basicPrice = ymBasicPrice;
@@ -2697,7 +2719,8 @@ async function pushProductToMp(product, mp, opts) {
   };
   const ctx = {
     profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
-    organizationId: orgId
+    organizationId: orgId,
+    updateOnly: opts.updateOnly === true,
   };
   if (mp === 'ozon') return pushOzonCard(productForPush, categoryMm, ctx);
   if (mp === 'wb') return pushWildberriesCard(productForPush, categoryMm, ctx);
@@ -2708,7 +2731,9 @@ async function pushProductToMp(product, mp, opts) {
 /**
  * @param {number|string} productId
  * @param {'ozon'|'wb'|'ym'|'all'|string} marketplace
- * @param {{ profileId?: number|string|null }} [opts]
+ * @param {{ profileId?: number|string|null, updateOnly?: boolean }} [opts]
+ *   updateOnly — только обновить существующие карточки: МП без связи пропускаются,
+ *   новые карточки и штрихкоды не создаются.
  */
 export async function pushProductCard(productId, marketplace, opts = {}) {
   const product = await productsService.getByIdWithDetails(productId);
@@ -2717,13 +2742,16 @@ export async function pushProductCard(productId, marketplace, opts = {}) {
     err.statusCode = 404;
     throw err;
   }
-  const mps = normalizeMp(marketplace);
+  const updateOnly = opts.updateOnly === true;
+  const mps = updateOnly
+    ? normalizeMp(marketplace).filter((mp) => isLinkedToMp(product, mp))
+    : normalizeMp(marketplace);
   const ctx = {
     profileId: opts.profileId ?? product.profile_id ?? product.profileId ?? null,
     organizationId: product.organization_id ?? product.organizationId ?? opts.organizationId ?? null,
   };
   try {
-    await ensureProductBarcodeForPush(product, ctx);
+    if (!updateOnly) await ensureProductBarcodeForPush(product, ctx);
   } catch (e) {
     const error = `Не удалось сгенерировать штрихкод перед отправкой: ${e?.message || String(e)}`;
     logger.warn('[MP Card Push] barcode generate failed', {
@@ -2949,10 +2977,100 @@ export function schedulePushCardsForCategory(userCategoryId, opts = {}) {
   _categoryPushTimers.set(catId, t);
 }
 
+const MP_TITLES = { ozon: 'Ozon', wb: 'WB', ym: 'Я.Маркет' };
+const _tnVedPushPending = new Map();
+
+/**
+ * После заполнения ТН ВЭД из категории — обновить на МП карточки затронутых товаров.
+ * Только существующие карточки и только МП, с которыми товар связан; итог — runtime-уведомлением.
+ * @param {number|string} userCategoryId
+ * @param {Array<number|string>} productIds
+ * @param {{ profileId?: number|string|null, code?: string, delayMs?: number }} [opts]
+ */
+export function schedulePushCardsAfterTnVed(userCategoryId, productIds, opts = {}) {
+  if (!isCardAutoPushEnabled()) return;
+  const catId = Number(userCategoryId);
+  const ids = (Array.isArray(productIds) ? productIds : [])
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!Number.isFinite(catId) || catId < 1 || ids.length === 0) return;
+
+  const pending = _tnVedPushPending.get(catId) || { ids: new Set(), timer: null };
+  ids.forEach((id) => pending.ids.add(id));
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => {
+    _tnVedPushPending.delete(catId);
+    runTnVedCardPush(catId, [...pending.ids].sort((a, b) => a - b), opts).catch((e) => {
+      logger.warn('[MP Card Push] TN VED auto push failed', {
+        userCategoryId: catId,
+        message: e?.message || String(e),
+      });
+    });
+  }, Math.max(1000, Number(opts.delayMs) || 5000));
+  pending.timer.unref?.();
+  _tnVedPushPending.set(catId, pending);
+}
+
+async function runTnVedCardPush(catId, ids, opts) {
+  const cat = await query('SELECT name, profile_id FROM user_categories WHERE id = $1', [catId]);
+  const catName = cat.rows[0]?.name || `#${catId}`;
+  const profileIdRaw = opts.profileId ?? cat.rows[0]?.profile_id ?? null;
+  const profileId =
+    profileIdRaw != null && profileIdRaw !== '' && Number.isFinite(Number(profileIdRaw))
+      ? Number(profileIdRaw)
+      : null;
+
+  logger.info('[MP Card Push] TN VED → push cards', { userCategoryId: catId, count: ids.length });
+  const okByMp = { ozon: 0, wb: 0, ym: 0 };
+  let skipped = 0;
+  const errors = [];
+  for (const productId of ids) {
+    try {
+      const out = await pushProductCard(productId, 'all', { profileId, updateOnly: true });
+      const sku = out?.product?.sku || `#${productId}`;
+      for (const r of out?.results || []) {
+        if (r.ok) okByMp[r.marketplace] = (okByMp[r.marketplace] || 0) + 1;
+        else if (r.skipped) skipped += 1;
+        else errors.push(`${sku} (${MP_TITLES[r.marketplace] || r.marketplace}): ${r.error || 'ошибка'}`);
+      }
+    } catch (e) {
+      errors.push(`#${productId}: ${e?.message || String(e)}`);
+    }
+  }
+
+  const sent = Object.entries(okByMp)
+    .filter(([, n]) => n > 0)
+    .map(([mp, n]) => `${MP_TITLES[mp]} — ${n}`);
+  const parts = [
+    `Категория «${catName}»${opts.code ? `, код ${opts.code}` : ''}: товаров с новым ТН ВЭД — ${ids.length}.`,
+    sent.length ? `Карточки обновлены: ${sent.join(', ')}.` : 'Ни одна карточка не обновлена.',
+  ];
+  if (skipped > 0) parts.push(`Пропущено (карточки нет на МП): ${skipped}.`);
+  if (errors.length > 0) {
+    parts.push(`Ошибок: ${errors.length}. ${errors.slice(0, 5).join('; ')}`);
+  }
+  logger.info('[MP Card Push] TN VED auto push done', {
+    userCategoryId: catId,
+    okByMp,
+    skipped,
+    errors: errors.length,
+  });
+  await addRuntimeNotification({
+    type: 'tn_ved_card_push',
+    severity: errors.length > 0 ? 'warn' : 'info',
+    source: 'tn_ved_card_push',
+    title: 'ТН ВЭД выгружен на маркетплейсы',
+    message: parts.join(' '),
+    profileId,
+    meta: { user_category_id: catId, product_ids: ids.slice(0, 200) },
+  });
+}
+
 export default {
   pushProductCard,
   pushProductCardsBulk,
   schedulePushProductCard,
   schedulePushCardsForCategory,
+  schedulePushCardsAfterTnVed,
   isCardAutoPushEnabled,
 };

@@ -19,6 +19,7 @@ import {
 } from '../utils/productMpFieldLinks.js';
 import tnVedProductApplyService from '../services/tnVedProductApply.service.js';
 import tnVedDirectoryService from '../services/tnVedDirectory.service.js';
+import { schedulePushCardsAfterTnVed } from '../services/marketplaceProductCardPush.service.js';
 import { normalizeCategoryTnVedCode, normalizeTnVedDigits } from '../utils/tnVedAttribute.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
@@ -68,7 +69,11 @@ function readTnVedCodeFromBody(body) {
 async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId) {
   if (!code) return;
   try {
-    await tnVedProductApplyService.applyToCategoryProducts(categoryId, code, { profileId });
+    const result = await tnVedProductApplyService.applyToCategoryProducts(categoryId, code, { profileId });
+    if (result?.productIds?.length) {
+      const pid = profileId != null && profileId !== '' && Number.isFinite(Number(profileId)) ? Number(profileId) : null;
+      schedulePushCardsAfterTnVed(categoryId, result.productIds, { profileId: pid, code });
+    }
   } catch (e) {
     logger.warn('[User Categories] TN VED apply to products failed', {
       categoryId,

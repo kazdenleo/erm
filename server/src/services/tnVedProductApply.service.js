@@ -264,7 +264,7 @@ class TnVedProductApplyService {
     return productData;
   }
 
-  async _applyMpKeys(categoryId, column, keys, storedValue) {
+  async _applyMpKeys(categoryId, column, keys, storedValue, touchedIds = null) {
     if (!keys.length) return 0;
     let total = 0;
     for (const key of keys) {
@@ -275,10 +275,12 @@ class TnVedProductApplyService {
              updated_at = CURRENT_TIMESTAMP
          WHERE user_category_id = $1
            AND ${mpValueIsEmptySql(column, '$2')}
-           AND (${column} IS NULL OR jsonb_typeof(${column}) = 'object')`,
+           AND (${column} IS NULL OR jsonb_typeof(${column}) = 'object')
+         RETURNING id`,
         [categoryId, key, patch]
       );
       total += r.rowCount || 0;
+      if (touchedIds) for (const row of r.rows || []) touchedIds.add(Number(row.id));
     }
     return total;
   }
@@ -293,26 +295,31 @@ class TnVedProductApplyService {
     const targets = await this._resolveTargets(id, opts);
     if (!targets) return { ok: false };
 
-    const erpUpdated = await this._insertEmptyErpTnVedValues(id, targets.erpIds, normalized);
+    const touchedIds = new Set();
+    const erpUpdated = await this._insertEmptyErpTnVedValues(id, targets.erpIds, normalized, touchedIds);
 
     const ozonUpdated = await this._applyMpKeys(
       id,
       'ozon_attributes',
       targets.ozonKeys,
-      storedTnVedValueForMarketplace('ozon', normalized)
+      storedTnVedValueForMarketplace('ozon', normalized),
+      touchedIds
     );
     const wbUpdated = await this._applyMpKeys(
       id,
       'wb_attributes',
       targets.wbKeys,
-      storedTnVedValueForMarketplace('wb', normalized)
+      storedTnVedValueForMarketplace('wb', normalized),
+      touchedIds
     );
     const ymUpdated = await this._applyMpKeys(
       id,
       'ym_attributes',
       targets.ymKeys,
-      storedTnVedValueForMarketplace('ym', normalized)
+      storedTnVedValueForMarketplace('ym', normalized),
+      touchedIds
     );
+    const productIds = [...touchedIds].filter((n) => Number.isFinite(n) && n > 0);
 
     logger.info('[TN VED apply] category products updated', {
       categoryId: id,
@@ -321,11 +328,12 @@ class TnVedProductApplyService {
       ozonUpdated,
       wbUpdated,
       ymUpdated,
+      products: productIds.length,
     });
-    return { ok: true, erpUpdated, ozonUpdated, wbUpdated, ymUpdated };
+    return { ok: true, erpUpdated, ozonUpdated, wbUpdated, ymUpdated, productIds };
   }
 
-  async _insertEmptyErpTnVedValues(categoryId, attrIds, code) {
+  async _insertEmptyErpTnVedValues(categoryId, attrIds, code, touchedIds = null) {
     const normalized = normalizeTnVedDigits(code);
     const id = Number(categoryId);
     if (!normalized || !Number.isFinite(id) || id <= 0) return 0;
@@ -348,10 +356,12 @@ class TnVedProductApplyService {
          ON CONFLICT (product_id, attribute_id)
          DO UPDATE SET value = EXCLUDED.value
          WHERE product_attribute_values.value IS NULL
-            OR TRIM(product_attribute_values.value) = ''`,
+            OR TRIM(product_attribute_values.value) = ''
+         RETURNING product_id`,
         [id, numericAttrId, normalized]
       );
       erpUpdated += r.rowCount || 0;
+      if (touchedIds) for (const row of r.rows || []) touchedIds.add(Number(row.product_id));
     }
     return erpUpdated;
   }
