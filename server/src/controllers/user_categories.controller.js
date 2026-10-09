@@ -73,6 +73,22 @@ function readTnVedCodeFromBody(body) {
   return normalizeCategoryTnVedCode(body.tn_ved_code ?? body.tnVedCode);
 }
 
+/** Товары категории, связанные с офферами Я.Маркета (артикул ЯМ хранится в product_skus). */
+async function listYmLinkedCategoryProductIds(categoryId) {
+  const r = await query(
+    `SELECT DISTINCT p.id
+       FROM products p
+       INNER JOIN product_skus ps
+         ON ps.product_id = p.id
+        AND ps.marketplace = 'ym'
+        AND COALESCE(TRIM(ps.sku), '') <> ''
+      WHERE p.user_category_id = $1
+        AND COALESCE(p.is_archived, false) = false`,
+    [categoryId]
+  );
+  return r.rows.map((row) => Number(row.id)).filter((n) => Number.isFinite(n) && n > 0);
+}
+
 async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId, previousCode = null) {
   if (!code) return;
   try {
@@ -85,12 +101,7 @@ async function applyTnVedToCategoryProductsSafe(categoryId, code, profileId, pre
       previousCode != null && normalizeTnVedDigits(code) !== normalizeTnVedDigits(previousCode);
     if (changed) {
       // На Я.Маркет ТН ВЭД уходит полем оффера, а не характеристикой.
-      const ymLinked = await query(
-        `SELECT id FROM products
-         WHERE user_category_id = $1 AND COALESCE(TRIM(sku_ym), '') <> ''`,
-        [categoryId]
-      );
-      ymLinked.rows.forEach((row) => productIds.add(Number(row.id)));
+      (await listYmLinkedCategoryProductIds(categoryId)).forEach((pid) => productIds.add(pid));
     }
     if (productIds.size) {
       const pid = profileId != null && profileId !== '' && Number.isFinite(Number(profileId)) ? Number(profileId) : null;
@@ -702,14 +713,10 @@ class UserCategoriesController {
         profileId: tid,
       });
       // На Я.Маркет ТН ВЭД уходит полем оффера, а не характеристикой — добавляем товары, связанные с ЯМ.
-      const ymLinked = await query(
-        `SELECT id FROM products
-         WHERE user_category_id = $1 AND COALESCE(TRIM(sku_ym), '') <> ''`,
-        [id]
+      const ymLinked = await listYmLinkedCategoryProductIds(id);
+      const productIds = [...new Set([...withCode, ...ymLinked])].filter(
+        (n) => Number.isFinite(n) && n > 0
       );
-      const productIds = [
-        ...new Set([...withCode, ...ymLinked.rows.map((row) => Number(row.id))]),
-      ].filter((n) => Number.isFinite(n) && n > 0);
       const status = productIds.length
         ? schedulePushCardsAfterTnVed(id, productIds, {
             profileId: Number(tid),
