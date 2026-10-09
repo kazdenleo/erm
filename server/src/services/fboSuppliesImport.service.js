@@ -3316,18 +3316,23 @@ class FboSuppliesImportService {
       { label: 'fbo-import-confirm', attempts: 3, delayMs: 5000 }
     );
 
+    // Пересчёт резерва по сотням товаров занимает минуты — не держим ответ клиенту.
     if (productIdsToRebalance.size) {
       const uniqueProductIds = [...productIdsToRebalance];
-      for (const productId of uniqueProductIds) {
-        await fboSupplyReserveService
-          .rebalanceReservesForProduct(productId, {
-            profileId,
-            skipMarketplaceSync: true,
-          })
-          .catch((e) => {
-            console.warn('[FboImport] reserve rebalance:', e?.message || e);
-          });
-      }
+      setImmediate(() => {
+        (async () => {
+          for (const productId of uniqueProductIds) {
+            await fboSupplyReserveService
+              .rebalanceReservesForProduct(productId, {
+                profileId,
+                skipMarketplaceSync: true,
+              })
+              .catch((e) => {
+                console.warn('[FboImport] reserve rebalance:', e?.message || e);
+              });
+          }
+        })();
+      });
     }
 
     return result;
