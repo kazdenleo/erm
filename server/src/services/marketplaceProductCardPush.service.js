@@ -51,7 +51,13 @@ import {
   applyOzonDescriptionHtml,
   plainTextToMarketplaceHtml,
 } from '../utils/marketplaceDescriptionHtml.js';
-import { collapseOzonNonCollectionAttrValues, ozonAttrValuesForApi } from '../utils/ozonManufacturerArticle.js';
+import {
+  OZON_ALTERNATIVE_ARTICLES_ATTR_ID,
+  OZON_PARTNUMBER_ATTR_ID,
+  collapseOzonNonCollectionAttrValues,
+  isOzonFreeTextMpAttr,
+  ozonAttrValuesForApi,
+} from '../utils/ozonManufacturerArticle.js';
 import {
   buildOzonComplexAttributesApiPayload,
   findOzonVehicleGroups,
@@ -393,6 +399,83 @@ async function resolveOzonTnVedDictionaryAttrs(item, schemaList, descId, typeId,
     const next = { complex_id: 0, id, values: nextVals };
     if (idx >= 0) attrs[idx] = next;
     else attrs.push(next);
+  }
+  item.attributes = attrs;
+}
+
+const OZON_OEM_ATTR_ID = 7324;
+const ozonBareDictValueCache = new Map();
+
+function ozonSchemaDictionaryId(a) {
+  const n = Number(a?.dictionary_id ?? a?.attribute_dictionary_id ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Словарное поле, сохранённое голым числом без «Подпись->id» (например «972262414» или «2»):
+ * Ozon сверяет { value } с подписями справочника и такое отклоняет. Число ищем среди подписей
+ * справочника, не нашли — значит это уже dictionary_value_id.
+ */
+export async function resolveOzonBareDictionaryValues(item, schemaList, descId, typeId, ctx = {}) {
+  const dictAttrs = new Set();
+  for (const a of Array.isArray(schemaList) ? schemaList : []) {
+    const id = Number(a?.id ?? a?.attribute_id);
+    if (!Number.isFinite(id) || id <= 0 || id === 85 || ozonSchemaDictionaryId(a) === 0) continue;
+    if (id === OZON_OEM_ATTR_ID || id === OZON_PARTNUMBER_ATTR_ID || id === OZON_ALTERNATIVE_ARTICLES_ATTR_ID) continue;
+    if (isTnVedAttributeName(a?.name ?? a?.attribute_name ?? '') || isOzonFreeTextMpAttr(a)) continue;
+    dictAttrs.add(id);
+  }
+  if (!dictAttrs.size || !Array.isArray(item?.attributes)) return;
+
+  const apiOpts = {
+    profileId: ctx.profileId ?? ctx.profile_id ?? null,
+    organizationId: ctx.organizationId ?? ctx.organization_id ?? null,
+  };
+  const attrs = [...item.attributes];
+  for (let i = 0; i < attrs.length; i += 1) {
+    const attr = attrs[i];
+    const id = Number(attr?.id);
+    if (!dictAttrs.has(id) || !Array.isArray(attr.values)) continue;
+    let changed = false;
+    const values = [];
+    for (const v of attr.values) {
+      const did = Number(v?.dictionary_value_id);
+      const text = String(v?.value ?? '').trim();
+      if ((Number.isFinite(did) && did > 0) || !/^\d+$/.test(text)) {
+        values.push(v);
+        continue;
+      }
+      const cacheKey = `${id}:${descId}:${typeId}:${text}`;
+      let hit = ozonBareDictValueCache.get(cacheKey);
+      if (hit === undefined) {
+        try {
+          // Поиск Ozon принимает от 2 символов; однозначные подписи («2») ищем в первой странице справочника.
+          const found =
+            text.length < 2
+              ? (await integrationsService.getOzonAttributeValues(id, descId, typeId, { ...apiOpts, limit: 100 }))
+                  ?.result || []
+              : await integrationsService.searchOzonAttributeValues(id, descId, typeId, text, apiOpts);
+          const match = (Array.isArray(found) ? found : []).find((x) => String(x?.value ?? '').trim() === text);
+          if (match && Number(match.id) > 0) hit = Number(match.id);
+          else hit = text.length < 2 ? null : Number(text);
+          ozonBareDictValueCache.set(cacheKey, hit);
+          if (ozonBareDictValueCache.size > 2000) {
+            ozonBareDictValueCache.delete(ozonBareDictValueCache.keys().next().value);
+          }
+        } catch (e) {
+          logger.warn('[CardPush] Ozon dictionary value search failed', { id, text, err: e?.message || e });
+          values.push(v);
+          continue;
+        }
+      }
+      if (hit == null) {
+        values.push(v);
+        continue;
+      }
+      values.push({ dictionary_value_id: hit });
+      changed = true;
+    }
+    if (changed) attrs[i] = { ...attr, values };
   }
   item.attributes = attrs;
 }
@@ -1274,6 +1357,7 @@ async function pushOzonCard(product, categoryMm, ctx) {
   await applyMappedOzonBrand(item, product);
   applyOzonDescriptionHtml(item, description);
   item.attributes = collapseOzonNonCollectionAttrValues(item.attributes);
+  await resolveOzonBareDictionaryValues(item, ozonSchema, descId, typeId, ctx);
   await ensureOzonNeedsMarkingAttribute(item, ozonSchema, descId, typeId, ctx);
   await resolveOzonTnVedDictionaryAttrs(item, ozonSchema, descId, typeId, ctx, product);
   const pid = product.ozon_product_id ?? product.marketplace_ozon_product_id;
