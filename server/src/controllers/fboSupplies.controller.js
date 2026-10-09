@@ -37,6 +37,16 @@ function logPackingScan(req, supplyId, { quantity = 0, action = null, error = nu
   });
 }
 
+function logPackingAction(req, supplyId, action) {
+  logEmployeeEvent({
+    user: req.user,
+    eventType: EMPLOYEE_EVENT.FBO_PACKING_ACTION,
+    entityType: 'fbo_supply',
+    entityId: supplyId,
+    meta: { action },
+  });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_kolichestvo.xlsx');
 
@@ -849,6 +859,7 @@ class FboSuppliesController {
         cargoIds,
         { profileId: tid, useCache: req.query?.refresh !== '1' }
       );
+      logPackingAction(req, id, 'labels_print');
       const filename = `ozon_cargo_labels_${id}.pdf`;
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
@@ -877,6 +888,7 @@ class FboSuppliesController {
         profileId: tid,
         useCache: req.query?.refresh !== '1',
       });
+      logPackingAction(req, id, 'labels_print');
       const b64 = buffer.toString('base64');
       const html = `<!DOCTYPE html>
 <html>
@@ -972,6 +984,7 @@ class FboSuppliesController {
         { placementZone, expiresAt },
         { profileId }
       );
+      logPackingAction(req, id, 'content_update');
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
@@ -1012,6 +1025,7 @@ class FboSuppliesController {
         { cargoKind, palletTareWeightKg, barcode },
         { profileId }
       );
+      logPackingAction(req, id, 'cargo_update');
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
@@ -1026,6 +1040,7 @@ class FboSuppliesController {
       const { id, cargoUnitId } = req.params;
       const profileId = req.user?.profileId ?? null;
       const data = await fboSuppliesPackingService.deleteCargoUnit(id, cargoUnitId, { profileId });
+      logPackingAction(req, id, 'cargo_delete');
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404) {

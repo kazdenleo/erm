@@ -10,8 +10,12 @@ import logger from '../utils/logger.js';
 export const EMPLOYEE_EVENT = {
   ASSEMBLY_SCAN: 'assembly_scan',
   ASSEMBLY_COLLECTED: 'assembly_collected',
+  /** Работа на сборке FBS без скана товара: печать этикетки заказа. */
+  ASSEMBLY_ACTION: 'assembly_action',
   RECEIPT_SCAN: 'receipt_scan',
   FBO_PACKING_SCAN: 'fbo_packing_scan',
+  /** Работа на упаковке без скана товара: печать этикеток, параметры коробки, сроки годности. */
+  FBO_PACKING_ACTION: 'fbo_packing_action',
 };
 
 function positiveIntOrNull(v) {

@@ -18,6 +18,7 @@ import customersRepo from '../repositories/customers.repository.pg.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import logger from '../utils/logger.js';
+import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import orderSupplierOrderService from '../services/orderSupplierOrder.service.js';
 import { processAssemblyShipmentsInBackground } from '../services/orderAssemblyBackground.service.js';
@@ -1095,6 +1096,13 @@ class OrdersController {
         err.statusCode = 502;
         throw err;
       }
+      logEmployeeEvent({
+        user: req.user,
+        eventType: EMPLOYEE_EVENT.ASSEMBLY_ACTION,
+        entityType: 'order',
+        entityId: orderId,
+        meta: { action: 'label_print' },
+      });
       const ext = filePath.endsWith('.png') ? 'png' : 'pdf';
       res.setHeader(
         'Content-Type',

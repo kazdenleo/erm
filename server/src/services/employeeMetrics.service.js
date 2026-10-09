@@ -7,6 +7,8 @@
  * FBS: отметки «Собран» (orders.assembled_*, вся история) + сканы из employee_activity_events.
  * FBO-сборка: fbo_supply_item_scans; скан комплектующей — доля комплекта (1 / штук в составе),
  * скан комплекта целиком — 1 шт. Упаковка FBO: employee_activity_events (fbo_packing_scan).
+ * Действия без скана товара (assembly_action, fbo_packing_action: печать этикеток, параметры коробки,
+ * сроки годности) — отметки работы без штук: не дают паузе между сканами стать «перерывом».
  * Общая норма упаковки (без сотрудников, в т. ч. до появления журнала): по грузоместам поставки —
  * у строки «товар в коробке» есть время первого (created_at) и последнего (updated_at) скана.
  * Приёмка делится на FBO (склад закупки с is_fbo_stock) и FBS (остальные склады и закупки без склада).
@@ -75,13 +77,28 @@ function activeTime(marks, idleSec) {
   const sorted = [...marks].filter((m) => Number.isFinite(m.t)).sort((a, b) => a.t - b.t);
   let activeSec = 0;
   let timedUnits = 0;
+  let sessionSec = 0;
+  let sessionUnits = 0;
+  // Отрезок без перерывов засчитывается, только если в нём есть штуки/заказы: печать этикеток и другие
+  // действия без скана товара не должны давать «рабочее» время тому, кто ничего не собирал.
+  const closeSession = () => {
+    if (sessionUnits > 0) {
+      activeSec += sessionSec;
+      timedUnits += sessionUnits;
+    }
+    sessionSec = 0;
+    sessionUnits = 0;
+  };
   for (let i = 1; i < sorted.length; i += 1) {
     const gapSec = (sorted[i].t - sorted[i - 1].t) / 1000;
     if (gapSec <= idleSec) {
-      activeSec += gapSec;
-      timedUnits += sorted[i].units;
+      sessionSec += gapSec;
+      sessionUnits += sorted[i].units;
+    } else {
+      closeSession();
     }
   }
+  closeSession();
   return { activeSec, timedUnits };
 }
 
@@ -253,7 +270,9 @@ class EmployeeMetricsService {
         `SELECT user_id, event_type, created_at, quantity, is_error
            FROM employee_activity_events
           WHERE profile_id = $1
-            AND event_type IN ('assembly_scan', 'assembly_collected', 'fbo_packing_scan')
+            AND event_type IN (
+              'assembly_scan', 'assembly_collected', 'assembly_action', 'fbo_packing_scan', 'fbo_packing_action'
+            )
             AND created_at >= ${from} AND created_at < ${to}`,
         params
       ),
@@ -384,6 +403,8 @@ class EmployeeMetricsService {
       if (row.event_type === 'fbo_packing_scan') {
         const q = row.is_error ? 0 : Number(row.quantity) || 0;
         u.packing.marks.push({ t: ts(row.created_at), units: Math.max(q, 0), qty: q });
+      } else if (row.event_type === 'fbo_packing_action') {
+        u.packing.marks.push({ t: ts(row.created_at), units: 0, qty: 0 });
       } else {
         u.fbs.marks.push({ t: ts(row.created_at), units: 0, qty: 0 });
       }
