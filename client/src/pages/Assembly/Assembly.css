@@ -53,7 +53,7 @@
   background: #fff;
 }
 
-.assembly-next__scan--in-card {
+.assembly-next__scan.assembly-next__scan--in-card {
   width: 100%;
   max-width: none;
   flex: none;
