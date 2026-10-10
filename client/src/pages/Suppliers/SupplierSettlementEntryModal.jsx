@@ -31,7 +31,7 @@ export function SupplierSettlementEntryModal({ isOpen, supplierId, initialKind =
   const parsed = parseMoneyInput(amount);
   let resultBalance = null;
   if (Number.isFinite(parsed)) {
-    if (kind === 'payment') resultBalance = currentBalance - parsed;
+    if (kind === 'payment') resultBalance = currentBalance + parsed;
     else if (adjustMode === 'target') resultBalance = parsed;
     else resultBalance = currentBalance + parsed;
   }
@@ -81,10 +81,10 @@ export function SupplierSettlementEntryModal({ isOpen, supplierId, initialKind =
   let amountPlaceholder = '10 000';
   if (kind === 'adjustment' && adjustMode === 'target') {
     amountLabel = 'Итоговый баланс, ₽';
-    amountPlaceholder = 'Положительный — наш долг, отрицательный — переплата';
+    amountPlaceholder = 'Со знаком минус — наш долг, без минуса — переплата';
   } else if (kind === 'adjustment') {
     amountLabel = 'Изменение баланса, ₽';
-    amountPlaceholder = '+ увеличить наш долг, − уменьшить';
+    amountPlaceholder = '− увеличить наш долг, + уменьшить';
   }
 
   return (

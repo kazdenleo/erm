@@ -12,7 +12,7 @@ import { SupplierForm } from '../../components/forms/SupplierForm/SupplierForm';
 import { suppliersApi } from '../../services/suppliers.api';
 import { autoOrderSettingsFromApiConfig } from '../../utils/supplierAutoOrderSettings';
 import { formatSupplierWarehouseOrderWindow } from '../../utils/supplierWarehouseArrival';
-import { describeBalance, formatMoney } from './settlementFormat';
+import { describeBalance, formatMoney, formatSignedBalance } from './settlementFormat';
 import './Suppliers.css';
 
 export function Suppliers() {
@@ -48,8 +48,8 @@ export function Suppliers() {
         {b.tone === 'neutral' ? (
           <span className="text-muted">{b.label}</span>
         ) : (
-          <span className={`supplier-settlements__tone--${b.tone}`}>
-            {b.tone === 'credit' ? 'Переплата ' : ''}{formatMoney(b.amount)}
+          <span className={`supplier-settlements__tone--${b.tone}`} title={`${b.label} ${formatMoney(b.amount)}`}>
+            {formatSignedBalance(row.balance)}
           </span>
         )}
       </Link>
@@ -130,7 +130,7 @@ export function Suppliers() {
                 <th>Склады</th>
                 <th>Автозаказ</th>
                 <th>Активен</th>
-                <th style={{textAlign: 'right'}} title="Положительный — наш долг поставщику">Баланс</th>
+                <th style={{textAlign: 'right'}} title="Со знаком минус — наш долг поставщику, без минуса — переплата">Баланс</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
               </tr>
             </thead>

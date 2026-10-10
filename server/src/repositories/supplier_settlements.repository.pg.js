@@ -1,6 +1,8 @@
 /**
  * Взаиморасчёты с поставщиками.
- * Баланс = наш долг поставщику: приёмки (+) − возвраты поставщику (−) + ручные операции (оплаты < 0, корректировки ±).
+ * Баланс — наш остаток у поставщика: < 0 — наш долг, > 0 — переплата.
+ * Приёмки уменьшают баланс, возвраты поставщику и оплаты — увеличивают, корректировки ±.
+ * В supplier_settlement_entries.amount хранится изменение долга (знак противоположен балансу).
  */
 
 import { query } from '../config/database.js';
@@ -65,7 +67,7 @@ function summarize({ received = 0, returned = 0, paid = 0, adjusted = 0 }) {
     paid: toMoney(paid),
     adjusted: toMoney(adjusted),
   };
-  s.balance = toMoney(s.received - s.returned - s.paid + s.adjusted);
+  s.balance = toMoney(s.paid + s.returned - s.received + s.adjusted);
   return s;
 }
 
@@ -97,7 +99,7 @@ class SupplierSettlementsRepositoryPG {
       query(
         `SELECT supplier_id,
                 -SUM(amount) FILTER (WHERE kind = 'payment') AS paid,
-                SUM(amount) FILTER (WHERE kind = 'adjustment') AS adjusted,
+                -SUM(amount) FILTER (WHERE kind = 'adjustment') AS adjusted,
                 MAX(occurred_at) AS last_at
          FROM supplier_settlement_entries
          WHERE supplier_id = ANY($1::bigint[])
@@ -149,7 +151,7 @@ class SupplierSettlementsRepositoryPG {
         key: `doc-${d.id}`,
         type: d.document_type,
         occurredAt: d.created_at,
-        amount: d.document_type === 'return' ? -amount : amount,
+        amount: d.document_type === 'return' ? amount : -amount,
         documentId: Number(d.id),
         documentNumber: d.receipt_number || null,
         linesCount: Number(d.lines_count) || 0,
@@ -164,7 +166,7 @@ class SupplierSettlementsRepositoryPG {
         key: `entry-${e.id}`,
         type: e.kind,
         occurredAt: e.occurred_at,
-        amount: toMoney(e.amount),
+        amount: -toMoney(e.amount),
         documentId: null,
         documentNumber: null,
         linesCount: 0,
@@ -186,9 +188,9 @@ class SupplierSettlementsRepositoryPG {
     for (const op of operations) {
       running = toMoney(running + op.amount);
       op.balanceAfter = running;
-      if (op.type === 'receipt') totals.received += op.amount;
-      else if (op.type === 'return') totals.returned -= op.amount;
-      else if (op.type === 'payment') totals.paid -= op.amount;
+      if (op.type === 'receipt') totals.received -= op.amount;
+      else if (op.type === 'return') totals.returned += op.amount;
+      else if (op.type === 'payment') totals.paid += op.amount;
       else totals.adjusted += op.amount;
     }
 
@@ -205,8 +207,9 @@ class SupplierSettlementsRepositoryPG {
 
   /**
    * Ручная операция.
-   * payment: amount > 0 — сколько оплатили поставщику (долг уменьшается).
+   * payment: amount > 0 — сколько оплатили поставщику (баланс растёт).
    * adjustment: amount — изменение баланса (±) либо targetBalance — итоговый баланс после корректировки.
+   * Возвращаемый amount — изменение баланса.
    */
   async createEntry({ profileId, supplierId, userId = null, kind, amount, targetBalance, date, comment }) {
     const pid = toId(profileId);
@@ -229,10 +232,7 @@ class SupplierSettlementsRepositoryPG {
       if (!Number.isFinite(n) || Math.abs(n) >= MAX_ABS_AMOUNT) throw httpError('Некорректная сумма');
       delta = toMoney(n);
       if (delta === 0) throw httpError('Сумма не может быть нулевой');
-      if (k === 'payment') {
-        if (delta < 0) throw httpError('Сумма оплаты должна быть положительной');
-        delta = -delta;
-      }
+      if (k === 'payment' && delta < 0) throw httpError('Сумма оплаты должна быть положительной');
     }
 
     const dateStr = date == null ? '' : String(date).trim();
@@ -249,7 +249,7 @@ class SupplierSettlementsRepositoryPG {
                CASE WHEN $5::date IS NULL THEN CURRENT_TIMESTAMP ELSE ($5::date + LOCALTIME)::timestamptz END,
                $6, $7)
        RETURNING id`,
-      [pid, sid, k, delta, dateStr || null, text, uid]
+      [pid, sid, k, -delta, dateStr || null, text, uid]
     );
     return { id: Number(res.rows[0].id), amount: delta };
   }

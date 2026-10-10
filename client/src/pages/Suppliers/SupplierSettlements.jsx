@@ -14,6 +14,7 @@ import {
   describeBalance,
   formatDateTime,
   formatMoney,
+  formatSignedBalance,
 } from './settlementFormat';
 import './Suppliers.css';
 
@@ -146,12 +147,17 @@ export function SupplierSettlements() {
                     {op.createdBy ? <div className="text-muted small">{op.createdBy}</div> : null}
                   </td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {op.amount > 0 ? formatMoney(op.amount) : ''}
-                  </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {op.amount < 0 ? formatMoney(-op.amount) : ''}
                   </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{formatMoney(op.balanceAfter)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {op.amount > 0 ? formatMoney(op.amount) : ''}
+                  </td>
+                  <td
+                    className={`supplier-settlements__tone--${describeBalance(op.balanceAfter).tone}`}
+                    style={{ textAlign: 'right', whiteSpace: 'nowrap' }}
+                  >
+                    {formatSignedBalance(op.balanceAfter)}
+                  </td>
                   <td style={{ textAlign: 'right' }}>
                     {op.entryId ? (
                       <Button
