@@ -78,6 +78,17 @@ export function ozonStickerMissing(order) {
   return orderStickerCellValue(order) === '—' && isAssemblyLikeStatus(order.status);
 }
 
+/**
+ * Можно ли собирать заказ: у WB/Ozon должен быть номер стикера (как на сервере в assemblySticker.js).
+ * Яндекс и ручные заказы стикера не требуют.
+ */
+export function orderHasAssemblySticker(order, { groupOrders = null } = {}) {
+  if (!order) return false;
+  const mp = normalizeMarketplaceForUI(order.marketplace);
+  if (mp !== 'wildberries' && mp !== 'ozon') return true;
+  return orderStickerCellValue({ ...order, status: 'in_assembly' }, { groupOrders }) !== '—';
+}
+
 /** Разбивает номер стикера WB/Ozon: основная часть + последние 4 цифры (полужирные в UI). */
 export function splitStickerEmphasis(text) {
   const s = String(text ?? '').trim();

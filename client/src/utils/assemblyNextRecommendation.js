@@ -22,6 +22,7 @@ export function pickAssemblyStageGroups({
   lastAssembledGroup = null,
   currentOrderAssembled = false,
   lastCollectedKey = '',
+  canAssembleGroup = null,
 } = {}) {
   const queue = Array.isArray(assemblyGroups) ? assemblyGroups : [];
   const collected = Array.isArray(collectedGroups) ? collectedGroups : [];
@@ -46,7 +47,10 @@ export function pickAssemblyStageGroups({
     collected[0] ||
     null;
 
-  const mainGroup = inProgress || queue.find((g) => g.key !== previous?.key) || null;
+  // Следующим предлагаем только заказ, который можно собрать (например, есть стикер).
+  const canAssemble = typeof canAssembleGroup === 'function' ? canAssembleGroup : () => true;
+  const mainGroup =
+    inProgress || queue.find((g) => g.key !== previous?.key && canAssemble(g)) || null;
   const sideGroup = previous && previous.key !== mainGroup?.key ? previous : null;
 
   return {

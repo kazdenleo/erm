@@ -232,6 +232,13 @@ router.get(
   wrapAsync(ordersController.getLabelStatus.bind(ordersController))
 );
 
+// Ручное обновление этикетки и номера стикера (кнопка ожидания на сборке)
+router.post(
+  '/:orderId/label/refresh',
+  validateOrderId,
+  wrapAsync(ordersController.refreshLabel.bind(ordersController))
+);
+
 // Ручная предзагрузка этикеток
 router.post(
   '/preload-labels',

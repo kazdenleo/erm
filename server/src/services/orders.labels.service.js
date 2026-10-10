@@ -123,6 +123,8 @@ function keyFp(raw) {
 const backgroundLabelFetches = new Set();
 const backgroundLabelCooldownUntil = new Map();
 const BACKGROUND_LABEL_COOLDOWN_MS = 30_000;
+/** Почему этикетка не загрузилась в последний раз — показываем сборщику на кнопке ожидания. */
+const labelLastError = new Map();
 
 class OrdersLabelsService {
   hasLabelCached(order) {
@@ -228,6 +230,7 @@ class OrdersLabelsService {
               if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
                 fs.writeFileSync(filePath, buf);
                 ok = true;
+                labelLastError.delete(filePath);
                 logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}`);
               }
               try {
@@ -241,6 +244,7 @@ class OrdersLabelsService {
               return;
             } catch (e) {
               const status = e?.statusCode;
+              labelLastError.set(filePath, e?.message || String(e));
               logLabelEvent(
                 `Error(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
               );
@@ -287,7 +291,69 @@ class OrdersLabelsService {
       }
     }
 
-    return { exists, stickerNumber: stickerNumber || null };
+    return {
+      exists,
+      stickerNumber: stickerNumber || null,
+      error: exists && stickerNumber ? null : labelLastError.get(filePath) || null,
+    };
+  }
+
+  /**
+   * Ручное «обновить стикер» со страницы сборки: без паузы после неудач, синхронно.
+   * WB: если отгрузка заказа не дошла до поставки WB (429/сбой) — сначала повторяем её,
+   * иначе WB этикетку не отдаст. Файл без номера стикера перекачиваем.
+   */
+  async refreshLabel(order, { organizationId = null } = {}) {
+    const filePath = getOrderLabelPath(order);
+    const mp = normalizeMarketplaceForLabel(order?.marketplace);
+    if (mp !== 'wildberries' && mp !== 'ozon' && mp !== 'yandex') {
+      return { exists: fs.existsSync(filePath), stickerNumber: null, error: null };
+    }
+    backgroundLabelCooldownUntil.delete(filePath);
+
+    if (mp === 'wildberries') {
+      try {
+        const { default: shipmentsService } = await import('./shipments.service.js');
+        const profileId = orderProfileId(order);
+        const ship = await shipmentsService.findLocalShipmentContainingOrder('wildberries', order.orderId, {
+          profileId,
+        });
+        if (ship && !ship.closed && ship.localWbOnly === true) {
+          await shipmentsService.syncWildberriesShipmentToMarketplace(ship.id, {
+            profileId,
+            organizationId: organizationId ?? ship.organizationId ?? null,
+          });
+        }
+      } catch (e) {
+        labelLastError.set(filePath, `Поставка WB: ${e?.message || String(e)}`);
+        logLabelEvent(`Refresh WB supply ${order.orderId} -> ${e?.message || String(e)}`);
+      }
+    }
+
+    if (fs.existsSync(filePath) && !orderHasValidSticker(order) && mp !== 'ozon' && mp !== 'yandex') {
+      try { fs.unlinkSync(filePath); } catch (_) {}
+    }
+
+    let error = null;
+    try {
+      await this.ensureLabelFile(order, { organizationId });
+      labelLastError.delete(filePath);
+    } catch (e) {
+      error = e?.message || String(e);
+      labelLastError.set(filePath, error);
+      backgroundLabelCooldownUntil.set(filePath, Date.now() + BACKGROUND_LABEL_COOLDOWN_MS);
+    }
+
+    const fresh = (await ordersService.getByMarketplaceAndOrderId(order.marketplace, order.orderId, {
+      profileId: orderProfileId(order),
+    }).catch(() => null)) || order;
+    const sn = orderHasValidSticker(fresh)
+      ? String(fresh.assemblyStickerNumber ?? fresh.assembly_sticker_number).trim()
+      : null;
+    if (!error && !sn && (mp === 'wildberries' || mp === 'ozon')) {
+      error = 'Этикетка загружена, но номер стикера маркетплейс не вернул';
+    }
+    return { exists: fs.existsSync(filePath), stickerNumber: sn, error };
   }
 
   /**

@@ -17,7 +17,11 @@ import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
-import { isAssemblyLikeStatus, ozonStickerMissing } from '../../utils/orderStickerDisplay';
+import {
+  isAssemblyLikeStatus,
+  orderHasAssemblySticker,
+  ozonStickerMissing,
+} from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import {
   buildAssemblyNextRecommendation,
@@ -190,6 +194,9 @@ function orderRequiresMarketplaceLabel(order) {
   const mp = normMarketplace(order);
   return mp === 'ozon' || mp === 'wildberries' || mp === 'yandex';
 }
+
+const NO_STICKER_MESSAGE =
+  'У заказа нет стикера маркетплейса — собирать его нельзя. Обновите стикер кнопкой с часами.';
 
 function labelNotReadyAssemblyMessage(marketplace) {
   const mp = normMarketplace({ marketplace });
@@ -414,6 +421,9 @@ export function Assembly() {
   const [labelPrintError, setLabelPrintError] = useState(null);
   /** orderId -> true, если файл этикетки уже загружен на сервер (можно показывать иконку печати) */
   const [labelReadyByOrderId, setLabelReadyByOrderId] = useState(() => ({}));
+  /** Почему этикетка/стикер не получены (с сервера) — подсказка на кнопке с часами. */
+  const [labelErrorByOrderId, setLabelErrorByOrderId] = useState(() => ({}));
+  const [stickerRefreshingId, setStickerRefreshingId] = useState('');
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
   /** Остаток на складе рекомендации (следующий к сборке) */
   const [nextStockEpoch, setNextStockEpoch] = useState(0);
@@ -558,6 +568,68 @@ export function Assembly() {
       .catch(() => {});
   }, [currentOrderData?.order?.orderId]);
 
+  /** Ответ label/status | label/refresh: готовность этикетки, номер стикера, причина неудачи. */
+  const applyLabelStatus = useCallback((id, payload) => {
+    const exists = payload?.exists === true;
+    const stickerNumber =
+      payload?.stickerNumber != null && String(payload.stickerNumber).trim() !== ''
+        ? String(payload.stickerNumber).trim()
+        : null;
+    const error = payload?.error ? String(payload.error) : '';
+    if (exists) {
+      setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+    }
+    setLabelErrorByOrderId((prev) => {
+      if ((prev?.[id] || '') === error) return prev;
+      const next = { ...(prev || {}) };
+      if (error) next[id] = error;
+      else delete next[id];
+      return next;
+    });
+    if (!stickerNumber) return;
+    const patchSticker = (o) => {
+      if (!o) return o;
+      if (String(o.orderId ?? o.order_id ?? '') !== id) return o;
+      const cur = String(o.assemblyStickerNumber ?? o.assembly_sticker_number ?? '').trim();
+      if (cur === stickerNumber) return o;
+      return { ...o, assemblyStickerNumber: stickerNumber, assembly_sticker_number: stickerNumber };
+    };
+    setAssemblyOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
+    setCollectedOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
+    setCurrentOrderData((prev) => {
+      if (!prev?.order) return prev;
+      const nextOrder = patchSticker(prev.order);
+      return nextOrder === prev.order ? prev : { ...prev, order: nextOrder };
+    });
+  }, []);
+
+  /** Кнопка с часами: принудительно запросить этикетку и стикер (WB — заодно дотолкнуть поставку). */
+  const refreshOrderSticker = useCallback(
+    async (orderId) => {
+      const id = String(orderId ?? '').trim();
+      if (!id || stickerRefreshingId) return;
+      setStickerRefreshingId(id);
+      try {
+        const r = await api.post(`/orders/${encodeURIComponent(id)}/label/refresh`, {}, { timeout: 90000 });
+        const payload = r?.data?.data ?? r?.data ?? {};
+        applyLabelStatus(id, payload);
+        labelCheckedAtRef.current.set(id, Date.now());
+        if (!payload.stickerNumber && payload.error) {
+          setLabelPrintError(`Стикер не получен: ${payload.error}`);
+          setTimeout(() => setLabelPrintError(null), 12000);
+        }
+      } catch (err) {
+        const msg = err?.response?.data?.message || err?.message || 'Не удалось обновить стикер';
+        setLabelErrorByOrderId((prev) => ({ ...(prev || {}), [id]: msg }));
+        setLabelPrintError(`Стикер не получен: ${msg}`);
+        setTimeout(() => setLabelPrintError(null), 12000);
+      } finally {
+        setStickerRefreshingId('');
+      }
+    },
+    [applyLabelStatus, stickerRefreshingId]
+  );
+
   // Фоновая проверка: показываем иконку печати только если файл этикетки уже кэширован на сервере.
   useEffect(() => {
     const ordersById = new Map();
@@ -575,7 +647,8 @@ export function Assembly() {
     const toFetch = [];
     for (const [id, o] of ordersById) {
       const needSticker = ozonStickerMissing(o) && !stickerFetchTriedRef.current.has(id);
-      if (labelReadyByOrderId?.[id] === true && !needSticker) continue;
+      const noSticker = isAssemblyLikeStatus(o.status) && !orderHasAssemblySticker(o);
+      if (labelReadyByOrderId?.[id] === true && !needSticker && !noSticker) continue;
       if (!needSticker && now - (labelCheckedAtRef.current.get(id) || 0) < LABEL_RECHECK_MS) continue;
       toFetch.push(id);
     }
@@ -594,32 +667,8 @@ export function Assembly() {
           signal: ac.signal,
         });
         stickerFetchTriedRef.current.add(id);
-        const payload = r?.data?.data ?? r?.data ?? {};
-        const exists = payload.exists === true;
-        const stickerNumber =
-          payload.stickerNumber != null && String(payload.stickerNumber).trim() !== ''
-            ? String(payload.stickerNumber).trim()
-            : null;
         if (cancelled) return;
-        if (exists) {
-          setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
-        }
-        if (stickerNumber) {
-          const patchSticker = (o) => {
-            if (!o) return o;
-            if (String(o.orderId ?? o.order_id ?? '') !== id) return o;
-            const cur = String(o.assemblyStickerNumber ?? o.assembly_sticker_number ?? '').trim();
-            if (cur === stickerNumber) return o;
-            return { ...o, assemblyStickerNumber: stickerNumber, assembly_sticker_number: stickerNumber };
-          };
-          setAssemblyOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
-          setCollectedOrders((prev) => (Array.isArray(prev) ? prev.map(patchSticker) : prev));
-          setCurrentOrderData((prev) => {
-            if (!prev?.order) return prev;
-            const nextOrder = patchSticker(prev.order);
-            return nextOrder === prev.order ? prev : { ...prev, order: nextOrder };
-          });
-        }
+        applyLabelStatus(id, r?.data?.data ?? r?.data ?? {});
       } catch {
         if (ac.signal.aborted) labelCheckedAtRef.current.delete(id);
         else stickerFetchTriedRef.current.add(id);
@@ -640,7 +689,7 @@ export function Assembly() {
       cancelled = true;
       try { ac.abort(); } catch { /* ignore */ }
     };
-  }, [assemblyOrders, collectedOrders, currentOrderData?.order, labelReadyByOrderId, labelRecheckTick]);
+  }, [assemblyOrders, collectedOrders, currentOrderData?.order, labelReadyByOrderId, labelRecheckTick, applyLabelStatus]);
 
   useEffect(() => {
     const t = setInterval(() => setLabelRecheckTick((n) => n + 1), LABEL_RECHECK_MS);
@@ -1264,6 +1313,11 @@ export function Assembly() {
       setTimeout(() => setLabelPrintError(null), 12000);
       return;
     }
+    if (!orderHasAssemblySticker(o)) {
+      setLabelPrintError(NO_STICKER_MESSAGE);
+      setTimeout(() => setLabelPrintError(null), 12000);
+      return;
+    }
     void runMarkCollectedFlow(marketplace, orderId, o.assemblyStickerNumber ?? o.assembly_sticker_number ?? null, {
       order: o,
       afterSuccess: () => {
@@ -1361,6 +1415,7 @@ export function Assembly() {
         lastAssembledGroup,
         currentOrderAssembled,
         lastCollectedKey,
+        canAssembleGroup: (g) => orderHasAssemblySticker(g.primary, { groupOrders: g.rows }),
       }),
     [
       assemblyTableGroups,
@@ -1704,35 +1759,48 @@ export function Assembly() {
                             <OrderLabelIcon size={20} />
                           </button>
                         )}
-                        <Button
-                          variant="primary"
-                          size="small"
-                          className="assembly-action-btn"
-                          onClick={() => handleManualAssembleFromTable(primary)}
-                          disabled={
-                            isReturnLoading ||
-                            finishScanSubmitting ||
-                            (orderRequiresMarketplaceLabel(primary) &&
-                              labelReadyByOrderId?.[String(primary.orderId)] !== true)
-                          }
-                          title={
+                        {(() => {
+                          const pidStr = String(primary.orderId);
+                          const labelMissing =
                             orderRequiresMarketplaceLabel(primary) &&
-                            labelReadyByOrderId?.[String(primary.orderId)] !== true
-                              ? labelNotReadyAssemblyMessage(primary.marketplace)
-                              : 'Собрать — отметить заказ собранным без сканирования и напечатать этикетку'
+                            labelReadyByOrderId?.[pidStr] !== true;
+                          const stickerMissing = !orderHasAssemblySticker(primary, { groupOrders: rows });
+                          if (!labelMissing && !stickerMissing) {
+                            return (
+                              <Button
+                                variant="primary"
+                                size="small"
+                                className="assembly-action-btn"
+                                onClick={() => handleManualAssembleFromTable(primary)}
+                                disabled={isReturnLoading || finishScanSubmitting}
+                                title="Собрать — отметить заказ собранным без сканирования и напечатать этикетку"
+                                aria-label="Собрать"
+                              >
+                                <AssemblyCheckIcon />
+                              </Button>
+                            );
                           }
-                          aria-label={
-                            orderRequiresMarketplaceLabel(primary) &&
-                            labelReadyByOrderId?.[String(primary.orderId)] !== true
-                              ? 'Ожидание этикетки'
-                              : 'Собрать'
-                          }
-                        >
-                          {orderRequiresMarketplaceLabel(primary) &&
-                          labelReadyByOrderId?.[String(primary.orderId)] !== true
-                            ? <AssemblyWaitIcon />
-                            : <AssemblyCheckIcon />}
-                        </Button>
+                          const refreshing = stickerRefreshingId === pidStr;
+                          const reason = labelErrorByOrderId?.[pidStr];
+                          const base = labelMissing
+                            ? labelNotReadyAssemblyMessage(primary.marketplace)
+                            : NO_STICKER_MESSAGE;
+                          return (
+                            <Button
+                              variant="primary"
+                              size="small"
+                              className={`assembly-action-btn assembly-action-btn--wait${
+                                refreshing ? ' assembly-action-btn--spinning' : ''
+                              }`}
+                              onClick={() => refreshOrderSticker(pidStr)}
+                              disabled={refreshing || Boolean(stickerRefreshingId) || isReturnLoading}
+                              title={`${reason ? `Причина: ${reason}\n\n` : ''}${base}\n\nНажмите, чтобы запросить стикер заново.`}
+                              aria-label="Обновить стикер"
+                            >
+                              <AssemblyWaitIcon />
+                            </Button>
+                          );
+                        })()}
                         <Button
                           variant="secondary"
                           size="small"

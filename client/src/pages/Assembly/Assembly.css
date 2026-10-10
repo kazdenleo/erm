@@ -838,3 +838,24 @@ button.assembly-label-link {
   padding: 0;
   line-height: 1;
 }
+
+.assembly-action-btn--wait.btn,
+.assembly-action-btn--wait.btn:hover:not(:disabled) {
+  background: #f59e0b;
+  border-color: #d97706;
+  color: #fff;
+}
+
+.assembly-action-btn--wait.btn:hover:not(:disabled) {
+  background: #d97706;
+}
+
+.assembly-action-btn--spinning svg {
+  animation: assembly-action-spin 1s linear infinite;
+}
+
+@keyframes assembly-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

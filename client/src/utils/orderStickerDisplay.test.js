@@ -1,4 +1,5 @@
 import {
+  orderHasAssemblySticker,
   orderStickerCellValue,
   ozonOrderNumberFromPostingNumber,
   ozonStickerMissing,
@@ -71,5 +72,24 @@ describe('orderStickerCellValue', () => {
         assemblyStickerNumber: '1234567890',
       })
     ).toBe('1234567890');
+  });
+});
+
+describe('orderHasAssemblySticker', () => {
+  test('WB без стикера собирать нельзя, со стикером — можно', () => {
+    const base = { marketplace: 'wildberries', status: 'in_assembly', orderId: '5956322304' };
+    expect(orderHasAssemblySticker(base)).toBe(false);
+    expect(orderHasAssemblySticker({ ...base, assemblyStickerNumber: '1234567890' })).toBe(true);
+  });
+
+  test('Ozon: числовой lower_barcode не считается стикером', () => {
+    const base = { marketplace: 'ozon', status: 'in_assembly', orderId: '74369038-0308-1' };
+    expect(orderHasAssemblySticker({ ...base, assemblyStickerNumber: '302085861110000' })).toBe(false);
+    expect(orderHasAssemblySticker({ ...base, assemblyStickerNumber: 'ii50048401925' })).toBe(true);
+  });
+
+  test('Яндекс и ручные заказы стикер не требуют', () => {
+    expect(orderHasAssemblySticker({ marketplace: 'yandex', orderId: '1' })).toBe(true);
+    expect(orderHasAssemblySticker({ marketplace: 'manual', orderId: '2' })).toBe(true);
   });
 });

@@ -13,6 +13,7 @@ import {
   buildAssemblyOrderItemsFromGroup
 } from '../services/assemblyOrderItems.service.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import { orderHasAssemblySticker, NO_STICKER_ASSEMBLY_MESSAGE } from '../utils/assemblySticker.js';
 import chestnyZnakOps from '../services/chestnyZnakOps.service.js';
 import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
 
@@ -180,7 +181,22 @@ class AssemblyController {
         order = await ordersService.findFirstAssembledByProductId(product.id, {
           marketplace: marketplaceFilter,
           listOrder,
+          requireSticker: true,
         });
+        if (!order) {
+          const withoutSticker = await ordersService.findFirstAssembledByProductId(product.id, {
+            marketplace: marketplaceFilter,
+            listOrder,
+          });
+          if (withoutSticker) {
+            return res.status(409).json({
+              ok: false,
+              code: 'ASSEMBLY_NO_STICKER',
+              orderId: withoutSticker.orderId ?? null,
+              message: `Заказ ${withoutSticker.orderId ?? ''} с этим товаром есть, но без стикера маркетплейса — собирать его нельзя. Обновите стикер кнопкой с часами в строке заказа.`,
+            });
+          }
+        }
       }
       if (!order) {
         if (marketplaceFilter) {
@@ -371,6 +387,15 @@ class AssemblyController {
             ok: false,
             message: e?.message ? `${e.message}. ${hint}` : `Этикетка не готова. ${hint}`
           });
+        }
+      }
+      if (needsMpLabel && !orderHasAssemblySticker(order)) {
+        // ensureLabelFile мог только что сохранить номер — перечитываем заказ.
+        const fresh = await ordersService.getByMarketplaceAndOrderId(marketplace, String(orderId), {
+          profileId: req.user?.profileId ?? null
+        });
+        if (!orderHasAssemblySticker(fresh) && !orderHasAssemblySticker({ ...order, assemblyStickerNumber: stickerNumber })) {
+          return res.status(409).json({ ok: false, code: 'ASSEMBLY_NO_STICKER', message: NO_STICKER_ASSEMBLY_MESSAGE });
         }
       }
       if (!config.auth?.disabled && !req.user?.id) {

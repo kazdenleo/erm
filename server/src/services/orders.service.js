@@ -59,6 +59,7 @@ import {
 } from './sellableQuantity.service.js';
 import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurementStatus.js';
 import { assemblyListOrderIndex, pickFirstByAssemblyListOrder } from '../utils/assemblyListOrder.js';
+import { orderHasAssemblySticker } from '../utils/assemblySticker.js';
 import logger from '../utils/logger.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import {
@@ -5073,7 +5074,8 @@ class OrdersService {
    * @param {number|string} productId
    * @param {{ marketplace?: string|null, listOrder?: Array<{ marketplace: string, orderId: string }> }} [options]
    *   marketplace — фильтр UI (ozon|wildberries|yandex|all);
-   *   listOrder — порядок строк таблицы «Сборка»: берём первый заказ из неё, иначе created_at DESC
+   *   listOrder — порядок строк таблицы «Сборка»: берём первый заказ из неё, иначе created_at DESC;
+   *   requireSticker — пропускать заказы без стикера маркетплейса
    * @returns {Promise<object|null>} заказ или null
    */
   async findFirstAssembledByProductId(productId, options = {}) {
@@ -5081,8 +5083,9 @@ class OrdersService {
     const marketplaces = this.normalizeAssemblyMarketplaceFilter(options.marketplace);
     const repoOpts = marketplaces ? { marketplaces } : {};
     const listOrder = assemblyListOrderIndex(options.listOrder);
-    if (repositoryFactory.isUsingPostgreSQL() && listOrder.size > 0) {
-      const candidates = await this.repository.findAllAssembledByProductIdOrSku(productId, repoOpts);
+    const requireSticker = options.requireSticker === true;
+    if (repositoryFactory.isUsingPostgreSQL() && (listOrder.size > 0 || requireSticker)) {
+      let candidates = await this.repository.findAllAssembledByProductIdOrSku(productId, repoOpts);
       const pid = Number(productId);
       if (Number.isFinite(pid) && pid > 0) {
         const kitsRes = await query(
@@ -5096,6 +5099,7 @@ class OrdersService {
           );
         }
       }
+      if (requireSticker) candidates = candidates.filter(orderHasAssemblySticker);
       return pickFirstByAssemblyListOrder(candidates, listOrder);
     }
     if (repositoryFactory.isUsingPostgreSQL()) {

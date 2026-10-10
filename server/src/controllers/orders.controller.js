@@ -1186,6 +1186,19 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     }
   }
 
+  async refreshLabel(req, res, next) {
+    try {
+      const { orderId } = req.params;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const order = await ordersLabelsService.findOrderById(orderId);
+      const status = await ordersLabelsService.refreshLabel(order, { organizationId });
+      return res.status(200).json({ ok: true, data: status });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async preloadLabels(req, res, next) {
     try {
       const data = await readData('orders');
