@@ -195,8 +195,6 @@ function orderRequiresMarketplaceLabel(order) {
   return mp === 'ozon' || mp === 'wildberries' || mp === 'yandex';
 }
 
-const FILTER_RESET_MESSAGE = 'Фильтр маркетплейса изменён — текущая сборка сброшена';
-
 const NO_STICKER_MESSAGE =
   'У заказа нет стикера маркетплейса — собирать его нельзя. Обновите стикер кнопкой с часами.';
 
@@ -968,21 +966,15 @@ export function Assembly() {
 
   /** Смена фильтра МП сбрасывает текущую сессию скана, если заказ не подходит. */
   useEffect(() => {
-    if (marketplaceFilter === 'all') {
-      setScanError((prev) => (prev === FILTER_RESET_MESSAGE ? null : prev));
-      return undefined;
-    }
-    if (!currentOrderData?.order) return undefined;
-    if (normMarketplace(currentOrderData.order) === marketplaceFilter) return undefined;
+    if (!currentOrderData?.order) return;
+    if (marketplaceFilter === 'all') return;
+    if (normMarketplace(currentOrderData.order) === marketplaceFilter) return;
     setCurrentOrderData(null);
     setCurrentOrderKey('');
     setScannedQuantities({});
     setPickedQuantities({});
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
-    setScanError(FILTER_RESET_MESSAGE);
-    setTimeout(() => setScanError((prev) => (prev === FILTER_RESET_MESSAGE ? null : prev)), 6000);
-    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- реагируем на смену фильтра и ключа заказа
   }, [marketplaceFilter, currentOrderKey]);
 
