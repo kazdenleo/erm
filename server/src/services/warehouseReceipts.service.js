@@ -330,6 +330,7 @@ class WarehouseReceiptsService {
         supplierId: scope.supplierId,
         organizationId: scope.organizationId,
         documentType: 'receipt',
+        warehouseId: whId,
       });
       if (!receipt) throw new Error('Не удалось создать приёмку');
 
@@ -630,6 +631,7 @@ class WarehouseReceiptsService {
       supplierId: scope.supplierId,
       organizationId: scope.organizationId,
       documentType: 'return',
+      warehouseId: whId,
     });
     if (!receipt) throw new Error('Не удалось создать возвратную накладную');
 
@@ -711,6 +713,7 @@ class WarehouseReceiptsService {
       supplierId: null,
       organizationId: scope.organizationId,
       documentType: 'customer_return',
+      warehouseId: whId,
     });
     if (!receipt) throw new Error('Не удалось создать документ возврата от клиента');
 
@@ -1408,6 +1411,7 @@ class WarehouseReceiptsService {
     await this.receiptsRepo.updateHeader(numId, {
       supplierId: scope.supplierId,
       organizationId: scope.organizationId,
+      warehouseId: whId,
     });
     await this.receiptsRepo.deleteLines(numId);
 
