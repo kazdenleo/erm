@@ -1119,6 +1119,21 @@ class SchedulerService {
         logger.info('[Scheduler] WB new-orders poll disabled (ORDERS_WB_NEW_POLL_ENABLED)');
       }
 
+      const wbSupplyPushRetryCron = '*/3 * * * *';
+      const wbSupplyPushRetryJob = cron.schedule(
+        wbSupplyPushRetryCron,
+        async () => {
+          try {
+            const { default: shipmentsService } = await import('./shipments.service.js');
+            const out = await shipmentsService.retryFailedWildberriesSupplyPushes();
+            if (out.length) logger.info('[Scheduler] WB supply push retry', { results: out });
+          } catch (e) {
+            logger.warn('[Scheduler] WB supply push retry failed:', e?.message || e);
+          }
+        },
+        { scheduled: false, timezone: 'Europe/Moscow' }
+      );
+
       let supplierStocksSyncJob = null;
       const supplierStocksCron = getSupplierStocksSyncCronExpression();
       if (isSupplierStocksSyncEnabled()) {
@@ -1622,6 +1637,14 @@ class SchedulerService {
         });
       }
 
+      this.jobs.push({
+        name: 'wb-supply-push-retry',
+        job: wbSupplyPushRetryJob,
+        schedule: wbSupplyPushRetryCron,
+        description:
+          'Повтор добавления заказов в поставку WB для открытых отгрузок, не ушедших из-за 429/сбоя WB (без поставки нет этикеток).'
+      });
+
       if (supplierStocksSyncJob) {
         this.jobs.push({
           name: 'supplier-stocks-sync',
@@ -1738,6 +1761,7 @@ class SchedulerService {
       if (ordersWbNewPollJob) {
         ordersWbNewPollJob.start();
       }
+      wbSupplyPushRetryJob.start();
       if (supplierStocksSyncJob) {
         supplierStocksSyncJob.start();
       }

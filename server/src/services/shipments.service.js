@@ -512,6 +512,7 @@ async function syncWildberriesShipmentToMarketplace(
   if (!push.ok) {
     ship.localWbOnly = true;
     ship.wbLastSyncError = push.message || 'Не удалось добавить заказы в поставку WB';
+    ship._lastWbPush = push;
     await saveLocalShipments(shipments);
     const err = new Error(ship.wbLastSyncError);
     err.statusCode = push.statusCode || 409;
@@ -521,6 +522,8 @@ async function syncWildberriesShipmentToMarketplace(
 
   ship.localWbOnly = false;
   delete ship.wbLastSyncError;
+  delete ship._lastWbPush;
+  delete ship.wbPushRetries;
 
   let stickerApplied = false;
   if (ship.closed && ship.externalId) {
@@ -541,6 +544,58 @@ async function syncWildberriesShipmentToMarketplace(
     push,
     stickerApplied,
   };
+}
+
+const WB_PUSH_RETRY_MAX = 24;
+const WB_PUSH_RETRY_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+function isRetryableWbPushFailure(ship) {
+  const status = ship?._lastWbPush?.statusCode;
+  if (status === 429 || status === 'network') return true;
+  if (typeof status === 'number' && status >= 500) return true;
+  return status == null && /\(429\)/.test(String(ship?.wbLastSyncError || ''));
+}
+
+/**
+ * Открытые WB-отгрузки, заказы которых не попали в поставку WB из-за лимита/сбоя WB.
+ * Без поставки WB не выдаёт этикетки заказов — повторяем отправку в фоне.
+ * 409 (заказ в другой поставке / неподходящий статус) не повторяем — нужен человек.
+ */
+async function retryFailedWildberriesSupplyPushes() {
+  const now = Date.now();
+  const shipments = await getLocalShipments();
+  const candidates = shipments.filter(
+    (s) =>
+      (s.marketplace === 'wildberries' || s.marketplace === 'wb') &&
+      !s.closed &&
+      s.localWbOnly === true &&
+      Array.isArray(s.orderIds) &&
+      s.orderIds.length > 0 &&
+      (Number(s.wbPushRetries) || 0) < WB_PUSH_RETRY_MAX &&
+      now - new Date(s.createdAt || 0).getTime() < WB_PUSH_RETRY_MAX_AGE_MS &&
+      isRetryableWbPushFailure(s)
+  );
+  const results = [];
+  for (const cand of candidates) {
+    const all = await getLocalShipments();
+    const ship = all.find((s) => s.id === cand.id);
+    if (!ship) continue;
+    ship.wbPushRetries = (Number(ship.wbPushRetries) || 0) + 1;
+    await saveLocalShipments(all);
+    try {
+      await syncWildberriesShipmentToMarketplace(ship.id, {
+        profileId: ship.profileId ?? null,
+        organizationId: ship.organizationId ?? null,
+      });
+      logger.info(`[Shipments WB] retry push ok: ${ship.id} (${ship.externalId || '—'}), orders=${ship.orderIds.length}`);
+      results.push({ id: ship.id, ok: true });
+    } catch (e) {
+      logger.warn(`[Shipments WB] retry push failed: ${ship.id} attempt=${ship.wbPushRetries}: ${e?.message || e}`);
+      results.push({ id: ship.id, ok: false, statusCode: e?.statusCode ?? null });
+      if (e?.statusCode === 429) break;
+    }
+  }
+  return results;
 }
 
 async function fetchWBSupplies(config) {
@@ -1499,6 +1554,8 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
       if (push.ok) {
         ship.localWbOnly = false;
         delete ship.wbLastSyncError;
+        delete ship._lastWbPush;
+        delete ship.wbPushRetries;
       } else {
         ship.localWbOnly = true;
         ship.wbLastSyncError = push.message || 'Не удалось добавить заказы в поставку WB';
@@ -2142,6 +2199,7 @@ const shipmentsService = {
   closeShipment,
   reapplyStockForShipment,
   syncWildberriesShipmentToMarketplace,
+  retryFailedWildberriesSupplyPushes,
   getQrStickerFilePath,
   pruneExpiredClosedWbShipments,
   wbClosedShipmentRetentionDays,
