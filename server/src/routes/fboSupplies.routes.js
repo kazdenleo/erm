@@ -101,6 +101,10 @@ router.get(
   '/:id/packing/cargo-labels/print',
   wrapAsync(fboSuppliesController.printCargoLabels.bind(fboSuppliesController))
 );
+router.get(
+  '/:id/packing/ym-cargo-labels',
+  wrapAsync(fboSuppliesController.downloadYmCargoLabels.bind(fboSuppliesController))
+);
 router.patch(
   '/:id/packing/contents/:contentId',
   wrapAsync(fboSuppliesController.packingUpdateContent.bind(fboSuppliesController))

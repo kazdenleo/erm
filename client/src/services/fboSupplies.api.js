@@ -38,6 +38,34 @@ function parseApiErrorPayload(error, fallback = 'Ошибка запроса') {
   return data?.message || data?.error || error?.message || fallback;
 }
 
+function openPdfForPrint(buffer, filename) {
+  const blob = new Blob([buffer], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, '_blank');
+  if (!w) {
+    // Окно печати после долгого запроса блокируется браузером — отдаём PDF файлом.
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } else {
+    w.addEventListener('load', () => {
+      setTimeout(() => {
+        try {
+          w.focus();
+          w.print();
+        } catch {
+          /* ignore */
+        }
+      }, 500);
+    });
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return { ok: true, opened: Boolean(w) };
+}
+
 export const fboSuppliesApi = {
   purchaseCalculation: async (supplyIds) => {
     const response = await api.post('/fbo-supplies/purchase-calculation', {
@@ -362,31 +390,21 @@ export const fboSuppliesApi = {
     } catch (e) {
       throw new Error(parseApiErrorPayload(e, 'Не удалось получить этикетки грузомест'));
     }
-    const blob = new Blob([buffer], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const w = window.open(url, '_blank');
-    if (!w) {
-      // Окно печати после долгого запроса блокируется браузером — отдаём PDF файлом.
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cargo-labels-${id}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } else {
-      w.addEventListener('load', () => {
-        setTimeout(() => {
-          try {
-            w.focus();
-            w.print();
-          } catch {
-            /* ignore */
-          }
-        }, 500);
+    return openPdfForPrint(buffer, `cargo-labels-${id}.pdf`);
+  },
+
+  printYmCargoLabels: async (id) => {
+    let buffer;
+    try {
+      const response = await api.get(`/fbo-supplies/${id}/packing/ym-cargo-labels`, {
+        responseType: 'arraybuffer',
+        timeout: 180000,
       });
+      buffer = response.data;
+    } catch (e) {
+      throw new Error(parseApiErrorPayload(e, 'Не удалось получить ярлыки грузомест из Маркета'));
     }
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
-    return { ok: true, opened: Boolean(w) };
+    return openPdfForPrint(buffer, `ym-cargo-labels-${id}.pdf`);
   },
 
   syncMarketplaceContent: async (id) => {

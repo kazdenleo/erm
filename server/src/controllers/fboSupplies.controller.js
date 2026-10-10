@@ -13,8 +13,7 @@ import fboSuppliesCollectService from '../services/fboSuppliesCollect.service.js
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
-import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';
-import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
+import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import fboSupplyForecastService from '../services/fboSupplyForecast.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
@@ -866,6 +865,28 @@ class FboSuppliesController {
       return res.send(buffer);
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
+      }
+      next(e);
+    }
+  }
+
+  async downloadYmCargoLabels(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Ярлыки недоступны без привязки к аккаунту' });
+      }
+      const { buffer, contentType } = await fboSuppliesImportService.fetchYmCargoLabelsPdf(id, {
+        profileId: tid,
+      });
+      logPackingAction(req, id, 'labels_print');
+      res.setHeader('Content-Type', contentType || 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="ym_cargo_labels_${id}.pdf"`);
+      return res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 502) {
         return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
       }
       next(e);

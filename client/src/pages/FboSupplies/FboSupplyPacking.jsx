@@ -396,6 +396,24 @@ export function FboSupplyPacking({
     await handlePrintCargoLabels(ids);
   };
 
+  const handlePrintYmLabels = async () => {
+    setPrintingLabels(true);
+    setScanError(null);
+    setScanMsg(null);
+    try {
+      const res = await fboSuppliesApi.printYmCargoLabels(supplyId);
+      setScanMsg(
+        res?.opened === false
+          ? 'Ярлыки грузомест Маркета скачаны файлом PDF.'
+          : 'Ярлыки грузомест Маркета отправлены на печать.'
+      );
+    } catch (err) {
+      setScanError(err.message || 'Не удалось получить ярлыки грузомест из Маркета');
+    } finally {
+      setPrintingLabels(false);
+    }
+  };
+
   const handleDeleteCargo = async (cargoUnitId, e) => {
     e?.stopPropagation?.();
     if (!window.confirm('Удалить грузоместо и весь его состав?')) return;
@@ -423,6 +441,7 @@ export function FboSupplyPacking({
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
   const isOzon = marketplace !== 'wb' && marketplace !== 'ym' && marketplace !== 'yandex';
+  const isYm = marketplace === 'ym' || marketplace === 'yandex';
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
   const activePlacementSummary =
@@ -484,6 +503,14 @@ export function FboSupplyPacking({
                 ) : null}{' '}
                 (+1 шт. за скан).
                 Для следующей коробки нажмите <strong>«Новое грузоместо»</strong> и отсканируйте её штрихкод.
+                {isYm ? (
+                  <>
+                    {' '}
+                    Ярлыки грузомест Маркет создаёт только в кабинете: страница поставки →{' '}
+                    <strong>«Ярлыки для грузомест»</strong> → «Создать» (не позже чем за 3 ч до поставки). Затем
+                    нажмите <strong>«Ярлыки Маркета»</strong>, чтобы распечатать их отсюда.
+                  </>
+                ) : null}
               </>
             )
           }
@@ -559,6 +586,17 @@ export function FboSupplyPacking({
                 {printingLabels ? 'Этикетки…' : 'Печать этикеток'}
               </Button>
             </>
+          ) : null}
+          {isYm ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={scanLoading || printingLabels}
+              onClick={handlePrintYmLabels}
+              title="Скачать ярлыки грузомест, созданные в кабинете Маркета, и отправить на печать"
+            >
+              {printingLabels ? 'Ярлыки…' : 'Ярлыки Маркета'}
+            </Button>
           ) : null}
           <Button
             type="button"

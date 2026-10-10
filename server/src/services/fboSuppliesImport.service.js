@@ -3678,6 +3678,94 @@ class FboSuppliesImportService {
 
     return { orderId, supplyId: ozonSupplyId, order, ozonSupply };
   }
+
+  /**
+   * PDF ярлыков грузомест заявки FBY (документ CARGO_UNITS).
+   * Сгенерировать ярлыки через API Маркета нельзя — только забрать созданные в кабинете.
+   */
+  async fetchYmCargoLabelsPdf(supplyId, { profileId } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, {
+      profileId,
+      skipReserveEnrichment: true,
+      skipPackingEval: true,
+    });
+    const mp = String(supply.marketplace || '').trim().toLowerCase();
+    if (mp !== 'ym' && !mp.includes('yandex')) {
+      const err = new Error('Ярлыки грузомест Маркета доступны только для поставок Яндекс.Маркета');
+      err.statusCode = 400;
+      throw err;
+    }
+    const ymConfig = await integrationsService.getMarketplaceConfig('yandex', {
+      profileId,
+      organizationId: supply.organizationId ?? null,
+    });
+    const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
+    if (!apiKey || !ymApiKeyHeader(apiKey)) {
+      const err = new Error('Не настроен API-ключ Яндекс.Маркета для организации поставки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const hit = await resolveYmSupplyRequestForErmSupply(supply, { profileId });
+    if (!hit?.req) {
+      const err = new Error(
+        'Заявка не найдена в Яндекс.Маркете — проверьте номер отгрузки / ID поставки в карточке'
+      );
+      err.statusCode = 404;
+      throw err;
+    }
+    const requestId = Number(hit.req.id?.id ?? hit.req.id ?? hit.req.requestId);
+    if (!Number.isFinite(requestId) || requestId <= 0) {
+      const err = new Error('Маркет не вернул ID заявки на поставку');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const docsData = await ymRequest(
+      `/v2/campaigns/${encodeURIComponent(String(hit.campaignId))}/supply-requests/documents`,
+      { apiKey, method: 'POST', body: { requestId } }
+    );
+    const docs = docsData?.result?.documents ?? docsData?.documents ?? [];
+    const labelDocs = docs
+      .filter((d) => String(d?.type || '').toUpperCase() === 'CARGO_UNITS' && d?.url)
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    if (!labelDocs.length) {
+      const err = new Error(
+        'В Маркете ещё нет ярлыков грузомест для этой заявки. Создайте их в кабинете: страница поставки → «Ярлыки для грузомест» → «Создать», затем повторите.'
+      );
+      err.statusCode = 404;
+      err.code = 'YM_CARGO_LABELS_NOT_CREATED';
+      throw err;
+    }
+
+    const docUrl = labelDocs[0].url;
+    const agent = getYandexHttpsAgent();
+    const download = async (withKey) => {
+      try {
+        return await fetch(docUrl, {
+          headers: withKey ? { 'Api-Key': ymApiKeyHeader(apiKey) } : {},
+          ...(agent && { agent }),
+        });
+      } catch (e) {
+        throw new Error(formatYandexNetworkError(e, docUrl));
+      }
+    };
+    let response = await download(false);
+    if (response.status === 401 || response.status === 403) {
+      response = await download(true);
+    }
+    if (!response.ok) {
+      const err = new Error(`Не удалось скачать ярлыки грузомест из Маркета (HTTP ${response.status})`);
+      err.statusCode = 502;
+      throw err;
+    }
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get('content-type') || 'application/pdf',
+      createdAt: labelDocs[0].createdAt ?? null,
+      requestId,
+    };
+  }
 }
 
 export default new FboSuppliesImportService();
