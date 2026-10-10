@@ -1530,6 +1530,7 @@ export function Assembly() {
               overlay={sideScanOverlay}
               mpDisplay={mpDisplay}
               emptyText="Соберите заказ — он появится здесь"
+              showPacking
               stickerAction={
                 sideLabelOrderId && labelReadyByOrderId?.[sideLabelOrderId] === true ? (
                   <button
@@ -1617,10 +1618,10 @@ export function Assembly() {
             <thead>
               <tr>
                 <th>Маркетплейс</th>
+                <th>Состав</th>
                 <th className="assembly-col-order-id">ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
-                <th>Состав</th>
                 <th className="assembly-col-sticker">Стикер</th>
                 <th>Действия</th>
               </tr>
@@ -1638,6 +1639,9 @@ export function Assembly() {
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
+                    <td className="assembly-col-composition">
+                      <AssemblyCompositionCell rows={rows} />
+                    </td>
                     <td className="assembly-col-order-id">
                       <Link
                         to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(apiOrderId || primary.orderId)}`}
@@ -1672,9 +1676,6 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
-                    <td className="assembly-col-composition">
-                      <AssemblyCompositionCell rows={rows} />
-                    </td>
                     <td className="assembly-col-sticker">
                       <OrderStickerDisplay order={primary} groupOrders={rows} />
                     </td>
@@ -1779,10 +1780,10 @@ export function Assembly() {
             <thead>
               <tr>
                 <th>Маркетплейс</th>
+                <th>Состав</th>
                 <th className="assembly-col-order-id">ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
-                <th>Состав</th>
                 <th>Собран</th>
                 <th>Собрал</th>
                 <th className="assembly-col-sticker">Стикер</th>
@@ -1810,6 +1811,9 @@ export function Assembly() {
                 return (
                   <tr key={groupKey}>
                     <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : mp}</td>
+                    <td className="assembly-col-composition">
+                      <AssemblyCompositionCell rows={rows} />
+                    </td>
                     <td className="assembly-col-order-id">
                       <Link
                         to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(stickerOrderId)}`}
@@ -1842,9 +1846,6 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
-                    <td className="assembly-col-composition">
-                      <AssemblyCompositionCell rows={rows} />
-                    </td>
                     <td>{assembledLabel}</td>
                     <td>{who}</td>
                     <td className="assembly-col-sticker">

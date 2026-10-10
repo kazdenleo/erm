@@ -25,14 +25,19 @@ function KindBadge({ kind }) {
   );
 }
 
-function HintLine({ article, quantity, stockLabel, remaining = null }) {
+function HintLine({ article, quantity, stockLabel, remaining = null, packing = null, kit = false }) {
   return (
-    <div className="assembly-hint-line">
+    <div className={`assembly-hint-line${kit ? ' assembly-hint-line--kit' : ''}`}>
       <span className="assembly-hint-line__left">
         <span className="assembly-next__sku">
           {article}
           {quantity > 0 ? <span className="assembly-next__qty">×{quantity}</span> : null}
         </span>
+        {packing ? (
+          <span className="assembly-hint-line__packing" title="Упаковка">
+            {packing}
+          </span>
+        ) : null}
         {remaining != null ? (
           <span
             className={`assembly-hint-line__remaining${
@@ -90,65 +95,85 @@ export function AssemblyHintCard({
   }
 
   const overlaySafe = overlay || { kitScanned: 0, byPid: new Map() };
-  const merged = mergeComponentStock(recommendation.components, hintStock?.components);
-  const packing = String(recommendation.packingDisplayValue ?? '').trim();
+  const items =
+    Array.isArray(recommendation.items) && recommendation.items.length > 0
+      ? recommendation.items
+      : [recommendation];
+  const multi = items.length > 1;
+  const packingValues = Array.isArray(recommendation.packingValues)
+    ? recommendation.packingValues
+    : [String(recommendation.packingDisplayValue ?? '').trim()].filter(Boolean);
+  // Разная упаковка у позиций — подписываем её у каждого комплекта, иначе легко упаковать не так.
+  const packingPerItem = showPacking && packingValues.length > 1;
   const mp = mpDisplay?.(recommendation.order.marketplace);
   const orderNo =
     marketplaceOrderIdForApi(recommendation.rows, recommendation.order.marketplace) ||
     recommendation.order.orderId;
+  const title = multi ? items.map((i) => i.productName).join(' + ') : recommendation.productName;
+
+  const renderItem = (item, idx) => {
+    const isPrimary = Number(item.productId) === Number(recommendation.productId);
+    const itemStock = isPrimary ? hintStock : null;
+    const merged = mergeComponentStock(item.components, hintStock?.components);
+    return (
+      <React.Fragment key={item.key || idx}>
+        <HintLine
+          kit={multi}
+          article={item.article}
+          quantity={item.quantity}
+          packing={packingPerItem ? item.packingDisplayValue || '—' : null}
+          remaining={remainingFor(remainingByPid, item.productId)}
+          stockLabel={
+            itemStock
+              ? onShelfLabel({
+                  onShelf: stockOnShelf(itemStock),
+                  scanned: overlaySafe.kitScanned,
+                })
+              : null
+          }
+        />
+        {item.isKit && merged.length > 0 ? (
+          <>
+            <div className="assembly-hint-line assembly-hint-line--section">Комплектующие</div>
+            {merged.map((c, i) => {
+              const pid = Number(c.productId ?? c.product_id ?? c.stock?.productId);
+              const scanned =
+                Number.isFinite(pid) && pid > 0 ? overlaySafe.byPid.get(pid) || 0 : 0;
+              return (
+                <HintLine
+                  key={`${c.article}-${i}`}
+                  article={c.article}
+                  quantity={c.quantity}
+                  remaining={remainingFor(remainingByPid, pid)}
+                  stockLabel={
+                    c.stock
+                      ? onShelfLabel({
+                          onShelf: stockOnShelf(c.stock),
+                          scanned,
+                        })
+                      : null
+                  }
+                />
+              );
+            })}
+          </>
+        ) : null}
+      </React.Fragment>
+    );
+  };
 
   return (
     <div className="assembly-hint-card">
       {header}
       <div className="assembly-next__name-row">
-        <span className="assembly-next__name" title={recommendation.productName}>
-          {recommendation.productName}
+        <span className="assembly-next__name" title={title}>
+          {title}
         </span>
         <KindBadge kind={recommendation.isKit ? 'Комплект' : 'Товар'} />
       </div>
       <div className="assembly-hint-cols">
         <div className="assembly-hint-cols__goods">
-          <div className="assembly-hint-lines">
-            <HintLine
-              article={recommendation.article}
-              quantity={recommendation.quantity}
-              remaining={remainingFor(remainingByPid, recommendation.productId)}
-              stockLabel={
-                hintStock
-                  ? onShelfLabel({
-                      onShelf: stockOnShelf(hintStock),
-                      scanned: overlaySafe.kitScanned,
-                    })
-                  : null
-              }
-            />
-            {recommendation.isKit && merged.length > 0 ? (
-              <>
-                <div className="assembly-hint-line assembly-hint-line--section">Комплектующие</div>
-                {merged.map((c, i) => {
-                  const pid = Number(c.productId ?? c.product_id ?? c.stock?.productId);
-                  const scanned =
-                    Number.isFinite(pid) && pid > 0 ? overlaySafe.byPid.get(pid) || 0 : 0;
-                  return (
-                    <HintLine
-                      key={`${c.article}-${i}`}
-                      article={c.article}
-                      quantity={c.quantity}
-                      remaining={remainingFor(remainingByPid, pid)}
-                      stockLabel={
-                        c.stock
-                          ? onShelfLabel({
-                              onShelf: stockOnShelf(c.stock),
-                              scanned,
-                            })
-                          : null
-                      }
-                    />
-                  );
-                })}
-              </>
-            ) : null}
-          </div>
+          <div className="assembly-hint-lines">{items.map(renderItem)}</div>
         </div>
         <dl className="assembly-hint-cols__order">
           <div className="assembly-hint-meta">
@@ -177,7 +202,15 @@ export function AssemblyHintCard({
           {showPacking ? (
             <div className="assembly-hint-meta">
               <dt>Упаковка</dt>
-              <dd>{packing || '—'}</dd>
+              <dd>
+                {packingPerItem ? (
+                  <span className="assembly-hint-meta__packing-warn">
+                    разная: {packingValues.join(', ')}
+                  </span>
+                ) : (
+                  packingValues[0] || '—'
+                )}
+              </dd>
             </div>
           ) : null}
         </dl>

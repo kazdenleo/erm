@@ -191,6 +191,62 @@ describe('buildAssemblyNextRecommendation', () => {
     expect(hint.packingDisplayValue).toBe('');
   });
 
+  test('два разных комплекта в заказе — позиции со своей упаковкой', () => {
+    const kitA = {
+      orderId: '5',
+      marketplace: 'ozon',
+      productId: 50,
+      productName: 'Щётки 600/450',
+      offerId: 'K601',
+      quantity: 1,
+      isKit: true,
+      packingDisplayValue: 'Пакет',
+      assemblyCompositionLines: [
+        { article: 'K-600', productId: 501, quantity: 1 },
+        { article: 'K-450', productId: 502, quantity: 1 },
+      ],
+    };
+    const kitB = {
+      ...kitA,
+      productId: 60,
+      productName: 'Щётки 650/350',
+      offerId: 'K650',
+      packingDisplayValue: 'Коробка',
+      assemblyCompositionLines: [
+        { article: 'K-650', productId: 601, quantity: 1 },
+        { article: 'K-350', productId: 602, quantity: 1 },
+      ],
+    };
+    const hint = buildAssemblyNextRecommendation({ key: 'ozon|o:5', rows: [kitA, kitB], primary: kitA });
+    expect(hint.items.map((i) => [i.article, i.packingDisplayValue, i.components.length])).toEqual([
+      ['K601', 'Пакет', 2],
+      ['K650', 'Коробка', 2],
+    ]);
+    expect(hint.packingValues).toEqual(['Пакет', 'Коробка']);
+  });
+
+  test('одинаковые комплекты в заказе склеиваются в одну позицию', () => {
+    const row = {
+      orderId: '6',
+      marketplace: 'ozon',
+      productId: 70,
+      productName: 'Комплект',
+      offerId: 'K70',
+      quantity: 1,
+      isKit: true,
+      packingDisplayValue: 'Пакет',
+      assemblyCompositionLines: [
+        { article: 'A', productId: 701, quantity: 1 },
+        { article: 'B', productId: 702, quantity: 1 },
+      ],
+    };
+    const hint = buildAssemblyNextRecommendation({ key: 'ozon|o:6', rows: [row, { ...row }], primary: row });
+    expect(hint.items).toHaveLength(1);
+    expect(hint.items[0].quantity).toBe(2);
+    expect(hint.items[0].components.map((c) => c.quantity)).toEqual([2, 2]);
+    expect(hint.packingValues).toEqual(['Пакет']);
+  });
+
   test('пустая группа — null', () => {
     expect(buildAssemblyNextRecommendation(null)).toBeNull();
   });
