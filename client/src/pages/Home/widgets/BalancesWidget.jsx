@@ -63,7 +63,7 @@ export function BalancesWidget({ profileId }) {
   const snap = ym?.campaignSnapshot;
 
   return (
-    <div className="card h-100 home-marketplace-balances-card">
+    <div className="card mb-0 home-marketplace-balances-card">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-wallet icon-gradient bg-mean-fruit me-2" />

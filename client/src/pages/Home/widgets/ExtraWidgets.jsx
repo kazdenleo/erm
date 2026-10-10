@@ -36,7 +36,7 @@ export function QuickLinksWidget({ settings, canUse }) {
   const ids = Array.isArray(settings?.links) ? settings.links : DEFAULT_QUICK_LINKS;
   const links = ids.map((id) => QUICK_LINKS.find((l) => l.id === id)).filter((l) => l && canUse(l));
   return (
-    <div className="card mb-0 h-100">
+    <div className="card mb-0">
       <div className="card-header">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-star icon-gradient bg-mean-fruit me-2" />
@@ -91,7 +91,7 @@ export function NoteWidget({ settings, onSettingsChange }) {
   };
 
   return (
-    <div className="card mb-0 h-100">
+    <div className="card mb-0">
       <div className="card-header">
         <div className="card-header-title mb-0">
           <i className="header-icon pe-7s-note icon-gradient bg-mean-fruit me-2" />

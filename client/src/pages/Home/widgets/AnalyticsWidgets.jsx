@@ -53,7 +53,7 @@ function toneOf(n) {
 
 export function KpiCard({ icon, title, period, to, loading, error, onReload, metrics, children }) {
   return (
-    <div className="card mb-0 h-100 home-kpi-card">
+    <div className="card mb-0 home-kpi-card">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
         <div className="card-header-title mb-0">
           <i className={`header-icon ${icon} icon-gradient bg-mean-fruit me-2`} />
