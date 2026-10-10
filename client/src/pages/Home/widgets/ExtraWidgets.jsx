@@ -13,6 +13,7 @@ export const QUICK_LINKS = [
   { id: 'receipts', to: '/stock-levels/warehouse?op=receipts_list', label: 'Приёмка', icon: 'pe-7s-download', sectionKey: 'warehouse_receipts' },
   { id: 'returns', to: '/stock-levels/warehouse?op=return_customer', label: 'Возвраты от клиентов', icon: 'pe-7s-back', sectionKey: 'warehouse_return_customer' },
   { id: 'inventory', to: '/stock-levels/warehouse?op=inventory', label: 'Инвентаризация', icon: 'pe-7s-note', sectionKey: 'warehouse_inventory' },
+  { id: 'suppliers', to: '/suppliers', label: 'Поставщики и взаиморасчёты', icon: 'pe-7s-truck', sectionKey: 'suppliers' },
   { id: 'products', to: '/products', label: 'Товары', icon: 'pe-7s-box1', sectionKey: 'products' },
   { id: 'card_work', to: '/card-work', label: 'Работа с карточками', icon: 'pe-7s-pen', sectionKey: 'card_work' },
   { id: 'prices', to: '/prices', label: 'Цены', icon: 'pe-7s-cash', sectionKey: 'prices' },

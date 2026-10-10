@@ -51,7 +51,7 @@ function toneOf(n) {
   return Number(n) > 0 ? 'good' : 'bad';
 }
 
-function KpiCard({ icon, title, period, to, loading, error, onReload, metrics, children }) {
+export function KpiCard({ icon, title, period, to, loading, error, onReload, metrics, children }) {
   return (
     <div className="card mb-0 h-100 home-kpi-card">
       <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">

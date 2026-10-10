@@ -16,6 +16,7 @@ import {
   ReturnsAnalyticsWidget,
 } from './AnalyticsWidgets';
 import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets';
+import { SupplierSettlementsSettings, SupplierSettlementsWidget } from './SupplierSettlementsWidget';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
 const CHART_HEIGHTS = [
@@ -126,6 +127,15 @@ export const WIDGETS = {
     defaultSize: 'lg',
     adminOnly: true,
     Component: BalancesWidget,
+  },
+  supplier_settlements: {
+    title: 'Взаиморасчёты с поставщиками',
+    description: 'Наш долг и переплаты по поставщикам',
+    group: 'ops',
+    defaultSize: 'md',
+    sectionKey: 'suppliers',
+    Component: SupplierSettlementsWidget,
+    SettingsComponent: SupplierSettlementsSettings,
   },
   pnl: {
     title: 'Прибыль (ОПиУ)',
