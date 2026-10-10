@@ -72,6 +72,7 @@ const PRINT_HELPER_URL_DEFAULT = process.env.REACT_APP_PRINT_HELPER_URL || 'http
 const PRINT_HELPER_FETCH_MS = 90000;
 /** Опрос кэша этикетки на сервере (fallback, если mark-collected не успел скачать). */
 const LABEL_STATUS_POLL_MS = 45000;
+const LABEL_RECHECK_MS = 20000;
 const LABEL_STATUS_POLL_INTERVAL_MS = 400;
 
 const marketplaceLabels = [
@@ -434,6 +435,8 @@ export function Assembly() {
   const printingFlowRef = useRef(false);
   const scanLoadingRef = useRef(false);
   const stickerFetchTriedRef = useRef(new Set());
+  const labelCheckedAtRef = useRef(new Map());
+  const [labelRecheckTick, setLabelRecheckTick] = useState(0);
   orderKeyRef.current = currentOrderKey;
   currentOrderDataRef.current = currentOrderData;
   scannedQuantitiesRef.current = scannedQuantities;
@@ -567,10 +570,13 @@ export function Assembly() {
     if (currentOrderData?.order) addOrder(currentOrderData.order);
 
     // Номер стикера Ozon приходит только из label/status — запрашиваем и при готовой этикетке (один раз).
+    // Каждый статус запускает на сервере загрузку у маркетплейса — не чаще раза в LABEL_RECHECK_MS на заказ.
+    const now = Date.now();
     const toFetch = [];
     for (const [id, o] of ordersById) {
       const needSticker = ozonStickerMissing(o) && !stickerFetchTriedRef.current.has(id);
       if (labelReadyByOrderId?.[id] === true && !needSticker) continue;
+      if (!needSticker && now - (labelCheckedAtRef.current.get(id) || 0) < LABEL_RECHECK_MS) continue;
       toFetch.push(id);
     }
     if (toFetch.length === 0) return;
@@ -581,6 +587,7 @@ export function Assembly() {
     // Ограничим количество параллельных запросов, чтобы не ловить 429 на WB.
     const limit = 12;
     const runChunk = async (id) => {
+      labelCheckedAtRef.current.set(id, Date.now());
       try {
         const r = await api.get(`/orders/${encodeURIComponent(id)}/label/status`, {
           timeout: 15000,
@@ -614,7 +621,8 @@ export function Assembly() {
           });
         }
       } catch {
-        if (!ac.signal.aborted) stickerFetchTriedRef.current.add(id);
+        if (ac.signal.aborted) labelCheckedAtRef.current.delete(id);
+        else stickerFetchTriedRef.current.add(id);
       }
     };
 
@@ -632,7 +640,12 @@ export function Assembly() {
       cancelled = true;
       try { ac.abort(); } catch { /* ignore */ }
     };
-  }, [assemblyOrders, collectedOrders, currentOrderData?.order, labelReadyByOrderId]);
+  }, [assemblyOrders, collectedOrders, currentOrderData?.order, labelReadyByOrderId, labelRecheckTick]);
+
+  useEffect(() => {
+    const t = setInterval(() => setLabelRecheckTick((n) => n + 1), LABEL_RECHECK_MS);
+    return () => clearInterval(t);
+  }, []);
 
   const waitLabelCachedOnServer = useCallback(async (orderId, { maxMs = LABEL_STATUS_POLL_MS } = {}) => {
     const path = `/orders/${encodeURIComponent(orderId)}/label/status`;

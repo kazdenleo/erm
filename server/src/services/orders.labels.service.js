@@ -16,6 +16,7 @@ import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonAssemblyStickerFromPosting, isOzonLabelStickerNumber } from '../utils/ozonPosting.js';
+import { wbBatchPost } from '../utils/wbBatchPost.js';
 
 // Используем централизованную конфигурацию путей
 const DATA_DIR = config.paths.dataDir;
@@ -117,6 +118,12 @@ function keyFp(raw) {
   }
 }
 
+// Фоновая загрузка этикетки по заказу: одна на файл, после неудачи — пауза,
+// иначе опрос статуса со страниц плодит параллельные циклы и WB отвечает 429.
+const backgroundLabelFetches = new Set();
+const backgroundLabelCooldownUntil = new Map();
+const BACKGROUND_LABEL_COOLDOWN_MS = 30_000;
+
 class OrdersLabelsService {
   hasLabelCached(order) {
     try {
@@ -199,55 +206,65 @@ class OrdersLabelsService {
       : null;
     const mp = normalizeMarketplaceForLabel(order?.marketplace);
 
-    if (!exists) {
+    const cooldownUntil = backgroundLabelCooldownUntil.get(filePath) || 0;
+    if (!exists && !backgroundLabelFetches.has(filePath) && cooldownUntil <= Date.now()) {
+      backgroundLabelFetches.add(filePath);
+      backgroundLabelCooldownUntil.delete(filePath);
       // Качаем в фоне, ответ не ждёт. Для WB возможны 409 (этикетка ещё не готова) и 429 (rate limit).
       // Делаем несколько попыток с бэкоффом, чтобы «На сборке» почти всегда прогревало этикетку.
       setTimeout(async () => {
-        const isWB = mp === 'wildberries';
-        const isOzon = mp === 'ozon';
-        const isYandex = mp === 'yandex';
-        const maxAttempts = isWB ? 4 : isOzon ? 3 : isYandex ? 2 : 1;
-        const org = normalizeOrgId(organizationId);
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          try {
-            const out = await fetchMarketplaceLabel(order, { organizationId });
-            const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
-            const sn = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
-            if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
-              fs.writeFileSync(filePath, buf);
-              logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}`);
-            }
+        let ok = false;
+        try {
+          const isWB = mp === 'wildberries';
+          const isOzon = mp === 'ozon';
+          const isYandex = mp === 'yandex';
+          const maxAttempts = isWB ? 4 : isOzon ? 3 : isYandex ? 2 : 1;
+          const org = normalizeOrgId(organizationId);
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-              if (sn != null && String(sn).trim() !== '') {
-                const profileId = order?.profileId ?? order?.profile_id ?? null;
-                await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, sn, profileId);
+              const out = await fetchMarketplaceLabel(order, { organizationId });
+              const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
+              const sn = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
+              if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
+                fs.writeFileSync(filePath, buf);
+                ok = true;
+                logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}`);
               }
-            } catch {
-              /* ignore */
-            }
-            return;
-          } catch (e) {
-            const status = e?.statusCode;
-            logLabelEvent(
-              `Error(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
-            );
-            if (attempt >= maxAttempts) return;
-            const retryable =
-              status === 409 || status === 429 || (isOzon && (status === 502 || status === 504));
-            if (!retryable) return;
-            const delayMs = isOzon
-              ? attempt === 1
-                ? 2000
-                : attempt === 2
+              try {
+                if (sn != null && String(sn).trim() !== '') {
+                  const profileId = order?.profileId ?? order?.profile_id ?? null;
+                  await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, sn, profileId);
+                }
+              } catch {
+                /* ignore */
+              }
+              return;
+            } catch (e) {
+              const status = e?.statusCode;
+              logLabelEvent(
+                `Error(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
+              );
+              if (attempt >= maxAttempts) return;
+              const retryable =
+                status === 409 || status === 429 || (isOzon && (status === 502 || status === 504));
+              if (!retryable) return;
+              const delayMs = isOzon
+                ? attempt === 1
+                  ? 2000
+                  : attempt === 2
+                    ? 5000
+                    : 10000
+                : attempt === 1
                   ? 5000
-                  : 10000
-              : attempt === 1
-                ? 5000
-                : attempt === 2
-                  ? 15000
-                  : 30000;
-            await new Promise((r) => setTimeout(r, delayMs));
+                  : attempt === 2
+                    ? 15000
+                    : 30000;
+              await new Promise((r) => setTimeout(r, delayMs));
+            }
           }
+        } finally {
+          backgroundLabelFetches.delete(filePath);
+          if (!ok) backgroundLabelCooldownUntil.set(filePath, Date.now() + BACKGROUND_LABEL_COOLDOWN_MS);
         }
       }, 0);
     }
@@ -558,19 +575,9 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
       : `Bearer ${tokenClean}`;
     // Не фильтруем по статусу — пробуем запросить этикетку; при недоступности WB API вернёт ошибку.
 
-    async function fetchStickersJson(url) {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        },
-        body: JSON.stringify({ orders: [orderIdNum] })
-      });
-      const text = await resp.text();
-      return { resp, text };
-    }
+    // WB режет поштучные запросы по лимиту (429) — заказы склеиваются в пачки по ключу.
+    const batched = (url, listKey) =>
+      wbBatchPost({ url, authHeader, orderId: orderIdNum, listKey, fetchImpl: fetch, onLog: logLabelEvent });
 
     function extractStickerNumber(sticker) {
       if (!sticker || typeof sticker !== 'object') return null;
@@ -606,65 +613,38 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
       logLabelEvent(`[WB] Invalid orderId for sticker: ${order.orderId}`);
       throw new Error('Некорректный номер заказа');
     }
-    let resp;
-    let text;
-    ({ resp, text } = await fetchStickersJson(urlFbs));
-
-    // WB может отвечать 429 при массовых синхронизациях/ночных задачах.
-    // В этом случае важно прокинуть статус, чтобы клиент не видел "502 Bad Gateway".
-    if (resp.status === 429) {
-      const retryAfter = resp.headers?.get?.('retry-after') || resp.headers?.get?.('Retry-After') || null;
-      const hint = retryAfter ? ` Попробуйте через ${retryAfter} сек.` : ' Подождите и повторите попытку.';
-      logLabelEvent(`[WB] rate limited 429${retryAfter ? ` retry-after=${retryAfter}` : ''}: ${text.substring(0, 300)}`);
-      const err = new Error(`WB: слишком много запросов (429).${hint}`);
-      err.statusCode = 429;
-      throw err;
-    }
-
-    if (!resp.ok) {
-      const org = normalizeOrgId(organizationId);
-      const fp = keyFp(wb.api_key);
-      logLabelEvent(
-        `[WB] label error ${resp.status}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''}: ${text.substring(0, 300)}`
-      );
-      throw new Error(`WB label error ${resp.status}: ${text.substring(0, 200)}`);
-    }
-
-    let json;
+    let fbs;
     try {
-      json = JSON.parse(text);
-    } catch (_) {
-      logLabelEvent(`[WB] stickers response not JSON: ${text.substring(0, 200)}`);
-      throw new Error('WB API вернул не JSON');
+      fbs = await batched(urlFbs, 'stickers');
+    } catch (e) {
+      // 429 прокидываем со статусом, чтобы клиент не видел "502 Bad Gateway".
+      if (e?.statusCode && e.statusCode !== 429) {
+        const org = normalizeOrgId(organizationId);
+        const fp = keyFp(wb.api_key);
+        const body = String(e.responseText || e.message || '');
+        logLabelEvent(
+          `[WB] label error ${e.statusCode}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''}: ${body.substring(0, 300)}`
+        );
+        throw new Error(`WB label error ${e.statusCode}: ${body.substring(0, 200)}`);
+      }
+      throw e;
     }
+    const json = fbs.json;
+    const first = fbs.item;
 
-    const stickers = json?.stickers;
-    if (!Array.isArray(stickers) || stickers.length === 0) {
+    if (!first) {
       // fallback: DBW stickers endpoint
       try {
-        const r2 = await fetchStickersJson(urlDbw);
-        if (r2.resp.status === 429) {
-          const retryAfter = r2.resp.headers?.get?.('retry-after') || r2.resp.headers?.get?.('Retry-After') || null;
-          const hint = retryAfter ? ` Попробуйте через ${retryAfter} сек.` : ' Подождите и повторите попытку.';
-          logLabelEvent(`[WB][DBW] rate limited 429${retryAfter ? ` retry-after=${retryAfter}` : ''}: ${r2.text.substring(0, 300)}`);
-          const err = new Error(`WB: слишком много запросов (429).${hint}`);
-          err.statusCode = 429;
-          throw err;
-        }
-        if (r2.resp.ok) {
-          let j2 = {};
-          try { j2 = r2.text ? JSON.parse(r2.text) : {}; } catch { j2 = {}; }
-          const st2 = j2?.stickers;
-          if (Array.isArray(st2) && st2.length > 0) {
-            const first2 = st2[0];
-            const base64_2 = first2?.file;
-            if (base64_2 && typeof base64_2 === 'string') {
-              return { buffer: Buffer.from(base64_2, 'base64'), stickerNumber: extractStickerNumber(first2) };
-            }
-            logLabelEvent('[WB][DBW] sticker has no file field');
-          } else {
-            logLabelEvent(`[WB][DBW] no stickers: ${(j2?.message || j2?.error || '').toString().substring(0, 150)}`);
+        const r2 = await batched(urlDbw, 'stickers');
+        const first2 = r2.item;
+        if (first2) {
+          const base64_2 = first2?.file;
+          if (base64_2 && typeof base64_2 === 'string') {
+            return { buffer: Buffer.from(base64_2, 'base64'), stickerNumber: extractStickerNumber(first2) };
           }
+          logLabelEvent('[WB][DBW] sticker has no file field');
+        } else {
+          logLabelEvent(`[WB][DBW] no stickers: ${(r2.json?.message || r2.json?.error || '').toString().substring(0, 150)}`);
         }
       } catch (e2) {
         if (e2?.statusCode === 429) throw e2;
@@ -676,40 +656,16 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
       // Попробуем один раз запросить статус заказа, чтобы понять supplierStatus/wbStatus.
       let statusDiag = '';
       try {
-        const stResp = await fetch('https://marketplace-api.wildberries.ru/api/v3/orders/status', {
-          method: 'POST',
-          headers: {
-            Authorization: authHeader,
-            'Content-Type': 'application/json',
-            Accept: 'application/json'
-          },
-          body: JSON.stringify({ orders: [orderIdNum] })
-        });
-        const stText = await stResp.text();
-        if (stResp.ok) {
-          let stJson = {};
-          try { stJson = stText ? JSON.parse(stText) : {}; } catch { stJson = {}; }
-          const list = Array.isArray(stJson?.orders) ? stJson.orders : (Array.isArray(stJson?.data) ? stJson.data : []);
-          const item = Array.isArray(list) ? list.find((x) => Number(x?.id ?? x?.orderId ?? x?.order_id) === orderIdNum) : null;
-          const supplierStatus = item?.supplierStatus ?? item?.supplier_status ?? item?.supplier_status_name ?? null;
-          const wbStatus = item?.wbStatus ?? item?.wb_status ?? null;
-          const codes = Array.isArray(item?.statuses) ? item.statuses.map((s) => s?.code).filter(Boolean) : [];
-          statusDiag = ` status: supplierStatus=${supplierStatus ?? ''} wbStatus=${wbStatus ?? ''} codes=${codes.join(',')}`;
-        } else {
-          statusDiag = ` statusApi=${stResp.status}`;
-        }
-      } catch {
-        /* ignore */
+        const st = await batched('https://marketplace-api.wildberries.ru/api/v3/orders/status', 'orders');
+        const item = st.item;
+        const supplierStatus = item?.supplierStatus ?? item?.supplier_status ?? item?.supplier_status_name ?? null;
+        const wbStatus = item?.wbStatus ?? item?.wb_status ?? null;
+        const codes = Array.isArray(item?.statuses) ? item.statuses.map((s) => s?.code).filter(Boolean) : [];
+        statusDiag = ` status: supplierStatus=${supplierStatus ?? ''} wbStatus=${wbStatus ?? ''} codes=${codes.join(',')}`;
+      } catch (e3) {
+        statusDiag = e3?.statusCode ? ` statusApi=${e3.statusCode}` : '';
       }
-      const diag = (() => {
-        try {
-          const snippet = JSON.stringify(json).substring(0, 500);
-          return snippet ? ` response=${snippet}` : '';
-        } catch {
-          return text ? ` responseText=${String(text).substring(0, 300)}` : '';
-        }
-      })();
-      logLabelEvent(`[WB] no stickers for order=${orderIdNum}: ${msg}${statusDiag}${diag}`);
+      logLabelEvent(`[WB] no stickers for order=${orderIdNum}: ${msg}${statusDiag}`);
       const hint = statusDiag
         ? ` (${statusDiag.trim()})`
         : '';
@@ -721,7 +677,6 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
       throw err;
     }
 
-    const first = stickers[0];
     const base64 = first?.file;
     if (!base64 || typeof base64 !== 'string') {
       logLabelEvent(`[WB] sticker has no file field`);
