@@ -127,7 +127,7 @@ export function Home() {
           </div>
         </div>
       ) : (
-        <div className="row g-3 home-dashboard-widgets mb-3">
+        <div className="row g-3 align-items-start home-dashboard-widgets mb-3">
           {visible.map((it) => {
             const { Component, title } = WIDGETS[it.type];
             return (

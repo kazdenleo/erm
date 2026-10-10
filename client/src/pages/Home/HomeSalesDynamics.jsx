@@ -124,7 +124,9 @@ function ChartTooltip({ active, payload, label, metric, granularity }) {
   );
 }
 
-export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
+const CHART_HEIGHT = 320;
+
+export function HomeSalesDynamics({ profileId }) {
   const [periodDays, setPeriodDays] = useState(30);
   const [granularity, setGranularity] = useState('day');
   const [metric, setMetric] = useState('qty');
@@ -293,7 +295,7 @@ export function HomeSalesDynamics({ profileId, chartHeight = 220 }) {
             )}
 
             <div className="home-sales-dynamics__chart">
-              <ResponsiveContainer width="100%" height={chartHeight}>
+              <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
                 <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis

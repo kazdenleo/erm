@@ -19,32 +19,8 @@ import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets
 import { SupplierSettlementsSettings, SupplierSettlementsWidget } from './SupplierSettlementsWidget';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
-const CHART_HEIGHTS = [
-  { value: 'compact', label: 'Низкий график', px: 220 },
-  { value: 'normal', label: 'Средний график', px: 320 },
-  { value: 'tall', label: 'Высокий график', px: 440 },
-];
-
-function SalesDynamicsWidget({ profileId, settings }) {
-  const h = CHART_HEIGHTS.find((x) => x.value === settings?.chartHeight) || CHART_HEIGHTS[0];
-  return <HomeSalesDynamics profileId={profileId} chartHeight={h.px} />;
-}
-
-function SalesDynamicsSettings({ settings, onChange }) {
-  return (
-    <select
-      className="form-select form-select-sm w-auto"
-      value={settings?.chartHeight || 'compact'}
-      onChange={(e) => onChange({ ...settings, chartHeight: e.target.value })}
-      aria-label="Высота графика"
-    >
-      {CHART_HEIGHTS.map((h) => (
-        <option key={h.value} value={h.value}>
-          {h.label}
-        </option>
-      ))}
-    </select>
-  );
+function SalesDynamicsWidget({ profileId }) {
+  return <HomeSalesDynamics profileId={profileId} />;
 }
 
 function MarketplaceInventoryWidget() {
@@ -110,7 +86,6 @@ export const WIDGETS = {
     group: 'analytics',
     defaultSize: 'lg',
     Component: SalesDynamicsWidget,
-    SettingsComponent: SalesDynamicsSettings,
   },
   mp_inventory: {
     title: 'Остатки на маркетплейсах',
