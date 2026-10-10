@@ -380,6 +380,30 @@
   min-width: 200px;
 }
 
+.fbo-ozon-create-opts {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.fbo-ozon-create-opts label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.fbo-ozon-create-opts__count input {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
 .fbo-open-calc-sessions-banner {
   margin: 12px 0 16px;
   padding: 12px 16px;

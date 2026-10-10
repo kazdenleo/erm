@@ -365,7 +365,15 @@ export const fboSuppliesApi = {
     const blob = new Blob([buffer], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const w = window.open(url, '_blank');
-    if (w) {
+    if (!w) {
+      // Окно печати после долгого запроса блокируется браузером — отдаём PDF файлом.
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cargo-labels-${id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else {
       w.addEventListener('load', () => {
         setTimeout(() => {
           try {
@@ -378,7 +386,7 @@ export const fboSuppliesApi = {
       });
     }
     setTimeout(() => URL.revokeObjectURL(url), 120000);
-    return { ok: true };
+    return { ok: true, opened: Boolean(w) };
   },
 
   syncMarketplaceContent: async (id) => {
