@@ -23,7 +23,7 @@ export function FboCargoContentMeta({
   showZone = true,
   showExpiry = true,
 }) {
-  const isOzon = marketplace !== 'wb';
+  const isOzon = marketplace !== 'wb' && marketplace !== 'ym' && marketplace !== 'yandex';
   const [zone, setZone] = useState(line.placementZone || '');
   const [expiry, setExpiry] = useState(toDateInput(line.expiresAt));
   const [saving, setSaving] = useState(false);

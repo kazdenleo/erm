@@ -422,7 +422,7 @@ export function FboSupplyPacking({
   };
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
-  const isOzon = marketplace !== 'wb';
+  const isOzon = marketplace !== 'wb' && marketplace !== 'ym' && marketplace !== 'yandex';
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
   const activePlacementSummary =
