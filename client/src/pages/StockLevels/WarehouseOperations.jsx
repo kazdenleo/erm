@@ -2999,8 +2999,17 @@ export function WarehouseOperations({
     return new Intl.NumberFormat('ru-RU', {
       style: 'currency',
       currency: 'RUB',
-      maximumFractionDigits: 0
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }).format(amount);
+  };
+
+  /** Себестоимость единицы в ячейке таблицы (₽ в заголовке): «198,90». */
+  const formatUnitCost = (raw) => {
+    if (raw == null || raw === '') return '—';
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return '—';
+    return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
   };
 
   /** Итог в списке инвентаризаций: чистая Σ(Δкол-во × себестоимость), строки без cost не входят; NULL → «—». */
@@ -3008,17 +3017,12 @@ export function WarehouseOperations({
     if (raw == null || raw === '') return '—';
     const n = typeof raw === 'number' ? raw : Number(raw);
     if (!Number.isFinite(n)) return '—';
-    if (n === 0) {
-      return new Intl.NumberFormat('ru-RU', {
-        style: 'currency',
-        currency: 'RUB',
-        maximumFractionDigits: 0
-      }).format(0);
-    }
+    if (n === 0) return formatRub(0);
     return new Intl.NumberFormat('ru-RU', {
       style: 'currency',
       currency: 'RUB',
-      maximumFractionDigits: 0,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
       signDisplay: 'always'
     }).format(n);
   };
@@ -4877,7 +4881,7 @@ export function WarehouseOperations({
                         <td className="name-cell">{line.product_name || '—'}</td>
                         <td>{line.quantity}</td>
                           {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
-                          <td>{line.cost != null ? Number(line.cost) : '—'}</td>
+                          <td>{formatUnitCost(line.cost)}</td>
                           ) : null}
                           {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
                             <td className="num-cell">{lineSum != null ? formatRub(lineSum) : '—'}</td>
