@@ -26,21 +26,6 @@ const normAngle = (v) => ((Math.round(Number(v) || 0) % 360) + 360) % 360;
 let idSeq = 0;
 const newId = () => `i${Date.now().toString(36)}${(idSeq += 1)}`;
 
-/** Поворот на 90° вокруг центра: прямоугольник w×h под углом θ — то же, что h×w под углом θ+90°. */
-function rotated90(it, layout) {
-  const cx = it.x + it.w / 2;
-  const cy = it.y + it.h / 2;
-  const w = it.h;
-  const h = it.w;
-  const place = it.rot ? round2 : snap;
-  return {
-    w,
-    h,
-    x: clamp(place(cx - w / 2), 0, Math.max(0, layout.width - w)),
-    y: clamp(place(cy - h / 2), 0, Math.max(0, layout.height - h)),
-  };
-}
-
 /** Новый размер повёрнутого элемента: угол напротив ручки остаётся на месте. */
 function resizedRotated(orig, dx, dy, layout) {
   const rad = (orig.rot * Math.PI) / 180;
@@ -175,9 +160,9 @@ export function LayoutTab({ warehouseId, settings, locations, setParam }) {
   }, [cell, layout?.width, layout?.height, updateItem]);
 
   const rotateSelected = useCallback(() => {
-    if (!selected || !layout) return;
-    updateItem(selected.id, rotated90(selected, layout));
-  }, [selected, layout, updateItem]);
+    if (!selected) return;
+    updateItem(selected.id, { rot: normAngle((selected.rot || 0) + 90) });
+  }, [selected, updateItem]);
 
   useEffect(() => {
     if (mode !== 'edit' || !selected) return undefined;
@@ -387,11 +372,9 @@ export function LayoutTab({ warehouseId, settings, locations, setParam }) {
                   const rot = normAngle(it.rot);
                   const cx = x + w / 2;
                   const cy = y + h / 2;
-                  // Надпись вдоль длинной стороны и никогда не вверх ногами.
+                  // Надпись вдоль длинной стороны; поворачивается вместе с элементом.
                   const vertical = it.kind !== 'zone' && h > w * 1.3;
-                  const baseTextAngle = vertical ? -90 : 0;
-                  const screenTextAngle = normAngle(rot + baseTextAngle);
-                  const textAngle = baseTextAngle + (screenTextAngle > 90 && screenTextAngle <= 270 ? 180 : 0);
+                  const textAngle = vertical ? -90 : 0;
                   const [tw, th] = vertical ? [h, w] : [w, h];
                   const fontSize = Math.max(9, Math.min(14, Math.min(th * 0.6, (tw / Math.max(1, text.length)) * 1.6)));
                   return (
