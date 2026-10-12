@@ -7,6 +7,7 @@
 
 import fs from 'fs';
 import { join } from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 import { readData, writeData, DATA_DIR } from '../utils/storage.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
@@ -37,6 +38,31 @@ function wbClosedShipmentRetentionDays() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Поставки лежат одним JSON-файлом (чтение → изменение → запись целиком): параллельные операции
+// затирали друг друга — вторая «На сборку» теряла поставку, созданную первой.
+const shipmentsLockCtx = new AsyncLocalStorage();
+let shipmentsLockTail = Promise.resolve();
+let shipmentsLockHolder = null;
+const SHIPMENTS_LOCK_MAX_MS = 180_000;
+
+function withShipmentsLock(fn) {
+  return function lockedShipmentsOp(...args) {
+    const token = shipmentsLockCtx.getStore();
+    // Вложенный вызов из той же операции (closeShipment → orders → removeOrderFromOpenShipments).
+    if (token && token === shipmentsLockHolder) return fn.apply(this, args);
+    const myToken = {};
+    const run = shipmentsLockTail.then(() => {
+      shipmentsLockHolder = myToken;
+      return shipmentsLockCtx.run(myToken, () => fn.apply(this, args));
+    });
+    // Зависший запрос к МП не должен навсегда заблокировать все поставки.
+    shipmentsLockTail = Promise.race([run.catch(() => {}), sleep(SHIPMENTS_LOCK_MAX_MS)]).then(() => {
+      if (shipmentsLockHolder === myToken) shipmentsLockHolder = null;
+    });
+    return run;
+  };
 }
 
 function retryAfterMsFromResponse(response, fallbackMs) {
@@ -2183,25 +2209,27 @@ async function removeOrderFromOpenShipments(marketplace, orderId, { profileId = 
   return removedFrom;
 }
 
+const pruneExpiredClosedWbShipmentsLocked = withShipmentsLock(pruneExpiredClosedWbShipments);
+
 const shipmentsService = {
   getShipments,
   getShipmentById,
-  createShipment,
-  addOrdersToShipment,
-  removeOrdersFromShipment,
-  removeOrdersFromOpenShipmentsBatch,
-  removeOrderFromOpenShipments,
-  getOrCreateOpenShipment,
+  createShipment: withShipmentsLock(createShipment),
+  addOrdersToShipment: withShipmentsLock(addOrdersToShipment),
+  removeOrdersFromShipment: withShipmentsLock(removeOrdersFromShipment),
+  removeOrdersFromOpenShipmentsBatch: withShipmentsLock(removeOrdersFromOpenShipmentsBatch),
+  removeOrderFromOpenShipments: withShipmentsLock(removeOrderFromOpenShipments),
+  getOrCreateOpenShipment: withShipmentsLock(getOrCreateOpenShipment),
   pickWbOverflowShipment,
   getOrderShipmentIndex,
   findLocalShipmentContainingOrder,
   getShipmentClosePreview,
-  closeShipment,
-  reapplyStockForShipment,
-  syncWildberriesShipmentToMarketplace,
-  retryFailedWildberriesSupplyPushes,
-  getQrStickerFilePath,
-  pruneExpiredClosedWbShipments,
+  closeShipment: withShipmentsLock(closeShipment),
+  reapplyStockForShipment: withShipmentsLock(reapplyStockForShipment),
+  syncWildberriesShipmentToMarketplace: withShipmentsLock(syncWildberriesShipmentToMarketplace),
+  retryFailedWildberriesSupplyPushes: withShipmentsLock(retryFailedWildberriesSupplyPushes),
+  getQrStickerFilePath: withShipmentsLock(getQrStickerFilePath),
+  pruneExpiredClosedWbShipments: pruneExpiredClosedWbShipmentsLocked,
   wbClosedShipmentRetentionDays,
   closedShipmentRetentionDays,
   getMarketplaces: () => MARKETPLACES
@@ -2210,7 +2238,7 @@ const shipmentsService = {
 export default shipmentsService;
 export {
   pickWbOverflowShipment,
-  pruneExpiredClosedWbShipments,
+  pruneExpiredClosedWbShipmentsLocked as pruneExpiredClosedWbShipments,
   wbClosedShipmentRetentionDays,
   closedShipmentRetentionDays
 };

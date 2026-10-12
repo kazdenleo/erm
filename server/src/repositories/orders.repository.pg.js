@@ -784,9 +784,10 @@ class OrdersRepositoryPG {
           WHEN orders.status = 'in_procurement' THEN orders.status
           WHEN orders.status IN ('in_assembly', 'wb_assembly', 'assembled', 'shipped', 'in_transit', 'delivered')
             AND EXCLUDED.status = 'in_procurement' THEN orders.status
-          WHEN orders.status = 'assembled' AND EXCLUDED.status IN (
+          WHEN orders.status IN ('assembled', 'shipped') AND EXCLUDED.status IN (
             'new', 'in_assembly', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status
+          WHEN orders.status = 'shipped' AND EXCLUDED.status = 'assembled' THEN orders.status
           WHEN orders.status = 'in_assembly' AND EXCLUDED.status IN (
             'new', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status
@@ -842,9 +843,10 @@ class OrdersRepositoryPG {
           WHEN orders.status = 'in_procurement' THEN orders.status
           WHEN orders.status IN ('in_assembly', 'wb_assembly', 'assembled', 'shipped', 'in_transit', 'delivered')
             AND EXCLUDED.status = 'in_procurement' THEN orders.status
-          WHEN orders.status = 'assembled' AND EXCLUDED.status IN (
+          WHEN orders.status IN ('assembled', 'shipped') AND EXCLUDED.status IN (
             'new', 'in_assembly', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status
+          WHEN orders.status = 'shipped' AND EXCLUDED.status = 'assembled' THEN orders.status
           WHEN orders.status = 'in_assembly' AND EXCLUDED.status IN (
             'new', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status
