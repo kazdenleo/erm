@@ -55,6 +55,7 @@ import { PrintProductLabel } from './pages/PrintProductLabel/PrintProductLabel.j
 import { PrintProductLabelsBatch } from './pages/PrintProductLabel/PrintProductLabelsBatch.jsx';
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
+import { AddressStorage } from './pages/AddressStorage/AddressStorage';
 import { Purchases } from './pages/StockLevels/Purchases';
 import { ChestnyZnakMarking } from './pages/StockLevels/ChestnyZnakMarking';
 import { FboSupplies } from './pages/FboSupplies/FboSupplies';
@@ -222,6 +223,7 @@ function App() {
             <Route path="purchases/forecast" element={<ProcurementForecast />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="marking" element={<ChestnyZnakMarking />} />
+            <Route path="address-storage" element={<AddressStorage />} />
             <Route path="fbo-supplies/purchase-calc" element={<FboPurchaseCalculation />} />
             <Route path="fbo-supplies/forecasting" element={<FboSupplyForecast />} />
             <Route path="fbo-supplies/:id" element={<FboSupplyDetail />} />

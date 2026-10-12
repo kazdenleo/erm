@@ -1,0 +1,39 @@
+.address-badge {
+  display: inline-block;
+  padding: 0 6px;
+  margin-left: 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1c3d6e;
+  background: #edf2ff;
+  border: 1px solid #bac8ff;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.address-badge--lg {
+  font-size: 15px;
+  padding: 1px 8px;
+}
+
+.product-storage-block__wh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.product-storage-block__wh input {
+  width: 170px;
+}
+
+.product-storage-block__stock {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 12px;
+  background: #f1f3f5;
+  border-radius: 10px;
+}

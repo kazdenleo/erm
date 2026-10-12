@@ -38,6 +38,10 @@ export const STOCK_SECTION_HEADERS = {
     title: '📤 Списание',
     subtitle: 'Списание товара со склада по скану штрихкода или из списка',
   },
+  address_storage: {
+    title: '🗄 Адресное хранение',
+    subtitle: 'Ячейки склада, закрепление товаров, размещение и план склада',
+  },
   marking: {
     title: '▣ Маркировка (Честный знак)',
     subtitle: 'КИ и документы ГИС МТ текущей организации: закупка, опт, FBO, FBS и списание себе',
@@ -65,6 +69,9 @@ export function resolveStockSectionHeader(pathname, search = '') {
   }
   if (path.startsWith('/stock-levels/marking')) {
     return STOCK_SECTION_HEADERS.marking;
+  }
+  if (path.startsWith('/stock-levels/address-storage')) {
+    return STOCK_SECTION_HEADERS.address_storage;
   }
 
   if (/^\/stock-levels\/fbo-supplies\/[^/]+/.test(path)) {

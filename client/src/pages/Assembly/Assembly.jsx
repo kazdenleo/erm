@@ -53,6 +53,8 @@ import {
   isRootKitSkuScanForOrder,
 } from '../../utils/assemblyKitScan.js';
 import { stockMovementsApi } from '../../services/stockMovements.api';
+import { useProductAddresses } from '../../hooks/useProductAddresses';
+import { AddressBadge } from '../../components/addressStorage/AddressBadge';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -404,7 +406,7 @@ export function Assembly() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [sortField, setSortField] = useState('name'); // 'name' | 'article'
+  const [sortField, setSortField] = useState('name'); // 'name' | 'article' | 'route'
   const [sortDir, setSortDir] = useState('asc'); // 'asc' | 'desc'
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState(null);
@@ -1346,12 +1348,22 @@ export function Assembly() {
 
   const mpDisplay = (code) => marketplaceLabels.find((m) => m.code === normMarketplace({ marketplace: code })) || null;
 
+  const lineProductIds = useMemo(
+    () => assembledOrders.map(assemblyLineProductId).filter(Boolean),
+    [assembledOrders]
+  );
+  const lineAddresses = useProductAddresses(lineProductIds);
+  const { routeFor: lineRouteFor } = lineAddresses;
+  const lineWarehouseId = (o) => o?.warehouseId ?? o?.warehouse_id ?? null;
+
   const filtered = useMemo(() => {
     let list = assembledOrders;
     if (marketplaceFilter !== 'all') {
       list = list.filter(o => normMarketplace(o) === marketplaceFilter);
     }
     const dir = sortDir === 'asc' ? 1 : -1;
+    const routeOf = (o) =>
+      lineRouteFor(assemblyLineProductId(o), o?.warehouseId ?? o?.warehouse_id ?? null);
     const byName = (a, b) => {
       const na = (a.productName || a.product_name || a.orderId || '').toLowerCase();
       const nb = (b.productName || b.product_name || b.orderId || '').toLowerCase();
@@ -1366,8 +1378,19 @@ export function Assembly() {
       const cmp = ka.localeCompare(kb, 'ru', ARTICLE_SORT_LOCALE_OPTS);
       return cmp !== 0 ? cmp * dir : byName(a, b);
     };
-    return [...list].sort(sortField === 'article' ? byArticle : byName);
-  }, [assembledOrders, marketplaceFilter, sortField, sortDir]);
+    // Без адреса — всегда в конце, независимо от направления.
+    const byRoute = (a, b) => {
+      const ra = routeOf(a);
+      const rb = routeOf(b);
+      const fa = Number.isFinite(ra);
+      const fb = Number.isFinite(rb);
+      if (fa !== fb) return fa ? -1 : 1;
+      if (fa && ra !== rb) return (ra - rb) * dir;
+      return byName(a, b);
+    };
+    const comparator = sortField === 'article' ? byArticle : sortField === 'route' ? byRoute : byName;
+    return [...list].sort(comparator);
+  }, [assembledOrders, marketplaceFilter, sortField, sortDir, lineRouteFor]);
 
   /** Одна строка таблицы = один заказ (группа по session key); комплектующие в ячейках */
   const assemblyTableGroups = useMemo(
@@ -1445,6 +1468,23 @@ export function Assembly() {
     nextStockEpoch,
     stockCacheRef.current
   );
+
+  const hintProductIds = useMemo(() => {
+    const ids = [];
+    for (const rec of [currentRecommendation, sideRecommendation]) {
+      if (!rec) continue;
+      const items = Array.isArray(rec.items) && rec.items.length > 0 ? rec.items : [rec];
+      for (const item of items) {
+        ids.push(item.productId);
+        for (const c of item.components || []) ids.push(c.productId ?? c.product_id);
+      }
+    }
+    for (const hs of [currentHintStock, sideHintStock]) {
+      for (const c of hs?.components || []) ids.push(c.productId);
+    }
+    return ids;
+  }, [currentRecommendation, sideRecommendation, currentHintStock, sideHintStock]);
+  const { addressFor: hintAddressFor } = useProductAddresses(hintProductIds);
 
   // Собранный заказ сервер уже вычел из «на полке» — сканы сессии повторно не вычитаем.
   const overlayOrderKey = currentOrderAssembled ? '' : currentOrderKey;
@@ -1552,6 +1592,7 @@ export function Assembly() {
               }
               remainingByPid={currentRemainingByPid}
               showPacking
+              addressFor={hintAddressFor}
               scan={
                 scanError || labelPrintError ? (
                 <div className="assembly-next__scan assembly-next__scan--in-card">
@@ -1585,6 +1626,7 @@ export function Assembly() {
               mpDisplay={mpDisplay}
               emptyText="Соберите заказ — он появится здесь"
               showPacking
+              addressFor={hintAddressFor}
               stickerAction={
                 sideLabelOrderId && labelReadyByOrderId?.[sideLabelOrderId] === true ? (
                   <button
@@ -1655,6 +1697,23 @@ export function Assembly() {
           >
             По артикулу {sortField === 'article' ? (sortDir === 'asc' ? 'А→Я' : 'Я→А') : ''}
           </Button>
+          {lineAddresses.enabled ? (
+            <Button
+              variant={sortField === 'route' ? 'primary' : 'secondary'}
+              size="small"
+              title="В порядке обхода ячеек склада; товары без адреса — в конце"
+              onClick={() => {
+                if (sortField === 'route') {
+                  setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                } else {
+                  setSortField('route');
+                  setSortDir('asc');
+                }
+              }}
+            >
+              По адресу {sortField === 'route' ? (sortDir === 'asc' ? '↓' : '↑') : ''}
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -1724,6 +1783,11 @@ export function Assembly() {
                                 name
                               )}
                               <span className="assembly-table-line-qty">{` — ${q} шт`}</span>
+                              {erpPid && lineAddresses.enabled ? (
+                                <AddressBadge
+                                  address={lineAddresses.addressFor(erpPid, lineWarehouseId(o))}
+                                />
+                              ) : null}
                             </div>
                           );
                         })}

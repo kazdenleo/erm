@@ -13,6 +13,7 @@ import usersRoutes from './users.routes.js';
 import productsRoutes from './products.routes.js';
 import warehousesRoutes from './warehouses.routes.js';
 import warehouseMappingsRoutes from './warehouseMappings.routes.js';
+import addressStorageRoutes from './addressStorage.routes.js';
 import suppliersRoutes from './suppliers.routes.js';
 import customersRoutes from './customers.routes.js';
 import ordersController from '../controllers/orders.controller.js';
@@ -233,6 +234,8 @@ router.use('/products', (req, res, next) => {
 router.use('/warehouses', warehousesRoutes);
 // Привязка складов маркетплейсов к фактическим складам
 router.use('/warehouse-mappings', warehouseMappingsRoutes);
+// Адресное хранение (ячейки, перемещения, план склада)
+router.use('/address-storage', addressStorageRoutes);
 
 // Suppliers API
 router.use('/suppliers', suppliersRoutes);

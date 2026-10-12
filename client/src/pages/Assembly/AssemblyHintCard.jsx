@@ -12,6 +12,7 @@ import {
 } from '../../utils/assemblyWarehouseStock';
 import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
+import { AddressBadge } from '../../components/addressStorage/AddressBadge';
 
 function KindBadge({ kind }) {
   return (
@@ -25,7 +26,15 @@ function KindBadge({ kind }) {
   );
 }
 
-function HintLine({ article, quantity, stockLabel, remaining = null, packing = null, kit = false }) {
+function HintLine({
+  article,
+  quantity,
+  stockLabel,
+  remaining = null,
+  packing = null,
+  kit = false,
+  address = null,
+}) {
   return (
     <div className={`assembly-hint-line${kit ? ' assembly-hint-line--kit' : ''}`}>
       <span className="assembly-hint-line__left">
@@ -33,6 +42,7 @@ function HintLine({ article, quantity, stockLabel, remaining = null, packing = n
           {article}
           {quantity > 0 ? <span className="assembly-next__qty">×{quantity}</span> : null}
         </span>
+        {address ? <AddressBadge address={address} large title="Ячейка хранения" /> : null}
         {packing ? (
           <span className="assembly-hint-line__packing" title="Упаковка">
             {packing}
@@ -74,8 +84,14 @@ export function AssemblyHintCard({
   remainingByPid = null,
   showPacking = false,
   stickerAction = null,
+  addressFor = null,
   children = null,
 }) {
+  const addressOf = (productId) => {
+    const pid = Number(productId);
+    if (!addressFor || !Number.isFinite(pid) || pid <= 0) return null;
+    return addressFor(pid, recommendation?.order?.warehouseId ?? recommendation?.order?.warehouse_id ?? null);
+  };
   const header = (
     <div className="assembly-next__label">
       <span>{label}</span>
@@ -121,6 +137,7 @@ export function AssemblyHintCard({
           kit={multi}
           article={item.article}
           quantity={item.quantity}
+          address={item.isKit ? null : addressOf(item.productId)}
           packing={packingPerItem ? item.packingDisplayValue || '—' : null}
           remaining={remainingFor(remainingByPid, item.productId)}
           stockLabel={
@@ -144,6 +161,7 @@ export function AssemblyHintCard({
                   key={`${c.article}-${i}`}
                   article={c.article}
                   quantity={c.quantity}
+                  address={addressOf(pid)}
                   remaining={remainingFor(remainingByPid, pid)}
                   stockLabel={
                     c.stock

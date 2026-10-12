@@ -16,6 +16,8 @@ import {
 } from '../../hooks/useProductLabelPrint.js';
 import { packedCellClass } from './fboPackedCell.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
+import { useProductAddresses } from '../../hooks/useProductAddresses';
+import { AddressBadge } from '../../components/addressStorage/AddressBadge';
 
 const POLL_MS = 3000;
 const NO_CATEGORY_VALUE = '__none__';
@@ -52,6 +54,7 @@ function getNextScanTargets(item) {
       const left = Math.max(0, need - got);
       return {
         key: `c-${c.productId}`,
+        productId: c.productId,
         sku: c.sku || `#${c.productId}`,
         need: left > 0 ? left : need,
         labelNeed: need,
@@ -61,6 +64,7 @@ function getNextScanTargets(item) {
   return [
     {
       key: `p-${item.productId || item.id}`,
+      productId: item.productId,
       sku: item.sku || item.productName || item.name || `#${item.id}`,
       need: null,
       labelNeed: null,
@@ -124,7 +128,7 @@ export function FboSupplyCollect({
     return () => clearInterval(t);
   }, [supplyId, load]);
 
-  const items = state?.items || [];
+  const items = useMemo(() => state?.items || [], [state?.items]);
   const searchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
   const categoryOptions = useMemo(() => {
@@ -149,6 +153,17 @@ export function FboSupplyCollect({
     return opts;
   }, [items]);
 
+  const addressProductIds = useMemo(() => {
+    const ids = [];
+    for (const it of items) {
+      if (it.productId) ids.push(it.productId);
+      for (const c of it.kitComponents || []) ids.push(c.productId);
+    }
+    return ids;
+  }, [items]);
+  const addresses = useProductAddresses(addressProductIds);
+  const { routeFor } = addresses;
+
   const filteredItems = useMemo(() => {
     let list = items;
     if (categoryFilter) {
@@ -160,6 +175,12 @@ export function FboSupplyCollect({
     if (searchActive) {
       list = filterSupplyItemsByQuery(list, itemSearchQuery);
     }
+    // Комплект обходим по первой ячейке его комплектующих.
+    const routeOf = (it) => {
+      const pids =
+        it.isKit && it.kitComponents?.length ? it.kitComponents.map((c) => c.productId) : [it.productId];
+      return Math.min(...pids.map((pid) => routeFor(pid)));
+    };
     // Без остатка на складе — ниже позиций, которые можно собирать (кроме уже начатых).
     list = [...list].sort((a, b) => {
       const tier = (it) => {
@@ -171,6 +192,9 @@ export function FboSupplyCollect({
       const tA = tier(a);
       const tB = tier(b);
       if (tA !== tB) return tA - tB;
+      const rA = routeOf(a);
+      const rB = routeOf(b);
+      if (rA !== rB) return rA < rB ? -1 : 1;
       return Number(a.id) - Number(b.id);
     });
     if (lastScannedItemId == null) return list;
@@ -180,7 +204,7 @@ export function FboSupplyCollect({
     if (!pinned || pinned.complete) return list;
     const rest = list.filter((it) => Number(it.id) !== topId);
     return [pinned, ...rest];
-  }, [items, itemSearchQuery, searchActive, categoryFilter, lastScannedItemId]);
+  }, [items, itemSearchQuery, searchActive, categoryFilter, lastScannedItemId, routeFor]);
 
   const nextItem = useMemo(() => {
     const stickyId =
@@ -440,6 +464,9 @@ export function FboSupplyCollect({
                       {t.need != null && t.need > 0 ? (
                         <span className="fbo-collect-next__qty">×{t.need}</span>
                       ) : null}
+                      {t.productId ? (
+                        <AddressBadge large address={addresses.addressFor(t.productId)} />
+                      ) : null}
                     </span>
                   ))
                 ) : (
@@ -499,6 +526,7 @@ export function FboSupplyCollect({
           <thead>
             <tr>
               <th>Артикул</th>
+              {addresses.enabled ? <th>Адрес</th> : null}
               <th>Товар</th>
               <th>Комплектующие</th>
               <th className="text-center">Собрано / нужно</th>
@@ -511,7 +539,7 @@ export function FboSupplyCollect({
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={6} className="text-muted">
+                <td colSpan={addresses.enabled ? 7 : 6} className="text-muted">
                   {searchActive || categoryFilter ? 'Ничего не найдено' : 'Нет позиций'}
                 </td>
               </tr>
@@ -537,6 +565,13 @@ export function FboSupplyCollect({
                     <td>
                       <code>{it.sku || '—'}</code>
                     </td>
+                    {addresses.enabled ? (
+                      <td>
+                        {!it.isKit && it.productId ? (
+                          <AddressBadge address={addresses.addressFor(it.productId)} />
+                        ) : null}
+                      </td>
+                    ) : null}
                     <td>
                       <div className="fbo-collect-item-name">
                         {it.productName || it.name || '—'}
@@ -555,7 +590,8 @@ export function FboSupplyCollect({
                                 {' '}
                                 ×{c.need}
                                 {c.got > 0 ? ` (${c.got}/${c.need})` : ''}
-                              </span>
+                              </span>{' '}
+                              <AddressBadge address={addresses.addressFor(c.productId)} />
                             </li>
                           ))}
                         </ul>

@@ -78,6 +78,12 @@ const stockWarehouseChildren = [
     sectionKey: 'warehouse_writeoff',
   },
   {
+    path: '/stock-levels/address-storage',
+    label: '🗄 Адресное хранение',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'warehouse_stock',
+  },
+  {
     path: '/stock-levels/marking',
     label: '▣ Маркировка',
     iconClass: 'pe-7s-ticket',

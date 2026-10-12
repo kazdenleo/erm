@@ -29,6 +29,7 @@ import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection, OzonManufacturerArticleField } from './ProductMarketplaceLinkSection.jsx';
 import { ProductCompetitorsTab } from './ProductCompetitorsTab.jsx';
+import { ProductStorageBlock } from '../../addressStorage/ProductStorageBlock.jsx';
 import { ProductPricesTab } from './ProductPricesTab.jsx';
 import { ProductAiEditor } from '../../products/ProductAiEditor.jsx';
 import { snapshotAiCardDraft, AI_CARD_FIELDS } from '../../../utils/aiProductCardFields.js';
@@ -7665,6 +7666,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'main' && (
         <>
+        {product?.id && formData.product_type !== 'kit' ? <ProductStorageBlock productId={product.id} /> : null}
         <div className="product-form-block">
         <h4 className="product-form-block__title">Главные атрибуты</h4>
         <div className="row g-2">
