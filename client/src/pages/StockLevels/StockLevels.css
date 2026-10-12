@@ -593,3 +593,45 @@
   border-bottom: 1px solid var(--border, #e5e7eb);
 }
 
+
+.stock-levels-view-tabs {
+  margin-bottom: 12px;
+}
+
+.low-stock-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.low-stock-badge--out {
+  background: #fde2e1;
+  color: #b42318;
+}
+
+.low-stock-badge--critical {
+  background: #ffe8d1;
+  color: #b54708;
+}
+
+.low-stock-badge--soon {
+  background: #fff6cc;
+  color: #8a6100;
+}
+
+.low-stock-table td {
+  vertical-align: middle;
+}
+
+.low-stock-name {
+  font-weight: 500;
+}
+
+.low-stock-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}

@@ -35,6 +35,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { authApi } from '../../services/auth.api.js';
 import { WarehouseOperations } from './WarehouseOperations';
+import { LowStockPanel } from './LowStockPanel';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import { supplierWarehouseMainIds } from '../../utils/supplierWarehouseLinks.js';
@@ -2283,6 +2284,18 @@ export function WarehouseStocks() {
     [location.search]
   );
 
+  const stockView = useMemo(
+    () => (new URLSearchParams(location.search || '').get('view') === 'low' ? 'low' : 'all'),
+    [location.search]
+  );
+
+  const handleStockViewChange = useCallback(
+    (view) => {
+      navigate(view === 'low' ? '/stock-levels/warehouse?view=low' : '/stock-levels/warehouse', { replace: true });
+    },
+    [navigate]
+  );
+
   const handleWarehouseTabChange = useCallback(
     (tab) => {
       if (tab === 'table') {
@@ -3558,6 +3571,26 @@ export function WarehouseStocks() {
   return (
     <>
       {activeTab === 'table' && (
+        <div className="erp-filter-row stock-levels-view-tabs" role="tablist">
+          {[
+            { key: 'all', label: 'Все товары' },
+            { key: 'low', label: 'Скоро закончится' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={stockView === t.key}
+              className={`erp-filter-btn${stockView === t.key ? ' erp-filter-btn--active' : ''}`}
+              onClick={() => handleStockViewChange(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {activeTab === 'table' && stockView === 'low' && <LowStockPanel ownWarehouses={ownWarehouses} />}
+      {activeTab === 'table' && stockView !== 'low' && (
         <>
           {productsError && products.length > 0 ? (
             <div className="error" style={{ marginBottom: 12 }} role="alert">

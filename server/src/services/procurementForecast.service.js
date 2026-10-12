@@ -58,7 +58,7 @@ function daysInclusive(fromYmd, toYmd) {
  * Пример: 3 комплекта по 2 наконечника → 6 шт. «в комплектах».
  * @returns {Promise<Map<number, number>>} componentId → qty
  */
-async function batchComponentQtyInKitsOnWarehouse(componentIds, warehouseId) {
+export async function batchComponentQtyInKitsOnWarehouse(componentIds, warehouseId) {
   const ids = [...new Set((componentIds || []).filter((n) => Number.isFinite(n) && n > 0))];
   const map = new Map();
   if (!ids.length || !Number.isFinite(warehouseId) || warehouseId < 1) return map;
@@ -97,7 +97,7 @@ async function batchComponentQtyInKitsOnWarehouse(componentIds, warehouseId) {
  * Нетто-резерв по складу (журнал + атрибуция заказов), как в остатках.
  * @returns {Promise<Map<number, number>>}
  */
-async function batchWarehouseReservedMap(productIds, warehouseId) {
+export async function batchWarehouseReservedMap(productIds, warehouseId) {
   const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const wh = Number(warehouseId);
   const map = new Map();

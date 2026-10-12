@@ -1,4 +1,5 @@
 import procurementForecastService from '../services/procurementForecast.service.js';
+import stockRunwayService from '../services/stockRunway.service.js';
 
 function parseFlag(v, fallback) {
   if (v == null || v === '') return fallback;
@@ -31,5 +32,18 @@ export async function getFbsForecast(req, res) {
     seasonality: parseFlag(seasonality, true),
   });
 
+  return res.json({ ok: true, data });
+}
+
+export async function getLowStock(req, res) {
+  const { warehouseId, periodDays, alertDays, coverDays, limit } = req.query || {};
+  const data = await stockRunwayService.getRunway({
+    profileId: req.user?.profileId ?? null,
+    warehouseId: warehouseId || null,
+    periodDays,
+    alertDays,
+    coverDays,
+    limit,
+  });
   return res.json({ ok: true, data });
 }

@@ -8,5 +8,6 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/fbs', wrapAsync(controller.getFbsForecast));
+router.get('/low-stock', wrapAsync(controller.getLowStock));
 
 export default router;

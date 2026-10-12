@@ -17,6 +17,7 @@ import {
 } from './AnalyticsWidgets';
 import { NoteWidget, QuickLinksSettings, QuickLinksWidget } from './ExtraWidgets';
 import { SupplierSettlementsSettings, SupplierSettlementsWidget } from './SupplierSettlementsWidget';
+import { LowStockSettings, LowStockWidget } from './LowStockWidget';
 import { DAY_PERIODS, MONTH_PERIODS } from './widgetUtils';
 
 function SalesDynamicsWidget({ profileId }) {
@@ -102,6 +103,15 @@ export const WIDGETS = {
     defaultSize: 'lg',
     adminOnly: true,
     Component: BalancesWidget,
+  },
+  low_stock: {
+    title: 'Пора пополнить запасы',
+    description: 'Какие товары скоро закончатся на складе и насколько срочно их пополнить',
+    group: 'ops',
+    defaultSize: 'md',
+    sectionKey: 'warehouse_stock',
+    Component: LowStockWidget,
+    SettingsComponent: LowStockSettings,
   },
   supplier_settlements: {
     title: 'Взаиморасчёты с поставщиками',
