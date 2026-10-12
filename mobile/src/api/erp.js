@@ -38,11 +38,18 @@ export const productsApi = {
 };
 
 export const ordersApi = {
-  listInAssembly: () =>
+  listInAssembly: () => ordersApi.listByStatus('in_assembly'),
+  listByStatus: (status) =>
     request('/orders', {
-      params: { status: 'in_assembly', limit: 500, skipAutoReserve: '1' },
+      params: { status, limit: 500, skipAutoReserve: '1' },
       timeoutMs: 60000,
     }).then(ordersList),
+  sendToAssembly: (items) =>
+    request('/orders/send-to-assembly', {
+      method: 'POST',
+      body: { orderIds: items },
+      timeoutMs: 120000,
+    }).then(unwrap),
   labelStatus: (orderId) =>
     request(`/orders/${encodeURIComponent(orderId)}/label/status`, { timeoutMs: 20000 }).then(unwrap),
 };

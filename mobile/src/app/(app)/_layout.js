@@ -14,6 +14,7 @@ export default function AppLayout() {
     >
       <Stack.Screen name="index" options={{ title: 'ERM Склад' }} />
       <Stack.Screen name="assembly" options={{ title: 'Сборка заказов' }} />
+      <Stack.Screen name="send-to-assembly" options={{ title: 'Новые заказы' }} />
       <Stack.Screen name="receipt/index" options={{ title: 'Приёмка' }} />
       <Stack.Screen name="receipt/[sessionId]" options={{ title: 'Приёмка' }} />
       <Stack.Screen name="cargo/index" options={{ title: 'Приёмка по закупке' }} />

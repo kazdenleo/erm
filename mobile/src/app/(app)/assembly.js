@@ -1,4 +1,5 @@
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { useAssemblySession } from '../../features/assembly/useAssemblySession';
 import { normalizeMarketplaceForUI, orderStickerCellValue, splitStickerEmphasis } from '../../shared/erpUtils';
 import { ScanBar } from '../../components/ScanBar';
@@ -137,6 +138,13 @@ export default function AssemblyScreen() {
       </ScrollView>
 
       <Banner text={ordersError} onClose={() => reloadOrders()} />
+
+      <Button
+        title="Отправить новые заказы на сборку"
+        variant="secondary"
+        small
+        onPress={() => router.push('/send-to-assembly')}
+      />
 
       <Text style={styles.section}>На сборке: {groups.length}</Text>
       {groups.length === 0 && !ordersLoading ? <Text style={styles.muted}>Заказов на сборке нет</Text> : null}
