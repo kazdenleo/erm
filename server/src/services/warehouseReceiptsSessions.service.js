@@ -156,6 +156,29 @@ class WarehouseReceiptsSessionsService {
     return this._serialize(s);
   }
 
+  /** Исправить количество позиции (0 — убрать из приёмки). */
+  setQuantity({ sessionId, productId, quantity }) {
+    const s = this._getSessionStrict(sessionId);
+    const pid = Number(productId);
+    const row = Number.isInteger(pid) ? s.items.get(pid) : null;
+    if (!row) {
+      const err = new Error('Позиция не найдена в приёмке');
+      err.statusCode = 404;
+      throw err;
+    }
+    const raw = Number(quantity);
+    if (!Number.isFinite(raw) || raw < 0) {
+      const err = new Error('Некорректное количество');
+      err.statusCode = 400;
+      throw err;
+    }
+    const q = clampInt(raw, 0, 1000000);
+    if (q === 0) s.items.delete(pid);
+    else row.quantity = q;
+    this._touch(s);
+    return this._serialize(s);
+  }
+
   async complete({ sessionId, supplierId = null, organizationId = null, userId = null }) {
     const s = this._getSessionStrict(sessionId);
     const uid = userId != null && userId !== '' ? Number(userId) : null;

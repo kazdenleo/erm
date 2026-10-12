@@ -138,6 +138,17 @@ class WarehouseReceiptsController {
     }
   }
 
+  async setSessionQuantity(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { productId, quantity } = req.body || {};
+      const data = warehouseReceiptsSessionsService.setQuantity({ sessionId: id, productId, quantity });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async completeSession(req, res, next) {
     try {
       const { id } = req.params;
