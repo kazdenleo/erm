@@ -1100,10 +1100,15 @@ class AddressStorageService {
     if (width > 300 || height > 300) throw httpError('План: не больше 300×300 клеток');
     const raw = Array.isArray(body.items) ? body.items : [];
     if (raw.length > MAX_LAYOUT_ITEMS) throw httpError(`План: не больше ${MAX_LAYOUT_ITEMS} элементов`);
+    // Повёрнутые элементы двигаются не по сетке, поэтому координаты храним с точностью до сотых.
     const num = (v, min, max, def) => {
       const n = Number(v);
       if (!Number.isFinite(n)) return def;
-      return Math.min(max, Math.max(min, Math.round(n * 2) / 2));
+      return Math.min(max, Math.max(min, Math.round(n * 100) / 100));
+    };
+    const angle = (v) => {
+      const n = Math.round(Number(v));
+      return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0;
     };
     const items = raw.map((it, i) => {
       const kind = LAYOUT_ITEM_KINDS.includes(it?.kind) ? it.kind : 'rack';
@@ -1114,6 +1119,7 @@ class AddressStorageService {
         y: num(it?.y, 0, height - 0.5, 0),
         w: num(it?.w, 0.5, width, 2),
         h: num(it?.h, 0.5, height, 1),
+        rot: angle(it?.rot),
         label: String(it?.label ?? '').slice(0, 64),
         rackKey: kind === 'rack' ? String(it?.rackKey ?? '').slice(0, 64) : '',
       };
