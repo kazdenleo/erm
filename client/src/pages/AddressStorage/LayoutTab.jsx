@@ -77,7 +77,7 @@ export function LayoutTab({ warehouseId, settings, locations, setParam }) {
   }, [warehouseId]);
 
   const dirty = layout && saved !== JSON.stringify(layout);
-  const items = layout?.items || [];
+  const items = useMemo(() => layout?.items || [], [layout?.items]);
   const selected = items.find((i) => i.id === selectedId) || null;
 
   const updateItem = useCallback((id, patch) => {

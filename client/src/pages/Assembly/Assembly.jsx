@@ -283,6 +283,38 @@ function assemblyLineProductId(item) {
   return Number.isInteger(n) && n >= 1 ? n : null;
 }
 
+/** Товары, которые берут с полки для строки заказа: у комплекта — комплектующие, иначе сам товар. */
+function assemblyLinePickProductIds(item) {
+  const linePid = assemblyLineProductId(item);
+  const lines = item?.assemblyCompositionLines ?? item?.assembly_composition_lines;
+  const compPids = Array.isArray(lines)
+    ? [
+        ...new Set(
+          lines
+            .map((l) => Number(l?.productId ?? l?.product_id))
+            .filter((n) => Number.isInteger(n) && n >= 1 && n !== linePid)
+        ),
+      ]
+    : [];
+  if (compPids.length) return compPids;
+  return linePid ? [linePid] : [];
+}
+
+const ASSEMBLY_SORT_STORAGE_KEY = 'assembly.sort';
+const ASSEMBLY_SORT_FIELDS = ['name', 'article', 'route'];
+
+function readStoredAssemblySort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ASSEMBLY_SORT_STORAGE_KEY) || 'null');
+    if (saved && ASSEMBLY_SORT_FIELDS.includes(saved.field)) {
+      return { field: saved.field, dir: saved.dir === 'desc' ? 'desc' : 'asc' };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { field: 'name', dir: 'asc' };
+}
+
 /** Части строки состава: название можно сделать ссылкой на карточку товара в ERP */
 function assemblyCompositionParts(item, quantityOverride) {
   const externalId = String(item.offerId ?? item.orderLineId ?? '').trim();
@@ -406,8 +438,15 @@ export function Assembly() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [sortField, setSortField] = useState('name'); // 'name' | 'article' | 'route'
-  const [sortDir, setSortDir] = useState('asc'); // 'asc' | 'desc'
+  const [sortField, setSortField] = useState(() => readStoredAssemblySort().field); // 'name' | 'article' | 'route'
+  const [sortDir, setSortDir] = useState(() => readStoredAssemblySort().dir); // 'asc' | 'desc'
+  useEffect(() => {
+    try {
+      localStorage.setItem(ASSEMBLY_SORT_STORAGE_KEY, JSON.stringify({ field: sortField, dir: sortDir }));
+    } catch {
+      /* ignore */
+    }
+  }, [sortField, sortDir]);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState(null);
   const [currentOrderData, setCurrentOrderData] = useState(null); // { order, product, orderItems }
@@ -1349,12 +1388,28 @@ export function Assembly() {
   const mpDisplay = (code) => marketplaceLabels.find((m) => m.code === normMarketplace({ marketplace: code })) || null;
 
   const lineProductIds = useMemo(
-    () => assembledOrders.map(assemblyLineProductId).filter(Boolean),
+    () => assembledOrders.flatMap(assemblyLinePickProductIds),
     [assembledOrders]
   );
   const lineAddresses = useProductAddresses(lineProductIds);
-  const { routeFor: lineRouteFor } = lineAddresses;
+  const { routeFor: lineRouteFor, primaryFor: linePrimaryFor } = lineAddresses;
   const lineWarehouseId = (o) => o?.warehouseId ?? o?.warehouse_id ?? null;
+  // Сохранённая сортировка «по адресу» без включённого адресного хранения — обычная по имени.
+  const effectiveSortField = sortField === 'route' && !lineAddresses.enabled ? 'name' : sortField;
+
+  /** Ячейки строки: у товара — его адреса, у комплекта — основная ячейка каждой комплектующей. */
+  const lineAddressText = (o) => {
+    const wid = lineWarehouseId(o);
+    const linePid = assemblyLineProductId(o);
+    const pids = assemblyLinePickProductIds(o);
+    if (pids.length === 1 && pids[0] === linePid) return lineAddresses.addressFor(linePid, wid);
+    const codes = [];
+    for (const pid of pids) {
+      const code = linePrimaryFor(pid, wid)?.code;
+      if (code && !codes.includes(code)) codes.push(code);
+    }
+    return codes.join(', ');
+  };
 
   const filtered = useMemo(() => {
     let list = assembledOrders;
@@ -1362,8 +1417,23 @@ export function Assembly() {
       list = list.filter(o => normMarketplace(o) === marketplaceFilter);
     }
     const dir = sortDir === 'asc' ? 1 : -1;
-    const routeOf = (o) =>
-      lineRouteFor(assemblyLineProductId(o), o?.warehouseId ?? o?.warehouse_id ?? null);
+    const rowRoute = (o) => {
+      const wid = o?.warehouseId ?? o?.warehouse_id ?? null;
+      return Math.min(
+        Number.POSITIVE_INFINITY,
+        ...assemblyLinePickProductIds(o).map((pid) => lineRouteFor(pid, wid))
+      );
+    };
+    // Заказ из нескольких строк встаёт в маршрут по ближайшей ячейке среди всех его товаров.
+    const routeByGroup = new Map();
+    if (effectiveSortField === 'route') {
+      for (const o of list) {
+        const k = assemblyOrderSessionKey(o);
+        const r = rowRoute(o);
+        if (!routeByGroup.has(k) || r < routeByGroup.get(k)) routeByGroup.set(k, r);
+      }
+    }
+    const routeOf = (o) => routeByGroup.get(assemblyOrderSessionKey(o)) ?? Number.POSITIVE_INFINITY;
     const byName = (a, b) => {
       const na = (a.productName || a.product_name || a.orderId || '').toLowerCase();
       const nb = (b.productName || b.product_name || b.orderId || '').toLowerCase();
@@ -1388,9 +1458,10 @@ export function Assembly() {
       if (fa && ra !== rb) return (ra - rb) * dir;
       return byName(a, b);
     };
-    const comparator = sortField === 'article' ? byArticle : sortField === 'route' ? byRoute : byName;
+    const comparator =
+      effectiveSortField === 'article' ? byArticle : effectiveSortField === 'route' ? byRoute : byName;
     return [...list].sort(comparator);
-  }, [assembledOrders, marketplaceFilter, sortField, sortDir, lineRouteFor]);
+  }, [assembledOrders, marketplaceFilter, effectiveSortField, sortDir, lineRouteFor]);
 
   /** Одна строка таблицы = один заказ (группа по session key); комплектующие в ячейках */
   const assemblyTableGroups = useMemo(
@@ -1669,51 +1740,41 @@ export function Assembly() {
         </div>
         <div className="assembly-sort">
           <span className="assembly-filter-label">Сортировка:</span>
-          <Button
-            variant={sortField === 'name' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => {
-              if (sortField === 'name') {
-                setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-              } else {
-                setSortField('name');
-                setSortDir('asc');
-              }
-            }}
-          >
-            По имени {sortField === 'name' ? (sortDir === 'asc' ? 'А→Я' : 'Я→А') : ''}
-          </Button>
-          <Button
-            variant={sortField === 'article' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => {
-              if (sortField === 'article') {
-                setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-              } else {
-                setSortField('article');
-                setSortDir('asc');
-              }
-            }}
-          >
-            По артикулу {sortField === 'article' ? (sortDir === 'asc' ? 'А→Я' : 'Я→А') : ''}
-          </Button>
-          {lineAddresses.enabled ? (
-            <Button
-              variant={sortField === 'route' ? 'primary' : 'secondary'}
-              size="small"
-              title="В порядке обхода ячеек склада; товары без адреса — в конце"
-              onClick={() => {
-                if (sortField === 'route') {
-                  setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-                } else {
-                  setSortField('route');
-                  setSortDir('asc');
-                }
-              }}
-            >
-              По адресу {sortField === 'route' ? (sortDir === 'asc' ? '↓' : '↑') : ''}
-            </Button>
-          ) : null}
+          {[
+            { field: 'name', label: 'По имени', asc: 'А→Я', desc: 'Я→А' },
+            { field: 'article', label: 'По артикулу', asc: 'А→Я', desc: 'Я→А' },
+            ...(lineAddresses.enabled
+              ? [
+                  {
+                    field: 'route',
+                    label: 'По адресу',
+                    asc: '↓',
+                    desc: '↑',
+                    title: 'В порядке обхода ячеек склада; товары без адреса — в конце',
+                  },
+                ]
+              : []),
+          ].map((opt) => {
+            const active = effectiveSortField === opt.field;
+            return (
+              <Button
+                key={opt.field}
+                variant={active ? 'primary' : 'secondary'}
+                size="small"
+                title={opt.title}
+                onClick={() => {
+                  if (active) {
+                    setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                  } else {
+                    setSortField(opt.field);
+                    setSortDir('asc');
+                  }
+                }}
+              >
+                {opt.label} {active ? (sortDir === 'asc' ? opt.asc : opt.desc) : ''}
+              </Button>
+            );
+          })}
         </div>
       </div>
 
@@ -1783,9 +1844,14 @@ export function Assembly() {
                                 name
                               )}
                               <span className="assembly-table-line-qty">{` — ${q} шт`}</span>
-                              {erpPid && lineAddresses.enabled ? (
+                              {lineAddresses.enabled ? (
                                 <AddressBadge
-                                  address={lineAddresses.addressFor(erpPid, lineWarehouseId(o))}
+                                  address={lineAddressText(o)}
+                                  title={
+                                    assemblyLinePickProductIds(o).includes(erpPid)
+                                      ? 'Адрес хранения'
+                                      : 'Ячейки комплектующих'
+                                  }
                                 />
                               ) : null}
                             </div>
