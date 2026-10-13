@@ -88,6 +88,15 @@ describe('orderHasAssemblySticker', () => {
     expect(orderHasAssemblySticker({ ...base, assemblyStickerNumber: 'ii50048401925' })).toBe(true);
   });
 
+  test('Ozon без ii (сортцентр): собирается, когда этикетка скачана', () => {
+    const base = { marketplace: 'ozon', status: 'in_assembly', orderId: '24142738-0331-2' };
+    expect(orderHasAssemblySticker(base)).toBe(false);
+    expect(orderHasAssemblySticker(base, { labelReady: true })).toBe(true);
+    expect(
+      orderHasAssemblySticker({ marketplace: 'wildberries', orderId: '1' }, { labelReady: true })
+    ).toBe(false);
+  });
+
   test('Яндекс и ручные заказы стикер не требуют', () => {
     expect(orderHasAssemblySticker({ marketplace: 'yandex', orderId: '1' })).toBe(true);
     expect(orderHasAssemblySticker({ marketplace: 'manual', orderId: '2' })).toBe(true);

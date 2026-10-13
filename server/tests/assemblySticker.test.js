@@ -11,6 +11,13 @@ describe('orderHasAssemblySticker', () => {
     expect(orderHasAssemblySticker({ marketplace: 'ozon', assemblyStickerNumber: 'ii50048401925' })).toBe(true);
   });
 
+  test('Ozon без ii (сортцентр): собирается по скачанной этикетке, WB — нет', () => {
+    const cached = () => true;
+    expect(orderHasAssemblySticker({ marketplace: 'ozon' })).toBe(false);
+    expect(orderHasAssemblySticker({ marketplace: 'ozon' }, { isLabelCached: cached })).toBe(true);
+    expect(orderHasAssemblySticker({ marketplace: 'wildberries' }, { isLabelCached: cached })).toBe(false);
+  });
+
   test('Яндекс и ручные заказы стикер не требуют', () => {
     expect(orderHasAssemblySticker({ marketplace: 'yandex' })).toBe(true);
     expect(orderHasAssemblySticker({ marketplace: 'manual' })).toBe(true);

@@ -5075,7 +5075,8 @@ class OrdersService {
    * @param {{ marketplace?: string|null, listOrder?: Array<{ marketplace: string, orderId: string }> }} [options]
    *   marketplace — фильтр UI (ozon|wildberries|yandex|all);
    *   listOrder — порядок строк таблицы «Сборка»: берём первый заказ из неё, иначе created_at DESC;
-   *   requireSticker — пропускать заказы без стикера маркетплейса
+   *   requireSticker — пропускать заказы без стикера маркетплейса;
+   *   isLabelCached — проверка скачанной этикетки (Ozon без `ii…` собирается по этикетке)
    * @returns {Promise<object|null>} заказ или null
    */
   async findFirstAssembledByProductId(productId, options = {}) {
@@ -5099,7 +5100,10 @@ class OrdersService {
           );
         }
       }
-      if (requireSticker) candidates = candidates.filter(orderHasAssemblySticker);
+      if (requireSticker) {
+        const stickerOpts = { isLabelCached: options.isLabelCached ?? null };
+        candidates = candidates.filter((o) => orderHasAssemblySticker(o, stickerOpts));
+      }
       return pickFirstByAssemblyListOrder(candidates, listOrder);
     }
     if (repositoryFactory.isUsingPostgreSQL()) {
@@ -7790,6 +7794,7 @@ class OrdersService {
     const r = await query(
       `SELECT o.id AS order_db_id,
               o.order_id AS marketplace_order_id,
+              o.marketplace AS order_marketplace,
               o.created_at,
               sm.product_id,
               sm.warehouse_id,
@@ -7803,7 +7808,7 @@ class OrdersService {
        WHERE sm.product_id = ANY($1::bigint[])
          AND o.status IN (${ORDER_RESERVE_FIFO_STATUSES_SQL})
          ${orderFilterSql}
-       GROUP BY o.id, o.order_id, o.created_at, sm.product_id, sm.warehouse_id
+       GROUP BY o.id, o.order_id, o.marketplace, o.created_at, sm.product_id, sm.warehouse_id
        HAVING ${RESERVE_META_INCOMING_SUM_SQL} > 0
           AND ${NET_RESERVED_SUM_EXPR_SQL} > 0
        ORDER BY sm.product_id ASC, o.created_at ASC NULLS LAST, o.id ASC`,
@@ -7858,6 +7863,7 @@ class OrdersService {
 
     let converted = 0;
     let units = 0;
+    const promoted = [];
     for (const row of rows) {
       const orderDbId = Number(row.order_db_id);
       const productId = Number(row.product_id);
@@ -7911,6 +7917,13 @@ class OrdersService {
         onHandBudget.set(budgetKey, Math.max(0, budget - qty));
         converted += 1;
         units += qty;
+        promoted.push({
+          orderDbId,
+          marketplace: row.order_marketplace,
+          orderId: orderIdLabel,
+          productId,
+          qty,
+        });
       } catch (e) {
         logger.warn('[Orders] promoteIncomingOrderReservesToOnHand row failed', {
           orderDbId,
@@ -7928,7 +7941,7 @@ class OrdersService {
         products: pids.length,
       });
     }
-    return { converted, units };
+    return { converted, units, promoted };
   }
 }
 

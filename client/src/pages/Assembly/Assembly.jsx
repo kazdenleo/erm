@@ -688,7 +688,9 @@ export function Assembly() {
     const toFetch = [];
     for (const [id, o] of ordersById) {
       const needSticker = ozonStickerMissing(o) && !stickerFetchTriedRef.current.has(id);
-      const noSticker = isAssemblyLikeStatus(o.status) && !orderHasAssemblySticker(o);
+      const noSticker =
+        isAssemblyLikeStatus(o.status) &&
+        !orderHasAssemblySticker(o, { labelReady: labelReadyByOrderId?.[id] === true });
       if (labelReadyByOrderId?.[id] === true && !needSticker && !noSticker) continue;
       if (!needSticker && now - (labelCheckedAtRef.current.get(id) || 0) < LABEL_RECHECK_MS) continue;
       toFetch.push(id);
@@ -1353,7 +1355,7 @@ export function Assembly() {
       setTimeout(() => setLabelPrintError(null), 12000);
       return;
     }
-    if (!orderHasAssemblySticker(o)) {
+    if (!orderHasAssemblySticker(o, { labelReady: labelReadyByOrderId?.[orderId] === true })) {
       setLabelPrintError(NO_STICKER_MESSAGE);
       setTimeout(() => setLabelPrintError(null), 12000);
       return;
@@ -1508,7 +1510,11 @@ export function Assembly() {
         lastAssembledGroup,
         currentOrderAssembled,
         lastCollectedKey,
-        canAssembleGroup: (g) => orderHasAssemblySticker(g.primary, { groupOrders: g.rows }),
+        canAssembleGroup: (g) =>
+          orderHasAssemblySticker(g.primary, {
+            groupOrders: g.rows,
+            labelReady: labelReadyByOrderId?.[String(g.primary?.orderId ?? '')] === true,
+          }),
       }),
     [
       assemblyTableGroups,
@@ -1517,6 +1523,7 @@ export function Assembly() {
       lastAssembledGroup,
       currentOrderAssembled,
       lastCollectedKey,
+      labelReadyByOrderId,
     ]
   );
 
@@ -1893,7 +1900,10 @@ export function Assembly() {
                           const labelMissing =
                             orderRequiresMarketplaceLabel(primary) &&
                             labelReadyByOrderId?.[pidStr] !== true;
-                          const stickerMissing = !orderHasAssemblySticker(primary, { groupOrders: rows });
+                          const stickerMissing = !orderHasAssemblySticker(primary, {
+                            groupOrders: rows,
+                            labelReady: labelReadyByOrderId?.[pidStr] === true,
+                          });
                           if (!labelMissing && !stickerMissing) {
                             return (
                               <Button

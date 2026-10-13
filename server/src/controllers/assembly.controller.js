@@ -182,6 +182,7 @@ class AssemblyController {
           marketplace: marketplaceFilter,
           listOrder,
           requireSticker: true,
+          isLabelCached: (o) => ordersLabelsService.hasLabelCached(o),
         });
         if (!order) {
           const withoutSticker = await ordersService.findFirstAssembledByProductId(product.id, {
@@ -389,12 +390,16 @@ class AssemblyController {
           });
         }
       }
-      if (needsMpLabel && !orderHasAssemblySticker(order)) {
+      const stickerOpts = { isLabelCached: (o) => ordersLabelsService.hasLabelCached(o) };
+      if (needsMpLabel && !orderHasAssemblySticker(order, stickerOpts)) {
         // ensureLabelFile мог только что сохранить номер — перечитываем заказ.
         const fresh = await ordersService.getByMarketplaceAndOrderId(marketplace, String(orderId), {
           profileId: req.user?.profileId ?? null
         });
-        if (!orderHasAssemblySticker(fresh) && !orderHasAssemblySticker({ ...order, assemblyStickerNumber: stickerNumber })) {
+        if (
+          !orderHasAssemblySticker(fresh, stickerOpts) &&
+          !orderHasAssemblySticker({ ...order, assemblyStickerNumber: stickerNumber }, stickerOpts)
+        ) {
           return res.status(409).json({ ok: false, code: 'ASSEMBLY_NO_STICKER', message: NO_STICKER_ASSEMBLY_MESSAGE });
         }
       }

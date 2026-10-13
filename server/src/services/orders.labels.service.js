@@ -350,10 +350,11 @@ class OrdersLabelsService {
     const sn = orderHasValidSticker(fresh)
       ? String(fresh.assemblyStickerNumber ?? fresh.assembly_sticker_number).trim()
       : null;
-    if (!error && !sn && (mp === 'wildberries' || mp === 'ozon')) {
+    const exists = fs.existsSync(filePath);
+    if (!error && !sn && (mp === 'wildberries' || (mp === 'ozon' && !exists))) {
       error = 'Этикетка загружена, но номер стикера маркетплейс не вернул';
     }
-    return { exists: fs.existsSync(filePath), stickerNumber: sn, error };
+    return { exists, stickerNumber: sn, error };
   }
 
   /**
