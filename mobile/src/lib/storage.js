@@ -7,6 +7,7 @@ const KEYS = {
   receiptSession: 'erm.receiptSession',
   cargoPurchase: 'erm.cargoPurchase',
   autoPrintLabel: 'erm.autoPrintLabel',
+  labelPrinter: 'erm.labelPrinter',
 };
 
 export async function readItem(key) {

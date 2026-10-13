@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import { useAuth } from '../../context/AuthContext';
+import PrinterSettingsCard from '../../features/printer/PrinterSettingsCard';
 import { readItem, writeItem } from '../../lib/storage';
 import { Button, Card } from '../../ui/components';
 import { colors } from '../../ui/theme';
@@ -48,10 +49,12 @@ export default function SettingsScreen() {
           <Switch value={autoPrint} onValueChange={toggleAutoPrint} />
         </View>
         <Text style={styles.muted}>
-          Печать идёт через системный диалог телефона (Wi‑Fi принтер или служба печати Android). Если этикетки печатает
-          ПК на складе — оставьте выключенным.
+          Если ниже выбран принтер этикеток — стикер сразу уходит на него по Bluetooth. Иначе открывается системный
+          диалог печати Android. Если этикетки печатает ПК на складе — оставьте выключенным.
         </Text>
       </Card>
+
+      <PrinterSettingsCard />
 
       <Card style={styles.gap}>
         <Text style={styles.section}>Аккаунт</Text>

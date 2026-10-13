@@ -2,8 +2,12 @@ import { fetch } from 'expo/fetch';
 import { File, Paths } from 'expo-file-system';
 import * as Print from 'expo-print';
 import { apiUrl, authHeaders, ApiError } from '../api/client';
+import { directPrintAvailable, loadPrinterSettings, printLabelFile } from './labelPrinter';
 
-/** Скачать этикетку заказа (PDF или PNG) с сервера и открыть системный диалог печати. */
+/**
+ * Скачать этикетку заказа (PDF или PNG) с сервера и напечатать: на выбранный Bluetooth-принтер этикеток,
+ * а если он не настроен — через системный диалог печати.
+ */
 export async function printOrderLabel(orderId) {
   const id = String(orderId ?? '').trim();
   if (!id) throw new ApiError('Не указан заказ');
@@ -30,6 +34,14 @@ export async function printOrderLabel(orderId) {
   const file = new File(Paths.cache, `label_${safeId}.${isPng ? 'png' : 'pdf'}`);
   if (file.exists) file.delete();
   file.write(await response.bytes());
+
+  if (directPrintAvailable) {
+    const settings = await loadPrinterSettings();
+    if (settings.address) {
+      await printLabelFile(file.uri, settings);
+      return;
+    }
+  }
 
   if (isPng) {
     const b64 = await file.base64();
