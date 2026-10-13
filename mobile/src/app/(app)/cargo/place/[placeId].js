@@ -115,14 +115,12 @@ export default function CargoPlaceScreen() {
   const handleScan = (code) => {
     const status = data?.place?.status;
     if (status === 'accepted') {
-      if (code === data.place.barcode) open();
-      else {
-        setMessage({ kind: 'warning', text: 'Сначала вскройте грузоместо' });
-        scanError();
-      }
+      if (code === data.place.barcode) return open();
+      setMessage({ kind: 'warning', text: 'Сначала вскройте грузоместо' });
+      scanError();
       return;
     }
-    runBusy(async () => {
+    return runBusy(async () => {
       setMessage(null);
       try {
         const res = await cargoApi.addItem(id, { code, quantity: multiplier });

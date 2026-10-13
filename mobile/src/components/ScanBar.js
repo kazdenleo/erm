@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { CameraScanner } from './CameraScanner';
@@ -10,15 +10,60 @@ function cleanCode(raw) {
     .trim();
 }
 
+/** Сканер в режиме клавиатуры печатает код за доли секунды; пауза дольше — код целиком введён. */
+const SCAN_IDLE_MS = 300;
+
 /**
- * Поле скана: аппаратный сканер ТСД работает как клавиатура (код + Enter),
- * камера телефона — через кнопку «Камера». Экранная клавиатура по умолчанию скрыта.
+ * Поле скана: аппаратный сканер ТСД работает как клавиатура — код принимается по Enter или,
+ * если сканер не шлёт Enter, автоматически после паузы во вводе. Камера телефона — через кнопку «Камера».
+ * Экранная клавиатура по умолчанию скрыта; в режиме ручного ввода код принимается только по Enter.
  */
 export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, placeholder, cameraHint }, ref) {
   const inputRef = useRef(null);
   const [value, setValue] = useState('');
   const [keyboard, setKeyboard] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const idleTimer = useRef(null);
+  const onScanRef = useRef(onScan);
+  const queue = useRef([]);
+  const draining = useRef(false);
+
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
+
+  useEffect(
+    () => () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+    },
+    []
+  );
+
+  const clearIdleTimer = () => {
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    idleTimer.current = null;
+  };
+
+  /** Коды, отсканированные во время обработки предыдущего, не теряются, а обрабатываются по очереди. */
+  const enqueue = useCallback(async (code) => {
+    queue.current.push(code);
+    if (draining.current) return;
+    draining.current = true;
+    try {
+      while (queue.current.length) {
+        const next = queue.current.shift();
+        try {
+          await onScanRef.current(next);
+        } catch {
+          /* ошибки показывает сам экран */
+        }
+        // Дать экрану перерисоваться, чтобы следующий код обработался уже с обновлённым состоянием.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    } finally {
+      draining.current = false;
+    }
+  }, []);
 
   const focus = useCallback(() => {
     setTimeout(() => inputRef.current?.focus(), 50);
@@ -33,16 +78,24 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   );
 
   const submit = (raw) => {
+    clearIdleTimer();
     const code = cleanCode(raw);
     setValue('');
-    if (code.length >= 2) onScan(code);
+    if (code.length >= 2) enqueue(code);
     focus();
   };
 
   const onChangeText = (text) => {
     // Часть сканеров присылает перевод строки внутри текста вместо события submit.
-    if (/[\r\n]/.test(text)) submit(text);
-    else setValue(text);
+    if (/[\r\n]/.test(text)) {
+      submit(text);
+      return;
+    }
+    setValue(text);
+    clearIdleTimer();
+    if (!keyboard && text) {
+      idleTimer.current = setTimeout(() => submit(text), SCAN_IDLE_MS);
+    }
   };
 
   return (
@@ -73,6 +126,7 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
         <Pressable
           style={[styles.action, keyboard && styles.actionActive]}
           onPress={() => {
+            clearIdleTimer();
             setKeyboard((k) => !k);
             inputRef.current?.blur();
             focus();
@@ -88,7 +142,7 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
           setCameraOpen(false);
           focus();
         }}
-        onScan={(code) => onScan(code)}
+        onScan={enqueue}
       />
     </View>
   );
