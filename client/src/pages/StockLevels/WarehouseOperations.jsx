@@ -2212,6 +2212,15 @@ export function WarehouseOperations({
         delete rowBoxQtyDebounceRef.current[key];
         const qty = Math.floor(Number(qtyStr) || 0);
         if (qty <= 0) return;
+        // N в «Коробкой» = размер коробки; −1 компенсирует идентификационный скан (+1).
+        if (qty <= 1) {
+          setReceiptList((prev) =>
+            prev.map((item) =>
+              String(item.productId) === key ? { ...item, _boxQtyInput: '' } : item
+            )
+          );
+          return;
+        }
         const row = receiptList.find((i) => String(i.productId) === key);
         const product = row
           ? { id: row.productId, sku: row.sku, name: row.name }
@@ -2219,7 +2228,7 @@ export function WarehouseOperations({
         void applyWarehouseReceiptBoxQty({
           product,
           productId,
-          qty,
+          qty: qty - 1,
           clearRowProductId: productId,
         });
       }, BOX_QTY_APPLY_MS);
@@ -5463,7 +5472,7 @@ export function WarehouseOperations({
             </p>
           )}
           <p className="warehouse-ops-hint">
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки укажите количество в колонке «Коробкой» в таблице — оно прибавится к уже принятому (через 2 с).
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки отсканируйте товар и укажите в колонке «Коробкой» сколько штук в коробке — скан уже засчитан, поэтому добавится на 1 меньше (через 2 с).
           </p>
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
@@ -5555,6 +5564,7 @@ export function WarehouseOperations({
                               className="warehouse-ops-qty-input small"
                               style={{ width: 90 }}
                 placeholder="Кол-во"
+                              title="Количество в коробке (из принятого вычтется 1 за скан-идентификацию)"
                               value={item._boxQtyInput ?? ''}
                               disabled={boxAddBusy}
                 onChange={(e) => {
