@@ -482,6 +482,7 @@ class PurchasesController {
       await addRuntimeNotification({
         type: 'purchase_receipt_invite',
         severity: 'info',
+        profileId,
         title: 'Приглашение в приёмку по закупке',
         message: `${from} приглашает вас в совместную приёмку №${rid} (закупка №${row.purchase_id}). Нажмите «Открыть приёмку» в уведомлении.`,
         meta: {

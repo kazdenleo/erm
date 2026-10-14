@@ -228,6 +228,7 @@ class InventorySessionsController {
       await addRuntimeNotification({
         type: 'inventory_session_invite',
         severity: 'info',
+        profileId: req.user?.profileId ?? null,
         title: 'Приглашение в общую инвентаризацию',
         message: `${from} приглашает вас в общую инвентаризацию. Нажмите кнопку «Открыть инвентаризацию» в этом уведомлении.`,
         meta: {

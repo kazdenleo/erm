@@ -187,6 +187,7 @@ class WarehouseReceiptsController {
       await addRuntimeNotification({
         type: 'receipt_session_invite',
         severity: 'info',
+        profileId: req.user?.profileId ?? null,
         title: 'Приглашение в общую приёмку',
         message: `${from} приглашает вас в общую приёмку. Нажмите кнопку «Открыть приёмку» в этом уведомлении.`,
         meta: {
