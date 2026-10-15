@@ -45,6 +45,19 @@ import {
   notifyCommissionIssue,
   ymWeightGramsToKg,
 } from '../utils/commissionGuards.js';
+import {
+  OZON_COMMISSION_TIER_300,
+  applyOzonPercentAbove300FromOwnPrice,
+  attachOzonTierRatesToCalculator,
+  extractOzonCommissionTierContext,
+  mergeOzonPercentAbove300,
+  ozonCommissionPriceTier,
+  resolveOzonSalesCommissionPercent,
+} from '../utils/ozonCommissionTiers.js';
+import {
+  learnAndPersistOzonLowTierRatesFromCalculators,
+  loadLearnedOzonLowTierRates,
+} from '../utils/ozonCommissionTiersLearning.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -1865,11 +1878,234 @@ class PricesService {
     return next;
   }
 
+  /**
+   * Ставка комиссии Ozon «свыше 300 ₽» из соседнего SKU той же ERP-категории
+   * или из marketplace_category_commission_cache (если образец был с ценой >300).
+   * @returns {{ FBS?: number, FBO?: number }|null}
+   */
+  async _lookupOzonPercentAbove300ByProductId(productId) {
+    if (productId == null) return null;
+    try {
+      const prodRes = await query(
+        `SELECT user_category_id FROM products WHERE id = $1`,
+        [productId]
+      );
+      const userCategoryId = prodRes.rows[0]?.user_category_id;
+
+      if (userCategoryId != null) {
+        const siblingRes = await query(
+          `
+          SELECT c.calculator
+          FROM products p
+          JOIN product_mp_calculator_cache c
+            ON c.product_id = p.id AND c.marketplace = 'ozon' AND c.calculator IS NOT NULL
+          WHERE p.user_category_id = $1
+            AND p.id <> $2
+            AND COALESCE(
+              NULLIF(c.calculator->>'commission_price_basis', '')::double precision,
+              NULLIF(c.calculator->>'price', '')::double precision
+            ) > $3
+            AND (
+              (c.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL
+              OR (c.calculator->'commissions'->'FBO'->>'percent') IS NOT NULL
+              OR (c.calculator->'commissions'->'FBS'->>'percent_above_300') IS NOT NULL
+              OR (c.calculator->'commissions'->'FBO'->>'percent_above_300') IS NOT NULL
+            )
+          ORDER BY c.updated_at DESC NULLS LAST, p.id DESC
+          LIMIT 1
+          `,
+          [userCategoryId, productId, OZON_COMMISSION_TIER_300]
+        );
+        const calc = siblingRes.rows[0]?.calculator;
+        const fromSibling = this._extractOzonAbove300FromCalculator(calc);
+        if (fromSibling) return fromSibling;
+      }
+
+      return await this._lookupOzonPercentAbove300FromCategoryCache(productId, userCategoryId);
+    } catch (e) {
+      logger.warn('[Prices Service] lookup Ozon percent_above_300 failed', {
+        productId,
+        error: e?.message || e,
+      });
+      return null;
+    }
+  }
+
+  _extractOzonAbove300FromCalculator(calc) {
+    if (!calc || typeof calc !== 'object') return null;
+    const pick = (pack) => {
+      if (!pack || typeof pack !== 'object') return null;
+      const above = Number(pack.percent_above_300);
+      if (Number.isFinite(above) && above > 0) return above;
+      const basis = Number(calc.commission_price_basis ?? calc.price);
+      if (Number.isFinite(basis) && ozonCommissionPriceTier(basis) === 'gt300') {
+        const pct = Number(pack.percent);
+        if (Number.isFinite(pct) && pct > 0) return pct;
+      }
+      return null;
+    };
+    const FBS = pick(calc.commissions?.FBS);
+    const FBO = pick(calc.commissions?.FBO);
+    if (FBS == null && FBO == null) return null;
+    return { ...(FBS != null ? { FBS } : {}), ...(FBO != null ? { FBO } : {}) };
+  }
+
+  /**
+   * Fallback: schemes из marketplace_category_commission_cache с percent_above_300
+   * (проставляется при refresh, если образец имел цену >300).
+   */
+  async _lookupOzonPercentAbove300FromCategoryCache(productId, userCategoryId = null) {
+    try {
+      let ozonCatId = null;
+      if (userCategoryId != null) {
+        const uc = await query(
+          `SELECT marketplace_mappings->>'ozon' AS ozon_id FROM user_categories WHERE id = $1`,
+          [userCategoryId]
+        );
+        ozonCatId = uc.rows[0]?.ozon_id ? String(uc.rows[0].ozon_id).trim() : null;
+      }
+      if (!ozonCatId && productId != null) {
+        const cm = await query(
+          `
+          SELECT c.marketplace_category_id
+          FROM category_mappings cm
+          JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ozon'
+          WHERE cm.product_id = $1 AND cm.marketplace = 'ozon'
+          LIMIT 1
+          `,
+          [productId]
+        );
+        ozonCatId = cm.rows[0]?.marketplace_category_id
+          ? String(cm.rows[0].marketplace_category_id).trim()
+          : null;
+      }
+      if (!ozonCatId) return null;
+
+      const variants = [
+        ozonCatId,
+        ozonCatId.replace(/^ozon_/, ''),
+        ozonCatId.startsWith('ozon_') ? ozonCatId : `ozon_${ozonCatId}`,
+      ];
+      const cacheRes = await query(
+        `
+        SELECT schemes FROM marketplace_category_commission_cache
+        WHERE marketplace = 'ozon' AND category_id = ANY($1::text[])
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1
+        `,
+        [variants]
+      );
+      const schemes = cacheRes.rows[0]?.schemes;
+      if (!Array.isArray(schemes) || !schemes.length) return null;
+
+      const out = {};
+      for (const s of schemes) {
+        const key = String(s?.key || '').toUpperCase();
+        if (key !== 'FBS' && key !== 'FBO') continue;
+        const above = Number(s.percent_above_300 ?? s.percentAbove300);
+        if (Number.isFinite(above) && above > 0) {
+          out[key] = above;
+          continue;
+        }
+        const basis = Number(s.price_basis ?? s.priceBasis);
+        const pct = Number(s.percent);
+        if (
+          Number.isFinite(basis) &&
+          ozonCommissionPriceTier(basis) === 'gt300' &&
+          Number.isFinite(pct) &&
+          pct > 0
+        ) {
+          out[key] = pct;
+        }
+      }
+      return out.FBS != null || out.FBO != null ? out : null;
+    } catch (e) {
+      logger.warn('[Prices Service] category-cache above300 lookup failed', {
+        productId,
+        error: e?.message || e,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Проставить percent_above_300 дешёвым SKU из соседей категории с price>300.
+   * Вызывается после batch-синка калькуляторов Ozon.
+   */
+  async _propagateOzonPercentAbove300InCache() {
+    let updated = 0;
+    try {
+      const res = await query(
+        `
+        SELECT p.id AS product_id, p.user_category_id, c.calculator
+        FROM product_mp_calculator_cache c
+        JOIN products p ON p.id = c.product_id
+        WHERE c.marketplace = 'ozon'
+          AND c.calculator IS NOT NULL
+          AND p.user_category_id IS NOT NULL
+        `
+      );
+      /** @type {Map<any, { FBS?: number, FBO?: number }>} */
+      const byCategory = new Map();
+      for (const row of res.rows) {
+        const calc = row.calculator;
+        if (!calc || typeof calc !== 'object') continue;
+        const basis = Number(calc.commission_price_basis ?? calc.price);
+        if (!Number.isFinite(basis) || ozonCommissionPriceTier(basis) !== 'gt300') continue;
+        const cur = byCategory.get(row.user_category_id) || {};
+        for (const key of ['FBS', 'FBO']) {
+          const pack = calc.commissions?.[key];
+          if (!pack) continue;
+          const pct = Number(pack.percent_above_300 ?? pack.percent);
+          if (Number.isFinite(pct) && pct > 0 && cur[key] == null) cur[key] = pct;
+        }
+        if (cur.FBS != null || cur.FBO != null) byCategory.set(row.user_category_id, cur);
+      }
+
+      for (const row of res.rows) {
+        const rates = byCategory.get(row.user_category_id);
+        if (!rates) continue;
+        let calc = row.calculator;
+        if (!calc || typeof calc !== 'object') continue;
+        const beforeFbs = calc.commissions?.FBS?.percent_above_300;
+        const beforeFbo = calc.commissions?.FBO?.percent_above_300;
+        calc = mergeOzonPercentAbove300(applyOzonPercentAbove300FromOwnPrice({ ...calc }), rates);
+        const afterFbs = calc.commissions?.FBS?.percent_above_300;
+        const afterFbo = calc.commissions?.FBO?.percent_above_300;
+        if (beforeFbs === afterFbs && beforeFbo === afterFbo) continue;
+        await this._upsertMpCalculatorCache(row.product_id, 'ozon', calc, 'tier_propagate');
+        updated++;
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] propagate Ozon percent_above_300 failed', {
+        error: e?.message || e,
+      });
+    }
+    return { updated };
+  }
+
   async _enrichOzonCalculatorForMinPrice(
     calculator,
     { productId = null, brandId = null, offerId = null, integrationScope = null } = {}
   ) {
     let calc = calculator;
+    if (calc && typeof calc === 'object') {
+      calc = applyOzonPercentAbove300FromOwnPrice({ ...calc });
+      const above = await this._lookupOzonPercentAbove300ByProductId(productId);
+      if (above) calc = mergeOzonPercentAbove300(calc, above);
+      try {
+        const learned = await loadLearnedOzonLowTierRates();
+        calc = attachOzonTierRatesToCalculator(calc, {
+          le100: learned.le100,
+          le300: learned.le300,
+          source: 'learned_api',
+        });
+      } catch (e) {
+        logger.warn('[Prices Service] attach learned Ozon tier rates failed', {
+          error: e?.message || e,
+        });
+      }
+    }
     calc = await this._enrichOzonCalculatorBrandPromotion(calc, { productId, brandId });
     calc = await this._enrichOzonCalculatorAdsPromotion(calc, {
       offerId,
@@ -1877,6 +2113,27 @@ class PricesService {
       integrationScope,
     });
     return calc;
+  }
+
+  /** Переобучить ставки ≤300 из всего product_mp_calculator_cache (Ozon). */
+  async _learnOzonLowTierRatesFromCache() {
+    try {
+      const res = await query(
+        `
+        SELECT calculator
+        FROM product_mp_calculator_cache
+        WHERE marketplace = 'ozon' AND calculator IS NOT NULL
+        `
+      );
+      return await learnAndPersistOzonLowTierRatesFromCalculators(
+        res.rows.map((r) => r.calculator).filter(Boolean)
+      );
+    } catch (e) {
+      logger.warn('[Prices Service] learn Ozon low-tier rates failed', {
+        error: e?.message || e,
+      });
+      return { updated: false, error: e?.message || String(e) };
+    }
   }
 
   async _upsertMpCalculatorCache(productId, marketplace, calculator, source = 'api') {
@@ -2055,7 +2312,34 @@ class PricesService {
       if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
     }
 
-    return { ok: errors.length === 0 || updated > 0, updated, requests, errors };
+    let propagated = 0;
+    let learnedTiers = null;
+    try {
+      const prop = await this._propagateOzonPercentAbove300InCache();
+      propagated = Number(prop?.updated) || 0;
+    } catch (e) {
+      errors.push({ batch: 'tier_propagate', error: e?.message || String(e) });
+    }
+    try {
+      learnedTiers = await this._learnOzonLowTierRatesFromCache();
+    } catch (e) {
+      errors.push({ batch: 'tier_learn', error: e?.message || String(e) });
+    }
+
+    return {
+      ok: errors.length === 0 || updated > 0,
+      updated,
+      requests,
+      errors,
+      percentAbove300Propagated: propagated,
+      learnedLowTier: learnedTiers?.rates
+        ? {
+            le100: learnedTiers.rates.le100,
+            le300: learnedTiers.rates.le300,
+            updated: Boolean(learnedTiers.updated),
+          }
+        : null,
+    };
   }
 
   async _syncWBCalculatorCacheSequential({ limit, delayMs }) {
@@ -3440,6 +3724,25 @@ class PricesService {
       volume_weight: calc.volume_weight,
       acquiring: calc.acquiring
     };
+    if (marketplace === 'ozon') {
+      if (calc.price != null && Number.isFinite(Number(calc.price))) {
+        out.price = Number(calc.price);
+      }
+      if (calc.commission_price_basis != null && Number.isFinite(Number(calc.commission_price_basis))) {
+        out.commission_price_basis = Number(calc.commission_price_basis);
+      } else if (out.price != null) {
+        out.commission_price_basis = out.price;
+      }
+      if (calc.tier_rates && typeof calc.tier_rates === 'object') {
+        const le100 = Number(calc.tier_rates.le100);
+        const le300 = Number(calc.tier_rates.le300);
+        out.tier_rates = {
+          ...(Number.isFinite(le100) && le100 > 0 ? { le100 } : {}),
+          ...(Number.isFinite(le300) && le300 > 0 ? { le300 } : {}),
+          ...(calc.tier_rates.source ? { source: String(calc.tier_rates.source) } : {}),
+        };
+      }
+    }
     if (calc.processing_cost_max != null && Number.isFinite(Number(calc.processing_cost_max))) {
       out.processing_cost_max = Number(calc.processing_cost_max);
     }
@@ -4173,8 +4476,27 @@ class PricesService {
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(productId, 'ozon', priceFbo, { ...calculator, price_scheme: 'FBO' }, { scheme: 'FBO' });
             }
-            if (priceFbs == null && priceFbo == null) errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';
-            else if (priceFbs == null) errors.ozon_fbs = 'Нет комиссии FBS Ozon';
+            if (priceFbs == null && priceFbo == null) {
+              const fbsCtx = extractOzonCommissionTierContext(calculator, 'FBS');
+              const missingAbove300 =
+                resolveOzonSalesCommissionPercent(OZON_COMMISSION_TIER_300 + 1, fbsCtx) == null &&
+                (fbsCtx.apiPrice == null || ozonCommissionPriceTier(fbsCtx.apiPrice) !== 'gt300');
+              errors.ozon = missingAbove300
+                ? `Нет ставки Ozon свыше ${OZON_COMMISSION_TIER_300} ₽ в категории (нужен товар с ценой >${OZON_COMMISSION_TIER_300} ₽) — прежняя мин. цена сохранена`
+                : 'Не удалось рассчитать минимальную цену Ozon';
+              if (missingAbove300) {
+                await notifyCommissionIssue({
+                  type: 'commission_cache_missing',
+                  severity: 'warn',
+                  marketplace: 'ozon',
+                  source: 'min_price_recalc',
+                  dedupeKey: `ozon-tier300:${product.user_category_id || productId}`,
+                  title: `Нет комиссии Ozon свыше ${OZON_COMMISSION_TIER_300} ₽`,
+                  message: `Товар ${productId} (${skuOzon}): цена в кабинете ≤${OZON_COMMISSION_TIER_300} ₽ (ставка 17%/23%), а мин. цена должна быть выше. Нужен сосед в категории с ценой >${OZON_COMMISSION_TIER_300} ₽ из API Ozon. Прежняя мин. цена не затёрта.`,
+                  meta: { productId, offerId: skuOzon, userCategoryId: product.user_category_id },
+                });
+              }
+            } else if (priceFbs == null) errors.ozon_fbs = 'Нет комиссии FBS Ozon';
             else if (priceFbo == null) errors.ozon_fbo = 'Нет комиссии FBO Ozon';
           }
         } else if (data?.error) {

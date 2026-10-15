@@ -17,6 +17,12 @@ import {
 import { resolveMarketplaceBuyoutRate } from '../../utils/marketplaceBuyoutRate.js';
 import { resolveOzonLogisticsCostsForReturn, computeOzonReturnUnitAmount } from '../../utils/ozonReturnAmount.js';
 import { calculateMinPrice, resolveSppPercent } from '../../utils/calculateMinPrice.js';
+import {
+  extractOzonCommissionTierContext,
+  ozonCommissionPriceTier,
+  ozonCommissionTierLabel,
+  resolveOzonSalesCommissionPercent,
+} from '../../utils/ozonCommissionTiers.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   getProfileLengthUnit,
@@ -776,7 +782,8 @@ function PriceDetailsModalInner({
     commissionDisplayPercent = commissionPercentBefore;
     commissionNetPercent = commissionPercentBefore;
   }
-  const marketplaceCommissionPercent = commissionNetPercent / 100;
+  let marketplaceCommissionPercent = commissionNetPercent / 100;
+  let ozonCommissionTierHint = '';
   const acquiringPercent = (acquiring || 0) / 100;
   
   // Процент услуг Джем (только для WB, вычисляется от суммы товара)
@@ -819,6 +826,19 @@ function PriceDetailsModalInner({
       sppPercentForMp
     );
     if (solved != null) calculatedPrice = solved;
+  }
+
+  // Ozon: ставка зависит от ценового порога (≤100 / 101–300 / >300)
+  if (marketplace === 'ozon' && calculatedPrice > 0) {
+    const tierCtx = extractOzonCommissionTierContext(resolvedCalculatorData, priceScheme);
+    const tierPct = resolveOzonSalesCommissionPercent(calculatedPrice, tierCtx);
+    if (tierPct != null && tierPct > 0) {
+      commissionDisplayPercent = tierPct;
+      commissionNetPercent = tierPct;
+      marketplaceCommissionPercent = tierPct / 100;
+    }
+    const tier = ozonCommissionPriceTier(calculatedPrice);
+    ozonCommissionTierHint = ozonCommissionTierLabel(tier);
   }
 
   let ozonReturnMeta = null;
@@ -1189,7 +1209,8 @@ function PriceDetailsModalInner({
             
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">
-                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commissionDisplayPercent}%):
+                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commissionDisplayPercent}%
+                {marketplace === 'ozon' && ozonCommissionTierHint ? ` · ${ozonCommissionTierHint}` : ''}):
               </span>
               <PriceBreakdownValue
                 className="negative"
@@ -1197,12 +1218,20 @@ function PriceDetailsModalInner({
                   `= ${calculatedPrice.toFixed(2)} × ${Number(commissionDisplayPercent).toFixed(2)}% = ${commissionGrossAmount.toFixed(2)} ₽` +
                   (marketplace === 'wb'
                     ? ' — схема FBO/FBW (Склад WB, paidStorageKgvp), по категории из API WB'
-                    : '')
+                    : marketplace === 'ozon' && ozonCommissionTierHint
+                      ? ` — ставка Ozon для диапазона «${ozonCommissionTierHint}»`
+                      : '')
                 }
                 extra={
                   marketplace === 'wb' && commissions.FBS && commissions.FBS.percent !== commission.percent ? (
                     <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic', whiteSpace: 'normal'}}>
                       FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
+                    </div>
+                  ) : marketplace === 'ozon' &&
+                    storedCommissionPercent > 0 &&
+                    Number(commissionDisplayPercent) !== Number(storedCommissionPercent) ? (
+                    <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic', whiteSpace: 'normal'}}>
+                      В API при цене {Number(resolvedCalculatorData.commission_price_basis ?? resolvedCalculatorData.price) || '—'} ₽ было {storedCommissionPercent}%
                     </div>
                   ) : null
                 }

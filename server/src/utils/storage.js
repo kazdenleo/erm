@@ -49,6 +49,8 @@ const DATA_FILES = {
   wbReturnTariffsCache: join(DATA_DIR, 'wbReturnTariffsCache.json'),
   ozonActionsCache: join(DATA_DIR, 'ozonActionsCache.json'),
   ozonActionProductsCache: join(DATA_DIR, 'ozonActionProductsCache.json'),
+  /** Выученные из API Ozon ставки комиссий ≤100 / 101–300 ₽ */
+  ozonCommissionTiersCache: join(DATA_DIR, 'ozonCommissionTiersCache.json'),
   wbPromotionsCache: join(DATA_DIR, 'wbPromotionsCache.json'),
   tokenStatusCache: join(DATA_DIR, 'tokenStatusCache.json'),
 

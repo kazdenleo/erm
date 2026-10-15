@@ -5,14 +5,23 @@ const baseCalculator = {
   acquiring: 1,
   processing_cost: 30,
   logistics_cost: 519,
+  price: 2500,
+  commission_price_basis: 2500,
   commissions: {
-    FBS: { percent: 44, first_mile_amount: 30, direct_flow_trans_amount: 519 },
+    FBS: {
+      percent: 44,
+      percent_above_300: 44,
+      first_mile_amount: 30,
+      direct_flow_trans_amount: 519,
+      return_amount: 0,
+    },
   },
 };
 
 const product = {
   cost: 653.25,
   minPrice: 50,
+  buyout_rate_ozon: 100,
   organization_tax_system: null,
   organization_vat: 'NO_VAT',
 };

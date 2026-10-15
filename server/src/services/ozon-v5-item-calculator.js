@@ -6,6 +6,7 @@
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import { extractOzonBrandPromotionPercent } from '../utils/ozonBrandPromotion.js';
+import { applyOzonPercentAbove300FromOwnPrice } from '../utils/ozonCommissionTiers.js';
 import { resolveMarketplaceVolumeLiters } from '../utils/productVolume.js';
 
 function parseOzonTariff(val) {
@@ -79,10 +80,13 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     logger.warn('[Ozon v5 calc] Acquiring not found in API response, using 0%');
   }
 
+  const priceNum = parseFloat(item.price?.price || 0);
   let calculatorData = {
     offer_id: item.offer_id,
     product_id: item.product_id,
-    price: parseFloat(item.price?.price || 0),
+    price: priceNum,
+    /** Цена Ozon, под которую API вернул sales_percent_* (для ценовых порогов комиссии). */
+    commission_price_basis: Number.isFinite(priceNum) ? priceNum : null,
     old_price: parseFloat(item.price?.old_price || 0),
     marketing_price: parseFloat(item.price?.marketing_price || 0),
     min_price: parseFloat(item.price?.min_price || 0),
@@ -328,6 +332,8 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     calculatorData.brand_promotion_percent = apiBrandPromotionPercent;
     calculatorData.brand_promotion_source = 'api';
   }
+
+  applyOzonPercentAbove300FromOwnPrice(calculatorData);
 
   return {
     found: true,

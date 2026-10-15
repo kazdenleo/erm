@@ -330,13 +330,29 @@ function ozonSchemesFromCalculator(calc) {
   if (fbo == null) {
     fbo = raw.sales_percent_fbo ?? raw.fbo_sales_percent ?? raw.fbo_percent;
   }
+  const priceBasis = Number(calc?.commission_price_basis ?? calc?.price);
+  const hasPriceBasis = Number.isFinite(priceBasis) && priceBasis >= 0;
+  const above300 =
+    hasPriceBasis && priceBasis > 300
+      ? true
+      : false;
+
   const schemes = [];
-  if (fbs != null && Number.isFinite(Number(fbs))) {
-    schemes.push({ key: 'FBS', label: 'FBS', shortLabel: 'FBS', percent: Number(fbs) });
-  }
-  if (fbo != null && Number.isFinite(Number(fbo))) {
-    schemes.push({ key: 'FBO', label: 'FBO', shortLabel: 'FBO', percent: Number(fbo) });
-  }
+  const pushScheme = (key, percent, pack) => {
+    if (percent == null || !Number.isFinite(Number(percent))) return;
+    const pct = Number(percent);
+    const entry = { key, label: key, shortLabel: key, percent: pct };
+    if (hasPriceBasis) entry.price_basis = priceBasis;
+    const packAbove = Number(pack?.percent_above_300);
+    if (Number.isFinite(packAbove) && packAbove > 0) {
+      entry.percent_above_300 = packAbove;
+    } else if (above300) {
+      entry.percent_above_300 = pct;
+    }
+    schemes.push(entry);
+  };
+  pushScheme('FBS', fbs, calc?.commissions?.FBS);
+  pushScheme('FBO', fbo, calc?.commissions?.FBO);
   return schemes;
 }
 
@@ -354,6 +370,13 @@ async function findOzonSampleByUserCategory(userCategoryId) {
     WHERE p.user_category_id = $1
       AND TRIM(COALESCE(ps.sku, '')) <> ''
     ORDER BY
+      (
+        COALESCE(
+          NULLIF(cache.calculator->>'commission_price_basis', '')::double precision,
+          NULLIF(cache.calculator->>'price', '')::double precision
+        ) > 300
+      ) DESC NULLS LAST,
+      (cache.calculator->'commissions'->'FBS'->>'percent_above_300') IS NOT NULL DESC,
       (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
       (cache.calculator->'commissions'->'FBO'->>'percent') IS NOT NULL DESC,
       p.updated_at DESC NULLS LAST,
@@ -389,6 +412,13 @@ async function findOzonSampleViaCategoryMappings(ozonCategoryId) {
       )
       AND TRIM(COALESCE(ps.sku, '')) <> ''
     ORDER BY
+      (
+        COALESCE(
+          NULLIF(cache.calculator->>'commission_price_basis', '')::double precision,
+          NULLIF(cache.calculator->>'price', '')::double precision
+        ) > 300
+      ) DESC NULLS LAST,
+      (cache.calculator->'commissions'->'FBS'->>'percent_above_300') IS NOT NULL DESC,
       (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
       p.updated_at DESC NULLS LAST,
       p.id DESC
@@ -418,6 +448,13 @@ async function findOzonSampleViaUserCategoryMapping(ozonCategoryId) {
     WHERE uc.marketplace_mappings->>'ozon' = ANY($1::text[])
       AND TRIM(COALESCE(ps.sku, '')) <> ''
     ORDER BY
+      (
+        COALESCE(
+          NULLIF(cache.calculator->>'commission_price_basis', '')::double precision,
+          NULLIF(cache.calculator->>'price', '')::double precision
+        ) > 300
+      ) DESC NULLS LAST,
+      (cache.calculator->'commissions'->'FBS'->>'percent_above_300') IS NOT NULL DESC,
       (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
       p.updated_at DESC NULLS LAST,
       p.id DESC

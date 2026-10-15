@@ -13,6 +13,11 @@ import {
   normalizePriceScheme,
   MIN_USABLE_COMMISSION_PERCENT,
 } from '../utils/commissionGuards.js';
+import {
+  OZON_COMMISSION_TIER_300,
+  extractOzonCommissionTierContext,
+  resolveOzonSalesCommissionPercent,
+} from '../utils/ozonCommissionTiers.js';
 
 function safeExpenseNum(value) {
   const n = Number(value);
@@ -159,8 +164,26 @@ export function calculateMinPrice(
   const returnRate =
     buyoutRateInput != null && buyoutRateInput < 100 ? 1 - buyoutRateInput / 100 : 0;
 
-  const marketplaceCommissionPercent = (extractMinPriceCommissionPercent(calculator, marketplace, priceScheme) || 0) / 100;
+  const baseCommissionPercent = extractMinPriceCommissionPercent(calculator, marketplace, priceScheme);
+  if (baseCommissionPercent == null || baseCommissionPercent < MIN_USABLE_COMMISSION_PERCENT) return null;
+
+  const ozonTierCtx =
+    marketplace === 'ozon' ? extractOzonCommissionTierContext(calculator, priceScheme) : null;
+  const resolveCommissionPercentAtPrice = (priceNum) => {
+    if (marketplace !== 'ozon' || !ozonTierCtx) return baseCommissionPercent;
+    return resolveOzonSalesCommissionPercent(priceNum, ozonTierCtx);
+  };
+
+  // Сид: категориальная (>300), иначе mid-тир. Цикл всё равно пересчитает по факту цены.
+  const seedCommissionPercent =
+    marketplace === 'ozon'
+      ? resolveOzonSalesCommissionPercent(OZON_COMMISSION_TIER_300 + 1, ozonTierCtx) ??
+        resolveOzonSalesCommissionPercent(Math.min(250, OZON_COMMISSION_TIER_300), ozonTierCtx) ??
+        baseCommissionPercent
+      : baseCommissionPercent;
+  const marketplaceCommissionPercent = seedCommissionPercent / 100;
   if (marketplaceCommissionPercent < MIN_USABLE_COMMISSION_PERCENT / 100) return null;
+
   const acquiringPercent = (Number(acquiring) || 0) / 100;
   let gemServicesPercent = 0;
   if (marketplace === 'wb' && wbGemServicesPercent != null) gemServicesPercent = (Number(wbGemServicesPercent) || 0) / 100;
@@ -187,7 +210,6 @@ export function calculateMinPrice(
     gemServicesPercent +
     (marketplace === 'ym' ? ymDeliveryPercent + ymAgencyPercent : 0);
   const vatR = Number(profile.vatRate) || 0;
-  const incR = Number(profile.incomeTaxRate) || 0;
   const targetNet = Number(minProfitNum);
 
   const baseFixedExpenses =
@@ -214,7 +236,11 @@ export function calculateMinPrice(
 
     const calculateNetProfit = (price) => {
       const priceNum = Number(price) || 0;
-      const commissionAmount = priceNum * marketplaceCommissionPercent;
+      const commissionPct = resolveCommissionPercentAtPrice(priceNum);
+      if (commissionPct == null || commissionPct < MIN_USABLE_COMMISSION_PERCENT) {
+        return Number.NEGATIVE_INFINITY;
+      }
+      const commissionAmount = priceNum * (commissionPct / 100);
       let acquiringAmount = priceNum * acquiringPercent;
       if (marketplace === 'ym') {
         acquiringAmount =
@@ -271,6 +297,16 @@ export function calculateMinPrice(
       finalPrice += 1;
       if (finalPrice > basePriceNum * 20 + 1000) break;
     }
+
+    // Fail-closed: цена >300 ₽ без категориальной ставки Ozon — не занижаем мин. цену ставкой 23%.
+    if (
+      marketplace === 'ozon' &&
+      finalPrice > OZON_COMMISSION_TIER_300 &&
+      resolveCommissionPercentAtPrice(finalPrice) == null
+    ) {
+      return null;
+    }
+    if (!(calculateNetProfit(finalPrice) >= targetNet)) return null;
     return finalPrice > 0 ? Math.round(finalPrice) : null;
   };
 
