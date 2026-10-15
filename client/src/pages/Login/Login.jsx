@@ -40,8 +40,7 @@ export function Login({ mode = 'user' }) {
         return;
       }
       if (result?.user?.role && String(result.user.role) === 'admin') {
-        logout();
-        setError('Для администратора продукта используйте отдельный вход: /platform-login');
+        navigate('/platform/accounts', { replace: true });
         return;
       }
       navigate(from && from.startsWith('/platform') ? '/' : from, { replace: true });
