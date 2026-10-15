@@ -54,7 +54,7 @@ export default function HomeScreen() {
       ) : null}
       <Tile
         title="Приёмка по закупке"
-        subtitle="Принять грузоместа, вскрыть каждое и принять товар из него"
+        subtitle="Принять грузоместа и товар из каждого места"
         accent={colors.success}
         onPress={() => router.push('/cargo')}
       />

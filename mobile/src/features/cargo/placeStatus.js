@@ -3,7 +3,7 @@ import { colors } from '../../ui/theme';
 
 const STATUS = {
   accepted: { label: 'Принято', fg: colors.primary, bg: '#EFF4FF' },
-  opened: { label: 'Вскрыто', fg: colors.warning, bg: colors.warningBg },
+  opened: { label: 'В работе', fg: colors.warning, bg: colors.warningBg },
   closed: { label: 'Разобрано', fg: colors.success, bg: colors.successBg },
   received: { label: 'Оприходовано', fg: colors.muted, bg: colors.bg },
 };

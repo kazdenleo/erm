@@ -87,8 +87,7 @@ export default function CargoPurchaseScreen() {
     }
   };
 
-  const openPlace = (placeId, autoOpen = false) =>
-    router.push(`/cargo/place/${placeId}${autoOpen ? '?autoOpen=1' : ''}`);
+  const openPlace = (placeId) => router.push(`/cargo/place/${placeId}`);
 
   const accept = async (code, force = false) => {
     const res = await cargoApi.acceptPlace(id, code, { force });
@@ -99,7 +98,7 @@ export default function CargoPurchaseScreen() {
       if (place?.status === 'accepted' || place?.status === 'opened' || place?.status === 'closed') {
         Alert.alert('Грузоместо уже принято', `${code}\n\nПерейти к приёмке товара из него?`, [
           { text: 'Отмена', style: 'cancel' },
-          { text: place.status === 'accepted' ? 'Вскрыть' : 'Открыть', onPress: () => openPlace(res.placeId, true) },
+          { text: 'Открыть', onPress: () => openPlace(res.placeId) },
         ]);
       } else {
         setMessage({ kind: 'warning', text: `${code}: товар из этого места уже оприходован` });
@@ -181,12 +180,12 @@ export default function CargoPurchaseScreen() {
 
   const confirmComplete = () => {
     const places = data.places || [];
-    const notOpened = places.filter((p) => p.status === 'accepted').length;
+    const withoutItems = places.filter((p) => p.status === 'accepted').length;
     const inProgress = places.filter((p) => p.status === 'opened').length;
     const expected = data.expectedCargoPlaces;
     const warnings = [];
     if (expected != null && places.length < expected) warnings.push(`Принято мест: ${places.length} из ${expected}.`);
-    if (notOpened) warnings.push(`Не вскрыто мест: ${notOpened}.`);
+    if (withoutItems) warnings.push(`Мест без разбора товара: ${withoutItems}.`);
     if (inProgress) warnings.push(`Не закрыто мест: ${inProgress}.`);
     Alert.alert(
       'Оформить приёмку?',
@@ -266,7 +265,7 @@ export default function CargoPurchaseScreen() {
 
       <Text style={styles.section}>Грузоместа</Text>
       {places.length === 0 ? (
-        <Text style={styles.muted}>Отсканируйте штрихкоды всех пришедших мест, затем вскрывайте их по одному.</Text>
+        <Text style={styles.muted}>Отсканируйте штрихкоды всех пришедших мест, затем зайдите в каждое и примите товар.</Text>
       ) : null}
       {places.map((place, index) => (
         <Pressable
@@ -291,7 +290,7 @@ export default function CargoPurchaseScreen() {
         </Pressable>
       ))}
       {places.some((p) => p.status === 'accepted') ? (
-        <Text style={styles.mutedSmall}>Нажмите на место, чтобы вскрыть; удерживайте, чтобы удалить ошибочный скан.</Text>
+        <Text style={styles.mutedSmall}>Нажмите на место, чтобы принять из него товар; удерживайте, чтобы удалить ошибочный скан.</Text>
       ) : null}
 
       {receipt ? (

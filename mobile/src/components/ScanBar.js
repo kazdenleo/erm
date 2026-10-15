@@ -11,7 +11,10 @@ function cleanCode(raw) {
 }
 
 /** Сканер в режиме клавиатуры печатает код за доли секунды; пауза дольше — код целиком введён. */
-const SCAN_IDLE_MS = 300;
+const SCAN_IDLE_MS = 350;
+
+/** Один и тот же ШК повторно не принимаем (двойной скан / удержание в луче). */
+const DUPLICATE_COOLDOWN_MS = 1500;
 
 /**
  * Поле скана: аппаратный сканер ТСД работает как клавиатура — код принимается по Enter или,
@@ -27,6 +30,8 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   const onScanRef = useRef(onScan);
   const queue = useRef([]);
   const draining = useRef(false);
+  const lastAccepted = useRef({ code: '', at: 0 });
+  const busyWas = useRef(busy);
 
   useEffect(() => {
     onScanRef.current = onScan;
@@ -44,8 +49,33 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
     idleTimer.current = null;
   };
 
+  const focus = useCallback(() => {
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ focus }), [focus]);
+
+  useFocusEffect(
+    useCallback(() => {
+      focus();
+    }, [focus])
+  );
+
+  // После обработки скана поле часто теряет фокус — вернуть его, иначе следующий скан «висит» до нажатия.
+  useEffect(() => {
+    if (busyWas.current && !busy && !keyboard && !cameraOpen) focus();
+    busyWas.current = busy;
+  }, [busy, keyboard, cameraOpen, focus]);
+
   /** Коды, отсканированные во время обработки предыдущего, не теряются, а обрабатываются по очереди. */
   const enqueue = useCallback(async (code) => {
+    const now = Date.now();
+    if (code === lastAccepted.current.code && now - lastAccepted.current.at < DUPLICATE_COOLDOWN_MS) {
+      return;
+    }
+    if (queue.current[queue.current.length - 1] === code) return;
+
+    lastAccepted.current = { code, at: now };
     queue.current.push(code);
     if (draining.current) return;
     draining.current = true;
@@ -64,18 +94,6 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
       draining.current = false;
     }
   }, []);
-
-  const focus = useCallback(() => {
-    setTimeout(() => inputRef.current?.focus(), 50);
-  }, []);
-
-  useImperativeHandle(ref, () => ({ focus }), [focus]);
-
-  useFocusEffect(
-    useCallback(() => {
-      focus();
-    }, [focus])
-  );
 
   const submit = (raw) => {
     clearIdleTimer();
@@ -106,12 +124,15 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
           value={value}
           onChangeText={onChangeText}
           onSubmitEditing={() => submit(value)}
+          blurOnSubmit={false}
           submitBehavior="submit"
           showSoftInputOnFocus={keyboard}
           autoFocus
           autoCapitalize="none"
           autoCorrect={false}
           spellCheck={false}
+          importantForAutofill="no"
+          textContentType="none"
           returnKeyType="done"
           placeholder={placeholder || 'Отсканируйте штрихкод'}
           placeholderTextColor={colors.muted}

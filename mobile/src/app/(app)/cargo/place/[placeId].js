@@ -47,7 +47,7 @@ function ItemRow({ item, editable, onChange, onRemove }) {
 }
 
 export default function CargoPlaceScreen() {
-  const { placeId, autoOpen } = useLocalSearchParams();
+  const { placeId } = useLocalSearchParams();
   const id = String(placeId || '');
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -55,7 +55,6 @@ export default function CargoPlaceScreen() {
   const [busy, setBusy] = useState(false);
   const [multiplier, setMultiplier] = useState(1);
   const busyRef = useRef(false);
-  const autoOpenRef = useRef(autoOpen === '1');
 
   const runBusy = useCallback(async (fn) => {
     if (busyRef.current) return;
@@ -69,31 +68,24 @@ export default function CargoPlaceScreen() {
     }
   }, []);
 
-  const open = useCallback(
-    () =>
-      runBusy(async () => {
-        try {
-          setData(await cargoApi.openPlace(id));
-          setMessage({ kind: 'success', text: 'Грузоместо вскрыто — сканируйте товар' });
-          scanOk();
-        } catch (e) {
-          setMessage({ kind: 'error', text: errorMessage(e, 'Не удалось вскрыть грузоместо') });
-          scanError();
-        }
-      }),
-    [id, runBusy]
-  );
-
   useEffect(() => {
-    cargoApi.getPlace(id).then(
-      (next) => {
-        setData(next);
-        if (autoOpenRef.current && next.place.status === 'accepted') open();
-        autoOpenRef.current = false;
-      },
-      (e) => setLoadError(errorMessage(e, 'Не удалось загрузить грузоместо'))
-    );
-  }, [id, open]);
+    let cancelled = false;
+    (async () => {
+      try {
+        let next = await cargoApi.getPlace(id);
+        // Вход в место сразу переводит его в работу — отдельного «Вскрыть» нет.
+        if (next.place.status === 'accepted') {
+          next = await cargoApi.openPlace(id);
+        }
+        if (!cancelled) setData(next);
+      } catch (e) {
+        if (!cancelled) setLoadError(errorMessage(e, 'Не удалось загрузить грузоместо'));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   const switchToPlace = (otherId) =>
     Alert.alert('Другое грузоместо', 'Закрыть текущее место и перейти к отсканированному?', [
@@ -104,7 +96,7 @@ export default function CargoPlaceScreen() {
           runBusy(async () => {
             try {
               if (data?.place?.status === 'opened') await cargoApi.closePlace(id);
-              router.replace(`/cargo/place/${otherId}?autoOpen=1`);
+              router.replace(`/cargo/place/${otherId}`);
             } catch (e) {
               setMessage({ kind: 'error', text: errorMessage(e) });
             }
@@ -112,15 +104,8 @@ export default function CargoPlaceScreen() {
       },
     ]);
 
-  const handleScan = (code) => {
-    const status = data?.place?.status;
-    if (status === 'accepted') {
-      if (code === data.place.barcode) return open();
-      setMessage({ kind: 'warning', text: 'Сначала вскройте грузоместо' });
-      scanError();
-      return;
-    }
-    return runBusy(async () => {
+  const handleScan = (code) =>
+    runBusy(async () => {
       setMessage(null);
       try {
         const res = await cargoApi.addItem(id, { code, quantity: multiplier });
@@ -148,7 +133,6 @@ export default function CargoPlaceScreen() {
         });
       }
     });
-  };
 
   const changeQuantity = (item, quantity) =>
     runBusy(async () => {
@@ -225,15 +209,6 @@ export default function CargoPlaceScreen() {
         <PlaceStatusBadge status={place.status} />
       </Card>
 
-      {place.status === 'accepted' ? (
-        <View style={styles.gap}>
-          <Button title="Вскрыть грузоместо" loading={busy} onPress={open} />
-          <Text style={styles.muted}>Или отсканируйте штрихкод этого места ещё раз.</Text>
-          <ScanBar onScan={handleScan} busy={busy} placeholder="Штрихкод грузоместа" />
-          <Button title="Удалить грузоместо" variant="secondary" onPress={removePlace} />
-        </View>
-      ) : null}
-
       {editable ? (
         <>
           <ScanBar
@@ -253,7 +228,7 @@ export default function CargoPlaceScreen() {
 
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
 
-      {place.status !== 'accepted' ? (
+      {place.status !== 'received' ? (
         <>
           <Text style={styles.section}>
             В месте: позиций {items.length} · штук {totalQty}
@@ -280,6 +255,9 @@ export default function CargoPlaceScreen() {
       {place.status === 'received' ? (
         <Text style={styles.muted}>Товар из этого места уже оприходован на склад.</Text>
       ) : null}
+      {place.status === 'accepted' ? (
+        <Button title="Удалить грузоместо" variant="secondary" onPress={removePlace} />
+      ) : null}
       {place.status !== 'opened' ? (
         <Button title="К закупке" variant="secondary" onPress={() => router.back()} />
       ) : null}
@@ -289,7 +267,6 @@ export default function CargoPlaceScreen() {
 
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 12, paddingBottom: 40 },
-  gap: { gap: 10 },
   gapSmall: { gap: 8 },
   flex: { flex: 1 },
   barcode: { fontSize: 20, fontWeight: '700', color: colors.text },
