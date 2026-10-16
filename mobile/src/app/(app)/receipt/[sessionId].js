@@ -191,19 +191,22 @@ export default function ReceiptSessionScreen() {
   const isOwner = user?.id != null && Number(session.ownerUserId) === Number(user.id);
 
   return (
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <View style={styles.screen}>
+      <View style={styles.scanArea}>
+        <ScanBar onScan={handleScan} busy={busy} placeholder="Отсканируйте товар" />
+        <View style={styles.multipliers}>
+          <Text style={styles.muted}>Количество за скан:</Text>
+          {MULTIPLIERS.map((m) => (
+            <Chip key={m} label={`×${m}`} active={multiplier === m} onPress={() => setMultiplier(m)} />
+          ))}
+        </View>
+      </View>
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Pressable onPress={() => Share.share({ message: sid })} style={styles.sessionInfo}>
         <Text style={styles.muted}>Код сессии (нажмите, чтобы поделиться)</Text>
         <Text style={styles.sessionCode}>{sid}</Text>
       </Pressable>
 
-      <ScanBar onScan={handleScan} busy={busy} placeholder="Отсканируйте товар" />
-      <View style={styles.multipliers}>
-        <Text style={styles.muted}>Количество за скан:</Text>
-        {MULTIPLIERS.map((m) => (
-          <Chip key={m} label={`×${m}`} active={multiplier === m} onPress={() => setMultiplier(m)} />
-        ))}
-      </View>
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
       {loadError ? <Banner kind="warning" text={`Нет связи: ${loadError}`} /> : null}
 
@@ -242,11 +245,14 @@ export default function ReceiptSessionScreen() {
           <Button title="Выйти из приёмки" variant="secondary" onPress={leave} />
         </View>
       )}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  scanArea: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 10, backgroundColor: colors.bg, zIndex: 1 },
   content: { padding: 16, gap: 12, paddingBottom: 40 },
   gap: { gap: 10 },
   flex: { flex: 1 },

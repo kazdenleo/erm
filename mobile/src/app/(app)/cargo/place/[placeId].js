@@ -202,15 +202,10 @@ export default function CargoPlaceScreen() {
   const title = place.number ? `Место ${place.number} из ${place.placesTotal}` : 'Грузоместо';
 
   return (
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <View style={styles.screen}>
       <Stack.Screen options={{ title }} />
-      <Card style={styles.gapSmall}>
-        <Text style={styles.barcode}>{place.barcode}</Text>
-        <PlaceStatusBadge status={place.status} />
-      </Card>
-
       {editable ? (
-        <>
+        <View style={styles.scanArea}>
           <ScanBar
             onScan={handleScan}
             busy={busy}
@@ -223,8 +218,13 @@ export default function CargoPlaceScreen() {
               <Chip key={m} label={`×${m}`} active={multiplier === m} onPress={() => setMultiplier(m)} />
             ))}
           </View>
-        </>
+        </View>
       ) : null}
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <Card style={styles.gapSmall}>
+        <Text style={styles.barcode}>{place.barcode}</Text>
+        <PlaceStatusBadge status={place.status} />
+      </Card>
 
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
 
@@ -261,11 +261,14 @@ export default function CargoPlaceScreen() {
       {place.status !== 'opened' ? (
         <Button title="К закупке" variant="secondary" onPress={() => router.back()} />
       ) : null}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  scanArea: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 10, backgroundColor: colors.bg, zIndex: 1 },
   content: { padding: 16, gap: 12, paddingBottom: 40 },
   gapSmall: { gap: 8 },
   flex: { flex: 1 },

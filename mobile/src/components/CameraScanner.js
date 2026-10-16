@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Button } from '../ui/components';
 import { colors } from '../ui/theme';
@@ -52,15 +52,18 @@ export function CameraScanner({ active, onScan, hint }) {
   }
 
   return (
-    <View style={styles.panel}>
-      <CameraView
-        style={styles.camera}
-        facing="back"
-        enableTorch={torch}
-        barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
-        onBarcodeScanned={handleScanned}
-      />
-      <View pointerEvents="none" style={styles.frame} />
+    // На Android TextureView/SurfaceView камеры чернеет внутри ScrollView и при overflow:hidden.
+    <View style={styles.panel} collapsable={false}>
+      <View style={styles.cameraWrap} collapsable={false}>
+        <CameraView
+          style={styles.camera}
+          facing="back"
+          enableTorch={torch}
+          barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
+          onBarcodeScanned={handleScanned}
+        />
+        <View pointerEvents="none" style={styles.frame} />
+      </View>
       <View style={styles.overlay}>
         {hint ? <Text style={styles.hint}>{hint}</Text> : null}
         <Text style={styles.last} numberOfLines={1}>
@@ -76,32 +79,43 @@ export function CameraScanner({ active, onScan, hint }) {
 
 const styles = StyleSheet.create({
   panel: {
-    height: 220,
+    height: 260,
     borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: '#000',
+    backgroundColor: '#111',
     borderWidth: 1,
     borderColor: colors.border,
+    // Не использовать overflow:'hidden' — на Android это часто даёт чёрный превью.
+    ...Platform.select({ android: { elevation: 1 }, ios: {} }),
   },
-  camera: { ...StyleSheet.absoluteFillObject },
+  cameraWrap: {
+    flex: 1,
+    width: '100%',
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    overflow: Platform.OS === 'ios' ? 'hidden' : 'visible',
+  },
+  camera: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
   frame: {
     position: 'absolute',
     left: '12%',
     right: '12%',
-    top: '28%',
-    height: '36%',
+    top: '22%',
+    height: '42%',
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.85)',
     borderRadius: 12,
   },
   overlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     gap: 6,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderBottomLeftRadius: 14,
+    borderBottomRightRadius: 14,
   },
   hint: { color: '#FDE68A', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   last: { color: '#fff', fontSize: 13, textAlign: 'center' },

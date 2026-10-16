@@ -214,8 +214,17 @@ export default function CargoPurchaseScreen() {
     !receipt?.createdByUserId || (user?.id != null && Number(receipt.createdByUserId) === Number(user.id));
 
   return (
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <View style={styles.screen}>
       <Stack.Screen options={{ title: `Закупка №${purchase.id}` }} />
+      <View style={styles.scanArea}>
+        <ScanBar
+          onScan={handleScan}
+          busy={busy}
+          placeholder="Отсканируйте грузоместо"
+          cameraHint="Наведите на штрихкод грузоместа"
+        />
+      </View>
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Card style={styles.gapSmall}>
         <Text style={styles.supplier}>{purchase.supplierName || 'Поставщик не указан'}</Text>
         {purchase.warehouseName ? <Text style={styles.muted}>Склад: {purchase.warehouseName}</Text> : null}
@@ -254,12 +263,6 @@ export default function CargoPurchaseScreen() {
         )}
       </Card>
 
-      <ScanBar
-        onScan={handleScan}
-        busy={busy}
-        placeholder="Отсканируйте грузоместо"
-        cameraHint="Наведите на штрихкод грузоместа"
-      />
       <Banner kind={message?.kind} text={message?.text} onClose={() => setMessage(null)} />
       {loadError ? <Banner kind="warning" text={`Нет связи: ${loadError}`} /> : null}
 
@@ -309,11 +312,14 @@ export default function CargoPurchaseScreen() {
           )}
         </Card>
       ) : null}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  scanArea: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, backgroundColor: colors.bg, zIndex: 1 },
   content: { padding: 16, gap: 12, paddingBottom: 40 },
   gap: { gap: 10 },
   gapSmall: { gap: 6 },

@@ -110,17 +110,21 @@ export default function AssemblyScreen() {
   } = session;
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-      refreshControl={<RefreshControl refreshing={ordersLoading} onRefresh={() => reloadOrders()} />}
-    >
-      <ScanBar
-        onScan={handleScan}
-        busy={busy}
-        placeholder="Отсканируйте товар"
-        cameraHint={current && session.phase === 'collecting' ? 'Сканируйте оставшиеся товары заказа' : null}
-      />
+    <View style={styles.screen}>
+      <View style={styles.scanArea}>
+        <ScanBar
+          onScan={handleScan}
+          busy={busy}
+          placeholder="Отсканируйте товар"
+          cameraHint={current && session.phase === 'collecting' ? 'Сканируйте оставшиеся товары заказа' : null}
+        />
+      </View>
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={ordersLoading} onRefresh={() => reloadOrders()} />}
+      >
       <Banner kind={message?.kind} text={message?.text} onClose={clearMessage} />
 
       {current ? <CurrentOrder session={session} /> : null}
@@ -168,11 +172,14 @@ export default function AssemblyScreen() {
       {groups.length > LIST_LIMIT ? (
         <Text style={styles.muted}>…и ещё {groups.length - LIST_LIMIT}</Text>
       ) : null}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.bg },
+  scanArea: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, backgroundColor: colors.bg, zIndex: 1 },
   content: { padding: 16, gap: 12, paddingBottom: 40 },
   gap: { gap: 10 },
   flex: { flex: 1 },
