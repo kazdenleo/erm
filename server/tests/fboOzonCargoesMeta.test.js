@@ -4,6 +4,7 @@ import {
   buildOzonPackingSubmitPreview,
   ozonCargoKindFromOzonType,
 } from '../src/services/fboSuppliesOzonCargoes.service.js';
+import { formatOzonCargoErrorReasons } from '../src/utils/ozonCargoErrors.js';
 
 describe('buildOzonPackingSubmitPreview', () => {
   test('blocks api submit when ozon cargo already filled', () => {
@@ -81,5 +82,19 @@ describe('ozonCargoKindFromOzonType', () => {
     expect(ozonCargoKindFromOzonType('PALLET')).toBe('pallet');
     expect(ozonCargoKindFromOzonType('BOX')).toBe('box');
     expect(ozonCargoKindFromOzonType('')).toBe('box');
+  });
+});
+
+describe('formatOzonCargoErrorReasons', () => {
+  test('translates WAREHOUSE_LIMITS_EXCEED', () => {
+    const msg = formatOzonCargoErrorReasons({
+      error_reasons: ['WAREHOUSE_LIMITS_EXCEED'],
+      items_validation: [],
+    });
+    expect(msg).toMatch(/лимит грузомест/i);
+  });
+
+  test('falls back to raw code for unknown reasons', () => {
+    expect(formatOzonCargoErrorReasons({ error_reasons: ['SOME_NEW_CODE'] })).toBe('SOME_NEW_CODE');
   });
 });

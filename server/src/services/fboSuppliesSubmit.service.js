@@ -13,6 +13,7 @@ import {
 } from '../utils/fboSupplyPackingCheck.js';
 import logger from '../utils/logger.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { formatOzonCargoErrorReasons } from '../utils/ozonCargoErrors.js';
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
@@ -84,9 +85,7 @@ async function pollOzonCargoesCreateInfo(
     }
     if (info.status === 'FAILED' || info.status === 'ERROR') {
       const err = new Error(
-        typeof info.errors === 'string'
-          ? info.errors
-          : info.errors?.message || 'Ozon отклонил установку грузомест'
+        formatOzonCargoErrorReasons(info.errors) || 'Ozon отклонил установку грузомест'
       );
       err.statusCode = 400;
       err.details = info.raw;
