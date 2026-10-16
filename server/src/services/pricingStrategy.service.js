@@ -2,7 +2,7 @@
  * Стратегии ценообразования: пресеты конфига и расчёт цены продажи.
  *
  * Режимы:
- * - floor — цена продажи = расчётный минимум
+ * - floor — цена продажи = расчётный минимум (FBS/FBO по price_push_settings профиля)
  * - target_margin — себестоимость + целевая маржа %, не ниже пола
  * - competitor — от цен конкурентов (WB/YM; на Ozon шаг пропускается)
  * - sales — корректировка от скорости продаж (FBS orders)
@@ -11,6 +11,10 @@
  */
 
 import { query } from '../config/database.js';
+import {
+  parsePricePushSettings,
+  resolvePushFloorForMarketplace,
+} from '../utils/pricePushSettings.js';
 import {
   formatPriceChangeReason,
   logMarketplacePriceChange,
@@ -456,18 +460,42 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
     strategyId: null,
   });
 
+  // Пол стратегии = тот же выбор FBS/FBO, что и при пуше мин. цен на МП.
+  let pushSchemes = parsePricePushSettings(null);
+  try {
+    const pref = await query(
+      `SELECT price_push_settings FROM profiles WHERE id = $1 LIMIT 1`,
+      [product.profile_id]
+    );
+    pushSchemes = parsePricePushSettings(pref.rows?.[0]?.price_push_settings);
+  } catch {
+    /* колонка/профиль могут отсутствовать — дефолт обеих схем */
+  }
+
   let floorsRes;
   try {
     floorsRes = await query(
-      `SELECT marketplace, min_price, selling_price, max_price, price_before_discount
+      `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price, max_price, price_before_discount
        FROM product_marketplace_prices
        WHERE product_id = $1
-         AND min_price IS NOT NULL AND min_price > 0
+         AND (
+           (min_price IS NOT NULL AND min_price > 0)
+           OR (min_price_fbs IS NOT NULL AND min_price_fbs > 0)
+           OR (min_price_fbo IS NOT NULL AND min_price_fbo > 0)
+         )
          ${marketplace ? 'AND marketplace = $2' : ''}`,
       marketplace ? [pid, String(marketplace).toLowerCase()] : [pid]
     );
   } catch (colErr) {
-    if (!String(colErr.message || '').includes('max_price') && !String(colErr.message || '').includes('price_before_discount')) throw colErr;
+    const msg = String(colErr.message || '');
+    if (
+      !msg.includes('max_price') &&
+      !msg.includes('price_before_discount') &&
+      !msg.includes('min_price_fbs') &&
+      !msg.includes('min_price_fbo')
+    ) {
+      throw colErr;
+    }
     floorsRes = await query(
       `SELECT marketplace, min_price, selling_price
        FROM product_marketplace_prices
@@ -481,7 +509,12 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
   const results = [];
   for (const row of floorsRes.rows || []) {
     const mp = String(row.marketplace).toLowerCase();
-    const floor = Number(row.min_price);
+    const floorResolved = resolvePushFloorForMarketplace(row, mp, pushSchemes);
+    const floor =
+      floorResolved != null
+        ? floorResolved
+        : floorRub(row.min_price) ?? floorRub(row.min_price_fbs) ?? floorRub(row.min_price_fbo);
+    if (floor == null) continue;
     const previousSelling = row.selling_price != null ? Number(row.selling_price) : null;
     const previousBefore =
       row.price_before_discount != null && Number.isFinite(Number(row.price_before_discount))
