@@ -30,6 +30,55 @@ function Sticker({ order }) {
   );
 }
 
+/** Состав группы заказов для списка (из assemblyCompositionLines или строк заказа). */
+function compositionLinesForGroup(rows) {
+  const lines = [];
+  for (const o of rows || []) {
+    const acl = o.assemblyCompositionLines ?? o.assembly_composition_lines;
+    if (Array.isArray(acl) && acl.length) {
+      for (const line of acl) {
+        const qty = Math.max(1, Number(line.quantity ?? line.qty ?? 1) || 1);
+        lines.push({
+          key: `${o.orderId}-${line.productId ?? line.product_id ?? line.offerId ?? lines.length}`,
+          name: line.productName || line.product_name || line.name || '—',
+          attribute: String(line.displayAttributeValue ?? line.display_attribute_value ?? '').trim(),
+          article: String(line.offerId ?? line.orderLineId ?? line.sku ?? line.productSku ?? '').trim(),
+          quantity: qty,
+        });
+      }
+      continue;
+    }
+    lines.push({
+      key: String(o.orderId ?? o.order_id ?? lines.length),
+      name: o.productName || o.product_name || '—',
+      attribute: String(o.displayAttributeValue ?? o.display_attribute_value ?? '').trim(),
+      article: String(o.offerId ?? o.offer_id ?? o.productSku ?? o.product_sku ?? '').trim(),
+      quantity: Math.max(1, Number(o.quantity) || 1),
+    });
+  }
+  return lines;
+}
+
+function CompositionList({ lines, compact = false }) {
+  if (!lines.length) return null;
+  return (
+    <View style={compact ? styles.compListCompact : styles.compList}>
+      {lines.map((line) => (
+        <View key={line.key} style={compact ? styles.compLineCompact : styles.compLine}>
+          <View style={styles.flex}>
+            <Text style={compact ? styles.compNameCompact : styles.compName} numberOfLines={compact ? 2 : 3}>
+              {line.name}
+              {line.attribute ? ` · ${line.attribute}` : ''}
+            </Text>
+            {line.article ? <Text style={styles.compArticle}>{line.article}</Text> : null}
+          </View>
+          <Text style={compact ? styles.compQtyCompact : styles.compQty}>{line.quantity} шт</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function CurrentOrder({ session }) {
   const { current, lines, phase, busy, printing, retryFinish, reset, printLabel } = session;
   const { order } = current;
@@ -153,19 +202,19 @@ export default function AssemblyScreen() {
       <Text style={styles.section}>На сборке: {groups.length}</Text>
       {groups.length === 0 && !ordersLoading ? <Text style={styles.muted}>Заказов на сборке нет</Text> : null}
       {groups.slice(0, LIST_LIMIT).map((g) => {
-        const qty = g.rows.reduce((s, o) => s + (Number(o.quantity) || 1), 0);
+        const composition = compositionLinesForGroup(g.rows);
+        const totalQty = composition.reduce((s, l) => s + l.quantity, 0);
         const active = current?.key === g.key;
         return (
           <View key={g.key} style={[styles.listRow, active && styles.listRowActive]}>
-            <MarketplaceBadge marketplace={g.primary.marketplace} />
-            <View style={styles.flex}>
-              <Text style={styles.listName} numberOfLines={2}>
-                {g.rows.map((o) => o.productName || o.product_name).filter(Boolean).join(', ') || g.primary.orderId}
-              </Text>
-              <Text style={styles.listMeta}>
-                {g.primary.orderId} · {qty} шт
+            <View style={styles.listHeader}>
+              <MarketplaceBadge marketplace={g.primary.marketplace} />
+              <Text style={styles.listMeta} numberOfLines={1}>
+                {g.primary.orderId} · {totalQty} шт
               </Text>
             </View>
+            <Sticker order={g.primary} />
+            <CompositionList lines={composition} compact />
           </View>
         );
       })}
@@ -212,9 +261,7 @@ const styles = StyleSheet.create({
   badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   badgeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    gap: 8,
     padding: 12,
     borderRadius: 12,
     backgroundColor: colors.card,
@@ -222,6 +269,27 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   listRowActive: { borderColor: colors.primary, borderWidth: 2 },
-  listName: { fontSize: 15, color: colors.text },
-  listMeta: { fontSize: 13, color: colors.muted, marginTop: 2 },
+  listHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  listMeta: { flex: 1, fontSize: 13, color: colors.muted },
+  compList: { gap: 6 },
+  compListCompact: { gap: 4 },
+  compLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: colors.bg,
+  },
+  compLineCompact: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  compName: { fontSize: 16, color: colors.text, fontWeight: '500' },
+  compNameCompact: { fontSize: 15, color: colors.text, fontWeight: '500' },
+  compArticle: { fontSize: 12, color: colors.muted, marginTop: 2 },
+  compQty: { fontSize: 18, fontWeight: '800', color: colors.text },
+  compQtyCompact: { fontSize: 15, fontWeight: '700', color: colors.text, minWidth: 44, textAlign: 'right' },
 });
