@@ -72,6 +72,7 @@ export function Settings() {
     display_length_unit: 'mm',
     display_weight_unit: 'g',
     packing_display_attribute_id: '',
+    purchase_receipt_mode: 'scanner',
     timezone: 'Europe/Moscow',
     card_quality_settings: {
       showInCardWork: false,
@@ -212,6 +213,7 @@ export function Settings() {
         packing_display_attribute_id: form.packing_display_attribute_id
           ? Number(form.packing_display_attribute_id)
           : null,
+        purchase_receipt_mode: form.purchase_receipt_mode === 'manual' ? 'manual' : 'scanner',
         timezone: form.timezone || 'Europe/Moscow',
         card_quality_settings: {
           showInCardWork: form.card_quality_settings?.showInCardWork === true,
@@ -698,6 +700,34 @@ export function Settings() {
                       <option value="kg">кг</option>
                     </select>
                   </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16, marginBottom: 8 }}>
+                <strong>Режим приёмки</strong>
+                <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                  Сканер: количество только сканом (шт. или ШК коробки), удаление — кнопкой «Удалить товар» и
+                  повторным сканом. Ручная: можно править количество в таблице.
+                </span>
+                <div className="mt-2" style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <label className="form-check" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="radio"
+                      name="purchase_receipt_mode"
+                      checked={form.purchase_receipt_mode !== 'manual'}
+                      onChange={() => setForm((f) => ({ ...f, purchase_receipt_mode: 'scanner' }))}
+                    />
+                    Через сканер
+                  </label>
+                  <label className="form-check" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="radio"
+                      name="purchase_receipt_mode"
+                      checked={form.purchase_receipt_mode === 'manual'}
+                      onChange={() => setForm((f) => ({ ...f, purchase_receipt_mode: 'manual' }))}
+                    />
+                    Ручная
+                  </label>
                 </div>
               </div>
 

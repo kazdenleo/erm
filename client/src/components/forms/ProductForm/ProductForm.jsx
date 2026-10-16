@@ -1092,6 +1092,8 @@ const EMPTY_PRODUCT_FORM_DATA = {
     brand: '',
   country_of_origin: '',
   okpd2_code: '',
+  box_barcode: '',
+  units_per_box: '',
     cost: '',
   additionalExpenses: '',
     minPrice: '',
@@ -2095,6 +2097,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
         brand: currentProduct.brand || '',
         country_of_origin: currentProduct.country_of_origin || '',
         okpd2_code: currentProduct.okpd2_code || '',
+        box_barcode: currentProduct.box_barcode || currentProduct.boxBarcode || '',
+        units_per_box:
+          currentProduct.units_per_box != null && currentProduct.units_per_box !== ''
+            ? String(currentProduct.units_per_box)
+            : currentProduct.unitsPerBox != null && currentProduct.unitsPerBox !== ''
+              ? String(currentProduct.unitsPerBox)
+              : '',
         cost: currentProduct.cost || '',
         additionalExpenses: (() => {
           const v = currentProduct.additionalExpenses ?? currentProduct.additional_expenses;
@@ -7128,6 +7137,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
       okpd2_code: normalizeOkpd2Code(formData.okpd2_code) || null,
+      box_barcode: String(formData.box_barcode || '').trim() || null,
+      units_per_box: (() => {
+        const n = Math.floor(Number(formData.units_per_box));
+        return Number.isFinite(n) && n > 0 ? n : null;
+      })(),
       // У комплекта cost пересчитывается на сервере по комплектующим — не шлём ручное значение.
       ...(formData.product_type === 'kit'
         ? {}
@@ -8942,6 +8956,49 @@ export const ProductForm = React.forwardRef(function ProductForm({
             + Добавить баркод
           </Button>
         </h4>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 12,
+            marginBottom: 12,
+            alignItems: 'flex-end',
+          }}
+        >
+          <div style={{ minWidth: 180 }}>
+            <label className="form-label" htmlFor="box_barcode" style={{ fontSize: 12 }}>
+              ШК коробки
+            </label>
+            <input
+              id="box_barcode"
+              type="text"
+              className="form-control form-control-sm"
+              value={formData.box_barcode || ''}
+              onChange={(e) => handleChange('box_barcode', e.target.value)}
+              placeholder="Штрихкод упаковки"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <div style={{ width: 120 }}>
+            <label className="form-label" htmlFor="units_per_box" style={{ fontSize: 12 }}>
+              Шт. в упаковке
+            </label>
+            <input
+              id="units_per_box"
+              type="number"
+              min={1}
+              step={1}
+              className="form-control form-control-sm"
+              value={formData.units_per_box || ''}
+              onChange={(e) => handleChange('units_per_box', e.target.value.replace(/[^\d]/g, ''))}
+              placeholder="N"
+            />
+          </div>
+          <span className="text-muted" style={{ fontSize: 11, maxWidth: 320, lineHeight: 1.35 }}>
+            В приёмке скан ШК коробки добавляет указанное количество штук.
+          </span>
+        </div>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
           Если штрихкод не указан, он создастся сам перед отправкой карточки на маркетплейс. Кнопка «Сгенерировать» нужна, только если хотите увидеть код заранее.
           Иконки отмечают площадки, на которые этот код уже отправлен (и какой ШК печатать в FBO).

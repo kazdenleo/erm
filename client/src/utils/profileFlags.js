@@ -57,6 +57,12 @@ export function accountSettingsFromProfile(profile) {
         : profile.packingDisplayAttributeId != null && profile.packingDisplayAttributeId !== ''
           ? String(profile.packingDisplayAttributeId)
           : '',
+    purchase_receipt_mode:
+      String(profile.purchase_receipt_mode ?? profile.purchaseReceiptMode ?? 'scanner')
+        .trim()
+        .toLowerCase() === 'manual'
+        ? 'manual'
+        : 'scanner',
     timezone: String(profile.timezone ?? profile.timeZone ?? 'Europe/Moscow').trim() || 'Europe/Moscow',
     card_quality_settings: parseClientCardQualitySettings(
       profile.card_quality_settings ?? profile.cardQualitySettings

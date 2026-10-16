@@ -2535,9 +2535,38 @@ class ProductsRepositoryPG {
     return [...new Set(out)];
   }
 
+  async _findProductIdByBoxBarcode(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
+    if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
+    const hasDigits = allowDigitMatch && digitsOnly.length > 0;
+    const result = await query(
+      hasDigits
+        ? `SELECT p.id
+           FROM products p
+           WHERE COALESCE(p.is_archived, false) = false
+             AND NULLIF(TRIM(COALESCE(p.box_barcode, '')), '') IS NOT NULL
+             AND (
+               LOWER(TRIM(p.box_barcode)) = LOWER(TRIM($1))
+               OR REGEXP_REPLACE(p.box_barcode, '\\D', '', 'g') = $2
+             )
+           ORDER BY p.id
+           LIMIT 1`
+        : `SELECT p.id
+           FROM products p
+           WHERE COALESCE(p.is_archived, false) = false
+             AND NULLIF(TRIM(COALESCE(p.box_barcode, '')), '') IS NOT NULL
+             AND LOWER(TRIM(p.box_barcode)) = LOWER(TRIM($1))
+           ORDER BY p.id
+           LIMIT 1`,
+      hasDigits ? [trimmed, digitsOnly] : [trimmed]
+    );
+    return result.rows[0]?.id ?? null;
+  }
+
   async _findProductIdByBarcodeValue(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
     if (isCorruptBarcodeString(trimmed)) return null;
     const hasDigits = allowDigitMatch && digitsOnly.length > 0;
+    const byBox = await this._findProductIdByBoxBarcode(trimmed, digitsOnly, { allowDigitMatch });
+    if (byBox != null) return byBox;
     const result = await query(
       hasDigits
         ? `SELECT bc.product_id
@@ -2567,6 +2596,9 @@ class ProductsRepositoryPG {
    */
   async _findProductIdByVendorLabelCode(trimmed) {
     if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
+
+    const byBox = await this._findProductIdByBoxBarcode(trimmed, '', { allowDigitMatch: false });
+    if (byBox != null) return byBox;
 
     const byBarcode = await query(
       `SELECT bc.product_id
@@ -2960,8 +2992,8 @@ class ProductsRepositoryPG {
           mp_ozon_name, mp_ozon_description, mp_ozon_brand,
           mp_wb_vendor_code, mp_wb_name, mp_wb_description, mp_wb_brand,
           mp_ym_name, mp_ym_description,
-          mp_field_links, okpd2_code
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb, $36)
+          mp_field_links, okpd2_code, box_barcode, units_per_box
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb, $36, $37, $38)
         RETURNING *
       `, [
         profileIdRaw,
@@ -3009,6 +3041,13 @@ class ProductsRepositoryPG {
             : {}
         ),
         mpStr(productData.okpd2_code),
+        mpStr(productData.box_barcode ?? productData.boxBarcode),
+        (() => {
+          const raw = productData.units_per_box ?? productData.unitsPerBox;
+          if (raw == null || raw === '') return null;
+          const n = Math.floor(Number(raw));
+          return Number.isFinite(n) && n > 0 ? n : null;
+        })(),
       ]);
       
       const product = productResult.rows[0];
@@ -3305,6 +3344,7 @@ class ProductsRepositoryPG {
         'weight', 'length', 'width', 'height', 'volume',
         'product_weight', 'product_length', 'product_width', 'product_height',
         'quantity', 'unit', 'description', 'product_type', 'organization_id', 'country_of_origin', 'okpd2_code',
+        'box_barcode', 'units_per_box',
         'mp_ozon_name', 'mp_ozon_description', 'mp_ozon_brand',
         'mp_wb_vendor_code', 'mp_wb_name', 'mp_wb_description', 'mp_wb_brand',
         'mp_ym_name', 'mp_ym_description',
@@ -3368,6 +3408,42 @@ class ProductsRepositoryPG {
         const buyoutRateValue = (v === null || v === undefined) ? 95 : (isNaN(parseFloat(v)) ? 95 : parseFloat(v));
         updateFields.push(`buyout_rate = $${paramIndex++}`);
         params.push(buyoutRateValue);
+      }
+
+      if (updates.hasOwnProperty('boxBarcode') && !updates.hasOwnProperty('box_barcode')) {
+        updates.box_barcode = updates.boxBarcode;
+      }
+      if (updates.hasOwnProperty('unitsPerBox') && !updates.hasOwnProperty('units_per_box')) {
+        updates.units_per_box = updates.unitsPerBox;
+      }
+      if (updates.hasOwnProperty('box_barcode')) {
+        const raw = updates.box_barcode;
+        updates.box_barcode =
+          raw != null && String(raw).trim() !== '' ? String(raw).trim() : null;
+      }
+      if (updates.hasOwnProperty('units_per_box')) {
+        const raw = updates.units_per_box;
+        if (raw == null || raw === '') {
+          updates.units_per_box = null;
+        } else {
+          const n = Math.floor(Number(raw));
+          updates.units_per_box = Number.isFinite(n) && n > 0 ? n : null;
+        }
+      }
+      if (updates.box_barcode) {
+        const clash = await client.query(
+          `SELECT product_id FROM barcodes
+           WHERE LOWER(TRIM(barcode)) = LOWER(TRIM($1))
+           LIMIT 1`,
+          [updates.box_barcode]
+        );
+        if (clash.rows?.[0]?.product_id && Number(clash.rows[0].product_id) !== numId) {
+          const err = new Error(
+            `ШК коробки «${updates.box_barcode}» уже используется как обычный штрихкод другого товара`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
       }
       
       for (const field of allowedFields) {

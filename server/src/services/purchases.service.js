@@ -38,6 +38,7 @@ import {
   transferIncomingBetweenWarehouses,
 } from '../utils/stockWarehouseReassign.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import addressStorageService from './addressStorage.service.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 /** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
@@ -2027,6 +2028,20 @@ async function applyPurchaseReceiptStockByProductInTx(
         warehouseId: dwId || null,
         profileId: pid,
       });
+      try {
+        await addressStorageService.placeInboundToAssigned(dwId, productId, stockQty, {
+          client,
+          note: `Приёмка №${rid} по закупке №${purchaseId}`,
+        });
+      } catch (e) {
+        logger.warn('[AddressStorage] placeInboundToAssigned (purchase) failed', {
+          purchaseId,
+          purchaseReceiptId: rid,
+          productId,
+          stockQty,
+          message: e?.message || String(e),
+        });
+      }
       if (moveFromIncoming > 0) {
         await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
           productId,
@@ -4339,10 +4354,15 @@ class PurchasesService {
     };
   }
 
-  /** Сканирование: +1 по товару (по productId или barcode) */
+  /**
+   * Сканирование в приёмку.
+   * Обычный ШК / артикул: ±1 шт.
+   * ШК коробки (products.box_barcode): ± units_per_box шт.
+   * mode: 'add' | 'remove'
+   */
   async scanToReceipt(
     receiptId,
-    { productId = null, barcode = null, sku = null, scannerId = null } = {},
+    { productId = null, barcode = null, sku = null, scannerId = null, mode = 'add' } = {},
     { profileId, userId = null } = {}
   ) {
     const rid = parseInt(receiptId, 10);
@@ -4362,15 +4382,17 @@ class PurchasesService {
     const skuStr = sku != null ? String(sku).trim() : '';
     const sc = scannerId != null ? String(scannerId).trim() : '';
 
+    const removeMode = String(mode || 'add').trim().toLowerCase() === 'remove';
+
     // Серверная защита от дублей
-    const k = scanKey(rid, bc, skuStr || String(pidNum || ''), sc || null);
+    const k = scanKey(rid, `${removeMode ? 'rm:' : ''}${bc}`, skuStr || String(pidNum || ''), sc || null);
     if (shouldIgnoreDuplicateScan(k)) {
       return { ok: true, ignoredDuplicate: true };
     }
 
     let cisMeta = null;
     let cisProductId = null;
-    if (looksLikeCis(bc)) {
+    if (!removeMode && looksLikeCis(bc)) {
       const head = await query(
         `SELECT r.id, r.status, p.organization_id, p.warehouse_id
          FROM purchase_receipts r
@@ -4420,7 +4442,29 @@ class PurchasesService {
       }
 
       let resolvedProductId = pidNum || cisProductId;
+      let matchedBoxBarcode = false;
       const codesToTry = productLookupCodesFromScan(bc);
+      if (!resolvedProductId) {
+        for (const code of codesToTry.length ? codesToTry : bc ? [bc] : []) {
+          const bcDigits = String(code).replace(/\D+/g, '');
+          const boxR = await client.query(
+            `SELECT id
+             FROM products
+             WHERE NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
+               AND (
+                 LOWER(TRIM(box_barcode)) = LOWER(TRIM($1))
+                 OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = $2
+               )
+             LIMIT 1`,
+            [code, bcDigits || '__none__']
+          );
+          if (boxR.rows?.[0]?.id) {
+            resolvedProductId = Number(boxR.rows[0].id);
+            matchedBoxBarcode = true;
+            break;
+          }
+        }
+      }
       if (!resolvedProductId) {
         for (const code of codesToTry) {
           const bcDigits = String(code).replace(/\D+/g, '');
@@ -4462,8 +4506,42 @@ class PurchasesService {
       }
       await assertProductAllowedInProfile(client, resolvedProductId, pid);
 
+      // Если товар нашли по productId, но скан совпал с его ШК коробки — тоже коробка.
+      if (!matchedBoxBarcode && bc) {
+        const boxCheck = await client.query(
+          `SELECT 1 FROM products
+           WHERE id = $1
+             AND NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
+             AND (
+               LOWER(TRIM(box_barcode)) = LOWER(TRIM($2))
+               OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = REGEXP_REPLACE($2, '\\D', '', 'g')
+             )
+           LIMIT 1`,
+          [resolvedProductId, bc]
+        );
+        if (boxCheck.rows?.length) matchedBoxBarcode = true;
+      }
+
+      let delta = 1;
+      if (matchedBoxBarcode) {
+        const qtyR = await client.query(
+          `SELECT units_per_box FROM products WHERE id = $1 LIMIT 1`,
+          [resolvedProductId]
+        );
+        const units = Math.floor(Number(qtyR.rows?.[0]?.units_per_box) || 0);
+        if (!Number.isFinite(units) || units <= 0) {
+          const err = new Error(
+            'У товара указан ШК коробки, но не задано количество штук в упаковке. Заполните поле в карточке товара.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        delta = units;
+      }
+      if (removeMode) delta = -delta;
+
       const { scannedQuantity } = await upsertReceiptItemQuantityInTx(client, rid, resolvedProductId, {
-        delta: 1,
+        delta,
         scannerId: sc || null,
         userId,
       });
@@ -4471,6 +4549,9 @@ class PurchasesService {
         ok: true,
         productId: resolvedProductId,
         scannedQuantity,
+        quantityDelta: delta,
+        isBox: matchedBoxBarcode,
+        removed: removeMode,
         cis: Boolean(cisMeta?.bound),
       };
     });

@@ -79,6 +79,12 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.procurement_status_enabled ?? b.procurementStatusEnabled;
     out.procurement_status_enabled = v === true || v === '1' || v === 'true';
   }
+  if (b.purchase_receipt_mode !== undefined || b.purchaseReceiptMode !== undefined) {
+    const v = String(b.purchase_receipt_mode ?? b.purchaseReceiptMode ?? 'scanner')
+      .trim()
+      .toLowerCase();
+    out.purchase_receipt_mode = v === 'manual' ? 'manual' : 'scanner';
+  }
   if (b.kits_enabled !== undefined || b.kitsEnabled !== undefined) {
     const v = b.kits_enabled ?? b.kitsEnabled;
     out.kits_enabled = v === true || v === '1' || v === 'true';

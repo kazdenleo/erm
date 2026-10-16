@@ -42,6 +42,9 @@ import { MarketplaceReturnsPanel } from '../../components/returns/MarketplaceRet
 import { MarketplaceReturnClaimsPanel } from '../../components/returns/MarketplaceReturnClaimsPanel';
 import { marketplaceReturnClaimsApi } from '../../services/marketplaceReturnClaims.api';
 import { orderRowCatalogSku } from '../../utils/orderActions.js';
+import { useProductAddresses } from '../../hooks/useProductAddresses';
+import { AddressBadge } from '../../components/addressStorage/AddressBadge';
+import { addressStorageApi } from '../../services/addressStorage.api';
 import './WarehouseOperations.css';
 import '../../pages/Returns/Returns.css';
 
@@ -279,7 +282,14 @@ export function WarehouseOperations({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, selectedOrganizationId } = useAuth();
+  const { user, selectedOrganizationId, profile } = useAuth();
+  const receiptMode =
+    String(profile?.purchase_receipt_mode ?? profile?.purchaseReceiptMode ?? 'scanner')
+      .trim()
+      .toLowerCase() === 'manual'
+      ? 'manual'
+      : 'scanner';
+  const isReceiptScannerMode = receiptMode === 'scanner';
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
@@ -368,6 +378,18 @@ export function WarehouseOperations({
   const [customerReturnWarehouseId, setCustomerReturnWarehouseId] = useState('');
   // Список для поступления: { productId, sku, name, quantity, cost }
   const [receiptList, setReceiptList] = useState([]);
+  const receiptAddressProductIds = useMemo(
+    () => (receiptList || []).map((item) => Number(item.productId)).filter((n) => Number.isFinite(n) && n > 0),
+    [receiptList]
+  );
+  const receiptAddresses = useProductAddresses(receiptAddressProductIds);
+  const receiptAssignedCode = useCallback(
+    (productId) => {
+      const p = receiptAddresses.primaryFor(productId, receiptWarehouseId || null);
+      return p?.assigned ? p.code : null;
+    },
+    [receiptAddresses, receiptWarehouseId]
+  );
   const scanDebounceRef = useRef(null);
   const manualSearchDebounceRef = useRef(null);
   const [receiptsList, setReceiptsList] = useState([]);
@@ -381,10 +403,8 @@ export function WarehouseOperations({
   const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
   const [receiptSessionId, setReceiptSessionId] = useState('');
   const [receiptSessionOwnerUserId, setReceiptSessionOwnerUserId] = useState(null);
-  const [boxAddBusy, setBoxAddBusy] = useState(false);
   const lastReceiptScannedProductRef = useRef(null);
-  const rowBoxQtyDebounceRef = useRef({});
-  const BOX_QTY_APPLY_MS = 2000;
+  const [receiptRemoveMode, setReceiptRemoveMode] = useState(false);
   const [inviteUsers, setInviteUsers] = useState([]);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inventoryLiveDraft, setInventoryLiveDraft] = useState(null);
@@ -1121,8 +1141,7 @@ export function WarehouseOperations({
     if (!addReceiptModalOpen) {
       clearScanField(scanInputRef.current);
       lastReceiptScannedProductRef.current = null;
-      Object.values(rowBoxQtyDebounceRef.current).forEach((t) => clearTimeout(t));
-      rowBoxQtyDebounceRef.current = {};
+      setReceiptRemoveMode(false);
     }
   }, [addReceiptModalOpen]);
 
@@ -1138,18 +1157,13 @@ export function WarehouseOperations({
     }
     setReceiptSessionOwnerUserId(ownerId);
     setReceiptList((prev) => {
-      const byPid = new Map((prev || []).map((i) => [String(i.productId), i]));
-      return items.map((it) => {
-        const prevRow = byPid.get(String(it.productId));
-        return {
+      return items.map((it) => ({
         productId: it.productId,
         sku: it.sku || '—',
         name: it.name || 'Без названия',
         quantity: Number(it.quantity) || 0,
-          cost: it.cost ?? '',
-          _boxQtyInput: prevRow?._boxQtyInput ?? '',
-        };
-      });
+        cost: it.cost ?? '',
+      }));
     });
   }, []);
 
@@ -1589,8 +1603,24 @@ export function WarehouseOperations({
     applySessionStateToList(res);
   };
 
-  /** Поступление по скану: 1 скан = +1 шт в список (без сохранения в БД) */
-  const lookupByBarcodeOrSkuThenReceiptOne = async (value) => {
+  /** Поступление по скану: ШК штуки = +1, ШК коробки = +units_per_box */
+  const receiptQtyForProductScan = (product, scannedCode) => {
+    const code = normalizeScanInput(scannedCode || '');
+    const box = String(product?.box_barcode ?? product?.boxBarcode ?? '').trim();
+    if (code && box && code.toLowerCase() === box.toLowerCase()) {
+      const units = Math.floor(Number(product?.units_per_box ?? product?.unitsPerBox) || 0);
+      if (!Number.isFinite(units) || units <= 0) {
+        const err = new Error(
+          'У товара указан ШК коробки, но не задано количество штук в упаковке'
+        );
+        throw err;
+      }
+      return { qty: units, isBox: true };
+    }
+    return { qty: 1, isBox: false };
+  };
+
+  const lookupByBarcodeOrSkuThenReceiptOne = async (value, { remove = false } = {}) => {
     const v = normalizeScanInput(value);
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
@@ -1602,17 +1632,54 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
-    if (shouldIgnoreDuplicateWarehouseScan(receiptScanDedupRef, v)) return;
+    if (shouldIgnoreDuplicateWarehouseScan(receiptScanDedupRef, `${remove ? 'rm:' : ''}${v}`)) return;
     setLookupError(null);
     try {
-      const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
+      const product = await lookupProductByAny(v, {
+        title: remove ? 'Выберите товар для удаления' : 'Выберите товар для поступления',
+        allowLinkBarcode: !remove,
+      });
+      const { qty, isBox } = receiptQtyForProductScan(product, v);
+      const signedQty = remove ? -qty : qty;
       lastReceiptScannedProductRef.current = product;
       if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-        await addToReceiptSession(product, 1);
+        if (remove) {
+          await receiptsApi.addSessionQuantity(String(receiptSessionId).trim(), {
+            code: String(product?.id || ''),
+            quantity: signedQty,
+          }).then(applySessionStateToList);
+        } else {
+          await addToReceiptSession(product, qty);
+        }
+      } else if (remove) {
+        setReceiptList((prev) =>
+          prev
+            .map((item) =>
+              String(item.productId) === String(product.id)
+                ? { ...item, quantity: Math.max(0, (Number(item.quantity) || 0) - qty) }
+                : item
+            )
+            .filter((item) => (Number(item.quantity) || 0) > 0)
+        );
       } else {
-      addToReceiptList(product, 1);
+        addToReceiptList(product, qty);
       }
-      setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
+      let cellHint = '';
+      try {
+        const map = await addressStorageApi.lookup([product.id]);
+        const list = map?.[Number(product.id)] || [];
+        const wid = Number(receiptWarehouseId);
+        const own =
+          list.find((x) => x.assigned && Number(x.warehouseId) === wid) ||
+          list.find((x) => x.assigned);
+        if (own?.code) cellHint = ` → 📍 ${own.code}`;
+      } catch {
+        /* адрес необязателен для приёмки */
+      }
+      const sign = remove ? '−' : '+';
+      setOpMessage(
+        `${remove ? 'Удалено' : 'В список'}: ${sign}${qty} шт${isBox ? ' (коробка)' : ''} — ${product.name || product.sku}${cellHint}`
+      );
       playEventSound(SOUND_EVENTS.scan_ok);
       clearScanField(scanInputRef.current);
       scanInputRef.current?.focus();
@@ -1875,10 +1942,12 @@ export function WarehouseOperations({
     (code) => {
       if (receiptSuppressScanRef.current) return;
       setLookupError(null);
-      lookupByBarcodeOrSkuThenReceiptOne(code);
+      lookupByBarcodeOrSkuThenReceiptOne(code, {
+        remove: isReceiptScannerMode && receiptRemoveMode,
+      });
       scanInputRef.current?.focus();
     },
-    [lookupByBarcodeOrSkuThenReceiptOne]
+    [lookupByBarcodeOrSkuThenReceiptOne, isReceiptScannerMode, receiptRemoveMode]
   );
 
   const handleReceiptManualQuery = useCallback(
@@ -1904,14 +1973,50 @@ export function WarehouseOperations({
             playEventSound(SOUND_EVENTS.scan_error);
             return;
           }
+          const remove = isReceiptScannerMode && receiptRemoveMode;
+          const { qty, isBox } = receiptQtyForProductScan(p, qq);
           lastReceiptScannedProductRef.current = p;
           if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-            await addToReceiptSession(p, 1);
+            if (remove) {
+              await receiptsApi
+                .addSessionQuantity(String(receiptSessionId).trim(), {
+                  code: String(p?.id || ''),
+                  quantity: -qty,
+                })
+                .then(applySessionStateToList);
+            } else {
+              await addToReceiptSession(p, qty);
+            }
+          } else if (remove) {
+            setReceiptList((prev) =>
+              prev
+                .map((item) =>
+                  String(item.productId) === String(p.id)
+                    ? { ...item, quantity: Math.max(0, (Number(item.quantity) || 0) - qty) }
+                    : item
+                )
+                .filter((item) => (Number(item.quantity) || 0) > 0)
+            );
           } else {
-            addToReceiptList(p, 1);
+            addToReceiptList(p, qty);
           }
           setLookupError(null);
-          setOpMessage(`В список: +1 шт — ${p.name || p.sku}`);
+          let cellHint = '';
+          try {
+            const map = await addressStorageApi.lookup([p.id]);
+            const list = map?.[Number(p.id)] || [];
+            const wid = Number(receiptWarehouseId);
+            const own =
+              list.find((x) => x.assigned && Number(x.warehouseId) === wid) ||
+              list.find((x) => x.assigned);
+            if (own?.code) cellHint = ` → 📍 ${own.code}`;
+          } catch {
+            /* адрес необязателен */
+          }
+          const sign = remove ? '−' : '+';
+          setOpMessage(
+            `${remove ? 'Удалено' : 'В список'}: ${sign}${qty} шт${isBox ? ' (коробка)' : ''} — ${p.name || p.sku}${cellHint}`
+          );
           playEventSound(SOUND_EVENTS.scan_ok);
         } catch (ex) {
           setOpMessage(null);
@@ -1932,6 +2037,12 @@ export function WarehouseOperations({
       receiptWarehouseId,
       receiptSessionEnabled,
       receiptSessionId,
+      addToReceiptSession,
+      addToReceiptList,
+      applySessionStateToList,
+      isReceiptScannerMode,
+      receiptRemoveMode,
+      receiptQtyForProductScan,
     ]
   );
 
@@ -2132,115 +2243,6 @@ export function WarehouseOperations({
     user?.id,
     user?.userId,
   ]);
-
-  const applyWarehouseReceiptBoxQty = useCallback(
-    async ({ product = null, productId = null, qty, clearRowProductId = null } = {}) => {
-      if (!receiptWarehouseId) {
-        setLookupError('Сначала выберите склад приёмки');
-        playEventSound(SOUND_EVENTS.scan_error);
-        return;
-      }
-      const n = Math.floor(Number(qty) || 0);
-      if (n <= 0 || boxAddBusy) return;
-
-      let resolved = product?.id ? product : null;
-      const pid = productId ?? resolved?.id ?? null;
-      if (!resolved?.id && pid != null) {
-        const fromList = receiptList.find((i) => String(i.productId) === String(pid));
-        if (fromList) {
-          resolved = { id: fromList.productId, sku: fromList.sku, name: fromList.name };
-        } else {
-          const fromProducts = (products || []).find((p) => String(p.id) === String(pid));
-          if (fromProducts) resolved = fromProducts;
-        }
-      }
-      if (!resolved?.id) {
-        setLookupError('Товар не найден в списке');
-        playEventSound(SOUND_EVENTS.scan_error);
-        return;
-      }
-
-      try {
-        setBoxAddBusy(true);
-        setLookupError(null);
-        if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-          await addToReceiptSession(resolved, n);
-        } else {
-          addToReceiptList(resolved, n);
-        }
-        lastReceiptScannedProductRef.current = resolved;
-        setOpMessage(`В список: +${n} шт — ${resolved.name || resolved.sku}`);
-        playEventSound(SOUND_EVENTS.scan_ok);
-        if (clearRowProductId != null) {
-          setReceiptList((prev) =>
-            prev.map((item) =>
-              String(item.productId) === String(clearRowProductId)
-                ? { ...item, _boxQtyInput: '' }
-                : item
-            )
-          );
-        }
-      } catch (ex) {
-        const msg = ex?.message || 'поиск не удался';
-        setLookupError(msg);
-        setOpMessage('Ошибка: ' + msg);
-        playEventSound(SOUND_EVENTS.scan_error);
-      } finally {
-        setBoxAddBusy(false);
-        scanInputRef.current?.focus();
-      }
-    },
-    [
-      boxAddBusy,
-      products,
-      receiptList,
-      receiptSessionEnabled,
-      receiptSessionId,
-      receiptWarehouseId,
-      addToReceiptList,
-      addToReceiptSession,
-    ]
-  );
-
-  const scheduleReceiptRowBoxQtyApply = useCallback(
-    (productId, qtyStr) => {
-      const key = String(productId);
-      if (rowBoxQtyDebounceRef.current[key]) {
-        clearTimeout(rowBoxQtyDebounceRef.current[key]);
-      }
-      rowBoxQtyDebounceRef.current[key] = setTimeout(() => {
-        delete rowBoxQtyDebounceRef.current[key];
-        const qty = Math.floor(Number(qtyStr) || 0);
-        if (qty <= 0) return;
-        // N в «Коробкой» = размер коробки; −1 компенсирует идентификационный скан (+1).
-        if (qty <= 1) {
-          setReceiptList((prev) =>
-            prev.map((item) =>
-              String(item.productId) === key ? { ...item, _boxQtyInput: '' } : item
-            )
-          );
-          return;
-        }
-        const row = receiptList.find((i) => String(i.productId) === key);
-        const product = row
-          ? { id: row.productId, sku: row.sku, name: row.name }
-          : { id: productId };
-        void applyWarehouseReceiptBoxQty({
-          product,
-          productId,
-          qty: qty - 1,
-          clearRowProductId: productId,
-        });
-      }, BOX_QTY_APPLY_MS);
-    },
-    [applyWarehouseReceiptBoxQty, receiptList]
-  );
-
-  const updateReceiptRowBoxInput = (index, value) => {
-    setReceiptList((prev) =>
-      prev.map((item, i) => (i === index ? { ...item, _boxQtyInput: value } : item))
-    );
-  };
 
   /** Добавить товар в список списания (qty ограничено остатком на выбранном складе). Возвращает добавленное кол-во или 0. */
   const addToWriteoffList = async (product, add, { cis = null } = {}) => {
@@ -5447,6 +5449,12 @@ export function WarehouseOperations({
               ))}
             </select>
             )}
+            {receiptAddresses.enabled ? (
+              <p className="muted-hint" style={{ margin: '6px 0 0' }}>
+                Закреплённая ячейка показывается в списке. При оформлении (если включён учёт по ячейкам) товар
+                попадёт в неё сам — спрашивать «куда» не нужно.
+              </p>
+            ) : null}
           </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
@@ -5472,17 +5480,24 @@ export function WarehouseOperations({
             </p>
           )}
           <p className="warehouse-ops-hint">
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки отсканируйте товар и укажите в колонке «Коробкой» сколько штук в коробке — скан уже засчитан, поэтому добавится на 1 меньше (через 2 с).
+            {isReceiptScannerMode
+              ? 'Сканируйте штрихкод штуки (+1) или ШК коробки (+шт. в упаковке из карточки товара). Удаление — кнопкой «Удалить товар» и сканом.'
+              : 'Ручная приёмка: добавьте товары поиском и укажите количество в таблице. Режим можно сменить в настройках аккаунта.'}
           </p>
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-            <div className="warehouse-ops-scan-form-input-wrap">
+            <div className="warehouse-ops-scan-form-input-wrap" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
                 <FastScanInput
                   inputRef={scanInputRef}
                   onScan={handleReceiptScan}
                 onManualQuery={handleReceiptManualQuery}
                   debounceMs={160}
                 manualDebounceMs={400}
-                  placeholder="Штрихкод, артикул или название"
+                  placeholder={
+                    receiptRemoveMode
+                      ? 'Сканируйте товар или ШК коробки для удаления'
+                      : 'Штрихкод / ШК коробки / артикул'
+                  }
                   disabled={!receiptWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {
@@ -5490,6 +5505,20 @@ export function WarehouseOperations({
                   }, 150);
                 }}
               />
+              </div>
+              {isReceiptScannerMode ? (
+                <Button
+                  type="button"
+                  variant={receiptRemoveMode ? 'primary' : 'secondary'}
+                  disabled={!receiptWarehouseId}
+                  onClick={() => {
+                    setReceiptRemoveMode((v) => !v);
+                    scanInputRef.current?.focus();
+                  }}
+                >
+                  {receiptRemoveMode ? 'Отмена удаления' : 'Удалить товар'}
+                </Button>
+              ) : null}
               {suggestOpen && suggestContext === 'receipt_modal_scan' && (
                 <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
                   <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
@@ -5536,46 +5565,42 @@ export function WarehouseOperations({
                       <tr>
                         <th>Артикул</th>
                         <th>Товар</th>
+                        {receiptAddresses.enabled ? <th>Ячейка</th> : null}
                         <th>Кол-во</th>
-                        <th style={{ width: 110 }}>Коробкой</th>
                         <th>Себестоимость, ₽</th>
-                        <th></th>
+                        {!isReceiptScannerMode ? <th></th> : null}
                       </tr>
                     </thead>
                     <tbody>
-                      {receiptList.map((item, index) => (
+                      {receiptList.map((item, index) => {
+                        const cellCode = receiptAddresses.enabled
+                          ? receiptAssignedCode(item.productId)
+                          : null;
+                        return (
                         <tr key={`${item.productId}-${index}`}>
                           <td className="sku-cell">{item.sku}</td>
                           <td className="name-cell">{item.name}</td>
+                          {receiptAddresses.enabled ? (
+                            <td>
+                              <AddressBadge
+                                address={cellCode}
+                                title="Закреплённая ячейка — сюда класть при приёмке"
+                              />
+                              {!cellCode ? <span className="muted-hint">без адреса</span> : null}
+                            </td>
+                          ) : null}
                           <td>
-              <input
-                              type="number"
-                              min={1}
-                              value={item.quantity}
-                              onChange={e => updateReceiptQuantity(index, e.target.value)}
-                              className="warehouse-ops-qty-input small"
-                            />
-                          </td>
-                          <td>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                              className="warehouse-ops-qty-input small"
-                              style={{ width: 90 }}
-                placeholder="Кол-во"
-                              title="Количество в коробке (из принятого вычтется 1 за скан-идентификацию)"
-                              value={item._boxQtyInput ?? ''}
-                              disabled={boxAddBusy}
-                onChange={(e) => {
-                                const v = e.target.value;
-                                updateReceiptRowBoxInput(index, v);
-                                scheduleReceiptRowBoxQtyApply(item.productId, v);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.preventDefault();
-                }}
-                            />
+                            {isReceiptScannerMode ? (
+                              item.quantity
+                            ) : (
+                              <input
+                                type="number"
+                                min={1}
+                                value={item.quantity}
+                                onChange={(e) => updateReceiptQuantity(index, e.target.value)}
+                                className="warehouse-ops-qty-input small"
+                              />
+                            )}
                           </td>
                           <td>
                 <input
@@ -5588,6 +5613,7 @@ export function WarehouseOperations({
                               className="warehouse-ops-cost-input"
                             />
                           </td>
+                          {!isReceiptScannerMode ? (
                           <td>
                             <button
                               type="button"
@@ -5598,8 +5624,10 @@ export function WarehouseOperations({
                               ✕
                             </button>
                           </td>
+                          ) : null}
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

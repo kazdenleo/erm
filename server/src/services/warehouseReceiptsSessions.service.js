@@ -125,7 +125,13 @@ class WarehouseReceiptsSessionsService {
 
   async addQuantity({ sessionId, code, quantity, cost = null }) {
     const s = this._getSessionStrict(sessionId);
-    const q = clampInt(quantity, 1, 1000000);
+    const rawQ = Math.floor(Number(quantity) || 0);
+    if (!Number.isFinite(rawQ) || rawQ === 0) {
+      const err = new Error('Количество должно быть ненулевым');
+      err.statusCode = 400;
+      throw err;
+    }
+    const q = rawQ > 0 ? clampInt(rawQ, 1, 1000000) : -clampInt(Math.abs(rawQ), 1, 1000000);
     const product = await this._resolveProduct(code);
     if (!product?.id) {
       const err = new Error('Товар не найден');
@@ -140,7 +146,8 @@ class WarehouseReceiptsSessionsService {
     if (prev) {
       prev.quantity += q;
       if (normalizedCost != null) prev.cost = normalizedCost;
-    } else {
+      if (prev.quantity <= 0) s.items.delete(pid);
+    } else if (q > 0) {
       const pc = product?.cost;
       const defaultCost = pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : null;
       s.items.set(pid, {

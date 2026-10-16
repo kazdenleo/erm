@@ -364,15 +364,25 @@ class PurchasesController {
   async scanReceipt(req, res, next) {
     try {
       const { receiptId } = req.params;
-      const { productId, barcode, sku, scannerId } = req.body || {};
+      const { productId, barcode, sku, scannerId, mode } = req.body || {};
       const profileId = req.user?.profileId ?? null;
       const userId = req.user?.id ?? null;
       const data = await purchasesService.scanToReceipt(
         receiptId,
-        { productId, barcode, sku, scannerId: scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null) },
+        {
+          productId,
+          barcode,
+          sku,
+          mode,
+          scannerId: scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null),
+        },
         { profileId, userId }
       );
-      logReceiptScan(req, receiptId, { quantity: 1, code: barcode || sku || productId });
+      logReceiptScan(req, receiptId, {
+        quantity: data?.quantityDelta ?? 1,
+        code: barcode || sku || productId,
+        mode: data?.removed ? 'remove' : 'add',
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {

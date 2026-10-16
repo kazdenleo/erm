@@ -332,7 +332,14 @@ function formatSourceOrders(raw) {
 export function Purchases() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  const receiptMode =
+    String(profile?.purchase_receipt_mode ?? profile?.purchaseReceiptMode ?? 'scanner')
+      .trim()
+      .toLowerCase() === 'manual'
+      ? 'manual'
+      : 'scanner';
+  const isReceiptScannerMode = receiptMode === 'scanner';
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
   const { products } = useProducts({ autoLoad: false });
   const { warehouses } = useWarehouses();
@@ -387,10 +394,8 @@ export function Purchases() {
   const [scanMsg, setScanMsg] = useState(null);
   const [lastScanLine, setLastScanLine] = useState(null);
   const [receiptScanQuery, setReceiptScanQuery] = useState('');
-  const [boxAddBusy, setBoxAddBusy] = useState(false);
   const lastScannedProductRef = useRef(null);
-  const rowBoxQtyDebounceRef = useRef({});
-  const BOX_QTY_APPLY_MS = 2000;
+  const [receiptRemoveMode, setReceiptRemoveMode] = useState(false);
   const [createReceiptBusy, setCreateReceiptBusy] = useState(false);
   const [extrasToResolve, setExtrasToResolve] = useState(null);
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
@@ -1159,6 +1164,7 @@ export function Purchases() {
         return;
       }
       setReceipt(data);
+      setReceiptRemoveMode(false);
       syncPurchaseReceiptInUrl(data.receipt.id);
       setScanMsg(null);
       setLastScanLine(null);
@@ -1334,6 +1340,7 @@ export function Purchases() {
         try {
           const data = await purchasesApi.getReceipt(id);
           setReceipt(data);
+      setReceiptRemoveMode(false);
         } catch {
           /* ignore */
         } finally {
@@ -1380,104 +1387,7 @@ export function Purchases() {
     [receipt?.receipt?.id, receipt?.receipt?.status, scannerId, scheduleReceiptRefresh]
   );
 
-  const applyPurchaseReceiptBoxQty = useCallback(
-    async ({ productId = null, barcode = null, sku = null, qty, clearRowProductId = null } = {}) => {
-      const rid = receipt?.receipt?.id;
-      if (!rid || String(receipt?.receipt?.status) !== 'scanning') return;
-      const n = Math.floor(Number(qty) || 0);
-      if (n <= 0 || boxAddBusy) return;
-
-      const payload = { quantity: n, scannerId: scannerId || null };
-      const pidNum = productId != null ? Number(productId) : null;
-      if (Number.isFinite(pidNum) && pidNum > 0) {
-        payload.productId = pidNum;
-      } else {
-        const code = normalizeScanInput(String(barcode || sku || '').trim());
-        if (!code) return;
-        payload.barcode = code;
-        payload.sku = code;
-      }
-
-      try {
-        setBoxAddBusy(true);
-        setErr(null);
-        pendingScansRef.current += 1;
-        setPendingScans(pendingScansRef.current);
-
-        const res = await purchasesApi.addReceiptQuantity(rid, payload);
-        const updatedProductId = Number(res?.productId);
-        const updatedScannedQty = Number(res?.scannedQuantity);
-        if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
-          setReceipt((prev) => {
-            if (!prev?.items) return prev;
-            const nextItems = (prev.items || []).map((x) => {
-              if (Number(x?.product_id) !== updatedProductId) return x;
-              const next = { ...x, scanned_quantity: updatedScannedQty };
-              if (clearRowProductId != null && Number(clearRowProductId) === updatedProductId) {
-                next._boxQtyInput = '';
-              }
-              return next;
-            });
-            return { ...prev, items: nextItems };
-          });
-          lastScannedProductRef.current = updatedProductId;
-        }
-        scheduleReceiptRefresh(rid);
-        playEventSound(SOUND_EVENTS.scan_ok);
-      } catch (ex) {
-        setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить количество');
-        playEventSound(SOUND_EVENTS.scan_error);
-      } finally {
-        setBoxAddBusy(false);
-        pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
-        setPendingScans(pendingScansRef.current);
-        scanRef.current?.focus();
-      }
-    },
-    [boxAddBusy, receipt?.receipt?.id, receipt?.receipt?.status, scannerId, scheduleReceiptRefresh]
-  );
-
-  const scheduleRowBoxQtyApply = useCallback(
-    (productId, qtyStr) => {
-      const key = String(productId);
-      if (rowBoxQtyDebounceRef.current[key]) {
-        clearTimeout(rowBoxQtyDebounceRef.current[key]);
-      }
-      rowBoxQtyDebounceRef.current[key] = setTimeout(() => {
-        delete rowBoxQtyDebounceRef.current[key];
-        const qtyEntered = Math.floor(Number(qtyStr) || 0);
-        if (qtyEntered <= 0) return;
-        // N в «Коробкой» = размер коробки; −1 компенсирует идентификационный скан (+1).
-        if (qtyEntered <= 1) {
-          setReceipt((prev) => {
-            if (!prev?.items) return prev;
-            return {
-              ...prev,
-              items: (prev.items || []).map((x) =>
-                Number(x?.product_id) === Number(productId) ? { ...x, _boxQtyInput: '' } : x
-              ),
-            };
-          });
-          return;
-        }
-        void applyPurchaseReceiptBoxQty({
-          productId,
-          qty: qtyEntered - 1,
-          clearRowProductId: productId,
-        });
-      }, BOX_QTY_APPLY_MS);
-    },
-    [applyPurchaseReceiptBoxQty]
-  );
-
-  useEffect(() => {
-    return () => {
-      Object.values(rowBoxQtyDebounceRef.current).forEach((t) => clearTimeout(t));
-      rowBoxQtyDebounceRef.current = {};
-    };
-  }, [receipt?.receipt?.id]);
-
-  // Пока приёмка открыта и идёт поток сканов — периодически подтягиваем состояние (на случай пропущенных строк/излишков).
+  // Пока приёмка открыта и идёт поток сканов — периодически подтягиваем состояние.
   useEffect(() => {
     const rid = receipt?.receipt?.id;
     if (!rid) return undefined;
@@ -1506,20 +1416,24 @@ export function Purchases() {
     if (!rid) return;
     if (!hasProductId && !v) return;
     const effectiveScannerId = scannerId || null;
+    const removeMode = isReceiptScannerMode && receiptRemoveMode;
     // Защита от двойного скана: некоторые сканеры шлют и \n, и Enter,
     // из-за чего scan() вызывается два раза почти одновременно.
     const now = Date.now();
     if (scanInFlightRef.current) return;
-    const lastKey = `${effectiveScannerId || 'no-scanner'}|${hasProductId ? `p:${pidNum}` : v}`;
+    const lastKey = `${effectiveScannerId || 'no-scanner'}|${removeMode ? 'rm|' : ''}${hasProductId ? `p:${pidNum}` : v}`;
     if (lastScanRef.current.value === lastKey && now - (lastScanRef.current.at || 0) < 500) return;
     scanInFlightRef.current = true;
     lastScanRef.current = { value: lastKey, at: now };
     try {
-      setScanMsg('Сканирую…');
+      setScanMsg(removeMode ? 'Удаляю…' : 'Сканирую…');
       setLastScanLine(null);
       pendingScansRef.current += 1;
       setPendingScans(pendingScansRef.current);
-      const payload = { scannerId: effectiveScannerId };
+      const payload = {
+        scannerId: effectiveScannerId,
+        mode: removeMode ? 'remove' : 'add',
+      };
       if (hasProductId) payload.productId = pidNum;
       else payload.barcode = v;
       const scanRes = await purchasesApi.scanReceipt(rid, payload);
@@ -2585,33 +2499,57 @@ export function Purchases() {
                 Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
               </p>
             ) : null}
-            {isReceiptScanning ? (
-            <div className="warehouse-ops-list-form" style={{ marginBottom: 8 }}>
-              <ProductSearchInput
-                id="purchase-receipt-product-search"
-                inputRef={scanRef}
-                value={receiptScanQuery}
-                onChange={setReceiptScanQuery}
-                products={products}
-                organizationId={receiptOrganizationId || null}
-                autoSelectSingleScan
-                placeholder={
-                  chestnyZnakEnabled
-                    ? 'Штрихкод, КИ, артикул или название (1 скан = +1)'
-                    : 'Штрихкод, артикул или название (1 скан = +1)'
-                }
-                disabled={boxAddBusy}
-                onSelect={(p) => {
-                  void scan('', { productId: p?.id });
+            {isReceiptScanning && isReceiptScannerMode ? (
+            <div className="warehouse-ops-list-form" style={{ marginBottom: 8, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <ProductSearchInput
+                  id="purchase-receipt-product-search"
+                  inputRef={scanRef}
+                  value={receiptScanQuery}
+                  onChange={setReceiptScanQuery}
+                  products={products}
+                  organizationId={receiptOrganizationId || null}
+                  autoSelectSingleScan
+                  placeholder={
+                    receiptRemoveMode
+                      ? 'Сканируйте товар или ШК коробки для удаления'
+                      : chestnyZnakEnabled
+                        ? 'Штрихкод / ШК коробки / КИ / артикул'
+                        : 'Штрихкод / ШК коробки / артикул'
+                  }
+                  onSelect={(p) => {
+                    void scan('', { productId: p?.id });
+                  }}
+                  onNoMatch={(q) => {
+                    const code = normalizeScanInput(q);
+                    if (!code) return;
+                    if (!isLikelyBarcodeScan(code) && code.length < 8) return;
+                    void scan(code);
+                  }}
+                />
+              </div>
+              <Button
+                type="button"
+                variant={receiptRemoveMode ? 'primary' : 'secondary'}
+                onClick={() => {
+                  setReceiptRemoveMode((v) => !v);
+                  scanRef.current?.focus();
                 }}
-                onNoMatch={(q) => {
-                  const code = normalizeScanInput(q);
-                  if (!code) return;
-                  if (!isLikelyBarcodeScan(code) && code.length < 8) return;
-                  void scan(code);
-                }}
-              />
+                title="Включите режим и отсканируйте товар или ШК коробки — количество уменьшится"
+              >
+                {receiptRemoveMode ? 'Отмена удаления' : 'Удалить товар'}
+              </Button>
             </div>
+            ) : null}
+            {isReceiptScanning && isReceiptScannerMode && receiptRemoveMode ? (
+              <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
+                Режим удаления: следующий скан уменьшит принятое количество (ШК штуки −1, ШК коробки −шт. в упаковке).
+              </p>
+            ) : null}
+            {isReceiptScanning && !isReceiptScannerMode ? (
+              <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
+                Ручная приёмка: укажите количество в колонке «Принято». Режим можно сменить в настройках аккаунта.
+              </p>
             ) : null}
             {isReceiptScanning && pendingScans > 0 ? (
               <p className="muted" style={{ marginTop: 8 }} role="status">
@@ -2654,11 +2592,6 @@ export function Purchases() {
                       <th className="warehouse-ops-receipt-num">Ожидается</th>
                       <th className="warehouse-ops-receipt-num">Было</th>
                       <th className="warehouse-ops-receipt-num">Принято</th>
-                      {isReceiptScanning ? (
-                        <th className="warehouse-ops-receipt-num" style={{ width: 100 }}>
-                          Коробкой
-                        </th>
-                      ) : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -2719,7 +2652,7 @@ export function Purchases() {
                                 {received != null ? received : '—'}
                               </td>
                               <td className="warehouse-ops-receipt-num" style={cellStyle}>
-                                {isScanning ? (
+                                {isScanning && !isReceiptScannerMode ? (
                                   <input
                                     key={`${it.product_id}-${scanned}`}
                                     type="number"
@@ -2740,36 +2673,6 @@ export function Purchases() {
                             </>
                           );
                         })()}
-                        {isReceiptScanning ? (
-                          <td className="warehouse-ops-receipt-num">
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
-                              className="warehouse-ops-qty-input"
-                              placeholder="N"
-                              value={it._boxQtyInput ?? ''}
-                              disabled={boxAddBusy}
-                              title="Количество в коробке (из принятого вычтется 1 за скан-идентификацию)"
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setReceipt((prev) => {
-                                  if (!prev?.items) return prev;
-                                  const nextItems = (prev.items || []).map((x) =>
-                                    Number(x?.product_id) === Number(it.product_id)
-                                      ? { ...x, _boxQtyInput: v }
-                                      : x
-                                  );
-                                  return { ...prev, items: nextItems };
-                                });
-                                scheduleRowBoxQtyApply(it.product_id, v);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') e.preventDefault();
-                              }}
-                            />
-                          </td>
-                        ) : null}
                       </tr>
                     ))}
                   </tbody>

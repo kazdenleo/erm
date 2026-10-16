@@ -545,6 +545,15 @@ class ProfilesRepositoryPG {
         set('packing_display_attribute_id', Number.isFinite(n) && n > 0 ? n : null);
       }
     }
+    if (
+      updates.purchase_receipt_mode !== undefined ||
+      updates.purchaseReceiptMode !== undefined
+    ) {
+      const v = String(updates.purchase_receipt_mode ?? updates.purchaseReceiptMode ?? 'scanner')
+        .trim()
+        .toLowerCase();
+      set('purchase_receipt_mode', v === 'manual' ? 'manual' : 'scanner');
+    }
     if (updates.timezone !== undefined || updates.timeZone !== undefined) {
       set('timezone', normalizeProfileTimezone(updates.timezone ?? updates.timeZone));
     }
