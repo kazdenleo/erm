@@ -578,6 +578,111 @@ function scheduleProcurementReserveReapply(productIds, { label = 'procurement-re
   });
 }
 
+function sourceOrderEntryKey(o) {
+  return sourceOrderKey(o?.marketplace, o?.orderId);
+}
+
+function sourceOrderQty(o) {
+  return Math.max(1, Math.floor(Number(o?.quantity)) || 1);
+}
+
+/**
+ * Приёмка отдаёт товар по FIFO — бывает, более старому заказу из другой открытой закупки.
+ * Тогда меняем заказы местами в source_orders: иначе ждущий заказ этой закупки не числится
+ * ни в одной открытой (в списке заказов нет поставщика), а в чужой висит уже обеспеченный.
+ */
+async function swapSourceOrdersAfterForeignPromotion(purchaseId, profileId, promoted) {
+  const byProduct = new Map();
+  for (const p of promoted || []) {
+    const productId = Number(p?.productId);
+    const orderId = String(p?.orderId ?? '').trim();
+    if (!Number.isFinite(productId) || productId < 1 || !orderId) continue;
+    if (!byProduct.has(productId)) byProduct.set(productId, []);
+    byProduct.get(productId).push({ marketplace: orderMarketplaceToDb(p.marketplace), orderId });
+  }
+  let swapped = 0;
+  for (const [productId, promotedRefs] of byProduct) {
+    await transaction(async (client) => {
+      const own = await client.query(
+        `SELECT id, source_orders FROM purchase_items WHERE purchase_id = $1 AND product_id = $2 LIMIT 1 FOR UPDATE`,
+        [purchaseId, productId]
+      );
+      const ownItem = own.rows?.[0];
+      if (!ownItem) return;
+      const ownList = parseSourceOrdersJson(ownItem.source_orders);
+      const ownKeys = new Set(ownList.map(sourceOrderEntryKey));
+      const promotedKeys = new Set(promotedRefs.map(sourceOrderEntryKey));
+      const foreign = promotedRefs.filter((r) => !ownKeys.has(sourceOrderEntryKey(r)));
+      if (!foreign.length) return;
+
+      const notPromoted = ownList.filter((o) => !promotedKeys.has(sourceOrderEntryKey(o)));
+      if (!notPromoted.length) return;
+      const waitingR = await client.query(
+        `SELECT marketplace, order_id FROM orders
+          WHERE profile_id = $1 AND product_id = $2 AND order_id = ANY($3::text[])
+            AND status IN ('new', 'in_procurement')`,
+        [profileId, productId, notPromoted.map((o) => String(o.orderId).trim())]
+      );
+      const waitingKeys = new Set(
+        (waitingR.rows || []).map((r) => sourceOrderKey(r.marketplace, r.order_id))
+      );
+      const waiting = notPromoted.filter((o) => waitingKeys.has(sourceOrderEntryKey(o)));
+
+      let ownChanged = false;
+      for (const f of foreign) {
+        const other = await client.query(
+          `SELECT pi.id, pi.purchase_id, pi.source_orders
+             FROM purchase_items pi
+             JOIN purchases p ON p.id = pi.purchase_id
+            WHERE p.profile_id = $1 AND p.status = 'open' AND pi.product_id = $2 AND pi.purchase_id <> $3
+              AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) e
+                 WHERE LOWER(TRIM(e->>'orderId')) = $4
+              )
+            ORDER BY p.id
+            LIMIT 1
+            FOR UPDATE OF pi`,
+          [profileId, productId, purchaseId, f.orderId.toLowerCase()]
+        );
+        const otherItem = other.rows?.[0];
+        if (!otherItem) continue;
+        const otherList = parseSourceOrdersJson(otherItem.source_orders);
+        const idxF = otherList.findIndex((o) => sourceOrderEntryKey(o) === sourceOrderEntryKey(f));
+        if (idxF < 0) continue;
+        const fEntry = otherList[idxF];
+        const wIdx = waiting.findIndex((o) => sourceOrderQty(o) === sourceOrderQty(fEntry));
+        if (wIdx < 0) continue;
+        const dEntry = waiting.splice(wIdx, 1)[0];
+        const idxD = ownList.findIndex((o) => sourceOrderEntryKey(o) === sourceOrderEntryKey(dEntry));
+        if (idxD < 0) continue;
+
+        ownList[idxD] = { ...ownList[idxD], marketplace: fEntry.marketplace, orderId: fEntry.orderId };
+        otherList[idxF] = { ...fEntry, marketplace: dEntry.marketplace, orderId: dEntry.orderId };
+        await client.query(`UPDATE purchase_items SET source_orders = $2::jsonb WHERE id = $1`, [
+          otherItem.id,
+          JSON.stringify(otherList),
+        ]);
+        ownChanged = true;
+        swapped += 1;
+        logger.info('[Purchases] source_orders: обмен заказами после приёмки', {
+          purchaseId,
+          otherPurchaseId: Number(otherItem.purchase_id),
+          productId,
+          receivedBy: fEntry.orderId,
+          movedToOther: dEntry.orderId,
+        });
+      }
+      if (ownChanged) {
+        await client.query(`UPDATE purchase_items SET source_orders = $2::jsonb WHERE id = $1`, [
+          ownItem.id,
+          JSON.stringify(ownList),
+        ]);
+      }
+    });
+  }
+  return swapped;
+}
+
 /** После приёмки/заказа у поставщика: дозарезервировать и перевести покрытие «в пути» → «со склада». */
 async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
   const purId = parseInt(purchaseId, 10);
@@ -597,11 +702,19 @@ async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
       // Без фильтра sourceOrders: иначе резерв «с пути» у нового заказа (не из source_orders
       // этой закупки) не переводится на наличие, когда на склад пришла единица от
       // отменённого/другого заказа. Бюджет on_hand по FIFO и так безопасен.
-      await ordersService.promoteIncomingOrderReservesToOnHand({
+      const promotion = await ordersService.promoteIncomingOrderReservesToOnHand({
         productIds: [...productIds],
         profileId: pid,
         reason: `Приёмка по закупке №${purId}: резерв «в пути» → со склада`,
       });
+      if (promotion?.promoted?.length) {
+        await swapSourceOrdersAfterForeignPromotion(purId, pid, promotion.promoted).catch((e) => {
+          logger.warn('[Purchases] swapSourceOrdersAfterForeignPromotion failed', {
+            purchaseId: purId,
+            message: e?.message || String(e),
+          });
+        });
+      }
     } catch (e) {
       logger.warn('[Purchases] promoteIncomingOrderReservesToOnHand failed', {
         purchaseId: purId,

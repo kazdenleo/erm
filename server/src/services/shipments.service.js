@@ -13,6 +13,7 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { marketplaceWarehouseLabel, shipmentsMatchMarketplaceWarehouse } from '../utils/marketplaceWarehouseId.js';
 
 const SHIPMENT_STICKERS_DIR = join(DATA_DIR, 'shipment-stickers');
@@ -1067,6 +1068,67 @@ async function finalizeShipmentCloseStock({ shipmentId, marketplace, orderIds, p
 }
 
 /**
+ * Яндекс не узнаёт о сборке из ERP: без READY_TO_SHIP заказ в ЛК остаётся «Новым»
+ * (риск просрочки/отмены), а синк возвращает его как STARTED.
+ */
+async function markYandexOrdersReadyToShip({ shipmentId, campaignId, orderIds, profileId = null, organizationId = null }) {
+  const ids = [...new Set((orderIds || []).map((id) => String(id).split(':')[0].trim()).filter((id) => /^\d+$/.test(id)))];
+  if (!ids.length) return { ok: 0, failed: [] };
+
+  const config = await integrationsService
+    .getMarketplaceConfig('yandex', { profileId, organizationId })
+    .catch(() => null);
+  const apiKey = String(config?.api_key ?? config?.apiKey ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/\uFEFF/g, '')
+    .trim();
+  if (!apiKey) {
+    logger.warn(`[Shipments YM] ${shipmentId}: нет Api-Key — READY_TO_SHIP не отправлен`);
+    return { ok: 0, failed: ids };
+  }
+
+  const { default: ordersService } = await import('./orders.service.js');
+  const configuredCampaign = Number(config?.campaign_id ?? config?.campaignId) || null;
+  const shipCampaign = Number(String(campaignId ?? '').match(/^\d+/)?.[0]) || null;
+  const agent = getYandexHttpsAgent();
+  let ok = 0;
+  const failed = [];
+
+  for (const orderId of ids) {
+    const order = await ordersService.getByMarketplaceAndOrderId('yandex', orderId, { profileId }).catch(() => null);
+    const cid =
+      Number(String(order?.deliveryAddress ?? order?.delivery_address ?? '').trim()) ||
+      shipCampaign ||
+      configuredCampaign;
+    if (!cid) {
+      failed.push(orderId);
+      continue;
+    }
+    const url = `https://api.partner.market.yandex.ru/v2/campaigns/${cid}/orders/${orderId}/status`;
+    try {
+      const resp = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Api-Key': apiKey, Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: { status: 'PROCESSING', substatus: 'READY_TO_SHIP' } }),
+        ...(agent && { agent })
+      });
+      if (resp.ok) {
+        ok += 1;
+      } else {
+        const text = await resp.text().catch(() => '');
+        failed.push(orderId);
+        logger.warn(`[Shipments YM] READY_TO_SHIP ${orderId}: ${resp.status} ${text.slice(0, 200)}`);
+      }
+    } catch (e) {
+      failed.push(orderId);
+      logger.warn(`[Shipments YM] READY_TO_SHIP ${orderId}: ${e?.message || e}`);
+    }
+  }
+  logger.info(`[Shipments YM] ${shipmentId}: READY_TO_SHIP ok=${ok}, ошибок=${failed.length}`);
+  return { ok, failed };
+}
+
+/**
  * Закрыть поставку. После закрытия новые заказы «на сборку» пойдут в новую поставку.
  * @param {{ notAssembled?: 'assemble'|'remove', cancelled?: 'remove'|'keep' }} [closeOptions]
  */
@@ -1211,6 +1273,21 @@ async function closeShipment(
     setImmediate(() => {
       finalizeWildberriesShipmentClose(wbCloseCtx).catch((e) => {
         logger.warn(`[Shipments] WB close background ${shipmentId}:`, e?.message || e);
+      });
+    });
+  }
+
+  if (shipToClose.marketplace === 'yandex' && stockOrderIdsNoCancelled.length > 0) {
+    const ymCtx = {
+      shipmentId,
+      campaignId: shipToClose.marketplaceWarehouseId ?? shipToClose.marketplace_warehouse_id ?? null,
+      orderIds: [...stockOrderIdsNoCancelled],
+      profileId: shipToClose.profileId ?? profileId ?? null,
+      organizationId
+    };
+    setImmediate(() => {
+      markYandexOrdersReadyToShip(ymCtx).catch((e) => {
+        logger.warn(`[Shipments YM] READY_TO_SHIP ${shipmentId}:`, e?.message || e);
       });
     });
   }
