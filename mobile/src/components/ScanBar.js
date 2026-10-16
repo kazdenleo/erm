@@ -16,15 +16,24 @@ const SCAN_IDLE_MS = 350;
 /** Один и тот же ШК повторно не принимаем (двойной скан / удержание в луче). */
 const DUPLICATE_COOLDOWN_MS = 1500;
 
+function CameraIcon({ active }) {
+  const stroke = active ? colors.primaryText : colors.primary;
+  return (
+    <View style={styles.iconRoot} accessibilityElementsHidden>
+      <View style={[styles.iconBody, { borderColor: stroke }]} />
+      <View style={[styles.iconLens, { borderColor: stroke }]} />
+      <View style={[styles.iconBump, { backgroundColor: stroke }]} />
+    </View>
+  );
+}
+
 /**
- * Поле скана: аппаратный сканер ТСД работает как клавиатура — код принимается по Enter или,
- * если сканер не шлёт Enter, автоматически после паузы во вводе. Камера телефона — через кнопку «Камера».
- * Экранная клавиатура по умолчанию скрыта; в режиме ручного ввода код принимается только по Enter.
+ * Скан без ручного ввода: скрытое поле принимает аппаратный сканер ТСД,
+ * камера включается/выключается иконкой (без модалки и без «Готово»).
  */
 export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, placeholder, cameraHint }, ref) {
   const inputRef = useRef(null);
   const [value, setValue] = useState('');
-  const [keyboard, setKeyboard] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const idleTimer = useRef(null);
   const onScanRef = useRef(onScan);
@@ -61,13 +70,11 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
     }, [focus])
   );
 
-  // После обработки скана поле часто теряет фокус — вернуть его, иначе следующий скан «висит» до нажатия.
   useEffect(() => {
-    if (busyWas.current && !busy && !keyboard && !cameraOpen) focus();
+    if (busyWas.current && !busy) focus();
     busyWas.current = busy;
-  }, [busy, keyboard, cameraOpen, focus]);
+  }, [busy, focus]);
 
-  /** Коды, отсканированные во время обработки предыдущего, не теряются, а обрабатываются по очереди. */
   const enqueue = useCallback(async (code) => {
     const now = Date.now();
     if (code === lastAccepted.current.code && now - lastAccepted.current.at < DUPLICATE_COOLDOWN_MS) {
@@ -87,7 +94,6 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
         } catch {
           /* ошибки показывает сам экран */
         }
-        // Дать экрану перерисоваться, чтобы следующий код обработался уже с обновлённым состоянием.
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     } finally {
@@ -104,100 +110,125 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   };
 
   const onChangeText = (text) => {
-    // Часть сканеров присылает перевод строки внутри текста вместо события submit.
     if (/[\r\n]/.test(text)) {
       submit(text);
       return;
     }
     setValue(text);
     clearIdleTimer();
-    if (!keyboard && text) {
+    if (text) {
       idleTimer.current = setTimeout(() => submit(text), SCAN_IDLE_MS);
     }
   };
 
+  const toggleCamera = () => {
+    setCameraOpen((open) => !open);
+    focus();
+  };
+
   return (
     <View style={styles.wrap}>
-      <View style={styles.inputRow}>
-        <TextInput
-          ref={inputRef}
-          value={value}
-          onChangeText={onChangeText}
-          onSubmitEditing={() => submit(value)}
-          blurOnSubmit={false}
-          submitBehavior="submit"
-          showSoftInputOnFocus={keyboard}
-          autoFocus
-          autoCapitalize="none"
-          autoCorrect={false}
-          spellCheck={false}
-          importantForAutofill="no"
-          textContentType="none"
-          returnKeyType="done"
-          placeholder={placeholder || 'Отсканируйте штрихкод'}
-          placeholderTextColor={colors.muted}
-          style={styles.input}
-        />
-        {busy ? <ActivityIndicator style={styles.spinner} color={colors.primary} /> : null}
-      </View>
-      <View style={styles.actions}>
-        <Pressable style={[styles.action, styles.camera]} onPress={() => setCameraOpen(true)}>
-          <Text style={[styles.actionText, styles.cameraText]}>Камера</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.action, keyboard && styles.actionActive]}
-          onPress={() => {
-            clearIdleTimer();
-            setKeyboard((k) => !k);
-            inputRef.current?.blur();
-            focus();
-          }}
-        >
-          <Text style={styles.actionText}>{keyboard ? 'Скрыть клавиатуру' : 'Ввести вручную'}</Text>
-        </Pressable>
-      </View>
-      <CameraScanner
-        visible={cameraOpen}
-        hint={cameraHint}
-        onClose={() => {
-          setCameraOpen(false);
-          focus();
-        }}
-        onScan={enqueue}
+      {/* Скрытый приёмник для аппаратного сканера (клавиатурный wedge). */}
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={onChangeText}
+        onSubmitEditing={() => submit(value)}
+        blurOnSubmit={false}
+        submitBehavior="submit"
+        showSoftInputOnFocus={false}
+        autoFocus
+        autoCapitalize="none"
+        autoCorrect={false}
+        spellCheck={false}
+        importantForAutofill="no"
+        textContentType="none"
+        caretHidden
+        contextMenuHidden
+        accessible={false}
+        style={styles.hiddenInput}
       />
+
+      <View style={styles.toolbar}>
+        <View style={styles.status}>
+          <Text style={styles.statusText} numberOfLines={2}>
+            {busy ? 'Обрабатываем скан…' : placeholder || 'Отсканируйте штрихкод'}
+          </Text>
+          {busy ? <ActivityIndicator color={colors.primary} /> : null}
+        </View>
+        <Pressable
+          onPress={toggleCamera}
+          style={[styles.cameraBtn, cameraOpen && styles.cameraBtnActive]}
+          accessibilityRole="button"
+          accessibilityLabel={cameraOpen ? 'Скрыть камеру' : 'Показать камеру'}
+        >
+          <CameraIcon active={cameraOpen} />
+        </Pressable>
+      </View>
+
+      <CameraScanner active={cameraOpen} hint={cameraHint} onScan={enqueue} />
     </View>
   );
 });
 
 const styles = StyleSheet.create({
   wrap: { gap: 10 },
-  inputRow: { justifyContent: 'center' },
-  input: {
-    minHeight: 56,
+  hiddenInput: {
+    position: 'absolute',
+    opacity: 0.01,
+    height: 1,
+    width: 1,
+    padding: 0,
+    margin: 0,
+  },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
     borderWidth: 2,
     borderColor: colors.primary,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingRight: 44,
-    fontSize: 18,
-    color: colors.text,
     backgroundColor: colors.card,
   },
-  spinner: { position: 'absolute', right: 14 },
-  actions: { flexDirection: 'row', gap: 10 },
-  action: {
-    flex: 1,
-    minHeight: 48,
+  status: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  statusText: { flex: 1, fontSize: 16, color: colors.text, fontWeight: '600' },
+  cameraBtn: {
+    width: 48,
+    height: 48,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.card,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
+    backgroundColor: colors.bg,
   },
-  actionActive: { borderColor: colors.primary },
-  actionText: { fontSize: 16, fontWeight: '600', color: colors.text },
-  camera: { backgroundColor: colors.primary, borderColor: colors.primary },
-  cameraText: { color: colors.primaryText },
+  cameraBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  iconRoot: { width: 26, height: 20, justifyContent: 'center', alignItems: 'center' },
+  iconBody: {
+    width: 24,
+    height: 16,
+    borderWidth: 2,
+    borderRadius: 4,
+  },
+  iconLens: {
+    position: 'absolute',
+    width: 8,
+    height: 8,
+    borderWidth: 2,
+    borderRadius: 4,
+  },
+  iconBump: {
+    position: 'absolute',
+    top: 0,
+    right: 4,
+    width: 6,
+    height: 3,
+    borderRadius: 1,
+  },
 });
