@@ -7,7 +7,7 @@ import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
-import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { isOzonStockRateLimitPayload, ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 import { parseMarketplaceWarehouseId } from '../utils/marketplaceWarehouseId.js';
 import { normalizeBarcodeRows, parseBarcodesMarketplacesColumn } from '../utils/productBarcodes.js';
@@ -207,17 +207,34 @@ async function pushOzon(ctx, quantity, organizationId, profileId) {
   if (offerId) stockRow.offer_id = offerId;
   if (productId && Number.isFinite(productId)) stockRow.product_id = productId;
 
-  const data = await ozonApiPostWithRetry(
-    '/v2/products/stocks',
-    { stocks: [stockRow] },
-    { profileId, organizationId }
-  );
-  const rowErrors = (data?.result || [])
-    .flatMap((row) => (Array.isArray(row?.errors) ? row.errors : []))
-    .filter(Boolean);
-  if (rowErrors.length > 0) {
-    const err = new Error(`Ozon stocks: ${JSON.stringify(rowErrors).substring(0, 300)}`);
-    throw err;
+  // Ozon часто отвечает HTTP 200 + result[].errors TOO_MANY_REQUESTS —
+  // без ретрая фантомный остаток остаётся на складе МП.
+  const maxAttempts = 6;
+  let data = null;
+  let rowErrors = [];
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    data = await ozonApiPostWithRetry(
+      '/v2/products/stocks',
+      { stocks: [stockRow] },
+      { profileId, organizationId }
+    );
+    rowErrors = (data?.result || [])
+      .flatMap((row) => (Array.isArray(row?.errors) ? row.errors : []))
+      .filter(Boolean);
+    if (rowErrors.length === 0) break;
+    if (!isOzonStockRateLimitPayload(rowErrors) || attempt >= maxAttempts - 1) {
+      const err = new Error(`Ozon stocks: ${JSON.stringify(rowErrors).substring(0, 300)}`);
+      if (isOzonStockRateLimitPayload(rowErrors)) {
+        err.statusCode = 429;
+        err.code = 'OZON_RATE_LIMIT';
+      }
+      throw err;
+    }
+    const waitMs = Math.min(30_000, 2000 * 2 ** attempt);
+    logger.warn(
+      `[MP Stock Push] Ozon stocks rate limited product=${ctx.product?.id} qty=${quantity}, retry in ${Math.round(waitMs / 1000)}s`
+    );
+    await sleep(waitMs);
   }
   logger.info(`[MP Stock Push] Ozon OK product=${ctx.product?.id} offer=${offerId} qty=${quantity} wh=${mpWarehouseId}`);
   return { marketplace: 'ozon', ok: true, quantity, warehouseId: mpWarehouseId, response: data };

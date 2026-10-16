@@ -237,6 +237,70 @@ export async function findOrganizationMarketplaceLinkedProductIds(organizationId
 
 const MP_LABELS = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс.Маркет' };
 
+/** Поколение синка: устаревший in-flight пуш не должен перезаписать более новый остаток. */
+const mpSyncGenerationByProduct = new Map();
+/** Один активный синк на товар — иначе параллельные пуши могут завершиться в обратном порядке. */
+const mpSyncTailByProduct = new Map();
+
+function bumpMarketplaceSyncGeneration(productId) {
+  const key = String(productId);
+  const next = (mpSyncGenerationByProduct.get(key) || 0) + 1;
+  mpSyncGenerationByProduct.set(key, next);
+  return next;
+}
+
+function currentMarketplaceSyncGeneration(productId) {
+  return mpSyncGenerationByProduct.get(String(productId)) || 0;
+}
+
+function withProductMarketplaceSyncLock(productId, fn) {
+  const key = String(productId);
+  const prev = mpSyncTailByProduct.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  mpSyncTailByProduct.set(
+    key,
+    run.then(
+      () => {},
+      () => {}
+    )
+  );
+  return run;
+}
+
+function isStockPushRateLimitError(err) {
+  const msg = String(err?.message ?? err ?? '');
+  const code = String(err?.code ?? '');
+  return (
+    Number(err?.statusCode) === 429 ||
+    code === 'OZON_RATE_LIMIT' ||
+    /too_many_requests/i.test(msg) ||
+    /too frequently/i.test(msg) ||
+    /rate limit/i.test(msg)
+  );
+}
+
+function scheduleRateLimitRetry(productId, opts, failedResults) {
+  const retryCount = Math.max(0, Math.floor(Number(opts._retryCount) || 0));
+  if (retryCount >= 5) return;
+  const hasRateLimit = (failedResults || []).some(
+    (r) => r && r.ok === false && !r.skipped && isStockPushRateLimitError({ message: r.error, code: r.code })
+  );
+  if (!hasRateLimit) return;
+  const delayMs = Math.min(60_000, 4000 * 2 ** retryCount);
+  logger.warn('[MP Stock Push] schedule retry after rate limit', {
+    productId,
+    retryCount: retryCount + 1,
+    delayMs,
+  });
+  setTimeout(() => {
+    scheduleWarehouseStockMarketplaceSync(productId, {
+      ...opts,
+      source: `${opts.source || 'unknown'}:rate_limit_retry`,
+      _retryCount: retryCount + 1,
+    });
+  }, delayMs);
+}
+
 export function formatSkipReasonsSummary(skipReasons = {}) {
   const parts = Object.entries(skipReasons)
     .filter(([, n]) => n > 0)
@@ -249,7 +313,17 @@ export function formatSkipReasonsSummary(skipReasons = {}) {
  * @param {{ organizationId?: number|string|null, source?: string, warehouseId?: number|string|null }} [opts]
  */
 export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
+  return withProductMarketplaceSyncLock(productId, () =>
+    syncWarehouseStockToMarketplacesUnlocked(productId, opts)
+  );
+}
+
+async function syncWarehouseStockToMarketplacesUnlocked(productId, opts = {}) {
   const source = opts.source || 'unknown';
+  const syncGeneration =
+    opts._syncGeneration != null
+      ? Number(opts._syncGeneration)
+      : bumpMarketplaceSyncGeneration(productId);
   let organizationId = opts.organizationId ?? null;
   if (organizationId == null) {
     organizationId = await resolveOrganizationIdForProduct(productId);
@@ -351,8 +425,19 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       continue;
     }
 
+    if (currentMarketplaceSyncGeneration(productId) !== syncGeneration) {
+      results.push({
+        marketplace: mp,
+        ok: false,
+        skipped: true,
+        reason: 'stale_sync_superseded',
+      });
+      continue;
+    }
+
     const erpWarehouseId = mapping.warehouse_id;
     const whForStock = effectiveWarehouseId ?? erpWarehouseId;
+    // Свежий пересчёт прямо перед API: иначе in-flight пуш утащит устаревший qty.
     const { available, onHand, suppliers, reserved } = await computeAvailableQuantity(
       productId,
       {
@@ -384,8 +469,20 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       reserved,
       available,
       pushQuantity,
-      qtyPolicyReason: qtyPolicy.reason || null
+      qtyPolicyReason: qtyPolicy.reason || null,
+      syncGeneration
     });
+
+    if (currentMarketplaceSyncGeneration(productId) !== syncGeneration) {
+      results.push({
+        marketplace: mp,
+        ok: false,
+        skipped: true,
+        reason: 'stale_sync_superseded',
+        pushQuantity,
+      });
+      continue;
+    }
 
     try {
       const pushResult = await pushStockToMarketplace({
@@ -416,11 +513,13 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
         marketplace: mp,
         ok: false,
         error: e?.message || String(e),
+        code: e?.code || null,
         erpWarehouseId,
         available,
         onHand,
         suppliers,
-        reserved
+        reserved,
+        pushQuantity
       });
     }
   }
@@ -432,6 +531,10 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
   for (const item of skippedItems) {
     const reason = item.reason || 'unknown';
     skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+  }
+
+  if (failed.length > 0 && currentMarketplaceSyncGeneration(productId) === syncGeneration) {
+    scheduleRateLimitRetry(productId, { ...opts, source, _syncGeneration: undefined }, failed);
   }
 
   return {
@@ -655,8 +758,10 @@ export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
     0,
     Math.min(30_000, parseInt(process.env.MP_STOCK_PUSH_DEBOUNCE_MS || '1500', 10) || 1500)
   );
+  const syncGeneration = bumpMarketplaceSyncGeneration(productId);
   const syncOpts = {
     ...opts,
+    _syncGeneration: syncGeneration,
     strictWarehouse:
       opts.strictWarehouse === true ||
       (opts.warehouseId != null && String(opts.warehouseId).trim() !== '')

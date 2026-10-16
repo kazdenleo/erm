@@ -11,7 +11,26 @@ let ozonSellerApiQueue = Promise.resolve();
 
 export function isOzonRateLimitError(err) {
   const msg = String(err?.message ?? '');
-  return msg.includes('429') || /rate limit/i.test(msg);
+  return (
+    msg.includes('429') ||
+    /rate limit/i.test(msg) ||
+    /too_many_requests/i.test(msg) ||
+    /too frequently/i.test(msg)
+  );
+}
+
+/** Ошибки в теле ответа Ozon stocks (HTTP 200, но result[].errors). */
+export function isOzonStockRateLimitPayload(errors) {
+  const list = Array.isArray(errors) ? errors : [];
+  return list.some((e) => {
+    const code = String(e?.code ?? '');
+    const message = String(e?.message ?? '');
+    return (
+      /too_many_requests/i.test(code) ||
+      /too frequently/i.test(message) ||
+      /rate limit/i.test(message)
+    );
+  });
 }
 
 
