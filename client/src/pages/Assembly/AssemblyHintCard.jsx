@@ -137,7 +137,7 @@ export function AssemblyHintCard({
           kit={multi}
           article={item.article}
           quantity={item.quantity}
-          address={item.isKit ? null : addressOf(item.productId)}
+          address={addressOf(item.productId)}
           packing={packingPerItem ? item.packingDisplayValue || '—' : null}
           remaining={remainingFor(remainingByPid, item.productId)}
           stockLabel={

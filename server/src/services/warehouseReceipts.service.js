@@ -377,14 +377,12 @@ class WarehouseReceiptsService {
           }
         });
 
-        if (!isKit) {
-          await this._placeInboundToAssignedQuiet(
-            whId,
-            productId,
-            quantity,
-            `Приёмка ${receiptNumber}`
-          );
-        }
+        await this._placeInboundToAssignedQuiet(
+          whId,
+          productId,
+          quantity,
+          `Приёмка ${receiptNumber}`
+        );
 
         if (cost != null && !Number.isNaN(cost) && cost >= 0) {
           await this.productsRepository.update(productId, { cost });
@@ -772,14 +770,12 @@ class WarehouseReceiptsService {
         }
       });
 
-      if (!isKit) {
-        await this._placeInboundToAssignedQuiet(
-          whId,
-          productId,
-          quantity,
-          `Возврат от клиента ${receiptNumber}`
-        );
-      }
+      await this._placeInboundToAssignedQuiet(
+        whId,
+        productId,
+        quantity,
+        `Возврат от клиента ${receiptNumber}`
+      );
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {
         await this.productsRepository.update(productId, { cost });

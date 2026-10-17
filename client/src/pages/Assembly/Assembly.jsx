@@ -283,21 +283,16 @@ function assemblyLineProductId(item) {
   return Number.isInteger(n) && n >= 1 ? n : null;
 }
 
-/** Товары, которые берут с полки для строки заказа: у комплекта — комплектующие, иначе сам товар. */
+/** Товары с полки для строки: сам товар/комплект и его комплектующие (комплект тоже может быть закреплён за ячейкой). */
 function assemblyLinePickProductIds(item) {
   const linePid = assemblyLineProductId(item);
   const lines = item?.assemblyCompositionLines ?? item?.assembly_composition_lines;
   const compPids = Array.isArray(lines)
-    ? [
-        ...new Set(
-          lines
-            .map((l) => Number(l?.productId ?? l?.product_id))
-            .filter((n) => Number.isInteger(n) && n >= 1 && n !== linePid)
-        ),
-      ]
+    ? lines
+        .map((l) => Number(l?.productId ?? l?.product_id))
+        .filter((n) => Number.isInteger(n) && n >= 1 && n !== linePid)
     : [];
-  if (compPids.length) return compPids;
-  return linePid ? [linePid] : [];
+  return [...new Set([...(linePid ? [linePid] : []), ...compPids])];
 }
 
 const ASSEMBLY_SORT_STORAGE_KEY = 'assembly.sort';

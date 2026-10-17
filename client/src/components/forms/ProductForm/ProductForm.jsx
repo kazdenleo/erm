@@ -7680,7 +7680,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
       {activeTab === 'main' && (
         <>
-        {product?.id && formData.product_type !== 'kit' ? <ProductStorageBlock productId={product.id} /> : null}
+        {product?.id ? <ProductStorageBlock productId={product.id} /> : null}
         <div className="product-form-block">
         <h4 className="product-form-block__title">Главные атрибуты</h4>
         <div className="row g-2">

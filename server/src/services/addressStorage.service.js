@@ -576,7 +576,6 @@ class AddressStorageService {
        LEFT JOIN product_storage_assignments a ON a.product_id = p.id AND a.warehouse_id = $1
        LEFT JOIN storage_locations sl ON sl.id = a.location_id
        WHERE COALESCE(p.is_archived, false) = false
-         AND COALESCE(p.product_type, 'product') <> 'kit'
          AND (p.name ILIKE $2 OR p.sku ILIKE $2 OR p.id::text = $3
               OR EXISTS (SELECT 1 FROM barcodes bc WHERE bc.product_id = p.id AND bc.barcode = $3))
          ${profileSql}
@@ -596,7 +595,6 @@ class AddressStorageService {
 
   async assignProduct(warehouseId, productId, locationId, { profileId = null } = {}) {
     const p = await this.assertProductInProfile(productId, profileId);
-    if (p.product_type === 'kit') throw httpError('Комплект не хранится отдельно — закрепите ячейки за комплектующими');
     if (locationId == null || locationId === '') {
       await query(`DELETE FROM product_storage_assignments WHERE product_id = $1 AND warehouse_id = $2`, [
         productId,
@@ -644,7 +642,7 @@ class AddressStorageService {
     const [prodR, locR] = await Promise.all([
       query(
         `SELECT id, LOWER(sku) AS k FROM products
-         WHERE LOWER(sku) = ANY($1::text[]) AND COALESCE(product_type, 'product') <> 'kit' ${profileSql}`,
+         WHERE LOWER(sku) = ANY($1::text[]) ${profileSql}`,
         params
       ),
       query(
@@ -903,9 +901,8 @@ class AddressStorageService {
       const settings = await this.getSettings(wid);
       if (!settings.enabled || !settings.trackQuantities) return { placed: false, reason: 'disabled' };
 
-      const p = await db.query(`SELECT product_type FROM products WHERE id = $1`, [pid]);
+      const p = await db.query(`SELECT id FROM products WHERE id = $1`, [pid]);
       if (!p.rows[0]) return { placed: false, reason: 'not_found' };
-      if (p.rows[0].product_type === 'kit') return { placed: false, reason: 'kit' };
 
       const a = await db.query(
         `SELECT a.location_id, l.code, l.capacity, l.is_active
@@ -1020,7 +1017,7 @@ class AddressStorageService {
        ) s ON s.product_id = pws.product_id
        LEFT JOIN product_storage_assignments a ON a.product_id = pws.product_id AND a.warehouse_id = $1
        LEFT JOIN storage_locations l ON l.id = a.location_id
-       WHERE pws.warehouse_id = $1 AND COALESCE(p.product_type, 'product') <> 'kit' AND ${cond}
+       WHERE pws.warehouse_id = $1 AND ${cond}
        ORDER BY (pws.quantity - COALESCE(s.placed, 0)) DESC, p.name
        LIMIT $2`,
       [warehouseId, lim]
