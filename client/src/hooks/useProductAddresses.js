@@ -15,6 +15,8 @@ export function useProductAddresses(productIds) {
 
   const [enabled, setEnabled] = useState(false);
   const [map, setMap] = useState({});
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = useCallback(() => setReloadToken((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,7 +29,7 @@ export function useProductAddresses(productIds) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadToken]);
 
   useEffect(() => {
     if (!enabled || !key) return undefined;
@@ -44,7 +46,7 @@ export function useProductAddresses(productIds) {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [enabled, key]);
+  }, [enabled, key, reloadToken]);
 
   /** Основной адрес товара: на складе заказа, иначе на любом складе с адресным хранением. */
   const primaryFor = useCallback(
@@ -81,5 +83,5 @@ export function useProductAddresses(productIds) {
     [primaryFor]
   );
 
-  return { enabled, map, addressFor, routeFor, primaryFor };
+  return { enabled, map, addressFor, routeFor, primaryFor, reload };
 }

@@ -43,7 +43,7 @@ import { MarketplaceReturnClaimsPanel } from '../../components/returns/Marketpla
 import { marketplaceReturnClaimsApi } from '../../services/marketplaceReturnClaims.api';
 import { orderRowCatalogSku } from '../../utils/orderActions.js';
 import { useProductAddresses } from '../../hooks/useProductAddresses';
-import { AddressBadge } from '../../components/addressStorage/AddressBadge';
+import { ReceiptAssignCell } from '../../components/addressStorage/ReceiptAssignCell';
 import { addressStorageApi } from '../../services/addressStorage.api';
 import './WarehouseOperations.css';
 import '../../pages/Returns/Returns.css';
@@ -5451,8 +5451,8 @@ export function WarehouseOperations({
             )}
             {receiptAddresses.enabled ? (
               <p className="muted-hint" style={{ margin: '6px 0 0' }}>
-                Закреплённая ячейка показывается в списке. При оформлении (если включён учёт по ячейкам) товар
-                попадёт в неё сам — спрашивать «куда» не нужно.
+                В списке — закреплённая ячейка; если нет — можно закрепить прямо при приёмке. При оформлении
+                (если включён учёт по ячейкам) товар попадёт в неё сам — спрашивать «куда» не нужно.
               </p>
             ) : null}
           </div>
@@ -5582,11 +5582,12 @@ export function WarehouseOperations({
                           <td className="name-cell">{item.name}</td>
                           {receiptAddresses.enabled ? (
                             <td>
-                              <AddressBadge
+                              <ReceiptAssignCell
+                                warehouseId={receiptWarehouseId}
+                                productId={item.productId}
                                 address={cellCode}
-                                title="Закреплённая ячейка — сюда класть при приёмке"
+                                onAssigned={receiptAddresses.reload}
                               />
-                              {!cellCode ? <span className="muted-hint">без адреса</span> : null}
                             </td>
                           ) : null}
                           <td>

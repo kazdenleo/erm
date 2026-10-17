@@ -39,6 +39,8 @@ import {
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { PurchaseExpectedDraftModal } from './PurchaseExpectedDraftModal.jsx';
 import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
+import { useProductAddresses } from '../../hooks/useProductAddresses';
+import { ReceiptAssignCell } from '../../components/addressStorage/ReceiptAssignCell';
 
 const RECEIPT_SCANNER_ID_LS = 'erm:purchase-receipt-scanner-id';
 
@@ -456,6 +458,22 @@ export function Purchases() {
       return sa.localeCompare(sb, 'ru', { numeric: true });
     });
   }, [detail?.items, detailExpectedQtySort]);
+
+  const receiptAddressProductIds = useMemo(
+    () =>
+      (Array.isArray(receipt?.items) ? receipt.items : [])
+        .map((it) => Number(it.product_id))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    [receipt?.items]
+  );
+  const receiptAddresses = useProductAddresses(receiptAddressProductIds);
+  const receiptAssignedCode = useCallback(
+    (productId) => {
+      const p = receiptAddresses.primaryFor(productId, receiptWarehouseId || null);
+      return p?.assigned ? p.code : null;
+    },
+    [receiptAddresses, receiptWarehouseId]
+  );
 
   const sortedReceiptItems = useMemo(() => {
     const items = receipt?.items;
@@ -1480,6 +1498,7 @@ export function Purchases() {
           });
           const over = expected != null && updatedScannedQty > expected;
           setLastScanLine({
+            productId: updatedProductId,
             sku: hit.product_sku || '—',
             name: hit.product_name || '—',
             expected,
@@ -2558,7 +2577,10 @@ export function Purchases() {
             ) : isReceiptScanning && scanMsg ? (
               <p className="muted" style={{ marginTop: 8 }}>{scanMsg}</p>
             ) : null}
-            {isReceiptScanning && lastScanLine && (
+            {isReceiptScanning && lastScanLine && (() => {
+              const lastCell =
+                receiptAddresses.enabled ? receiptAssignedCode(lastScanLine.productId) : null;
+              return (
               <div
                 role="status"
                 style={{
@@ -2569,8 +2591,19 @@ export function Purchases() {
                   background: lastScanLine.over ? 'rgba(211,51,51,0.08)' : 'rgba(0,0,0,0.03)',
                 }}
               >
-                <div style={{ fontWeight: 600 }}>
-                  {lastScanLine.sku} — {lastScanLine.name}
+                <div style={{ fontWeight: 600, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                  <span>
+                    {lastScanLine.sku} — {lastScanLine.name}
+                  </span>
+                  {receiptAddresses.enabled ? (
+                    <ReceiptAssignCell
+                      warehouseId={receiptWarehouseId}
+                      productId={lastScanLine.productId}
+                      address={lastCell}
+                      large
+                      onAssigned={receiptAddresses.reload}
+                    />
+                  ) : null}
                 </div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Принято {lastScanLine.scanned}/{lastScanLine.expected ?? '—'}
@@ -2578,9 +2611,16 @@ export function Purchases() {
                   {chestnyZnakEnabled && lastScanLine.cis ? ' · КИ записан' : ''}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             <h4 style={{ marginTop: 14 }}>{isReceiptScanning ? 'Отсканировано' : 'Принято по приёмке'}</h4>
+            {receiptAddresses.enabled ? (
+              <p className="muted" style={{ marginTop: 4, marginBottom: 8, fontSize: 13 }}>
+                В колонке «Ячейка» — куда класть. Если не закреплена — можно закрепить прямо здесь (скан или адрес).
+                При завершении приёмки (если включён учёт по ячейкам) товар попадёт в закреплённую ячейку сам.
+              </p>
+            ) : null}
             {Array.isArray(receipt.items) && receipt.items.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
                 <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--purchase-scan table">
@@ -2588,6 +2628,7 @@ export function Purchases() {
                     <tr>
                       <th>Артикул</th>
                       <th>Товар</th>
+                      {receiptAddresses.enabled ? <th>Ячейка</th> : null}
                       <th className="warehouse-ops-receipt-num warehouse-ops-receipt-num--price">Закуп. цена</th>
                       <th className="warehouse-ops-receipt-num">Ожидается</th>
                       <th className="warehouse-ops-receipt-num">Было</th>
@@ -2595,10 +2636,41 @@ export function Purchases() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedReceiptItems.map((it) => (
+                    {sortedReceiptItems.map((it) => {
+                      const cellCode = receiptAddresses.enabled
+                        ? receiptAssignedCode(it.product_id)
+                        : null;
+                      const expected = receiptItemExpectedQty(it, { scanning: isReceiptScanning });
+                      const scanned = Number(it.scanned_quantity) || 0;
+                      const rec = Number(it.received_quantity);
+                      const received = Number.isFinite(rec) ? rec : null;
+                      const remain = expected != null ? Math.max(0, expected - scanned) : null;
+                      const diff = expected != null ? scanned - expected : null;
+                      const isOver = diff != null && diff > 0;
+                      const isExact = diff != null && diff === 0 && expected !== 0;
+                      const isUnder = diff != null && diff < 0;
+                      const cellStyle = isOver
+                        ? { color: '#b00020', fontWeight: 700 }
+                        : isExact
+                          ? { color: '#1b5e20', fontWeight: 700 }
+                          : isUnder
+                            ? { color: '#8a6d00', fontWeight: 700 }
+                            : {};
+                      const isScanning = String(receipt?.receipt?.status) === 'scanning';
+                      return (
                       <tr key={receiptItemRowKey(it)}>
                         <td className="sku-cell">{it.product_sku || '—'}</td>
                         <td className="name-cell">{it.product_name || '—'}</td>
+                        {receiptAddresses.enabled ? (
+                          <td>
+                            <ReceiptAssignCell
+                              warehouseId={receiptWarehouseId}
+                              productId={it.product_id}
+                              address={cellCode}
+                              onAssigned={receiptAddresses.reload}
+                            />
+                          </td>
+                        ) : null}
                         <td className="warehouse-ops-receipt-num warehouse-ops-receipt-num--price">
                           {isReceiptScanning ? (
                             <input
@@ -2627,26 +2699,6 @@ export function Purchases() {
                             it.purchase_price ?? it.product_cost ?? '—'
                           )}
                         </td>
-                        {(() => {
-                          const expected = receiptItemExpectedQty(it, { scanning: isReceiptScanning });
-                          const scanned = Number(it.scanned_quantity) || 0;
-                          const rec = Number(it.received_quantity);
-                          const received = Number.isFinite(rec) ? rec : null;
-                          const remain = expected != null ? Math.max(0, expected - scanned) : null;
-                          const diff = expected != null ? scanned - expected : null;
-                          const isOver = diff != null && diff > 0;
-                          const isExact = diff != null && diff === 0 && expected !== 0;
-                          const isUnder = diff != null && diff < 0;
-                          const cellStyle = isOver
-                            ? { color: '#b00020', fontWeight: 700 }
-                            : isExact
-                              ? { color: '#1b5e20', fontWeight: 700 }
-                              : isUnder
-                                ? { color: '#8a6d00', fontWeight: 700 }
-                                : {};
-                          const isScanning = String(receipt?.receipt?.status) === 'scanning';
-                          return (
-                            <>
                               <td className="warehouse-ops-receipt-num">{remain != null ? remain : '—'}</td>
                               <td className="warehouse-ops-receipt-num muted">
                                 {received != null ? received : '—'}
@@ -2670,11 +2722,9 @@ export function Purchases() {
                                   scanned
                                 )}
                               </td>
-                            </>
-                          );
-                        })()}
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
