@@ -67,7 +67,13 @@ export function AddressStorage() {
     if (!warehouseId) return;
     setLocationsLoading(true);
     try {
-      setLocations((await addressStorageApi.listLocations(warehouseId)) || []);
+      const list = (await addressStorageApi.listLocations(warehouseId)) || [];
+      setLocations(list);
+      // Счётчик в селекте склада должен совпадать с таблицей (после удаления/генерации).
+      setWarehouses((prev) =>
+        (prev || []).map((w) => (w.id === warehouseId ? { ...w, locationsCount: list.length } : w))
+      );
+      addressStorageApi.invalidateWarehouses();
     } catch (e) {
       setError(addressStorageError(e).message);
     } finally {

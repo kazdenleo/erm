@@ -11,6 +11,7 @@ import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.j
 import { requireWarehouseDocumentScope, requireTransferDocumentScope, assertWarehouseBelongsToOrganization } from '../utils/stockDocumentScope.js';
 import { looksLikeCis } from '../utils/chestnyZnak.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
+import addressStorageService from './addressStorage.service.js';
 import logger from '../utils/logger.js';
 
 class WarehouseReceiptsService {
@@ -27,6 +28,21 @@ class WarehouseReceiptsService {
       throw err;
     }
     return wid;
+  }
+
+  /** Приход на склад → в закреплённую ячейку (если учёт по ячейкам включён). Ошибки не роняют документ. */
+  async _placeInboundToAssignedQuiet(warehouseId, productId, quantity, note) {
+    try {
+      return await addressStorageService.placeInboundToAssigned(warehouseId, productId, quantity, { note });
+    } catch (e) {
+      logger.warn('[AddressStorage] placeInboundToAssigned failed', {
+        warehouseId,
+        productId,
+        quantity,
+        message: e?.message || String(e),
+      });
+      return { placed: false, reason: 'error' };
+    }
   }
 
   _normalizeReceiptLines(lines) {
@@ -360,6 +376,15 @@ class WarehouseReceiptsService {
             ...(isKit ? { kit_receipt: true } : {})
           }
         });
+
+        if (!isKit) {
+          await this._placeInboundToAssignedQuiet(
+            whId,
+            productId,
+            quantity,
+            `Приёмка ${receiptNumber}`
+          );
+        }
 
         if (cost != null && !Number.isNaN(cost) && cost >= 0) {
           await this.productsRepository.update(productId, { cost });
@@ -746,6 +771,15 @@ class WarehouseReceiptsService {
           ...(isKit ? { kit_customer_return: true } : {})
         }
       });
+
+      if (!isKit) {
+        await this._placeInboundToAssignedQuiet(
+          whId,
+          productId,
+          quantity,
+          `Возврат от клиента ${receiptNumber}`
+        );
+      }
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {
         await this.productsRepository.update(productId, { cost });

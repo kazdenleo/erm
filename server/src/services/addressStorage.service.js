@@ -887,6 +887,81 @@ class AddressStorageService {
     });
   }
 
+  /**
+   * После прихода на склад: если включён учёт по ячейкам и у товара есть закреплённая ячейка —
+   * сразу положить принятое количество туда (из «без адреса»). Без закрепления — не трогаем.
+   * Переполнение вместимости: не размещаем, товар остаётся без адреса.
+   * @returns {{ placed: boolean, code?: string, locationId?: number, reason?: string }}
+   */
+  async placeInboundToAssigned(warehouseId, productId, quantity, { userId = null, note = null, client = null } = {}) {
+    const wid = toPosInt(warehouseId);
+    const pid = toPosInt(productId);
+    const qty = toPosInt(quantity);
+    if (!wid || !pid || !qty) return { placed: false, reason: 'bad_args' };
+
+    const run = async (db) => {
+      const settings = await this.getSettings(wid);
+      if (!settings.enabled || !settings.trackQuantities) return { placed: false, reason: 'disabled' };
+
+      const p = await db.query(`SELECT product_type FROM products WHERE id = $1`, [pid]);
+      if (!p.rows[0]) return { placed: false, reason: 'not_found' };
+      if (p.rows[0].product_type === 'kit') return { placed: false, reason: 'kit' };
+
+      const a = await db.query(
+        `SELECT a.location_id, l.code, l.capacity, l.is_active
+         FROM product_storage_assignments a
+         JOIN storage_locations l ON l.id = a.location_id
+         WHERE a.product_id = $1 AND a.warehouse_id = $2`,
+        [pid, wid]
+      );
+      if (!a.rows[0] || a.rows[0].is_active === false) return { placed: false, reason: 'no_assignment' };
+      const locationId = Number(a.rows[0].location_id);
+      const code = String(a.rows[0].code);
+      const capacity = a.rows[0].capacity != null ? Number(a.rows[0].capacity) : null;
+
+      const pws = await db.query(
+        `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
+        [pid, wid]
+      );
+      const whQty = Number(pws.rows[0]?.quantity) || 0;
+      const placedR = await db.query(
+        `SELECT COALESCE(SUM(quantity), 0)::int AS s FROM product_location_stock
+         WHERE product_id = $1 AND warehouse_id = $2`,
+        [pid, wid]
+      );
+      const unplaced = whQty - Number(placedR.rows[0].s);
+      if (unplaced < qty) return { placed: false, reason: 'no_unplaced', unplaced: Math.max(0, unplaced) };
+
+      if (capacity != null) {
+        const inCell = await db.query(
+          `SELECT COALESCE(SUM(quantity), 0)::int AS s FROM product_location_stock WHERE location_id = $1`,
+          [locationId]
+        );
+        if (Number(inCell.rows[0].s) + qty > capacity) {
+          return { placed: false, reason: 'over_capacity', code, locationId };
+        }
+      }
+
+      await db.query(
+        `INSERT INTO product_location_stock (product_id, location_id, warehouse_id, quantity)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (product_id, location_id) DO UPDATE SET
+           quantity = product_location_stock.quantity + EXCLUDED.quantity, updated_at = CURRENT_TIMESTAMP`,
+        [pid, locationId, wid, qty]
+      );
+      await db.query(
+        `INSERT INTO storage_location_movements
+           (product_id, warehouse_id, from_location_id, to_location_id, quantity, kind, user_id, note)
+         VALUES ($1, $2, NULL, $3, $4, 'move', $5, $6)`,
+        [pid, wid, locationId, qty, userId, note ? String(note).slice(0, 300) : 'Приход в закреплённую ячейку']
+      );
+      return { placed: true, code, locationId };
+    };
+
+    if (client) return run(client);
+    return transaction(run);
+  }
+
   /** Разместить весь остаток «без адреса» в закреплённые ячейки (первичный переход на учёт по ячейкам). */
   async placeUnplacedToAssigned(warehouseId, { userId = null } = {}) {
     return transaction(async (client) => {

@@ -33,15 +33,25 @@ export const addressStorageApi = {
   },
 
   listLocations: async (warehouseId) => unwrap(await api.get(`${wh(warehouseId)}/locations`)),
-  createLocation: async (warehouseId, body) => unwrap(await api.post(`${wh(warehouseId)}/locations`, body)),
-  generateLocations: async (warehouseId, body) =>
-    unwrap(await api.post(`${wh(warehouseId)}/locations/generate`, body)),
+  createLocation: async (warehouseId, body) => {
+    const data = unwrap(await api.post(`${wh(warehouseId)}/locations`, body));
+    warehousesCache = null;
+    return data;
+  },
+  generateLocations: async (warehouseId, body) => {
+    const data = unwrap(await api.post(`${wh(warehouseId)}/locations/generate`, body));
+    warehousesCache = null;
+    return data;
+  },
   updateLocation: async (warehouseId, locationId, body) =>
     unwrap(await api.patch(`${wh(warehouseId)}/locations/${locationId}`, body)),
   bulkUpdateLocations: async (warehouseId, ids, patch) =>
     unwrap(await api.post(`${wh(warehouseId)}/locations/bulk-update`, { ids, patch })),
-  deleteLocations: async (warehouseId, ids, { force = false } = {}) =>
-    unwrap(await api.post(`${wh(warehouseId)}/locations/delete`, { ids, force })),
+  deleteLocations: async (warehouseId, ids, { force = false } = {}) => {
+    const data = unwrap(await api.post(`${wh(warehouseId)}/locations/delete`, { ids, force }));
+    warehousesCache = null;
+    return data;
+  },
   renumberRoute: async (warehouseId, strategy) =>
     unwrap(await api.post(`${wh(warehouseId)}/locations/renumber`, { strategy })),
   labelsPdf: async (warehouseId, ids) => {

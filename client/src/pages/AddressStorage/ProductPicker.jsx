@@ -1,9 +1,11 @@
 /**
  * Поиск товара по названию, артикулу или штрихкоду в рамках склада.
+ * Сканер: ввод → Enter; при одном совпадении товар выбирается сразу, иначе открывается список.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { addressStorageApi } from '../../services/addressStorage.api';
+import { isLikelyBarcodeScan, normalizeProductSearchQuery } from '../../utils/productSearch';
 
 export function ProductPicker({ warehouseId, onPick, placeholder = 'Товар: название, артикул или штрихкод', autoFocus = false }) {
   const [q, setQ] = useState('');
@@ -11,32 +13,99 @@ export function ProductPicker({ warehouseId, onPick, placeholder = 'Товар: 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const reqRef = useRef(0);
+  const itemsRef = useRef([]);
+  const loadingRef = useRef(false);
+  const inputRef = useRef(null);
+  const blurCloseTimer = useRef(null);
 
   useEffect(() => {
-    const term = q.trim();
+    itemsRef.current = items;
+  }, [items]);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+
+  const search = (term, { keepOpen = true } = {}) => {
+    const cleaned = normalizeProductSearchQuery(term);
+    if (cleaned.length < 2) {
+      setItems([]);
+      return Promise.resolve([]);
+    }
+    const id = ++reqRef.current;
+    setLoading(true);
+    if (keepOpen) setOpen(true);
+    return addressStorageApi
+      .searchProducts(warehouseId, cleaned)
+      .then((list) => {
+        if (id !== reqRef.current) return null;
+        const next = list || [];
+        setItems(next);
+        if (keepOpen) setOpen(true);
+        return next;
+      })
+      .catch(() => {
+        if (id === reqRef.current) setItems([]);
+        return [];
+      })
+      .finally(() => {
+        if (id === reqRef.current) setLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    const term = normalizeProductSearchQuery(q);
     if (term.length < 2) {
       setItems([]);
       return undefined;
     }
-    const id = ++reqRef.current;
-    setLoading(true);
+    // Штрихкод со сканера набирается быстро — короткий debounce; ручной ввод — чуть длиннее.
+    const delay = isLikelyBarcodeScan(term) ? 80 : 300;
     const t = setTimeout(() => {
-      addressStorageApi
-        .searchProducts(warehouseId, term)
-        .then((list) => {
-          if (id === reqRef.current) setItems(list || []);
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (id === reqRef.current) setLoading(false);
-        });
-    }, 300);
+      void search(term);
+    }, delay);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- search замыкается на warehouseId
   }, [q, warehouseId]);
+
+  const pick = (p) => {
+    onPick?.(p);
+    setQ('');
+    setItems([]);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const confirmScan = async () => {
+    const term = normalizeProductSearchQuery(q);
+    if (term.length < 2) return;
+    // Не закрывать список по blur от Enter.
+    if (blurCloseTimer.current) {
+      clearTimeout(blurCloseTimer.current);
+      blurCloseTimer.current = null;
+    }
+    setOpen(true);
+    let list = itemsRef.current;
+    if (loadingRef.current || !list.length || normalizeProductSearchQuery(q) !== term) {
+      list = (await search(term)) || [];
+    }
+    if (!list?.length) return;
+    if (list.length === 1) {
+      pick(list[0]);
+      return;
+    }
+    // Точное совпадение штрихкода / артикула — выбираем его, даже если нашлись ещё похожие.
+    const exact = list.find(
+      (p) =>
+        String(p.sku || '').toLowerCase() === term.toLowerCase() ||
+        String(p.id) === term
+    );
+    if (exact) pick(exact);
+  };
 
   return (
     <div className="address-picker">
       <input
+        ref={inputRef}
         className="form-control form-control-sm"
         value={q}
         placeholder={placeholder}
@@ -46,9 +115,17 @@ export function ProductPicker({ warehouseId, onPick, placeholder = 'Товар: 
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => {
+          blurCloseTimer.current = setTimeout(() => setOpen(false), 150);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          e.stopPropagation();
+          void confirmScan();
+        }}
       />
-      {open && q.trim().length >= 2 ? (
+      {open && normalizeProductSearchQuery(q).length >= 2 ? (
         <ul className="address-picker__list">
           {loading && !items.length ? <li className="muted-hint">Поиск…</li> : null}
           {!loading && !items.length ? <li className="muted-hint">Ничего не найдено</li> : null}
@@ -57,11 +134,7 @@ export function ProductPicker({ warehouseId, onPick, placeholder = 'Товар: 
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  onPick?.(p);
-                  setQ('');
-                  setOpen(false);
-                }}
+                onClick={() => pick(p)}
               >
                 <code>{p.sku}</code> {p.name}
                 <span className="muted-hint">
