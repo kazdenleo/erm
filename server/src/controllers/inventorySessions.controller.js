@@ -47,6 +47,7 @@ class InventorySessionsController {
       const warehouseId = req.body?.warehouseId ?? req.body?.warehouse_id ?? null;
       const zeroUnlistedRaw = req.body?.zeroUnlisted ?? req.body?.zero_unlisted;
       const zeroUnlisted = zeroUnlistedRaw !== false;
+      const categoryIds = req.body?.categoryIds ?? req.body?.category_ids ?? null;
       const userId = req.user?.id ?? null;
       const profileId = req.user?.profileId ?? null;
       const result = await inventorySessionsService.apply(lines, {
@@ -55,6 +56,7 @@ class InventorySessionsController {
         note: note || null,
         warehouseId,
         zeroUnlisted,
+        categoryIds,
       });
       return res.status(200).json({ ok: true, data: result });
     } catch (e) {
@@ -74,10 +76,12 @@ class InventorySessionsController {
       const lines = req.body?.lines;
       const zeroUnlistedRaw = req.body?.zeroUnlisted ?? req.body?.zero_unlisted;
       const zeroUnlisted = zeroUnlistedRaw !== false;
+      const categoryIds = req.body?.categoryIds ?? req.body?.category_ids;
       const profileId = req.user?.profileId ?? null;
       const result = await inventorySessionsService.updateSession(id, lines, {
         profileId,
         zeroUnlisted,
+        ...(categoryIds !== undefined ? { categoryIds } : {}),
       });
       return res.status(200).json({ ok: true, data: result });
     } catch (e) {
@@ -98,6 +102,8 @@ class InventorySessionsController {
         items,
         editingSessionId,
         editing_session_id,
+        categoryIds,
+        category_ids,
       } = req.body || {};
       const wh = warehouseId ?? warehouse_id ?? null;
       const zeroRaw = zeroUnlisted ?? zero_unlisted;
@@ -107,6 +113,8 @@ class InventorySessionsController {
         zeroUnlisted: zeroRaw !== false,
         items: items ?? null,
         editingSessionId: editingSessionId ?? editing_session_id ?? null,
+        categoryIds: categoryIds ?? category_ids ?? null,
+        profileId: req.user?.profileId ?? null,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

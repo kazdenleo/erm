@@ -23,6 +23,13 @@ function clampInt(v, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function productCategoryId(product) {
+  const raw = product?.user_category_id ?? product?.userCategoryId ?? product?.categoryId ?? product?.category_id;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class InventorySessionsLiveService {
   constructor() {
     this._sessions = new Map();
@@ -96,11 +103,35 @@ class InventorySessionsLiveService {
       ownerUserId: s.ownerUserId ?? null,
       editingSessionId: s.editingSessionId ?? null,
       zeroUnlisted: s.zeroUnlisted !== false,
+      categoryIds: Array.isArray(s.categoryIds) ? s.categoryIds : [],
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       items,
       itemsCount: items.length,
     };
+  }
+
+  async _ensureExpandedCategories(s, profileId = null) {
+    if (!Array.isArray(s.categoryIds) || s.categoryIds.length === 0) {
+      s.expandedCategoryIds = [];
+      return [];
+    }
+    if (Array.isArray(s.expandedCategoryIds) && s.expandedCategoryIds.length > 0) {
+      return s.expandedCategoryIds;
+    }
+    s.expandedCategoryIds = await inventorySessionsService.expandCategoryIds(profileId, s.categoryIds);
+    return s.expandedCategoryIds;
+  }
+
+  async _assertProductInCategoryScope(s, product, profileId = null) {
+    const expanded = await this._ensureExpandedCategories(s, profileId);
+    if (!expanded.length) return;
+    const catId = productCategoryId(product);
+    if (catId == null || !expanded.includes(catId)) {
+      const err = new Error('Товар не из выбранных категорий инвентаризации');
+      err.statusCode = 400;
+      throw err;
+    }
   }
 
   _seedItems(s, itemsInput) {
@@ -124,6 +155,7 @@ class InventorySessionsLiveService {
         current,
         fact,
         cost,
+        userCategoryId: productCategoryId(it) ?? productCategoryId({ user_category_id: it?.user_category_id }),
       });
     }
   }
@@ -134,6 +166,8 @@ class InventorySessionsLiveService {
     zeroUnlisted = true,
     items = null,
     editingSessionId = null,
+    categoryIds = null,
+    profileId = null,
   }) {
     const wid = warehouseId != null ? Number(warehouseId) : null;
     if (!wid || Number.isNaN(wid)) {
@@ -153,6 +187,9 @@ class InventorySessionsLiveService {
         ? Number(editSidRaw)
         : null;
 
+    const rootCats = inventorySessionsService.normalizeCategoryIds(categoryIds);
+    const expanded = await inventorySessionsService.expandCategoryIds(profileId, rootCats);
+
     const id = makeId();
     const t = nowMs();
     const s = {
@@ -161,12 +198,23 @@ class InventorySessionsLiveService {
       ownerUserId: ouid,
       editingSessionId: editSid,
       zeroUnlisted: zeroUnlisted !== false,
+      categoryIds: rootCats,
+      expandedCategoryIds: expanded,
+      profileId: profileId != null ? Number(profileId) : null,
       createdAt: t,
       updatedAt: t,
       expiresAt: t + SESSION_TTL_MS,
       items: new Map(),
     };
     this._seedItems(s, items);
+
+    if (expanded.length > 0 && s.items.size > 0) {
+      for (const row of s.items.values()) {
+        const product = await this.productsRepo.findById(row.productId);
+        await this._assertProductInCategoryScope(s, product || row, profileId);
+      }
+    }
+
     this._sessions.set(id, s);
     return this._serialize(s);
   }
@@ -206,6 +254,7 @@ class InventorySessionsLiveService {
   }
 
   async _addProductScan(s, product, quantity, userId = null) {
+    await this._assertProductInCategoryScope(s, product, s.profileId);
     const pid = Number(product.id);
     const q = clampInt(quantity, 1, 1000000);
     const prev = s.items.get(pid);
@@ -225,6 +274,7 @@ class InventorySessionsLiveService {
           product.cost != null && product.cost !== '' && Number.isFinite(Number(product.cost))
             ? Number(product.cost)
             : null,
+        userCategoryId: productCategoryId(product),
       };
       this._touchUserScan(row, userId);
       s.items.set(pid, row);
@@ -316,12 +366,14 @@ class InventorySessionsLiveService {
       updateIdRaw != null && updateIdRaw !== '' && Number.isFinite(Number(updateIdRaw))
         ? Number(updateIdRaw)
         : null;
+    const categoryIds = Array.isArray(s.categoryIds) ? s.categoryIds : [];
 
     let result;
     if (updateId) {
       result = await inventorySessionsService.updateSession(updateId, lines, {
         profileId,
         zeroUnlisted: zeroFlag,
+        categoryIds,
       });
     } else {
       result = await inventorySessionsService.apply(lines, {
@@ -330,6 +382,7 @@ class InventorySessionsLiveService {
         note: note || null,
         warehouseId: s.warehouseId,
         zeroUnlisted: zeroFlag,
+        categoryIds,
       });
     }
     this._sessions.delete(s.id);

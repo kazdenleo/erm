@@ -17,6 +17,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
+import { useCategories } from '../../hooks/useCategories';
 import { Button } from '../../components/common/Button/Button';
 import { InviteUserButton } from '../../components/common/InviteUserButton/InviteUserButton';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
@@ -116,6 +117,75 @@ function sortInventoryNewRows(rows) {
       numeric: true,
     });
   });
+}
+
+function productUserCategoryId(product) {
+  const raw =
+    product?.user_category_id ??
+    product?.userCategoryId ??
+    product?.categoryId ??
+    product?.category_id ??
+    null;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Выбранные категории + все потомки по parent_id / parentId. */
+function expandCategoryIdsClient(categories, selectedIds) {
+  const roots = (selectedIds || [])
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!roots.length) return [];
+  const byParent = new Map();
+  for (const cat of categories || []) {
+    const id = Number(cat?.id);
+    if (!Number.isFinite(id) || id < 1) continue;
+    const parentRaw = cat.parent_id ?? cat.parentId ?? null;
+    const parentId =
+      parentRaw != null && parentRaw !== '' && Number.isFinite(Number(parentRaw))
+        ? Number(parentRaw)
+        : null;
+    if (parentId == null) continue;
+    if (!byParent.has(parentId)) byParent.set(parentId, []);
+    byParent.get(parentId).push(id);
+  }
+  const out = new Set(roots);
+  const queue = [...roots];
+  while (queue.length) {
+    const id = queue.pop();
+    for (const child of byParent.get(id) || []) {
+      if (out.has(child)) continue;
+      out.add(child);
+      queue.push(child);
+    }
+  }
+  return [...out];
+}
+
+function normalizeInventoryCategoryIds(raw) {
+  if (raw == null || raw === '') return [];
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return String(raw).split(',');
+          }
+        })()
+      : [];
+  const out = [];
+  const seen = new Set();
+  for (const x of list) {
+    const n = Number(x);
+    if (!Number.isFinite(n) || n < 1 || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
 }
 
 function warehouseScanErrorMessage(e, fallback = 'Товар не найден') {
@@ -294,6 +364,7 @@ export function WarehouseOperations({
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
+  const { categories: inventoryCategories } = useCategories();
   const organizationOptions = useMemo(() => {
     const list = Array.isArray(organizations) ? [...organizations] : [];
     const fallbackId =
@@ -628,6 +699,33 @@ export function WarehouseOperations({
   const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
   /** Обнулить остаток по позициям на складе, не попавшим в список пересчёта */
   const [inventoryZeroUnlisted, setInventoryZeroUnlisted] = useState(true);
+  /** Категории области инвентаризации (пусто = весь склад) */
+  const [inventoryCategoryIds, setInventoryCategoryIds] = useState([]);
+  const inventoryExpandedCategoryIds = useMemo(
+    () => expandCategoryIdsClient(inventoryCategories, inventoryCategoryIds),
+    [inventoryCategories, inventoryCategoryIds]
+  );
+  const inventoryCategoryScopeActive = inventoryExpandedCategoryIds.length > 0;
+  const assertProductInInventoryCategories = useCallback(
+    (product) => {
+      if (!inventoryCategoryScopeActive) return;
+      const catId = productUserCategoryId(product);
+      if (catId == null || !inventoryExpandedCategoryIds.includes(catId)) {
+        const err = new Error('Товар не из выбранных категорий инвентаризации');
+        throw err;
+      }
+    },
+    [inventoryCategoryScopeActive, inventoryExpandedCategoryIds]
+  );
+  const toggleInventoryCategoryId = useCallback((catId) => {
+    const id = Number(catId);
+    if (!Number.isFinite(id) || id < 1) return;
+    setInventoryCategoryIds((prev) => {
+      const has = prev.some((x) => Number(x) === id);
+      if (has) return prev.filter((x) => Number(x) !== id);
+      return [...prev, id];
+    });
+  }, []);
   /** Редактирование существующего документа (id) */
   const [inventoryEditingSessionId, setInventoryEditingSessionId] = useState(null);
   const [inventoryLiveEnabled, setInventoryLiveEnabled] = useState(false);
@@ -1200,6 +1298,9 @@ export function WarehouseOperations({
     } else if (d?.zeroUnlisted === true) {
       setInventoryZeroUnlisted(true);
     }
+    if (d?.categoryIds != null || d?.category_ids != null) {
+      setInventoryCategoryIds(normalizeInventoryCategoryIds(d.categoryIds ?? d.category_ids));
+    }
     setInventoryLiveOwnerUserId(ownerId);
     const editSidRaw = d?.editingSessionId ?? d?.editing_session_id ?? null;
     const meRaw = user?.id ?? user?.userId ?? null;
@@ -1268,6 +1369,7 @@ export function WarehouseOperations({
       const created = await inventorySessionsApi.createSession({
         warehouseId: Number(inventorySessionWarehouseId),
         zeroUnlisted: inventoryZeroUnlisted,
+        categoryIds: inventoryCategoryIds.length ? inventoryCategoryIds : undefined,
         items,
         editingSessionId: inventoryEditingSessionId || undefined,
       });
@@ -1298,6 +1400,7 @@ export function WarehouseOperations({
   }, [
     inventorySessionWarehouseId,
     inventoryZeroUnlisted,
+    inventoryCategoryIds,
     inventoryNewRows,
     inventoryEditingSessionId,
     applyInventoryLiveStateToRows,
@@ -3164,6 +3267,7 @@ export function WarehouseOperations({
     if (!product?.id) {
       throw new Error('Товар не найден в каталоге (нет ID)');
     }
+    assertProductInInventoryCategories(product);
     await appendInventoryRowDelta(resolveProductForInventory(product), 1);
   };
 
@@ -3246,6 +3350,7 @@ export function WarehouseOperations({
       return false;
     }
     try {
+      assertProductInInventoryCategories(product);
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(String(product.id));
         setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
@@ -3344,6 +3449,7 @@ export function WarehouseOperations({
     setInventorySessionWarehouseId('');
     setInventoryEditingSessionId(null);
     setInventoryZeroUnlisted(true);
+    setInventoryCategoryIds([]);
     setLookupError(null);
     setInventoryLiveDraft(readInventoryLiveDraft());
   };
@@ -3406,6 +3512,7 @@ export function WarehouseOperations({
       setInventoryEditingSessionId(session.id);
       setInventorySessionWarehouseId(whId);
       setInventoryZeroUnlisted(true);
+      setInventoryCategoryIds(normalizeInventoryCategoryIds(session.category_ids ?? session.categoryIds));
       setInventoryNewRows(rows);
       setInventoryNewSession(true);
       setInventoryDetailView(null);
@@ -3492,6 +3599,7 @@ export function WarehouseOperations({
     const payload = {
       lines,
       zeroUnlisted: inventoryZeroUnlisted,
+      categoryIds: inventoryCategoryIds.length ? inventoryCategoryIds : [],
     };
     try {
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
@@ -4123,6 +4231,9 @@ export function WarehouseOperations({
                   onClick={() => {
                     setInventoryNewSession(true);
                     setInventoryNewRows([]);
+                    setInventoryEditingSessionId(null);
+                    setInventoryCategoryIds([]);
+                    setInventoryZeroUnlisted(true);
                     setOpMessage(null);
                     setLookupError(null);
                     clearScanField(inventoryNewScanInputRef.current);
@@ -4294,6 +4405,92 @@ export function WarehouseOperations({
                 )}
               </div>
 
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
+                <div className="warehouse-ops-inventory-categories-head">
+                  <label>Категории — можно выбрать несколько</label>
+                  {(inventoryCategories || []).length > 0 &&
+                  !(
+                    isInventoryLiveGuest ||
+                    (inventoryLiveEnabled && !!String(inventoryLiveSessionId || '').trim())
+                  ) ? (
+                    <span className="warehouse-ops-inventory-categories-actions">
+                      <button
+                        type="button"
+                        className="warehouse-ops-link-btn"
+                        onClick={() =>
+                          setInventoryCategoryIds(
+                            (inventoryCategories || [])
+                              .map((c) => Number(c.id))
+                              .filter((n) => Number.isFinite(n) && n > 0)
+                          )
+                        }
+                      >
+                        Выбрать все
+                      </button>
+                      <button
+                        type="button"
+                        className="warehouse-ops-link-btn"
+                        onClick={() => setInventoryCategoryIds([])}
+                        disabled={inventoryCategoryIds.length === 0}
+                      >
+                        Снять все
+                      </button>
+                    </span>
+                  ) : null}
+                </div>
+                <div className="warehouse-ops-inventory-categories" role="group" aria-label="Категории инвентаризации">
+                  {(inventoryCategories || []).length === 0 ? (
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      Нет категорий
+                    </span>
+                  ) : (
+                    (inventoryCategories || []).map((cat) => {
+                      const id = Number(cat.id);
+                      const checked = inventoryCategoryIds.some((x) => Number(x) === id);
+                      const locked =
+                        isInventoryLiveGuest ||
+                        (inventoryLiveEnabled && !!String(inventoryLiveSessionId || '').trim());
+                      const parentRaw = cat.parent_id ?? cat.parentId;
+                      const isChild =
+                        parentRaw != null && parentRaw !== '' && Number.isFinite(Number(parentRaw));
+                      return (
+                        <label
+                          key={cat.id}
+                          className={`warehouse-ops-inventory-category${isChild ? ' is-child' : ''}${
+                            checked ? ' is-checked' : ''
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={locked}
+                            onChange={() => toggleInventoryCategoryId(id)}
+                          />
+                          <span>{cat.name || `Категория #${cat.id}`}</span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+                {inventoryCategoryIds.length > 0 ? (
+                  <div className="warehouse-ops-inventory-category-chips">
+                    {inventoryCategoryIds.map((cid) => {
+                      const cat = (inventoryCategories || []).find((c) => Number(c.id) === Number(cid));
+                      return (
+                        <span key={cid} className="warehouse-ops-inventory-category-chip">
+                          {cat?.name || `#${cid}`}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <p className="warehouse-ops-hint" style={{ marginTop: 6, marginBottom: 0 }}>
+                  {inventoryCategoryIds.length
+                    ? `Пересчёт по ${inventoryCategoryIds.length} категориям (включая подкатегории). Товары других категорий на складе не трогаем.`
+                    : 'Без выбора — инвентаризация по всему складу. Отметьте одну или несколько категорий галочками.'}
+                </p>
+              </div>
+
               {isInventoryLiveGuest && (
                 <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
                   Вы приглашены в общую инвентаризацию: сканируйте товары — они попадут в общий список пересчёта.
@@ -4359,9 +4556,12 @@ export function WarehouseOperations({
                   type="checkbox"
                   checked={inventoryZeroUnlisted}
                   onChange={(e) => setInventoryZeroUnlisted(e.target.checked)}
+                  disabled={isInventoryLiveGuest}
                 />
                 <span>
-                  Обнулить остаток по товарам на складе, не попавшим в список пересчёта (списание непересчитанных)
+                  {inventoryCategoryIds.length
+                    ? 'Обнулить остаток по товарам выбранных категорий, не попавшим в список пересчёта (остальные на складе не трогать)'
+                    : 'Обнулить остаток по товарам на складе, не попавшим в список пересчёта (списание непересчитанных)'}
                 </span>
               </label>
               <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>

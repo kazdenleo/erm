@@ -80,18 +80,71 @@ async function setPwsQuantity(client, productId, whId, quantity) {
   );
 }
 
-/** Позиции с остатком на складе, не попавшие в пересчёт. */
-async function findUnlistedWithStock(client, whId, profileId, listedIds) {
+/** Нормализация списка ID категорий из body / БД. */
+function normalizeCategoryIds(raw) {
+  if (raw == null || raw === '') return [];
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? (() => {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return String(raw).split(',');
+    }
+  })() : [];
+  const out = [];
+  const seen = new Set();
+  for (const x of list) {
+    const n = typeof x === 'string' ? parseInt(x, 10) : Number(x);
+    if (!Number.isFinite(n) || n < 1 || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Выбранные категории + все потомки по parent_id (в рамках профиля).
+ * @returns {Promise<number[]>}
+ */
+async function expandCategoryIds(client, profileId, categoryIds) {
+  const roots = normalizeCategoryIds(categoryIds);
+  if (roots.length === 0) return [];
+  const pid = normalizeProfileId(profileId);
+  const res = await client.query(
+    `WITH RECURSIVE tree AS (
+       SELECT id, parent_id
+       FROM user_categories
+       WHERE id = ANY($1::bigint[])
+         AND ($2::bigint IS NULL OR profile_id = $2::bigint)
+       UNION ALL
+       SELECT c.id, c.parent_id
+       FROM user_categories c
+       INNER JOIN tree t ON c.parent_id = t.id
+       WHERE ($2::bigint IS NULL OR c.profile_id = $2::bigint)
+     )
+     SELECT DISTINCT id FROM tree`,
+    [roots, pid]
+  );
+  return (res.rows || [])
+    .map((r) => Number(r.id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** Позиции с остатком на складе, не попавшие в пересчёт (опционально — только выбранные категории). */
+async function findUnlistedWithStock(client, whId, profileId, listedIds, categoryIds = null) {
   const pid = normalizeProfileId(profileId);
   const ids = [...listedIds].filter((id) => id != null && !Number.isNaN(Number(id)));
+  const catIds = Array.isArray(categoryIds) ? categoryIds.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0) : [];
+  const hasCats = catIds.length > 0;
   if (ids.length === 0) {
     const res = await client.query(
       `SELECT pws.product_id, pws.quantity
        FROM product_warehouse_stock pws
        INNER JOIN products p ON p.id = pws.product_id
        WHERE pws.warehouse_id = $1 AND pws.quantity > 0
-         AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)`,
-      [whId, pid]
+         AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)
+         AND ($3::bigint[] IS NULL OR p.user_category_id = ANY($3::bigint[]))`,
+      [whId, pid, hasCats ? catIds : null]
     );
     return res.rows || [];
   }
@@ -101,10 +154,44 @@ async function findUnlistedWithStock(client, whId, profileId, listedIds) {
      INNER JOIN products p ON p.id = pws.product_id
      WHERE pws.warehouse_id = $1 AND pws.quantity > 0
        AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)
-       AND NOT (pws.product_id = ANY($3::bigint[]))`,
-    [whId, pid, ids]
+       AND NOT (pws.product_id = ANY($3::bigint[]))
+       AND ($4::bigint[] IS NULL OR p.user_category_id = ANY($4::bigint[]))`,
+    [whId, pid, ids, hasCats ? catIds : null]
   );
   return res.rows || [];
+}
+
+/** Если задан scope категорий — все товары в lines должны в него входить. */
+async function assertProductsInCategoryScope(client, profileId, productIds, expandedCategoryIds) {
+  const cats = Array.isArray(expandedCategoryIds) ? expandedCategoryIds : [];
+  if (cats.length === 0) return;
+  const ids = [...new Set(
+    (productIds || [])
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n > 0)
+  )];
+  if (ids.length === 0) return;
+  const res = await client.query(
+    `SELECT p.id, p.sku, p.user_category_id
+     FROM products p
+     WHERE p.id = ANY($1::bigint[])
+       AND (
+         p.user_category_id IS NULL
+         OR NOT (p.user_category_id = ANY($2::bigint[]))
+       )
+       AND ($3::bigint IS NULL OR p.profile_id = $3::bigint)`,
+    [ids, cats, normalizeProfileId(profileId)]
+  );
+  const bad = res.rows || [];
+  if (bad.length === 0) return;
+  const sample = bad.slice(0, 3).map((r) => r.sku || `#${r.id}`).join(', ');
+  const err = new Error(
+    bad.length === 1
+      ? `Товар ${sample} не из выбранных категорий инвентаризации`
+      : `Товары не из выбранных категорий инвентаризации: ${sample}${bad.length > 3 ? '…' : ''}`
+  );
+  err.statusCode = 400;
+  throw err;
 }
 
 function parseLineProductId(raw) {
@@ -247,6 +334,7 @@ async function runInventoryUpdateLines(client, {
   linesInput,
   zeroUnlisted,
   oldLines,
+  expandedCategoryIds = null,
 }) {
   const mergedLines = mergeInventoryLinesInput(linesInput);
   const oldFactByProduct = new Map();
@@ -261,6 +349,12 @@ async function runInventoryUpdateLines(client, {
   const affectedProductIds = new Set();
 
   const sortedLines = [...mergedLines].sort((a, b) => a.productId - b.productId);
+  await assertProductsInCategoryScope(
+    client,
+    profileId,
+    sortedLines.map((x) => x.productId),
+    expandedCategoryIds
+  );
   for (const { productId, quantityAfter } of sortedLines) {
     listedIds.add(productId);
     const { applied: lineApplied, productId: pid } = await applyInventoryEditLine(client, {
@@ -279,7 +373,7 @@ async function runInventoryUpdateLines(client, {
   }
 
   if (zeroUnlisted && listedIds.size > 0) {
-    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds)).sort(
+    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds, expandedCategoryIds)).sort(
       (a, b) => Number(a.product_id) - Number(b.product_id)
     );
     for (const row of unlisted) {
@@ -314,6 +408,7 @@ async function runInventoryLines(client, {
   linesInput,
   zeroUnlisted,
   reasonBase,
+  expandedCategoryIds = null,
 }) {
   const mergedLines = mergeInventoryLinesInput(linesInput);
   const listedIds = new Set();
@@ -325,6 +420,13 @@ async function runInventoryLines(client, {
     const pb = parseLineProductId(b) ?? 0;
     return pa - pb;
   });
+
+  const productIdsForScope = [];
+  for (const raw of sortedLines) {
+    const productId = parseLineProductId(raw);
+    if (productId) productIdsForScope.push(productId);
+  }
+  await assertProductsInCategoryScope(client, profileId, productIdsForScope, expandedCategoryIds);
 
   for (const raw of sortedLines) {
     const productId = parseLineProductId(raw);
@@ -350,7 +452,7 @@ async function runInventoryLines(client, {
 
   // Без хотя бы одной пересчитанной позиции не обнуляем весь склад (защита от пустого/битого lines).
   if (zeroUnlisted && listedIds.size > 0) {
-    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds)).sort(
+    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds, expandedCategoryIds)).sort(
       (a, b) => Number(a.product_id) - Number(b.product_id)
     );
     for (const row of unlisted) {
@@ -500,7 +602,7 @@ class InventorySessionsService {
     if (pid != null) {
       const res = await query(
         `SELECT s.id, s.created_at, s.lines_count, s.note, s.profile_id, s.warehouse_id,
-                s.created_by_user_id,
+                s.category_ids, s.created_by_user_id,
                 u.email AS created_by_email,
                 u.full_name AS created_by_full_name,
                 ${whLabel} AS warehouse_label,
@@ -517,7 +619,7 @@ class InventorySessionsService {
     }
     const res = await query(
       `SELECT s.id, s.created_at, s.lines_count, s.note, s.profile_id, s.warehouse_id,
-              s.created_by_user_id,
+              s.category_ids, s.created_by_user_id,
               u.email AS created_by_email,
               u.full_name AS created_by_full_name,
               ${whLabel} AS warehouse_label,
@@ -542,7 +644,7 @@ class InventorySessionsService {
     }
     const head = await query(
       `SELECT s.id, s.created_at, s.lines_count, s.note, s.profile_id, s.warehouse_id,
-              s.created_by_user_id,
+              s.category_ids, s.created_by_user_id,
               u.email AS created_by_email,
               u.full_name AS created_by_full_name,
               COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text) AS warehouse_label
@@ -581,7 +683,7 @@ class InventorySessionsService {
 
   /**
    * @param {Array<{ productId: number|string, quantityAfter: number }>} linesInput
-   * @param {{ userId: number|null, profileId: number|string|null, note?: string, warehouseId?: number|string|null, zeroUnlisted?: boolean }} ctx
+   * @param {{ userId: number|null, profileId: number|string|null, note?: string, warehouseId?: number|string|null, zeroUnlisted?: boolean, categoryIds?: number[] }} ctx
    */
   async apply(linesInput, {
     userId = null,
@@ -589,6 +691,7 @@ class InventorySessionsService {
     note = null,
     warehouseId = null,
     zeroUnlisted = true,
+    categoryIds = null,
   } = {}) {
     if (!Array.isArray(linesInput) || linesInput.length === 0) {
       const err = new Error('Передайте непустой массив lines');
@@ -598,18 +701,26 @@ class InventorySessionsService {
     const uid = userId != null ? parseInt(userId, 10) : null;
     const pid = normalizeProfileId(profileId);
     const zeroUnlistedFlag = zeroUnlisted !== false;
+    const rootCategoryIds = normalizeCategoryIds(categoryIds);
 
     const result = await runWithDbRetry(
       () =>
         transaction(async (client) => {
       const whId = await requireInventoryWarehouseId(client, warehouseId);
       await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whId)]);
+      const expandedCategoryIds = await expandCategoryIds(client, pid, rootCategoryIds);
 
       const ins = await client.query(
-        `INSERT INTO inventory_sessions (created_by_user_id, profile_id, lines_count, note, warehouse_id)
-         VALUES ($1, $2, 0, $3, $4)
+        `INSERT INTO inventory_sessions (created_by_user_id, profile_id, lines_count, note, warehouse_id, category_ids)
+         VALUES ($1, $2, 0, $3, $4, $5::jsonb)
          RETURNING id`,
-        [uid && !Number.isNaN(uid) ? uid : null, pid, note || null, whId]
+        [
+          uid && !Number.isNaN(uid) ? uid : null,
+          pid,
+          note || null,
+          whId,
+          rootCategoryIds.length ? JSON.stringify(rootCategoryIds) : null,
+        ]
       );
       const sessionId = ins.rows[0].id;
       const reasonBase = `Инвентаризация №${sessionId}`;
@@ -621,6 +732,7 @@ class InventorySessionsService {
         linesInput,
         zeroUnlisted: zeroUnlistedFlag,
         reasonBase,
+        expandedCategoryIds,
       });
 
       const linesRecorded = await client.query(
@@ -666,7 +778,7 @@ class InventorySessionsService {
   /**
    * Редактирование сохранённой инвентаризации: откат старых строк, применение нового списка.
    */
-  async updateSession(sessionId, linesInput, { profileId = null, zeroUnlisted = true } = {}) {
+  async updateSession(sessionId, linesInput, { profileId = null, zeroUnlisted = true, categoryIds = undefined } = {}) {
     if (!Array.isArray(linesInput) || linesInput.length === 0) {
       const err = new Error('Передайте непустой массив lines');
       err.statusCode = 400;
@@ -682,6 +794,10 @@ class InventorySessionsService {
     }
     const pid = normalizeProfileId(profileId);
     const zeroUnlistedFlag = zeroUnlisted !== false;
+    const rootCategoryIds =
+      categoryIds !== undefined
+        ? normalizeCategoryIds(categoryIds)
+        : normalizeCategoryIds(session.category_ids);
 
     const revertProductIds = new Set();
     const result = await runWithDbRetry(
@@ -691,6 +807,7 @@ class InventorySessionsService {
       if (Number.isFinite(whNum) && whNum > 0) {
         await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whNum)]);
       }
+      const expandedCategoryIds = await expandCategoryIds(client, pid, rootCategoryIds);
 
       await client.query('DELETE FROM inventory_session_lines WHERE session_id = $1', [sid]);
 
@@ -701,7 +818,13 @@ class InventorySessionsService {
         linesInput,
         zeroUnlisted: zeroUnlistedFlag,
         oldLines: oldLines || [],
+        expandedCategoryIds,
       });
+
+      await client.query(
+        `UPDATE inventory_sessions SET category_ids = $1::jsonb WHERE id = $2`,
+        [rootCategoryIds.length ? JSON.stringify(rootCategoryIds) : null, sid]
+      );
 
       for (const line of oldLines || []) {
         const productId = parseInt(line.product_id, 10);
@@ -808,6 +931,35 @@ class InventorySessionsService {
     }
 
     return del;
+  }
+
+  /** Корневые ID категорий → включая потомков (для live-скана и UI). */
+  async expandCategoryIds(profileId, categoryIds) {
+    const roots = normalizeCategoryIds(categoryIds);
+    if (roots.length === 0) return [];
+    const pid = normalizeProfileId(profileId);
+    const res = await query(
+      `WITH RECURSIVE tree AS (
+         SELECT id, parent_id
+         FROM user_categories
+         WHERE id = ANY($1::bigint[])
+           AND ($2::bigint IS NULL OR profile_id = $2::bigint)
+         UNION ALL
+         SELECT c.id, c.parent_id
+         FROM user_categories c
+         INNER JOIN tree t ON c.parent_id = t.id
+         WHERE ($2::bigint IS NULL OR c.profile_id = $2::bigint)
+       )
+       SELECT DISTINCT id FROM tree`,
+      [roots, pid]
+    );
+    return (res.rows || [])
+      .map((r) => Number(r.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  normalizeCategoryIds(raw) {
+    return normalizeCategoryIds(raw);
   }
 }
 
