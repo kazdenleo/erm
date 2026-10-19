@@ -6,12 +6,13 @@ import { errorMessage } from '../../../../api/client';
 import { scanError, scanOk } from '../../../../lib/feedback';
 import { ScanBar } from '../../../../components/ScanBar';
 import { PlaceStatusBadge } from '../../../../features/cargo/placeStatus';
+import { ProductMeta } from '../../../../components/ProductMeta';
 import { Banner, Button, Card, Chip, Loading } from '../../../../ui/components';
 import { colors } from '../../../../ui/theme';
 
 const MULTIPLIERS = [1, 5, 10, 20];
 
-function ItemRow({ item, editable, onChange, onRemove }) {
+function ItemRow({ item, editable, onChange, onRemove, addressStorageEnabled }) {
   const remaining = item.inPurchase ? Math.max(0, (item.expectedQuantity || 0) - (item.receivedBefore || 0)) : null;
   const over = remaining != null && item.receiptQuantity > remaining;
   const exact = remaining != null && item.receiptQuantity === remaining;
@@ -19,7 +20,11 @@ function ItemRow({ item, editable, onChange, onRemove }) {
     <View style={[styles.item, !item.inPurchase && styles.itemExtra]}>
       <View style={styles.flex}>
         <Text style={styles.itemName}>{item.name}</Text>
-        <Text style={styles.itemSku}>{item.sku}</Text>
+        <ProductMeta
+          article={item.article || item.sku}
+          locationCode={item.locationCode}
+          addressStorageEnabled={addressStorageEnabled}
+        />
         {item.inPurchase ? (
           <Text style={[styles.itemHint, over && { color: colors.danger }, exact && { color: colors.success }]}>
             Всего по закупке: {item.receiptQuantity} из {remaining}
@@ -241,6 +246,7 @@ export default function CargoPlaceScreen() {
               editable={editable}
               onChange={changeQuantity}
               onRemove={confirmRemoveItem}
+              addressStorageEnabled={data?.addressStorageEnabled === true}
             />
           ))}
         </>
@@ -288,7 +294,6 @@ const styles = StyleSheet.create({
   },
   itemExtra: { borderColor: colors.warning, backgroundColor: colors.warningBg },
   itemName: { fontSize: 16, color: colors.text, fontWeight: '500' },
-  itemSku: { fontSize: 13, color: colors.muted, marginTop: 2 },
   itemHint: { fontSize: 13, color: colors.muted, marginTop: 4, fontWeight: '600' },
   itemQty: { fontSize: 22, fontWeight: '800', color: colors.text, minWidth: 36, textAlign: 'center' },
   qtyButton: {

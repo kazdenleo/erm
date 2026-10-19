@@ -15,6 +15,7 @@ import {
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
 import { orderHasAssemblySticker, NO_STICKER_ASSEMBLY_MESSAGE } from '../utils/assemblySticker.js';
 import chestnyZnakOps from '../services/chestnyZnakOps.service.js';
+import addressStorageService from '../services/addressStorage.service.js';
 import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
 
 /** Скан при сборке: успех (2xx) или ошибка сборщика (404/409) — в журнал сотрудников. */
@@ -314,6 +315,31 @@ class AssemblyController {
         }
       }
 
+      const productIds = [
+        ...new Set(
+          (orderItems || [])
+            .map((it) => Number(it.productId ?? it.product_id))
+            .filter((n) => Number.isFinite(n) && n > 0)
+        ),
+      ];
+      const storage = await addressStorageService.storageUiForProducts(productIds, {
+        profileId,
+        warehouseId: order.warehouseId ?? order.warehouse_id ?? null,
+      });
+      const enrichedItems = (orderItems || []).map((it) => {
+        const pid = Number(it.productId ?? it.product_id);
+        const loc = Number.isFinite(pid) ? storage.locations[pid] : null;
+        const sku = it.sku ?? it.productSku ?? it.product_sku ?? null;
+        const article = it.article ?? it.offerId ?? it.offer_id ?? sku ?? null;
+        return {
+          ...it,
+          sku: sku || null,
+          article: article != null && String(article).trim() !== '' ? String(article).trim() : null,
+          locationCode: loc?.code || null,
+          locationAssigned: loc?.assigned === true,
+        };
+      });
+
       return res.status(200).json({
         ok: true,
         data: {
@@ -321,7 +347,8 @@ class AssemblyController {
           // иначе фронт не сможет корректно считать "осталось дособрать".
           order: order.productId ? order : { ...order, productId: product.id },
           product,
-          orderItems,
+          orderItems: enrichedItems,
+          addressStorageEnabled: storage.addressStorageEnabled,
           cis: Boolean(cisMeta?.isCis && cisMeta?.bound),
         }
       });

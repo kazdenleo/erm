@@ -174,3 +174,12 @@ export const receiptsApi = {
       timeoutMs: 60000,
     }).then(unwrap),
 };
+
+export const addressStorageApi = {
+  listWarehouses: () => request('/address-storage/warehouses').then(listOf),
+  lookup: (productIds) =>
+    request('/address-storage/lookup', {
+      method: 'POST',
+      body: { productIds: Array.isArray(productIds) ? productIds : [] },
+    }).then(unwrap),
+};

@@ -297,7 +297,7 @@ export default function CargoPurchaseScreen() {
         <Text style={styles.mutedSmall}>Нажмите на место, чтобы принять из него товар; удерживайте, чтобы удалить ошибочный скан.</Text>
       ) : null}
 
-      <CargoReport report={report} />
+      <CargoReport report={report} addressStorageEnabled={data?.addressStorageEnabled === true} />
 
       {receipt ? (
         <Card style={styles.gap}>

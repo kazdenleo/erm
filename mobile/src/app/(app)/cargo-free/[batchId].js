@@ -358,7 +358,7 @@ export default function CargoFreeBatchScreen() {
           <Text style={styles.mutedSmall}>Нажмите на место, чтобы принять товар; удерживайте, чтобы удалить ошибочный скан.</Text>
         ) : null}
 
-        <CargoReport report={report} />
+        <CargoReport report={report} addressStorageEnabled={data?.addressStorageEnabled === true} />
 
         {isOpen ? (
           completing ? (

@@ -9,6 +9,7 @@
 
 import { query, transaction } from '../config/database.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import addressStorageService from './addressStorage.service.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
 
 const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(NULLIF(TRIM(w.name), ''), w.address, w.wb_warehouse_name, '')), '')`;
@@ -314,7 +315,7 @@ class PurchaseCargoPlacesService {
 
   async _stateInTx(client, purchaseId) {
     const head = await client.query(
-      `SELECT p.id, p.status, p.note, p.created_at, p.expected_cargo_places,
+      `SELECT p.id, p.profile_id, p.status, p.note, p.created_at, p.expected_cargo_places,
               p.supplier_id, s.name AS supplier_name,
               p.organization_id, o.name AS organization_name,
               p.warehouse_id, ${WAREHOUSE_LABEL_SQL} AS warehouse_name
@@ -367,6 +368,11 @@ class PurchaseCargoPlacesService {
        ORDER BY cp.accepted_at ASC, cp.id ASC, pr.sku ASC`,
       [purchaseId]
     );
+    const reportProductIds = [...new Set((reportR.rows || []).map((r) => Number(r.product_id)).filter(Boolean))];
+    const storage = await addressStorageService.storageUiForProducts(reportProductIds, {
+      profileId: p.profile_id != null ? Number(p.profile_id) : null,
+      warehouseId: p.warehouse_id,
+    });
     const reportPlaces = new Map();
     for (const row of reportR.rows || []) {
       const placeId = Number(row.place_id);
@@ -375,11 +381,16 @@ class PurchaseCargoPlacesService {
       }
       const place = reportPlaces.get(placeId);
       const qty = Number(row.quantity) || 0;
+      const pid = Number(row.product_id);
+      const loc = storage.locations[pid];
       place.items.push({
-        productId: Number(row.product_id),
+        productId: pid,
         sku: row.sku,
+        article: row.sku || null,
         name: row.name,
         quantity: qty,
+        locationCode: loc?.code || null,
+        locationAssigned: loc?.assigned === true,
       });
       place.quantity += qty;
     }
@@ -399,9 +410,10 @@ class PurchaseCargoPlacesService {
       },
       expectedCargoPlaces: p.expected_cargo_places != null ? Number(p.expected_cargo_places) : null,
       places: (places.rows || []).map(mapPlace),
+      addressStorageEnabled: storage.addressStorageEnabled,
       report: {
         places: [...reportPlaces.values()],
-        totalQuantity: [...reportPlaces.values()].reduce((s, p) => s + p.quantity, 0),
+        totalQuantity: [...reportPlaces.values()].reduce((s, pl) => s + pl.quantity, 0),
       },
       receipt: receipt
         ? {
@@ -571,7 +583,7 @@ class PurchaseCargoPlacesService {
       await resetPlacesWithLostReceiptInTx(client, purchaseId);
 
       const placeR = await client.query(
-        `SELECT cp.*, r.status AS receipt_status,
+        `SELECT cp.*, r.status AS receipt_status, p.warehouse_id,
                 COALESCE(it.cnt, 0)::int AS items_count,
                 COALESCE(it.qty, 0)::int AS quantity,
                 (SELECT COUNT(*) FROM purchase_cargo_places WHERE purchase_id = cp.purchase_id)::int AS places_total,
@@ -579,6 +591,7 @@ class PurchaseCargoPlacesService {
                  WHERE x.purchase_id = cp.purchase_id
                    AND (x.accepted_at, x.id) <= (cp.accepted_at, cp.id))::int AS place_number
          FROM purchase_cargo_places cp
+         JOIN purchases p ON p.id = cp.purchase_id
          LEFT JOIN purchase_receipts r ON r.id = cp.receipt_id
          LEFT JOIN LATERAL (
            SELECT COUNT(*) AS cnt, SUM(quantity) AS qty
@@ -600,6 +613,26 @@ class PurchaseCargoPlacesService {
          ORDER BY ci.updated_at DESC, pr.sku ASC`,
         [cid, purchaseId, row.receipt_id]
       );
+      const mappedItems = (items.rows || []).map((it) => ({
+        productId: Number(it.product_id),
+        sku: it.sku || null,
+        article: it.sku || null,
+        name: it.name,
+        quantity: Number(it.quantity) || 0,
+        inPurchase: it.expected_quantity != null,
+        expectedQuantity: it.expected_quantity != null ? Number(it.expected_quantity) : null,
+        receivedBefore: Number(it.received_quantity) || 0,
+        receiptQuantity: Number(it.receipt_quantity) || 0,
+      }));
+      const storage = await addressStorageService.storageUiForProducts(
+        mappedItems.map((i) => i.productId),
+        { profileId: pid, warehouseId: row.warehouse_id }
+      );
+      for (const item of mappedItems) {
+        const loc = storage.locations[item.productId];
+        item.locationCode = loc?.code || null;
+        item.locationAssigned = loc?.assigned === true;
+      }
       return {
         place: {
           ...mapPlace(row),
@@ -607,16 +640,9 @@ class PurchaseCargoPlacesService {
           placesTotal: Number(row.places_total) || 0,
         },
         purchaseId,
-        items: (items.rows || []).map((it) => ({
-          productId: Number(it.product_id),
-          sku: it.sku,
-          name: it.name,
-          quantity: Number(it.quantity) || 0,
-          inPurchase: it.expected_quantity != null,
-          expectedQuantity: it.expected_quantity != null ? Number(it.expected_quantity) : null,
-          receivedBefore: Number(it.received_quantity) || 0,
-          receiptQuantity: Number(it.receipt_quantity) || 0,
-        })),
+        warehouseId: row.warehouse_id != null ? Number(row.warehouse_id) : null,
+        addressStorageEnabled: storage.addressStorageEnabled,
+        items: mappedItems,
       };
     });
   }

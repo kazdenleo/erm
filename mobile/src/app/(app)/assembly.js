@@ -1,8 +1,11 @@
+import { useMemo } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { useAssemblySession } from '../../features/assembly/useAssemblySession';
+import { useProductAddresses } from '../../features/addressStorage/useProductAddresses';
 import { normalizeMarketplaceForUI, orderStickerCellValue, splitStickerEmphasis } from '../../shared/erpUtils';
 import { ScanBar } from '../../components/ScanBar';
+import { ProductMeta } from '../../components/ProductMeta';
 import { Banner, Button, Card, Chip } from '../../ui/components';
 import { colors, marketplaceColors, marketplaceLabels } from '../../ui/theme';
 
@@ -34,6 +37,7 @@ function Sticker({ order }) {
 function compositionLinesForGroup(rows) {
   const lines = [];
   for (const o of rows || []) {
+    const warehouseId = o.warehouseId ?? o.warehouse_id ?? null;
     const acl = o.assemblyCompositionLines ?? o.assembly_composition_lines;
     if (Array.isArray(acl) && acl.length) {
       for (const line of acl) {
@@ -42,7 +46,9 @@ function compositionLinesForGroup(rows) {
           key: `${o.orderId}-${line.productId ?? line.product_id ?? line.offerId ?? lines.length}`,
           name: line.productName || line.product_name || line.name || '—',
           attribute: String(line.displayAttributeValue ?? line.display_attribute_value ?? '').trim(),
-          article: String(line.offerId ?? line.orderLineId ?? line.sku ?? line.productSku ?? '').trim(),
+          article: String(line.article ?? line.sku ?? line.offerId ?? line.orderLineId ?? line.productSku ?? '').trim(),
+          productId: Number(line.productId ?? line.product_id) || null,
+          warehouseId,
           quantity: qty,
         });
       }
@@ -52,14 +58,16 @@ function compositionLinesForGroup(rows) {
       key: String(o.orderId ?? o.order_id ?? lines.length),
       name: o.productName || o.product_name || '—',
       attribute: String(o.displayAttributeValue ?? o.display_attribute_value ?? '').trim(),
-      article: String(o.offerId ?? o.offer_id ?? o.productSku ?? o.product_sku ?? '').trim(),
+      article: String(o.article ?? o.offerId ?? o.offer_id ?? o.productSku ?? o.product_sku ?? '').trim(),
+      productId: Number(o.productId ?? o.product_id) || null,
+      warehouseId,
       quantity: Math.max(1, Number(o.quantity) || 1),
     });
   }
   return lines;
 }
 
-function CompositionList({ lines, compact = false }) {
+function CompositionList({ lines, compact = false, addressStorageEnabled = false, codeFor }) {
   if (!lines.length) return null;
   return (
     <View style={compact ? styles.compListCompact : styles.compList}>
@@ -70,7 +78,15 @@ function CompositionList({ lines, compact = false }) {
               {line.name}
               {line.attribute ? ` · ${line.attribute}` : ''}
             </Text>
-            {line.article ? <Text style={styles.compArticle}>{line.article}</Text> : null}
+            <ProductMeta
+              article={line.article}
+              locationCode={
+                line.locationCode ||
+                (codeFor && line.productId ? codeFor(line.productId, line.warehouseId) : null)
+              }
+              addressStorageEnabled={addressStorageEnabled}
+              compact={compact}
+            />
           </View>
           <Text style={compact ? styles.compQtyCompact : styles.compQty}>{line.quantity} шт</Text>
         </View>
@@ -85,6 +101,7 @@ function CurrentOrder({ session }) {
   const done = phase === 'collected';
   const totalNeed = lines.reduce((s, l) => s + l.need, 0);
   const totalScanned = lines.reduce((s, l) => s + l.scanned, 0);
+  const storageOn = current?.addressStorageEnabled === true;
 
   return (
     <Card style={[styles.gap, done && styles.cardDone]}>
@@ -113,7 +130,11 @@ function CurrentOrder({ session }) {
                 {line.name}
                 {line.attribute ? ` · ${line.attribute}` : ''}
               </Text>
-              {line.article ? <Text style={styles.lineArticle}>{line.article}</Text> : null}
+              <ProductMeta
+                article={line.article}
+                locationCode={line.locationCode}
+                addressStorageEnabled={storageOn}
+              />
             </View>
             <Text style={[styles.lineQty, lineDone && styles.lineQtyDone]}>
               {line.scanned}/{line.need}
@@ -157,6 +178,17 @@ export default function AssemblyScreen() {
     busy,
     handleScan,
   } = session;
+
+  const listProductIds = useMemo(() => {
+    const ids = [];
+    for (const g of groups.slice(0, LIST_LIMIT)) {
+      for (const line of compositionLinesForGroup(g.rows)) {
+        if (line.productId) ids.push(line.productId);
+      }
+    }
+    return ids;
+  }, [groups]);
+  const addresses = useProductAddresses(listProductIds);
 
   return (
     <View style={styles.screen}>
@@ -214,7 +246,12 @@ export default function AssemblyScreen() {
               </Text>
             </View>
             <Sticker order={g.primary} />
-            <CompositionList lines={composition} compact />
+            <CompositionList
+              lines={composition}
+              compact
+              addressStorageEnabled={addresses.enabled}
+              codeFor={addresses.codeFor}
+            />
           </View>
         );
       })}
@@ -251,7 +288,6 @@ const styles = StyleSheet.create({
   lineDone: { backgroundColor: colors.successBg },
   lineInfo: { flex: 1, gap: 2 },
   lineName: { fontSize: 16, color: colors.text, fontWeight: '500' },
-  lineArticle: { fontSize: 13, color: colors.muted },
   lineQty: { fontSize: 22, fontWeight: '800', color: colors.text },
   lineQtyDone: { color: colors.success },
   buttonsRow: { flexDirection: 'row', gap: 10 },
@@ -289,7 +325,6 @@ const styles = StyleSheet.create({
   },
   compName: { fontSize: 16, color: colors.text, fontWeight: '500' },
   compNameCompact: { fontSize: 15, color: colors.text, fontWeight: '500' },
-  compArticle: { fontSize: 12, color: colors.muted, marginTop: 2 },
   compQty: { fontSize: 18, fontWeight: '800', color: colors.text },
   compQtyCompact: { fontSize: 15, fontWeight: '700', color: colors.text, minWidth: 44, textAlign: 'right' },
 });

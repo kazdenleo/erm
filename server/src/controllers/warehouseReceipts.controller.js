@@ -104,7 +104,11 @@ class WarehouseReceiptsController {
       const { warehouseId, warehouse_id } = req.body || {};
       const wh = warehouseId ?? warehouse_id ?? null;
       const ownerUserId = req.user?.id ?? null;
-      const data = await warehouseReceiptsSessionsService.createSession({ warehouseId: wh, ownerUserId });
+      const data = await warehouseReceiptsSessionsService.createSession({
+        warehouseId: wh,
+        ownerUserId,
+        profileId: req.user?.profileId ?? null,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -114,7 +118,9 @@ class WarehouseReceiptsController {
   async getSession(req, res, next) {
     try {
       const { id } = req.params;
-      const data = warehouseReceiptsSessionsService.getSession(id);
+      const data = await warehouseReceiptsSessionsService.getSession(id, {
+        profileId: req.user?.profileId ?? null,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -130,7 +136,8 @@ class WarehouseReceiptsController {
         sessionId: id,
         code: c,
         quantity,
-        cost: cost ?? null
+        cost: cost ?? null,
+        profileId: req.user?.profileId ?? null,
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
@@ -142,7 +149,12 @@ class WarehouseReceiptsController {
     try {
       const { id } = req.params;
       const { productId, quantity } = req.body || {};
-      const data = warehouseReceiptsSessionsService.setQuantity({ sessionId: id, productId, quantity });
+      const data = await warehouseReceiptsSessionsService.setQuantity({
+        sessionId: id,
+        productId,
+        quantity,
+        profileId: req.user?.profileId ?? null,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -177,7 +189,9 @@ class WarehouseReceiptsController {
       if (me != null && !Number.isNaN(me) && me === targetUserId) {
         return res.status(400).json({ ok: false, message: 'Нельзя пригласить самого себя' });
       }
-      const session = warehouseReceiptsSessionsService.getSession(id);
+      const session = await warehouseReceiptsSessionsService.getSession(id, {
+        profileId: req.user?.profileId ?? null,
+      });
       if (session?.ownerUserId != null && me != null && Number(session.ownerUserId) !== Number(me)) {
         return res.status(403).json({ ok: false, message: 'Приглашать может только создатель общей приёмки' });
       }

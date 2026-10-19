@@ -6,17 +6,22 @@ import { errorMessage } from '../../../../api/client';
 import { scanError, scanOk } from '../../../../lib/feedback';
 import { ScanBar } from '../../../../components/ScanBar';
 import { PlaceStatusBadge } from '../../../../features/cargo/placeStatus';
+import { ProductMeta } from '../../../../components/ProductMeta';
 import { Banner, Button, Card, Chip, Loading } from '../../../../ui/components';
 import { colors } from '../../../../ui/theme';
 
 const MULTIPLIERS = [1, 5, 10, 20];
 
-function ItemRow({ item, editable, onChange, onRemove }) {
+function ItemRow({ item, editable, onChange, onRemove, addressStorageEnabled }) {
   return (
     <View style={styles.item}>
       <View style={styles.flex}>
         <Text style={styles.itemName}>{item.name}</Text>
-        <Text style={styles.itemSku}>{item.sku}</Text>
+        <ProductMeta
+          article={item.article || item.sku}
+          locationCode={item.locationCode}
+          addressStorageEnabled={addressStorageEnabled}
+        />
       </View>
       {editable ? (
         <Pressable
@@ -207,6 +212,7 @@ export default function CargoFreePlaceScreen() {
                 editable={editable && place.status !== 'received'}
                 onChange={changeQuantity}
                 onRemove={confirmRemoveItem}
+                addressStorageEnabled={data?.addressStorageEnabled === true}
               />
             ))}
           </>
@@ -253,7 +259,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   itemName: { fontSize: 16, color: colors.text, fontWeight: '500' },
-  itemSku: { fontSize: 13, color: colors.muted, marginTop: 2 },
   itemQty: { fontSize: 22, fontWeight: '800', color: colors.text, minWidth: 36, textAlign: 'center' },
   qtyButton: {
     width: 44,

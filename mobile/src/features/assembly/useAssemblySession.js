@@ -234,7 +234,15 @@ export function useAssemblySession() {
         const nextPicked = applyAssemblyPickScan(sameOrder ? st.picked : {}, data.product, orderItems, scannedBefore, {
           kitUnits,
         });
-        const nextCurrent = { key, order, product: data.product, orderItems };
+        const nextCurrent = {
+          key,
+          order,
+          product: data.product,
+          orderItems,
+          addressStorageEnabled:
+            data.addressStorageEnabled === true ||
+            (sameOrder && cur?.addressStorageEnabled === true),
+        };
         setCurrent(nextCurrent);
         setScanned(nextScanned);
         setPicked(nextPicked);
@@ -296,7 +304,9 @@ export function useAssemblySession() {
         key: assemblyLineScanKey(item, idx, items),
         name: item.productName || item.product_name || '—',
         attribute: String(item.displayAttributeValue ?? item.display_attribute_value ?? '').trim(),
-        article: String(item.offerId ?? item.orderLineId ?? '').trim(),
+        article: String(item.article ?? item.sku ?? item.offerId ?? item.orderLineId ?? '').trim(),
+        locationCode: item.locationCode || null,
+        productId: Number(item.productId ?? item.product_id) || null,
         need,
         scanned: got,
       };

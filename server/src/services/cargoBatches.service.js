@@ -8,6 +8,7 @@
 
 import { query, transaction } from '../config/database.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import addressStorageService from './addressStorage.service.js';
 import warehouseReceiptsService from './warehouseReceipts.service.js';
 
 const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(NULLIF(TRIM(w.name), ''), w.address, w.wb_warehouse_name, '')), '')`;
@@ -164,7 +165,7 @@ async function loadPlaces(client, batchId) {
   return (r.rows || []).map(mapPlace);
 }
 
-async function loadReport(client, batchId) {
+async function loadReport(client, batchId, { profileId = null, warehouseId = null } = {}) {
   const r = await client.query(
     `SELECT cp.id AS place_id, cp.barcode,
             ci.product_id, ci.quantity, pr.sku, pr.name
@@ -175,6 +176,8 @@ async function loadReport(client, batchId) {
      ORDER BY cp.accepted_at ASC, cp.id ASC, pr.sku ASC`,
     [batchId]
   );
+  const productIds = [...new Set((r.rows || []).map((row) => Number(row.product_id)).filter(Boolean))];
+  const storage = await addressStorageService.storageUiForProducts(productIds, { profileId, warehouseId });
   const byPlace = new Map();
   const byProduct = new Map();
   for (const row of r.rows || []) {
@@ -184,21 +187,27 @@ async function loadReport(client, batchId) {
     }
     const place = byPlace.get(placeId);
     const qty = Number(row.quantity) || 0;
+    const pid = Number(row.product_id);
+    const loc = storage.locations[pid];
     place.items.push({
-      productId: Number(row.product_id),
+      productId: pid,
       sku: row.sku,
+      article: row.sku || null,
       name: row.name,
       quantity: qty,
+      locationCode: loc?.code || null,
+      locationAssigned: loc?.assigned === true,
     });
     place.quantity += qty;
 
-    const pid = Number(row.product_id);
     if (!byProduct.has(pid)) {
       byProduct.set(pid, {
         productId: pid,
         sku: row.sku,
+        article: row.sku || null,
         name: row.name,
         quantity: 0,
+        locationCode: loc?.code || null,
         places: [],
       });
     }
@@ -210,6 +219,7 @@ async function loadReport(client, batchId) {
     places: [...byPlace.values()],
     products: [...byProduct.values()],
     totalQuantity: [...byProduct.values()].reduce((s, p) => s + p.quantity, 0),
+    addressStorageEnabled: storage.addressStorageEnabled,
   };
 }
 
@@ -319,8 +329,14 @@ class CargoBatchesService {
     return transaction(async (client) => {
       const batch = await lockBatchInTx(client, id, pid, { forUpdate: false });
       const places = await loadPlaces(client, id);
-      const report = await loadReport(client, id);
-      return mapBatch(batch, places, report);
+      const report = await loadReport(client, id, {
+        profileId: pid,
+        warehouseId: batch.warehouse_id,
+      });
+      return {
+        ...mapBatch(batch, places, report),
+        addressStorageEnabled: report.addressStorageEnabled === true,
+      };
     });
   }
 
@@ -376,11 +392,14 @@ class CargoBatchesService {
       );
       if (existing.rows?.[0]) {
         const places = await loadPlaces(client, id);
-        const report = await loadReport(client, id);
+        const report = await loadReport(client, id, { profileId: pid, warehouseId: batch.warehouse_id });
         return {
           alreadyAccepted: true,
           placeId: Number(existing.rows[0].id),
-          state: mapBatch(batch, places, report),
+          state: {
+            ...mapBatch(batch, places, report),
+            addressStorageEnabled: report.addressStorageEnabled === true,
+          },
         };
       }
       const otherBatch = await client.query(
@@ -405,11 +424,14 @@ class CargoBatchesService {
       );
       await client.query(`UPDATE cargo_batches SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
       const places = await loadPlaces(client, id);
-      const report = await loadReport(client, id);
+      const report = await loadReport(client, id, { profileId: pid, warehouseId: batch.warehouse_id });
       return {
         alreadyAccepted: false,
         placeId: Number(ins.rows[0].id),
-        state: mapBatch(batch, places, report),
+        state: {
+          ...mapBatch(batch, places, report),
+          addressStorageEnabled: report.addressStorageEnabled === true,
+        },
       };
     });
   }
@@ -484,7 +506,7 @@ class CargoBatchesService {
     const cid = requireId(placeId, 'Некорректный ID грузоместа');
     return transaction(async (client) => {
       const placeR = await client.query(
-        `SELECT cp.*, b.status AS batch_status, b.id AS batch_id,
+        `SELECT cp.*, b.status AS batch_status, b.id AS batch_id, b.warehouse_id, b.profile_id,
                 COALESCE(it.cnt, 0)::int AS items_count,
                 COALESCE(it.qty, 0)::int AS quantity,
                 (SELECT COUNT(*) FROM cargo_places WHERE batch_id = cp.batch_id)::int AS places_total,
@@ -510,6 +532,22 @@ class CargoBatchesService {
          ORDER BY ci.updated_at DESC, pr.sku ASC`,
         [cid]
       );
+      const mappedItems = (items.rows || []).map((it) => ({
+        productId: Number(it.product_id),
+        sku: it.sku || null,
+        article: it.sku || null,
+        name: it.name,
+        quantity: Number(it.quantity) || 0,
+      }));
+      const storage = await addressStorageService.storageUiForProducts(
+        mappedItems.map((i) => i.productId),
+        { profileId: pid, warehouseId: row.warehouse_id }
+      );
+      for (const item of mappedItems) {
+        const loc = storage.locations[item.productId];
+        item.locationCode = loc?.code || null;
+        item.locationAssigned = loc?.assigned === true;
+      }
       return {
         place: {
           ...mapPlace(row),
@@ -517,12 +555,9 @@ class CargoBatchesService {
           placesTotal: Number(row.places_total) || 0,
         },
         batchId: Number(row.batch_id),
-        items: (items.rows || []).map((it) => ({
-          productId: Number(it.product_id),
-          sku: it.sku,
-          name: it.name,
-          quantity: Number(it.quantity) || 0,
-        })),
+        warehouseId: row.warehouse_id != null ? Number(row.warehouse_id) : null,
+        addressStorageEnabled: storage.addressStorageEnabled,
+        items: mappedItems,
       };
     });
   }

@@ -7,6 +7,7 @@ import { errorMessage } from '../../../api/client';
 import { scanError, scanOk } from '../../../lib/feedback';
 import { writeItem } from '../../../lib/storage';
 import { ScanBar } from '../../../components/ScanBar';
+import { ProductMeta } from '../../../components/ProductMeta';
 import { Banner, Button, Card, Chip, Field, Loading } from '../../../ui/components';
 import { colors } from '../../../ui/theme';
 
@@ -218,7 +219,11 @@ export default function ReceiptSessionScreen() {
         <View key={item.productId} style={styles.item}>
           <View style={styles.flex}>
             <Text style={styles.itemName}>{item.name}</Text>
-            <Text style={styles.itemSku}>{item.sku}</Text>
+            <ProductMeta
+              article={item.article || item.sku}
+              locationCode={item.locationCode}
+              addressStorageEnabled={data?.addressStorageEnabled === true}
+            />
           </View>
           <Pressable
             style={styles.qtyButton}
@@ -280,7 +285,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   itemName: { fontSize: 16, color: colors.text, fontWeight: '500' },
-  itemSku: { fontSize: 13, color: colors.muted, marginTop: 2 },
   itemQty: { fontSize: 22, fontWeight: '800', color: colors.text, minWidth: 36, textAlign: 'center' },
   qtyButton: {
     width: 44,

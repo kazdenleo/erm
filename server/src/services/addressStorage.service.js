@@ -777,6 +777,31 @@ class AddressStorageService {
     return out;
   }
 
+  /**
+   * Для UI приёмки/сборки: включено ли адресное хранение и основная ячейка товара
+   * (закреплённая, иначе первая с остатком по маршруту).
+   */
+  async storageUiForProducts(productIds, { profileId = null, warehouseId = null } = {}) {
+    const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(toPosInt).filter(Boolean))];
+    const warehouseIds = warehouseId != null ? [toPosInt(warehouseId)].filter(Boolean) : null;
+    const warehouses = (await this.listWarehouses({ profileId, warehouseIds })).filter((w) => w.settings.enabled);
+    if (!warehouses.length) return { addressStorageEnabled: false, locations: {} };
+    if (!ids.length) return { addressStorageEnabled: true, locations: {} };
+    const lookup = await this.lookupProducts(ids, {
+      profileId,
+      warehouseIds: warehouses.map((w) => w.id),
+    });
+    const locations = {};
+    for (const pid of ids) {
+      const list = lookup[pid] || [];
+      const preferred = list.find((x) => x.assigned) || list[0] || null;
+      locations[pid] = preferred
+        ? { code: preferred.code, assigned: preferred.assigned === true, warehouseId: preferred.warehouseId }
+        : null;
+    }
+    return { addressStorageEnabled: true, locations };
+  }
+
   // ---------- Остатки по ячейкам и перемещения ----------
 
   async moveStock(warehouseId, body = {}, { userId = null, profileId = null } = {}) {

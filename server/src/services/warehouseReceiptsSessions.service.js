@@ -7,6 +7,7 @@
 import crypto from 'crypto';
 import repositoryFactory from '../config/repository-factory.js';
 import warehouseReceiptsService from './warehouseReceipts.service.js';
+import addressStorageService from './addressStorage.service.js';
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -64,7 +65,10 @@ class WarehouseReceiptsSessionsService {
   _serialize(s) {
     const items = [];
     for (const row of s.items.values()) {
-      items.push({ ...row });
+      items.push({
+        ...row,
+        article: row.article ?? row.sku ?? null,
+      });
     }
     items.sort((a, b) => String(a.sku || '').localeCompare(String(b.sku || ''), 'ru', { numeric: true }));
     return {
@@ -74,11 +78,29 @@ class WarehouseReceiptsSessionsService {
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       items,
-      itemsCount: items.length
+      itemsCount: items.length,
+      addressStorageEnabled: false,
     };
   }
 
-  async createSession({ warehouseId, ownerUserId }) {
+  async enrichForUi(serialized, { profileId = null } = {}) {
+    if (!serialized) return serialized;
+    const productIds = (serialized.items || []).map((i) => Number(i.productId)).filter(Boolean);
+    const storage = await addressStorageService.storageUiForProducts(productIds, {
+      profileId,
+      warehouseId: serialized.warehouseId,
+    });
+    for (const item of serialized.items || []) {
+      item.article = item.article ?? item.sku ?? null;
+      const loc = storage.locations[Number(item.productId)];
+      item.locationCode = loc?.code || null;
+      item.locationAssigned = loc?.assigned === true;
+    }
+    serialized.addressStorageEnabled = storage.addressStorageEnabled === true;
+    return serialized;
+  }
+
+  async createSession({ warehouseId, ownerUserId, profileId = null }) {
     const wid = warehouseId != null ? Number(warehouseId) : null;
     if (!wid || Number.isNaN(wid)) {
       const err = new Error('Укажите склад приёмки');
@@ -103,12 +125,12 @@ class WarehouseReceiptsSessionsService {
       items: new Map(), // productId -> { productId, sku, name, quantity, cost }
     };
     this._sessions.set(id, s);
-    return this._serialize(s);
+    return this.enrichForUi(this._serialize(s), { profileId });
   }
 
-  getSession(sessionId) {
+  async getSession(sessionId, { profileId = null } = {}) {
     const s = this._getSessionStrict(sessionId);
-    return this._serialize(s);
+    return this.enrichForUi(this._serialize(s), { profileId });
   }
 
   async _resolveProduct(code) {
@@ -123,7 +145,7 @@ class WarehouseReceiptsSessionsService {
     return await this.productsRepo.findByBarcode(v);
   }
 
-  async addQuantity({ sessionId, code, quantity, cost = null }) {
+  async addQuantity({ sessionId, code, quantity, cost = null, profileId = null }) {
     const s = this._getSessionStrict(sessionId);
     const rawQ = Math.floor(Number(quantity) || 0);
     if (!Number.isFinite(rawQ) || rawQ === 0) {
@@ -153,6 +175,7 @@ class WarehouseReceiptsSessionsService {
       s.items.set(pid, {
         productId: pid,
         sku: product.sku || '—',
+        article: product.sku || null,
         name: product.name || 'Без названия',
         quantity: q,
         cost: normalizedCost ?? defaultCost
@@ -160,11 +183,11 @@ class WarehouseReceiptsSessionsService {
     }
 
     this._touch(s);
-    return this._serialize(s);
+    return this.enrichForUi(this._serialize(s), { profileId });
   }
 
   /** Исправить количество позиции (0 — убрать из приёмки). */
-  setQuantity({ sessionId, productId, quantity }) {
+  async setQuantity({ sessionId, productId, quantity, profileId = null }) {
     const s = this._getSessionStrict(sessionId);
     const pid = Number(productId);
     const row = Number.isInteger(pid) ? s.items.get(pid) : null;
@@ -183,7 +206,7 @@ class WarehouseReceiptsSessionsService {
     if (q === 0) s.items.delete(pid);
     else row.quantity = q;
     this._touch(s);
-    return this._serialize(s);
+    return this.enrichForUi(this._serialize(s), { profileId });
   }
 
   async complete({ sessionId, supplierId = null, organizationId = null, userId = null }) {
