@@ -9,7 +9,7 @@ import { LOW_STOCK_URGENCY, daysLeftLabel } from '../../StockLevels/LowStockPane
 import { KpiCard } from './AnalyticsWidgets';
 import { cachedLoad, errorMessage, formatQty } from './widgetUtils';
 
-const ALERT_OPTIONS = [7, 14, 21, 30];
+const ALERT_OPTIONS = [5, 7, 10, 14, 21, 30];
 const LIST_LIMITS = [5, 10, 20];
 const FULL_LIST_URL = '/stock-levels/warehouse?view=low';
 
