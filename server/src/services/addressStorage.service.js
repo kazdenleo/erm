@@ -288,7 +288,16 @@ class AddressStorageService {
                   'name', p.name,
                   'sku', p.sku,
                   'assigned', x.assigned,
-                  'quantity', x.qty
+                  'quantity', x.qty,
+                  'barcodes', (
+                    SELECT COALESCE(json_agg(bc ORDER BY bc), '[]'::json)
+                    FROM (
+                      SELECT bc.barcode AS bc FROM barcodes bc WHERE bc.product_id = x.product_id
+                      UNION
+                      SELECT NULLIF(TRIM(p.box_barcode), '')
+                      WHERE NULLIF(TRIM(COALESCE(p.box_barcode, '')), '') IS NOT NULL
+                    ) t
+                  )
                 ) ORDER BY x.assigned DESC, p.name) AS items
          FROM (
            SELECT product_id, BOOL_OR(assigned) AS assigned, SUM(qty)::int AS qty

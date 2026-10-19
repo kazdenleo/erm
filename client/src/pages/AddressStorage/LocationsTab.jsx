@@ -353,9 +353,13 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
       if (occupancy === 'inactive' && l.isActive) return false;
       if (!term) return true;
       if (l.code.toLowerCase().includes(term)) return true;
-      return l.products.some(
-        (p) => String(p.sku || '').toLowerCase().includes(term) || String(p.name || '').toLowerCase().includes(term)
-      );
+      if (String(l.barcode || '').toLowerCase().includes(term)) return true;
+      return l.products.some((p) => {
+        if (String(p.sku || '').toLowerCase().includes(term)) return true;
+        if (String(p.name || '').toLowerCase().includes(term)) return true;
+        const codes = Array.isArray(p.barcodes) ? p.barcodes : [];
+        return codes.some((bc) => String(bc || '').toLowerCase().includes(term));
+      });
     });
   }, [locations, q, typeFilter, rackFilter, occupancy, sep]);
 
@@ -459,7 +463,7 @@ export function LocationsTab({ warehouseId, settings, locations, locationsLoadin
       <div className="address-toolbar">
         <input
           className="form-control form-control-sm address-toolbar__search"
-          placeholder="Адрес, артикул или название товара"
+          placeholder="Адрес, артикул, ШК или название товара"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
