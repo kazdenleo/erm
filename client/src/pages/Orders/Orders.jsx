@@ -3559,8 +3559,7 @@ export function Orders() {
           <>
             <table className="orders-table table">
             <colgroup>
-              <col className="orders-col-checkbox" />
-              <col className="orders-col-num" />
+              <col className="orders-col-select" />
               <col className="orders-col-mp" />
               <col className="orders-col-order-id" />
               <col className="orders-col-arrived" />
@@ -3576,18 +3575,22 @@ export function Orders() {
             </colgroup>
             <thead>
               <tr>
-                <th className="orders-col-checkbox">
-                  <label className="orders-checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={allFilteredSelected}
-                      onChange={toggleSelectAll}
-                      title={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
-                      aria-label={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
-                    />
-                  </label>
+                <th className="orders-col-select">
+                  <span className="orders-col-select-inner">
+                    <label className="orders-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredSelected}
+                        onChange={toggleSelectAll}
+                        title={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
+                        aria-label={allFilteredSelected ? 'Снять выделение' : 'Выбрать все'}
+                      />
+                    </label>
+                    <span className="orders-col-select-num" title="№">
+                      №
+                    </span>
+                  </span>
                 </th>
-                <th className="orders-col-num">№</th>
                 <th className="orders-col-mp" title="Маркетплейс">
                   МП
                 </th>
@@ -3597,7 +3600,7 @@ export function Orders() {
                 <th className="orders-col-warehouse" title="Наш склад, на который пришёл заказ">
                   Склад
                 </th>
-                <th>Товары</th>
+                <th className="orders-col-products">Товары</th>
                 <th
                   className={`orders-th-sortable${sortByArticle ? ' orders-th-sortable--active' : ''}`}
                 >
@@ -3761,21 +3764,23 @@ export function Orders() {
                   className={`orders-row-clickable ${checked ? 'orders-row-selected' : ''} ${isGroup ? 'orders-row-multi' : ''}`}
                   onClick={onNavigationClick(() => setDetailModalRow(row), {
                     ignoreClosest:
-                      'input, textarea, select, label, .orders-col-checkbox, .orders-col-actions, [data-no-nav-click]',
+                      'input, textarea, select, label, .orders-col-select, .orders-col-actions, [data-no-nav-click]',
                   })}
                   title={groupRowTitle ?? 'Открыть карточку заказа'}
                 >
-                  <td className="orders-col-checkbox" onClick={e => e.stopPropagation()}>
-                    <label className="orders-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleSelectGroup(row)}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    </label>
+                  <td className="orders-col-select" onClick={e => e.stopPropagation()}>
+                    <span className="orders-col-select-inner">
+                      <label className="orders-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSelectGroup(row)}
+                          onClick={e => e.stopPropagation()}
+                        />
+                      </label>
+                      <span className="orders-col-select-num">{pageOffset + idx + 1}</span>
+                    </span>
                   </td>
-                  <td className="orders-col-num">{pageOffset + idx + 1}</td>
                   <td className="orders-col-mp">
                     {(() => {
                       const mpNorm = normalizeMarketplaceForUI(first.marketplace);

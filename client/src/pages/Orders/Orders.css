@@ -84,12 +84,9 @@
   position: static;
 }
 
-.orders-page .orders-table col.orders-col-checkbox {
-  width: 2.25rem;
-}
-
-.orders-page .orders-table col.orders-col-num {
-  width: 2.25rem;
+/* Чекбокс + № в одной колонке — не разъезжаются при width:100%. */
+.orders-page .orders-table col.orders-col-select {
+  width: 3.5rem;
 }
 
 .orders-page .orders-table col.orders-col-mp {
@@ -112,8 +109,9 @@
   width: 6.5rem;
 }
 
+/* Поглощает остаток ширины таблицы — иначе чекбокс/№ разъезжаются. */
 .orders-page .orders-table col.orders-col-products {
-  width: 14.5rem;
+  width: auto;
 }
 
 .orders-page .orders-table col.orders-col-article {
@@ -168,44 +166,57 @@
   text-decoration: underline;
 }
 
-.orders-col-checkbox {
-  width: 2.25rem;
-  min-width: 2.25rem;
-  max-width: 2.25rem;
+.orders-col-select {
+  width: 3.5rem;
+  min-width: 3.5rem;
+  max-width: 3.5rem;
   padding-left: 6px !important;
-  padding-right: 2px !important;
-  text-align: center;
+  padding-right: 4px !important;
   vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
   box-sizing: border-box;
 }
 
-.orders-col-num {
-  width: 2.25rem;
-  min-width: 2.25rem;
-  max-width: 2.25rem;
-  padding-left: 2px !important;
-  padding-right: 4px !important;
-  text-align: center;
-  vertical-align: middle;
+.orders-col-select-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.orders-col-select-num {
   color: var(--muted, #666);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  box-sizing: border-box;
+  font-weight: 500;
+  line-height: 1;
+  min-width: 1.1em;
+  text-align: right;
+}
+
+th.orders-col-select .orders-col-select-num {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* Бейджи МП: src/styles/mp-badges.css */
 .orders-col-mp {
-  width: 3.25rem;
-  min-width: 3.25rem;
-  max-width: 3.25rem;
+  width: 3rem;
+  min-width: 3rem;
+  max-width: 3rem;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
   text-align: center;
   vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
   box-sizing: border-box;
+}
+
+.orders-page .orders-table th.orders-col-products,
+.orders-page .orders-table td.orders-col-products {
+  width: auto;
 }
 
 .orders-col-date {
@@ -323,7 +334,7 @@
   background: rgba(13, 110, 253, 0.08);
 }
 
-.orders-row-clickable td:not(.orders-col-checkbox):not(.orders-col-actions) {
+.orders-row-clickable td:not(.orders-col-select):not(.orders-col-actions) {
   user-select: text;
 }
 
