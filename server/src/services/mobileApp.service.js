@@ -15,7 +15,9 @@ const META_PATH = join(APP_DIR, 'meta.json');
 function readMetaFile() {
   try {
     if (!fs.existsSync(META_PATH)) return null;
-    const raw = JSON.parse(fs.readFileSync(META_PATH, 'utf8'));
+    // PowerShell UTF-8 часто пишет BOM — снимаем перед parse.
+    const text = fs.readFileSync(META_PATH, 'utf8').replace(/^\uFEFF/, '');
+    const raw = JSON.parse(text);
     if (!raw || typeof raw !== 'object') return null;
     return raw;
   } catch {

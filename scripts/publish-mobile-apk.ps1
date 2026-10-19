@@ -29,15 +29,16 @@ if (-not (Test-Path $local)) { throw "APK not found: $local" }
 $size = (Get-Item $local).Length
 if ($size -lt 1000000) { throw "File too small ($size), not an APK" }
 
-$meta = @{
+$metaObj = [ordered]@{
   version = $Version
   versionCode = $VersionCode
   updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
   fileName = "latest.apk"
-} | ConvertTo-Json
-
+}
+$meta = ($metaObj | ConvertTo-Json -Compress)
 $metaFile = Join-Path $env:TEMP "erm-mobile-app-meta.json"
-Set-Content -Path $metaFile -Value $meta -Encoding utf8
+# Без BOM — иначе Node JSON.parse падает на сервере.
+[System.IO.File]::WriteAllText($metaFile, $meta + "`n")
 
 if ($Remote) {
   Write-Host "Uploading to ${RemoteHost}:${RemoteDataDir} ..."
