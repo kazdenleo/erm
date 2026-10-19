@@ -14,6 +14,7 @@ import { parsePricePushSettings } from '../utils/pricePushSettings.js';
 import { isHighDrr } from '../utils/highDrrSettings.js';
 import {
   CERT_EXPIRY_WARN_DAYS,
+  certificateDateOnly,
   certificateExpiryPhaseLabel,
   daysUntilDate,
 } from '../utils/certificateExpiryNotify.js';
@@ -638,7 +639,7 @@ class MarketplaceCardWorkService {
     for (const r of expiringRows) {
       const productId = Number(r.id) || 0;
       if (productId <= 0) continue;
-      const validTo = r.valid_to ? String(r.valid_to).slice(0, 10) : null;
+      const validTo = certificateDateOnly(r.valid_to);
       const daysLeft = daysUntilDate(validTo);
       const expired = daysLeft != null && daysLeft < 0;
       if (expired) expiredCount += 1;

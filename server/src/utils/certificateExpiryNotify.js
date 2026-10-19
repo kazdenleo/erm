@@ -15,6 +15,25 @@ function startOfDay(d) {
 }
 
 /**
+ * Дата сертификата → YYYY-MM-DD. pg отдаёт DATE как Date в локальную полночь,
+ * поэтому берём локальные компоненты (как daysUntilDate).
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+export function certificateDateOnly(raw) {
+  if (raw == null || raw === '') return null;
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) return null;
+    const y = raw.getFullYear();
+    const m = String(raw.getMonth() + 1).padStart(2, '0');
+    const d = String(raw.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(String(raw).trim());
+  return iso ? iso[1] : null;
+}
+
+/**
  * @param {unknown} rawDate YYYY-MM-DD | Date | ISO
  * @param {Date} [now]
  * @returns {number|null} дней до даты (отрицательное = уже прошло)

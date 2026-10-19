@@ -1,6 +1,7 @@
 import {
   CERT_EXPIRY_WARN_DAYS,
   calendarDaysBetween,
+  certificateDateOnly,
   certificateExpiryPhaseLabel,
   certificateNotifyPeriodKey,
   daysUntilDate,
@@ -15,6 +16,15 @@ describe('certificateExpiryNotify', () => {
     expect(daysUntilDate('2026-06-16', now)).toBe(1);
     expect(daysUntilDate('2026-06-14', now)).toBe(-1);
     expect(daysUntilDate('2026-12-12', now)).toBe(180);
+  });
+
+  test('certificateDateOnly: pg Date (local midnight) and ISO strings', () => {
+    const pgDate = new Date(2026, 9, 29);
+    expect(certificateDateOnly(pgDate)).toBe('2026-10-29');
+    expect(daysUntilDate(certificateDateOnly(pgDate), now)).toBe(daysUntilDate(pgDate, now));
+    expect(certificateDateOnly('2026-10-29T00:00:00.000Z')).toBe('2026-10-29');
+    expect(certificateDateOnly(String(pgDate))).toBeNull();
+    expect(certificateDateOnly(null)).toBeNull();
   });
 
   test('outside 6 months — no notification', () => {

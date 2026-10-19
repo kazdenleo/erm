@@ -39,6 +39,7 @@ import {
 } from '../utils/notificationSettings.js';
 import {
   CERT_EXPIRY_WARN_DAYS,
+  certificateDateOnly,
   certificateExpiryPhaseLabel,
   certificateNotifyPeriodKey,
   daysUntilDate,
@@ -671,7 +672,7 @@ class IntegrationsService {
       const considerCert = (row) => {
         const certId = row.id;
         if (certId == null) return;
-        const dt = row.valid_to ? String(row.valid_to).slice(0, 10) : null;
+        const dt = certificateDateOnly(row.valid_to);
         if (!dt) return;
         const daysLeft = daysUntilDate(dt, now);
         if (daysLeft == null || daysLeft > CERT_EXPIRY_WARN_DAYS) return;
@@ -690,7 +691,7 @@ class IntegrationsService {
           title,
           message: `${row.certificate_number}${scope ? ` (${scope})` : ''}: срок до ${dt}${
             phase ? ` — ${phase}` : ''
-          }.`,
+          }`.replace(/\.?$/, '.'),
           expires_at: dt,
           days_left: daysLeft,
           certificate_id: certId,
@@ -720,11 +721,29 @@ class IntegrationsService {
              WHERE c.valid_to IS NOT NULL
                AND c.valid_to::date <= (CURRENT_DATE + ($1::int * INTERVAL '1 day'))
                AND ($2::bigint IS NULL OR c.profile_id = $2::bigint)
+               -- документ заменён: все его товары покрыты более поздним или бессрочным
+               AND NOT (
+                 EXISTS (SELECT 1 FROM certificate_products cp WHERE cp.certificate_id = c.id)
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM certificate_products cp
+                   WHERE cp.certificate_id = c.id
+                     AND NOT EXISTS (
+                       SELECT 1
+                       FROM certificate_products cp2
+                       JOIN certificates c2 ON c2.id = cp2.certificate_id
+                       WHERE cp2.product_id = cp.product_id
+                         AND c2.id <> c.id
+                         AND (c2.valid_to IS NULL OR c2.valid_to > c.valid_to)
+                     )
+                 )
+               )
              ORDER BY c.valid_to ASC`,
             [CERT_EXPIRY_WARN_DAYS, profileId]
           );
         } catch (qe) {
-          // fallback без certificate_products (старая схема)
+          // fallback без certificate_products (миграция 214 ещё не применена)
+          if (!/certificate_products/i.test(String(qe?.message || ''))) throw qe;
           r = await query(
             `SELECT c.id, c.certificate_number, c.valid_to, c.valid_from,
                     b.name AS brand_name,
