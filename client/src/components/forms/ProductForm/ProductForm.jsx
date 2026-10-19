@@ -58,6 +58,7 @@ import {
   canUsePrintHelper,
   openProductLabelPrintTab,
   useProductLabelPrint,
+  printPackagingBarcodeLabel,
 } from '../../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../../services/api.js';
 import { createAsyncQueue } from '../../../utils/asyncQueue.js';
@@ -1094,6 +1095,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
   okpd2_code: '',
   box_barcode: '',
   units_per_box: '',
+  box_packagings: [],
     cost: '',
   additionalExpenses: '',
     minPrice: '',
@@ -2104,6 +2106,28 @@ export const ProductForm = React.forwardRef(function ProductForm({
             : currentProduct.unitsPerBox != null && currentProduct.unitsPerBox !== ''
               ? String(currentProduct.unitsPerBox)
               : '',
+        box_packagings: (() => {
+          const raw = currentProduct.box_packagings ?? currentProduct.boxPackagings;
+          if (Array.isArray(raw) && raw.length) {
+            return raw.map((r) => ({
+              barcode: String(r?.barcode ?? r?.box_barcode ?? '').trim(),
+              units_per_box:
+                r?.units_per_box != null && r?.units_per_box !== ''
+                  ? String(r.units_per_box)
+                  : r?.unitsPerBox != null && r?.unitsPerBox !== ''
+                    ? String(r.unitsPerBox)
+                    : '',
+            }));
+          }
+          const bc = String(currentProduct.box_barcode || currentProduct.boxBarcode || '').trim();
+          const u =
+            currentProduct.units_per_box != null && currentProduct.units_per_box !== ''
+              ? String(currentProduct.units_per_box)
+              : currentProduct.unitsPerBox != null && currentProduct.unitsPerBox !== ''
+                ? String(currentProduct.unitsPerBox)
+                : '';
+          return bc || u ? [{ barcode: bc, units_per_box: u }] : [];
+        })(),
         cost: currentProduct.cost || '',
         additionalExpenses: (() => {
           const v = currentProduct.additionalExpenses ?? currentProduct.additional_expenses;
@@ -5800,6 +5824,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [pushCardError, setPushCardError] = useState('');
   const [pushCardIsWarning, setPushCardIsWarning] = useState(false);
   const [barcodeGeneratingIndex, setBarcodeGeneratingIndex] = useState(null);
+  const [boxBarcodeGeneratingIndex, setBoxBarcodeGeneratingIndex] = useState(null);
+  const [boxBarcodePrintingIndex, setBoxBarcodePrintingIndex] = useState(null);
   const [barcodeGenerateError, setBarcodeGenerateError] = useState('');
   const [richContentLoading, setRichContentLoading] = useState(null);
   const [richContentError, setRichContentError] = useState('');
@@ -6179,6 +6205,78 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setBarcodeGenerateError(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод');
     } finally {
       setBarcodeGeneratingIndex(null);
+    }
+  };
+
+  const handleBoxPackagingChange = (index, field, value) => {
+    setFormData((prev) => {
+      const list = Array.isArray(prev.box_packagings) ? [...prev.box_packagings] : [];
+      while (list.length <= index) list.push({ barcode: '', units_per_box: '' });
+      list[index] = {
+        ...list[index],
+        [field]: field === 'units_per_box' ? String(value || '').replace(/[^\d]/g, '') : value,
+      };
+      return { ...prev, box_packagings: list };
+    });
+  };
+
+  const addBoxPackagingRow = () => {
+    setFormData((prev) => ({
+      ...prev,
+      box_packagings: [...(Array.isArray(prev.box_packagings) ? prev.box_packagings : []), { barcode: '', units_per_box: '' }],
+    }));
+  };
+
+  const removeBoxPackagingRow = (index) => {
+    setFormData((prev) => ({
+      ...prev,
+      box_packagings: (Array.isArray(prev.box_packagings) ? prev.box_packagings : []).filter((_, i) => i !== index),
+    }));
+  };
+
+  const handleGenerateBoxBarcode = async (index) => {
+    setBarcodeGenerateError('');
+    setBoxBarcodeGeneratingIndex(index);
+    try {
+      const body = await productsApi.generateBarcode({
+        productId: currentProduct?.id,
+        organizationId: formData.organizationId || currentProduct?.organization_id || undefined,
+      });
+      const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode ?? body?.data);
+      if (!code) throw new Error('Не удалось сгенерировать штрихкод');
+      handleBoxPackagingChange(index, 'barcode', code);
+    } catch (e) {
+      setBarcodeGenerateError(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод');
+    } finally {
+      setBoxBarcodeGeneratingIndex(null);
+    }
+  };
+
+  const handlePrintBoxBarcode = async (index) => {
+    const row = (Array.isArray(formData.box_packagings) ? formData.box_packagings : [])[index];
+    const code = String(row?.barcode || '').trim();
+    if (!code) {
+      setBarcodeGenerateError('Сначала укажите или сгенерируйте ШК упаковки');
+      return;
+    }
+    if (!currentProduct?.id) {
+      setBarcodeGenerateError('Сохраните товар, затем печатайте ШК упаковки');
+      return;
+    }
+    setBarcodeGenerateError('');
+    setBoxBarcodePrintingIndex(index);
+    try {
+      const out = await printPackagingBarcodeLabel(
+        printHelperUrl,
+        currentProduct.id,
+        code,
+        row?.units_per_box
+      );
+      if (!out.ok) setBarcodeGenerateError(out.message || 'Не удалось напечатать ШК упаковки');
+    } catch (e) {
+      setBarcodeGenerateError(e?.response?.data?.message || e?.message || 'Не удалось напечатать ШК упаковки');
+    } finally {
+      setBoxBarcodePrintingIndex(null);
     }
   };
 
@@ -7137,10 +7235,29 @@ export const ProductForm = React.forwardRef(function ProductForm({
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
       okpd2_code: normalizeOkpd2Code(formData.okpd2_code) || null,
-      box_barcode: String(formData.box_barcode || '').trim() || null,
+      box_packagings: (Array.isArray(formData.box_packagings) ? formData.box_packagings : [])
+        .map((r) => ({
+          barcode: String(r?.barcode || '').trim(),
+          units_per_box: Math.floor(Number(r?.units_per_box)),
+        }))
+        .filter((r) => r.barcode && Number.isFinite(r.units_per_box) && r.units_per_box > 0),
+      box_barcode: (() => {
+        const packs = (Array.isArray(formData.box_packagings) ? formData.box_packagings : [])
+          .map((r) => ({
+            barcode: String(r?.barcode || '').trim(),
+            units_per_box: Math.floor(Number(r?.units_per_box)),
+          }))
+          .filter((r) => r.barcode && Number.isFinite(r.units_per_box) && r.units_per_box > 0);
+        return packs[0]?.barcode || null;
+      })(),
       units_per_box: (() => {
-        const n = Math.floor(Number(formData.units_per_box));
-        return Number.isFinite(n) && n > 0 ? n : null;
+        const packs = (Array.isArray(formData.box_packagings) ? formData.box_packagings : [])
+          .map((r) => ({
+            barcode: String(r?.barcode || '').trim(),
+            units_per_box: Math.floor(Number(r?.units_per_box)),
+          }))
+          .filter((r) => r.barcode && Number.isFinite(r.units_per_box) && r.units_per_box > 0);
+        return packs[0]?.units_per_box ?? null;
       })(),
       // У комплекта cost пересчитывается на сервере по комплектующим — не шлём ручное значение.
       ...(formData.product_type === 'kit'
@@ -8956,48 +9073,116 @@ export const ProductForm = React.forwardRef(function ProductForm({
             + Добавить баркод
           </Button>
         </h4>
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
-            marginBottom: 12,
-            alignItems: 'flex-end',
-          }}
-        >
-          <div style={{ minWidth: 180 }}>
-            <label className="form-label" htmlFor="box_barcode" style={{ fontSize: 12 }}>
-              ШК коробки
-            </label>
-            <input
-              id="box_barcode"
-              type="text"
-              className="form-control form-control-sm"
-              value={formData.box_barcode || ''}
-              onChange={(e) => handleChange('box_barcode', e.target.value)}
-              placeholder="Штрихкод упаковки"
-              autoComplete="off"
-              spellCheck={false}
-            />
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>Упаковки</span>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={addBoxPackagingRow}
+              style={{ padding: '4px 12px', fontSize: 11 }}
+            >
+              + Добавить упаковку
+            </Button>
+            <span className="text-muted" style={{ fontSize: 11, maxWidth: 420, lineHeight: 1.35 }}>
+              У каждой упаковки свой ШК (сгенерировать или вписать) и количество штук. В приёмке скан добавляет это количество.
+            </span>
           </div>
-          <div style={{ width: 120 }}>
-            <label className="form-label" htmlFor="units_per_box" style={{ fontSize: 12 }}>
-              Шт. в упаковке
-            </label>
-            <input
-              id="units_per_box"
-              type="number"
-              min={1}
-              step={1}
-              className="form-control form-control-sm"
-              value={formData.units_per_box || ''}
-              onChange={(e) => handleChange('units_per_box', e.target.value.replace(/[^\d]/g, ''))}
-              placeholder="N"
-            />
+          {(Array.isArray(formData.box_packagings) ? formData.box_packagings : []).length === 0 ? (
+            <div className="text-muted" style={{ fontSize: 12, marginBottom: 4 }}>
+              Упаковок нет — приёмка только поштучно по обычному ШК.
+            </div>
+          ) : null}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(Array.isArray(formData.box_packagings) ? formData.box_packagings : []).map((row, index) => {
+              const code = String(row?.barcode || '').trim();
+              const generating = boxBarcodeGeneratingIndex === index;
+              return (
+                <div key={index} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+                  <div style={{ minWidth: 180, flex: '1 1 180px' }}>
+                    {index === 0 ? (
+                      <label className="form-label" style={{ fontSize: 12 }}>ШК упаковки</label>
+                    ) : null}
+                    <div className="product-form-barcode" style={{ position: 'relative' }}>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm"
+                        value={row?.barcode || ''}
+                        onChange={(e) => handleBoxPackagingChange(index, 'barcode', e.target.value)}
+                        placeholder=""
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      {!code ? (
+                        <button
+                          type="button"
+                          disabled={generating}
+                          onClick={() => handleGenerateBoxBarcode(index)}
+                          title="Сгенерировать штрихкод упаковки"
+                          style={{
+                            position: 'absolute',
+                            left: 10,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            border: 0,
+                            background: 'transparent',
+                            padding: 0,
+                            color: generating ? 'var(--muted)' : '#2563eb',
+                            cursor: generating ? 'wait' : 'pointer',
+                            fontSize: '13px',
+                            lineHeight: 1,
+                            textDecoration: generating ? 'none' : 'underline',
+                            textUnderlineOffset: '2px',
+                          }}
+                        >
+                          {generating ? 'Генерация…' : 'Сгенерировать'}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div style={{ width: 120 }}>
+                    {index === 0 ? (
+                      <label className="form-label" style={{ fontSize: 12 }}>Шт. в упаковке</label>
+                    ) : null}
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      className="form-control form-control-sm"
+                      value={row?.units_per_box || ''}
+                      onChange={(e) => handleBoxPackagingChange(index, 'units_per_box', e.target.value)}
+                      placeholder="N"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={!code || !currentProduct?.id || boxBarcodePrintingIndex === index}
+                    onClick={() => handlePrintBoxBarcode(index)}
+                    style={{ padding: '6px 10px', fontSize: 12, minWidth: 36 }}
+                    title={
+                      !currentProduct?.id
+                        ? 'Сначала сохраните товар'
+                        : !code
+                          ? 'Укажите ШК упаковки'
+                          : 'Распечатать ШК упаковки'
+                    }
+                  >
+                    {boxBarcodePrintingIndex === index ? '…' : '🖨'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => removeBoxPackagingRow(index)}
+                    style={{ padding: '6px 10px', fontSize: 12, color: '#fca5a5', borderColor: '#fca5a5' }}
+                    title="Удалить упаковку"
+                  >
+                    ✕
+                  </Button>
+                </div>
+              );
+            })}
           </div>
-          <span className="text-muted" style={{ fontSize: 11, maxWidth: 320, lineHeight: 1.35 }}>
-            В приёмке скан ШК коробки добавляет указанное количество штук.
-          </span>
         </div>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
           Если штрихкод не указан, он создастся сам перед отправкой карточки на маркетплейс. Кнопка «Сгенерировать» нужна, только если хотите увидеть код заранее.

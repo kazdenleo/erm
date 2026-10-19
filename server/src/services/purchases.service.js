@@ -4357,7 +4357,7 @@ class PurchasesService {
   /**
    * Сканирование в приёмку.
    * Обычный ШК / артикул: ±1 шт.
-   * ШК коробки (products.box_barcode): ± units_per_box шт.
+   * ШК упаковки (product_box_packagings / legacy box_barcode): ± units_per_box шт.
    * mode: 'add' | 'remove'
    */
   async scanToReceipt(
@@ -4443,24 +4443,41 @@ class PurchasesService {
 
       let resolvedProductId = pidNum || cisProductId;
       let matchedBoxBarcode = false;
+      let matchedBoxUnits = null;
       const codesToTry = productLookupCodesFromScan(bc);
       if (!resolvedProductId) {
         for (const code of codesToTry.length ? codesToTry : bc ? [bc] : []) {
           const bcDigits = String(code).replace(/\D+/g, '');
-          const boxR = await client.query(
-            `SELECT id
-             FROM products
-             WHERE NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
-               AND (
-                 LOWER(TRIM(box_barcode)) = LOWER(TRIM($1))
-                 OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = $2
-               )
-             LIMIT 1`,
-            [code, bcDigits || '__none__']
-          );
+          let boxR;
+          try {
+            boxR = await client.query(
+              `SELECT b.product_id AS id, b.units_per_box
+                 FROM product_box_packagings b
+                WHERE LOWER(TRIM(b.barcode)) = LOWER(TRIM($1))
+                   OR REGEXP_REPLACE(b.barcode, '\\D', '', 'g') = $2
+                LIMIT 1`,
+              [code, bcDigits || '__none__']
+            );
+          } catch (_) {
+            boxR = { rows: [] };
+          }
+          if (!boxR.rows?.[0]?.id) {
+            boxR = await client.query(
+              `SELECT id, units_per_box
+               FROM products
+               WHERE NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
+                 AND (
+                   LOWER(TRIM(box_barcode)) = LOWER(TRIM($1))
+                   OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = $2
+                 )
+               LIMIT 1`,
+              [code, bcDigits || '__none__']
+            );
+          }
           if (boxR.rows?.[0]?.id) {
             resolvedProductId = Number(boxR.rows[0].id);
             matchedBoxBarcode = true;
+            matchedBoxUnits = Math.floor(Number(boxR.rows[0].units_per_box) || 0);
             break;
           }
         }
@@ -4506,32 +4523,55 @@ class PurchasesService {
       }
       await assertProductAllowedInProfile(client, resolvedProductId, pid);
 
-      // Если товар нашли по productId, но скан совпал с его ШК коробки — тоже коробка.
+      // Если товар нашли по productId, но скан совпал с его ШК упаковки — тоже коробка.
       if (!matchedBoxBarcode && bc) {
-        const boxCheck = await client.query(
-          `SELECT 1 FROM products
-           WHERE id = $1
-             AND NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
-             AND (
-               LOWER(TRIM(box_barcode)) = LOWER(TRIM($2))
-               OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = REGEXP_REPLACE($2, '\\D', '', 'g')
-             )
-           LIMIT 1`,
-          [resolvedProductId, bc]
-        );
-        if (boxCheck.rows?.length) matchedBoxBarcode = true;
+        let boxCheck;
+        try {
+          boxCheck = await client.query(
+            `SELECT units_per_box FROM product_box_packagings
+             WHERE product_id = $1
+               AND (
+                 LOWER(TRIM(barcode)) = LOWER(TRIM($2))
+                 OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = REGEXP_REPLACE($2, '\\D', '', 'g')
+               )
+             LIMIT 1`,
+            [resolvedProductId, bc]
+          );
+        } catch (_) {
+          boxCheck = { rows: [] };
+        }
+        if (!boxCheck.rows?.length) {
+          boxCheck = await client.query(
+            `SELECT units_per_box FROM products
+             WHERE id = $1
+               AND NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
+               AND (
+                 LOWER(TRIM(box_barcode)) = LOWER(TRIM($2))
+                 OR REGEXP_REPLACE(box_barcode, '\\D', '', 'g') = REGEXP_REPLACE($2, '\\D', '', 'g')
+               )
+             LIMIT 1`,
+            [resolvedProductId, bc]
+          );
+        }
+        if (boxCheck.rows?.length) {
+          matchedBoxBarcode = true;
+          matchedBoxUnits = Math.floor(Number(boxCheck.rows[0].units_per_box) || 0);
+        }
       }
 
       let delta = 1;
       if (matchedBoxBarcode) {
-        const qtyR = await client.query(
-          `SELECT units_per_box FROM products WHERE id = $1 LIMIT 1`,
-          [resolvedProductId]
-        );
-        const units = Math.floor(Number(qtyR.rows?.[0]?.units_per_box) || 0);
+        let units = matchedBoxUnits;
+        if (!Number.isFinite(units) || units <= 0) {
+          const qtyR = await client.query(
+            `SELECT units_per_box FROM products WHERE id = $1 LIMIT 1`,
+            [resolvedProductId]
+          );
+          units = Math.floor(Number(qtyR.rows?.[0]?.units_per_box) || 0);
+        }
         if (!Number.isFinite(units) || units <= 0) {
           const err = new Error(
-            'У товара указан ШК коробки, но не задано количество штук в упаковке. Заполните поле в карточке товара.'
+            'У товара указан ШК упаковки, но не задано количество штук. Заполните упаковку в карточке товара.'
           );
           err.statusCode = 400;
           throw err;

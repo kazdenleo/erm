@@ -59,6 +59,46 @@ class ProductLabelsController {
       next(error);
     }
   }
+
+  async getPackagingLabel(req, res, next) {
+    try {
+      const productId = req.params.id ?? req.params.productId;
+      const format = String(req.query?.format || 'png').toLowerCase() === 'pdf' ? 'pdf' : 'png';
+      const result = await productLabelsService.renderPackagingBarcodeLabel(productId, {
+        barcode: req.query?.barcode,
+        unitsPerBox: req.query?.units ?? req.query?.units_per_box,
+        format,
+        sizePreset: req.query?.size || req.query?.sizePreset,
+      });
+      res.setHeader('Content-Type', result.contentType);
+      res.setHeader('Cache-Control', 'no-store');
+      if (result.widthMm != null) res.setHeader('X-Label-Width-Mm', String(result.widthMm));
+      if (result.heightMm != null) res.setHeader('X-Label-Height-Mm', String(result.heightMm));
+      res.setHeader('Access-Control-Expose-Headers', 'X-Label-Width-Mm, X-Label-Height-Mm');
+      return res.send(result.buffer);
+    } catch (error) {
+      const code = error.statusCode || 500;
+      if (code < 500) {
+        return res.status(code).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  }
+
+  async getPackagingLabelPrint(req, res, next) {
+    try {
+      const productId = req.params.id ?? req.params.productId;
+      const html = productLabelsService.buildPackagingPrintHtml(productId, {
+        barcode: req.query?.barcode,
+        unitsPerBox: req.query?.units ?? req.query?.units_per_box,
+      });
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(html);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new ProductLabelsController();

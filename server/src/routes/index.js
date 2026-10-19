@@ -131,6 +131,18 @@ router.get(
   optionalAuth,
   wrapAsync(productLabelsController.getLabelPrint.bind(productLabelsController))
 );
+router.get(
+  '/products/:id/packaging-label',
+  validateProductId,
+  optionalAuth,
+  wrapAsync(productLabelsController.getPackagingLabel.bind(productLabelsController))
+);
+router.get(
+  '/products/:id/packaging-label/print',
+  validateProductId,
+  optionalAuth,
+  wrapAsync(productLabelsController.getPackagingLabelPrint.bind(productLabelsController))
+);
 
 // Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)
 router.use(optionalAuth);
@@ -410,6 +422,11 @@ router.post(
   '/inventory-sessions/apply',
   requireAuth,
   wrapAsync(inventorySessionsController.apply.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/preview-unlisted',
+  requireAuth,
+  wrapAsync(inventorySessionsController.previewUnlisted.bind(inventorySessionsController))
 );
 router.post(
   '/inventory-sessions/sessions',

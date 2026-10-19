@@ -28,7 +28,18 @@ export async function generateWbBarcodeFromApi(ctx = {}) {
 export async function barcodeTaken(code) {
   const s = coerceBarcodeString(code);
   if (!s || isCorruptBarcodeString(s)) return true;
-  const r = await query('SELECT 1 FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1', [s]);
+  const r = await query(
+    `SELECT 1 FROM barcodes WHERE TRIM(barcode) = TRIM($1)
+     UNION ALL
+     SELECT 1 FROM product_box_packagings
+      WHERE LOWER(TRIM(barcode)) = LOWER(TRIM($1))
+     UNION ALL
+     SELECT 1 FROM products
+      WHERE NULLIF(TRIM(COALESCE(box_barcode, '')), '') IS NOT NULL
+        AND LOWER(TRIM(box_barcode)) = LOWER(TRIM($1))
+     LIMIT 1`,
+    [s]
+  );
   return (r.rowCount || 0) > 0;
 }
 

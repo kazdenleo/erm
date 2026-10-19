@@ -158,6 +158,75 @@ export function openProductLabelPrintTab(productId, copies = 1, marketplace = nu
   return false;
 }
 
+export function buildPackagingLabelPrintPageUrl(productId, barcode, unitsPerBox) {
+  const id = productId != null ? String(productId).trim() : '';
+  const code = String(barcode || '').trim();
+  const params = new URLSearchParams({ barcode: code });
+  const u = Math.floor(Number(unitsPerBox) || 0);
+  if (u > 0) params.set('units', String(u));
+  return `/api/products/${encodeURIComponent(id)}/packaging-label/print?${params.toString()}`;
+}
+
+export function openPackagingLabelPrintTab(productId, barcode, unitsPerBox) {
+  const url = buildPackagingLabelPrintPageUrl(productId, barcode, unitsPerBox);
+  try {
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    if (w) {
+      w.focus?.();
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/**
+ * Печать ШК упаковки: Print Helper (kind=packaging) или вкладка с автопечатью.
+ * @returns {Promise<{ ok: boolean, message?: string }>}
+ */
+export async function printPackagingBarcodeLabel(printHelperUrl, productId, barcode, unitsPerBox) {
+  const id = productId != null ? String(productId).trim() : '';
+  const code = String(barcode || '').trim();
+  if (!id || !code) return { ok: false, message: 'Нет товара или штрихкода упаковки' };
+
+  const units = Math.floor(Number(unitsPerBox) || 0);
+  const params = { format: 'pdf', barcode: code, ...(units > 0 ? { units: String(units) } : {}) };
+
+  if (!canUsePrintHelper(printHelperUrl)) {
+    const ok = openPackagingLabelPrintTab(id, code, units);
+    return ok
+      ? { ok: true }
+      : { ok: false, message: 'Разрешите всплывающие окна для печати' };
+  }
+
+  let pdfBlob;
+  try {
+    const res = await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
+      params,
+      responseType: 'blob',
+      timeout: PRINT_HELPER_FETCH_MS,
+      headers: { Accept: 'application/pdf' },
+    });
+    pdfBlob = res?.data instanceof Blob ? res.data : new Blob([res?.data], { type: 'application/pdf' });
+  } catch (e) {
+    return { ok: false, message: await errorMessageFromLabelRequest(e) };
+  }
+
+  const printed = await printViaPrintHelper({
+    printHelperUrl,
+    kind: 'packaging',
+    pdfBuffer: pdfBlob,
+    orderId: `packaging-${id}-${code}`,
+    timeoutMs: PRINT_HELPER_FETCH_MS,
+  });
+  if (printed.ok) return { ok: true };
+  const ok = openPackagingLabelPrintTab(id, code, units);
+  return ok
+    ? { ok: true }
+    : { ok: false, message: printed.message || 'Print Helper не ответил' };
+}
+
 export function useProductLabelPrint(printHelperUrl = '') {
   const [error, setError] = useState(null);
   const [printing, setPrinting] = useState(false);

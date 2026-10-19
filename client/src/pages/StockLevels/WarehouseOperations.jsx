@@ -1826,17 +1826,36 @@ export function WarehouseOperations({
     applySessionStateToList(res);
   };
 
-  /** Поступление по скану: ШК штуки = +1, ШК коробки = +units_per_box */
+  /** Поступление по скану: ШК штуки = +1, ШК упаковки = +units_per_box */
   const receiptQtyForProductScan = (product, scannedCode) => {
     const code = normalizeScanInput(scannedCode || '');
-    const box = String(product?.box_barcode ?? product?.boxBarcode ?? '').trim();
-    if (code && box && code.toLowerCase() === box.toLowerCase()) {
-      const units = Math.floor(Number(product?.units_per_box ?? product?.unitsPerBox) || 0);
+    if (!code) return { qty: 1, isBox: false };
+    const packs = Array.isArray(product?.box_packagings)
+      ? product.box_packagings
+      : Array.isArray(product?.boxPackagings)
+        ? product.boxPackagings
+        : null;
+    const list =
+      packs && packs.length
+        ? packs
+        : [
+            {
+              barcode: product?.box_barcode ?? product?.boxBarcode,
+              units_per_box: product?.units_per_box ?? product?.unitsPerBox,
+            },
+          ];
+    const lower = code.toLowerCase();
+    const digits = code.replace(/\D+/g, '');
+    for (const row of list) {
+      const box = String(row?.barcode ?? row?.box_barcode ?? '').trim();
+      if (!box) continue;
+      const hit =
+        box.toLowerCase() === lower ||
+        (digits && box.replace(/\D+/g, '') === digits);
+      if (!hit) continue;
+      const units = Math.floor(Number(row?.units_per_box ?? row?.unitsPerBox) || 0);
       if (!Number.isFinite(units) || units <= 0) {
-        const err = new Error(
-          'У товара указан ШК коробки, но не задано количество штук в упаковке'
-        );
-        throw err;
+        throw new Error('У товара указан ШК упаковки, но не задано количество штук');
       }
       return { qty: units, isBox: true };
     }

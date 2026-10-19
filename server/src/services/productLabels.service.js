@@ -1039,6 +1039,131 @@ export const productLabelsService = {
 </script>
 </body></html>`;
   },
+
+  /**
+   * Этикетка ШК упаковки: штрихкод + артикул + «N шт.»
+   * @param {number|string} productId
+   * @param {{ barcode: string, unitsPerBox?: number|string, format?: 'png'|'pdf', sizePreset?: string }} opts
+   */
+  async renderPackagingBarcodeLabel(productId, opts = {}) {
+    const barcode = String(opts.barcode || '').trim();
+    if (!barcode) {
+      const err = new Error('Не указан штрихкод упаковки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const units = Math.floor(Number(opts.unitsPerBox ?? opts.units_per_box ?? 0));
+    const product = await loadProductForLabel(productId);
+    if (!product) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    const presetKey = SIZE_PRESETS[opts.sizePreset] ? opts.sizePreset : '58x40';
+    const { widthMm, heightMm } = SIZE_PRESETS[presetKey];
+    const pad = Math.round(2 * MM_TO_PX);
+    const widthPx = Math.round(widthMm * MM_TO_PX);
+    const heightPx = Math.round(heightMm * MM_TO_PX);
+    const innerW = Math.max(10, widthPx - pad * 2);
+    const sku = String(product.sku || '').trim();
+    const name = String(product.name || '').trim();
+    const title = sku || name || 'Упаковка';
+    const unitsLine = Number.isFinite(units) && units > 0 ? `${units} шт.` : '';
+
+    const escapeXml = (s) =>
+      String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    const titleFs = 14;
+    const unitsFs = 16;
+    const codeFs = 12;
+    let y = pad + titleFs;
+    const blocks = [];
+    blocks.push(
+      `<text x="${pad}" y="${y}" font-family="Arial, Helvetica, sans-serif" font-size="${titleFs}" font-weight="bold" fill="#000">${escapeXml(title.slice(0, 48))}</text>`
+    );
+    y += 6;
+
+    const textUnderH = codeFs + 4;
+    const unitsH = unitsLine ? unitsFs + 4 : 0;
+    const barSlotH = Math.max(40, heightPx - y - pad - textUnderH - unitsH - 8);
+    const barHeightMm = barSlotH / MM_TO_PX;
+    const barcodePng = await generateBarcodePng(barcode, { widthPx: innerW, barHeightMm });
+    if (!barcodePng) {
+      const err = new Error('Не удалось сформировать штрихкод упаковки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const fitted = await fitBarcodePngToSlot(barcodePng, innerW, barSlotH);
+    if (!fitted) {
+      const err = new Error('Не удалось вписать штрихкод на этикетку');
+      err.statusCode = 500;
+      throw err;
+    }
+    const b64 = fitted.toString('base64');
+    blocks.push(`<image x="${pad}" y="${y}" width="${innerW}" height="${barSlotH}" href="data:image/png;base64,${b64}" />`);
+    y += barSlotH + codeFs + 2;
+    blocks.push(
+      `<text x="${widthPx / 2}" y="${y}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${codeFs}" fill="#111">${escapeXml(barcode)}</text>`
+    );
+    if (unitsLine) {
+      y += unitsFs + 2;
+      blocks.push(
+        `<text x="${widthPx / 2}" y="${y}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${unitsFs}" font-weight="bold" fill="#000">${escapeXml(unitsLine)}</text>`
+      );
+    }
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}">
+  <rect width="100%" height="100%" fill="#fff"/>
+  ${blocks.join('\n  ')}
+</svg>`;
+    const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
+    if (opts.format === 'pdf') {
+      const pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
+      return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm, pngBuffer };
+    }
+    return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm, pngBuffer };
+  },
+
+  buildPackagingPrintHtml(productId, { barcode, unitsPerBox } = {}) {
+    const qs = new URLSearchParams({
+      format: 'png',
+      barcode: String(barcode || '').trim(),
+    });
+    const u = Math.floor(Number(unitsPerBox) || 0);
+    if (u > 0) qs.set('units', String(u));
+    return `<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="utf-8"/>
+<title>ШК упаковки</title>
+<style>
+  @page { margin: 0; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+  img { max-width: 100%; height: auto; display: block; }
+  .err { font-family: system-ui, sans-serif; padding: 24px; color: #b00; }
+</style>
+</head>
+<body>
+<img id="label" alt="ШК упаковки" />
+<script>
+(function() {
+  var img = document.getElementById('label');
+  var url = '/api/products/${encodeURIComponent(String(productId))}/packaging-label?${qs.toString()}';
+  img.onload = function() {
+    setTimeout(function() { try { window.print(); } catch(e) {} }, 300);
+  };
+  img.onerror = function() {
+    document.body.innerHTML = '<p class="err">Не удалось загрузить этикетку ШК упаковки</p>';
+  };
+  img.src = url;
+})();
+</script>
+</body></html>`;
+  },
 };
 
 export default productLabelsService;

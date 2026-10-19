@@ -294,6 +294,10 @@ class AddressStorageService {
                     FROM (
                       SELECT bc.barcode AS bc FROM barcodes bc WHERE bc.product_id = x.product_id
                       UNION
+                      SELECT NULLIF(TRIM(b.barcode), '')
+                        FROM product_box_packagings b
+                       WHERE b.product_id = x.product_id
+                      UNION
                       SELECT NULLIF(TRIM(p.box_barcode), '')
                       WHERE NULLIF(TRIM(COALESCE(p.box_barcode, '')), '') IS NOT NULL
                     ) t

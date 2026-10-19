@@ -20,6 +20,11 @@ import {
   mergeJsonAttrPatch,
   mergeJsonObjectPatch,
 } from '../utils/productAttrPatch.js';
+import {
+  boxPackagingsFromLegacy,
+  legacyFieldsFromBoxPackagings,
+  normalizeBoxPackagings,
+} from '../utils/productBoxPackagings.js';
 
 function mapBarcodeDbRow(row) {
   return {
@@ -323,6 +328,84 @@ async function insertProductBarcodes(client, productId, barcodes) {
       throw e;
     }
   }
+}
+
+async function loadBoxPackagingsForProduct(clientOrQuery, productId) {
+  const run = typeof clientOrQuery === 'function' ? clientOrQuery : (sql, params) => clientOrQuery.query(sql, params);
+  try {
+    const r = await run(
+      `SELECT barcode, units_per_box
+         FROM product_box_packagings
+        WHERE product_id = $1
+        ORDER BY sort_order, id`,
+      [productId]
+    );
+    return normalizeBoxPackagings(r.rows || []);
+  } catch (e) {
+    if (String(e?.message || '').includes('product_box_packagings')) return null;
+    throw e;
+  }
+}
+
+async function replaceBoxPackagings(client, productId, packagings) {
+  const rows = normalizeBoxPackagings(packagings);
+  for (const row of rows) {
+    const clash = await client.query(
+      `SELECT product_id FROM barcodes
+       WHERE LOWER(TRIM(barcode)) = LOWER(TRIM($1))
+       LIMIT 1`,
+      [row.barcode]
+    );
+    if (clash.rows?.[0]?.product_id && Number(clash.rows[0].product_id) !== Number(productId)) {
+      const err = new Error(
+        `ШК упаковки «${row.barcode}» уже используется как обычный штрихкод другого товара`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    const otherBox = await client.query(
+      `SELECT product_id FROM product_box_packagings
+       WHERE LOWER(TRIM(barcode)) = LOWER(TRIM($1))
+         AND product_id <> $2
+       LIMIT 1`,
+      [row.barcode, productId]
+    );
+    if (otherBox.rows?.[0]?.product_id) {
+      const err = new Error(
+        `ШК упаковки «${row.barcode}» уже привязан к другому товару (ID ${otherBox.rows[0].product_id})`
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+  await client.query('DELETE FROM product_box_packagings WHERE product_id = $1', [productId]);
+  let order = 0;
+  for (const row of rows) {
+    await client.query(
+      `INSERT INTO product_box_packagings (product_id, barcode, units_per_box, sort_order)
+       VALUES ($1, $2, $3, $4)`,
+      [productId, row.barcode, row.units_per_box, order++]
+    );
+  }
+  const legacy = legacyFieldsFromBoxPackagings(rows);
+  await client.query(
+    `UPDATE products SET box_barcode = $2, units_per_box = $3 WHERE id = $1`,
+    [productId, legacy.box_barcode, legacy.units_per_box]
+  );
+  return rows;
+}
+
+function attachBoxPackagingsToProduct(product, packagings) {
+  if (!product) return product;
+  const list =
+    packagings != null
+      ? normalizeBoxPackagings(packagings)
+      : boxPackagingsFromLegacy(product);
+  product.box_packagings = list;
+  const legacy = legacyFieldsFromBoxPackagings(list);
+  product.box_barcode = legacy.box_barcode;
+  product.units_per_box = legacy.units_per_box;
+  return product;
 }
 
 function parseOptionalMaxPrice(raw) {
@@ -2368,6 +2451,13 @@ class ProductsRepositoryPG {
       console.warn('[Products Repository] findById barcodes:', bcErr?.message || bcErr);
       product.barcodes = Array.isArray(product.barcodes) ? product.barcodes : [];
     }
+    try {
+      const packs = await loadBoxPackagingsForProduct(query, numericId);
+      attachBoxPackagingsToProduct(product, packs != null ? packs : boxPackagingsFromLegacy(product));
+    } catch (packErr) {
+      console.warn('[Products Repository] findById box packagings:', packErr?.message || packErr);
+      attachBoxPackagingsToProduct(product, boxPackagingsFromLegacy(product));
+    }
     return product;
   }
   
@@ -2538,6 +2628,32 @@ class ProductsRepositoryPG {
   async _findProductIdByBoxBarcode(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
     if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
     const hasDigits = allowDigitMatch && digitsOnly.length > 0;
+    try {
+      const byPack = await query(
+        hasDigits
+          ? `SELECT p.id
+             FROM product_box_packagings b
+             JOIN products p ON p.id = b.product_id
+             WHERE COALESCE(p.is_archived, false) = false
+               AND (
+                 LOWER(TRIM(b.barcode)) = LOWER(TRIM($1))
+                 OR REGEXP_REPLACE(b.barcode, '\\D', '', 'g') = $2
+               )
+             ORDER BY p.id
+             LIMIT 1`
+          : `SELECT p.id
+             FROM product_box_packagings b
+             JOIN products p ON p.id = b.product_id
+             WHERE COALESCE(p.is_archived, false) = false
+               AND LOWER(TRIM(b.barcode)) = LOWER(TRIM($1))
+             ORDER BY p.id
+             LIMIT 1`,
+        hasDigits ? [trimmed, digitsOnly] : [trimmed]
+      );
+      if (byPack.rows[0]?.id != null) return byPack.rows[0].id;
+    } catch (e) {
+      if (!String(e?.message || '').includes('product_box_packagings')) throw e;
+    }
     const result = await query(
       hasDigits
         ? `SELECT p.id
@@ -3132,6 +3248,20 @@ class ProductsRepositoryPG {
           );
         }
       }
+
+      const createPacks = Object.prototype.hasOwnProperty.call(productData, 'box_packagings')
+        || Object.prototype.hasOwnProperty.call(productData, 'boxPackagings')
+        ? normalizeBoxPackagings(productData.box_packagings ?? productData.boxPackagings)
+        : boxPackagingsFromLegacy(productData);
+      try {
+        product.box_packagings = await replaceBoxPackagings(client, product.id, createPacks);
+        const legacy = legacyFieldsFromBoxPackagings(product.box_packagings);
+        product.box_barcode = legacy.box_barcode;
+        product.units_per_box = legacy.units_per_box;
+      } catch (packErr) {
+        if (!String(packErr?.message || '').includes('product_box_packagings')) throw packErr;
+        console.warn('[Products Repository] create box packagings skipped:', packErr?.message || packErr);
+      }
       
       // SKU маркетплейсов: Ozon — offer_id и/или product_id; WB/ЯМ — непустой sku
       if (productData.marketplace_skus && typeof productData.marketplace_skus === 'object') {
@@ -3423,33 +3553,54 @@ class ProductsRepositoryPG {
       if (updates.hasOwnProperty('unitsPerBox') && !updates.hasOwnProperty('units_per_box')) {
         updates.units_per_box = updates.unitsPerBox;
       }
-      if (updates.hasOwnProperty('box_barcode')) {
-        const raw = updates.box_barcode;
-        updates.box_barcode =
-          raw != null && String(raw).trim() !== '' ? String(raw).trim() : null;
+      if (updates.hasOwnProperty('boxPackagings') && !updates.hasOwnProperty('box_packagings')) {
+        updates.box_packagings = updates.boxPackagings;
       }
-      if (updates.hasOwnProperty('units_per_box')) {
-        const raw = updates.units_per_box;
-        if (raw == null || raw === '') {
-          updates.units_per_box = null;
-        } else {
-          const n = Math.floor(Number(raw));
-          updates.units_per_box = Number.isFinite(n) && n > 0 ? n : null;
+      let packagingsToReplace = null;
+      if (Object.prototype.hasOwnProperty.call(updates, 'box_packagings')) {
+        packagingsToReplace = normalizeBoxPackagings(updates.box_packagings);
+        const legacy = legacyFieldsFromBoxPackagings(packagingsToReplace);
+        updates.box_barcode = legacy.box_barcode;
+        updates.units_per_box = legacy.units_per_box;
+        delete updates.box_packagings;
+      } else {
+        if (updates.hasOwnProperty('box_barcode')) {
+          const raw = updates.box_barcode;
+          updates.box_barcode =
+            raw != null && String(raw).trim() !== '' ? String(raw).trim() : null;
         }
-      }
-      if (updates.box_barcode) {
-        const clash = await client.query(
-          `SELECT product_id FROM barcodes
-           WHERE LOWER(TRIM(barcode)) = LOWER(TRIM($1))
-           LIMIT 1`,
-          [updates.box_barcode]
-        );
-        if (clash.rows?.[0]?.product_id && Number(clash.rows[0].product_id) !== numId) {
-          const err = new Error(
-            `ШК коробки «${updates.box_barcode}» уже используется как обычный штрихкод другого товара`
-          );
-          err.statusCode = 400;
-          throw err;
+        if (updates.hasOwnProperty('units_per_box')) {
+          const raw = updates.units_per_box;
+          if (raw == null || raw === '') {
+            updates.units_per_box = null;
+          } else {
+            const n = Math.floor(Number(raw));
+            updates.units_per_box = Number.isFinite(n) && n > 0 ? n : null;
+          }
+        }
+        // Старый API (одно поле): синхронизируем только если упаковок ещё нет или одна.
+        if (updates.hasOwnProperty('box_barcode') || updates.hasOwnProperty('units_per_box')) {
+          const existing = await loadBoxPackagingsForProduct(client, numId);
+          if (existing == null || existing.length <= 1) {
+            const cur = await client.query(
+              'SELECT box_barcode, units_per_box FROM products WHERE id = $1',
+              [numId]
+            );
+            const curRow = cur.rows?.[0] || {};
+            packagingsToReplace = normalizeBoxPackagings([
+              {
+                barcode: updates.hasOwnProperty('box_barcode')
+                  ? updates.box_barcode
+                  : curRow.box_barcode,
+                units_per_box: updates.hasOwnProperty('units_per_box')
+                  ? updates.units_per_box
+                  : curRow.units_per_box,
+              },
+            ]);
+            const legacy = legacyFieldsFromBoxPackagings(packagingsToReplace);
+            updates.box_barcode = legacy.box_barcode;
+            updates.units_per_box = legacy.units_per_box;
+          }
         }
       }
       
@@ -3487,6 +3638,15 @@ class ProductsRepositoryPG {
         await client.query('DELETE FROM barcodes WHERE product_id = $1', [numId]);
         if (Array.isArray(updates.barcodes)) {
           await insertProductBarcodes(client, numId, updates.barcodes);
+        }
+      }
+
+      if (packagingsToReplace != null) {
+        try {
+          await replaceBoxPackagings(client, numId, packagingsToReplace);
+        } catch (packErr) {
+          if (!String(packErr?.message || '').includes('product_box_packagings')) throw packErr;
+          console.warn('[Products Repository] update box packagings skipped:', packErr?.message || packErr);
         }
       }
 
