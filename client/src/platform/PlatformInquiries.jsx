@@ -67,6 +67,9 @@ export function PlatformInquiries() {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [savingId, setSavingId] = useState(null);
+  const [replyDraft, setReplyDraft] = useState('');
+  const [replySaving, setReplySaving] = useState(false);
+  const [replyMessage, setReplyMessage] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,10 +90,15 @@ export function PlatformInquiries() {
 
   const openDetail = async (id) => {
     setDetail(null);
+    setReplyDraft('');
+    setReplyMessage('');
     setDetailLoading(true);
     try {
       const res = await inquiriesApi.getById(id);
-      if (res?.ok) setDetail(res.data);
+      if (res?.ok) {
+        setDetail(res.data);
+        setReplyDraft(res.data?.admin_reply || '');
+      }
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка');
     } finally {
@@ -101,6 +109,28 @@ export function PlatformInquiries() {
   const closeDetail = () => {
     setDetail(null);
     setDetailLoading(false);
+    setReplyDraft('');
+    setReplyMessage('');
+  };
+
+  const saveReply = async () => {
+    if (!detail?.id) return;
+    setReplySaving(true);
+    setReplyMessage('');
+    setError('');
+    try {
+      const res = await inquiriesApi.reply(detail.id, { reply: replyDraft });
+      if (res?.ok) {
+        setDetail(res.data);
+        setReplyDraft(res.data?.admin_reply || '');
+        setReplyMessage(res.data?.admin_reply ? 'Ответ сохранён. Пользователь увидит его в «Поддержке».' : 'Ответ очищен.');
+        await load();
+      }
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Не удалось сохранить ответ');
+    } finally {
+      setReplySaving(false);
+    }
   };
 
   const changeStatus = async (id, status) => {
@@ -125,7 +155,7 @@ export function PlatformInquiries() {
     <div className="platform-page card">
       <h1 className="title">Обращения</h1>
       <p className="platform-muted" style={{ marginBottom: '1rem' }}>
-        Все обращения пользователей по аккаунтам. Статусы меняются вручную.
+        Все обращения пользователей по аккаунтам. Можно ответить в карточке обращения и сменить статус.
       </p>
 
       {error && <p className="text-danger">{error}</p>}
@@ -147,6 +177,7 @@ export function PlatformInquiries() {
                 <th>Аккаунт</th>
                 <th>Автор</th>
                 <th>Текст</th>
+                <th>Ответ</th>
                 <th>Статус</th>
                 <th />
               </tr>
@@ -166,6 +197,15 @@ export function PlatformInquiries() {
                     <span className="text-truncate d-inline-block" style={{ maxWidth: 260 }} title={row.body_text}>
                       {row.body_text || '—'}
                     </span>
+                  </td>
+                  <td className="small">
+                    {row.admin_reply ? (
+                      <span className="text-success" title={row.admin_reply}>
+                        есть
+                      </span>
+                    ) : (
+                      <span className="text-muted">нет</span>
+                    )}
                   </td>
                   <td style={{ minWidth: 140 }}>
                     <select
@@ -228,7 +268,7 @@ export function PlatformInquiries() {
               ))}
             </div>
             {(detail.attachments || []).length > 0 && (
-              <div>
+              <div className="mb-3">
                 <h3 className="h6">Вложения</h3>
                 <div className="platform-inq-media">
                   {detail.attachments.map((a) => (
@@ -237,6 +277,58 @@ export function PlatformInquiries() {
                 </div>
               </div>
             )}
+            <div className="platform-inq-reply">
+              <h3 className="h6">Ответ пользователю</h3>
+              <textarea
+                className="form-control"
+                rows={5}
+                value={replyDraft}
+                onChange={(e) => setReplyDraft(e.target.value)}
+                placeholder="Напишите ответ — пользователь увидит его в разделе «Поддержка»"
+                disabled={replySaving}
+              />
+              {detail.admin_replied_at ? (
+                <p className="small text-muted mt-1 mb-2">
+                  Сохранён {formatDate(detail.admin_replied_at)}
+                  {detail.replied_by_email ? ` · ${detail.replied_by_email}` : ''}
+                </p>
+              ) : (
+                <p className="small text-muted mt-1 mb-2">Ответа ещё нет</p>
+              )}
+              <div className="d-flex flex-wrap gap-2 align-items-center">
+                <Button type="button" variant="primary" size="small" onClick={saveReply} disabled={replySaving}>
+                  {replySaving ? 'Сохранение…' : 'Сохранить ответ'}
+                </Button>
+                {detail.admin_reply ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    disabled={replySaving}
+                    onClick={async () => {
+                      setReplyDraft('');
+                      setReplySaving(true);
+                      setReplyMessage('');
+                      try {
+                        const res = await inquiriesApi.reply(detail.id, { reply: '' });
+                        if (res?.ok) {
+                          setDetail(res.data);
+                          setReplyMessage('Ответ очищен.');
+                          await load();
+                        }
+                      } catch (err) {
+                        setError(err?.response?.data?.message || err?.message || 'Не удалось очистить');
+                      } finally {
+                        setReplySaving(false);
+                      }
+                    }}
+                  >
+                    Очистить
+                  </Button>
+                ) : null}
+                {replyMessage ? <span className="small text-muted">{replyMessage}</span> : null}
+              </div>
+            </div>
           </div>
         )}
       </Modal>

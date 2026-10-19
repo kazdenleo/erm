@@ -21,6 +21,7 @@ router.get(
 );
 router.get('/:id', wrapAsync(inquiriesController.getById));
 router.patch('/:id', requireAdmin, wrapAsync(inquiriesController.updateStatus));
+router.post('/:id/reply', requireAdmin, wrapAsync(inquiriesController.reply));
 router.post(
   '/',
   requireProfile,

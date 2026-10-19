@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import repositoryFactory from '../config/repository-factory.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -139,7 +140,73 @@ export const inquiriesController = {
       if (!updated) {
         return res.status(404).json({ ok: false, message: 'Обращение не найдено' });
       }
-      res.json({ ok: true, data: updated });
+      const full = await inquiriesRepo.findById(updated.id);
+      res.json({ ok: true, data: full || updated });
+    } catch (e) {
+      next(e);
+    }
+  },
+
+  /**
+   * POST /api/inquiries/:id/reply — ответ администратора продукта.
+   * Тело: { reply: string } (пустая строка очищает ответ).
+   * Опционально status; если не передан и обращение ещё «new» — статус станет «in_progress».
+   */
+  async reply(req, res, next) {
+    try {
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ ok: false, message: 'Только администратор продукта может отвечать' });
+      }
+      const existing = await inquiriesRepo.findById(req.params.id);
+      if (!existing) {
+        return res.status(404).json({ ok: false, message: 'Обращение не найдено' });
+      }
+
+      const hasReply =
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'reply') ||
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'admin_reply');
+      if (!hasReply) {
+        return res.status(400).json({ ok: false, message: 'Укажите текст ответа (reply)' });
+      }
+      const replyRaw = req.body?.reply ?? req.body?.admin_reply;
+      const replyText = replyRaw == null ? '' : String(replyRaw);
+
+      let nextStatus = null;
+      if (req.body?.status != null && req.body.status !== '') {
+        if (!STATUSES.has(req.body.status)) {
+          return res.status(400).json({ ok: false, message: 'Недопустимый статус' });
+        }
+        nextStatus = req.body.status;
+      } else if (replyText.trim() && existing.status === 'new') {
+        nextStatus = 'in_progress';
+      }
+
+      const updated = await inquiriesRepo.setAdminReply(existing.id, {
+        replyText,
+        repliedBy: req.user.id,
+        status: nextStatus,
+      });
+      if (!updated) {
+        return res.status(404).json({ ok: false, message: 'Обращение не найдено' });
+      }
+
+      const full = await inquiriesRepo.findById(updated.id);
+      const savedReply = String(full?.admin_reply || '').trim();
+      if (savedReply) {
+        const preview = savedReply.length > 240 ? `${savedReply.slice(0, 237)}…` : savedReply;
+        await addRuntimeNotification({
+          type: 'support_inquiry_reply',
+          severity: 'info',
+          source: 'support_inquiry_reply',
+          title: 'Ответ на обращение в поддержку',
+          message: `По обращению #${full.id}: ${preview}`,
+          profileId: full.profile_id,
+          dedupeKey: `support_inquiry_reply:${full.id}`,
+          meta: { inquiry_id: full.id },
+        }).catch(() => {});
+      }
+
+      res.json({ ok: true, data: full || updated });
     } catch (e) {
       next(e);
     }

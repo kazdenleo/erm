@@ -105,8 +105,8 @@ export function Support() {
     <div>
       <PageTitle title="Обращение в техподдержку" />
       <p className="support-lead text-muted">
-        Опишите вопрос и при необходимости прикрепите фото или видео. Администратор продукта увидит обращение в своей
-        панели.
+        Опишите вопрос и при необходимости прикрепите фото или видео. Ответ администратора продукта появится здесь же в
+        карточке обращения.
       </p>
 
       <form className="card support-form" onSubmit={submit}>
@@ -152,6 +152,17 @@ export function Support() {
               <span className="text-muted small">{formatDate(row.created_at)}</span>
             </div>
             <p className="support-body-text mb-0">{row.body_text || '—'}</p>
+            {row.admin_reply ? (
+              <div className="support-reply">
+                <div className="support-reply-head">
+                  <strong>Ответ поддержки</strong>
+                  {row.admin_replied_at ? (
+                    <span className="text-muted small">{formatDate(row.admin_replied_at)}</span>
+                  ) : null}
+                </div>
+                <p className="support-body-text mb-0">{row.admin_reply}</p>
+              </div>
+            ) : null}
           </li>
         ))}
       </ul>

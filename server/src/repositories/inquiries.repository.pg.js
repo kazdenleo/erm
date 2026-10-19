@@ -8,24 +8,34 @@ class InquiriesRepositoryPG {
   /**
    * @param {{ profileId?: number|string, authorUserId?: number|string }} filters
    */
-  async findAll(filters = {}) {
-    const { profileId, authorUserId } = filters;
-    let sql = `
+  _selectList() {
+    return `
       SELECT
         si.id,
         si.profile_id,
         si.author_user_id,
         si.body_text,
         si.status,
+        si.admin_reply,
+        si.admin_replied_at,
+        si.admin_replied_by,
         si.created_at,
         si.updated_at,
         p.name AS profile_name,
         u.email AS author_email,
-        u.full_name AS author_full_name
+        u.full_name AS author_full_name,
+        ru.email AS replied_by_email,
+        ru.full_name AS replied_by_full_name
       FROM support_inquiries si
       LEFT JOIN profiles p ON p.id = si.profile_id
       LEFT JOIN users u ON u.id = si.author_user_id
+      LEFT JOIN users ru ON ru.id = si.admin_replied_by
     `;
+  }
+
+  async findAll(filters = {}) {
+    const { profileId, authorUserId } = filters;
+    let sql = this._selectList();
     const params = [];
     const where = [];
     if (profileId != null && profileId !== '') {
@@ -45,24 +55,7 @@ class InquiriesRepositoryPG {
   }
 
   async findById(id) {
-    const result = await query(
-      `SELECT
-        si.id,
-        si.profile_id,
-        si.author_user_id,
-        si.body_text,
-        si.status,
-        si.created_at,
-        si.updated_at,
-        p.name AS profile_name,
-        u.email AS author_email,
-        u.full_name AS author_full_name
-      FROM support_inquiries si
-      LEFT JOIN profiles p ON p.id = si.profile_id
-      LEFT JOIN users u ON u.id = si.author_user_id
-      WHERE si.id = $1`,
-      [id]
-    );
+    const result = await query(`${this._selectList()} WHERE si.id = $1`, [id]);
     return result.rows[0] || null;
   }
 
@@ -81,8 +74,42 @@ class InquiriesRepositoryPG {
       `UPDATE support_inquiries
        SET status = $1, updated_at = CURRENT_TIMESTAMP
        WHERE id = $2
-       RETURNING id, profile_id, author_user_id, body_text, status, created_at, updated_at`,
+       RETURNING id, profile_id, author_user_id, body_text, status,
+                 admin_reply, admin_replied_at, admin_replied_by, created_at, updated_at`,
       [status, id]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Сохранить / обновить / очистить ответ администратора.
+   * @param {number|string} id
+   * @param {{ replyText: string|null, repliedBy: number|string|null, status?: string|null }} opts
+   */
+  async setAdminReply(id, { replyText, repliedBy, status = null }) {
+    const text = replyText == null ? null : String(replyText).trim() || null;
+    const repliedById =
+      text && repliedBy != null && repliedBy !== '' && Number.isFinite(Number(repliedBy))
+        ? Number(repliedBy)
+        : null;
+    const repliedAt = text ? new Date().toISOString() : null;
+    const params = [id, text, repliedAt, repliedById];
+    let statusSql = '';
+    if (status) {
+      params.push(status);
+      statusSql = `, status = $${params.length}`;
+    }
+    const result = await query(
+      `UPDATE support_inquiries
+       SET admin_reply = $2::text,
+           admin_replied_at = $3::timestamptz,
+           admin_replied_by = $4::bigint,
+           updated_at = CURRENT_TIMESTAMP
+           ${statusSql}
+       WHERE id = $1
+       RETURNING id, profile_id, author_user_id, body_text, status,
+                 admin_reply, admin_replied_at, admin_replied_by, created_at, updated_at`,
+      params
     );
     return result.rows[0] || null;
   }

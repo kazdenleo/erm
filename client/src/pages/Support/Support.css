@@ -29,6 +29,23 @@
   white-space: pre-wrap;
 }
 
+.support-reply {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary, #3f6ad8) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary, #3f6ad8) 22%, transparent);
+}
+
+.support-reply-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.9rem;
+}
+
 .support-att-grid {
   display: flex;
   flex-wrap: wrap;

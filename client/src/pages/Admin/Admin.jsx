@@ -609,6 +609,7 @@ export function Admin() {
                       <th>Статус</th>
                       <th>Автор</th>
                       <th>Текст</th>
+                      <th>Ответ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -625,6 +626,16 @@ export function Admin() {
                             {(q.body_text || '').slice(0, 400)}
                             {(q.body_text || '').length > 400 ? '…' : ''}
                           </span>
+                        </td>
+                        <td style={{ maxWidth: 220 }}>
+                          {q.admin_reply ? (
+                            <span className="small" style={{ whiteSpace: 'pre-wrap' }} title={q.admin_reply}>
+                              {(q.admin_reply || '').slice(0, 200)}
+                              {(q.admin_reply || '').length > 200 ? '…' : ''}
+                            </span>
+                          ) : (
+                            <span className="text-muted small">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}

@@ -24,4 +24,11 @@ export const inquiriesApi = {
     const response = await api.patch(`/inquiries/${id}`, { status });
     return response.data;
   },
+
+  async reply(id, { reply, status } = {}) {
+    const body = { reply };
+    if (status != null && status !== '') body.status = status;
+    const response = await api.post(`/inquiries/${id}/reply`, body);
+    return response.data;
+  },
 };
