@@ -51,8 +51,40 @@ BUILD_DIR="$APP_ROOT/client/build"
 BUILD_NEW="$APP_ROOT/client/build.new"
 BUILD_OLD="$APP_ROOT/client/build.old"
 rm -rf "$BUILD_NEW"
-BUILD_PATH=build.new npm run build
+export BUILD_PATH=build.new
+npm run build
+has_main_js() {
+  local dir="$1/static/js"
+  [ -d "$dir" ] || return 1
+  ls "$dir"/main.*.js >/dev/null 2>&1
+}
+# Если npm/node не пробросил BUILD_PATH, CRA мог собрать прямо в build/ — тогда не подменяем пустым build.new.
+if ! has_main_js "$BUILD_NEW" && has_main_js "$BUILD_DIR"; then
+  echo "WARN: CRA собрал в build/ вместо build.new — копируем результат"
+  rm -rf "$BUILD_NEW"
+  cp -a "$BUILD_DIR" "$BUILD_NEW"
+fi
+# Страховка: public-ассеты (ArchitectUI и т.п.) обязаны быть в билде, иначе разъезжается вёрстка.
+if [ -d "$APP_ROOT/client/public" ] && [ -d "$BUILD_NEW" ]; then
+  # index.html уже из HtmlWebpackPlugin — не затираем
+  for item in "$APP_ROOT/client/public"/*; do
+    base="$(basename "$item")"
+    if [ "$base" = "index.html" ]; then
+      continue
+    fi
+    cp -a "$item" "$BUILD_NEW/"
+  done
+fi
+if [ ! -f "$BUILD_NEW/architectui/assets/styles/main.css" ]; then
+  echo "ERROR: в сборке нет architectui CSS — отмена подмены build"
+  exit 1
+fi
+if ! has_main_js "$BUILD_NEW"; then
+  echo "ERROR: в сборке нет main.*.js — отмена подмены build"
+  exit 1
+fi
 # Сохраняем предыдущие main.*.js — иначе после деплоя F5 с закэшированным index.html даёт 404 и белый экран
+mkdir -p "$BUILD_NEW/static/js"
 cp -f "$JS_ARCHIVE/"main.*.js "$BUILD_NEW/static/js/" 2>/dev/null || true
 chmod -R a+rX "$BUILD_NEW"
 rm -rf "$BUILD_OLD"
