@@ -136,10 +136,24 @@ export function applyCertAutofillToAttributes(attributes, certSource, prevValues
 
   let changed = false;
   const next = { ...prevValues };
+  // Реестр сертификатов — источник правды: при смене дат в сертификате
+  // перезаписываем уже заполненные поля карточки (раньше заполняли только пустые).
+  const overwrite = opts.overwrite !== false;
+
+  const setIfChanged = (key, value) => {
+    if (isEmptyMarketplaceValue(value)) return;
+    const prev = next[key];
+    const prevStr = prev == null ? '' : String(prev).trim();
+    const nextStr = String(value).trim();
+    if (prevStr === nextStr) return;
+    next[key] = value;
+    changed = true;
+  };
 
   for (const attr of attributes) {
     const key = getAttrKey(attr);
-    if (!key || !isEmptyMarketplaceValue(next[key])) continue;
+    if (!key) continue;
+    if (!overwrite && !isEmptyMarketplaceValue(next[key])) continue;
 
     const name = getAttrName(attr);
     const { hasDocKeyword, explicitType, doc } = resolveDocForAttrName(name, certSource);
@@ -153,10 +167,7 @@ export function applyCertAutofillToAttributes(attributes, certSource, prevValues
     if (isDocTypeAttr) {
       const label = docTypeLabel(primaryDocType);
       const resolved = resolveEnumValue ? resolveEnumValue(attr, label, { kind: 'doc_type' }) : label;
-      if (!isEmptyMarketplaceValue(resolved)) {
-        next[key] = resolved;
-        changed = true;
-      }
+      setIfChanged(key, resolved);
       continue;
     }
 
@@ -169,23 +180,17 @@ export function applyCertAutofillToAttributes(attributes, certSource, prevValues
       /(дата оконч|срок действ|действителен до|окончан.*действ|годен до)/.test(n) && hasDocKeyword;
 
     if (isNumberAttr && doc?.number) {
-      next[key] = doc.number;
-      changed = true;
+      setIfChanged(key, doc.number);
     } else if (isNumberAttr && !explicitType && fallbackNumber) {
-      next[key] = fallbackNumber;
-      changed = true;
+      setIfChanged(key, fallbackNumber);
     } else if (isFromAttr && doc?.validFrom) {
-      next[key] = formatDate(doc.validFrom);
-      changed = true;
+      setIfChanged(key, formatDate(doc.validFrom));
     } else if (isFromAttr && !explicitType && fallbackFrom) {
-      next[key] = formatDate(fallbackFrom);
-      changed = true;
+      setIfChanged(key, formatDate(fallbackFrom));
     } else if (isToAttr && doc?.validTo) {
-      next[key] = formatDate(doc.validTo);
-      changed = true;
+      setIfChanged(key, formatDate(doc.validTo));
     } else if (isToAttr && !explicitType && fallbackTo) {
-      next[key] = formatDate(fallbackTo);
-      changed = true;
+      setIfChanged(key, formatDate(fallbackTo));
     }
   }
 

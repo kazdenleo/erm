@@ -7,5 +7,6 @@ describe('WB certificate dates', () => {
     expect(formatWbCertDate('3.11.2025')).toBe('03.11.2025');
     expect(formatWbCertDate(3)).toBe('');
     expect(formatWbCertDate(2)).toBe('');
+    expect(formatWbCertDate(new Date('2025-10-30T00:00:00.000Z'))).toBe('30.10.2025');
   });
 });

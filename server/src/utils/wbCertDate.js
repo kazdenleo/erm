@@ -7,6 +7,12 @@
 export function formatWbCertDate(raw) {
   if (raw == null || raw === '') return '';
   if (typeof raw === 'number' && Number.isFinite(raw)) return '';
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+    const y = raw.getUTCFullYear();
+    const m = String(raw.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(raw.getUTCDate()).padStart(2, '0');
+    return `${d}.${m}.${y}`;
+  }
   const s = String(raw).trim();
   if (!s) return '';
   const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);

@@ -4,6 +4,11 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
+import {
+  mergeExistingCertKeys,
+  wbCertAttributePatch,
+} from '../utils/certProductAttributes.js';
 
 function httpError(message, statusCode) {
   const err = new Error(message);
@@ -264,8 +269,57 @@ class CertificatesService {
           [number, from, to, cid, pid]
         );
       }
+
+      // Карточки товаров: обновляем уже заполненные WB-характеристики сертификата,
+      // иначе в карточке МП остаются старые даты до ручного редактирования.
+      await this._syncWbCertAttributesToCategoryProducts(cert, categoryIds, pid);
     } catch (_) {
       // не ломаем основной поток
+    }
+  }
+
+  /**
+   * Перезаписывает номер/даты сертификата в wb_attributes товаров категорий,
+   * но только для ключей, которые уже есть в карточке.
+   */
+  async _syncWbCertAttributesToCategoryProducts(cert, categoryIds, profileId = null) {
+    const ids = (Array.isArray(categoryIds) ? categoryIds : [])
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return;
+
+    const patch = wbCertAttributePatch(cert);
+    if (!Object.keys(patch).length) return;
+
+    const prodRes = await query(
+      `SELECT id, wb_attributes
+       FROM products
+       WHERE user_category_id = ANY($1::bigint[])
+         AND ($2::bigint IS NULL OR profile_id = $2::bigint)
+         AND wb_attributes IS NOT NULL
+         AND jsonb_typeof(wb_attributes) = 'object'`,
+      [ids, profileId]
+    );
+
+    let updated = 0;
+    for (const row of prodRes.rows || []) {
+      const { next, changed } = mergeExistingCertKeys(row.wb_attributes, patch);
+      if (!changed) continue;
+      await query(
+        `UPDATE products
+         SET wb_attributes = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [JSON.stringify(next), row.id]
+      );
+      updated += 1;
+    }
+
+    if (updated > 0) {
+      logger.info('[Certificates] wb_attributes сертификата обновлены в товарах', {
+        certificateId: cert?.id,
+        categories: ids.length,
+        products: updated,
+      });
     }
   }
 }
