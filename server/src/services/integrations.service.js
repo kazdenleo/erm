@@ -2521,7 +2521,7 @@ class IntegrationsService {
         });
         if (byVc?.nmId != null && Number(byVc.nmId) === wantNm) {
           return this._normalizeWbListCard(
-            { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode },
+            byVc.listCard || { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode },
             nmId
           );
         }
@@ -2535,7 +2535,7 @@ class IntegrationsService {
       if (vc != null && String(vc).trim() !== '') {
         const byVc = await this.getWildberriesProductByVendorCode(String(vc).trim(), scope);
         if (byVc?.nmId != null && Number(byVc.nmId) === wantNm) {
-          first = { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode };
+          first = byVc.listCard || { nmID: byVc.nmId, nmId: byVc.nmId, vendorCode: byVc.vendorCode };
         }
       }
     }
@@ -2679,6 +2679,8 @@ class IntegrationsService {
           vendorCode: String(
             this._wbCardVendorCodes(listCard).find((c) => this._wbNormVendor(c) === want) || vc
           ).trim(),
+          // Полная карточка из list (sizes/chrtID) — иначе update выдумает второй size.
+          listCard,
         };
       }
       let full = null;
@@ -2695,7 +2697,8 @@ class IntegrationsService {
       const matched = codes.find((c) => this._wbNormVendor(c) === want) || vc;
       return {
         nmId: Number(full?.nmId ?? full?.nmID ?? listCard?.nmID ?? listCard?.nmId ?? nm),
-        vendorCode: String(matched).trim()
+        vendorCode: String(matched).trim(),
+        listCard: listCard || full || null,
       };
     };
 

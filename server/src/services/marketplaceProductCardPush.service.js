@@ -1755,6 +1755,23 @@ async function persistOzonProductId(product, ozonProductId, offerId, ctx) {
   }
 }
 
+function wbCardHasSizes(card) {
+  return Array.isArray(card?.sizes) && card.sizes.length > 0;
+}
+
+function preferWbCardWithSizes(primary, fallback) {
+  if (primary && wbCardHasSizes(primary)) return primary;
+  if (fallback && wbCardHasSizes(fallback)) {
+    const nm = wbCardNmId(fallback) || wbCardNmId(primary);
+    return {
+      ...fallback,
+      ...(nm ? { nmId: nm, nmID: nm } : {}),
+      vendorCode: fallback.vendorCode || primary?.vendorCode || null,
+    };
+  }
+  return primary || fallback || null;
+}
+
 async function findExistingWbCard(product, ctx) {
   const nmId = resolveWbNmId(product);
   const vendor = resolveWbVendorCodeForPush(product);
@@ -1764,6 +1781,8 @@ async function findExistingWbCard(product, ctx) {
     skipCatalogScan: true,
   };
 
+  let found = null;
+
   if (nmId) {
     try {
       const existing = await integrationsService.getWildberriesProductInfo({
@@ -1772,35 +1791,50 @@ async function findExistingWbCard(product, ctx) {
         profileId: ctx.profileId,
         organizationId: ctx.organizationId,
       });
-      if (existing && wbCardNmId(existing)) return existing;
+      if (existing && wbCardNmId(existing)) found = existing;
     } catch (e) {
       logger.warn('[MP Card Push] WB fetch by nmId:', e?.message || e);
     }
   }
 
-  if (vendor) {
+  if (vendor && (!found || !wbCardHasSizes(found))) {
     try {
       const byVc = await integrationsService.getWildberriesProductByVendorCode(vendor, scope);
       const foundNm = byVc?.nmId != null ? Number(byVc.nmId) : NaN;
       if (Number.isFinite(foundNm) && foundNm >= 1) {
-        try {
-          const full = await integrationsService.getWildberriesProductInfo({
-            nm_id: foundNm,
-            vendor_code: vendor,
-            profileId: ctx.profileId,
-            organizationId: ctx.organizationId,
-          });
-          if (full && wbCardNmId(full)) return full;
-        } catch {
-          /* list card достаточно, чтобы не создавать дубль */
+        const fromList =
+          byVc.listCard && typeof byVc.listCard === 'object'
+            ? {
+                ...byVc.listCard,
+                nmId: foundNm,
+                nmID: foundNm,
+                vendorCode: byVc.vendorCode || vendor,
+              }
+            : null;
+        if (!found) {
+          try {
+            const full = await integrationsService.getWildberriesProductInfo({
+              nm_id: foundNm,
+              vendor_code: vendor,
+              profileId: ctx.profileId,
+              organizationId: ctx.organizationId,
+            });
+            if (full && wbCardNmId(full)) {
+              found = preferWbCardWithSizes(full, fromList);
+            }
+          } catch {
+            /* list card достаточно, чтобы не создавать дубль */
+          }
         }
-        return { nmId: foundNm, vendorCode: byVc.vendorCode || vendor };
+        found = preferWbCardWithSizes(found, fromList) ||
+          found ||
+          { nmId: foundNm, vendorCode: byVc.vendorCode || vendor };
       }
     } catch (e) {
       logger.warn('[MP Card Push] WB fetch by vendorCode:', e?.message || e);
     }
   }
-  return null;
+  return found;
 }
 
 async function readWbErrorListHit(vendor, ctx, { afterMs = 0 } = {}) {
@@ -2250,7 +2284,15 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       },
     ];
     wbBarcodeSent = sizeSkus[0] || null;
-  } else if (erpWbBarcode && !wbSizesHaveSku(card.sizes) && !wbSizesHaveSku(existing?.sizes)) {
+  } else if (
+    erpWbBarcode &&
+    Array.isArray(card.sizes) &&
+    card.sizes.length > 0 &&
+    !wbSizesHaveSku(card.sizes)
+  ) {
+    // Только дополняем пустые skus у уже известных sizes (с chrtID).
+    // Нельзя «выдумывать» новый size при update: WB видит второй безразмерный
+    // товар в группе с тем же vendorCode и отклоняет карточку.
     if (applyErpBarcodeToWbSizes(card, erpWbBarcode)) wbBarcodeSent = erpWbBarcode;
   }
 

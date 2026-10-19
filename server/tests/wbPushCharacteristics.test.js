@@ -47,4 +47,19 @@ describe('WB push: ERP values must not be replaced by old card data', () => {
     expect(sizes[0].skus).toEqual(['S1']);
     expect(sizes[1].skus).toEqual(['M1']);
   });
+
+  test('single-size update keeps chrtID so WB does not see a second product', () => {
+    const sizes = applyErpBarcodesToWbCardSizes(
+      [{ chrtID: 744261006, techSize: '0', wbSize: '', skus: ['2045510144705'] }],
+      {
+        barcodes: [
+          { barcode: '2045510144705', marketplaces: [] },
+          { barcode: '4680037018672', marketplaces: [] },
+        ],
+      }
+    );
+    expect(sizes).toHaveLength(1);
+    expect(sizes[0].chrtID).toBe(744261006);
+    expect(sizes[0].skus).toEqual(expect.arrayContaining(['2045510144705', '4680037018672']));
+  });
 });
