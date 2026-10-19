@@ -740,9 +740,26 @@ export function WarehouseOperations({
   const [inventoryZeroUnlisted, setInventoryZeroUnlisted] = useState(true);
   /** Категории области инвентаризации (пусто = весь склад) */
   const [inventoryCategoryIds, setInventoryCategoryIds] = useState([]);
+  /** Режим удаления сканом (как в приёмке при purchase_receipt_mode=scanner) */
+  const [inventoryRemoveMode, setInventoryRemoveMode] = useState(false);
   const inventoryExpandedCategoryIds = useMemo(
     () => expandCategoryIdsClient(inventoryCategories, inventoryCategoryIds),
     [inventoryCategories, inventoryCategoryIds]
+  );
+  const inventoryAddressProductIds = useMemo(
+    () =>
+      (inventoryNewRows || [])
+        .map((r) => Number(r?.product?.id))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    [inventoryNewRows]
+  );
+  const inventoryAddresses = useProductAddresses(inventoryAddressProductIds);
+  const inventoryAssignedCode = useCallback(
+    (productId) => {
+      const p = inventoryAddresses.primaryFor(productId, inventorySessionWarehouseId || null);
+      return p?.assigned ? p.code : null;
+    },
+    [inventoryAddresses, inventorySessionWarehouseId]
   );
   const inventoryCategoryScopeActive = inventoryExpandedCategoryIds.length > 0;
   const assertProductInInventoryCategories = useCallback(
@@ -3129,15 +3146,36 @@ export function WarehouseOperations({
     const resolved = resolveProductForInventory(product);
     const current = await warehouseQtyForProduct(resolved, inventorySessionWarehouseId);
     const now = Date.now();
-    const delta = Math.max(1, Number(factDelta) || 1);
+    const delta = Math.trunc(Number(factDelta) || 0);
+    if (delta === 0) return { fact: null, removed: false };
+    let result = { fact: null, removed: false };
     setInventoryNewRows((prev) => {
-      const idx = prev.findIndex((r) => r.product.id === resolved.id);
-      if (idx === -1) {
-        return sortInventoryNewRows([{ product: resolved, current, fact: delta, scannedAt: now }, ...prev]);
+      const idx = prev.findIndex((r) => String(r.product.id) === String(resolved.id));
+      if (delta < 0) {
+        if (idx === -1) {
+          result = { fact: null, removed: false, missing: true };
+          return prev;
+        }
+        const nextFact = Math.max(0, (Number(prev[idx].fact) || 0) + delta);
+        if (nextFact <= 0) {
+          result = { fact: 0, removed: true };
+          return prev.filter((_, i) => i !== idx);
+        }
+        result = { fact: nextFact, removed: false };
+        const row = { ...prev[idx], fact: nextFact, current, scannedAt: now };
+        return sortInventoryNewRows([row, ...prev.filter((_, i) => i !== idx)]);
       }
-      const row = { ...prev[idx], fact: prev[idx].fact + delta, current, scannedAt: now };
+      const add = Math.max(1, delta);
+      if (idx === -1) {
+        result = { fact: add, removed: false };
+        return sortInventoryNewRows([{ product: resolved, current, fact: add, scannedAt: now }, ...prev]);
+      }
+      const nextFact = (Number(prev[idx].fact) || 0) + add;
+      result = { fact: nextFact, removed: false };
+      const row = { ...prev[idx], fact: nextFact, current, scannedAt: now };
       return sortInventoryNewRows([row, ...prev.filter((_, i) => i !== idx)]);
     });
+    return result;
   };
 
   const getInventoryUnitCostRub = (product) => {
@@ -3302,20 +3340,53 @@ export function WarehouseOperations({
     return { plus, minus, net: plus - minus };
   }, [inventoryDetailView]);
 
-  const addOneToInventoryNewRow = async (product) => {
-    if (!product?.id) {
-      throw new Error('Товар не найден в каталоге (нет ID)');
-    }
-    assertProductInInventoryCategories(product);
-    await appendInventoryRowDelta(resolveProductForInventory(product), 1);
-  };
-
   const scanInventoryLive = async (code) => {
     const sid = String(inventoryLiveSessionId || '').trim();
     if (!sid) return null;
     const res = await inventorySessionsApi.scanSession(sid, { code: String(code || '').trim() });
     applyInventoryLiveStateToRows(res);
     return res?.data ?? res;
+  };
+
+  const applyInventoryScanProduct = async (product, { remove = false, code = '' } = {}) => {
+    if (!product?.id) throw new Error('Товар не найден в каталоге (нет ID)');
+    assertProductInInventoryCategories(product);
+    const resolved = resolveProductForInventory(product);
+    const live = inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim();
+    const scanCode = String(code || resolved.id || '').trim();
+    if (remove) {
+      if (live) {
+        const sid = String(inventoryLiveSessionId).trim();
+        const existing = inventoryNewRows.find((r) => String(r.product?.id) === String(resolved.id));
+        if (!existing) {
+          throw new Error('Товара нет в списке пересчёта');
+        }
+        const nextFact = Math.max(0, (Number(existing.fact) || 0) - 1);
+        if (nextFact <= 0) {
+          await inventorySessionsApi.removeSessionItem(sid, { productId: Number(resolved.id) });
+          applyInventoryLiveStateToRows(await inventorySessionsApi.getSession(sid));
+        } else {
+          applyInventoryLiveStateToRows(
+            await inventorySessionsApi.setSessionFact(sid, {
+              productId: Number(resolved.id),
+              fact: nextFact,
+            })
+          );
+        }
+        return { fact: nextFact, removed: nextFact <= 0, product: resolved };
+      }
+      const res = await appendInventoryRowDelta(resolved, -1);
+      if (res?.missing) {
+        throw new Error('Товара нет в списке пересчёта');
+      }
+      return { ...res, product: resolved };
+    }
+    if (live) {
+      await scanInventoryLive(scanCode);
+      return { fact: null, removed: false, product: resolved };
+    }
+    const res = await appendInventoryRowDelta(resolved, 1);
+    return { ...res, product: resolved };
   };
 
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
@@ -3335,12 +3406,13 @@ export function WarehouseOperations({
       focusInventoryScanInput();
       return;
     }
+    const remove = isReceiptScannerMode && inventoryRemoveMode;
     inventoryScanBusyRef.current = true;
     if (suggestContext === 'inventory_scan') closeSuggest();
     setLookupError(null);
     setOpMessage('Поиск товара…');
     try {
-      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+      if (!remove && inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(v);
         setLookupError(null);
         setOpMessage('Пересчёт: +1 шт');
@@ -3348,14 +3420,27 @@ export function WarehouseOperations({
         return;
       }
       const product = await fetchProductByScanCode(v);
-      await addOneToInventoryNewRow(product);
+      const res = await applyInventoryScanProduct(product, { remove, code: v });
+      const label = res?.product?.name || res?.product?.sku || product.name || product.sku;
       setLookupError(null);
-      setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      if (remove) {
+        setOpMessage(
+          res?.removed
+            ? `Удалено из пересчёта — ${label}`
+            : `Пересчёт: −1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+        );
+      } else {
+        setOpMessage(
+          `Пересчёт: +1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+        );
+      }
       playEventSound(SOUND_EVENTS.scan_ok);
     } catch (e) {
       const msg = warehouseScanErrorMessage(
         e,
-        'Штрихкод не найден. Проверьте штрихкод в карточке товара или привяжите его к товару.'
+        remove
+          ? 'Не удалось удалить позицию сканом'
+          : 'Штрихкод не найден. Проверьте штрихкод в карточке товара или привяжите его к товару.'
       );
       setLookupError(msg);
       setOpMessage(null);
@@ -3391,7 +3476,7 @@ export function WarehouseOperations({
     ]
   );
 
-  const addInventoryProductFromPick = async (product) => {
+  const addInventoryProductFromPick = async (product, { remove = false } = {}) => {
     if (!inventorySessionWarehouseId) {
       setOpMessage('Выберите склад инвентаризации');
       return false;
@@ -3401,13 +3486,20 @@ export function WarehouseOperations({
       return false;
     }
     try {
-      assertProductInInventoryCategories(product);
-      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
-        await scanInventoryLive(String(product.id));
-        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      const res = await applyInventoryScanProduct(product, {
+        remove: remove || (isReceiptScannerMode && inventoryRemoveMode),
+        code: String(product.id),
+      });
+      const label = res?.product?.name || product.name || product.sku;
+      const wasRemove = remove || (isReceiptScannerMode && inventoryRemoveMode);
+      if (wasRemove) {
+        setOpMessage(
+          res?.removed
+            ? `Удалено из пересчёта — ${label}`
+            : `Пересчёт: −1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+        );
       } else {
-        await addOneToInventoryNewRow(product);
-        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+        setOpMessage(`Пересчёт: +1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`);
       }
       setLookupError(null);
       focusInventoryScanInput(50);
@@ -3548,6 +3640,7 @@ export function WarehouseOperations({
     setInventoryEditingSessionId(null);
     setInventoryZeroUnlisted(true);
     setInventoryCategoryIds([]);
+    setInventoryRemoveMode(false);
     setLookupError(null);
     setInventoryLiveDraft(readInventoryLiveDraft());
   };
@@ -4464,8 +4557,9 @@ export function WarehouseOperations({
       >
         <div className="warehouse-ops-inventory-workspace">
                   <p className="warehouse-ops-hint">
-            Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству. Чтобы пригласить коллег с других
-            устройств — включите «Совместный пересчёт» ниже.
+            {isReceiptScannerMode
+              ? 'Сканируйте штрихкод — плюс 1 шт к факту. Удаление — кнопкой «Удалить товар» и повторным сканом. Чтобы пригласить коллег — включите «Совместный пересчёт» ниже.'
+              : 'Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству. Чтобы пригласить коллег с других устройств — включите «Совместный пересчёт» ниже.'}
                   </p>
 
               <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -4663,28 +4757,52 @@ export function WarehouseOperations({
                 </span>
               </label>
               <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
-                Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
+                {isReceiptScannerMode
+                  ? 'Только сканирование: 1 скан = 1 шт. Количество в таблице менять нельзя — удаление через кнопку и повторный скан.'
+                  : 'Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.'}
                 {' '}
                 «В системе» и суммы пересчёта считаются по выбранному складу
                 {inventoryEditingSessionId ? '' : '; при смене склада список строк очищается'}.
               </p>
 
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <div className="warehouse-ops-scan-form-input-wrap">
-                <FastScanInput
-                  inputRef={inventoryNewScanInputRef}
-                  onScan={handleInventoryScan}
-                    onManualQuery={handleInventoryManualQuery}
-                  debounceMs={160}
-                    manualDebounceMs={400}
-                    placeholder="Штрихкод, артикул или название"
-                  disabled={!inventorySessionWarehouseId}
-                    onBlur={() => {
-                      setTimeout(() => {
-                        if (suggestContext === 'inventory_scan') closeSuggest();
-                      }, 150);
-                    }}
-                  />
+                <div
+                  className="warehouse-ops-scan-form-input-wrap"
+                  style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}
+                >
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <FastScanInput
+                      inputRef={inventoryNewScanInputRef}
+                      onScan={handleInventoryScan}
+                      onManualQuery={handleInventoryManualQuery}
+                      debounceMs={160}
+                      manualDebounceMs={400}
+                      placeholder={
+                        inventoryRemoveMode
+                          ? 'Сканируйте товар для удаления (−1)'
+                          : 'Штрихкод, артикул или название'
+                      }
+                      disabled={!inventorySessionWarehouseId}
+                      onBlur={() => {
+                        setTimeout(() => {
+                          if (suggestContext === 'inventory_scan') closeSuggest();
+                        }, 150);
+                      }}
+                    />
+                  </div>
+                  {isReceiptScannerMode ? (
+                    <Button
+                      type="button"
+                      variant={inventoryRemoveMode ? 'primary' : 'secondary'}
+                      disabled={!inventorySessionWarehouseId}
+                      onClick={() => {
+                        setInventoryRemoveMode((v) => !v);
+                        focusInventoryScanInput(50);
+                      }}
+                    >
+                      {inventoryRemoveMode ? 'Отмена удаления' : 'Удалить товар'}
+                    </Button>
+                  ) : null}
                   {suggestOpen && suggestContext === 'inventory_scan' && (
                     <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
                       <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
@@ -4740,12 +4858,13 @@ export function WarehouseOperations({
                         <tr>
                           <th>Артикул</th>
                           <th>Товар</th>
+                          {inventoryAddresses.enabled ? <th>Ячейка</th> : null}
                           <th>В системе</th>
                           <th>Факт (пересчёт)</th>
                           <th className="num-cell">Себестоимость<br /><span className="warehouse-ops-th-sub">₽/шт</span></th>
                           <th className="num-cell">Излишек</th>
                           <th className="num-cell">Недостача</th>
-                          <th />
+                          {!isReceiptScannerMode ? <th /> : null}
                         </tr>
                       </thead>
                       <tbody>
@@ -4758,19 +4877,36 @@ export function WarehouseOperations({
                             if (delta > 0) plusRub = delta * unit;
                             if (delta < 0) minusRub = -delta * unit;
                           }
+                          const cellCode = inventoryAddresses.enabled
+                            ? inventoryAssignedCode(row.product.id)
+                            : null;
                           return (
                             <tr key={row.product.id}>
                               <td className="sku-cell">{row.product.sku || '—'}</td>
                               <td className="name-cell">{row.product.name || '—'}</td>
+                              {inventoryAddresses.enabled ? (
+                                <td>
+                                  <ReceiptAssignCell
+                                    warehouseId={inventorySessionWarehouseId}
+                                    productId={row.product.id}
+                                    address={cellCode}
+                                    onAssigned={inventoryAddresses.reload}
+                                  />
+                                </td>
+                              ) : null}
                               <td>{row.current}</td>
                               <td>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={row.fact}
-                                  onChange={(e) => setInventoryNewFact(row.product.id, e.target.value)}
-                                  className="warehouse-ops-qty-input small"
-                                />
+                                {isReceiptScannerMode ? (
+                                  row.fact
+                                ) : (
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={row.fact}
+                                    onChange={(e) => setInventoryNewFact(row.product.id, e.target.value)}
+                                    className="warehouse-ops-qty-input small"
+                                  />
+                                )}
                               </td>
                               <td className="num-cell">{unit != null ? formatRub(unit) : '—'}</td>
                               <td className="num-cell warehouse-ops-inventory-plus">
@@ -4779,23 +4915,28 @@ export function WarehouseOperations({
                               <td className="num-cell warehouse-ops-inventory-minus">
                                 {minusRub != null ? formatRub(minusRub) : '—'}
                               </td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="warehouse-ops-remove-btn"
-                                  onClick={() => removeInventoryNewRow(row.product.id)}
-                                  title="Убрать из пересчёта"
-                                >
-                                  ✕
-                                </button>
-                              </td>
+                              {!isReceiptScannerMode ? (
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="warehouse-ops-remove-btn"
+                                    onClick={() => removeInventoryNewRow(row.product.id)}
+                                    title="Убрать из пересчёта"
+                                  >
+                                    ✕
+                                  </button>
+                                </td>
+                              ) : null}
                             </tr>
                           );
                         })}
                       </tbody>
                       <tfoot>
                         <tr className="warehouse-ops-inventory-totals">
-                          <td colSpan={5} className="warehouse-ops-inventory-totals-label">
+                          <td
+                            colSpan={5 + (inventoryAddresses.enabled ? 1 : 0)}
+                            className="warehouse-ops-inventory-totals-label"
+                          >
                             Итого по пересчёту (только позиции с указанной себестоимостью):
                           </td>
                           <td className="num-cell warehouse-ops-inventory-plus">
@@ -4804,16 +4945,19 @@ export function WarehouseOperations({
                           <td className="num-cell warehouse-ops-inventory-minus">
                             {formatRub(inventoryNewMoneyTotals.minus)}
                           </td>
-                          <td />
+                          {!isReceiptScannerMode ? <td /> : null}
                         </tr>
                         <tr className="warehouse-ops-inventory-totals warehouse-ops-inventory-totals-net">
-                          <td colSpan={5} className="warehouse-ops-inventory-totals-label">
+                          <td
+                            colSpan={5 + (inventoryAddresses.enabled ? 1 : 0)}
+                            className="warehouse-ops-inventory-totals-label"
+                          >
                             Чистая разница (излишек − недостача):
                           </td>
                           <td colSpan={2} className="num-cell warehouse-ops-inventory-net">
                             {formatRub(inventoryNewMoneyTotals.net)}
                           </td>
-                          <td />
+                          {!isReceiptScannerMode ? <td /> : null}
                         </tr>
                       </tfoot>
                     </table>
