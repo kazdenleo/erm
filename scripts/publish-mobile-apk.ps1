@@ -40,7 +40,7 @@ $metaFile = Join-Path $env:TEMP "erm-mobile-app-meta.json"
 Set-Content -Path $metaFile -Value $meta -Encoding utf8
 
 if ($Remote) {
-  Write-Host "Uploading to $RemoteHost:$RemoteDataDir ..."
+  Write-Host "Uploading to ${RemoteHost}:${RemoteDataDir} ..."
   ssh $RemoteHost "mkdir -p $RemoteDataDir"
   scp -o StrictHostKeyChecking=accept-new $local "${RemoteHost}:${RemoteDataDir}/latest.apk"
   scp -o StrictHostKeyChecking=accept-new $metaFile "${RemoteHost}:${RemoteDataDir}/meta.json"
