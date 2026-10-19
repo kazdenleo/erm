@@ -37,6 +37,12 @@ import {
   isNotificationVisibleToUser,
   parseNotificationSettings,
 } from '../utils/notificationSettings.js';
+import {
+  CERT_EXPIRY_WARN_DAYS,
+  certificateExpiryPhaseLabel,
+  certificateNotifyPeriodKey,
+  daysUntilDate,
+} from '../utils/certificateExpiryNotify.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -657,74 +663,99 @@ class IntegrationsService {
       }
     }
 
-    // Сертификаты: истёкшие и истекающие
+    // Сертификаты: за 6 мес. — раз в месяц; последний месяц и после истечения — каждый день.
+    // Id с ключом периода: после dismiss следующее уведомление появится в новом дне/месяце.
     try {
+      const now = new Date();
+
+      const considerCert = (row) => {
+        const certId = row.id;
+        if (certId == null) return;
+        const dt = row.valid_to ? String(row.valid_to).slice(0, 10) : null;
+        if (!dt) return;
+        const daysLeft = daysUntilDate(dt, now);
+        if (daysLeft == null || daysLeft > CERT_EXPIRY_WARN_DAYS) return;
+        const periodKey = certificateNotifyPeriodKey(daysLeft, now);
+        if (!periodKey) return;
+
+        const expired = daysLeft < 0;
+        const title = expired ? 'Истёк сертификат' : 'Скоро истечёт сертификат';
+        const severity = expired || daysLeft <= 30 ? 'error' : 'warn';
+        const scope = [row.brand_name, row.products_hint].filter(Boolean).join(' · ');
+        const phase = certificateExpiryPhaseLabel(daysLeft);
+        out.push({
+          id: `certificate_${certId}_${periodKey}`,
+          type: expired ? 'certificate_expired' : 'certificate_expires_soon',
+          severity,
+          title,
+          message: `${row.certificate_number}${scope ? ` (${scope})` : ''}: срок до ${dt}${
+            phase ? ` — ${phase}` : ''
+          }.`,
+          expires_at: dt,
+          days_left: daysLeft,
+          certificate_id: certId,
+        });
+      };
+
       if (repositoryFactory.isUsingPostgreSQL()) {
-        const r = await query(
-          `SELECT c.id, c.certificate_number, c.valid_to, c.valid_from,
-                  b.name AS brand_name,
-                  string_agg(DISTINCT uc.name, ', ' ORDER BY uc.name) AS user_category_name
-           FROM certificates c
-           LEFT JOIN brands b ON b.id = c.brand_id
-           LEFT JOIN certificate_user_categories cuc ON cuc.certificate_id = c.id
-           LEFT JOIN user_categories uc ON uc.id = cuc.user_category_id
-           WHERE c.valid_to IS NOT NULL
-             AND c.valid_to <= (CURRENT_DATE + ($1::int * INTERVAL '1 day'))
-             AND ($2::bigint IS NULL OR c.profile_id = $2::bigint)
-           GROUP BY c.id, c.certificate_number, c.valid_to, c.valid_from, b.name
-           ORDER BY c.valid_to ASC`,
-          [warnDays, profileId]
-        );
-        for (const row of r.rows || []) {
-          const dt = row.valid_to ? String(row.valid_to).slice(0, 10) : null;
-          // days left
-          let daysLeft = null;
-          try {
-            const d = new Date(`${dt}T00:00:00`);
-            const now = new Date();
-            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            daysLeft = Math.floor((d.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
-          } catch (_) {}
-          const expired = daysLeft != null ? daysLeft < 0 : false;
-          const title = expired ? 'Истёк сертификат' : 'Скоро истечёт сертификат';
-          const severity = expired ? 'error' : 'warn';
-          const scope = [row.brand_name, row.user_category_name].filter(Boolean).join(' · ');
-          out.push({
-            id: `certificate_${row.id}`,
-            type: expired ? 'certificate_expired' : 'certificate_expires_soon',
-            severity,
-            title,
-            message: `${row.certificate_number}${scope ? ` (${scope})` : ''}: срок до ${dt}${daysLeft != null && !expired ? `, осталось ${daysLeft} дн.` : ''}.`,
-            expires_at: dt,
-            days_left: daysLeft,
-            certificate_id: row.id
-          });
+        let r;
+        try {
+          r = await query(
+            `SELECT c.id, c.certificate_number, c.valid_to, c.valid_from,
+                    b.name AS brand_name,
+                    (
+                      SELECT string_agg(x.sku, ', ' ORDER BY x.sku)
+                      FROM (
+                        SELECT p.sku
+                        FROM certificate_products cp
+                        JOIN products p ON p.id = cp.product_id
+                        WHERE cp.certificate_id = c.id
+                          AND p.sku IS NOT NULL AND TRIM(p.sku) <> ''
+                        ORDER BY p.sku
+                        LIMIT 5
+                      ) x
+                    ) AS products_hint
+             FROM certificates c
+             LEFT JOIN brands b ON b.id = c.brand_id
+             WHERE c.valid_to IS NOT NULL
+               AND c.valid_to::date <= (CURRENT_DATE + ($1::int * INTERVAL '1 day'))
+               AND ($2::bigint IS NULL OR c.profile_id = $2::bigint)
+             ORDER BY c.valid_to ASC`,
+            [CERT_EXPIRY_WARN_DAYS, profileId]
+          );
+        } catch (qe) {
+          // fallback без certificate_products (старая схема)
+          r = await query(
+            `SELECT c.id, c.certificate_number, c.valid_to, c.valid_from,
+                    b.name AS brand_name,
+                    string_agg(DISTINCT uc.name, ', ' ORDER BY uc.name) AS products_hint
+             FROM certificates c
+             LEFT JOIN brands b ON b.id = c.brand_id
+             LEFT JOIN certificate_user_categories cuc ON cuc.certificate_id = c.id
+             LEFT JOIN user_categories uc ON uc.id = cuc.user_category_id
+             WHERE c.valid_to IS NOT NULL
+               AND c.valid_to::date <= (CURRENT_DATE + ($1::int * INTERVAL '1 day'))
+               AND ($2::bigint IS NULL OR c.profile_id = $2::bigint)
+             GROUP BY c.id, c.certificate_number, c.valid_to, c.valid_from, b.name
+             ORDER BY c.valid_to ASC`,
+            [CERT_EXPIRY_WARN_DAYS, profileId]
+          );
         }
+        for (const row of r.rows || []) considerCert(row);
       } else {
         const list = await readData('certificates');
         const arr = Array.isArray(list) ? list : [];
-        const today = new Date();
-        const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         for (const c of arr) {
           if (profileId != null && profileId !== '') {
             const certPid = c?.profile_id ?? c?.profileId;
             if (Number(certPid) !== Number(profileId)) continue;
           }
-          const dt = c?.valid_to ? String(c.valid_to).slice(0, 10) : null;
-          if (!dt) continue;
-          const d = new Date(`${dt}T00:00:00`);
-          const daysLeft = Math.floor((d.getTime() - t0.getTime()) / (24 * 60 * 60 * 1000));
-          if (daysLeft > warnDays) continue;
-          const expired = daysLeft < 0;
-          out.push({
-            id: `certificate_${c.id}`,
-            type: expired ? 'certificate_expired' : 'certificate_expires_soon',
-            severity: expired ? 'error' : 'warn',
-            title: expired ? 'Истёк сертификат' : 'Скоро истечёт сертификат',
-            message: `${c.certificate_number}: срок до ${dt}${!expired ? `, осталось ${daysLeft} дн.` : ''}.`,
-            expires_at: dt,
-            days_left: daysLeft,
-            certificate_id: c.id
+          considerCert({
+            id: c.id,
+            certificate_number: c.certificate_number,
+            valid_to: c.valid_to,
+            brand_name: c.brand_name || null,
+            products_hint: null,
           });
         }
       }

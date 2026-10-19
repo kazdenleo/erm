@@ -113,6 +113,11 @@ export const salesAnalyticsApi = {
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
 
+  getCardWorkCertificates: async () => {
+    const r = await api.get('/sales-analytics/card-work/certificates');
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
+
   getLostRevenue: (params = {}) => getWithParams('/sales-analytics/lost-revenue', params),
   getReturns: (params = {}) => getWithParams('/sales-analytics/returns', params),
   getDeadStock: (params = {}) => getWithParams('/sales-analytics/dead-stock', params),

@@ -45,7 +45,7 @@ export const NOTIFICATION_CHANNELS = [
   {
     key: 'certificates',
     title: 'Сертификаты',
-    hint: 'Истёкшие и истекающие сертификаты.',
+    hint: 'За 6 месяцев до окончания — раз в месяц; в последний месяц и после истечения — каждый день.',
     defaultMode: 'all',
     types: ['certificate_expired', 'certificate_expires_soon'],
   },

@@ -76,6 +76,21 @@
   color: #991b1b;
 }
 
+.card-work__reason--certificate_missing {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.card-work__reason--certificate_expired {
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+.card-work__reason--certificate_expiring {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
 .card-work__hint {
   color: #64748b;
   font-size: 13px;

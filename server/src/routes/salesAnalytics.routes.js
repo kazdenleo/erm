@@ -17,6 +17,7 @@ router.get('/turnover', wrapAsync(controller.getTurnover));
 router.get('/card-work', wrapAsync(controller.getCardWork));
 router.get('/card-work/duplicates', wrapAsync(controller.getCardWorkDuplicates));
 router.get('/card-work/missing-cost', wrapAsync(controller.getCardWorkMissingCost));
+router.get('/card-work/certificates', wrapAsync(controller.getCardWorkCertificates));
 router.get('/lost-revenue', wrapAsync(controller.getLostRevenue));
 router.get('/returns', wrapAsync(controller.getReturns));
 router.get('/dead-stock', wrapAsync(controller.getDeadStock));

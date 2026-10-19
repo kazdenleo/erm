@@ -42,6 +42,7 @@ const REASON_FILTERS = [
   { value: 'high_returns', label: 'Много возвратов' },
   { value: 'duplicate', label: 'Дубли' },
   { value: 'missing_cost', label: 'Без себестоимости' },
+  { value: 'certificate', label: 'Без сертификата' },
 ];
 
 const SORT_GETTERS = {
@@ -57,6 +58,13 @@ const SORT_GETTERS = {
 const COST_SORT_GETTERS = {
   article: (r) => r.sku || '',
   productName: (r) => r.productName || '',
+};
+
+const CERT_SORT_GETTERS = {
+  article: (r) => r.sku || '',
+  productName: (r) => r.productName || '',
+  issue: (r) => (r.issue === 'expired' ? 0 : r.issue === 'expiring' ? 1 : 2),
+  daysLeft: (r) => (r.daysLeft == null ? 99999 : Number(r.daysLeft)),
 };
 
 function formatQty(n) {
@@ -112,12 +120,16 @@ export function CardWork() {
   const [data, setData] = useState(null);
   const [duplicates, setDuplicates] = useState(null);
   const [missingCost, setMissingCost] = useState(null);
+  const [certIssues, setCertIssues] = useState(null);
+  const [certLoading, setCertLoading] = useState(true);
+  const [certError, setCertError] = useState(null);
   const [fixTarget, setFixTarget] = useState(null);
   const [costFixId, setCostFixId] = useState(null);
   const [dimFix, setDimFix] = useState(null);
   const [activeHypothesisByProduct, setActiveHypothesisByProduct] = useState(() => new Map());
   const { sort, toggleSort } = useTableSort('severity', 'asc');
   const { sort: costSort, toggleSort: toggleCostSort } = useTableSort('article', 'asc');
+  const { sort: certSort, toggleSort: toggleCertSort } = useTableSort('issue', 'asc');
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -178,9 +190,23 @@ export function CardWork() {
     }
   }, []);
 
+  const loadCertificates = useCallback(async () => {
+    setCertLoading(true);
+    setCertError(null);
+    try {
+      const res = await salesAnalyticsApi.getCardWorkCertificates();
+      setCertIssues(res?.data ?? null);
+    } catch (e) {
+      setCertError(e?.response?.data?.message || e?.message || 'Не удалось загрузить товары по сертификатам');
+      setCertIssues(null);
+    } finally {
+      setCertLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
-    await Promise.all([loadQueue(), loadDuplicates(), loadMissingCost()]);
-  }, [loadQueue, loadDuplicates, loadMissingCost]);
+    await Promise.all([loadQueue(), loadDuplicates(), loadMissingCost(), loadCertificates()]);
+  }, [loadQueue, loadDuplicates, loadMissingCost, loadCertificates]);
 
   useEffect(() => {
     loadQueue();
@@ -194,9 +220,13 @@ export function CardWork() {
     loadMissingCost();
   }, [loadMissingCost]);
 
+  useEffect(() => {
+    loadCertificates();
+  }, [loadCertificates]);
+
   const items = useMemo(() => {
     const list = Array.isArray(data?.items) ? data.items : [];
-    if (reason === 'duplicate' || reason === 'missing_cost') return [];
+    if (reason === 'duplicate' || reason === 'missing_cost' || reason === 'certificate') return [];
     const filtered =
       reason === 'all' ? list : list.filter((i) => (i.reasonCodes || []).includes(reason));
     return sortRows(filtered, sort, SORT_GETTERS);
@@ -207,13 +237,18 @@ export function CardWork() {
     () => sortRows(missingCost?.items || [], costSort, COST_SORT_GETTERS),
     [missingCost, costSort]
   );
+  const certificateItems = useMemo(
+    () => sortRows(certIssues?.items || [], certSort, CERT_SORT_GETTERS),
+    [certIssues, certSort]
+  );
   const showDuplicates = reason === 'duplicate';
   const showMissingCost = reason === 'missing_cost';
-  const showMainTable = !showDuplicates && !showMissingCost;
+  const showCertificates = reason === 'certificate';
+  const showMainTable = !showDuplicates && !showMissingCost && !showCertificates;
   const hideSoldQty =
     reason === 'low_content_rating' || reason === 'dim_mismatch' || reason === 'high_drr';
   const showRowActions = reason === 'low_content_rating' || reason === 'dim_mismatch';
-  const anyLoading = loading || dupLoading || costLoading;
+  const anyLoading = loading || dupLoading || costLoading || certLoading;
 
   const openHypothesis = useCallback(
     (row) => {
@@ -303,6 +338,7 @@ export function CardWork() {
       {error && <div className="sales-analytics__error">{error}</div>}
       {dupError && showDuplicates ? <div className="sales-analytics__error">{dupError}</div> : null}
       {costError && showMissingCost ? <div className="sales-analytics__error">{costError}</div> : null}
+      {certError && showCertificates ? <div className="sales-analytics__error">{certError}</div> : null}
 
       <div className="product-dynamics__summary-cards">
         <div className="product-dynamics__summary-card">
@@ -401,6 +437,25 @@ export function CardWork() {
             {costLoading && missingCost == null
               ? '…'
               : formatQty(missingCost?.productCount ?? missingCostItems.length)}
+          </div>
+        </div>
+        <div
+          className={`product-dynamics__summary-card${reason === 'certificate' ? ' is-active' : ''}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => setReason('certificate')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setReason('certificate');
+            }
+          }}
+        >
+          <div className="product-dynamics__summary-card-label">Без сертификата</div>
+          <div className="product-dynamics__summary-card-value">
+            {certLoading && certIssues == null
+              ? '…'
+              : formatQty(certIssues?.productCount ?? certificateItems.length)}
           </div>
         </div>
       </div>
@@ -712,6 +767,101 @@ export function CardWork() {
         </section>
       ) : null}
 
+      {showCertificates ? (
+        <section className="card-work__duplicates" aria-labelledby="card-work-cert-title">
+          <h2 id="card-work-cert-title" className="card-work__section-title">
+            Без сертификата
+          </h2>
+          <p className="card-work__section-lead">
+            Товары без привязанного сертификата и товары, у которых документ истекает в ближайшие 6 месяцев
+            или уже истёк. Период продаж на список не влияет. Привязка — в{' '}
+            <Link to="/settings/certificates">Настройки → Сертификаты</Link>.
+            {certIssues != null ? (
+              <>
+                {' '}Сейчас: без сертификата — {formatQty(certIssues.missingCount || 0)}, истекает —{' '}
+                {formatQty(certIssues.expiringCount || 0)}, истёк — {formatQty(certIssues.expiredCount || 0)}.
+              </>
+            ) : null}
+          </p>
+          {certLoading && certIssues == null ? (
+            <p className="sales-analytics__empty">Загрузка…</p>
+          ) : !certificateItems.length ? (
+            <p className="sales-analytics__empty">Все карточки с действующими сертификатами.</p>
+          ) : (
+            <div className="sales-analytics__table-wrap">
+              <table className="sales-analytics__table card-work__dup-table">
+                <thead>
+                  <tr>
+                    <SortableTh sortKey="article" sort={certSort} onSort={toggleCertSort}>
+                      Артикул ERP
+                    </SortableTh>
+                    <SortableTh sortKey="productName" sort={certSort} onSort={toggleCertSort}>
+                      Карточка
+                    </SortableTh>
+                    <SortableTh sortKey="issue" sort={certSort} onSort={toggleCertSort}>
+                      Статус
+                    </SortableTh>
+                    <th>Документ</th>
+                    <SortableTh sortKey="daysLeft" sort={certSort} onSort={toggleCertSort}>
+                      Срок
+                    </SortableTh>
+                    <th className="card-work__dup-actions-col" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {certificateItems.map((p) => (
+                    <tr
+                      key={`${p.productId}-${p.issue}-${p.certificateId || 'x'}`}
+                      className={
+                        p.issue === 'expired' || p.issue === 'missing'
+                          ? 'card-work__priority-high'
+                          : undefined
+                      }
+                    >
+                      <td>
+                        <Link className="card-work__link" to={productCardPath(p.productId)}>
+                          {p.sku || '—'}
+                        </Link>
+                      </td>
+                      <td>
+                        <Link className="card-work__link" to={productCardPath(p.productId)}>
+                          {p.productName || '—'}
+                        </Link>
+                        {p.brandName ? (
+                          <p className="card-work__hint">{p.brandName}</p>
+                        ) : null}
+                      </td>
+                      <td>
+                        <span
+                          className={`card-work__reason card-work__reason--certificate_${p.issue}`}
+                        >
+                          {p.issueLabel || p.issue}
+                        </span>
+                      </td>
+                      <td>{p.certificateNumber || '—'}</td>
+                      <td>
+                        {p.issue === 'missing'
+                          ? '—'
+                          : p.phaseLabel || p.validTo || '—'}
+                      </td>
+                      <td className="card-work__dup-actions-col">
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => navigate('/settings/certificates')}
+                        >
+                          К сертификатам
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
       <DuplicateFixModal
         isOpen={!!fixTarget}
         group={fixTarget}
@@ -746,6 +896,8 @@ export function CardWork() {
         Дубли — несколько карточек с одинаковым полем одного типа (ERP↔ERP, артикул продавца↔продавца,
         артикул производителя↔производителя, ШК↔ШК). Разные типы не склеиваем. Список дублей не зависит от периода.
         Без себестоимости — в карточке не задан cost (пусто или ≤ 0); период продаж не влияет.
+        Без сертификата — нет привязки к документу или срок истекает в ближайшие 6 месяцев / уже истёк;
+        уведомления в колокольчике: за полгода раз в месяц, в последний месяц и после истечения — каждый день.
         «Исправить» открывает форму правки. Клик по артикулу открывает карточку товара.
       </p>
     </div>

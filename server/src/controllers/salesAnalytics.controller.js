@@ -231,3 +231,9 @@ export async function deleteExpense(req, res) {
   const data = await companyExpensesService.remove({ profileId, id: req.params?.id });
   return res.json({ ok: true, data });
 }
+
+export async function getCardWorkCertificates(req, res) {
+  const profileId = req.user?.profileId ?? null;
+  const data = await marketplaceCardWorkService.getCertificateIssues({ profileId });
+  return res.json({ ok: true, data });
+}

@@ -12,6 +12,11 @@ import { query } from '../config/database.js';
 import { describePackDimensionMismatch } from '../utils/packDimensionsDiff.js';
 import { parsePricePushSettings } from '../utils/pricePushSettings.js';
 import { isHighDrr } from '../utils/highDrrSettings.js';
+import {
+  CERT_EXPIRY_WARN_DAYS,
+  certificateExpiryPhaseLabel,
+  daysUntilDate,
+} from '../utils/certificateExpiryNotify.js';
 
 const MP_LABEL = { ozon: 'Ozon', wb: 'Wildberries', ym: 'Яндекс' };
 
@@ -540,6 +545,139 @@ class MarketplaceCardWorkService {
     })).filter((x) => x.productId > 0);
 
     return { items, productCount: items.length };
+  }
+
+  /**
+   * Товары без сертификата и с истекающим/истёкшим (окно 6 месяцев).
+   * Не зависит от периода продаж.
+   */
+  async getCertificateIssues({ profileId } = {}) {
+    const empty = {
+      items: [],
+      productCount: 0,
+      missingCount: 0,
+      expiringCount: 0,
+      expiredCount: 0,
+      warnDays: CERT_EXPIRY_WARN_DAYS,
+    };
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return empty;
+
+    let missingRows = [];
+    let expiringRows = [];
+    try {
+      const missingRes = await query(
+        `SELECT p.id, p.sku, p.name, p.brand_id, b.name AS brand_name
+           FROM products p
+           LEFT JOIN brands b ON b.id = p.brand_id
+          WHERE p.profile_id = $1
+            AND COALESCE(p.is_archived, false) = false
+            AND NOT EXISTS (
+              SELECT 1 FROM certificate_products cp WHERE cp.product_id = p.id
+            )
+          ORDER BY p.sku NULLS LAST, p.id`,
+        [pid]
+      );
+      missingRows = missingRes.rows || [];
+
+      // Самый поздний документ товара: продлённый сертификат перекрывает истекающий,
+      // бессрочный (valid_to IS NULL) — тоже.
+      const expiringRes = await query(
+        `SELECT * FROM (
+           SELECT DISTINCT ON (p.id)
+              p.id,
+              p.sku,
+              p.name,
+              p.brand_id,
+              b.name AS brand_name,
+              c.id AS certificate_id,
+              c.certificate_number,
+              c.valid_to,
+              c.document_type
+             FROM products p
+             INNER JOIN certificate_products cp ON cp.product_id = p.id
+             INNER JOIN certificates c ON c.id = cp.certificate_id
+             LEFT JOIN brands b ON b.id = p.brand_id
+            WHERE p.profile_id = $1
+              AND COALESCE(p.is_archived, false) = false
+              AND (c.profile_id IS NULL OR c.profile_id = $1)
+            ORDER BY p.id, c.valid_to DESC NULLS FIRST, c.id DESC
+         ) latest
+         WHERE latest.valid_to IS NOT NULL
+           AND latest.valid_to::date <= (CURRENT_DATE + ($2::int * INTERVAL '1 day'))`,
+        [pid, CERT_EXPIRY_WARN_DAYS]
+      );
+      expiringRows = expiringRes.rows || [];
+    } catch (e) {
+      // certificate_products появляется миграцией 214
+      if (/certificate_products/i.test(String(e?.message || ''))) return empty;
+      throw e;
+    }
+
+    const items = [];
+    for (const r of missingRows) {
+      const productId = Number(r.id) || 0;
+      if (productId <= 0) continue;
+      items.push({
+        productId,
+        sku: r.sku || '',
+        productName: r.name || '',
+        brandName: r.brand_name || '',
+        issue: 'missing',
+        issueLabel: 'Нет сертификата',
+        certificateId: null,
+        certificateNumber: null,
+        validTo: null,
+        daysLeft: null,
+        severity: 'high',
+      });
+    }
+
+    let expiringCount = 0;
+    let expiredCount = 0;
+    for (const r of expiringRows) {
+      const productId = Number(r.id) || 0;
+      if (productId <= 0) continue;
+      const validTo = r.valid_to ? String(r.valid_to).slice(0, 10) : null;
+      const daysLeft = daysUntilDate(validTo);
+      const expired = daysLeft != null && daysLeft < 0;
+      if (expired) expiredCount += 1;
+      else expiringCount += 1;
+      items.push({
+        productId,
+        sku: r.sku || '',
+        productName: r.name || '',
+        brandName: r.brand_name || '',
+        issue: expired ? 'expired' : 'expiring',
+        issueLabel: expired ? 'Сертификат истёк' : 'Сертификат истекает',
+        certificateId: r.certificate_id != null ? Number(r.certificate_id) : null,
+        certificateNumber: r.certificate_number || null,
+        documentType: r.document_type || null,
+        validTo,
+        daysLeft,
+        phaseLabel: certificateExpiryPhaseLabel(daysLeft),
+        severity: expired || (daysLeft != null && daysLeft <= 30) ? 'high' : 'medium',
+      });
+    }
+
+    items.sort((a, b) => {
+      const rank = (x) => (x.issue === 'expired' ? 0 : x.issue === 'expiring' ? 1 : 2);
+      const sr = rank(a) - rank(b);
+      if (sr !== 0) return sr;
+      if (a.daysLeft != null && b.daysLeft != null && a.daysLeft !== b.daysLeft) {
+        return a.daysLeft - b.daysLeft;
+      }
+      return String(a.sku || '').localeCompare(String(b.sku || ''), 'ru');
+    });
+
+    return {
+      items,
+      productCount: items.length,
+      missingCount: missingRows.length,
+      expiringCount,
+      expiredCount,
+      warnDays: CERT_EXPIRY_WARN_DAYS,
+    };
   }
 
   async getQueue({
