@@ -85,15 +85,15 @@
 }
 
 .orders-page .orders-table col.orders-col-checkbox {
-  width: 5rem;
+  width: 2.25rem;
 }
 
 .orders-page .orders-table col.orders-col-num {
-  width: 2.75rem;
+  width: 2.25rem;
 }
 
 .orders-page .orders-table col.orders-col-mp {
-  width: 3.25rem;
+  width: 3rem;
 }
 
 .orders-page .orders-table col.orders-col-order-id {
@@ -113,7 +113,7 @@
 }
 
 .orders-page .orders-table col.orders-col-products {
-  width: 12rem;
+  width: 14.5rem;
 }
 
 .orders-page .orders-table col.orders-col-article {
@@ -169,10 +169,12 @@
 }
 
 .orders-col-checkbox {
-  width: 5rem;
-  min-width: 5rem;
-  max-width: 5rem;
-  text-align: left;
+  width: 2.25rem;
+  min-width: 2.25rem;
+  max-width: 2.25rem;
+  padding-left: 6px !important;
+  padding-right: 2px !important;
+  text-align: center;
   vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
@@ -180,9 +182,11 @@
 }
 
 .orders-col-num {
-  width: 2.75rem;
-  min-width: 2.75rem;
-  max-width: 2.75rem;
+  width: 2.25rem;
+  min-width: 2.25rem;
+  max-width: 2.25rem;
+  padding-left: 2px !important;
+  padding-right: 4px !important;
   text-align: center;
   vertical-align: middle;
   color: var(--muted, #666);
