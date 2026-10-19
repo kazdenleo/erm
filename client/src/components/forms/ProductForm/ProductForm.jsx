@@ -68,7 +68,7 @@ import { brandsApi } from '../../../services/brands.api.js';
 import {
   applyCertAutofillToAttributes,
   certSourceHasAnyDocument,
-  filterBrandCertsForCategory,
+  filterBrandCertsForProduct,
   formatWbCertDate,
 } from '../../../utils/productCertAttributeAutofill.js';
 import {
@@ -2555,18 +2555,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
 
   useEffect(() => {
     const br = selectedBrandForCert;
-    const catId = String(formData.categoryId || '').trim();
-    if (!br?.id || !catId) {
+    const productId = product?.id ?? currentProduct?.id ?? null;
+    if (!br?.id || productId == null || productId === '') {
       setBrandCategoryCerts([]);
       return;
     }
     let cancelled = false;
     certificatesApi
-      .getAll({ brandId: br.id, includeExpired: false })
+      .getAll({ brandId: br.id, productId, includeExpired: false })
       .then((res) => {
         if (cancelled) return;
         const all = Array.isArray(res?.data) ? res.data : [];
-        setBrandCategoryCerts(filterBrandCertsForCategory(all, catId));
+        setBrandCategoryCerts(filterBrandCertsForProduct(all, productId));
       })
       .catch(() => {
         if (!cancelled) setBrandCategoryCerts([]);
@@ -2574,7 +2574,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     return () => {
       cancelled = true;
     };
-  }, [selectedBrandForCert?.id, formData.categoryId]);
+  }, [selectedBrandForCert?.id, product?.id, currentProduct?.id]);
 
   const mpMappingByMarketplace = useMemo(() => {
     const br = selectedBrandForCert;

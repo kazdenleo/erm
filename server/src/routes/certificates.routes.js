@@ -12,6 +12,10 @@ const uploadPhoto = createCertificatePhotoUpload();
 
 router.get('/', wrapAsync(certificatesController.getAll.bind(certificatesController)));
 router.get(
+  '/products-without-certificate',
+  wrapAsync(certificatesController.getProductsWithoutCertificate.bind(certificatesController))
+);
+router.get(
   '/ozon/accordance-types',
   wrapAsync(certificatesController.ozonAccordanceTypes.bind(certificatesController))
 );

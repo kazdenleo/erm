@@ -1,13 +1,13 @@
 /**
  * Certificates Page
- * Настройки → Сертификаты: реестр сертификатов/деклараций с привязкой бренд + категория.
- * Отправка в раздел «Сертификаты» кабинета Ozon (Certification API).
+ * Настройки → Сертификаты: реестр с привязкой бренд + конкретные товары.
+ * Отдельный список товаров без сертификатов.
  */
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { certificatesApi } from '../../services/certificates.api';
+import { productsApi } from '../../services/products.api';
 import { useBrands } from '../../hooks/useBrands';
-import { useUserCategories } from '../../hooks/useUserCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { CertificateBindingReport } from './CertificateBindingReport';
@@ -94,12 +94,21 @@ function daysUntil(dateStr) {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
+function productLabel(p) {
+  if (!p) return '';
+  const sku = p.sku ? String(p.sku).trim() : '';
+  const name = p.name ? String(p.name).trim() : '';
+  if (sku && name) return `${sku} — ${name}`;
+  return sku || name || `ID ${p.id}`;
+}
+
 function emptyForm() {
   return {
     certificate_number: '',
     document_type: 'certificate',
     brand_id: '',
-    user_category_ids: [],
+    product_ids: [],
+    products: [],
     valid_from: '',
     valid_to: '',
   };
@@ -109,9 +118,10 @@ function CertificateForm({
   form,
   setForm,
   brands,
-  categories,
-  categorySearch,
-  setCategorySearch,
+  productSearch,
+  setProductSearch,
+  productOptions,
+  productsLoading,
   photoFile,
   setPhotoFile,
   editing,
@@ -120,25 +130,39 @@ function CertificateForm({
   onCancel,
   saving,
 }) {
-  const selectedCategorySet = useMemo(
-    () => new Set((form.user_category_ids || []).map(String)),
-    [form.user_category_ids]
+  const selectedProductSet = useMemo(
+    () => new Set((form.product_ids || []).map(String)),
+    [form.product_ids]
   );
 
-  const filteredCategories = useMemo(() => {
-    const q = String(categorySearch || '').trim().toLowerCase();
-    const list = Array.isArray(categories) ? categories : [];
-    if (!q) return list;
-    return list.filter((c) => String(c.name || '').toLowerCase().includes(q));
-  }, [categories, categorySearch]);
+  const selectedProducts = useMemo(() => {
+    const byId = new Map();
+    for (const p of form.products || []) byId.set(String(p.id), p);
+    for (const p of productOptions || []) {
+      if (!byId.has(String(p.id))) byId.set(String(p.id), p);
+    }
+    return (form.product_ids || [])
+      .map((id) => byId.get(String(id)) || { id })
+      .filter(Boolean);
+  }, [form.product_ids, form.products, productOptions]);
 
-  const toggleCategory = (id) => {
-    const sid = String(id);
+  const toggleProduct = (product) => {
+    const sid = String(product.id);
     setForm((prev) => {
-      const curr = new Set((prev.user_category_ids || []).map(String));
-      if (curr.has(sid)) curr.delete(sid);
-      else curr.add(sid);
-      return { ...prev, user_category_ids: Array.from(curr) };
+      const curr = new Set((prev.product_ids || []).map(String));
+      const productsMap = new Map((prev.products || []).map((p) => [String(p.id), p]));
+      if (curr.has(sid)) {
+        curr.delete(sid);
+        productsMap.delete(sid);
+      } else {
+        curr.add(sid);
+        productsMap.set(sid, product);
+      }
+      return {
+        ...prev,
+        product_ids: Array.from(curr),
+        products: Array.from(productsMap.values()),
+      };
     });
   };
 
@@ -174,7 +198,12 @@ function CertificateForm({
         <label>Бренд <span className="req">*</span></label>
         <select
           value={form.brand_id}
-          onChange={(e) => setForm((p) => ({ ...p, brand_id: e.target.value }))}
+          onChange={(e) => setForm((p) => ({
+            ...p,
+            brand_id: e.target.value,
+            product_ids: [],
+            products: [],
+          }))}
           required
         >
           <option value="">Выберите бренд</option>
@@ -185,39 +214,54 @@ function CertificateForm({
       </div>
 
       <div className="form-group">
-        <label>Категории <span className="req">*</span></label>
-        <p className="form-hint">Нужны бренд и хотя бы одна категория — вместе, не по отдельности.</p>
-        <input
-          type="text"
-          className="category-search"
-          placeholder="Поиск категории…"
-          value={categorySearch}
-          onChange={(e) => setCategorySearch(e.target.value)}
-        />
-        <div className="category-checkboxes">
-          {filteredCategories.length === 0 ? (
-            <div className="muted">Ничего не найдено</div>
-          ) : (
-            filteredCategories.map((cat) => (
-              <label key={cat.id} className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={selectedCategorySet.has(String(cat.id))}
-                  onChange={() => toggleCategory(cat.id)}
-                />
-                <span>{cat.name}</span>
-              </label>
-            ))
-          )}
-        </div>
-        {(form.user_category_ids || []).length > 0 && (
+        <label>Товары <span className="req">*</span></label>
+        <p className="form-hint">Выберите конкретные товары, на которые действует документ.</p>
+        {!form.brand_id ? (
+          <div className="muted">Сначала выберите бренд</div>
+        ) : (
+          <>
+            <input
+              type="text"
+              className="category-search"
+              placeholder="Поиск по артикулу или названию…"
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+            />
+            <div className="category-checkboxes">
+              {productsLoading ? (
+                <div className="muted">Загрузка товаров…</div>
+              ) : productOptions.length === 0 ? (
+                <div className="muted">Ничего не найдено</div>
+              ) : (
+                productOptions.map((p) => (
+                  <label key={p.id} className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={selectedProductSet.has(String(p.id))}
+                      onChange={() => toggleProduct(p)}
+                    />
+                    <span>{productLabel(p)}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </>
+        )}
+        {selectedProducts.length > 0 && (
           <div className="selected-tags">
-            {(form.user_category_ids || []).map((id) => {
-              const cat = (categories || []).find((c) => String(c.id) === String(id));
-              return (
-                <span key={String(id)} className="tag">{cat?.name || id}</span>
-              );
-            })}
+            {selectedProducts.map((p) => (
+              <span key={String(p.id)} className="tag">
+                {productLabel(p)}
+                <button
+                  type="button"
+                  className="tag-remove"
+                  onClick={() => toggleProduct(p)}
+                  aria-label="Убрать товар"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </div>
         )}
       </div>
@@ -273,7 +317,7 @@ function CertificateForm({
 
 export function Certificates() {
   const { brands, loading: brandsLoading } = useBrands();
-  const { categories, loading: categoriesLoading } = useUserCategories();
+  const [activeTab, setActiveTab] = useState('registry');
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -281,7 +325,9 @@ export function Certificates() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [formError, setFormError] = useState('');
-  const [categorySearch, setCategorySearch] = useState('');
+  const [productSearch, setProductSearch] = useState('');
+  const [productOptions, setProductOptions] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(false);
   const [photoFile, setPhotoFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [filterBrandId, setFilterBrandId] = useState('');
@@ -320,6 +366,15 @@ export function Certificates() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
   const [statusSyncError, setStatusSyncError] = useState('');
+
+  const [withoutCerts, setWithoutCerts] = useState([]);
+  const [withoutTotal, setWithoutTotal] = useState(0);
+  const [withoutLoading, setWithoutLoading] = useState(false);
+  const [withoutError, setWithoutError] = useState('');
+  const [withoutSearch, setWithoutSearch] = useState('');
+  const [withoutBrandId, setWithoutBrandId] = useState('');
+  const [withoutOffset, setWithoutOffset] = useState(0);
+  const WITHOUT_LIMIT = 50;
 
   const brandNameById = useMemo(() => {
     const map = {};
@@ -377,7 +432,7 @@ export function Certificates() {
       ];
       let text = `Импорт завершён. ${parts.join(', ')}.`;
       if (d.without_brand) {
-        text += ` У ${d.without_brand} не удалось определить бренд и категории — укажите их вручную.`;
+        text += ` У ${d.without_brand} не удалось определить бренд и товары — укажите их вручную.`;
       }
       const errs = [
         d.errors?.ozon && `Ozon: ${d.errors.ozon}`,
@@ -412,6 +467,28 @@ export function Certificates() {
     }
   };
 
+  const loadWithoutCerts = useCallback(async () => {
+    setWithoutLoading(true);
+    setWithoutError('');
+    try {
+      const res = await certificatesApi.getProductsWithoutCertificate({
+        brandId: withoutBrandId || undefined,
+        search: withoutSearch || undefined,
+        limit: WITHOUT_LIMIT,
+        offset: withoutOffset,
+      });
+      const data = res?.data || {};
+      setWithoutCerts(Array.isArray(data.items) ? data.items : []);
+      setWithoutTotal(Number(data.total) || 0);
+    } catch (err) {
+      setWithoutError(err?.message || 'Ошибка загрузки товаров');
+      setWithoutCerts([]);
+      setWithoutTotal(0);
+    } finally {
+      setWithoutLoading(false);
+    }
+  }, [withoutBrandId, withoutSearch, withoutOffset]);
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -422,6 +499,48 @@ export function Certificates() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    // Счётчик для вкладки — сразу при открытии страницы
+    certificatesApi
+      .getProductsWithoutCertificate({ limit: 1, offset: 0 })
+      .then((res) => setWithoutTotal(Number(res?.data?.total) || 0))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'without') return;
+    loadWithoutCerts();
+  }, [activeTab, loadWithoutCerts]);
+
+  useEffect(() => {
+    if (!modalOpen || !form.brand_id) {
+      setProductOptions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setProductsLoading(true);
+      try {
+        const res = await productsApi.getAll({
+          brandId: form.brand_id,
+          search: productSearch || undefined,
+          limit: 80,
+        });
+        if (cancelled) return;
+        const raw = res?.data?.items ?? res?.data ?? res?.items ?? [];
+        setProductOptions(Array.isArray(raw) ? raw : []);
+      } catch (_) {
+        if (!cancelled) setProductOptions([]);
+      } finally {
+        if (!cancelled) setProductsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [modalOpen, form.brand_id, productSearch]);
+
   const filteredList = useMemo(() => {
     if (!filterDocType) return list;
     return list.filter((c) => String(c.document_type || 'certificate') === filterDocType);
@@ -431,7 +550,7 @@ export function Certificates() {
     setEditing(null);
     setForm(emptyForm());
     setFormError('');
-    setCategorySearch('');
+    setProductSearch('');
     setPhotoFile(null);
     setModalOpen(true);
   };
@@ -442,14 +561,27 @@ export function Certificates() {
       certificate_number: c.certificate_number || '',
       document_type: c.document_type || 'certificate',
       brand_id: c.brand_id != null ? String(c.brand_id) : '',
-      user_category_ids: Array.isArray(c.user_category_ids)
-        ? c.user_category_ids.map(String)
-        : [],
+      product_ids: Array.isArray(c.product_ids) ? c.product_ids.map(String) : [],
+      products: Array.isArray(c.products) ? c.products : [],
       valid_from: toDateOnly(c.valid_from),
       valid_to: toDateOnly(c.valid_to),
     });
     setFormError('');
-    setCategorySearch('');
+    setProductSearch('');
+    setPhotoFile(null);
+    setModalOpen(true);
+  };
+
+  const openCreateForProduct = (product) => {
+    setEditing(null);
+    setForm({
+      ...emptyForm(),
+      brand_id: product.brand_id != null ? String(product.brand_id) : '',
+      product_ids: [String(product.id)],
+      products: [{ id: product.id, sku: product.sku, name: product.name }],
+    });
+    setFormError('');
+    setProductSearch('');
     setPhotoFile(null);
     setModalOpen(true);
   };
@@ -459,7 +591,7 @@ export function Certificates() {
     setEditing(null);
     setForm(emptyForm());
     setFormError('');
-    setCategorySearch('');
+    setProductSearch('');
     setPhotoFile(null);
   };
 
@@ -474,11 +606,11 @@ export function Certificates() {
       setFormError('Выберите бренд');
       return;
     }
-    const categoryIds = (form.user_category_ids || [])
+    const productIds = (form.product_ids || [])
       .map((x) => Number(x))
       .filter((n) => Number.isFinite(n) && n > 0);
-    if (categoryIds.length === 0) {
-      setFormError('Выберите хотя бы одну категорию');
+    if (productIds.length === 0) {
+      setFormError('Выберите хотя бы один товар');
       return;
     }
 
@@ -489,7 +621,7 @@ export function Certificates() {
         certificate_number: number,
         document_type: form.document_type || 'certificate',
         brand_id: Number(form.brand_id),
-        user_category_ids: categoryIds,
+        product_ids: productIds,
         valid_from: form.valid_from || null,
         valid_to: form.valid_to || null,
       };
@@ -504,6 +636,7 @@ export function Certificates() {
       }
       closeModal();
       await load();
+      if (activeTab === 'without') await loadWithoutCerts();
     } catch (err) {
       setFormError(err?.response?.data?.message || err?.message || 'Ошибка сохранения');
     } finally {
@@ -522,6 +655,7 @@ export function Certificates() {
     try {
       await certificatesApi.remove(c.id);
       await load();
+      if (activeTab === 'without') await loadWithoutCerts();
     } catch (err) {
       alert(err?.response?.data?.message || err?.message || 'Ошибка удаления');
     }
@@ -700,12 +834,12 @@ export function Certificates() {
     }
   };
 
-  const pageLoading = loading || brandsLoading || categoriesLoading;
+  const pageLoading = loading || brandsLoading;
 
-  if (pageLoading && list.length === 0) {
+  if (pageLoading && list.length === 0 && activeTab === 'registry') {
     return <div className="certificates-page card"><p className="loading">Загрузка...</p></div>;
   }
-  if (error && list.length === 0) {
+  if (error && list.length === 0 && activeTab === 'registry') {
     return <div className="certificates-page card"><p className="error">Ошибка: {error}</p></div>;
   }
 
@@ -713,254 +847,383 @@ export function Certificates() {
     <div className="certificates-page card">
       <h1 className="title">Сертификаты</h1>
       <p className="subtitle">
-        Документы соответствия с привязкой бренд + категория.
-        Кнопки Ozon / ЯМ создают документ в кабинете маркетплейса и привязывают товары с этой парой бренд/категория.
+        Документы соответствия с привязкой к конкретным товарам.
+        Кнопки Ozon / ЯМ создают документ в кабинете маркетплейса и привязывают выбранные товары.
       </p>
 
-      <div className="certificates-toolbar">
-        <div className="filters">
-          <select
-            value={filterBrandId}
-            onChange={(e) => setFilterBrandId(e.target.value)}
-            aria-label="Фильтр по бренду"
-          >
-            <option value="">Все бренды</option>
-            {(brands || []).map((b) => (
-              <option key={b.id} value={b.id}>{b.name}</option>
-            ))}
-          </select>
-          <select
-            value={filterDocType}
-            onChange={(e) => setFilterDocType(e.target.value)}
-            aria-label="Фильтр по типу"
-          >
-            <option value="">Все типы</option>
-            {Object.entries(DOC_TYPE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="certificates-toolbar-actions">
-          <Button
-            variant="secondary"
-            onClick={runImport}
-            disabled={importBusy}
-            title="Загрузить сертификаты, которые уже есть в кабинетах Ozon и Яндекс.Маркета. Одинаковые номера не дублируются."
-          >
-            {importBusy ? 'Импортирую…' : 'Импорт с маркетплейсов'}
-          </Button>
-          <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
-        </div>
+      <div className="certificates-tabs">
+        <button
+          type="button"
+          className={`certificates-tab${activeTab === 'registry' ? ' is-active' : ''}`}
+          onClick={() => setActiveTab('registry')}
+        >
+          Реестр
+        </button>
+        <button
+          type="button"
+          className={`certificates-tab${activeTab === 'without' ? ' is-active' : ''}`}
+          onClick={() => setActiveTab('without')}
+        >
+          Без сертификатов
+          {withoutTotal > 0 ? ` (${withoutTotal})` : ''}
+        </button>
       </div>
       {importMessage ? (
         <p className={importMessage.isError ? 'error' : 'certificates-import-result'}>{importMessage.text}</p>
       ) : null}
       {statusSyncError ? <p className="error">{statusSyncError}</p> : null}
 
-      <div className="certificates-table-wrap">
-        {filteredList.length === 0 ? (
-          <div className="empty-state">
-            <p>Документов пока нет</p>
-            <Button onClick={openCreate}>Добавить первый</Button>
+      {activeTab === 'registry' && (
+        <>
+          <div className="certificates-toolbar">
+            <div className="filters">
+              <select
+                value={filterBrandId}
+                onChange={(e) => setFilterBrandId(e.target.value)}
+                aria-label="Фильтр по бренду"
+              >
+                <option value="">Все бренды</option>
+                {(brands || []).map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+              <select
+                value={filterDocType}
+                onChange={(e) => setFilterDocType(e.target.value)}
+                aria-label="Фильтр по типу"
+              >
+                <option value="">Все типы</option>
+                {Object.entries(DOC_TYPE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="certificates-toolbar-actions">
+              <Button
+                variant="secondary"
+                onClick={runImport}
+                disabled={importBusy}
+                title="Загрузить сертификаты, которые уже есть в кабинетах Ozon и Яндекс.Маркета. Одинаковые номера не дублируются."
+              >
+                {importBusy ? 'Импортирую…' : 'Импорт с маркетплейсов'}
+              </Button>
+              <Button variant="primary" onClick={openCreate}>➕ Добавить</Button>
+            </div>
           </div>
-        ) : (
-          <table className="certificates-table">
-            <thead>
-              <tr>
-                <th>Номер</th>
-                <th>Тип</th>
-                <th>Бренд</th>
-                <th>Категории</th>
-                <th>Начало</th>
-                <th>Окончание</th>
-                <th>Срок</th>
-                <th>Ozon</th>
-                <th>Яндекс</th>
-                <th style={{ width: 190 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredList.map((c) => {
-                const days = daysUntil(c.valid_to);
-                const expired = days != null && days < 0;
-                const expSoon = days != null && days >= 0 && days <= 30;
-                const ozonStatus = String(c.ozon_status_code || '').toLowerCase();
-                const ymStatus = String(c.ym_status_code || '').toUpperCase();
-                return (
-                  <tr
-                    key={c.id}
-                    className={expired ? 'row-expired' : expSoon ? 'row-expiring' : undefined}
-                  >
-                    <td className="cell-strong">{c.certificate_number}</td>
-                    <td>
-                      <span className="type-badge">
-                        {DOC_TYPE_LABELS[c.document_type] || DOC_TYPE_LABELS.certificate}
-                      </span>
-                    </td>
-                    <td>{c.brand_name || brandNameById[String(c.brand_id)] || '—'}</td>
-                    <td className="categories-cell">
-                      {Array.isArray(c.user_categories) && c.user_categories.length > 0 ? (
-                        <div className="selected-tags">
-                          {c.user_categories.slice(0, 4).map((cat) => (
-                            <span key={cat.id} className="tag">{cat.name}</span>
-                          ))}
-                          {c.user_categories.length > 4 && (
-                            <span className="muted">+{c.user_categories.length - 4}</span>
-                          )}
-                        </div>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td className="nowrap">{toDateOnly(c.valid_from) || '—'}</td>
-                    <td className="nowrap">{toDateOnly(c.valid_to) || '—'}</td>
-                    <td>
-                      {expired ? (
-                        <span className="status-expired">Истёк</span>
-                      ) : expSoon ? (
-                        <span className="status-expiring">Истекает через {days} дн.</span>
-                      ) : (
-                        <span className="muted">Ок</span>
-                      )}
-                    </td>
-                    <td>
-                      {c.ozon_certificate_id ? (
-                        <div className="ozon-sync-cell">
-                          <div className="status-line">
-                            <span
-                              className={
-                                ozonStatus === 'approved'
-                                  ? 'status-ozon-ok'
-                                  : ozonStatus === 'rejected' || ozonStatus === 'declined'
-                                    ? 'status-expired'
-                                    : 'status-ozon-pending'
-                              }
-                            >
-                              {OZON_STATUS_LABELS[ozonStatus] || `ID ${c.ozon_certificate_id}`}
-                            </span>
-                            {!OZON_FINAL_STATUSES.includes(ozonStatus) ? (
-                              <StatusRefreshButton
-                                busy={statusSyncingId === c.id}
-                                onClick={() => syncOneStatus(c.id)}
-                              />
-                            ) : null}
-                          </div>
-                          {c.ozon_last_error ? (
-                            <button
-                              type="button"
-                              className="muted ozon-error-hint ozon-error-hint--link"
-                              title={c.ozon_last_error}
-                              onClick={() => openBindingReport(c)}
-                            >
-                              есть ошибка
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span className="muted">не отправлен</span>
-                      )}
-                    </td>
-                    <td>
-                      {c.ym_document_id || c.ym_status_code ? (
-                        <div className="ozon-sync-cell">
-                          <div className="status-line">
-                            <span
-                              className={
-                                ymStatus === 'ACTIVE'
-                                  ? 'status-ozon-ok'
-                                  : ymStatus === 'NOT_FOUND' || ymStatus === 'EXPIRED' || ymStatus === 'REVOKED'
-                                    ? 'status-expired'
-                                    : 'status-ozon-pending'
-                              }
-                            >
-                              {YM_STATUS_LABELS[ymStatus]
-                                || (c.ym_document_id ? `ID ${c.ym_document_id}` : ymStatus)}
-                            </span>
-                            {c.ym_document_id && YM_PENDING_STATUSES.includes(ymStatus || 'VALIDATING') ? (
-                              <StatusRefreshButton
-                                busy={statusSyncingId === c.id}
-                                onClick={() => syncOneStatus(c.id)}
-                              />
-                            ) : null}
-                          </div>
-                          {c.ym_last_error ? (
-                            <button
-                              type="button"
-                              className="muted ozon-error-hint ozon-error-hint--link"
-                              title={c.ym_last_error}
-                              onClick={() => openBindingReport(c)}
-                            >
-                              есть ошибка
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span className="muted">не отправлен</span>
-                      )}
-                    </td>
-                    <td className="certificates-actions-cell">
-                      <div className="certificates-actions">
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          onClick={() => openOzonPush(c)}
-                          title="Отправить на Ozon"
-                          className="btn-icon btn-ozon-push"
-                          aria-label="Отправить на Ozon"
-                        >
-                          Ozon
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          onClick={() => openYmPush(c)}
-                          title="Отправить на Яндекс.Маркет"
-                          className="btn-icon btn-ym-push"
-                          aria-label="Отправить на Яндекс.Маркет"
-                        >
-                          ЯМ
-                        </Button>
-                        {c.ozon_certificate_id || c.ym_document_id ? (
-                          <Button
-                            variant="secondary"
-                            size="small"
-                            onClick={() => openBindingReport(c)}
-                            title="Проверить, какие товары привязаны на маркетплейсах"
-                            className="btn-icon btn-icon-only"
-                            aria-label="Привязка товаров"
-                          >
-                            🔗
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          onClick={() => openEdit(c)}
-                          title="Изменить"
-                          className="btn-icon btn-icon-only"
-                          aria-label="Изменить"
-                        >
-                          ✏️
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          className="btn-icon btn-icon-only btn-delete"
-                          onClick={() => handleDelete(c)}
-                          title="Удалить"
-                          aria-label="Удалить"
-                        >
-                          🗑️
-                        </Button>
-                      </div>
-                    </td>
+
+          <div className="certificates-table-wrap">
+            {filteredList.length === 0 ? (
+              <div className="empty-state">
+                <p>Документов пока нет</p>
+                <Button onClick={openCreate}>Добавить первый</Button>
+              </div>
+            ) : (
+              <table className="certificates-table">
+                <thead>
+                  <tr>
+                    <th>Номер</th>
+                    <th>Тип</th>
+                    <th>Бренд</th>
+                    <th>Товары</th>
+                    <th>Начало</th>
+                    <th>Окончание</th>
+                    <th>Срок</th>
+                    <th>Ozon</th>
+                    <th>Яндекс</th>
+                    <th style={{ width: 190 }}></th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+                </thead>
+                <tbody>
+                  {filteredList.map((c) => {
+                    const days = daysUntil(c.valid_to);
+                    const expired = days != null && days < 0;
+                    const expSoon = days != null && days >= 0 && days <= 30;
+                    const ozonStatus = String(c.ozon_status_code || '').toLowerCase();
+                    const ymStatus = String(c.ym_status_code || '').toUpperCase();
+                    const products = Array.isArray(c.products) ? c.products : [];
+                    return (
+                      <tr
+                        key={c.id}
+                        className={expired ? 'row-expired' : expSoon ? 'row-expiring' : undefined}
+                      >
+                        <td className="cell-strong">{c.certificate_number}</td>
+                        <td>
+                          <span className="type-badge">
+                            {DOC_TYPE_LABELS[c.document_type] || DOC_TYPE_LABELS.certificate}
+                          </span>
+                        </td>
+                        <td>{c.brand_name || brandNameById[String(c.brand_id)] || '—'}</td>
+                        <td className="categories-cell">
+                          {products.length > 0 ? (
+                            <div className="selected-tags">
+                              {products.slice(0, 4).map((p) => (
+                                <span key={p.id} className="tag" title={productLabel(p)}>
+                                  {p.sku || p.name || p.id}
+                                </span>
+                              ))}
+                              {products.length > 4 && (
+                                <span className="muted">+{products.length - 4}</span>
+                              )}
+                            </div>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="nowrap">{toDateOnly(c.valid_from) || '—'}</td>
+                        <td className="nowrap">{toDateOnly(c.valid_to) || '—'}</td>
+                        <td>
+                          {expired ? (
+                            <span className="status-expired">Истёк</span>
+                          ) : expSoon ? (
+                            <span className="status-expiring">Истекает через {days} дн.</span>
+                          ) : (
+                            <span className="muted">Ок</span>
+                          )}
+                        </td>
+                        <td>
+                          {c.ozon_certificate_id ? (
+                            <div className="ozon-sync-cell">
+                              <div className="status-line">
+                                <span
+                                  className={
+                                    ozonStatus === 'approved'
+                                      ? 'status-ozon-ok'
+                                      : ozonStatus === 'rejected' || ozonStatus === 'declined'
+                                        ? 'status-expired'
+                                        : 'status-ozon-pending'
+                                  }
+                                >
+                                  {OZON_STATUS_LABELS[ozonStatus] || `ID ${c.ozon_certificate_id}`}
+                                </span>
+                                {!OZON_FINAL_STATUSES.includes(ozonStatus) ? (
+                                  <StatusRefreshButton
+                                    busy={statusSyncingId === c.id}
+                                    onClick={() => syncOneStatus(c.id)}
+                                  />
+                                ) : null}
+                              </div>
+                              {c.ozon_last_error ? (
+                                <button
+                                  type="button"
+                                  className="muted ozon-error-hint ozon-error-hint--link"
+                                  title={c.ozon_last_error}
+                                  onClick={() => openBindingReport(c)}
+                                >
+                                  есть ошибка
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="muted">не отправлен</span>
+                          )}
+                        </td>
+                        <td>
+                          {c.ym_document_id || c.ym_status_code ? (
+                            <div className="ozon-sync-cell">
+                              <div className="status-line">
+                                <span
+                                  className={
+                                    ymStatus === 'ACTIVE'
+                                      ? 'status-ozon-ok'
+                                      : ymStatus === 'NOT_FOUND' || ymStatus === 'EXPIRED' || ymStatus === 'REVOKED'
+                                        ? 'status-expired'
+                                        : 'status-ozon-pending'
+                                  }
+                                >
+                                  {YM_STATUS_LABELS[ymStatus]
+                                    || (c.ym_document_id ? `ID ${c.ym_document_id}` : ymStatus)}
+                                </span>
+                                {c.ym_document_id && YM_PENDING_STATUSES.includes(ymStatus || 'VALIDATING') ? (
+                                  <StatusRefreshButton
+                                    busy={statusSyncingId === c.id}
+                                    onClick={() => syncOneStatus(c.id)}
+                                  />
+                                ) : null}
+                              </div>
+                              {c.ym_last_error ? (
+                                <button
+                                  type="button"
+                                  className="muted ozon-error-hint ozon-error-hint--link"
+                                  title={c.ym_last_error}
+                                  onClick={() => openBindingReport(c)}
+                                >
+                                  есть ошибка
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="muted">не отправлен</span>
+                          )}
+                        </td>
+                        <td className="certificates-actions-cell">
+                          <div className="certificates-actions">
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              onClick={() => openOzonPush(c)}
+                              title="Отправить на Ozon"
+                              className="btn-icon btn-ozon-push"
+                              aria-label="Отправить на Ozon"
+                            >
+                              Ozon
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              onClick={() => openYmPush(c)}
+                              title="Отправить на Яндекс.Маркет"
+                              className="btn-icon btn-ym-push"
+                              aria-label="Отправить на Яндекс.Маркет"
+                            >
+                              ЯМ
+                            </Button>
+                            {c.ozon_certificate_id || c.ym_document_id ? (
+                              <Button
+                                variant="secondary"
+                                size="small"
+                                onClick={() => openBindingReport(c)}
+                                title="Проверить, какие товары привязаны на маркетплейсах"
+                                className="btn-icon btn-icon-only"
+                                aria-label="Привязка товаров"
+                              >
+                                🔗
+                              </Button>
+                            ) : null}
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              onClick={() => openEdit(c)}
+                              title="Изменить"
+                              className="btn-icon btn-icon-only"
+                              aria-label="Изменить"
+                            >
+                              ✏️
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              className="btn-icon btn-icon-only btn-delete"
+                              onClick={() => handleDelete(c)}
+                              title="Удалить"
+                              aria-label="Удалить"
+                            >
+                              🗑️
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
+      {activeTab === 'without' && (
+        <>
+          <div className="certificates-toolbar">
+            <div className="filters">
+              <select
+                value={withoutBrandId}
+                onChange={(e) => {
+                  setWithoutBrandId(e.target.value);
+                  setWithoutOffset(0);
+                }}
+                aria-label="Фильтр по бренду"
+              >
+                <option value="">Все бренды</option>
+                {(brands || []).map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                className="without-search"
+                placeholder="Поиск SKU / названия…"
+                value={withoutSearch}
+                onChange={(e) => {
+                  setWithoutSearch(e.target.value);
+                  setWithoutOffset(0);
+                }}
+              />
+            </div>
+            <Button variant="secondary" onClick={loadWithoutCerts} disabled={withoutLoading}>
+              {withoutLoading ? 'Загрузка…' : 'Обновить'}
+            </Button>
+          </div>
+
+          {withoutError && <div className="form-error">{withoutError}</div>}
+
+          <div className="certificates-table-wrap">
+            {withoutLoading && withoutCerts.length === 0 ? (
+              <p className="loading">Загрузка...</p>
+            ) : withoutCerts.length === 0 ? (
+              <div className="empty-state">
+                <p>Все товары имеют привязку к сертификату</p>
+              </div>
+            ) : (
+              <table className="certificates-table">
+                <thead>
+                  <tr>
+                    <th>Артикул</th>
+                    <th>Название</th>
+                    <th>Бренд</th>
+                    <th>Категория</th>
+                    <th style={{ width: 160 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {withoutCerts.map((p) => (
+                    <tr key={p.id}>
+                      <td className="cell-strong">{p.sku || '—'}</td>
+                      <td>{p.name || '—'}</td>
+                      <td>{p.brand_name || brandNameById[String(p.brand_id)] || '—'}</td>
+                      <td>{p.category_name || '—'}</td>
+                      <td>
+                        <Button
+                          variant="primary"
+                          size="small"
+                          onClick={() => openCreateForProduct(p)}
+                          disabled={!p.brand_id}
+                          title={!p.brand_id ? 'У товара нет бренда' : 'Создать сертификат для товара'}
+                        >
+                          Привязать
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {withoutTotal > WITHOUT_LIMIT && (
+            <div className="without-pager">
+              <Button
+                variant="secondary"
+                size="small"
+                disabled={withoutOffset <= 0 || withoutLoading}
+                onClick={() => setWithoutOffset((o) => Math.max(0, o - WITHOUT_LIMIT))}
+              >
+                ← Назад
+              </Button>
+              <span className="muted">
+                {withoutOffset + 1}–{Math.min(withoutOffset + WITHOUT_LIMIT, withoutTotal)} из {withoutTotal}
+              </span>
+              <Button
+                variant="secondary"
+                size="small"
+                disabled={withoutOffset + WITHOUT_LIMIT >= withoutTotal || withoutLoading}
+                onClick={() => setWithoutOffset((o) => o + WITHOUT_LIMIT)}
+              >
+                Вперёд →
+              </Button>
+            </div>
+          )}
+        </>
+      )}
 
       <Modal
         isOpen={modalOpen}
@@ -972,9 +1235,10 @@ export function Certificates() {
           form={form}
           setForm={setForm}
           brands={brands}
-          categories={categories}
-          categorySearch={categorySearch}
-          setCategorySearch={setCategorySearch}
+          productSearch={productSearch}
+          setProductSearch={setProductSearch}
+          productOptions={productOptions}
+          productsLoading={productsLoading}
           photoFile={photoFile}
           setPhotoFile={setPhotoFile}
           editing={editing}
@@ -1021,7 +1285,7 @@ export function Certificates() {
                 onChange={(e) => setOzonForm((p) => ({ ...p, name: e.target.value }))}
                 placeholder="Например: Фильтр воздушный Nordfil"
               />
-              <p className="form-hint">Подставлено из категорий и бренда — можно изменить.</p>
+              <p className="form-hint">Подставлено автоматически (категории и бренд) — можно изменить.</p>
             </div>
             <div className="form-group">
               <label>Тип соответствия</label>
@@ -1043,7 +1307,7 @@ export function Certificates() {
                 checked={ozonForm.bindProducts}
                 onChange={(e) => setOzonForm((p) => ({ ...p, bindProducts: e.target.checked }))}
               />
-              <span>Привязать товары с этим брендом и категориями (у которых есть ID в каталоге Ozon)</span>
+              <span>Привязать выбранные товары (у которых есть ID в каталоге Ozon)</span>
             </label>
             {ozonForm.bindProducts ? (
               <label className="checkbox-label">
@@ -1128,7 +1392,7 @@ export function Certificates() {
                 checked={ymForm.bindProducts}
                 onChange={(e) => setYmForm((p) => ({ ...p, bindProducts: e.target.checked }))}
               />
-              <span>Привязать товары с этим брендом и категориями (у которых есть артикул YM / offerId)</span>
+              <span>Привязать выбранные товары (у которых есть артикул YM / offerId)</span>
             </label>
             {ymModalCert.ym_document_id ? (
               <label className="checkbox-label">
@@ -1165,7 +1429,7 @@ export function Certificates() {
         {bindingCert && (
           <div className="certificate-form">
             <p className="form-hint">
-              Сверка для <strong>{bindingCert.certificate_number}</strong>: товары ERP с этим брендом и категориями
+              Сверка для <strong>{bindingCert.certificate_number}</strong>: привязанные к сертификату товары ERP
               против того, что реально привязано в кабинетах.
             </p>
             {bindingError ? <div className="form-error">{bindingError}</div> : null}

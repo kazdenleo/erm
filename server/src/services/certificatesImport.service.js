@@ -13,6 +13,10 @@ import {
   mergeMarketplaceCertificates,
 } from '../utils/certificateImportMap.js';
 
+function noBinding() {
+  return { brandId: null, categoryIds: [], productIds: [] };
+}
+
 function errorMessage(e) {
   return e?.message || String(e);
 }
@@ -22,7 +26,8 @@ class CertificatesImportService {
     const r = await query(
       `SELECT c.id, c.certificate_number, c.brand_id, c.valid_from, c.valid_to,
               c.ozon_certificate_id, c.ym_document_id,
-              (SELECT COUNT(*)::int FROM certificate_user_categories cuc WHERE cuc.certificate_id = c.id) AS categories_count
+              (SELECT COUNT(*)::int FROM certificate_user_categories cuc WHERE cuc.certificate_id = c.id) AS categories_count,
+              (SELECT COUNT(*)::int FROM certificate_products cp WHERE cp.certificate_id = c.id) AS products_count
          FROM certificates c
         WHERE c.profile_id = $1::bigint`,
       [profileId]
@@ -36,23 +41,33 @@ class CertificatesImportService {
         profileId,
         organizationId,
       });
-      if (!productIds.length) return { brandId: null, categoryIds: [] };
+      if (!productIds.length) return noBinding();
       const r = await query(
-        `SELECT p.brand_id, p.user_category_id
+        `SELECT DISTINCT p.id, p.brand_id, uc.id AS user_category_id
            FROM product_skus ps
            JOIN products p ON p.id = ps.product_id
+           LEFT JOIN user_categories uc ON uc.id = p.user_category_id AND uc.profile_id = $2::bigint
           WHERE ps.marketplace = 'ozon'
             AND ps.marketplace_product_id::text = ANY($1::text[])
-            AND p.profile_id = $2::bigint
-            AND p.user_category_id IN (SELECT id FROM user_categories WHERE profile_id = $2::bigint)`,
+            AND p.profile_id = $2::bigint`,
         [productIds.map(String), profileId]
       );
-      const inferred = inferBrandAndCategories(r.rows || []);
-      // бренд и категории в реестре указываются только вместе
-      return inferred.brandId && inferred.categoryIds.length ? inferred : { brandId: null, categoryIds: [] };
+      const rows = r.rows || [];
+      const inferred = inferBrandAndCategories(rows);
+      if (!inferred.brandId) return noBinding();
+      // сертификат привязывается к товарам своего бренда
+      const erpProductIds = [
+        ...new Set(
+          rows
+            .filter((row) => Number(row.brand_id) === inferred.brandId)
+            .map((row) => Number(row.id))
+            .filter((n) => Number.isFinite(n) && n > 0)
+        ),
+      ];
+      return erpProductIds.length ? { ...inferred, productIds: erpProductIds } : noBinding();
     } catch (e) {
       logger.warn('[Certificates import] brand inference failed', { ozonCertificateId, message: errorMessage(e) });
-      return { brandId: null, categoryIds: [] };
+      return noBinding();
     }
   }
 
@@ -93,6 +108,12 @@ class CertificatesImportService {
         cols.map((c) => fields[c])
       );
       const id = r.rows[0].id;
+      for (const pid of binding.productIds || []) {
+        await client.query(
+          `INSERT INTO certificate_products (certificate_id, product_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [id, pid]
+        );
+      }
       for (const cid of binding.categoryIds) {
         await client.query(
           `INSERT INTO certificate_user_categories (certificate_id, user_category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -117,10 +138,11 @@ class CertificatesImportService {
     if (!Object.keys(fields).length) return false;
     if (local.valid_from == null && entry.validFrom) fields.valid_from = entry.validFrom;
     if (local.valid_to == null && entry.validTo) fields.valid_to = entry.validTo;
-    const fillBinding = local.brand_id == null && !local.categories_count && Boolean(binding.brandId);
+    const fillBinding =
+      local.brand_id == null && !local.categories_count && !local.products_count && Boolean(binding.brandId);
     if (fillBinding) {
       fields.brand_id = binding.brandId;
-      fields.user_category_id = binding.categoryIds[0];
+      fields.user_category_id = binding.categoryIds[0] || null;
     }
 
     const cols = Object.keys(fields);
@@ -131,6 +153,12 @@ class CertificatesImportService {
         [...cols.map((c) => fields[c]), local.id, profileId]
       );
       if (fillBinding) {
+        for (const pid of binding.productIds || []) {
+          await client.query(
+            `INSERT INTO certificate_products (certificate_id, product_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [local.id, pid]
+          );
+        }
         for (const cid of binding.categoryIds) {
           await client.query(
             `INSERT INTO certificate_user_categories (certificate_id, user_category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -174,11 +202,12 @@ class CertificatesImportService {
           (entry.ym && byYmId.get(Number(entry.ym.id))) ||
           byKey.get(entry.key) ||
           null;
-        const needsBinding = !local || (local.brand_id == null && !local.categories_count);
+        const needsBinding =
+          !local || (local.brand_id == null && !local.categories_count && !local.products_count);
         const binding =
           needsBinding && entry.ozon
             ? await this._inferFromOzonProducts(entry.ozon.certificate_id, opts)
-            : { brandId: null, categoryIds: [] };
+            : noBinding();
 
         if (!local) {
           const id = await this._createLocal(entry, binding, profileId);

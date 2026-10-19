@@ -63,10 +63,31 @@ class CertificatesController {
       const opts = {
         brandId: req.query.brandId ?? null,
         userCategoryId: req.query.userCategoryId ?? null,
+        productId: req.query.productId ?? null,
         includeExpired: this._truthyQuery(req.query.includeExpired, true),
       };
       if (scope.profileId != null) opts.profileId = scope.profileId;
       const data = await certificatesService.getAll(opts);
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async getProductsWithoutCertificate(req, res, next) {
+    try {
+      const scope = this._listScope(req);
+      if (scope.empty) {
+        return res.status(200).json({ ok: true, data: { items: [], total: 0, limit: 50, offset: 0 } });
+      }
+      const opts = {
+        brandId: req.query.brandId ?? req.query.brand_id ?? null,
+        search: req.query.search ?? '',
+        limit: req.query.limit,
+        offset: req.query.offset,
+      };
+      if (scope.profileId != null) opts.profileId = scope.profileId;
+      const data = await certificatesService.getProductsWithoutCertificate(opts);
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);

@@ -9,8 +9,21 @@ export const certificatesApi = {
     const params = {};
     if (opts.brandId != null && opts.brandId !== '') params.brandId = opts.brandId;
     if (opts.userCategoryId != null && opts.userCategoryId !== '') params.userCategoryId = opts.userCategoryId;
+    if (opts.productId != null && opts.productId !== '') params.productId = opts.productId;
     if (opts.includeExpired === false) params.includeExpired = false;
     const res = await api.get('/certificates', { params: Object.keys(params).length ? params : undefined });
+    return res.data;
+  },
+
+  getProductsWithoutCertificate: async (opts = {}) => {
+    const params = {};
+    if (opts.brandId != null && opts.brandId !== '') params.brandId = opts.brandId;
+    if (opts.search != null && String(opts.search).trim() !== '') params.search = String(opts.search).trim();
+    if (opts.limit != null) params.limit = opts.limit;
+    if (opts.offset != null) params.offset = opts.offset;
+    const res = await api.get('/certificates/products-without-certificate', {
+      params: Object.keys(params).length ? params : undefined,
+    });
     return res.data;
   },
 

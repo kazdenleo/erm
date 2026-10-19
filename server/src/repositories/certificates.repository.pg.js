@@ -1,6 +1,6 @@
 /**
  * Certificates Repository (PostgreSQL)
- * Сертификаты соответствия
+ * Сертификаты соответствия — привязка к бренду и конкретным товарам.
  */
 
 import { query, transaction } from '../config/database.js';
@@ -26,36 +26,63 @@ class CertificatesRepositoryPG {
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
-  async _attachCategories(rows = []) {
+  async _attachRelations(rows = []) {
     if (!rows.length) return rows;
     const certIds = rows.map((r) => r.id);
-    const q = await query(
-      `SELECT cuc.certificate_id, uc.id AS user_category_id, uc.name AS user_category_name
-       FROM certificate_user_categories cuc
-       JOIN user_categories uc ON uc.id = cuc.user_category_id
-       WHERE cuc.certificate_id = ANY($1::bigint[])
-       ORDER BY uc.name`,
-      [certIds]
-    );
-    const byCert = new Map();
-    for (const r of q.rows || []) {
-      const list = byCert.get(r.certificate_id) || [];
+
+    const [catsQ, prodsQ] = await Promise.all([
+      query(
+        `SELECT cuc.certificate_id, uc.id AS user_category_id, uc.name AS user_category_name
+         FROM certificate_user_categories cuc
+         JOIN user_categories uc ON uc.id = cuc.user_category_id
+         WHERE cuc.certificate_id = ANY($1::bigint[])
+         ORDER BY uc.name`,
+        [certIds]
+      ),
+      query(
+        `SELECT cp.certificate_id, p.id AS product_id, p.sku, p.name AS product_name
+         FROM certificate_products cp
+         JOIN products p ON p.id = cp.product_id
+         WHERE cp.certificate_id = ANY($1::bigint[])
+         ORDER BY p.sku NULLS LAST, p.name`,
+        [certIds]
+      ),
+    ]);
+
+    const catsByCert = new Map();
+    for (const r of catsQ.rows || []) {
+      const list = catsByCert.get(r.certificate_id) || [];
       list.push({ id: r.user_category_id, name: r.user_category_name });
-      byCert.set(r.certificate_id, list);
+      catsByCert.set(r.certificate_id, list);
     }
+
+    const productsByCert = new Map();
+    for (const r of prodsQ.rows || []) {
+      const list = productsByCert.get(r.certificate_id) || [];
+      list.push({
+        id: r.product_id,
+        sku: r.sku,
+        name: r.product_name,
+      });
+      productsByCert.set(r.certificate_id, list);
+    }
+
     return rows.map((row) => {
-      const cats = byCert.get(row.id) || [];
+      const cats = catsByCert.get(row.id) || [];
+      const products = productsByCert.get(row.id) || [];
       return {
         ...row,
         user_category_ids: cats.map((c) => c.id),
         user_categories: cats,
-        user_category_name: cats.length ? cats.map((c) => c.name).join(', ') : null
+        user_category_name: cats.length ? cats.map((c) => c.name).join(', ') : null,
+        product_ids: products.map((p) => p.id),
+        products,
       };
     });
   }
 
   async findAll(options = {}) {
-    const { brandId, userCategoryId, includeExpired = true } = options;
+    const { brandId, userCategoryId, productId, includeExpired = true } = options;
     const profileId = this._profileId(options);
     let sql = `
       SELECT
@@ -84,13 +111,21 @@ class CertificatesRepositoryPG {
       )`;
       params.push(userCategoryId);
     }
+    if (productId != null && productId !== '') {
+      sql += ` AND EXISTS (
+        SELECT 1
+        FROM certificate_products cp
+        WHERE cp.certificate_id = c.id AND cp.product_id = $${i++}::bigint
+      )`;
+      params.push(productId);
+    }
     if (!includeExpired) {
       sql += ` AND (c.valid_to IS NULL OR c.valid_to >= CURRENT_DATE)`;
     }
 
     sql += ` ORDER BY c.valid_to NULLS LAST, c.certificate_number`;
     const r = await query(sql, params);
-    return await this._attachCategories(r.rows || []);
+    return await this._attachRelations(r.rows || []);
   }
 
   async findById(id, options = {}) {
@@ -106,15 +141,18 @@ class CertificatesRepositoryPG {
     }
     const r = await query(sql, params);
     if (!r.rows[0]) return null;
-    const rows = await this._attachCategories([r.rows[0]]);
+    const rows = await this._attachRelations([r.rows[0]]);
     return rows[0] || null;
   }
 
   async create(data) {
+    const productIds = this._ensureArrayOfIds(
+      data.product_ids ?? data.productIds ?? []
+    );
     const categoryIds = this._ensureArrayOfIds(
       data.user_category_ids ??
-      data.userCategoryIds ??
-      (data.user_category_id != null ? [data.user_category_id] : [])
+        data.userCategoryIds ??
+        (data.user_category_id != null ? [data.user_category_id] : [])
     );
     const profileId = this._profileId(data);
     const created = await transaction(async (client) => {
@@ -125,7 +163,7 @@ class CertificatesRepositoryPG {
         [
           data.certificate_number,
           data.brand_id || null,
-          categoryIds[0] || data.user_category_id || null, // legacy column (compat)
+          categoryIds[0] || data.user_category_id || null,
           data.photo_url || null,
           data.valid_from || null,
           data.valid_to || null,
@@ -134,13 +172,19 @@ class CertificatesRepositoryPG {
         ]
       );
       const cert = r.rows[0] || null;
-      if (cert && categoryIds.length) {
-        for (const cid of categoryIds) {
-          await client.query(
-            `INSERT INTO certificate_user_categories (certificate_id, user_category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [cert.id, cid]
-          );
-        }
+      if (!cert) return null;
+
+      for (const pid of productIds) {
+        await client.query(
+          `INSERT INTO certificate_products (certificate_id, product_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [cert.id, pid]
+        );
+      }
+      for (const cid of categoryIds) {
+        await client.query(
+          `INSERT INTO certificate_user_categories (certificate_id, user_category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [cert.id, cid]
+        );
       }
       return cert;
     });
@@ -150,12 +194,20 @@ class CertificatesRepositoryPG {
 
   async update(id, updates, options = {}) {
     const profileId = this._profileId(options);
-    const allowed = ['certificate_number', 'brand_id', 'user_category_id', 'photo_url', 'valid_from', 'valid_to', 'document_type'];
+    const allowed = [
+      'certificate_number',
+      'brand_id',
+      'user_category_id',
+      'photo_url',
+      'valid_from',
+      'valid_to',
+      'document_type',
+    ];
     const fields = [];
     const params = [];
     let i = 1;
     for (const f of allowed) {
-      if (updates.hasOwnProperty(f)) {
+      if (Object.prototype.hasOwnProperty.call(updates, f)) {
         fields.push(`${f} = $${i++}`);
         if (f === 'document_type') {
           params.push(this._normalizeDocumentType(updates[f]));
@@ -164,8 +216,15 @@ class CertificatesRepositoryPG {
         }
       }
     }
-    const hasCategories = updates.hasOwnProperty('user_category_ids') || updates.hasOwnProperty('userCategoryIds');
-    if (fields.length === 0 && !hasCategories) return await this.findById(id, { profileId });
+    const hasCategories =
+      Object.prototype.hasOwnProperty.call(updates, 'user_category_ids') ||
+      Object.prototype.hasOwnProperty.call(updates, 'userCategoryIds');
+    const hasProducts =
+      Object.prototype.hasOwnProperty.call(updates, 'product_ids') ||
+      Object.prototype.hasOwnProperty.call(updates, 'productIds');
+    if (fields.length === 0 && !hasCategories && !hasProducts) {
+      return await this.findById(id, { profileId });
+    }
 
     await transaction(async (client) => {
       if (fields.length > 0) {
@@ -192,8 +251,22 @@ class CertificatesRepositoryPG {
           throw err;
         }
       }
+
+      if (hasProducts) {
+        const productIds = this._ensureArrayOfIds(updates.product_ids ?? updates.productIds ?? []);
+        await client.query('DELETE FROM certificate_products WHERE certificate_id = $1', [id]);
+        for (const pid of productIds) {
+          await client.query(
+            `INSERT INTO certificate_products (certificate_id, product_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [id, pid]
+          );
+        }
+      }
+
       if (hasCategories) {
-        const categoryIds = this._ensureArrayOfIds(updates.user_category_ids ?? updates.userCategoryIds ?? []);
+        const categoryIds = this._ensureArrayOfIds(
+          updates.user_category_ids ?? updates.userCategoryIds ?? []
+        );
         await client.query('DELETE FROM certificate_user_categories WHERE certificate_id = $1', [id]);
         for (const cid of categoryIds) {
           await client.query(
@@ -201,11 +274,10 @@ class CertificatesRepositoryPG {
             [id, cid]
           );
         }
-        // поддержка legacy single field
-        await client.query(
-          `UPDATE certificates SET user_category_id = $1 WHERE id = $2`,
-          [categoryIds[0] || null, id]
-        );
+        await client.query(`UPDATE certificates SET user_category_id = $1 WHERE id = $2`, [
+          categoryIds[0] || null,
+          id,
+        ]);
       }
     });
     return await this.findById(id, { profileId });
@@ -222,6 +294,90 @@ class CertificatesRepositoryPG {
     }
     const r = await query('DELETE FROM certificates WHERE id = $1 RETURNING id', [id]);
     return r.rows.length > 0;
+  }
+
+  /**
+   * Товары профиля без привязки ни к одному сертификату.
+   */
+  async findProductsWithoutCertificate(options = {}) {
+    const profileId = this._profileId(options);
+    const brandId = options.brandId ?? options.brand_id ?? null;
+    const search = String(options.search || '').trim();
+    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+
+    const params = [];
+    let i = 1;
+    let sql = `
+      SELECT
+        p.id,
+        p.sku,
+        p.name,
+        p.brand_id,
+        b.name AS brand_name,
+        p.user_category_id,
+        uc.name AS category_name
+      FROM products p
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM certificate_products cp WHERE cp.product_id = p.id
+      )
+    `;
+    if (profileId != null) {
+      sql += ` AND p.profile_id = $${i++}::bigint`;
+      params.push(profileId);
+    }
+    if (brandId != null && brandId !== '') {
+      sql += ` AND p.brand_id = $${i++}::bigint`;
+      params.push(brandId);
+    }
+    if (search) {
+      sql += ` AND (
+        p.sku ILIKE $${i}
+        OR p.name ILIKE $${i}
+        OR COALESCE(b.name, '') ILIKE $${i}
+      )`;
+      params.push(`%${search}%`);
+      i += 1;
+    }
+    sql += ` ORDER BY p.sku NULLS LAST, p.name ASC LIMIT $${i++} OFFSET $${i++}`;
+    params.push(limit, offset);
+
+    const countParams = params.slice(0, params.length - 2);
+    let countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM products p
+      LEFT JOIN brands b ON b.id = p.brand_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM certificate_products cp WHERE cp.product_id = p.id
+      )
+    `;
+    let ci = 1;
+    if (profileId != null) {
+      countSql += ` AND p.profile_id = $${ci++}::bigint`;
+    }
+    if (brandId != null && brandId !== '') {
+      countSql += ` AND p.brand_id = $${ci++}::bigint`;
+    }
+    if (search) {
+      countSql += ` AND (
+        p.sku ILIKE $${ci}
+        OR p.name ILIKE $${ci}
+        OR COALESCE(b.name, '') ILIKE $${ci}
+      )`;
+    }
+
+    const [rows, count] = await Promise.all([
+      query(sql, params),
+      query(countSql, countParams),
+    ]);
+    return {
+      items: rows.rows || [],
+      total: Number(count.rows?.[0]?.total || 0),
+      limit,
+      offset,
+    };
   }
 }
 

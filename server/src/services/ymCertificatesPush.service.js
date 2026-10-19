@@ -71,15 +71,34 @@ async function ymFetchJson(url, { method = 'POST', apiKey, body } = {}) {
   return data;
 }
 
-/** Товары ERP бренда и категорий сертификата с offerId Маркета: [{ productId, sku, offerId }]. */
+/**
+ * Товары ERP сертификата с offerId Маркета: [{ productId, sku, offerId }].
+ * Предпочтительно — явная привязка certificate_products (product_ids);
+ * fallback для старых сертификатов — бренд + категории.
+ */
 async function findYmOffersForCertificate(cert, { profileId, organizationId }) {
+  const productIds = (Array.isArray(cert.product_ids) ? cert.product_ids : [])
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
   const brandId = cert.brand_id != null ? Number(cert.brand_id) : null;
   const categoryIds = (Array.isArray(cert.user_category_ids) ? cert.user_category_ids : [])
     .map((x) => Number(x))
     .filter((n) => Number.isFinite(n) && n > 0);
-  if (!brandId || !categoryIds.length) return [];
 
-  const params = [brandId, categoryIds];
+  let params;
+  let where;
+  let i;
+  if (productIds.length) {
+    params = [productIds];
+    where = 'p.id = ANY($1::bigint[])';
+    i = 2;
+  } else {
+    if (!brandId || !categoryIds.length) return [];
+    params = [brandId, categoryIds];
+    where = 'p.brand_id = $1 AND p.user_category_id = ANY($2::bigint[])';
+    i = 3;
+  }
+
   let sql = `
     SELECT DISTINCT ON (TRIM(ps.sku)) TRIM(ps.sku) AS offer_id, p.id AS product_id, p.sku
     FROM products p
@@ -88,11 +107,9 @@ async function findYmOffersForCertificate(cert, { profileId, organizationId }) {
      AND ps.marketplace = 'ym'
      AND ps.sku IS NOT NULL
      AND TRIM(ps.sku) <> ''
-    WHERE p.brand_id = $1
-      AND p.user_category_id = ANY($2::bigint[])
+    WHERE ${where}
       AND COALESCE(p.is_archived, false) = false
   `;
-  let i = 3;
   if (profileId != null && profileId !== '') {
     sql += ` AND p.profile_id = $${i++}::bigint`;
     params.push(profileId);

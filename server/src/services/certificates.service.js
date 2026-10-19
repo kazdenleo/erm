@@ -1,14 +1,27 @@
 /**
  * Certificates Service
+ * Привязка: бренд + конкретные товары.
  */
 
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
+import {
+  mergeExistingCertKeys,
+  wbCertAttributePatch,
+} from '../utils/certProductAttributes.js';
 
 function httpError(message, statusCode) {
   const err = new Error(message);
   err.statusCode = statusCode;
   return err;
+}
+
+function normalizeIdList(raw) {
+  const arr = Array.isArray(raw) ? raw : raw != null && raw !== '' ? [raw] : [];
+  return arr
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
 }
 
 class CertificatesService {
@@ -33,6 +46,10 @@ class CertificatesService {
     return item;
   }
 
+  async getProductsWithoutCertificate(options = {}) {
+    return await this.repo.findProductsWithoutCertificate(options);
+  }
+
   _normalizePayload(data = {}) {
     const certificate_number = String(data.certificate_number ?? data.certificateNumber ?? '').trim();
     if (!certificate_number) {
@@ -44,35 +61,34 @@ class CertificatesService {
       throw httpError('Бренд обязателен', 400);
     }
 
-    const user_category_id = data.user_category_id ?? data.userCategoryId ?? null;
-    const user_category_ids = Array.isArray(data.user_category_ids)
-      ? data.user_category_ids
-      : (Array.isArray(data.userCategoryIds) ? data.userCategoryIds : (user_category_id != null ? [user_category_id] : []));
-    const normalizedCategoryIds = user_category_ids
-      .map((x) => Number(x))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    if (normalizedCategoryIds.length === 0) {
-      throw httpError('Нужна хотя бы одна категория (бренд и категория указываются только вместе)', 400);
+    const product_ids = normalizeIdList(data.product_ids ?? data.productIds);
+    if (product_ids.length === 0) {
+      throw httpError('Выберите хотя бы один товар', 400);
     }
 
-    const document_type = data.document_type ?? data.documentType ?? 'certificate';
-    const photo_url = data.photo_url ?? data.photoUrl ?? null;
-    const valid_from = data.valid_from ?? data.validFrom ?? null;
-    const valid_to = data.valid_to ?? data.validTo ?? null;
+    // Категории больше не обязательны; сохраняем если передали (совместимость).
+    const user_category_ids = normalizeIdList(
+      data.user_category_ids ??
+        data.userCategoryIds ??
+        (data.user_category_id != null || data.userCategoryId != null
+          ? [data.user_category_id ?? data.userCategoryId]
+          : [])
+    );
 
     return {
       certificate_number,
       brand_id,
-      user_category_id: normalizedCategoryIds[0],
-      user_category_ids: normalizedCategoryIds,
-      document_type,
-      photo_url,
-      valid_from,
-      valid_to,
+      product_ids,
+      user_category_id: user_category_ids[0] ?? null,
+      user_category_ids,
+      document_type: data.document_type ?? data.documentType ?? 'certificate',
+      photo_url: data.photo_url ?? data.photoUrl ?? null,
+      valid_from: data.valid_from ?? data.validFrom ?? null,
+      valid_to: data.valid_to ?? data.validTo ?? null,
     };
   }
 
-  async _assertTenantBindings(profileId, brandId, categoryIds) {
+  async _assertTenantBindings(profileId, brandId, productIds, categoryIds = []) {
     if (profileId == null || profileId === '') return;
     if (!repositoryFactory.isUsingPostgreSQL()) return;
 
@@ -96,17 +112,29 @@ class CertificatesService {
       }
     }
 
-    const ids = (Array.isArray(categoryIds) ? categoryIds : [])
-      .map((x) => Number(x))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    if (ids.length) {
+    const pids = normalizeIdList(productIds);
+    if (pids.length) {
+      const r = await query(
+        `SELECT COUNT(*)::int AS n
+         FROM products
+         WHERE id = ANY($1::bigint[])
+           AND profile_id = $2::bigint`,
+        [pids, profileId]
+      );
+      if (Number(r.rows[0]?.n || 0) !== pids.length) {
+        throw httpError('Товар не найден в этом аккаунте', 403);
+      }
+    }
+
+    const cids = normalizeIdList(categoryIds);
+    if (cids.length) {
       const r = await query(
         `SELECT COUNT(*)::int AS n
          FROM user_categories
          WHERE id = ANY($1::bigint[]) AND profile_id = $2::bigint`,
-        [ids, profileId]
+        [cids, profileId]
       );
-      if (Number(r.rows[0]?.n || 0) !== ids.length) {
+      if (Number(r.rows[0]?.n || 0) !== cids.length) {
         throw httpError('Категория не найдена в этом аккаунте', 403);
       }
     }
@@ -115,7 +143,12 @@ class CertificatesService {
   async create(data, options = {}) {
     const profileId = options.profileId ?? options.profile_id ?? null;
     const payload = this._normalizePayload(data);
-    await this._assertTenantBindings(profileId, payload.brand_id, payload.user_category_ids);
+    await this._assertTenantBindings(
+      profileId,
+      payload.brand_id,
+      payload.product_ids,
+      payload.user_category_ids
+    );
     const created = await this.repo.create({ ...payload, profile_id: profileId });
     await this._syncMarketplaceFieldsFromCertificate(created, profileId);
     return created;
@@ -128,9 +161,9 @@ class CertificatesService {
       throw httpError('Сертификат не найден', 404);
     }
 
-    // allow partial update; but if certificate_number provided, validate it
     const updates = {};
-    if (data.hasOwnProperty('certificate_number') || data.hasOwnProperty('certificateNumber')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'certificate_number') ||
+        Object.prototype.hasOwnProperty.call(data, 'certificateNumber')) {
       const n = String(data.certificate_number ?? data.certificateNumber ?? '').trim();
       if (!n) {
         throw httpError('Номер сертификата обязателен', 400);
@@ -139,6 +172,7 @@ class CertificatesService {
     }
     const map = {
       brand_id: ['brand_id', 'brandId'],
+      product_ids: ['product_ids', 'productIds'],
       user_category_id: ['user_category_id', 'userCategoryId'],
       user_category_ids: ['user_category_ids', 'userCategoryIds'],
       document_type: ['document_type', 'documentType'],
@@ -148,49 +182,49 @@ class CertificatesService {
     };
     for (const [field, keys] of Object.entries(map)) {
       for (const k of keys) {
-        if (data.hasOwnProperty(k)) {
+        if (Object.prototype.hasOwnProperty.call(data, k)) {
           updates[field] = data[k] === '' ? null : data[k];
           break;
         }
       }
     }
 
-    // Бренд и категории — только вместе (проверяем при изменении привязки)
     const touchingBinding =
-      updates.hasOwnProperty('brand_id') ||
-      updates.hasOwnProperty('user_category_id') ||
-      updates.hasOwnProperty('user_category_ids');
+      Object.prototype.hasOwnProperty.call(updates, 'brand_id') ||
+      Object.prototype.hasOwnProperty.call(updates, 'product_ids') ||
+      Object.prototype.hasOwnProperty.call(updates, 'user_category_ids') ||
+      Object.prototype.hasOwnProperty.call(updates, 'user_category_id');
 
     let nextBrandId = existing.brand_id ?? null;
-    let nextCategoryIds = Array.isArray(existing.user_category_ids)
-      ? existing.user_category_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
-      : (existing.user_category_id != null ? [Number(existing.user_category_id)] : []);
+    let nextProductIds = normalizeIdList(existing.product_ids);
+    let nextCategoryIds = normalizeIdList(existing.user_category_ids);
 
     if (touchingBinding) {
-      nextBrandId = updates.hasOwnProperty('brand_id')
-        ? updates.brand_id
-        : (existing.brand_id ?? null);
-      if (updates.hasOwnProperty('user_category_ids')) {
-        const raw = Array.isArray(updates.user_category_ids) ? updates.user_category_ids : [];
-        nextCategoryIds = raw.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+      if (Object.prototype.hasOwnProperty.call(updates, 'brand_id')) {
+        nextBrandId = updates.brand_id;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'product_ids')) {
+        nextProductIds = normalizeIdList(updates.product_ids);
+        updates.product_ids = nextProductIds;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'user_category_ids')) {
+        nextCategoryIds = normalizeIdList(updates.user_category_ids);
         updates.user_category_ids = nextCategoryIds;
         updates.user_category_id = nextCategoryIds[0] ?? null;
-      } else if (updates.hasOwnProperty('user_category_id')) {
-        nextCategoryIds = updates.user_category_id != null
-          ? [Number(updates.user_category_id)].filter((n) => Number.isFinite(n) && n > 0)
-          : [];
+      } else if (Object.prototype.hasOwnProperty.call(updates, 'user_category_id')) {
+        nextCategoryIds = normalizeIdList([updates.user_category_id]);
         updates.user_category_ids = nextCategoryIds;
       }
 
       if (nextBrandId == null || nextBrandId === '') {
         throw httpError('Бренд обязателен', 400);
       }
-      if (!nextCategoryIds.length) {
-        throw httpError('Нужна хотя бы одна категория (бренд и категория указываются только вместе)', 400);
+      if (!nextProductIds.length) {
+        throw httpError('Выберите хотя бы один товар', 400);
       }
     }
 
-    await this._assertTenantBindings(profileId, nextBrandId, nextCategoryIds);
+    await this._assertTenantBindings(profileId, nextBrandId, nextProductIds, nextCategoryIds);
 
     const updated = await this.repo.update(id, updates, this._profileOpts(profileId));
     if (!updated) {
@@ -210,13 +244,11 @@ class CertificatesService {
   }
 
   /**
-   * Проброс номера и дат сертификата в brands/user_categories.
-   * Логика: записываем ровно значения из этого сертификата.
-   * (Если появятся несколько сертификатов на бренд/категорию — позже можно будет выбрать активный/последний.)
+   * Проброс номера/дат в бренд и в wb_attributes привязанных товаров.
    */
   async _syncMarketplaceFieldsFromCertificate(cert, profileId = null) {
     if (!cert) return;
-    if (!repositoryFactory.isUsingPostgreSQL()) return; // for file storage: оставим как есть
+    if (!repositoryFactory.isUsingPostgreSQL()) return;
 
     const number = cert.certificate_number || null;
     const from = cert.valid_from || null;
@@ -224,7 +256,6 @@ class CertificatesService {
     const docType = cert.document_type || 'certificate';
     const pid = cert.profile_id ?? cert.profileId ?? profileId ?? null;
 
-    // Набор полей для проброса в зависимости от типа документа
     const fieldsByType = {
       certificate: {
         number: 'certificate_number',
@@ -252,20 +283,50 @@ class CertificatesService {
           [number, from, to, cert.brand_id, pid]
         );
       }
-      // Важно: сертификат может относиться к нескольким категориям (M2M)
-      const categoryIds = Array.isArray(cert.user_category_ids)
-        ? cert.user_category_ids
-        : (cert.user_category_id ? [cert.user_category_id] : []);
 
-      for (const cid of categoryIds) {
-        await query(
-          `UPDATE user_categories SET ${map.number} = $1, ${map.from} = $2, ${map.to} = $3, updated_at = CURRENT_TIMESTAMP
-           WHERE id = $4 AND ($5::bigint IS NULL OR profile_id = $5::bigint)`,
-          [number, from, to, cid, pid]
-        );
-      }
-    } catch (_) {
-      // не ломаем основной поток
+      const productIds = normalizeIdList(cert.product_ids);
+      await this._syncWbCertAttributesToProducts(cert, productIds, pid);
+    } catch (e) {
+      logger.warn('[Certificates] sync marketplace fields failed:', e?.message || e);
+    }
+  }
+
+  async _syncWbCertAttributesToProducts(cert, productIds, profileId = null) {
+    const ids = normalizeIdList(productIds);
+    if (!ids.length) return;
+
+    const patch = wbCertAttributePatch(cert);
+    if (!Object.keys(patch).length) return;
+
+    const prodRes = await query(
+      `SELECT id, wb_attributes
+       FROM products
+       WHERE id = ANY($1::bigint[])
+         AND ($2::bigint IS NULL OR profile_id = $2::bigint)
+         AND wb_attributes IS NOT NULL
+         AND jsonb_typeof(wb_attributes) = 'object'`,
+      [ids, profileId]
+    );
+
+    let updated = 0;
+    for (const row of prodRes.rows || []) {
+      const { next, changed } = mergeExistingCertKeys(row.wb_attributes, patch);
+      if (!changed) continue;
+      await query(
+        `UPDATE products
+         SET wb_attributes = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [JSON.stringify(next), row.id]
+      );
+      updated += 1;
+    }
+
+    if (updated > 0) {
+      logger.info('[Certificates] wb_attributes сертификата обновлены в товарах', {
+        certificateId: cert?.id,
+        linkedProducts: ids.length,
+        products: updated,
+      });
     }
   }
 }

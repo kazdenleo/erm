@@ -470,10 +470,41 @@
 }
 
 .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 999px;
   padding: 2px 8px;
   font-size: 11px;
+  max-width: 240px;
+}
+
+.tag-remove {
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted, #6b7280);
+  padding: 0;
+}
+
+.without-search {
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  font-size: 14px;
+  min-width: 220px;
+}
+
+.without-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
 }
 
 .form-actions {

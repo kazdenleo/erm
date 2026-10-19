@@ -193,8 +193,24 @@ export function applyCertAutofillToAttributes(attributes, certSource, prevValues
 }
 
 /**
- * Сертификаты бренда, подходящие для категории товара.
- * Нужна явная привязка к категории (бренд + категория только вместе).
+ * Сертификаты, явно привязанные к товару.
+ */
+export function filterBrandCertsForProduct(certs, productId) {
+  const list = Array.isArray(certs) ? certs : [];
+  const pid = productId != null ? String(productId).trim() : '';
+  if (!pid) return [];
+  return list.filter((c) => {
+    const ids = c.product_ids ?? c.productIds ?? [];
+    if (Array.isArray(ids) && ids.some((id) => String(id) === pid)) return true;
+    const products = c.products;
+    if (Array.isArray(products) && products.some((p) => String(p?.id) === pid)) return true;
+    return false;
+  });
+}
+
+/**
+ * @deprecated Используйте filterBrandCertsForProduct — привязка теперь к товарам.
+ * Сертификаты бренда, подходящие для категории товара (legacy).
  */
 export function filterBrandCertsForCategory(certs, categoryId) {
   const list = Array.isArray(certs) ? certs : [];

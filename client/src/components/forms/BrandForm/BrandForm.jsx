@@ -8,7 +8,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '../../common/Button/Button';
 import { Modal } from '../../common/Modal/Modal';
 import { certificatesApi } from '../../../services/certificates.api';
-import { userCategoriesApi } from '../../../services/userCategories.api';
+import { productsApi } from '../../../services/products.api';
 import { brandsApi } from '../../../services/brands.api';
 import { MpBrandSuggest } from '../../common/MpBrandSuggest/MpBrandSuggest.jsx';
 import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
@@ -65,14 +65,16 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
   const [certForm, setCertForm] = useState({
     certificate_number: '',
     document_type: 'certificate',
-    user_category_ids: [],
+    product_ids: [],
+    products: [],
     valid_from: '',
     valid_to: ''
   });
   const [certPhotoFile, setCertPhotoFile] = useState(null);
   const [certSaving, setCertSaving] = useState(false);
-  const [allCategories, setAllCategories] = useState([]);
-  const [certCategorySearch, setCertCategorySearch] = useState('');
+  const [certProductOptions, setCertProductOptions] = useState([]);
+  const [certProductsLoading, setCertProductsLoading] = useState(false);
+  const [certProductSearch, setCertProductSearch] = useState('');
 
   useEffect(() => {
     if (brand) {
@@ -122,20 +124,33 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
   }, [brand?.id]);
 
   useEffect(() => {
+    if (!isCertModalOpen || !brand?.id) {
+      setCertProductOptions([]);
+      return;
+    }
     let cancelled = false;
-    const loadCategories = async () => {
+    const timer = setTimeout(async () => {
+      setCertProductsLoading(true);
       try {
-        const res = await userCategoriesApi.getAll();
+        const res = await productsApi.getAll({
+          brandId: brand.id,
+          search: certProductSearch || undefined,
+          limit: 80,
+        });
         if (cancelled) return;
-        const data = res?.data?.data || res?.data || [];
-        setAllCategories(Array.isArray(data) ? data : []);
+        const raw = res?.data?.items ?? res?.data ?? res?.items ?? [];
+        setCertProductOptions(Array.isArray(raw) ? raw : []);
       } catch (_) {
-        if (!cancelled) setAllCategories([]);
+        if (!cancelled) setCertProductOptions([]);
+      } finally {
+        if (!cancelled) setCertProductsLoading(false);
       }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
     };
-    loadCategories();
-    return () => { cancelled = true; };
-  }, []);
+  }, [isCertModalOpen, brand?.id, certProductSearch]);
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -283,21 +298,47 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     });
   }, [certs]);
 
-  const filteredCategoryOptions = useMemo(() => {
-    const q = String(certCategorySearch || '').trim().toLowerCase();
-    if (!q) return allCategories;
-    return allCategories.filter((cat) => String(cat?.name || '').toLowerCase().includes(q));
-  }, [allCategories, certCategorySearch]);
+  const selectedProductSet = useMemo(
+    () => new Set((certForm.product_ids || []).map(String)),
+    [certForm.product_ids]
+  );
 
-  const selectedCategorySet = useMemo(() => new Set((certForm.user_category_ids || []).map(String)), [certForm.user_category_ids]);
+  const selectedCertProducts = useMemo(() => {
+    const byId = new Map();
+    for (const p of certForm.products || []) byId.set(String(p.id), p);
+    for (const p of certProductOptions || []) {
+      if (!byId.has(String(p.id))) byId.set(String(p.id), p);
+    }
+    return (certForm.product_ids || [])
+      .map((id) => byId.get(String(id)) || { id })
+      .filter(Boolean);
+  }, [certForm.product_ids, certForm.products, certProductOptions]);
 
-  const toggleCategory = (id) => {
-    const sid = String(id);
+  const productLabel = (p) => {
+    if (!p) return '';
+    const sku = p.sku ? String(p.sku).trim() : '';
+    const name = p.name ? String(p.name).trim() : '';
+    if (sku && name) return `${sku} — ${name}`;
+    return sku || name || `ID ${p.id}`;
+  };
+
+  const toggleProduct = (product) => {
+    const sid = String(product.id);
     setCertForm((prev) => {
-      const curr = new Set((prev.user_category_ids || []).map(String));
-      if (curr.has(sid)) curr.delete(sid);
-      else curr.add(sid);
-      return { ...prev, user_category_ids: Array.from(curr) };
+      const curr = new Set((prev.product_ids || []).map(String));
+      const productsMap = new Map((prev.products || []).map((p) => [String(p.id), p]));
+      if (curr.has(sid)) {
+        curr.delete(sid);
+        productsMap.delete(sid);
+      } else {
+        curr.add(sid);
+        productsMap.set(sid, product);
+      }
+      return {
+        ...prev,
+        product_ids: Array.from(curr),
+        products: Array.from(productsMap.values()),
+      };
     });
   };
 
@@ -312,7 +353,15 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
   const openCertCreate = () => {
     setEditingCert(null);
     setCertPhotoFile(null);
-    setCertForm({ certificate_number: '', document_type: 'certificate', user_category_ids: [], valid_from: '', valid_to: '' });
+    setCertForm({
+      certificate_number: '',
+      document_type: 'certificate',
+      product_ids: [],
+      products: [],
+      valid_from: '',
+      valid_to: '',
+    });
+    setCertProductSearch('');
     setIsCertModalOpen(true);
   };
 
@@ -322,10 +371,12 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     setCertForm({
       certificate_number: c.certificate_number || '',
       document_type: c.document_type || 'certificate',
-      user_category_ids: Array.isArray(c.user_category_ids) ? c.user_category_ids.map((x) => String(x)) : [],
+      product_ids: Array.isArray(c.product_ids) ? c.product_ids.map((x) => String(x)) : [],
+      products: Array.isArray(c.products) ? c.products : [],
       valid_from: toDateOnly(c.valid_from),
       valid_to: toDateOnly(c.valid_to),
     });
+    setCertProductSearch('');
     setIsCertModalOpen(true);
   };
 
@@ -333,16 +384,23 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     setIsCertModalOpen(false);
     setEditingCert(null);
     setCertPhotoFile(null);
-    setCertForm({ certificate_number: '', document_type: 'certificate', user_category_ids: [], valid_from: '', valid_to: '' });
-    setCertCategorySearch('');
+    setCertForm({
+      certificate_number: '',
+      document_type: 'certificate',
+      product_ids: [],
+      products: [],
+      valid_from: '',
+      valid_to: '',
+    });
+    setCertProductSearch('');
   };
 
   const saveCert = async (e) => {
     e.preventDefault();
     if (!brand?.id) return;
-    const categoryIds = (certForm.user_category_ids || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
-    if (categoryIds.length === 0) {
-      alert('Выберите хотя бы одну категорию (бренд и категория указываются только вместе)');
+    const productIds = (certForm.product_ids || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+    if (productIds.length === 0) {
+      alert('Выберите хотя бы один товар');
       return;
     }
     setCertSaving(true);
@@ -351,7 +409,7 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
         certificate_number: String(certForm.certificate_number || '').trim(),
         document_type: certForm.document_type || 'certificate',
         brand_id: brand.id,
-        user_category_ids: categoryIds,
+        product_ids: productIds,
         valid_from: certForm.valid_from || null,
         valid_to: certForm.valid_to || null,
       };
@@ -574,7 +632,7 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
         </div>
         <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
           Полный реестр — в <Link to="/settings/certificates">Настройки → Сертификаты</Link>.
-          К каждому документу нужна категория (бренд + категория только вместе).
+          К каждому документу привязываются конкретные товары бренда.
         </div>
 
         {!brand?.id && (
@@ -598,7 +656,7 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               <tr>
                 <th>Номер</th>
                 <th>Тип документа</th>
-                <th>Категории</th>
+                <th>Товары</th>
                 <th>Начало</th>
                 <th>Окончание</th>
                 <th>Статус</th>
@@ -624,15 +682,15 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
                     </span>
                   </td>
                   <td style={{ fontSize: '12px', maxWidth: '260px' }}>
-                    {Array.isArray(c.user_categories) && c.user_categories.length > 0 ? (
+                    {Array.isArray(c.products) && c.products.length > 0 ? (
                       <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                        {c.user_categories.slice(0, 3).map((cat) => (
-                          <span key={cat.id} style={{ border: '1px solid var(--border)', borderRadius: '999px', padding: '2px 8px', fontSize: '11px' }}>
-                            {cat.name}
+                        {c.products.slice(0, 3).map((p) => (
+                          <span key={p.id} style={{ border: '1px solid var(--border)', borderRadius: '999px', padding: '2px 8px', fontSize: '11px' }}>
+                            {p.sku || p.name || p.id}
                           </span>
                         ))}
-                        {c.user_categories.length > 3 && (
-                          <span style={{ color: 'var(--muted)', fontSize: '11px' }}>+{c.user_categories.length - 3}</span>
+                        {c.products.length > 3 && (
+                          <span style={{ color: 'var(--muted)', fontSize: '11px' }}>+{c.products.length - 3}</span>
                         )}
                       </div>
                     ) : (
@@ -706,43 +764,42 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               </select>
             </div>
             <div className="col-12">
-              <label className="form-label">Категории товаров <span style={{ color: '#ef4444' }}>*</span></label>
+              <label className="form-label">Товары <span style={{ color: '#ef4444' }}>*</span></label>
               <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>
-                Обязательно: бренд и категория указываются только вместе.
+                Выберите конкретные товары этого бренда.
               </div>
               <input
                 className="form-control form-control-sm"
-                placeholder="Поиск категории..."
-                value={certCategorySearch}
-                onChange={(e) => setCertCategorySearch(e.target.value)}
+                placeholder="Поиск по артикулу или названию..."
+                value={certProductSearch}
+                onChange={(e) => setCertProductSearch(e.target.value)}
                 style={{ marginBottom: '8px' }}
               />
               <div style={{ border: '1px solid var(--border)', borderRadius: '8px', maxHeight: '180px', overflowY: 'auto', padding: '8px' }}>
-                {filteredCategoryOptions.length === 0 ? (
+                {certProductsLoading ? (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Загрузка товаров…</div>
+                ) : certProductOptions.length === 0 ? (
                   <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Ничего не найдено</div>
                 ) : (
-                  filteredCategoryOptions.map((cat) => (
-                    <label key={cat.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', cursor: 'pointer' }}>
+                  certProductOptions.map((p) => (
+                    <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
-                        checked={selectedCategorySet.has(String(cat.id))}
-                        onChange={() => toggleCategory(cat.id)}
+                        checked={selectedProductSet.has(String(p.id))}
+                        onChange={() => toggleProduct(p)}
                       />
-                      <span style={{ fontSize: '13px' }}>{cat.name}</span>
+                      <span style={{ fontSize: '13px' }}>{productLabel(p)}</span>
                     </label>
                   ))
                 )}
               </div>
-              {(certForm.user_category_ids || []).length > 0 && (
+              {selectedCertProducts.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-                  {(certForm.user_category_ids || []).map((id) => {
-                    const cat = allCategories.find((c) => String(c.id) === String(id));
-                    return (
-                      <span key={String(id)} style={{ border: '1px solid var(--border)', borderRadius: '999px', padding: '2px 8px', fontSize: '11px' }}>
-                        {cat?.name || id}
-                      </span>
-                    );
-                  })}
+                  {selectedCertProducts.map((p) => (
+                    <span key={String(p.id)} style={{ border: '1px solid var(--border)', borderRadius: '999px', padding: '2px 8px', fontSize: '11px' }}>
+                      {productLabel(p)}
+                    </span>
+                  ))}
                 </div>
               )}
             </div>
