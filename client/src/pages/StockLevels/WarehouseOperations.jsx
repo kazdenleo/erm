@@ -3429,6 +3429,30 @@ export function WarehouseOperations({
         if (suggestContext === 'inventory_scan') closeSuggest();
         return;
       }
+      // ШК комплекта часто ≠ SKU (DT-353 → DTSN2200-01LR). Сначала точный getByBarcode.
+      try {
+        const byCode = await fetchProductByScanCode(qq);
+        if (byCode?.id) {
+          if (inventoryScanBusyRef.current) return;
+          inventoryScanBusyRef.current = true;
+          inventorySuppressScanRef.current = true;
+          clearScanField(inventoryNewScanInputRef.current);
+          closeSuggest();
+          try {
+            await addInventoryProductFromPick(byCode);
+            playEventSound(SOUND_EVENTS.scan_ok);
+          } finally {
+            inventoryScanBusyRef.current = false;
+            window.setTimeout(() => {
+              inventorySuppressScanRef.current = false;
+              focusInventoryScanInput(50);
+            }, 200);
+          }
+          return;
+        }
+      } catch {
+        /* не найден по ШК — обычный поиск по списку */
+      }
       let matches = findLocalMatches(qq);
       const remote = await searchProductsRemote(qq, { limit: 40 });
       matches = mergeProductLists(matches, remote);
@@ -3436,7 +3460,6 @@ export function WarehouseOperations({
         if (suggestContext === 'inventory_scan') closeSuggest();
         return;
       }
-      // Точный артикул/штрихкод (часто у комплектов с буквами) — сразу в пересчёт, без клика.
       const exact = findExactInventoryScanMatch(matches, qq);
       if (exact?.id) {
         if (inventoryScanBusyRef.current) return;

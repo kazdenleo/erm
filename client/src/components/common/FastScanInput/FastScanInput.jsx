@@ -13,11 +13,16 @@ function assignRef(ref, el) {
   else if (ref) ref.current = el;
 }
 
-/** При ручном вводе артикула авто-скан только для длинного числового штрихкода (8+ цифр). */
+/**
+ * Похоже на штрихкод / вендорный код (DT-353, H600400-11), а не на поиск по названию.
+ * При ручном вводе: длинный числовой ШК или код с буквами+цифрами.
+ */
 function isBarcodeLikeForScan(raw, { manualTypingMode = false } = {}) {
   const v = normalizeProductSearchQuery(raw);
   if (!v) return false;
   if (looksLikeCis(v)) return true;
+  // Комплекты / вендорные ШК с буквами — сразу в onScan, не в выпадающий поиск по имени
+  if (/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9._-]{1,48}$/.test(v)) return true;
   if (/[a-zа-я]/i.test(v)) return false;
   if (!manualTypingMode) return isLikelyBarcodeScan(v);
   return /^\d{8,}$/.test(v);
