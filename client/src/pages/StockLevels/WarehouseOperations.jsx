@@ -742,17 +742,24 @@ export function WarehouseOperations({
   const [inventoryCategoryIds, setInventoryCategoryIds] = useState([]);
   /** Режим удаления сканом (как в приёмке при purchase_receipt_mode=scanner) */
   const [inventoryRemoveMode, setInventoryRemoveMode] = useState(false);
+  /** Превью позиций, которые будут обнулены (не в пересчёте) при zeroUnlisted */
+  const [inventoryWillZeroRows, setInventoryWillZeroRows] = useState([]);
   const inventoryExpandedCategoryIds = useMemo(
     () => expandCategoryIdsClient(inventoryCategories, inventoryCategoryIds),
     [inventoryCategories, inventoryCategoryIds]
   );
-  const inventoryAddressProductIds = useMemo(
-    () =>
-      (inventoryNewRows || [])
-        .map((r) => Number(r?.product?.id))
-        .filter((n) => Number.isFinite(n) && n > 0),
-    [inventoryNewRows]
-  );
+  const inventoryAddressProductIds = useMemo(() => {
+    const ids = new Set();
+    for (const r of inventoryNewRows || []) {
+      const n = Number(r?.product?.id);
+      if (Number.isFinite(n) && n > 0) ids.add(n);
+    }
+    for (const r of inventoryWillZeroRows || []) {
+      const n = Number(r?.product?.id);
+      if (Number.isFinite(n) && n > 0) ids.add(n);
+    }
+    return [...ids];
+  }, [inventoryNewRows, inventoryWillZeroRows]);
   const inventoryAddresses = useProductAddresses(inventoryAddressProductIds);
   const inventoryAssignedCode = useCallback(
     (productId) => {
@@ -782,6 +789,58 @@ export function WarehouseOperations({
       return [...prev, id];
     });
   }, []);
+
+  /** Превью «будут обнулены» при включённом zeroUnlisted */
+  useEffect(() => {
+    if (!inventoryNewSession || !inventoryZeroUnlisted || !inventorySessionWarehouseId) {
+      setInventoryWillZeroRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      const excludeProductIds = (inventoryNewRows || [])
+        .map((r) => Number(r?.product?.id))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      inventorySessionsApi
+        .previewUnlisted({
+          warehouseId: Number(inventorySessionWarehouseId),
+          categoryIds: inventoryCategoryIds.length ? inventoryCategoryIds : [],
+          excludeProductIds,
+        })
+        .then((list) => {
+          if (cancelled) return;
+          const rows = (Array.isArray(list) ? list : []).map((item) => ({
+            willZero: true,
+            fact: 0,
+            current: Math.max(0, Number(item.quantity) || 0),
+            scannedAt: 0,
+            product: {
+              id: item.productId,
+              sku: item.sku,
+              name: item.name,
+              cost: item.cost,
+              user_category_id: item.userCategoryId ?? item.user_category_id,
+              category_name: item.categoryName ?? item.category_name,
+            },
+          }));
+          setInventoryWillZeroRows(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setInventoryWillZeroRows([]);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [
+    inventoryNewSession,
+    inventoryZeroUnlisted,
+    inventorySessionWarehouseId,
+    inventoryCategoryIds,
+    inventoryNewRows,
+  ]);
+
   /** Редактирование существующего документа (id) */
   const [inventoryEditingSessionId, setInventoryEditingSessionId] = useState(null);
   const [inventoryLiveEnabled, setInventoryLiveEnabled] = useState(false);
@@ -1550,6 +1609,11 @@ export function WarehouseOperations({
       setReceiptSessionEnabled(true);
       setReceiptSessionId(sessionId);
       setLookupError(null);
+      applySingleOrgWarehouseDefaults({
+        singleOrganizationId,
+        organizationId: receiptOrganizationId,
+        setOrganizationId: setReceiptOrganizationId,
+      });
       try {
         const res = await receiptsApi.getSession(sessionId);
         applySessionStateToList(res);
@@ -1561,7 +1625,7 @@ export function WarehouseOperations({
         setReceiptSessionId('');
       }
     },
-    [applySessionStateToList]
+    [applySessionStateToList, singleOrganizationId, receiptOrganizationId]
   );
 
   // Если пришли по ссылке сессии (?session=) — подхватываем при каждом изменении URL (в т.ч. из уведомления).
@@ -1883,7 +1947,9 @@ export function WarehouseOperations({
       setOpMessage('Выберите организацию');
       return;
     }
-    if (!String(receiptSupplierId || '').trim()) {
+    const sessionMode = receiptSessionEnabled && String(receiptSessionId || '').trim();
+    // В общей сессии поставщик необязателен (как на телефоне); в обычной приёмке — обязателен.
+    if (!sessionMode && !String(receiptSupplierId || '').trim()) {
       setOpMessage('Выберите поставщика');
       return;
     }
@@ -1892,7 +1958,7 @@ export function WarehouseOperations({
     try {
       const organizationId = receiptOrganizationId ? Number(receiptOrganizationId) : null;
       const supplierId = receiptSupplierId ? Number(receiptSupplierId) : null;
-      if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+      if (sessionMode) {
         const meIdRaw = user?.id ?? user?.userId ?? null;
         const meId =
           meIdRaw != null && meIdRaw !== '' && Number.isFinite(Number(meIdRaw)) ? Number(meIdRaw) : null;
@@ -3305,15 +3371,27 @@ export function WarehouseOperations({
     </div>
   );
 
-  const inventoryNewRowsSorted = useMemo(
-    () => sortInventoryNewRows(inventoryNewRows),
-    [inventoryNewRows]
-  );
+  const inventoryNewRowsSorted = useMemo(() => {
+    const scannedIds = new Set(
+      (inventoryNewRows || []).map((r) => String(r?.product?.id)).filter(Boolean)
+    );
+    const willZero = (inventoryWillZeroRows || []).filter(
+      (r) => r?.product?.id != null && !scannedIds.has(String(r.product.id))
+    );
+    return [
+      ...sortInventoryNewRows(inventoryNewRows),
+      ...willZero.sort((a, b) =>
+        String(a?.product?.sku || '').localeCompare(String(b?.product?.sku || ''), 'ru', {
+          numeric: true,
+        })
+      ),
+    ];
+  }, [inventoryNewRows, inventoryWillZeroRows]);
 
   const inventoryNewMoneyTotals = useMemo(() => {
     let plus = 0;
     let minus = 0;
-    for (const row of inventoryNewRows) {
+    for (const row of inventoryNewRowsSorted) {
       const unit = getInventoryUnitCostRub(row.product);
       if (unit == null) continue;
       const d = (row.fact ?? 0) - (row.current ?? 0);
@@ -3321,13 +3399,22 @@ export function WarehouseOperations({
       else if (d < 0) minus += -d * unit;
     }
     return { plus, minus, net: plus - minus };
-  }, [inventoryNewRows]);
+  }, [inventoryNewRowsSorted]);
+
+  const inventoryWillZeroCount = useMemo(
+    () => inventoryNewRowsSorted.filter((r) => r?.willZero).length,
+    [inventoryNewRowsSorted]
+  );
 
   const inventorySavedMoneyTotals = useMemo(() => {
     const lines = inventoryDetailView?.lines;
-    if (!Array.isArray(lines) || lines.length === 0) return { plus: 0, minus: 0, net: 0 };
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return { plus: 0, minus: 0, net: 0, unlistedMinus: 0, unlistedCount: 0 };
+    }
     let plus = 0;
     let minus = 0;
+    let unlistedMinus = 0;
+    let unlistedCount = 0;
     for (const line of lines) {
       const unit = getInventoryUnitCostRub({ cost: line.product_cost ?? line.productCost });
       if (unit == null) continue;
@@ -3336,8 +3423,12 @@ export function WarehouseOperations({
       const d = after - before;
       if (d > 0) plus += d * unit;
       else if (d < 0) minus += -d * unit;
+      if (line.is_unlisted_zero || line.isUnlistedZero) {
+        unlistedCount += 1;
+        if (d < 0) unlistedMinus += -d * unit;
+      }
     }
-    return { plus, minus, net: plus - minus };
+    return { plus, minus, net: plus - minus, unlistedMinus, unlistedCount };
   }, [inventoryDetailView]);
 
   const scanInventoryLive = async (code) => {
@@ -3641,6 +3732,7 @@ export function WarehouseOperations({
     setInventoryZeroUnlisted(true);
     setInventoryCategoryIds([]);
     setInventoryRemoveMode(false);
+    setInventoryWillZeroRows([]);
     setLookupError(null);
     setInventoryLiveDraft(readInventoryLiveDraft());
   };
@@ -3802,6 +3894,7 @@ export function WarehouseOperations({
         const r = await inventorySessionsApi.completeSession(String(inventoryLiveSessionId || '').trim(), {
           zeroUnlisted: inventoryZeroUnlisted,
           updateSessionId: inventoryEditingSessionId || undefined,
+          categoryIds: inventoryCategoryIds.length ? inventoryCategoryIds : [],
         });
         const res = r?.data ?? r;
         const sid = res?.sessionId ?? inventoryEditingSessionId;
@@ -4600,11 +4693,7 @@ export function WarehouseOperations({
               <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
                 <div className="warehouse-ops-inventory-categories-head">
                   <label>Категории — можно выбрать несколько</label>
-                  {(inventoryCategories || []).length > 0 &&
-                  !(
-                    isInventoryLiveGuest ||
-                    (inventoryLiveEnabled && !!String(inventoryLiveSessionId || '').trim())
-                  ) ? (
+                  {(inventoryCategories || []).length > 0 && !isInventoryLiveGuest ? (
                     <span className="warehouse-ops-inventory-categories-actions">
                       <button
                         type="button"
@@ -4639,9 +4728,7 @@ export function WarehouseOperations({
                     (inventoryCategories || []).map((cat) => {
                       const id = Number(cat.id);
                       const checked = inventoryCategoryIds.some((x) => Number(x) === id);
-                      const locked =
-                        isInventoryLiveGuest ||
-                        (inventoryLiveEnabled && !!String(inventoryLiveSessionId || '').trim());
+                      const locked = isInventoryLiveGuest;
                       const parentRaw = cat.parent_id ?? cat.parentId;
                       const isChild =
                         parentRaw != null && parentRaw !== '' && Number.isFinite(Number(parentRaw));
@@ -4847,11 +4934,21 @@ export function WarehouseOperations({
 
               <h4 className="warehouse-ops-receipt-list-title" style={{ marginTop: 20 }}>
                 Список пересчёта
+                {inventoryWillZeroCount > 0
+                  ? ` · будет обнулено: ${inventoryWillZeroCount}`
+                  : ''}
               </h4>
-              {inventoryNewRows.length === 0 ? (
+              {inventoryNewRowsSorted.length === 0 ? (
                 <p className="warehouse-ops-receipt-list-empty">Пока нет позиций. Сканируйте или выберите из подсказок поиска.</p>
               ) : (
                 <>
+                  {inventoryZeroUnlisted && inventoryWillZeroCount > 0 ? (
+                    <p className="warehouse-ops-hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                      Строки «будет обнулён» — товары выбранных категорий с остатком на складе, которых ещё нет в
+                      пересчёте. Снимите категорию или галку обнуления, если списывать их не нужно. Они входят в сумму
+                      недостачи ниже.
+                    </p>
+                  ) : null}
                   <div className="warehouse-ops-receipt-list-wrap">
                     <table className="warehouse-ops-receipt-list-table table warehouse-ops-inventory-table">
                       <thead>
@@ -4880,10 +4977,24 @@ export function WarehouseOperations({
                           const cellCode = inventoryAddresses.enabled
                             ? inventoryAssignedCode(row.product.id)
                             : null;
+                          const willZero = Boolean(row.willZero);
                           return (
-                            <tr key={row.product.id}>
+                            <tr
+                              key={willZero ? `zero-${row.product.id}` : row.product.id}
+                              className={willZero ? 'warehouse-ops-inventory-row--will-zero' : undefined}
+                            >
                               <td className="sku-cell">{row.product.sku || '—'}</td>
-                              <td className="name-cell">{row.product.name || '—'}</td>
+                              <td className="name-cell">
+                                {row.product.name || '—'}
+                                {willZero ? (
+                                  <span className="warehouse-ops-inventory-will-zero-badge">
+                                    будет обнулён
+                                    {row.product.category_name
+                                      ? ` · ${row.product.category_name}`
+                                      : ''}
+                                  </span>
+                                ) : null}
+                              </td>
                               {inventoryAddresses.enabled ? (
                                 <td>
                                   <ReceiptAssignCell
@@ -4896,7 +5007,7 @@ export function WarehouseOperations({
                               ) : null}
                               <td>{row.current}</td>
                               <td>
-                                {isReceiptScannerMode ? (
+                                {willZero || isReceiptScannerMode ? (
                                   row.fact
                                 ) : (
                                   <input
@@ -4917,14 +5028,16 @@ export function WarehouseOperations({
                               </td>
                               {!isReceiptScannerMode ? (
                                 <td>
-                                  <button
-                                    type="button"
-                                    className="warehouse-ops-remove-btn"
-                                    onClick={() => removeInventoryNewRow(row.product.id)}
-                                    title="Убрать из пересчёта"
-                                  >
-                                    ✕
-                                  </button>
+                                  {willZero ? null : (
+                                    <button
+                                      type="button"
+                                      className="warehouse-ops-remove-btn"
+                                      onClick={() => removeInventoryNewRow(row.product.id)}
+                                      title="Убрать из пересчёта"
+                                    >
+                                      ✕
+                                    </button>
+                                  )}
                                 </td>
                               ) : null}
                             </tr>
@@ -5666,6 +5779,30 @@ export function WarehouseOperations({
                   ? ` · Склад №${inventoryDetailView.session.warehouse_id}`
                   : ''}
             </p>
+            {(() => {
+              const catIds = normalizeInventoryCategoryIds(
+                inventoryDetailView.session.category_ids ?? inventoryDetailView.session.categoryIds
+              );
+              if (!catIds.length) {
+                return (
+                  <p className="warehouse-ops-hint" style={{ marginTop: -4, marginBottom: 12 }}>
+                    Область: весь склад (категории не ограничивали).
+                  </p>
+                );
+              }
+              return (
+                <div className="warehouse-ops-inventory-category-chips" style={{ marginBottom: 12 }}>
+                  {catIds.map((cid) => {
+                    const cat = (inventoryCategories || []).find((c) => Number(c.id) === Number(cid));
+                    return (
+                      <span key={cid} className="warehouse-ops-inventory-category-chip">
+                        {cat?.name || `#${cid}`}
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {Array.isArray(inventoryDetailView.lines) && inventoryDetailView.lines.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
                 <table className="warehouse-ops-receipt-list-table table warehouse-ops-inventory-table">
@@ -5698,10 +5835,21 @@ export function WarehouseOperations({
                         if (delta > 0) plusRub = delta * unit;
                         if (delta < 0) minusRub = -delta * unit;
                       }
+                      const unlisted = Boolean(line.is_unlisted_zero || line.isUnlistedZero);
                       return (
-                        <tr key={line.id}>
+                        <tr
+                          key={line.id}
+                          className={unlisted ? 'warehouse-ops-inventory-row--will-zero' : undefined}
+                        >
                           <td className="sku-cell">{line.product_sku || '—'}</td>
-                          <td className="name-cell">{line.product_name || '—'}</td>
+                          <td className="name-cell">
+                            {line.product_name || '—'}
+                            {unlisted ? (
+                              <span className="warehouse-ops-inventory-will-zero-badge">
+                                не пересчитан — обнулён
+                              </span>
+                            ) : null}
+                          </td>
                           <td>{line.quantity_before}</td>
                           <td>{line.quantity_after}</td>
                           <td className="num-cell">{unit != null ? formatRub(unit) : '—'}</td>
@@ -5727,6 +5875,17 @@ export function WarehouseOperations({
                         {formatRub(inventorySavedMoneyTotals.minus)}
                       </td>
                     </tr>
+                    {inventorySavedMoneyTotals.unlistedCount > 0 ? (
+                      <tr className="warehouse-ops-inventory-totals">
+                        <td colSpan={5} className="warehouse-ops-inventory-totals-label">
+                          В т.ч. автосписание непересчитанных ({inventorySavedMoneyTotals.unlistedCount} поз.):
+                        </td>
+                        <td className="num-cell">—</td>
+                        <td className="num-cell warehouse-ops-inventory-minus">
+                          {formatRub(inventorySavedMoneyTotals.unlistedMinus)}
+                        </td>
+                      </tr>
+                    ) : null}
                     <tr className="warehouse-ops-inventory-totals warehouse-ops-inventory-totals-net">
                       <td colSpan={5} className="warehouse-ops-inventory-totals-label">
                         Чистая разница (излишек − недостача):
@@ -5900,21 +6059,28 @@ export function WarehouseOperations({
           </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
-                Поставщик <span className="warehouse-ops-required-star">*</span>
-            </label>
-                <select
+                Поставщик
+                {receiptSessionEnabled && receiptSessionId ? null : (
+                  <span className="warehouse-ops-required-star">*</span>
+                )}
+              </label>
+              <select
                 value={receiptSupplierId}
                 onChange={(e) => setReceiptSupplierId(e.target.value)}
-                  className="warehouse-ops-select"
+                className="warehouse-ops-select"
               >
-                <option value="">— Выберите поставщика —</option>
+                <option value="">
+                  {receiptSessionEnabled && receiptSessionId
+                    ? '— Без поставщика —'
+                    : '— Выберите поставщика —'}
+                </option>
                 {(suppliers || []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name || s.code || s.id}
-                      </option>
-                    ))}
-                </select>
-              </div>
+                  </option>
+                ))}
+              </select>
+            </div>
             </div>
           {isReceiptSessionGuest && (
             <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>

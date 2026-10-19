@@ -56,11 +56,11 @@ function SupplierPicker({ onCancel, onConfirm, busy }) {
         <Button
           title="Оформить"
           style={styles.flex}
-          disabled={!selected}
           loading={busy}
-          onPress={() => onConfirm(Number(selected))}
+          onPress={() => onConfirm(selected != null ? Number(selected) : null)}
         />
       </View>
+      <Text style={styles.muted}>Поставщика можно не выбирать — оформите без него.</Text>
     </Card>
   );
 }
@@ -189,7 +189,11 @@ export default function ReceiptSessionScreen() {
 
   const items = session.items || [];
   const totalQty = items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
-  const isOwner = user?.id != null && Number(session.ownerUserId) === Number(user.id);
+  const myUserId = user?.id ?? user?.userId ?? null;
+  const isOwner =
+    myUserId != null &&
+    session.ownerUserId != null &&
+    Number(session.ownerUserId) === Number(myUserId);
 
   return (
     <View style={styles.screen}>
@@ -222,7 +226,7 @@ export default function ReceiptSessionScreen() {
             <ProductMeta
               article={item.article || item.sku}
               locationCode={item.locationCode}
-              addressStorageEnabled={data?.addressStorageEnabled === true}
+              addressStorageEnabled={session?.addressStorageEnabled === true}
             />
           </View>
           <Pressable
