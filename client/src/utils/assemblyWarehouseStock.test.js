@@ -30,9 +30,9 @@ describe('applyPickedToStock', () => {
 });
 
 describe('stockCountsLabel', () => {
-  test('наличие / в собранных заказах / на полке', () => {
+  test('наличие / в собранных заказах / в ячейке', () => {
     expect(stockCountsLabel({ onHand: 7, assembledInOrders: 1, onShelf: 6 })).toBe(
-      'наличие 7 · в собранных заказах 1 · на полке 6'
+      'наличие 7 · в собранных заказах 1 · в ячейке 6'
     );
   });
 });
@@ -54,12 +54,12 @@ describe('stockOnShelf', () => {
 
 describe('onShelfLabel', () => {
   test('до скана', () => {
-    expect(onShelfLabel({ onShelf: 6, scanned: 0 })).toBe('на полке 6');
+    expect(onShelfLabel({ onShelf: 6, scanned: 0 })).toBe('в ячейке 6');
   });
 
   test('скан уменьшает, не ниже нуля', () => {
-    expect(onShelfLabel({ onShelf: 6, scanned: 2 })).toBe('на полке 4');
-    expect(onShelfLabel({ onShelf: 1, scanned: 3 })).toBe('на полке 0');
+    expect(onShelfLabel({ onShelf: 6, scanned: 2 })).toBe('в ячейке 4');
+    expect(onShelfLabel({ onShelf: 1, scanned: 3 })).toBe('в ячейке 0');
   });
 });
 

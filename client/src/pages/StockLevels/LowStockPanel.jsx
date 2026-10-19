@@ -11,7 +11,7 @@ export const LOW_STOCK_URGENCY = {
 
 const PERIOD_OPTIONS = [14, 30, 60, 90];
 const ALERT_OPTIONS = [5, 7, 10, 14, 21, 30, 45];
-const COVER_OPTIONS = [14, 30, 45, 60, 90];
+const COVER_OPTIONS = [5, 7, 10, 14, 30, 45, 60, 90];
 
 function fmtQty(n) {
   const v = Number(n) || 0;

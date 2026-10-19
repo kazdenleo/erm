@@ -6,7 +6,7 @@ function n(v) {
   return Math.max(0, Math.floor(Number(v) || 0));
 }
 
-/** На полке = наличие − собрано в заказах (сборка не списывает наличие до отгрузки). */
+/** В ячейке = наличие − собрано в заказах (сборка не списывает наличие до отгрузки). */
 export function stockOnShelf(stock) {
   if (!stock) return 0;
   if (stock.onShelf != null) return n(stock.onShelf);
@@ -16,12 +16,12 @@ export function stockOnShelf(stock) {
 export function stockCountsLabel(stock = {}) {
   return `наличие ${n(stock?.onHand)} · в собранных заказах ${n(
     stock?.assembledInOrders
-  )} · на полке ${stockOnShelf(stock)}`;
+  )} · в ячейке ${stockOnShelf(stock)}`;
 }
 
-/** scanned — сколько уже отсканировали в текущей сессии: эти штуки уже сняты с полки. */
+/** scanned — сколько уже отсканировали в текущей сессии: эти штуки уже сняты с ячейки. */
 export function onShelfLabel({ onShelf = 0, scanned = 0 } = {}) {
-  return `на полке ${Math.max(0, n(onShelf) - n(scanned))}`;
+  return `в ячейке ${Math.max(0, n(onShelf) - n(scanned))}`;
 }
 
 /**
