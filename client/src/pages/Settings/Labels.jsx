@@ -96,13 +96,17 @@ export function Labels() {
         clearTimeout(healthT);
       }
 
-      const list = await fetchPrintHelperPrinters(base);
+      const { printers: list, message: printersMsg } = await fetchPrintHelperPrinters(base);
       setPrinters(list);
       if (!list.length && featuresOk) {
-        setPrintersError('Принтеры не найдены. Проверьте, что принтеры установлены в Windows.');
+        setPrintersError(
+          printersMsg ||
+            'Принтеры не найдены. Проверьте службу «Диспетчер печати» и что принтеры видны в параметрах Windows.'
+        );
       } else if (!list.length) {
         setPrintersError(
-          'Не удалось получить список принтеров. Установите/обновите Print Helper и нажмите «Обновить список».'
+          printersMsg ||
+            'Не удалось получить список принтеров. Установите/обновите Print Helper и нажмите «Обновить список».'
         );
       }
     } finally {
@@ -132,21 +136,46 @@ export function Labels() {
       });
 
       const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp?.data]);
-      const url = URL.createObjectURL(blob);
+      // Ошибки API при responseType:blob приходят JSON-ом в теле — иначе скачивается «битый» exe.
+      const ctype = String(resp?.headers?.['content-type'] || '');
+      if (ctype.includes('application/json') || blob.type === 'application/json') {
+        const text = await blob.text();
+        let message = 'Не удалось скачать установщик';
+        try {
+          const j = JSON.parse(text);
+          if (j?.message) message = String(j.message);
+        } catch {
+          /* ignore */
+        }
+        throw new Error(message);
+      }
+      if (!blob.size || blob.size < 1024) {
+        throw new Error('Файл установщика пустой или повреждён. Обратитесь к администратору.');
+      }
 
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'erm-print-helper-setup.exe';
       document.body.appendChild(a);
       a.click();
       a.remove();
-
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e) {
-      const msg =
-        e?.response?.data?.message ||
+      let msg =
         e?.message ||
         'Не удалось скачать установщик. Проверьте, что файл загружен на сервер.';
+      const errData = e?.response?.data;
+      if (errData instanceof Blob) {
+        try {
+          const j = JSON.parse(await errData.text());
+          if (j?.message) msg = String(j.message);
+        } catch {
+          /* ignore */
+        }
+      } else if (errData?.message) {
+        msg = String(errData.message);
+      }
       setDownloadError(String(msg));
     } finally {
       setDownloadLoading(false);
@@ -218,28 +247,36 @@ export function Labels() {
           {printersError ? <p className="error">{printersError}</p> : null}
 
           <div className="settings-labels-printers">
-            {LABEL_PRINT_KINDS.map((kind) => (
-              <div key={kind.id} className="form-group settings-labels-select settings-labels-printer-row">
-                <label htmlFor={`label-printer-${kind.id}`}>{kind.label}</label>
-                <p className="settings-labels-kind-hint">{kind.hint}</p>
-                <select
-                  id={`label-printer-${kind.id}`}
-                  value={printerMap[kind.id] || ''}
-                  onChange={(e) => onPrinterChange(kind.id, e.target.value)}
-                  className="settings-labels-select-el"
-                >
-                  <option value="">Принтер по умолчанию</option>
-                  {printerMap[kind.id] && !printers.includes(printerMap[kind.id]) ? (
-                    <option value={printerMap[kind.id]}>{printerMap[kind.id]} (сохранён)</option>
-                  ) : null}
-                  {printers.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
+            {LABEL_PRINT_KINDS.map((kind) => {
+              // Показываем фактический принтер с учётом миграции со старого «box» / «cargo».
+              const effective =
+                printerMap[kind.id] ||
+                (kind.id.startsWith('box_') ? printerMap.box : '') ||
+                (kind.id === 'box_ym' ? printerMap.cargo : '') ||
+                '';
+              return (
+                <div key={kind.id} className="form-group settings-labels-select settings-labels-printer-row">
+                  <label htmlFor={`label-printer-${kind.id}`}>{kind.label}</label>
+                  <p className="settings-labels-kind-hint">{kind.hint}</p>
+                  <select
+                    id={`label-printer-${kind.id}`}
+                    value={effective}
+                    onChange={(e) => onPrinterChange(kind.id, e.target.value)}
+                    className="settings-labels-select-el"
+                  >
+                    <option value="">Принтер по умолчанию</option>
+                    {effective && !printers.includes(effective) ? (
+                      <option value={effective}>{effective} (сохранён)</option>
+                    ) : null}
+                    {printers.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
           </div>
 
           <hr style={{ margin: '18px 0' }} />
@@ -247,6 +284,10 @@ export function Labels() {
           <h2 className="subtitle" style={{ marginTop: 0 }}>Print Helper (тихая печать)</h2>
           <p className="subtitle" style={{ marginTop: 0 }}>
             Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера и на нужный принтер.
+          </p>
+          <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+            Перед обновлением закройте Print Helper в трее (правый клик → Выход), иначе установщик не сможет
+            заменить файл.
           </p>
           <div className="form-group">
             <button className="btn btn-primary" type="button" onClick={downloadPrintHelper} disabled={downloadLoading}>

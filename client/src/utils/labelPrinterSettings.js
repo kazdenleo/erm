@@ -5,7 +5,9 @@
 
 export const LABEL_PRINTER_STORAGE_KEY = 'erm_label_printers';
 
-/** @typedef {'order'|'product'|'box'|'pallet'|'cargo'} LabelPrintKind */
+/**
+ * @typedef {'order'|'product'|'packaging'|'box_ozon'|'box_wb'|'box_ym'|'pallet'|'cargo'|'box'} LabelPrintKind
+ */
 
 export const LABEL_PRINT_KINDS = [
   {
@@ -19,24 +21,58 @@ export const LABEL_PRINT_KINDS = [
     hint: 'Этикетки товаров и сборка FBO по штукам',
   },
   {
-    id: 'box',
-    label: 'Стикеры коробов',
-    hint: 'FBO: этикетки коробов (грузомест-коробов)',
+    id: 'packaging',
+    label: 'ШК упаковок товара',
+    hint: 'Печать штрихкода упаковки из карточки товара (коробка с N шт.)',
+  },
+  {
+    id: 'box_ozon',
+    label: 'Короба FBO — Ozon',
+    hint: 'Этикетки грузомест-коробов Ozon',
+  },
+  {
+    id: 'box_wb',
+    label: 'Короба FBO — Wildberries',
+    hint: 'Этикетки коробов WB (FBW)',
+  },
+  {
+    id: 'box_ym',
+    label: 'Короба FBO — Яндекс Маркет',
+    hint: 'Ярлыки грузомест / коробов Маркета',
   },
   {
     id: 'pallet',
     label: 'Стикеры паллет',
-    hint: 'FBO: этикетки паллет',
+    hint: 'FBO: этикетки паллет (Ozon)',
   },
   {
     id: 'cargo',
-    label: 'Стикеры грузомест',
-    hint: 'Транспортные грузоместа (ТГМ) и ярлыки Маркета',
+    label: 'Стикеры грузомест (ТГМ)',
+    hint: 'Транспортные грузоместа Ozon (ТГМ)',
   },
 ];
 
 function emptyMap() {
-  return { order: '', product: '', box: '', pallet: '', cargo: '' };
+  return {
+    order: '',
+    product: '',
+    packaging: '',
+    box_ozon: '',
+    box_wb: '',
+    box_ym: '',
+    pallet: '',
+    cargo: '',
+    /** @deprecated legacy — читаем как fallback для box_* */
+    box: '',
+  };
+}
+
+/** Нормализация маркетплейса поставки → ключ принтера коробов. */
+export function fboBoxPrintKind(marketplace) {
+  const mp = String(marketplace || 'ozon').toLowerCase().trim();
+  if (mp === 'wb' || mp === 'wildberries') return 'box_wb';
+  if (mp === 'ym' || mp === 'yandex' || mp === 'yandex_market') return 'box_ym';
+  return 'box_ozon';
 }
 
 export function getLabelPrinterMap() {
@@ -49,6 +85,7 @@ export function getLabelPrinterMap() {
     for (const k of Object.keys(base)) {
       if (parsed[k] != null) base[k] = String(parsed[k]).trim();
     }
+    // Миграция: старый единый «box» → пустые box_* наследуют его при чтении (см. getLabelPrinter).
     return base;
   } catch {
     return emptyMap();
@@ -66,7 +103,14 @@ export function setLabelPrinterMap(map) {
 export function getLabelPrinter(kind) {
   const map = getLabelPrinterMap();
   const key = String(kind || '').trim();
-  return map[key] ? String(map[key]).trim() : '';
+  if (map[key]) return String(map[key]).trim();
+  // Совместимость со старой настройкой «Стикеры коробов»
+  if (key === 'box_ozon' || key === 'box_wb' || key === 'box_ym' || key === 'box') {
+    if (map.box) return String(map.box).trim();
+  }
+  // Ярлыки Маркета раньше шли на «грузоместа»
+  if (key === 'box_ym' && map.cargo) return String(map.cargo).trim();
+  return '';
 }
 
 /** @param {LabelPrintKind|string} kind @param {string} printerName */

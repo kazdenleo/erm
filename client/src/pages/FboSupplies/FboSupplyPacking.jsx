@@ -28,6 +28,7 @@ import {
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
+import { fboBoxPrintKind } from '../../utils/labelPrinterSettings.js';
 
 /** Лимит сервера на одно создание грузомест в Ozon. */
 const OZON_CARGO_CREATE_MAX = 30;
@@ -73,17 +74,18 @@ function downloadExcelBuffer(buffer, filename) {
   URL.revokeObjectURL(url);
 }
 
-function resolveCargoPrintKind(cargoUnits, cargoIds) {
+function resolveCargoPrintKind(cargoUnits, cargoIds, marketplace = 'ozon') {
   const idSet = new Set((cargoIds || []).map(String));
   const matched = (cargoUnits || []).filter(
     (c) => idSet.has(String(c.id)) || idSet.has(String(c.barcode)) || idSet.has(String(c.cargoUnitId))
   );
-  if (!matched.length) return 'box';
+  const boxKind = fboBoxPrintKind(marketplace);
+  if (!matched.length) return boxKind;
   const kinds = new Set(matched.map((c) => (c.cargoKind === 'pallet' ? 'pallet' : 'box')));
   if (kinds.size === 1 && kinds.has('pallet')) return 'pallet';
-  if (kinds.size === 1) return 'box';
+  if (kinds.size === 1) return boxKind;
   // Смешанная печать — печатаем пачками по типу ниже; здесь fallback.
-  return 'box';
+  return boxKind;
 }
 
 export function FboSupplyPacking({
@@ -340,7 +342,8 @@ export function FboSupplyPacking({
         setScanMsg(`${createdMsg} Получаем этикетки у Ozon…`);
         try {
           const res = await fboSuppliesApi.printCargoLabels(supplyId, createdIds, {
-            kind: cargoKind === 'pallet' ? 'pallet' : 'box',
+            kind: cargoKind === 'pallet' ? 'pallet' : fboBoxPrintKind(marketplace),
+            marketplace,
             printHelperUrl,
           });
           setScanMsg(
@@ -412,18 +415,28 @@ export function FboSupplyPacking({
         else boxes.push(id);
       }
       // Короба и паллеты — параллельно (разные принтеры), иначе ждать Ozon дважды подряд.
+      const boxKind = fboBoxPrintKind(marketplace);
       if (!boxes.length && !pallets.length) {
         await fboSuppliesApi.printCargoLabels(supplyId, ids, {
-          kind: resolveCargoPrintKind(cargoUnits, ids),
+          kind: resolveCargoPrintKind(cargoUnits, ids, marketplace),
+          marketplace,
           printHelperUrl,
         });
       } else {
         await Promise.all([
           boxes.length
-            ? fboSuppliesApi.printCargoLabels(supplyId, boxes, { kind: 'box', printHelperUrl })
+            ? fboSuppliesApi.printCargoLabels(supplyId, boxes, {
+                kind: boxKind,
+                marketplace,
+                printHelperUrl,
+              })
             : null,
           pallets.length
-            ? fboSuppliesApi.printCargoLabels(supplyId, pallets, { kind: 'pallet', printHelperUrl })
+            ? fboSuppliesApi.printCargoLabels(supplyId, pallets, {
+                kind: 'pallet',
+                marketplace,
+                printHelperUrl,
+              })
             : null,
         ]);
       }

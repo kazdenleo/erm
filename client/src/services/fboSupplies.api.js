@@ -4,6 +4,7 @@
 
 import api from './api';
 import { canReachPrintHelper, printViaPrintHelper } from '../utils/printHelperClient.js';
+import { fboBoxPrintKind } from '../utils/labelPrinterSettings.js';
 
 function parseXlsxFilename(response, fallback) {
   const cd = String(
@@ -418,7 +419,7 @@ export const fboSuppliesApi = {
     }
   },
 
-  /** Печать этикеток ТГМ на принтер типа «грузоместа». */
+  /** Печать этикеток ТГМ на принтер «Стикеры грузомест (ТГМ)». */
   printTransportCargoLabels: async (id, transportCargoIds, { printHelperUrl } = {}) => {
     const buffer = await fboSuppliesApi.downloadTransportCargoLabels(id, transportCargoIds);
     return printPdfBuffer(buffer, {
@@ -446,9 +447,13 @@ export const fboSuppliesApi = {
   /**
    * @param {string|number} id
    * @param {Array<string|number>} cargoIds
-   * @param {{ refresh?: boolean, kind?: 'box'|'pallet'|'cargo', printHelperUrl?: string }} [opts]
+   * @param {{ refresh?: boolean, kind?: string, marketplace?: string, printHelperUrl?: string }} [opts]
    */
-  printCargoLabels: async (id, cargoIds, { refresh = false, kind = 'box', printHelperUrl } = {}) => {
+  printCargoLabels: async (
+    id,
+    cargoIds,
+    { refresh = false, kind = 'box', marketplace, printHelperUrl } = {}
+  ) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
     let buffer;
     try {
@@ -461,7 +466,12 @@ export const fboSuppliesApi = {
     } catch (e) {
       throw new Error(parseApiErrorPayload(e, 'Не удалось получить этикетки грузомест'));
     }
-    const printKind = kind === 'pallet' || kind === 'cargo' ? kind : 'box';
+    let printKind = String(kind || 'box').trim();
+    if (printKind === 'box') {
+      printKind = fboBoxPrintKind(marketplace);
+    } else if (printKind !== 'pallet' && printKind !== 'cargo' && !/^box_/.test(printKind)) {
+      printKind = fboBoxPrintKind(marketplace);
+    }
     return printPdfBuffer(buffer, {
       kind: printKind,
       filename: `cargo-labels-${id}.pdf`,
@@ -482,7 +492,7 @@ export const fboSuppliesApi = {
       throw new Error(parseApiErrorPayload(e, 'Не удалось получить ярлыки грузомест из Маркета'));
     }
     return printPdfBuffer(buffer, {
-      kind: 'cargo',
+      kind: 'box_ym',
       filename: `ym-cargo-labels-${id}.pdf`,
       printHelperUrl,
       orderId: `ym-cargo-${id}`,
