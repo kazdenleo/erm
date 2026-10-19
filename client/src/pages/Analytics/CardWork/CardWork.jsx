@@ -32,8 +32,9 @@ const SCHEME_OPTIONS = [
   { value: 'fbs', label: 'Только FBS' },
 ];
 
-const REASON_FILTERS = [
-  { value: 'all', label: 'Все причины' },
+/** Плашки-фильтры по причине (клик открывает раздел). */
+const REASON_PLAQUES = [
+  { value: 'all', label: 'Карточек к работе' },
   { value: 'low_turnover', label: 'Низкая оборачиваемость' },
   { value: 'stockout', label: 'Нет остатка' },
   { value: 'low_content_rating', label: 'Качество' },
@@ -241,6 +242,49 @@ export function CardWork() {
     () => sortRows(certIssues?.items || [], certSort, CERT_SORT_GETTERS),
     [certIssues, certSort]
   );
+  const plaqueCounts = useMemo(() => {
+    const queueLoading = loading && data == null;
+    return {
+      all: { loading: queueLoading, value: summary.cardsCount },
+      low_turnover: {
+        loading: queueLoading,
+        value: summary.lowTurnoverCount ?? summary.overstockCount,
+      },
+      stockout: { loading: queueLoading, value: summary.stockoutCount },
+      low_content_rating: { loading: queueLoading, value: summary.lowContentRatingCount },
+      dim_mismatch: { loading: queueLoading, value: summary.dimMismatchCount },
+      high_drr: { loading: queueLoading, value: summary.highDrrCount },
+      high_returns: { loading: queueLoading, value: summary.highReturnsCount },
+      duplicate: {
+        loading: dupLoading && duplicates == null,
+        value: duplicates?.productCount ?? duplicateGroups.length,
+      },
+      missing_cost: {
+        loading: costLoading && missingCost == null,
+        value: missingCost?.productCount ?? missingCostItems.length,
+      },
+      certificate: {
+        loading: certLoading && certIssues == null,
+        value: certIssues?.productCount ?? certificateItems.length,
+      },
+    };
+  }, [
+    loading,
+    data,
+    summary,
+    dupLoading,
+    duplicates,
+    duplicateGroups.length,
+    costLoading,
+    missingCost,
+    missingCostItems.length,
+    certLoading,
+    certIssues,
+    certificateItems.length,
+  ]);
+  const selectReason = useCallback((value) => {
+    setReason(value);
+  }, []);
   const showDuplicates = reason === 'duplicate';
   const showMissingCost = reason === 'missing_cost';
   const showCertificates = reason === 'certificate';
@@ -319,145 +363,38 @@ export function CardWork() {
         ) : null}
       </div>
 
-      <div className="product-dynamics__controls-row">
-        <div className="product-dynamics__toggle-group" role="group" aria-label="Причина">
-          <span className="product-dynamics__toggle-label">Причина</span>
-          {REASON_FILTERS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              className={`product-dynamics__toggle${reason === f.value ? ' is-active' : ''}`}
-              onClick={() => setReason(f.value)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {error && <div className="sales-analytics__error">{error}</div>}
       {dupError && showDuplicates ? <div className="sales-analytics__error">{dupError}</div> : null}
       {costError && showMissingCost ? <div className="sales-analytics__error">{costError}</div> : null}
       {certError && showCertificates ? <div className="sales-analytics__error">{certError}</div> : null}
 
-      <div className="product-dynamics__summary-cards">
-        <div className="product-dynamics__summary-card">
-          <div className="product-dynamics__summary-card-label">Карточек к работе</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.cardsCount)}
-          </div>
-        </div>
-        <div className="product-dynamics__summary-card">
-          <div className="product-dynamics__summary-card-label">Низкая оборачиваемость</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null
-              ? '…'
-              : formatQty(summary.lowTurnoverCount ?? summary.overstockCount)}
-          </div>
-        </div>
-        <div className="product-dynamics__summary-card">
-          <div className="product-dynamics__summary-card-label">Нет остатка</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.stockoutCount)}
-          </div>
-        </div>
-        <div className="product-dynamics__summary-card">
-          <div className="product-dynamics__summary-card-label">Качество</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.lowContentRatingCount)}
-          </div>
-        </div>
-        <div className="product-dynamics__summary-card">
-          <div className="product-dynamics__summary-card-label">Размеры</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.dimMismatchCount)}
-          </div>
-        </div>
-        <div
-          className={`product-dynamics__summary-card${reason === 'high_drr' ? ' is-active' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => setReason('high_drr')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') setReason('high_drr');
-          }}
-        >
-          <div className="product-dynamics__summary-card-label">Высокий ДРР</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.highDrrCount)}
-          </div>
-        </div>
-        <div
-          className={`product-dynamics__summary-card${reason === 'high_returns' ? ' is-active' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => setReason('high_returns')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') setReason('high_returns');
-          }}
-        >
-          <div className="product-dynamics__summary-card-label">Много возвратов</div>
-          <div className="product-dynamics__summary-card-value">
-            {loading && data == null ? '…' : formatQty(summary.highReturnsCount)}
-          </div>
-        </div>
-        <div
-          className={`product-dynamics__summary-card${reason === 'duplicate' ? ' is-active' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => setReason('duplicate')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setReason('duplicate');
-            }
-          }}
-        >
-          <div className="product-dynamics__summary-card-label">Дубли</div>
-          <div className="product-dynamics__summary-card-value">
-            {dupLoading && duplicates == null
-              ? '…'
-              : formatQty(duplicates?.productCount ?? duplicateGroups.length)}
-          </div>
-        </div>
-        <div
-          className={`product-dynamics__summary-card${reason === 'missing_cost' ? ' is-active' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => setReason('missing_cost')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setReason('missing_cost');
-            }
-          }}
-        >
-          <div className="product-dynamics__summary-card-label">Без себестоимости</div>
-          <div className="product-dynamics__summary-card-value">
-            {costLoading && missingCost == null
-              ? '…'
-              : formatQty(missingCost?.productCount ?? missingCostItems.length)}
-          </div>
-        </div>
-        <div
-          className={`product-dynamics__summary-card${reason === 'certificate' ? ' is-active' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => setReason('certificate')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setReason('certificate');
-            }
-          }}
-        >
-          <div className="product-dynamics__summary-card-label">Без сертификата</div>
-          <div className="product-dynamics__summary-card-value">
-            {certLoading && certIssues == null
-              ? '…'
-              : formatQty(certIssues?.productCount ?? certificateItems.length)}
-          </div>
-        </div>
+      <div className="product-dynamics__summary-cards" role="group" aria-label="Причина">
+        {REASON_PLAQUES.map((plaque) => {
+          const count = plaqueCounts[plaque.value] || {};
+          const active = reason === plaque.value;
+          return (
+            <div
+              key={plaque.value}
+              className={`product-dynamics__summary-card${active ? ' is-active' : ''}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={active}
+              title={`Показать: ${plaque.label}`}
+              onClick={() => selectReason(plaque.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectReason(plaque.value);
+                }
+              }}
+            >
+              <div className="product-dynamics__summary-card-label">{plaque.label}</div>
+              <div className="product-dynamics__summary-card-value">
+                {count.loading ? '…' : formatQty(count.value)}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {showMainTable ? (
