@@ -7,6 +7,7 @@ import { errorMessage } from '../../../api/client';
 import { scanError, scanOk } from '../../../lib/feedback';
 import { writeItem } from '../../../lib/storage';
 import { ScanBar } from '../../../components/ScanBar';
+import { CargoReport } from '../../../features/cargo/CargoReport';
 import { PlaceStatusBadge } from '../../../features/cargo/placeStatus';
 import { Banner, Button, Card, Field, Loading } from '../../../ui/components';
 import { colors } from '../../../ui/theme';
@@ -208,7 +209,7 @@ export default function CargoPurchaseScreen() {
     );
   }
 
-  const { purchase, places = [], receipt, expectedCargoPlaces } = data;
+  const { purchase, places = [], receipt, expectedCargoPlaces, report } = data;
   const doneCount = places.filter((p) => p.status === 'closed' || p.status === 'received').length;
   const isReceiptOwner =
     !receipt?.createdByUserId || (user?.id != null && Number(receipt.createdByUserId) === Number(user.id));
@@ -295,6 +296,8 @@ export default function CargoPurchaseScreen() {
       {places.some((p) => p.status === 'accepted') ? (
         <Text style={styles.mutedSmall}>Нажмите на место, чтобы принять из него товар; удерживайте, чтобы удалить ошибочный скан.</Text>
       ) : null}
+
+      <CargoReport report={report} />
 
       {receipt ? (
         <Card style={styles.gap}>

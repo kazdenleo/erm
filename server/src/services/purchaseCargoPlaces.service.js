@@ -357,6 +357,32 @@ class PurchaseCargoPlacesService {
       [purchaseId]
     );
     const receipt = receiptR.rows?.[0];
+    const reportR = await client.query(
+      `SELECT cp.id AS place_id, cp.barcode,
+              ci.product_id, ci.quantity, pr.sku, pr.name
+       FROM purchase_cargo_places cp
+       JOIN purchase_cargo_place_items ci ON ci.cargo_place_id = cp.id
+       JOIN products pr ON pr.id = ci.product_id
+       WHERE cp.purchase_id = $1
+       ORDER BY cp.accepted_at ASC, cp.id ASC, pr.sku ASC`,
+      [purchaseId]
+    );
+    const reportPlaces = new Map();
+    for (const row of reportR.rows || []) {
+      const placeId = Number(row.place_id);
+      if (!reportPlaces.has(placeId)) {
+        reportPlaces.set(placeId, { placeId, barcode: row.barcode, items: [], quantity: 0 });
+      }
+      const place = reportPlaces.get(placeId);
+      const qty = Number(row.quantity) || 0;
+      place.items.push({
+        productId: Number(row.product_id),
+        sku: row.sku,
+        name: row.name,
+        quantity: qty,
+      });
+      place.quantity += qty;
+    }
     return {
       purchase: {
         id: Number(p.id),
@@ -373,6 +399,10 @@ class PurchaseCargoPlacesService {
       },
       expectedCargoPlaces: p.expected_cargo_places != null ? Number(p.expected_cargo_places) : null,
       places: (places.rows || []).map(mapPlace),
+      report: {
+        places: [...reportPlaces.values()],
+        totalQuantity: [...reportPlaces.values()].reduce((s, p) => s + p.quantity, 0),
+      },
       receipt: receipt
         ? {
             id: Number(receipt.id),

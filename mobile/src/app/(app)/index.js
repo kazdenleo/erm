@@ -21,11 +21,13 @@ export default function HomeScreen() {
   const { user, organization } = useAuth();
   const [activeReceipt, setActiveReceipt] = useState(null);
   const [activePurchase, setActivePurchase] = useState(null);
+  const [activeBatch, setActiveBatch] = useState(null);
 
   useFocusEffect(
     useCallback(() => {
       readItem('receiptSession').then(setActiveReceipt);
       readItem('cargoPurchase').then(setActivePurchase);
+      readItem('cargoBatch').then(setActiveBatch);
     }, [])
   );
 
@@ -54,9 +56,23 @@ export default function HomeScreen() {
       ) : null}
       <Tile
         title="Приёмка по закупке"
-        subtitle="Принять грузоместа и товар из каждого места"
+        subtitle="Грузоместа и товар в рамках закупки"
         accent={colors.success}
         onPress={() => router.push('/cargo')}
+      />
+      {activeBatch ? (
+        <Tile
+          title={`Грузоместа · пакет №${activeBatch}`}
+          subtitle="Продолжить приёмку без закупки"
+          accent={colors.warning}
+          onPress={() => router.push(`/cargo-free/${encodeURIComponent(activeBatch)}`)}
+        />
+      ) : null}
+      <Tile
+        title="Грузоместа без закупки"
+        subtitle="Принять коробки, затем товар из каждой — с отчётом по местам"
+        accent={colors.success}
+        onPress={() => router.push('/cargo-free')}
       />
       {activeReceipt ? (
         <Tile
@@ -68,8 +84,8 @@ export default function HomeScreen() {
       ) : null}
       <Tile
         title="Приёмка без закупки"
-        subtitle="Новая приёмка на склад или подключение к общей приёмке"
-        accent={colors.success}
+        subtitle="Сразу товар на склад (без грузомест) или общая сессия"
+        accent={colors.muted}
         onPress={() => router.push('/receipt')}
       />
       <View style={styles.spacer} />

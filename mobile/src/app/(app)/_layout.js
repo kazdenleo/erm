@@ -20,6 +20,9 @@ export default function AppLayout() {
       <Stack.Screen name="cargo/index" options={{ title: 'Приёмка по закупке' }} />
       <Stack.Screen name="cargo/[purchaseId]" options={{ title: 'Закупка' }} />
       <Stack.Screen name="cargo/place/[placeId]" options={{ title: 'Грузоместо' }} />
+      <Stack.Screen name="cargo-free/index" options={{ title: 'Грузоместа без закупки' }} />
+      <Stack.Screen name="cargo-free/[batchId]" options={{ title: 'Пакет грузомест' }} />
+      <Stack.Screen name="cargo-free/place/[placeId]" options={{ title: 'Грузоместо' }} />
       <Stack.Screen name="settings" options={{ title: 'Настройки' }} />
     </Stack>
   );

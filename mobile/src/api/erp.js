@@ -103,6 +103,47 @@ export const cargoApi = {
     }).then(unwrap),
 };
 
+/** Приёмка грузомест без закупки. */
+export const cargoBatchesApi = {
+  list: (status = 'open') => request('/cargo-batches/batches', { params: { status } }).then(listOf),
+  create: ({ warehouseId, organizationId, expectedPlaces, note }) =>
+    request('/cargo-batches/batches', {
+      method: 'POST',
+      body: { warehouseId, organizationId, expectedPlaces, note },
+    }).then(unwrap),
+  get: (batchId) => request(`/cargo-batches/batches/${batchId}`).then(unwrap),
+  setExpected: (batchId, expectedPlaces) =>
+    request(`/cargo-batches/batches/${batchId}/expected`, {
+      method: 'PUT',
+      body: { expectedPlaces },
+    }).then(unwrap),
+  acceptPlace: (batchId, barcode, { force = false } = {}) =>
+    request(`/cargo-batches/batches/${batchId}/places`, {
+      method: 'POST',
+      body: { barcode, force },
+    }).then(unwrap),
+  complete: (batchId, { supplierId, organizationId } = {}) =>
+    request(`/cargo-batches/batches/${batchId}/complete`, {
+      method: 'POST',
+      body: { supplierId, organizationId },
+      timeoutMs: 120000,
+    }).then(unwrap),
+  getPlace: (placeId) => request(`/cargo-batches/places/${placeId}`).then(unwrap),
+  removePlace: (placeId) => request(`/cargo-batches/places/${placeId}/remove`, { method: 'POST' }).then(unwrap),
+  openPlace: (placeId) => request(`/cargo-batches/places/${placeId}/open`, { method: 'POST' }).then(unwrap),
+  closePlace: (placeId) => request(`/cargo-batches/places/${placeId}/close`, { method: 'POST' }).then(unwrap),
+  addItem: (placeId, { code = null, productId = null, quantity = 1 }) =>
+    request(`/cargo-batches/places/${placeId}/items`, {
+      method: 'POST',
+      body: { code, productId, quantity },
+    }).then(unwrap),
+  setItemQuantity: (placeId, productId, quantity) =>
+    request(`/cargo-batches/places/${placeId}/items/set`, {
+      method: 'POST',
+      body: { productId, quantity },
+    }).then(unwrap),
+};
+
 export const purchasesApi = {
   completeReceipt: (receiptId, warehouseId) =>
     request(`/purchases/receipts/${receiptId}/complete`, {

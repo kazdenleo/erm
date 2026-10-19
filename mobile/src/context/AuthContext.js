@@ -126,6 +126,7 @@ export function AuthProvider({ children }) {
   const signOut = useCallback(async () => {
     await writeItem('receiptSession', null);
     await writeItem('cargoPurchase', null);
+    await writeItem('cargoBatch', null);
     await resetSession();
   }, [resetSession]);
 

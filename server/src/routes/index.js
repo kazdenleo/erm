@@ -43,6 +43,7 @@ import productAttributesRoutes from './product_attributes.routes.js';
 import warehouseReceiptsRoutes from './warehouseReceipts.routes.js';
 import purchasesRoutes from './purchases.routes.js';
 import purchaseCargoPlacesRoutes from './purchaseCargoPlaces.routes.js';
+import cargoBatchesRoutes from './cargoBatches.routes.js';
 import fboSuppliesRoutes from './fboSupplies.routes.js';
 import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
@@ -380,6 +381,8 @@ router.post(
 router.use('/purchases', purchasesRoutes);
 // Грузоместа закупок: приёмка мест и товара из них (мобильное приложение склада)
 router.use('/purchase-cargo', purchaseCargoPlacesRoutes);
+// Грузоместа без закупки: пакет → места → товар → оформление на склад
+router.use('/cargo-batches', cargoBatchesRoutes);
 
 // Шаблон Excel FBO (явный маршрут до вложенного router — только артикул + количество)
 router.get(

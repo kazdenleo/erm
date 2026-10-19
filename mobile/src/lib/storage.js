@@ -6,6 +6,7 @@ const KEYS = {
   organizationId: 'erm.organizationId',
   receiptSession: 'erm.receiptSession',
   cargoPurchase: 'erm.cargoPurchase',
+  cargoBatch: 'erm.cargoBatch',
   autoPrintLabel: 'erm.autoPrintLabel',
   labelPrinter: 'erm.labelPrinter',
 };
