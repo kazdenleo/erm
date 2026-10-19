@@ -23,7 +23,21 @@ import {
 } from './fboSuppliesSubmit.service.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { formatOzonCargoErrorReasons } from '../utils/ozonCargoErrors.js';
+import { toOzonJsonId } from '../utils/ozonJsonId.js';
 import logger from '../utils/logger.js';
+
+/** operation_id из ответов create/status Ozon (несколько вариантов обёртки). */
+function extractOzonLabelOperationId(data) {
+  const root = data?.result ?? data ?? {};
+  return (
+    root.operation_id ??
+    root.operationId ??
+    data?.operation_id ??
+    data?.operationId ??
+    root?.result?.operation_id ??
+    null
+  );
+}
 
 /** Дедуп параллельных запросов одних и тех же этикеток (создание + печать сразу). */
 const pendingCargoLabelFetches = new Map();
@@ -43,15 +57,16 @@ export function ozonCargoKindFromOzonType(type) {
 
 /** Тело запроса Ozon POST /v1/cargoes-label/create (у каждого ГМ нужен type). */
 export function buildOzonCargoLabelsCreateBody(ozonSupplyId, cargoEntries) {
-  const supplyIdNum = Number(ozonSupplyId);
   return {
-    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+    supply_id: toOzonJsonId(ozonSupplyId),
     cargoes: (cargoEntries || []).map((entry) => {
+      // В ERM cargoId = barcode (уникальный номер на этикетке). Для API нужен именно он,
+      // не общий apiCargoId: у нескольких коробов cargo_id в supplies/get часто один.
       const cargoId = entry?.cargoId ?? entry?.cargo_id ?? entry;
       const type =
         entry?.type === 'PALLET' || entry?.cargoKind === 'pallet' ? 'PALLET' : 'BOX';
       return {
-        cargo_id: Number(cargoId) || cargoId,
+        cargo_id: toOzonJsonId(cargoId),
         type,
       };
     }),
@@ -128,9 +143,8 @@ export function buildOzonPackingSubmitPreview(packing, ozonCargoes) {
 }
 
 export function buildOzonEmptyCargoesBody(ozonSupplyId, slots, { includeEmptyItems = false } = {}) {
-  const supplyIdNum = Number(ozonSupplyId);
   return {
-    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+    supply_id: toOzonJsonId(ozonSupplyId),
     delete_current_version: false,
     cargoes: (slots || []).map((slot) => {
       const value = { type: ozonCargoType(slot.cargoKind) };
@@ -642,7 +656,7 @@ class FboSuppliesOzonCargoesService {
     const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
     const createRes = await ozonApiPostWithRetry(
       '/v1/cargoes/transport/activate',
-      { supply_id: Number(ozonSupplyId) || ozonSupplyId, is_transport: enabled !== false },
+      { supply_id: toOzonJsonId(ozonSupplyId), is_transport: enabled !== false },
       ozonApiOpts
     );
     const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
@@ -684,7 +698,7 @@ class FboSuppliesOzonCargoesService {
     const createRes = await ozonApiPostWithRetry(
       '/v1/cargoes/transport/create',
       {
-        supply_id: Number(ozonSupplyId) || ozonSupplyId,
+        supply_id: toOzonJsonId(ozonSupplyId),
         transport_cargoes: [{ count: qty, type: 'PALLET' }],
       },
       ozonApiOpts
@@ -776,18 +790,18 @@ class FboSuppliesOzonCargoesService {
     }
 
     const body = {
-      supply_id: Number(ozonSupplyId) || ozonSupplyId,
+      supply_id: toOzonJsonId(ozonSupplyId),
     };
     if (uniqueBind.length) {
       body.transport_cargo_bind = [
         {
-          transport_cargo_id: Number(transportBarcode) || transportBarcode,
-          cargo_ids: uniqueBind,
+          transport_cargo_id: toOzonJsonId(transportBarcode),
+          cargo_ids: uniqueBind.map((id) => toOzonJsonId(id)),
         },
       ];
     }
     if (unbindBarcodes.length) {
-      body.cargoes_unbind_transport_cargoes = unbindBarcodes;
+      body.cargoes_unbind_transport_cargoes = unbindBarcodes.map((id) => toOzonJsonId(id));
     }
 
     const createRes = await ozonApiPostWithRetry('/v1/cargoes/transport/bind', body, ozonApiOpts);
@@ -837,15 +851,25 @@ class FboSuppliesOzonCargoesService {
     const createRes = await ozonApiPostWithRetry(
       '/v1/cargoes/label/transport/create',
       {
-        supply_id: Number(ozonSupplyId) || ozonSupplyId,
-        transport_cargo_ids: ids,
+        supply_id: toOzonJsonId(ozonSupplyId),
+        transport_cargo_ids: ids.map((id) => toOzonJsonId(id)),
       },
       ozonApiOpts
     );
-    const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
+    const operationId = extractOzonLabelOperationId(createRes);
     if (!operationId) {
-      const err = new Error('Ozon не начал генерацию этикеток ТГМ');
+      const reason = formatOzonCargoErrorReasons(
+        createRes?.errors ?? createRes?.result?.errors ?? createRes?.error
+      );
+      logger.warn('[FBO Ozon] transport label create without operation_id', {
+        supplyId,
+        ozonSupplyId,
+        ids,
+        createRes,
+      });
+      const err = new Error(reason || 'Ozon не начал генерацию этикеток ТГМ');
       err.statusCode = 400;
+      err.details = createRes;
       throw err;
     }
     let fileUrl = null;
@@ -1029,14 +1053,22 @@ class FboSuppliesOzonCargoesService {
     });
 
     const createData = await ozonApiPostWithRetry('/v1/cargoes-label/create', labelBody, ozonApiOpts);
-    const operationId =
-      createData?.operation_id ??
-      createData?.operationId ??
-      createData?.result?.operation_id ??
-      null;
+    const operationId = extractOzonLabelOperationId(createData);
     if (!operationId) {
-      const err = new Error('Ozon не вернул идентификатор операции генерации этикеток');
+      const reason = formatOzonCargoErrorReasons(
+        createData?.errors ?? createData?.result?.errors ?? createData?.error
+      );
+      logger.warn('[FBO Ozon] cargoes-label/create without operation_id', {
+        supplyId,
+        ozonSupplyId,
+        labelBody,
+        createData,
+      });
+      const err = new Error(
+        reason || 'Ozon не вернул идентификатор операции генерации этикеток'
+      );
       err.statusCode = 400;
+      err.details = createData;
       throw err;
     }
 

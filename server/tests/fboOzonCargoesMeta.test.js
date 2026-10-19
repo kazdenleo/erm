@@ -75,6 +75,19 @@ describe('buildOzonCargoLabelsCreateBody', () => {
       { cargo_id: 1002, type: 'PALLET' },
     ]);
   });
+
+  test('keeps long cargo_id as string (Number would corrupt and collide)', () => {
+    const a = '1000000000064728284';
+    const b = '1000000000064728285';
+    expect(Number.isSafeInteger(Number(a))).toBe(false);
+    expect(Number(a)).toBe(Number(b)); // Number() схлопывает разные этикетки в один id
+    const body = buildOzonCargoLabelsCreateBody('2000069836652', [
+      { cargoId: a, type: 'BOX' },
+      { cargoId: b, type: 'BOX' },
+    ]);
+    expect(body.supply_id).toBe(2000069836652);
+    expect(body.cargoes.map((c) => c.cargo_id)).toEqual([a, b]);
+  });
 });
 
 describe('ozonCargoKindFromOzonType', () => {

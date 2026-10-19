@@ -13,6 +13,7 @@ import {
 } from '../utils/fboSupplyPackingCheck.js';
 import logger from '../utils/logger.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { toOzonJsonId } from '../utils/ozonJsonId.js';
 import { formatOzonCargoErrorReasons } from '../utils/ozonCargoErrors.js';
 
 function normalizeMp(marketplace) {
@@ -124,14 +125,13 @@ async function pollOzonCargoesDeleteStatus(operationId, ozonApiOpts, { maxAttemp
 }
 
 async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
-  const ids = (cargoIds || []).map((id) => String(id).trim()).filter(Boolean);
+  const ids = (cargoIds || []).map((id) => toOzonJsonId(String(id).trim())).filter((id) => id != null && id !== '');
   if (!ids.length) return;
 
-  const supplyIdNum = Number(ozonSupplyId);
   const deleteData = await ozonApiPostWithRetry(
     '/v1/cargoes/delete',
     {
-      supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+      supply_id: toOzonJsonId(ozonSupplyId),
       cargo_ids: ids,
     },
     ozonApiOpts
@@ -684,9 +684,8 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan
     throw err;
   }
 
-  const supplyIdNum = Number(supplyIdRaw);
   return {
-    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
+    supply_id: toOzonJsonId(supplyIdRaw),
     // false + key=cargo_id: обновление состава без смены номеров (после сброса или для пустых ГМ)
     delete_current_version: Boolean(deleteCurrentVersion),
     cargoes,
