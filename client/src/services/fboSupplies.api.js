@@ -3,6 +3,7 @@
  */
 
 import api from './api';
+import { canReachPrintHelper, printViaPrintHelper } from '../utils/printHelperClient.js';
 
 function parseXlsxFilename(response, fallback) {
   const cd = String(
@@ -63,7 +64,29 @@ function openPdfForPrint(buffer, filename) {
     });
   }
   setTimeout(() => URL.revokeObjectURL(url), 120000);
-  return { ok: true, opened: Boolean(w) };
+  return { ok: true, opened: Boolean(w), via: 'browser' };
+}
+
+/**
+ * Тихая печать PDF через Print Helper на принтер выбранного типа этикетки.
+ * @param {ArrayBuffer} buffer
+ * @param {{ kind: string, filename?: string, printHelperUrl?: string, orderId?: string }} opts
+ */
+async function printPdfBuffer(buffer, opts = {}) {
+  const filename = opts.filename || 'labels.pdf';
+  const kind = opts.kind || 'cargo';
+  const helperUrl = opts.printHelperUrl;
+  if (canReachPrintHelper(helperUrl) && buffer) {
+    const printed = await printViaPrintHelper({
+      printHelperUrl: helperUrl,
+      kind,
+      pdfBuffer: buffer,
+      orderId: opts.orderId || `${kind}-${Date.now()}`,
+      timeoutMs: 60000,
+    });
+    if (printed.ok) return { ok: true, via: 'helper' };
+  }
+  return openPdfForPrint(buffer, filename);
 }
 
 export const fboSuppliesApi = {
@@ -395,6 +418,17 @@ export const fboSuppliesApi = {
     }
   },
 
+  /** Печать этикеток ТГМ на принтер типа «грузоместа». */
+  printTransportCargoLabels: async (id, transportCargoIds, { printHelperUrl } = {}) => {
+    const buffer = await fboSuppliesApi.downloadTransportCargoLabels(id, transportCargoIds);
+    return printPdfBuffer(buffer, {
+      kind: 'cargo',
+      filename: `transport-cargo-labels-${id}.pdf`,
+      printHelperUrl,
+      orderId: `tgm-${id}`,
+    });
+  },
+
   downloadCargoLabels: async (id, cargoIds, { refresh = false } = {}) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
     try {
@@ -409,7 +443,12 @@ export const fboSuppliesApi = {
     }
   },
 
-  printCargoLabels: async (id, cargoIds, { refresh = false } = {}) => {
+  /**
+   * @param {string|number} id
+   * @param {Array<string|number>} cargoIds
+   * @param {{ refresh?: boolean, kind?: 'box'|'pallet'|'cargo', printHelperUrl?: string }} [opts]
+   */
+  printCargoLabels: async (id, cargoIds, { refresh = false, kind = 'box', printHelperUrl } = {}) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
     let buffer;
     try {
@@ -422,10 +461,16 @@ export const fboSuppliesApi = {
     } catch (e) {
       throw new Error(parseApiErrorPayload(e, 'Не удалось получить этикетки грузомест'));
     }
-    return openPdfForPrint(buffer, `cargo-labels-${id}.pdf`);
+    const printKind = kind === 'pallet' || kind === 'cargo' ? kind : 'box';
+    return printPdfBuffer(buffer, {
+      kind: printKind,
+      filename: `cargo-labels-${id}.pdf`,
+      printHelperUrl,
+      orderId: `${printKind}-${id}`,
+    });
   },
 
-  printYmCargoLabels: async (id) => {
+  printYmCargoLabels: async (id, { printHelperUrl } = {}) => {
     let buffer;
     try {
       const response = await api.get(`/fbo-supplies/${id}/packing/ym-cargo-labels`, {
@@ -436,7 +481,12 @@ export const fboSuppliesApi = {
     } catch (e) {
       throw new Error(parseApiErrorPayload(e, 'Не удалось получить ярлыки грузомест из Маркета'));
     }
-    return openPdfForPrint(buffer, `ym-cargo-labels-${id}.pdf`);
+    return printPdfBuffer(buffer, {
+      kind: 'cargo',
+      filename: `ym-cargo-labels-${id}.pdf`,
+      printHelperUrl,
+      orderId: `ym-cargo-${id}`,
+    });
   },
 
   syncMarketplaceContent: async (id) => {

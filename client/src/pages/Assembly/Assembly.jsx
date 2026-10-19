@@ -17,6 +17,7 @@ import { clearScanField } from '../../utils/scanInput';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { useChestnyZnakEnabled } from '../../hooks/useChestnyZnakEnabled.js';
 import { getStoredLabelSize } from '../Settings/Labels';
+import { printViaPrintHelper } from '../../utils/printHelperClient.js';
 import {
   isAssemblyLikeStatus,
   orderHasAssemblySticker,
@@ -892,32 +893,26 @@ export function Assembly() {
 
     setLabelPrintError(null);
     const labelSize = getStoredLabelSize();
-    const helperUrl = `${base}/print?orderId=${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrlAbs)}&labelSize=${encodeURIComponent(labelSize)}`;
-
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), PRINT_HELPER_FETCH_MS);
-    try {
-      const r = await fetch(helperUrl, { method: 'GET', mode: 'cors', signal: ac.signal });
-      if (r.ok) return;
-      const body = await r.json().catch(() => ({}));
-      const msg = body?.message || 'Принтер не ответил';
-      if (r.status === 502 && (String(msg).includes('Этикетка') || String(msg).includes('загружена'))) {
-        setLabelPrintError('Этикетка для заказа не загружена. Запущена печать со страницы этикетки.');
-        setTimeout(() => setLabelPrintError(null), 8000);
-      }
-      throw new Error(msg);
-    } catch (err) {
-      const aborted = err?.name === 'AbortError';
-      if (aborted) {
-        setLabelPrintError(
-          'Таймаут печати: этикетка с маркетплейса долго формируется. Запущена печать со страницы этикетки.'
-        );
-        setTimeout(() => setLabelPrintError(null), 10000);
-      }
-      openLabelPrintFallbackPage(labelPrintPageUrl);
-    } finally {
-      clearTimeout(t);
+    const printed = await printViaPrintHelper({
+      printHelperUrl: base,
+      kind: 'order',
+      labelUrl: labelFileUrlAbs,
+      orderId: id,
+      labelSize,
+      timeoutMs: PRINT_HELPER_FETCH_MS,
+    });
+    if (printed.ok) return;
+    const msg = printed.message || 'Принтер не ответил';
+    if (String(msg).includes('Этикетка') || String(msg).includes('загружена')) {
+      setLabelPrintError('Этикетка для заказа не загружена. Запущена печать со страницы этикетки.');
+      setTimeout(() => setLabelPrintError(null), 8000);
+    } else if (String(msg).includes('Таймаут')) {
+      setLabelPrintError(
+        'Таймаут печати: этикетка с маркетплейса долго формируется. Запущена печать со страницы этикетки.'
+      );
+      setTimeout(() => setLabelPrintError(null), 10000);
     }
+    openLabelPrintFallbackPage(labelPrintPageUrl);
   }, [printHelperUrl, waitLabelCachedOnServer]);
 
   /** Отметка «Собран» + печать этикетки (общая для скана и таблицы). */

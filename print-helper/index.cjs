@@ -37,6 +37,12 @@ const { PDFDocument } = require('pdf-lib');
 const PORT = Number(process.env.PRINT_HELPER_PORT) || 9100;
 const app = express();
 app.use(cors());
+app.use(
+  express.raw({
+    type: ['application/pdf', 'application/octet-stream', 'image/png'],
+    limit: '40mb',
+  })
+);
 
 function getExeDir() {
   return path.dirname(process.execPath);
@@ -152,14 +158,56 @@ async function pngToPdfBuffer(pngBuffer, labelSizeParam) {
   return Buffer.from(await doc.save());
 }
 
-function printFile(filePath) {
+function listWindowsPrinters() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') {
+      resolve([]);
+      return;
+    }
+    const proc = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Get-Printer | Select-Object -ExpandProperty Name',
+      ],
+      { windowsHide: true, shell: false }
+    );
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => {
+      out += String(d);
+    });
+    proc.stderr.on('data', (d) => {
+      err += String(d);
+    });
+    proc.on('error', () => resolve([]));
+    proc.on('close', () => {
+      const names = out
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!names.length && err) {
+        console.warn('[print-helper] Get-Printer:', err.trim().slice(0, 200));
+      }
+      resolve(names);
+    });
+  });
+}
+
+function printFile(filePath, printerName) {
   const sumatra = getSumatraPath();
   if (!sumatra) {
     return Promise.reject(new Error('Положите SumatraPDF.exe в папку с erm-print-helper.exe.'));
   }
   const fullPath = path.resolve(filePath);
+  const printer = printerName != null ? String(printerName).trim() : '';
+  const args = printer
+    ? ['-print-to', printer, '-silent', '-exit-when-done', '-print-settings', '1,noscale,landscape', fullPath]
+    : ['-print-to-default', '-silent', '-exit-when-done', '-print-settings', '1,noscale,landscape', fullPath];
   return new Promise((resolve, reject) => {
-    const proc = spawn(sumatra, ['-print-to-default', '-silent', '-exit-when-done', '-print-settings', '1,noscale,landscape', fullPath], {
+    const proc = spawn(sumatra, args, {
       stdio: 'ignore',
       windowsHide: true,
       shell: false,
@@ -167,17 +215,79 @@ function printFile(filePath) {
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`SumatraPDF exit code ${code}`));
+      else reject(new Error(`SumatraPDF exit code ${code}${printer ? ` (принтер: ${printer})` : ''}`));
     });
   });
+}
+
+async function saveAndPrintPdfBuffer(buf, orderId, labelSize, printerName) {
+  const tempDir = getTempLabelDir();
+  const baseName = `label-${orderId || Date.now()}`;
+  let tmpPath = null;
+  try {
+    let toPrint;
+    if (isPngBuffer(buf)) {
+      const dims = parseLabelSize(labelSize);
+      const pdfBuf = await pngToPdfBuffer(buf, labelSize);
+      tmpPath = path.join(tempDir, baseName + '.pdf');
+      fs.writeFileSync(tmpPath, pdfBuf);
+      toPrint = tmpPath;
+      console.log(
+        '[print-helper] PNG→PDF:',
+        tmpPath,
+        'книжная (шир×выс)',
+        Math.round((dims.widthPt / 72) * 25.4) + '×' + Math.round((dims.heightPt / 72) * 25.4) + ' мм',
+        pdfBuf.length,
+        'байт',
+        printerName ? `→ ${printerName}` : '→ default'
+      );
+    } else if (isPdfBuffer(buf)) {
+      tmpPath = path.join(tempDir, baseName + '.pdf');
+      fs.writeFileSync(tmpPath, buf);
+      toPrint = tmpPath;
+      console.log(
+        '[print-helper] Файл:',
+        tmpPath,
+        buf.length,
+        'байт',
+        printerName ? `→ ${printerName}` : '→ default'
+      );
+    } else {
+      const err = new Error('Получен не файл этикетки (PDF/PNG)');
+      err.statusCode = 502;
+      throw err;
+    }
+    await printFile(toPrint, printerName);
+  } finally {
+    if (tmpPath) {
+      const toDelete = tmpPath;
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(toDelete)) fs.unlinkSync(toDelete);
+        } catch (_) {}
+      }, 60000);
+    }
+  }
 }
 
 if (process.platform !== 'win32') {
   console.warn('[print-helper] Работает только на Windows.');
 }
 
+app.get('/printers', async (req, res) => {
+  if (process.platform !== 'win32') {
+    return res.status(501).json({ ok: false, message: 'Список принтеров только на Windows', printers: [] });
+  }
+  try {
+    const printers = await listWindowsPrinters();
+    res.json({ ok: true, printers });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message || 'Не удалось получить принтеры', printers: [] });
+  }
+});
+
 app.get('/print', async (req, res) => {
-  const { orderId, labelUrl, labelSize } = req.query;
+  const { orderId, labelUrl, labelSize, printer } = req.query;
   if (!labelUrl) {
     return res.status(400).json({ ok: false, message: 'Укажите labelUrl' });
   }
@@ -186,7 +296,6 @@ app.get('/print', async (req, res) => {
     return res.status(501).json({ ok: false, message: 'Тихая печать только на Windows' });
   }
 
-  let tmpPath = null;
   try {
     const response = await fetch(String(labelUrl), { redirect: 'follow' });
     if (!response.ok) {
@@ -205,35 +314,32 @@ app.get('/print', async (req, res) => {
       return res.status(502).json({ ok: false, message: 'Получен не файл этикетки (PDF/PNG). Проверьте, что сервер отдаёт этикетку по этому URL без авторизации.' });
     }
 
-    const tempDir = getTempLabelDir();
-    const baseName = `label-${orderId || Date.now()}`;
-    let toPrint;
-    if (isPngBuffer(buf)) {
-      const dims = parseLabelSize(labelSize);
-      const pdfBuf = await pngToPdfBuffer(buf, labelSize);
-      tmpPath = path.join(tempDir, baseName + '.pdf');
-      fs.writeFileSync(tmpPath, pdfBuf);
-      toPrint = tmpPath;
-      console.log('[print-helper] PNG→PDF:', tmpPath, 'книжная (шир×выс)', Math.round(dims.widthPt / 72 * 25.4) + '×' + Math.round(dims.heightPt / 72 * 25.4) + ' мм', pdfBuf.length, 'байт');
-    } else {
-      tmpPath = path.join(tempDir, baseName + '.pdf');
-      fs.writeFileSync(tmpPath, buf);
-      toPrint = tmpPath;
-      console.log('[print-helper] Файл:', tmpPath, buf.length, 'байт');
-    }
-
-    await printFile(toPrint);
+    await saveAndPrintPdfBuffer(buf, orderId, labelSize, printer);
     res.json({ ok: true, message: 'Отправлено на печать' });
   } catch (err) {
     console.error('[print-helper] Ошибка печати:', err.message);
-    res.status(500).json({ ok: false, message: err.message || 'Ошибка печати' });
-  } finally {
-    if (tmpPath) {
-      const toDelete = tmpPath;
-      setTimeout(() => {
-        try { if (fs.existsSync(toDelete)) fs.unlinkSync(toDelete); } catch (_) {}
-      }, 60000);
-    }
+    const status = err.statusCode || 500;
+    res.status(status).json({ ok: false, message: err.message || 'Ошибка печати' });
+  }
+});
+
+/** POST /print — тело PDF/PNG (для этикеток коробов/паллет/ТГМ без публичного URL). Query: printer, orderId, labelSize */
+app.post('/print', async (req, res) => {
+  if (process.platform !== 'win32') {
+    return res.status(501).json({ ok: false, message: 'Тихая печать только на Windows' });
+  }
+  const { orderId, labelSize, printer } = req.query;
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || buf.length === 0) {
+    return res.status(400).json({ ok: false, message: 'Пустое тело запроса (ожидается PDF или PNG)' });
+  }
+  try {
+    await saveAndPrintPdfBuffer(buf, orderId, labelSize, printer);
+    res.json({ ok: true, message: 'Отправлено на печать' });
+  } catch (err) {
+    console.error('[print-helper] Ошибка печати (POST):', err.message);
+    const status = err.statusCode || 500;
+    res.status(status).json({ ok: false, message: err.message || 'Ошибка печати' });
   }
 });
 
@@ -253,6 +359,7 @@ app.get('/health', (req, res) => {
     ok: true,
     platform: process.platform,
     sumatraFound: !!getSumatraPath(),
+    features: { printers: true, namedPrinter: true, postPrint: true },
   });
 });
 

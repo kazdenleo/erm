@@ -6,6 +6,7 @@
 import { useCallback, useState } from 'react';
 import api, { resolveApiBaseUrl } from '../services/api';
 import { getStoredLabelSize } from '../pages/Settings/Labels.jsx';
+import { canReachPrintHelper, printViaPrintHelper } from '../utils/printHelperClient.js';
 
 const PRINT_HELPER_FETCH_MS = 25000;
 export const PRODUCT_LABELS_BATCH_STORAGE_KEY = 'erm:product-labels-batch';
@@ -127,8 +128,7 @@ async function errorMessageFromLabelRequest(err) {
 }
 
 export function canUsePrintHelper(printHelperUrl = '') {
-  if (typeof window === 'undefined' || !window.isSecureContext) return false;
-  return Boolean(String(printHelperUrl || '').trim());
+  return canReachPrintHelper(printHelperUrl);
 }
 
 export function buildProductLabelPrintPageUrl(productId, copies = 1, marketplace = null) {
@@ -230,23 +230,18 @@ export function useProductLabelPrint(printHelperUrl = '') {
         }
       })();
       const helperLabelUrl = copies > 1 ? labelFileUrlAbs : labelPngUrlAbs;
-      const helperUrl = `${base}/print?orderId=product-${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(helperLabelUrl)}&labelSize=${encodeURIComponent(labelSize)}`;
-
-      let helperOk = false;
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), PRINT_HELPER_FETCH_MS);
-      try {
-        const r = await fetch(helperUrl, { method: 'GET', mode: 'cors', signal: ac.signal });
-        helperOk = r.ok;
-      } catch {
-        helperOk = false;
-      } finally {
-        clearTimeout(t);
-      }
+      const printed = await printViaPrintHelper({
+        printHelperUrl: base,
+        kind: 'product',
+        labelUrl: helperLabelUrl,
+        orderId: `product-${id}`,
+        labelSize,
+        timeoutMs: PRINT_HELPER_FETCH_MS,
+      });
 
       setPrinting(false);
 
-      if (helperOk) {
+      if (printed.ok) {
         return true;
       }
 

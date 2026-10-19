@@ -1120,6 +1120,7 @@ export function FboSupplyDetail() {
           onBreakdownClick={setBreakdownItem}
           onItemQuantitySaved={handleItemQuantitySaved}
           itemSearchQuery={itemSearchQuery}
+          printHelperUrl={printHelperUrl}
         />
       ) : null}
 

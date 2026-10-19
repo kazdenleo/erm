@@ -73,6 +73,19 @@ function downloadExcelBuffer(buffer, filename) {
   URL.revokeObjectURL(url);
 }
 
+function resolveCargoPrintKind(cargoUnits, cargoIds) {
+  const idSet = new Set((cargoIds || []).map(String));
+  const matched = (cargoUnits || []).filter(
+    (c) => idSet.has(String(c.id)) || idSet.has(String(c.barcode)) || idSet.has(String(c.cargoUnitId))
+  );
+  if (!matched.length) return 'box';
+  const kinds = new Set(matched.map((c) => (c.cargoKind === 'pallet' ? 'pallet' : 'box')));
+  if (kinds.size === 1 && kinds.has('pallet')) return 'pallet';
+  if (kinds.size === 1) return 'box';
+  // Смешанная печать — печатаем пачками по типу ниже; здесь fallback.
+  return 'box';
+}
+
 export function FboSupplyPacking({
   supplyId,
   marketplace = 'ozon',
@@ -82,6 +95,7 @@ export function FboSupplyPacking({
   onBreakdownClick,
   onItemQuantitySaved,
   itemSearchQuery = '',
+  printHelperUrl = '',
 }) {
   const [scanLoading, setScanLoading] = useState(false);
   const { enabled: chestnyZnakEnabled } = useChestnyZnakEnabled();
@@ -323,11 +337,19 @@ export function FboSupplyPacking({
       const createdIds = (data?.createdCargoIds || []).map(String).filter(Boolean);
       if (ozonCreatePrint && createdIds.length) {
         setPrintingLabels(true);
+        setScanMsg(`${createdMsg} Получаем этикетки у Ozon…`);
         try {
-          const res = await fboSuppliesApi.printCargoLabels(supplyId, createdIds);
+          const res = await fboSuppliesApi.printCargoLabels(supplyId, createdIds, {
+            kind: cargoKind === 'pallet' ? 'pallet' : 'box',
+            printHelperUrl,
+          });
           setScanMsg(
             `${createdMsg} ${
-              res?.opened === false ? 'Этикетки скачаны файлом PDF.' : 'Этикетки отправлены на печать.'
+              res?.via === 'helper'
+                ? 'Этикетки отправлены на принтер.'
+                : res?.opened === false
+                  ? 'Этикетки скачаны файлом PDF.'
+                  : 'Этикетки отправлены на печать.'
             }`
           );
         } catch (pe) {
@@ -378,9 +400,34 @@ export function FboSupplyPacking({
     if (!ids.length) return;
     setPrintingLabels(true);
     setScanError(null);
+    setScanMsg(`Получаем этикетки у Ozon (${ids.length})…`);
     try {
-      await fboSuppliesApi.printCargoLabels(supplyId, ids);
-      setScanMsg(`Печать этикеток: ${ids.join(', ')}`);
+      const boxes = [];
+      const pallets = [];
+      for (const id of ids) {
+        const unit = cargoUnits.find(
+          (c) => String(c.id) === String(id) || String(c.barcode) === String(id) || String(c.cargoUnitId) === String(id)
+        );
+        if (unit?.cargoKind === 'pallet') pallets.push(id);
+        else boxes.push(id);
+      }
+      // Короба и паллеты — параллельно (разные принтеры), иначе ждать Ozon дважды подряд.
+      if (!boxes.length && !pallets.length) {
+        await fboSuppliesApi.printCargoLabels(supplyId, ids, {
+          kind: resolveCargoPrintKind(cargoUnits, ids),
+          printHelperUrl,
+        });
+      } else {
+        await Promise.all([
+          boxes.length
+            ? fboSuppliesApi.printCargoLabels(supplyId, boxes, { kind: 'box', printHelperUrl })
+            : null,
+          pallets.length
+            ? fboSuppliesApi.printCargoLabels(supplyId, pallets, { kind: 'pallet', printHelperUrl })
+            : null,
+        ]);
+      }
+      setScanMsg(`Этикетки отправлены: ${ids.join(', ')}`);
     } catch (e) {
       setScanError(e.message || e.response?.data?.message || 'Не удалось получить этикетки');
     } finally {
@@ -402,11 +449,13 @@ export function FboSupplyPacking({
     setScanError(null);
     setScanMsg(null);
     try {
-      const res = await fboSuppliesApi.printYmCargoLabels(supplyId);
+      const res = await fboSuppliesApi.printYmCargoLabels(supplyId, { printHelperUrl });
       setScanMsg(
-        res?.opened === false
-          ? 'Ярлыки грузомест Маркета скачаны файлом PDF.'
-          : 'Ярлыки грузомест Маркета отправлены на печать.'
+        res?.via === 'helper'
+          ? 'Ярлыки грузомест Маркета отправлены на принтер.'
+          : res?.opened === false
+            ? 'Ярлыки грузомест Маркета скачаны файлом PDF.'
+            : 'Ярлыки грузомест Маркета отправлены на печать.'
       );
     } catch (err) {
       setScanError(err.message || 'Не удалось получить ярлыки грузомест из Маркета');
@@ -877,6 +926,7 @@ export function FboSupplyPacking({
 
       {isOzon ? (
         <FboTransportCargoes
+          printHelperUrl={printHelperUrl}
           supplyId={supplyId}
           packing={packing}
           onPackingChange={onPackingChange}

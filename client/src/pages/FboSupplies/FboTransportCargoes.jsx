@@ -7,23 +7,12 @@ import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 
-function downloadPdfBuffer(buffer, filename) {
-  const blob = new Blob([buffer], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 export function FboTransportCargoes({
   supplyId,
   packing,
   onPackingChange,
   disabled = false,
+  printHelperUrl = '',
 }) {
   const transportCargoes = packing?.transportCargoes || [];
   const cargoUnits = packing?.cargoUnits || [];
@@ -122,14 +111,21 @@ export function FboTransportCargoes({
   const handlePrint = async (transport) => {
     setBusy(`print-${transport.id}`);
     setError(null);
+    setMsg(null);
     try {
-      const buffer = await fboSuppliesApi.downloadTransportCargoLabels(supplyId, [
-        transport.barcode,
-      ]);
-      downloadPdfBuffer(buffer, `ozon_tgm_${transport.barcode}.pdf`);
+      const res = await fboSuppliesApi.printTransportCargoLabels(supplyId, [transport.barcode], {
+        printHelperUrl,
+      });
+      setMsg(
+        res?.via === 'helper'
+          ? 'Этикетка ТГМ отправлена на принтер'
+          : res?.opened === false
+            ? 'Этикетка ТГМ скачана файлом PDF'
+            : 'Этикетка ТГМ открыта для печати'
+      );
       playEventSound(SOUND_EVENTS.scan_ok);
     } catch (e) {
-      setError(e.message || 'Не удалось скачать этикетку ТГМ');
+      setError(e.message || 'Не удалось напечатать этикетку ТГМ');
       playEventSound(SOUND_EVENTS.scan_error);
     } finally {
       setBusy(null);

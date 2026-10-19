@@ -1,10 +1,20 @@
 /**
- * Настройки этикеток: размер для печати (используется Print Helper при конвертации PNG → PDF).
+ * Настройки этикеток: размер, Print Helper, принтеры по типам стикеров.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api';
 import { LabelConstructor } from './LabelConstructor.jsx';
+import {
+  LABEL_PRINT_KINDS,
+  getLabelPrinterMap,
+  setLabelPrinterMap,
+} from '../../utils/labelPrinterSettings.js';
+import {
+  canReachPrintHelper,
+  fetchPrintHelperPrinters,
+  normalizePrintHelperBase,
+} from '../../utils/printHelperClient.js';
 import './Labels.css';
 
 const STORAGE_KEY = 'erm_label_size';
@@ -28,12 +38,88 @@ export function Labels() {
   const [size, setSize] = useState(getStoredLabelSize);
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const [printerMap, setPrinterMap] = useState(getLabelPrinterMap);
+  const [printers, setPrinters] = useState([]);
+  const [printersLoading, setPrintersLoading] = useState(false);
+  const [printersError, setPrintersError] = useState('');
+  const [helperStatus, setHelperStatus] = useState('');
 
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, size);
     } catch (_) {}
   }, [size]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/config');
+        const url = (res?.data?.data?.printHelperUrl ?? res?.data?.printHelperUrl ?? '').trim();
+        if (!cancelled) setPrintHelperUrl(url);
+      } catch {
+        if (!cancelled) setPrintHelperUrl('http://127.0.0.1:9100');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshPrinters = useCallback(async () => {
+    setPrintersLoading(true);
+    setPrintersError('');
+    setHelperStatus('');
+    const base = normalizePrintHelperBase(printHelperUrl) || 'http://127.0.0.1:9100';
+    try {
+      if (!canReachPrintHelper(base)) {
+        setPrinters([]);
+        setPrintersError('Список принтеров доступен только по HTTPS (или localhost).');
+        return;
+      }
+      const healthAc = new AbortController();
+      const healthT = setTimeout(() => healthAc.abort(), 4000);
+      let featuresOk = false;
+      try {
+        const hr = await fetch(`${base}/health`, { mode: 'cors', signal: healthAc.signal });
+        if (hr.ok) {
+          const h = await hr.json().catch(() => ({}));
+          featuresOk = Boolean(h?.features?.printers);
+          setHelperStatus(featuresOk ? 'Print Helper подключён' : 'Print Helper старой версии — обновите установщик');
+        } else {
+          setHelperStatus('Print Helper не отвечает');
+        }
+      } catch {
+        setHelperStatus('Print Helper не запущен на этом ПК');
+      } finally {
+        clearTimeout(healthT);
+      }
+
+      const list = await fetchPrintHelperPrinters(base);
+      setPrinters(list);
+      if (!list.length && featuresOk) {
+        setPrintersError('Принтеры не найдены. Проверьте, что принтеры установлены в Windows.');
+      } else if (!list.length) {
+        setPrintersError(
+          'Не удалось получить список принтеров. Установите/обновите Print Helper и нажмите «Обновить список».'
+        );
+      }
+    } finally {
+      setPrintersLoading(false);
+    }
+  }, [printHelperUrl]);
+
+  useEffect(() => {
+    if (tab !== 'general') return undefined;
+    refreshPrinters();
+    return undefined;
+  }, [tab, refreshPrinters]);
+
+  const onPrinterChange = (kind, value) => {
+    const next = setLabelPrinterMap({ ...printerMap, [kind]: value });
+    setPrinterMap(next);
+  };
 
   const downloadPrintHelper = async () => {
     if (downloadLoading) return;
@@ -91,39 +177,87 @@ export function Labels() {
         <LabelConstructor />
       ) : (
         <>
-      <p className="subtitle">Размер этикетки по умолчанию для тихой печати (Print Helper).</p>
-      <div className="form-group settings-labels-select">
-        <label htmlFor="label-size">Размер этикетки</label>
-        <select
-          id="label-size"
-          value={size}
-          onChange={(e) => setSize(e.target.value)}
-          className="settings-labels-select-el"
-        >
-          {LABEL_SIZES.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </div>
+          <p className="subtitle">Размер этикетки по умолчанию для тихой печати (Print Helper).</p>
+          <div className="form-group settings-labels-select">
+            <label htmlFor="label-size">Размер этикетки</label>
+            <select
+              id="label-size"
+              value={size}
+              onChange={(e) => setSize(e.target.value)}
+              className="settings-labels-select-el"
+            >
+              {LABEL_SIZES.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <hr style={{ margin: '18px 0' }} />
+          <hr style={{ margin: '18px 0' }} />
 
-      <h2 className="subtitle" style={{ marginTop: 0 }}>Print Helper (тихая печать)</h2>
-      <p className="subtitle" style={{ marginTop: 0 }}>
-        Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера.
-      </p>
-      <div className="form-group">
-        <button className="btn btn-primary" type="button" onClick={downloadPrintHelper} disabled={downloadLoading}>
-          {downloadLoading ? 'Скачивание…' : 'Скачать установщик Print Helper (Windows)'}
-        </button>
-        {downloadError && (
-          <p className="error" style={{ marginTop: 10 }}>
-            {downloadError}
+          <h2 className="subtitle" style={{ marginTop: 0 }}>Принтеры по типам стикеров</h2>
+          <p className="subtitle" style={{ marginTop: 0 }}>
+            Настройки хранятся на этом компьютере. Пустое значение — принтер Windows по умолчанию.
+            Нужен запущенный Print Helper.
           </p>
-        )}
-      </div>
+          {helperStatus ? <p className="settings-labels-helper-status">{helperStatus}</p> : null}
+          <div className="settings-labels-printers-toolbar">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={refreshPrinters}
+              disabled={printersLoading}
+            >
+              {printersLoading ? 'Загрузка…' : 'Обновить список принтеров'}
+            </button>
+            {printers.length ? (
+              <span className="text-muted small">Найдено: {printers.length}</span>
+            ) : null}
+          </div>
+          {printersError ? <p className="error">{printersError}</p> : null}
+
+          <div className="settings-labels-printers">
+            {LABEL_PRINT_KINDS.map((kind) => (
+              <div key={kind.id} className="form-group settings-labels-select settings-labels-printer-row">
+                <label htmlFor={`label-printer-${kind.id}`}>{kind.label}</label>
+                <p className="settings-labels-kind-hint">{kind.hint}</p>
+                <select
+                  id={`label-printer-${kind.id}`}
+                  value={printerMap[kind.id] || ''}
+                  onChange={(e) => onPrinterChange(kind.id, e.target.value)}
+                  className="settings-labels-select-el"
+                >
+                  <option value="">Принтер по умолчанию</option>
+                  {printerMap[kind.id] && !printers.includes(printerMap[kind.id]) ? (
+                    <option value={printerMap[kind.id]}>{printerMap[kind.id]} (сохранён)</option>
+                  ) : null}
+                  {printers.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <hr style={{ margin: '18px 0' }} />
+
+          <h2 className="subtitle" style={{ marginTop: 0 }}>Print Helper (тихая печать)</h2>
+          <p className="subtitle" style={{ marginTop: 0 }}>
+            Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера и на нужный принтер.
+          </p>
+          <div className="form-group">
+            <button className="btn btn-primary" type="button" onClick={downloadPrintHelper} disabled={downloadLoading}>
+              {downloadLoading ? 'Скачивание…' : 'Скачать установщик Print Helper (Windows)'}
+            </button>
+            {downloadError && (
+              <p className="error" style={{ marginTop: 10 }}>
+                {downloadError}
+              </p>
+            )}
+          </div>
         </>
       )}
     </div>
