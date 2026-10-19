@@ -8,6 +8,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { batchWarehouseScopedIncomingMap } from './kitStock.service.js';
 import { batchComponentQtyInKitsOnWarehouse, batchWarehouseReservedMap } from './procurementForecast.service.js';
 import { sqlOrderOfferMapCte, sqlOrderOfferJoin, sqlOrderProductId } from '../utils/orderProductSql.js';
+import { orderMultipleFromKits, toOrderRounded } from '../utils/stockRunwayMath.js';
 
 const DAY_MS = 86400000;
 const CRITICAL_DAYS = 3;
@@ -40,6 +41,23 @@ async function addPerWarehouse(map, warehouseIds, loader) {
     const part = await loader(wid);
     for (const [pid, qty] of part) map.set(pid, (map.get(pid) || 0) + (Number(qty) || 0));
   }
+}
+
+async function batchKitComponentQtys(productIds) {
+  const map = new Map();
+  const ids = [...new Set((productIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return map;
+  const r = await query(
+    `SELECT component_product_id, array_agg(DISTINCT GREATEST(COALESCE(quantity, 1), 1)::int) AS qtys
+       FROM kit_components
+      WHERE component_product_id = ANY($1::bigint[])
+      GROUP BY 1`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    map.set(Number(row.component_product_id), (row.qtys || []).map((q) => Number(q) || 1));
+  }
+  return map;
 }
 
 class StockRunwayService {
@@ -127,6 +145,9 @@ class StockRunwayService {
              p.name, p.sku, p.supplier_id, s.name AS supplier_name,
              COALESCE(SUM(e.q) FILTER (WHERE e.src = 'orders'), 0)::numeric AS orders_qty,
              COALESCE(SUM(e.q) FILTER (WHERE e.src = 'fbo'), 0)::numeric AS fbo_qty,
+             COALESCE((
+               SELECT SUM(d.q) FROM demand_raw d WHERE d.product_id = e.product_id
+             ), 0)::numeric AS direct_qty,
              COALESCE((SELECT SUM(pws.quantity) FROM product_warehouse_stock pws
                         WHERE pws.product_id = e.product_id AND pws.warehouse_id = ANY($8::bigint[])), 0)::int AS on_hand
         FROM exploded e
@@ -143,12 +164,14 @@ class StockRunwayService {
     const reserved = new Map();
     const inKits = new Map();
     const incoming = new Map();
+    let kitQtys = new Map();
     if (productIds.length) {
       await addPerWarehouse(reserved, scopeIds, (wid) => batchWarehouseReservedMap(productIds, wid));
       await addPerWarehouse(inKits, scopeIds, (wid) => batchComponentQtyInKitsOnWarehouse(productIds, wid));
       await addPerWarehouse(incoming, scopeIds, (wid) =>
         batchWarehouseScopedIncomingMap(productIds, { warehouseId: wid, profileId: pid })
       );
+      kitQtys = await batchKitComponentQtys(productIds);
     }
 
     const today = new Date(`${mskYmd(now)}T12:00:00Z`);
@@ -174,6 +197,15 @@ class StockRunwayService {
       else if (daysLeft <= alert) urgency = 'soon';
       if (urgency === 'ok') continue;
 
+      const orderMultiple = orderMultipleFromKits(Number(r.direct_qty) || 0, kitQtys.get(productId));
+      const coverNeed = Math.ceil(dailyRate * cover);
+      const toOrder = toOrderRounded({
+        need: coverNeed,
+        available,
+        incoming: inc,
+        orderMultiple,
+      });
+
       const runOut = new Date(today.getTime() + Math.floor(daysLeft) * DAY_MS);
       items.push({
         productId,
@@ -193,7 +225,8 @@ class StockRunwayService {
         daysLeftWithIncoming: round1(daysLeftWithIncoming),
         runOutDate: available > 0 ? mskYmd(runOut) : null,
         coveredByIncoming: daysLeftWithIncoming > alert,
-        toOrder: Math.max(0, Math.ceil(dailyRate * cover) - available - inc),
+        toOrder,
+        orderMultiple,
         urgency,
       });
     }

@@ -261,7 +261,10 @@ export function LowStockPanel({ ownWarehouses = [] }) {
                 <th className="text-end">Свободно</th>
                 <th className="text-end">В пути</th>
                 <th className="text-end">Хватит на</th>
-                <th className="text-end" title={`Сколько докупить, чтобы хватило на ${data?.params?.coverDays ?? coverDays} дн.`}>
+                <th
+                  className="text-end"
+                  title={`Сколько докупить, чтобы хватило на ${data?.params?.coverDays ?? coverDays} дн. Для товаров, которые уходят только комплектами, округляем вверх до кратности состава.`}
+                >
                   Заказать
                 </th>
               </tr>
@@ -302,7 +305,19 @@ export function LowStockPanel({ ownWarehouses = [] }) {
                       <div>{daysLeftLabel(it)}</div>
                       {it.runOutDate ? <div className="text-muted small">до {fmtDate(it.runOutDate)}</div> : null}
                     </td>
-                    <td className="text-end fw-semibold">{it.toOrder ? fmtQty(it.toOrder) : <span className="text-muted">—</span>}</td>
+                    <td
+                      className="text-end fw-semibold"
+                      title={
+                        it.orderMultiple > 1
+                          ? `Кратно ${it.orderMultiple}: товар за период уходил только комплектами`
+                          : undefined
+                      }
+                    >
+                      {it.toOrder ? fmtQty(it.toOrder) : <span className="text-muted">—</span>}
+                      {it.orderMultiple > 1 && it.toOrder ? (
+                        <div className="small text-muted fw-normal">×{it.orderMultiple}</div>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
