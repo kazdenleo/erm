@@ -2731,8 +2731,15 @@ class ProductsRepositoryPG {
     if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
     const allowDigitMatch = shouldUseBarcodeDigitFallback(trimmed);
 
-    // DT-00230 и др.: только точный штрихкод / артикул — без комплектов и без цифр 00230.
+    // DT-00230 и др.: только точное совпадение, без цифровой «обрезки» 00230.
+    // Комплекты ищем по точному SKU/штрихкоду — иначе скан комплекта в инвентаризации
+    // не находит карточку и уходит в ручной выбор из списка.
     if (!allowDigitMatch) {
+      const kitId = await this._findKitProductIdByScanCode(trimmed, '', { allowDigitMatch: false });
+      if (kitId != null) {
+        const kit = await this.findById(kitId);
+        if (kit) return kit;
+      }
       const vendorId = await this._findProductIdByVendorLabelCode(trimmed);
       if (vendorId == null) return null;
       return (await this.findById(vendorId)) || null;

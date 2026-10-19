@@ -38,7 +38,9 @@ import {
   searchProductsRemote,
   formatProductOptionLabel,
   searchProductsCombined,
+  scoreProductSearchMatch,
 } from '../../utils/productSearch';
+import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 import { MarketplaceReturnsPanel } from '../../components/returns/MarketplaceReturnsPanel';
 import { MarketplaceReturnClaimsPanel } from '../../components/returns/MarketplaceReturnClaimsPanel';
 import { marketplaceReturnClaimsApi } from '../../services/marketplaceReturnClaims.api';
@@ -186,6 +188,32 @@ function normalizeInventoryCategoryIds(raw) {
     out.push(n);
   }
   return out;
+}
+
+/** Точное совпадение артикула / штрихкода (для автодобавления комплекта без клика по списку). */
+function findExactInventoryScanMatch(products, query) {
+  const q = normalizeProductSearchQuery(query).toLowerCase();
+  if (!q || !Array.isArray(products) || !products.length) return null;
+  const exact = products.filter((p) => {
+    if (!p?.id) return false;
+    const sku = String(p.sku || '').trim().toLowerCase();
+    if (sku && sku === q) return true;
+    return barcodeStringsFromProduct(p.barcodes).some(
+      (b) => String(b || '').trim().toLowerCase() === q
+    );
+  });
+  if (exact.length === 1) return exact[0];
+  // Комплект в приоритете при нескольких точных совпадениях (SKU комплекта = SKU МП и т.п.)
+  if (exact.length > 1) {
+    const kit = exact.find(
+      (p) => String(p.product_type || p.productType || '').toLowerCase() === 'kit' || p.is_kit_catalog
+    );
+    if (kit) return kit;
+  }
+  if (exact.length === 0 && products.length === 1 && scoreProductSearchMatch(products[0], query) >= 90) {
+    return products[0];
+  }
+  return null;
 }
 
 function warehouseScanErrorMessage(e, fallback = 'Товар не найден') {
@@ -695,6 +723,17 @@ export function WarehouseOperations({
   const inventoryNewScanInputRef = useRef(null);
   const inventoryScanBusyRef = useRef(false);
   const inventorySuppressScanRef = useRef(false);
+  const focusInventoryScanInput = useCallback((delayMs = 50) => {
+    window.setTimeout(() => {
+      const el = inventoryNewScanInputRef.current;
+      if (!el || el.disabled) return;
+      try {
+        el.focus({ preventScroll: true });
+      } catch {
+        el.focus();
+      }
+    }, delayMs);
+  }, []);
   /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
   const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
   /** Обнулить остаток по позициям на складе, не попавшим в список пересчёта */
@@ -3286,15 +3325,18 @@ export function WarehouseOperations({
       setLookupError('Введите штрихкод / артикул / название');
       setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
+      focusInventoryScanInput();
       return;
     }
     if (!inventorySessionWarehouseId) {
       setLookupError('Сначала выберите склад инвентаризации');
       setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
+      focusInventoryScanInput();
       return;
     }
     inventoryScanBusyRef.current = true;
+    if (suggestContext === 'inventory_scan') closeSuggest();
     setLookupError(null);
     setOpMessage('Поиск товара…');
     try {
@@ -3321,7 +3363,8 @@ export function WarehouseOperations({
     } finally {
       inventoryScanBusyRef.current = false;
       clearScanField(inventoryNewScanInputRef.current);
-      inventoryNewScanInputRef.current?.focus();
+      focusInventoryScanInput(50);
+      focusInventoryScanInput(200);
     }
   };
 
@@ -3332,12 +3375,20 @@ export function WarehouseOperations({
         setLookupError('Сначала выберите склад инвентаризации');
         setOpMessage(null);
         playEventSound(SOUND_EVENTS.scan_error);
+        focusInventoryScanInput();
         return;
       }
       setLookupError(null);
+      if (suggestContext === 'inventory_scan') closeSuggest();
       lookupByBarcodeOrSkuThenInventoryNewOne(code);
     },
-    [inventorySessionWarehouseId, lookupByBarcodeOrSkuThenInventoryNewOne]
+    [
+      inventorySessionWarehouseId,
+      lookupByBarcodeOrSkuThenInventoryNewOne,
+      suggestContext,
+      closeSuggest,
+      focusInventoryScanInput,
+    ]
   );
 
   const addInventoryProductFromPick = async (product) => {
@@ -3359,19 +3410,21 @@ export function WarehouseOperations({
         setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
       setLookupError(null);
-    inventoryNewScanInputRef.current?.focus();
+      focusInventoryScanInput(50);
       return true;
     } catch (e) {
       const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
       setLookupError(msg);
       setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
+      focusInventoryScanInput(50);
       return false;
     }
   };
 
   const handleInventoryManualQuery = useCallback(
     async (qq) => {
+      if (inventoryScanBusyRef.current || inventorySuppressScanRef.current) return;
       if (qq.length < 2) {
         if (suggestContext === 'inventory_scan') closeSuggest();
         return;
@@ -3381,8 +3434,28 @@ export function WarehouseOperations({
       matches = mergeProductLists(matches, remote);
       if (matches.length === 0) {
         if (suggestContext === 'inventory_scan') closeSuggest();
-      return;
-    }
+        return;
+      }
+      // Точный артикул/штрихкод (часто у комплектов с буквами) — сразу в пересчёт, без клика.
+      const exact = findExactInventoryScanMatch(matches, qq);
+      if (exact?.id) {
+        if (inventoryScanBusyRef.current) return;
+        inventoryScanBusyRef.current = true;
+        inventorySuppressScanRef.current = true;
+        clearScanField(inventoryNewScanInputRef.current);
+        closeSuggest();
+        try {
+          await addInventoryProductFromPick(exact);
+          playEventSound(SOUND_EVENTS.scan_ok);
+        } finally {
+          inventoryScanBusyRef.current = false;
+          window.setTimeout(() => {
+            inventorySuppressScanRef.current = false;
+            focusInventoryScanInput(50);
+          }, 200);
+        }
+        return;
+      }
       openSuggest('inventory_scan', 'Выберите товар', matches, async (p) => {
         if (!p?.id) return;
         inventorySuppressScanRef.current = true;
@@ -3392,8 +3465,8 @@ export function WarehouseOperations({
         } finally {
           window.setTimeout(() => {
             inventorySuppressScanRef.current = false;
-            inventoryNewScanInputRef.current?.focus();
-          }, 500);
+            focusInventoryScanInput(50);
+          }, 200);
         }
       });
     },
@@ -3405,6 +3478,8 @@ export function WarehouseOperations({
       inventorySessionWarehouseId,
       inventoryLiveEnabled,
       inventoryLiveSessionId,
+      addInventoryProductFromPick,
+      focusInventoryScanInput,
     ]
   );
 
