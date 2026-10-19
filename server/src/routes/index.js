@@ -424,11 +424,6 @@ router.post(
   wrapAsync(inventorySessionsController.apply.bind(inventorySessionsController))
 );
 router.post(
-  '/inventory-sessions/preview-unlisted',
-  requireAuth,
-  wrapAsync(inventorySessionsController.previewUnlisted.bind(inventorySessionsController))
-);
-router.post(
   '/inventory-sessions/sessions',
   requireAuth,
   wrapAsync(inventorySessionsController.createLiveSession.bind(inventorySessionsController))
