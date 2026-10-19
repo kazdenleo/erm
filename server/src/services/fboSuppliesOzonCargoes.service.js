@@ -16,6 +16,7 @@ import {
   executeOzonCargoesCreate,
   extractOzonCargoIdMapping,
   fetchOzonSupplyCargoes,
+  fetchOzonSupplyCargoesDetailed,
   isOzonCargoFilled,
   ozonCargoKeyFromUnit,
 } from './fboSuppliesSubmit.service.js';
@@ -166,6 +167,86 @@ async function waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, { ma
     newIds: ozonAfter.map((c) => c.cargoId).filter((id) => id && !beforeIds.has(id)),
     ozonAfter,
   };
+}
+
+async function pollOzonTransportStatus(statusPath, operationId, ozonApiOpts, { maxAttempts = 30, intervalMs = 2000 } = {}) {
+  let last = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, intervalMs));
+    last = await ozonApiPostWithRetry(statusPath, { operation_id: operationId }, ozonApiOpts);
+    const status = String(last?.status ?? last?.result?.status ?? '').toUpperCase();
+    if (status === 'SUCCESS' || status === 'COMPLETED') return last;
+    if (status === 'FAILED' || status === 'ERROR') {
+      const err = new Error(
+        formatOzonCargoErrorReasons(last?.errors || { error_reasons: last?.error_reasons }) ||
+          'Ozon отклонил операцию с транспортными грузоместами'
+      );
+      err.statusCode = 400;
+      err.details = last;
+      throw err;
+    }
+  }
+  const err = new Error('Ozon не завершил операцию с ТГМ вовремя');
+  err.statusCode = 400;
+  err.code = 'OZON_TRANSPORT_PENDING';
+  err.details = last;
+  throw err;
+}
+
+async function upsertErmTransportCargoes(supplyId, transportCargoes) {
+  const result = [];
+  for (const tc of transportCargoes || []) {
+    const barcode = String(tc.transportCargoId ?? tc.barcode ?? '').trim();
+    if (!barcode) continue;
+    const exists = await query(
+      `SELECT id FROM fbo_supply_transport_cargoes
+       WHERE fbo_supply_id = $1 AND barcode = $2 LIMIT 1`,
+      [supplyId, barcode]
+    );
+    if (exists.rows?.[0]?.id) {
+      result.push({ barcode, id: exists.rows[0].id, existed: true });
+      continue;
+    }
+    const ins = await query(
+      `INSERT INTO fbo_supply_transport_cargoes (fbo_supply_id, barcode, transport_kind)
+       VALUES ($1, $2, 'pallet')
+       ON CONFLICT (fbo_supply_id, barcode) DO UPDATE SET barcode = EXCLUDED.barcode
+       RETURNING id`,
+      [supplyId, barcode]
+    );
+    result.push({ barcode, id: ins.rows[0]?.id, existed: false });
+  }
+  return result;
+}
+
+async function applyOzonTransportBindings(supplyId, ozonCargoes) {
+  const transportRows = await query(
+    `SELECT id, barcode FROM fbo_supply_transport_cargoes WHERE fbo_supply_id = $1`,
+    [supplyId]
+  );
+  const transportByBarcode = new Map(
+    (transportRows.rows || []).map((r) => [String(r.barcode).trim(), Number(r.id)])
+  );
+
+  // Сброс привязок, затем установка по данным Ozon.
+  await query(
+    `UPDATE fbo_supply_cargo_units SET transport_cargo_id = NULL WHERE fbo_supply_id = $1`,
+    [supplyId]
+  );
+
+  for (const c of ozonCargoes || []) {
+    const cargoId = String(c.cargoId || '').trim();
+    const tid = c.transportCargoId != null ? String(c.transportCargoId).trim() : '';
+    if (!cargoId || !tid) continue;
+    const transportId = transportByBarcode.get(tid);
+    if (!transportId) continue;
+    await query(
+      `UPDATE fbo_supply_cargo_units
+       SET transport_cargo_id = $3
+       WHERE fbo_supply_id = $1 AND barcode = $2`,
+      [supplyId, cargoId, transportId]
+    );
+  }
 }
 
 async function insertErmCargoUnits(supplyId, entries) {
@@ -442,9 +523,11 @@ class FboSuppliesOzonCargoesService {
 
   async syncOzonCargoesToErm(supplyId, { profileId } = {}) {
     const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
-    const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    const detailed = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+    const ozonCargoes = detailed.cargoes || [];
+    const ozonTransport = detailed.transportCargoes || [];
     const ozonIds = ozonCargoes.map((c) => c.cargoId).filter(Boolean);
-    if (!ozonIds.length) {
+    if (!ozonIds.length && !ozonTransport.length) {
       const err = new Error(
         'В Ozon пока нет грузомест для этой поставки. Сначала создайте их в личном кабинете или кнопками «Короб на Ozon» / «Паллета на Ozon».'
       );
@@ -452,6 +535,7 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
 
+    const transportUpserted = await upsertErmTransportCargoes(supplyId, ozonTransport);
     const created = await insertErmCargoUnits(
       supplyId,
       ozonCargoes.map((c) => ({
@@ -459,21 +543,288 @@ class FboSuppliesOzonCargoesService {
         cargoKind: ozonCargoKindFromOzonType(c.type),
       }))
     );
+    await applyOzonTransportBindings(supplyId, ozonCargoes);
     const added = created.filter((c) => !c.existed);
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
     const ozonMeta = buildOzonPackingSubmitPreview(packing, ozonCargoes);
+    const parts = [];
+    if (added.length > 0) {
+      parts.push(`коробов +${added.length}`);
+    }
+    const addedTransport = transportUpserted.filter((t) => !t.existed);
+    if (addedTransport.length > 0) {
+      parts.push(`ТГМ +${addedTransport.length}`);
+    }
 
     return {
       createdCargoIds: ozonIds,
       created,
       addedCount: added.length,
+      transportCargoes: packing.transportCargoes || [],
       packing,
       ozonMeta,
       message:
-        added.length > 0
-          ? `Добавлено ${added.length} грузомест из Ozon: ${added.map((c) => c.cargoId).join(', ')}`
-          : 'Все грузоместа Ozon уже есть в сборке ERM',
+        parts.length > 0
+          ? `Подтянуто из Ozon: ${parts.join(', ')} (всего коробов ${ozonIds.length}, ТГМ ${ozonTransport.length})`
+          : `Все грузоместа Ozon уже есть в сборке ERM (коробов ${ozonIds.length}, ТГМ ${ozonTransport.length})`,
     };
+  }
+
+  /** Включить режим транспортных грузомест в поставке Ozon. */
+  async activateTransportCargoes(supplyId, { enabled = true, profileId } = {}) {
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
+    const createRes = await ozonApiPostWithRetry(
+      '/v1/cargoes/transport/activate',
+      { supply_id: Number(ozonSupplyId) || ozonSupplyId, is_transport: enabled !== false },
+      ozonApiOpts
+    );
+    const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
+    if (!operationId) {
+      const err = new Error('Ozon не вернул operation_id при включении ТГМ');
+      err.statusCode = 400;
+      throw err;
+    }
+    await pollOzonTransportStatus(
+      '/v1/cargoes/transport/activate/status',
+      operationId,
+      ozonApiOpts
+    );
+    return {
+      operationId,
+      enabled: enabled !== false,
+      message: enabled !== false ? 'Транспортные грузоместа включены в поставке Ozon' : 'ТГМ отключены',
+    };
+  }
+
+  /** Создать транспортные грузоместа (паллеты-ТГМ) на Ozon и в ERM. */
+  async createTransportCargoesOnOzon(supplyId, { count = 1, profileId } = {}) {
+    const qty = Math.min(Math.max(Number(count) || 1, 1), 40);
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
+
+    // Без is_transport:true Ozon часто отклоняет create.
+    try {
+      await this.activateTransportCargoes(supplyId, { enabled: true, profileId });
+    } catch (err) {
+      logger.warn('[FBO Ozon] transport activate before create', {
+        supplyId,
+        error: err?.message,
+      });
+    }
+
+    const before = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+    const beforeIds = new Set((before.transportCargoes || []).map((t) => t.transportCargoId));
+
+    const createRes = await ozonApiPostWithRetry(
+      '/v1/cargoes/transport/create',
+      {
+        supply_id: Number(ozonSupplyId) || ozonSupplyId,
+        transport_cargoes: [{ count: qty, type: 'PALLET' }],
+      },
+      ozonApiOpts
+    );
+    const errorReasons = createRes?.error_reasons ?? createRes?.result?.error_reasons;
+    if (Array.isArray(errorReasons) && errorReasons.length) {
+      const err = new Error(formatOzonCargoErrorReasons({ error_reasons: errorReasons }) || 'Ozon отклонил создание ТГМ');
+      err.statusCode = 400;
+      throw err;
+    }
+    const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
+    if (!operationId) {
+      const err = new Error('Ozon не вернул operation_id при создании ТГМ');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const statusData = await pollOzonTransportStatus(
+      '/v1/cargoes/transport/create/status',
+      operationId,
+      ozonApiOpts
+    );
+    let newIds = (statusData?.result?.transport_cargoes || statusData?.transport_cargoes || [])
+      .map((t) => (t?.id != null ? String(t.id).trim() : ''))
+      .filter(Boolean);
+
+    if (newIds.length < qty) {
+      for (let i = 0; i < 10 && newIds.length < qty; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 2000));
+        const after = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+        newIds = (after.transportCargoes || [])
+          .map((t) => t.transportCargoId)
+          .filter((id) => id && !beforeIds.has(id));
+      }
+    }
+
+    if (!newIds.length) {
+      const err = new Error(
+        'Ozon не вернул номера новых ТГМ. Подождите и нажмите «Подтянуть из Ozon».'
+      );
+      err.statusCode = 400;
+      err.code = 'OZON_TRANSPORT_CREATE_NO_IDS';
+      throw err;
+    }
+
+    await upsertErmTransportCargoes(
+      supplyId,
+      newIds.map((id) => ({ transportCargoId: id, type: 'PALLET' }))
+    );
+    const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    return {
+      operationId,
+      createdTransportCargoIds: newIds,
+      packing,
+      message: `Создано ${newIds.length} транспортных грузомест: ${newIds.join(', ')}`,
+    };
+  }
+
+  /**
+   * Привязать / отвязать короба к ТГМ.
+   * @param {{ transportCargoId: string|number, cargoUnitIds?: number[], cargoBarcodes?: string[], unbindCargoBarcodes?: string[] }} opts
+   */
+  async bindCargoesToTransport(supplyId, opts = {}, { profileId } = {}) {
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
+    const transportBarcode = String(opts.transportCargoId ?? opts.transportBarcode ?? '').trim();
+    if (!transportBarcode) {
+      const err = new Error('Укажите транспортное грузоместо');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    const units = packing?.cargoUnits || [];
+    const unitIds = new Set((opts.cargoUnitIds || []).map((id) => Number(id)).filter((n) => n > 0));
+    const barcodesFromOpts = (opts.cargoBarcodes || []).map((b) => String(b).trim()).filter(Boolean);
+    const bindBarcodes = [
+      ...barcodesFromOpts,
+      ...units.filter((u) => unitIds.has(Number(u.id))).map((u) => String(u.barcode).trim()),
+    ].filter(Boolean);
+    const uniqueBind = [...new Set(bindBarcodes)];
+    const unbindBarcodes = [
+      ...new Set((opts.unbindCargoBarcodes || []).map((b) => String(b).trim()).filter(Boolean)),
+    ];
+
+    if (!uniqueBind.length && !unbindBarcodes.length) {
+      const err = new Error('Укажите короба для привязки или отвязки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const body = {
+      supply_id: Number(ozonSupplyId) || ozonSupplyId,
+    };
+    if (uniqueBind.length) {
+      body.transport_cargo_bind = [
+        {
+          transport_cargo_id: Number(transportBarcode) || transportBarcode,
+          cargo_ids: uniqueBind,
+        },
+      ];
+    }
+    if (unbindBarcodes.length) {
+      body.cargoes_unbind_transport_cargoes = unbindBarcodes;
+    }
+
+    const createRes = await ozonApiPostWithRetry('/v1/cargoes/transport/bind', body, ozonApiOpts);
+    const errorReasons = createRes?.error_reasons ?? createRes?.result?.error_reasons;
+    if (Array.isArray(errorReasons) && errorReasons.length) {
+      const err = new Error(
+        formatOzonCargoErrorReasons({ error_reasons: errorReasons }) || 'Ozon отклонил привязку к ТГМ'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
+    if (operationId) {
+      await pollOzonTransportStatus('/v1/cargoes/transport/bind/status', operationId, ozonApiOpts);
+    }
+
+    // Локально синхронизируем привязку по ответу Ozon (полный список).
+    const detailed = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+    await upsertErmTransportCargoes(supplyId, detailed.transportCargoes || []);
+    await applyOzonTransportBindings(supplyId, detailed.cargoes || []);
+
+    const nextPacking = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    return {
+      operationId,
+      packing: nextPacking,
+      message: uniqueBind.length
+        ? `Привязано ${uniqueBind.length} коробов к ТГМ ${transportBarcode}`
+        : `Отвязано ${unbindBarcodes.length} коробов от ТГМ`,
+    };
+  }
+
+  async fetchTransportCargoLabelsPdf(supplyId, transportCargoIds, { profileId } = {}) {
+    const ids = (transportCargoIds || []).map((id) => String(id).trim()).filter(Boolean);
+    if (!ids.length) {
+      const err = new Error('Укажите номера транспортных грузомест');
+      err.statusCode = 400;
+      throw err;
+    }
+    const { ozonSupplyId, ozonApiOpts, ozonCfg } = await resolveOzonApiContext(supplyId, {
+      profileId,
+    });
+    const createRes = await ozonApiPostWithRetry(
+      '/v1/cargoes/label/transport/create',
+      {
+        supply_id: Number(ozonSupplyId) || ozonSupplyId,
+        transport_cargo_ids: ids,
+      },
+      ozonApiOpts
+    );
+    const operationId = createRes?.operation_id ?? createRes?.result?.operation_id;
+    if (!operationId) {
+      const err = new Error('Ozon не начал генерацию этикеток ТГМ');
+      err.statusCode = 400;
+      throw err;
+    }
+    let fileUrl = null;
+    let fileGuid = null;
+    for (let i = 0; i < 30; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 2000));
+      const st = await ozonApiPostWithRetry(
+        '/v1/cargoes/label/transport/status',
+        { operation_id: operationId },
+        ozonApiOpts
+      );
+      const status = String(st?.status || st?.result?.status || '').toUpperCase();
+      fileUrl =
+        st?.file_url ??
+        st?.result?.file_url ??
+        st?.result?.result?.file_url ??
+        null;
+      fileGuid =
+        st?.file_guid ??
+        st?.result?.file_guid ??
+        st?.result?.result?.file_guid ??
+        null;
+      if (status === 'FAILED' || status === 'ERROR') {
+        const err = new Error(
+          formatOzonCargoErrorReasons(st?.errors || st?.error_reasons) ||
+            'Ozon не сформировал этикетки ТГМ'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      if (fileUrl || fileGuid || status === 'SUCCESS' || status === 'COMPLETED') break;
+    }
+    if (fileUrl) {
+      const r = await fetch(String(fileUrl));
+      if (!r.ok) throw new Error(`Не удалось скачать этикетки ТГМ (${r.status})`);
+      return { buffer: Buffer.from(await r.arrayBuffer()), cargoIds: ids };
+    }
+    if (fileGuid) {
+      const base = config.ozon?.apiUrl || 'https://api-seller.ozon.ru';
+      const r = await fetch(`${base}/v1/cargoes-label/file/${fileGuid}`, {
+        headers: {
+          'Client-Id': String(ozonCfg.clientId),
+          'Api-Key': String(ozonCfg.apiKey),
+        },
+      });
+      if (!r.ok) throw new Error(`Не удалось скачать этикетки ТГМ (${r.status})`);
+      return { buffer: Buffer.from(await r.arrayBuffer()), cargoIds: ids };
+    }
+    const err = new Error('Ozon не вернул файл этикеток ТГМ');
+    err.statusCode = 400;
+    throw err;
   }
 
   async fetchCargoLabelsPdf(supplyId, cargoIds, { profileId, useCache = true } = {}) {

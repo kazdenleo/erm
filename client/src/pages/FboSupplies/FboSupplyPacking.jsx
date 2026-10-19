@@ -13,6 +13,7 @@ import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
 import { FboCargoContentMeta } from './FboCargoContentMeta.jsx';
 import { FboCargoUnitKind } from './FboCargoUnitKind.jsx';
 import { FboCargoBarcodeEdit } from './FboCargoBarcodeEdit.jsx';
+import { FboTransportCargoes } from './FboTransportCargoes.jsx';
 import {
   cargoWeightExceededMessage,
   cargoWeightSummary,
@@ -572,7 +573,7 @@ export function FboSupplyPacking({
                 variant="secondary"
                 disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
                 onClick={handleSyncFromOzon}
-                title="Подтянуть номера грузомест из Ozon в сборку ERM"
+                title="Подтянуть все короба и ТГМ из Ozon (включая привязанные к транспортным грузоместам)"
               >
                 {syncingFromOzon ? 'Синхр…' : 'Подтянуть из Ozon'}
               </Button>
@@ -719,6 +720,11 @@ export function FboSupplyPacking({
                   <div className="fbo-cargo-card__title">
                     <strong>{cargo.barcode}</strong>
                     {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
+                    {cargo.transportCargoBarcode ? (
+                      <span className="badge bg-secondary ms-2" title="Привязан к транспортному грузоместу">
+                        ТГМ {cargo.transportCargoBarcode}
+                      </span>
+                    ) : null}
                   </div>
                   <span className="fbo-cargo-card__summary text-muted small">
                     {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
@@ -868,6 +874,15 @@ export function FboSupplyPacking({
           })}
         </div>
       )}
+
+      {isOzon ? (
+        <FboTransportCargoes
+          supplyId={supplyId}
+          packing={packing}
+          onPackingChange={onPackingChange}
+          disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
+        />
+      ) : null}
 
       <h4 className="fbo-packing-section-title" style={{ marginTop: 20 }}>
         Товары поставки

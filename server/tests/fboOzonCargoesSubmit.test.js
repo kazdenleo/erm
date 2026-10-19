@@ -15,6 +15,7 @@ import {
   ozonCargoKeyFromUnit,
   parseOzonSupplyCargoIds,
   parseOzonSupplyCargoes,
+  parseOzonSuppliesGetCargoes,
   resolveOzonCargoesForSubmit,
   resolveOzonDeleteCurrentVersion,
 } from '../src/services/fboSuppliesSubmit.service.js';
@@ -288,9 +289,12 @@ describe('parseOzonSupplyCargoes', () => {
     expect(cargoes).toEqual([
       {
         cargoId: '1022086000854000',
+        barcode: '1022086000854000',
+        apiCargoId: '1022086000854000',
         contentType: 'NONE',
         bundleId: '',
         type: '',
+        transportCargoId: null,
       },
     ]);
   });
@@ -312,6 +316,77 @@ describe('parseOzonSupplyCargoIds', () => {
       '12345678'
     );
     expect(ids).toEqual(['1022086000854000']);
+  });
+
+  test('does not take first supply when ids do not match', () => {
+    const cargoes = parseOzonSupplyCargoes(
+      {
+        supply: [
+          { supply_id: 111, cargoes: [{ cargo_id: 1 }] },
+          { supply_id: 222, cargoes: [{ cargo_id: 2 }] },
+        ],
+      },
+      '999'
+    );
+    expect(cargoes).toEqual([]);
+  });
+});
+
+describe('parseOzonSuppliesGetCargoes', () => {
+  test('merges unbound boxes and boxes inside transport cargoes', () => {
+    const parsed = parseOzonSuppliesGetCargoes(
+      {
+        supplies_cargoes: [
+          {
+            supply_id: 55,
+            cargoes_without_transport_cargoes: [{ cargo_id: 101, barcode: '101', type: 'BOX' }],
+            transport_cargoes: [
+              {
+                transport_cargo_id: 9001,
+                type: 'PALLET',
+                cargoes: [
+                  { cargo_id: 102, barcode: '102', type: 'BOX' },
+                  { cargo_id: 103, barcode: '103', type: 'BOX' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      55
+    );
+    expect(parsed.transportCargoes).toEqual([
+      { transportCargoId: '9001', type: 'PALLET', boxCount: 2 },
+    ]);
+    expect(parsed.cargoes.map((c) => c.cargoId).sort()).toEqual(['101', '102', '103']);
+    expect(parsed.cargoes.find((c) => c.cargoId === '102').transportCargoId).toBe('9001');
+    expect(parsed.cargoes.find((c) => c.cargoId === '101').transportCargoId).toBeNull();
+  });
+
+  test('uses unique barcode when cargo_id is duplicated (Voronezh / supplies/get)', () => {
+    const parsed = parseOzonSuppliesGetCargoes(
+      {
+        supplies_cargoes: [
+          {
+            supply_id: 2000069836652,
+            cargoes_without_transport_cargoes: [
+              { cargo_id: 1000000000064728300, barcode: '1000000000064728284' },
+              { cargo_id: 1000000000064728300, barcode: '1000000000064728285' },
+              { cargo_id: 1000000000064728300, barcode: '1000000000064728286' },
+            ],
+            transport_cargoes: [{ transport_cargo_id: 1022114868697000, type: 'PALLET', cargoes: [] }],
+          },
+        ],
+      },
+      2000069836652
+    );
+    expect(parsed.cargoes.map((c) => c.cargoId).sort()).toEqual([
+      '1000000000064728284',
+      '1000000000064728285',
+      '1000000000064728286',
+    ]);
+    expect(parsed.cargoes.every((c) => c.apiCargoId === '1000000000064728300')).toBe(true);
+    expect(parsed.transportCargoes).toHaveLength(1);
   });
 });
 

@@ -236,6 +236,9 @@ function mapCargoRow(row) {
     barcode: row.barcode,
     cargoKind: kind,
     palletTareWeightKg,
+    transportCargoId: row.transport_cargo_id != null ? Number(row.transport_cargo_id) : null,
+    transportCargoBarcode:
+      row.transport_cargo_barcode != null ? String(row.transport_cargo_barcode).trim() : null,
     createdAt: row.created_at,
   };
 }
@@ -262,13 +265,49 @@ class FboSuppliesPackingService {
     const weightLimits =
       weightLimitsIn ?? (await loadFboWeightLimitsForSupply(supply, { profileId }));
 
-    const cargoR = await query(
-      `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
-       FROM fbo_supply_cargo_units c
-       WHERE c.fbo_supply_id = $1
-       ORDER BY c.id ASC`,
-      [supplyId]
-    );
+    let cargoR;
+    let transportCargoes = [];
+    try {
+      cargoR = await query(
+        `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at,
+                c.transport_cargo_id, t.barcode AS transport_cargo_barcode
+         FROM fbo_supply_cargo_units c
+         LEFT JOIN fbo_supply_transport_cargoes t ON t.id = c.transport_cargo_id
+         WHERE c.fbo_supply_id = $1
+         ORDER BY c.id ASC`,
+        [supplyId]
+      );
+      const transportR = await query(
+        `SELECT t.id, t.fbo_supply_id, t.barcode, t.transport_kind, t.created_at,
+                COUNT(c.id)::int AS box_count
+         FROM fbo_supply_transport_cargoes t
+         LEFT JOIN fbo_supply_cargo_units c ON c.transport_cargo_id = t.id
+         WHERE t.fbo_supply_id = $1
+         GROUP BY t.id
+         ORDER BY t.id ASC`,
+        [supplyId]
+      );
+      transportCargoes = (transportR.rows || []).map((row) => ({
+        id: row.id,
+        fboSupplyId: row.fbo_supply_id,
+        barcode: row.barcode,
+        transportKind: 'pallet',
+        boxCount: Number(row.box_count) || 0,
+        createdAt: row.created_at,
+      }));
+    } catch (err) {
+      // До миграции 230 колонки/таблицы может не быть.
+      if (!/fbo_supply_transport_cargoes|transport_cargo_id/i.test(String(err?.message || ''))) {
+        throw err;
+      }
+      cargoR = await query(
+        `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
+         FROM fbo_supply_cargo_units c
+         WHERE c.fbo_supply_id = $1
+         ORDER BY c.id ASC`,
+        [supplyId]
+      );
+    }
 
     const contentsR = await query(
       `SELECT cc.id, cc.cargo_unit_id, cc.fbo_supply_item_id, cc.quantity,
@@ -363,7 +402,7 @@ class FboSuppliesPackingService {
       };
     });
 
-    return { cargoUnits, itemStats, weightLimits };
+    return { cargoUnits, transportCargoes, itemStats, weightLimits };
   }
 
   async updateCargoUnit(supplyId, cargoUnitId, patch = {}, { profileId } = {}) {

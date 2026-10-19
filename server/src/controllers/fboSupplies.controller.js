@@ -841,6 +841,89 @@ class FboSuppliesController {
     }
   }
 
+  async createOzonTransportCargoes(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const { count } = req.body || {};
+      const data = await fboSuppliesOzonCargoesService.createTransportCargoesOnOzon(id, {
+        count,
+        profileId: tid,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+        });
+      }
+      next(e);
+    }
+  }
+
+  async bindOzonTransportCargoes(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const data = await fboSuppliesOzonCargoesService.bindCargoesToTransport(id, req.body || {}, {
+        profileId: tid,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+        });
+      }
+      next(e);
+    }
+  }
+
+  async downloadTransportCargoLabels(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Этикетки недоступны без привязки к аккаунту' });
+      }
+      const raw = req.query?.transportCargoIds ?? req.query?.ids ?? '';
+      const transportCargoIds = String(raw)
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const { buffer } = await fboSuppliesOzonCargoesService.fetchTransportCargoLabelsPdf(
+        id,
+        transportCargoIds,
+        { profileId: tid }
+      );
+      const filename = `ozon_transport_labels_${id}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
+      }
+      next(e);
+    }
+  }
+
   async downloadCargoLabels(req, res, next) {
     try {
       const { id } = req.params;

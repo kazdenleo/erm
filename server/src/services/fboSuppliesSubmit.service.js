@@ -242,33 +242,143 @@ export function ozonCargoKeyFromUnit(cargo) {
 function parseOzonSupplyList(data, ozonSupplyId) {
   const supplies = data?.result?.supply ?? data?.supply ?? [];
   const list = Array.isArray(supplies) ? supplies : [];
-  return list.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId)) ?? list[0] ?? null;
+  const exact = list.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId));
+  if (exact) return exact;
+  // Не берём list[0] при нескольких поставках — иначе можно «потерять» короба нужной поставки.
+  if (list.length === 1) return list[0];
+  return null;
+}
+
+function mapOzonCargoEntry(c, { transportCargoId = null } = {}) {
+  // В /v1/cargoes/supplies/get у разных коробов часто один cargo_id, а уникален barcode (номер на этикетке).
+  // В /v1/cargoes/get barcode может отсутствовать — тогда остаётся cargo_id.
+  const labelBarcode = c?.barcode != null ? String(c.barcode).trim() : '';
+  const apiCargoId = c?.cargo_id != null ? String(c.cargo_id).trim() : '';
+  const cargoId = labelBarcode || apiCargoId;
+  if (!cargoId) return null;
+  const transportId =
+    transportCargoId != null && String(transportCargoId).trim() !== ''
+      ? String(transportCargoId).trim()
+      : c?.transport_cargo_id != null
+        ? String(c.transport_cargo_id).trim()
+        : null;
+  return {
+    cargoId,
+    barcode: cargoId,
+    apiCargoId: apiCargoId || cargoId,
+    contentType: c?.content_type != null ? String(c.content_type).trim().toUpperCase() : '',
+    bundleId: c?.bundle_id != null ? String(c.bundle_id).trim() : '',
+    type: c?.type != null ? String(c.type).trim().toUpperCase() : '',
+    transportCargoId: transportId || null,
+  };
 }
 
 export function parseOzonSupplyCargoes(data, ozonSupplyId) {
   const match = parseOzonSupplyList(data, ozonSupplyId);
   const cargoes = match?.cargoes ?? [];
   return (Array.isArray(cargoes) ? cargoes : [])
-    .map((c) => ({
-      cargoId: c?.cargo_id != null ? String(c.cargo_id).trim() : '',
-      contentType: c?.content_type != null ? String(c.content_type).trim().toUpperCase() : '',
-      bundleId: c?.bundle_id != null ? String(c.bundle_id).trim() : '',
-      type: c?.type != null ? String(c.type).trim().toUpperCase() : '',
-    }))
-    .filter((c) => c.cargoId);
+    .map((c) => mapOzonCargoEntry(c))
+    .filter(Boolean);
+}
+
+/**
+ * /v1/cargoes/supplies/get — полный список коробов, в т.ч. привязанных к ТГМ.
+ */
+export function parseOzonSuppliesGetCargoes(data, ozonSupplyId) {
+  const root = data?.result ?? data ?? {};
+  const list = root.supplies_cargoes ?? root.supplies ?? [];
+  const arr = Array.isArray(list) ? list : [];
+  const match =
+    arr.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId)) ??
+    (arr.length === 1 ? arr[0] : null);
+  if (!match) return { cargoes: [], transportCargoes: [] };
+
+  const byId = new Map();
+  const push = (c, transportCargoId = null) => {
+    const mapped = mapOzonCargoEntry(c, { transportCargoId });
+    if (!mapped) return;
+    const prev = byId.get(mapped.cargoId);
+    if (!prev || (!prev.transportCargoId && mapped.transportCargoId)) {
+      byId.set(mapped.cargoId, mapped);
+    }
+  };
+
+  for (const c of match.cargoes_without_transport_cargoes || []) {
+    push(c, null);
+  }
+  // На всякий случай: плоский список cargoes, если API его отдаёт.
+  for (const c of match.cargoes || []) {
+    push(c, c?.transport_cargo_id ?? null);
+  }
+
+  const transportCargoes = [];
+  for (const tc of match.transport_cargoes || []) {
+    const tid =
+      tc?.transport_cargo_id != null ? String(tc.transport_cargo_id).trim() : '';
+    if (!tid) continue;
+    transportCargoes.push({
+      transportCargoId: tid,
+      type: tc?.type != null ? String(tc.type).trim().toUpperCase() : 'PALLET',
+      boxCount: Number(tc?.box_count) || (Array.isArray(tc?.cargoes) ? tc.cargoes.length : 0),
+    });
+    for (const c of tc.cargoes || []) {
+      push(c, tid);
+    }
+  }
+
+  return { cargoes: [...byId.values()], transportCargoes };
 }
 
 export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
   return parseOzonSupplyCargoes(data, ozonSupplyId).map((c) => c.cargoId);
 }
 
-export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts) {
+export async function fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts) {
+  let fromSupplies = { cargoes: [], transportCargoes: [] };
+  try {
+    const data = await ozonApiPostWithRetry(
+      '/v1/cargoes/supplies/get',
+      { supply_ids: [String(ozonSupplyId)] },
+      ozonApiOpts
+    );
+    fromSupplies = parseOzonSuppliesGetCargoes(data, ozonSupplyId);
+  } catch (err) {
+    logger.warn('[FBO Ozon] cargoes/supplies/get failed', {
+      ozonSupplyId,
+      error: err?.message,
+    });
+  }
+
+  // supplies/get даёт уникальные barcode; v1/get часто дублирует один cargo_id на все короба.
+  if (fromSupplies.cargoes.length || fromSupplies.transportCargoes.length) {
+    logger.info('[FBO Ozon] cargoes from supplies/get', {
+      ozonSupplyId,
+      cargoes: fromSupplies.cargoes.length,
+      transport: fromSupplies.transportCargoes.length,
+    });
+    return fromSupplies;
+  }
+
   const data = await ozonApiPostWithRetry(
     '/v1/cargoes/get',
     { supply_ids: [String(ozonSupplyId)] },
     ozonApiOpts
   );
-  return parseOzonSupplyCargoes(data, ozonSupplyId);
+  const cargoes = parseOzonSupplyCargoes(data, ozonSupplyId);
+  const unique = [...new Map(cargoes.map((c) => [c.cargoId, c])).values()];
+  if (cargoes.length > unique.length) {
+    logger.warn('[FBO Ozon] /v1/cargoes/get returned duplicate cargo_id; unique only', {
+      ozonSupplyId,
+      raw: cargoes.length,
+      unique: unique.length,
+    });
+  }
+  return { cargoes: unique, transportCargoes: [] };
+}
+
+export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts) {
+  const detailed = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+  return detailed.cargoes;
 }
 
 export async function fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts) {

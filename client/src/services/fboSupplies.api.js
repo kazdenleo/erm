@@ -363,6 +363,38 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  createOzonTransportCargoes: async (id, { count = 1 } = {}) => {
+    const response = await api.post(
+      `/fbo-supplies/${id}/packing/ozon-transport-cargoes/create`,
+      { count },
+      { timeout: 180000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
+  bindOzonTransportCargoes: async (id, payload = {}) => {
+    const response = await api.post(
+      `/fbo-supplies/${id}/packing/ozon-transport-cargoes/bind`,
+      payload,
+      { timeout: 180000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
+  downloadTransportCargoLabels: async (id, transportCargoIds) => {
+    const ids = (transportCargoIds || []).filter(Boolean).join(',');
+    try {
+      const response = await api.get(`/fbo-supplies/${id}/packing/ozon-transport-cargoes/labels`, {
+        params: { transportCargoIds: ids },
+        responseType: 'arraybuffer',
+        timeout: 180000,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(parseApiErrorPayload(e, 'Не удалось скачать этикетки ТГМ'));
+    }
+  },
+
   downloadCargoLabels: async (id, cargoIds, { refresh = false } = {}) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
     try {
