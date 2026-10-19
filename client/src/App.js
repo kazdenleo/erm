@@ -77,6 +77,7 @@ import { Settings } from './pages/Settings/Settings';
 import { Attributes } from './pages/Settings/Attributes';
 import { Certificates } from './pages/Settings/Certificates';
 import { Labels } from './pages/Settings/Labels';
+import { MobileApp } from './pages/Settings/MobileApp';
 import { RichContentConstructor } from './pages/Settings/RichContentConstructor.jsx';
 import { VideoCoverConstructor } from './pages/Settings/VideoCoverConstructor.jsx';
 import { ContentSettingsLayout } from './pages/Settings/ContentSettings.jsx';
@@ -262,6 +263,7 @@ function App() {
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
           <Route path="/settings/certificates" element={<ProtectedRoute><Layout><Certificates /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
+          <Route path="/settings/app" element={<ProtectedRoute><Layout><MobileApp /></Layout></ProtectedRoute>} />
           <Route
             path="/settings/content"
             element={

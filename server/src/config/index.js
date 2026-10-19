@@ -11,7 +11,8 @@ import { dirname, join } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const projectRoot = __dirname.includes('server/src/config')
+// На Windows в пути обратные слэши — нельзя искать только 'server/src/config'.
+const projectRoot = /server[/\\]src[/\\]config/.test(__dirname)
   ? join(__dirname, '../../../')
   : process.cwd();
 

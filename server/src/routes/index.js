@@ -24,6 +24,7 @@ import {
   validateOrderReserveBody,
 } from '../validators/orderValidator.js';
 import { requireAuth } from '../middleware/auth.js';
+import mobileAppController from '../controllers/mobileApp.controller.js';
 import supplierStocksRoutes from './supplierStocks.routes.js';
 import integrationsRoutes from './integrations.routes.js';
 import { categoriesRoutes } from './categories.routes.js';
@@ -111,6 +112,11 @@ router.get(
   '/shipments/:id/qr-sticker',
   wrapAsync(shipmentsController.getQrStickerPublic.bind(shipmentsController))
 );
+
+// Публичные: APK и QR мобильного приложения (скан с телефона без логина)
+router.get('/mobile-app', wrapAsync(mobileAppController.getInfo.bind(mobileAppController)));
+router.get('/mobile-app/qr.png', wrapAsync(mobileAppController.getQr.bind(mobileAppController)));
+router.get('/mobile-app/download', wrapAsync(mobileAppController.download.bind(mobileAppController)));
 
 // Публичные: этикетки товаров — Print Helper без Bearer; optionalAuth подставляет req.user при токене в браузере
 router.get(
