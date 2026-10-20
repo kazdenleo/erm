@@ -2172,7 +2172,7 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
         }
       },
       ozonApiOpts,
-      { maxAttempts: 5, priority: 'high' }
+      { maxAttempts: 3, priority: 'high' }
     );
     const postings = data?.result?.postings ?? [];
     acc.push(...postings);
@@ -2186,6 +2186,16 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
   try {
     const { client_id, api_key } = config;
     if (!client_id || !api_key) return [];
+
+    // Дать Client-Id «остыть» после stock/FBO перед первым list.
+    const quietMs = Math.max(
+      0,
+      parseInt(process.env.OZON_FBS_LIST_QUIET_MS || '8000', 10) || 8000
+    );
+    if (quietMs > 0) {
+      logger.info(`[Ozon Orders] пауза ${quietMs}ms перед list (снижение 429)`);
+      await new Promise((r) => setTimeout(r, quietMs));
+    }
 
     const now = new Date();
     const windowStart = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000);
@@ -2215,6 +2225,10 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
         logger.warn(
           `[Ozon Orders] чанк ${chunkIdx} (${since.toISOString().slice(0, 10)}..${to.toISOString().slice(0, 10)}): ${e.message}`
         );
+        // Не долбить следующие чанки в том же прогоне — только усугубляет ban.
+        if (String(e?.code || e?.message || '').includes('RATE_LIMIT') || /429|ограничил частоту/i.test(String(e?.message || ''))) {
+          break;
+        }
       }
       t = chunkEndMs + 1;
     }

@@ -8,13 +8,13 @@ import integrationsService from '../services/integrations.service.js';
 /** Мин. интервал между запросами одного Client-Id (Ozon — лимит на секунду). */
 export const OZON_SELLER_API_MIN_GAP_MS = Math.max(
   400,
-  parseInt(process.env.OZON_SELLER_API_MIN_GAP_MS || '1100', 10) || 1100
+  parseInt(process.env.OZON_SELLER_API_MIN_GAP_MS || '1500', 10) || 1500
 );
 
 /** После 429 не бить этот Client-Id ещё N мс. */
 export const OZON_SELLER_API_COOLDOWN_MS = Math.max(
   5_000,
-  parseInt(process.env.OZON_SELLER_API_COOLDOWN_MS || '45000', 10) || 45_000
+  parseInt(process.env.OZON_SELLER_API_COOLDOWN_MS || '60000', 10) || 60_000
 );
 
 let ozonSellerApiNormalQueue = Promise.resolve();
