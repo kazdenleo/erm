@@ -1,0 +1,91 @@
+.packaging-label-scan .subtitle {
+  color: var(--muted, #6b7280);
+  max-width: 42rem;
+  margin-bottom: 1rem;
+}
+
+.packaging-label-scan__row {
+  margin-bottom: 12px;
+}
+
+.packaging-label-scan__copies {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.packaging-label-scan__copies input {
+  width: 72px;
+  padding: 6px 10px;
+  font-size: 14px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+}
+
+.packaging-label-scan__scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  max-width: 36rem;
+  margin-bottom: 14px;
+}
+
+.packaging-label-scan__input {
+  flex: 1 1 240px;
+  min-width: 200px;
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 16px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+}
+
+.packaging-label-scan__busy {
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+}
+
+.packaging-label-scan__msg {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: 42rem;
+}
+
+.packaging-label-scan__msg--ok {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.packaging-label-scan__msg--err {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.packaging-label-scan__card {
+  max-width: 42rem;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg, #fff);
+}
+
+.packaging-label-scan__product {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.packaging-label-scan__packs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

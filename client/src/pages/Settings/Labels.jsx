@@ -3,8 +3,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../services/api';
 import { LabelConstructor } from './LabelConstructor.jsx';
+import { PackagingLabelScanPrint } from './PackagingLabelScanPrint.jsx';
 import {
   LABEL_PRINT_KINDS,
   getLabelPrinterMap,
@@ -18,6 +20,7 @@ import {
 import './Labels.css';
 
 const STORAGE_KEY = 'erm_label_size';
+const LABEL_TABS = new Set(['general', 'constructor', 'packaging-print']);
 
 export const LABEL_SIZES = [
   { value: '58x40', label: '58 × 40 мм' },
@@ -34,8 +37,25 @@ export function getStoredLabelSize() {
 }
 
 export function Labels() {
-  const [tab, setTab] = useState('general');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = String(searchParams.get('tab') || '').trim();
+  const [tab, setTab] = useState(() => (LABEL_TABS.has(tabFromUrl) ? tabFromUrl : 'general'));
   const [size, setSize] = useState(getStoredLabelSize);
+
+  useEffect(() => {
+    if (LABEL_TABS.has(tabFromUrl) && tabFromUrl !== tab) setTab(tabFromUrl);
+  }, [tabFromUrl, tab]);
+
+  const selectTab = useCallback(
+    (next) => {
+      setTab(next);
+      const nextParams = new URLSearchParams(searchParams);
+      if (next === 'general') nextParams.delete('tab');
+      else nextParams.set('tab', next);
+      setSearchParams(nextParams, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
   const [printHelperUrl, setPrintHelperUrl] = useState('');
@@ -196,14 +216,21 @@ export function Labels() {
         <button
           type="button"
           className={tab === 'general' ? 'active' : ''}
-          onClick={() => setTab('general')}
+          onClick={() => selectTab('general')}
         >
           Печать
         </button>
         <button
           type="button"
+          className={tab === 'packaging-print' ? 'active' : ''}
+          onClick={() => selectTab('packaging-print')}
+        >
+          ШК упаковок по скану
+        </button>
+        <button
+          type="button"
           className={tab === 'constructor' ? 'active' : ''}
-          onClick={() => setTab('constructor')}
+          onClick={() => selectTab('constructor')}
         >
           Конструктор по категориям
         </button>
@@ -211,6 +238,8 @@ export function Labels() {
 
       {tab === 'constructor' ? (
         <LabelConstructor />
+      ) : tab === 'packaging-print' ? (
+        <PackagingLabelScanPrint />
       ) : (
         <>
           <p className="subtitle">Размер этикетки по умолчанию для тихой печати (Print Helper).</p>
