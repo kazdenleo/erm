@@ -2121,10 +2121,6 @@ function mapOzonPostingToSyncRows(order) {
 }
 
 /**
- * v3/posting/fbs/list для одного интервала since..to: все страницы (offset), до limit записей на страницу.
- * @throws {Error} при HTTP-ошибке Ozon
- */
-/**
  * После upsert: сохранить номер с этикетки / order_number Ozon в assembly_sticker_number.
  * upsertFromSyncBatch само поле не обновляет (чтобы не затирать стикер WB).
  */
@@ -2148,39 +2144,50 @@ async function persistOzonAssemblyStickersFromSyncRows(rows, profileId = null) {
   }
 }
 
+/**
+ * /v4/posting/fbs/list для интервала since..to.
+ * v3 deprecated (и у части кабинетов режется 429 по IP); v4 — курсорная пагинация,
+ * postings часто на верхнем уровне ответа (не только в result).
+ * @throws {Error} при HTTP-ошибке Ozon
+ */
 async function fetchOzonFbsListForPeriod(config, since, to) {
   const ozonApiOpts = ozonApiOptsFromConfig(config);
   if (!ozonApiOpts) return [];
   const acc = [];
-  let offset = 0;
   const limit = 1000;
-  while (true) {
+  let cursor = '';
+  for (let page = 0; page < 200; page++) {
+    const body = {
+      sort_dir: 'ASC',
+      cursor,
+      limit,
+      filter: {
+        since: since.toISOString(),
+        to: to.toISOString(),
+      },
+      with: {
+        analytics_data: false,
+        financial_data: false,
+        barcodes: true,
+      },
+      translit: false,
+    };
     // Через общую очередь Seller API: иначе параллельный push остатков/FBO даёт 429
     // и сик FBS молча возвращает 0 заказов.
-    const data = await ozonApiPostWithRetry(
-      '/v3/posting/fbs/list',
-      {
-        dir: 'ASC',
-        filter: {
-          since: since.toISOString(),
-          to: to.toISOString()
-        },
-        limit,
-        offset,
-        with: {
-          analytics_data: false,
-          financial_data: false,
-          transliteration: false,
-          barcodes: true
-        }
-      },
-      ozonApiOpts,
-      { maxAttempts: 3, priority: 'high' }
-    );
-    const postings = data?.result?.postings ?? [];
+    const data = await ozonApiPostWithRetry('/v4/posting/fbs/list', body, ozonApiOpts, {
+      maxAttempts: 3,
+      priority: 'high',
+    });
+    const postings = Array.isArray(data?.postings)
+      ? data.postings
+      : Array.isArray(data?.result?.postings)
+        ? data.result.postings
+        : [];
     acc.push(...postings);
-    if (postings.length < limit) break;
-    offset += limit;
+    const hasNext = data?.has_next === true || data?.result?.has_next === true;
+    const nextCursor = data?.cursor ?? data?.result?.cursor ?? '';
+    if (!hasNext || !nextCursor || postings.length === 0) break;
+    cursor = String(nextCursor);
   }
   return acc;
 }

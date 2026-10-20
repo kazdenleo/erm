@@ -341,25 +341,27 @@ class IntegrationsService {
           const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 дней назад
           const to = now.toISOString();
           await this._ozonApiPost(
-            '/v3/posting/fbs/list',
+            '/v4/posting/fbs/list',
             {
-              dir: 'ASC',
-              filter: { since, to },
+              sort_dir: 'ASC',
+              cursor: '',
               limit: 1,
-              offset: 0
+              filter: { since, to },
+              with: { analytics_data: false, financial_data: false, barcodes: false },
+              translit: false,
             },
             { profileId, ozonOverride: cfg, __ozonRaw: true }
           );
-          checks.push({ scope: 'ozon_v3_postings', valid: true, message: 'Ozon: v3 OK (postings)' });
+          checks.push({ scope: 'ozon_v4_postings', valid: true, message: 'Ozon: v4 OK (postings)' });
         } catch (e) {
           const m = String(e?.message || '');
           const deactivated = m.toLowerCase().includes('api-key is deactivated');
           checks.push({
-            scope: 'ozon_v3_postings',
+            scope: 'ozon_v4_postings',
             valid: false,
             message: deactivated
-              ? 'Ozon: API ключ деактивирован (v3 postings)'
-              : `Ozon: v3 postings check failed: ${m.slice(0, 140)}`
+              ? 'Ozon: API ключ деактивирован (v4 postings)'
+              : `Ozon: v4 postings check failed: ${m.slice(0, 140)}`
           });
           if (deactivated) {
             valid = false;
@@ -371,7 +373,7 @@ class IntegrationsService {
               marketplace: 'ozon',
               title: 'Ozon: API ключ деактивирован',
               message:
-                'Ozon Seller API вернул "Api-key is deactivated" при проверке /v3/posting/fbs/list. Этикетки и сборка постингов будут недоступны, пока не выпустите новый ключ.',
+                'Ozon Seller API вернул "Api-key is deactivated" при проверке /v4/posting/fbs/list. Этикетки и сборка постингов будут недоступны, пока не выпустите новый ключ.',
               meta: profileId != null ? { profile_id: profileId } : undefined
             });
           }

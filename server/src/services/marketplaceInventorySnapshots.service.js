@@ -280,7 +280,7 @@ function ozonPostingProductKey(p) {
 }
 
 /**
- * FBS-постинги «в пути к клиенту»: v3/posting/fbs/list по статусам и по чанкам дат.
+ * FBS-постинги «в пути к клиенту»: /v4/posting/fbs/list по статусам и по чанкам дат.
  * Окно 90 дней отрезало старые, но ещё не доставленные отправления — берём до ~400 дней чанками (как синк заказов).
  */
 async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, daysBack = 400, chunkDays = 30 }) {
@@ -299,10 +299,10 @@ async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, days
     const to = new Date(Math.min(t + chunkMs, now.getTime()));
 
     for (const st of stList) {
-      let offset = 0;
+      let cursor = '';
       const limit = 1000;
       for (let safety = 0; safety < 200; safety++) {
-        const r = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/list', {
+        const r = await fetch('https://api-seller.ozon.ru/v4/posting/fbs/list', {
           method: 'POST',
           headers: {
             'Client-Id': cid,
@@ -311,19 +311,19 @@ async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, days
             Accept: 'application/json',
           },
           body: JSON.stringify({
-            dir: 'ASC',
+            sort_dir: 'ASC',
+            cursor,
+            limit,
             filter: {
               since: since.toISOString(),
               to: to.toISOString(),
-              status: st,
+              statuses: [st],
             },
-            limit,
-            offset,
             with: {
               analytics_data: false,
               financial_data: false,
-              transliteration: false,
             },
+            translit: false,
           }),
         });
         if (!r.ok) {
@@ -331,13 +331,19 @@ async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, days
           throw new Error(`Ozon posting/fbs/list failed: ${r.status} ${errText.substring(0, 300)}`);
         }
         const data = await r.json();
-        const rows = Array.isArray(data?.result?.postings) ? data.result.postings : [];
+        const rows = Array.isArray(data?.postings)
+          ? data.postings
+          : Array.isArray(data?.result?.postings)
+            ? data.result.postings
+            : [];
         for (const p of rows) {
           const pn = p?.posting_number;
           if (pn) byPosting.set(String(pn), p);
         }
-        if (rows.length < limit) break;
-        offset += limit;
+        const hasNext = data?.has_next === true || data?.result?.has_next === true;
+        const nextCursor = data?.cursor ?? data?.result?.cursor ?? '';
+        if (!hasNext || !nextCursor || rows.length === 0) break;
+        cursor = String(nextCursor);
       }
       /* eslint-disable no-await-in-loop */
       await new Promise((res) => setTimeout(res, 80));
@@ -607,7 +613,7 @@ export async function runMarketplaceInventoryDailySnapshot({ profileId = null, o
           }
         }
         mpDiagnostics = {
-          endpoint: 'POST https://api-seller.ozon.ru/v3/posting/fbs/list (несколько статусов «в доставке», окно дат)',
+          endpoint: 'POST https://api-seller.ozon.ru/v4/posting/fbs/list (несколько статусов «в доставке», окно дат)',
           hint:
             'Здесь — сумма quantity по товарам в FBS-постингах с логистическими статусами. Число заказов в ERM (in_transit) может отличаться: другой момент синка, FBO, частичные отмены, статус в ЛК.',
           postingsDistinct: postingList.length,
