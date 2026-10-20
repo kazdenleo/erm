@@ -17,22 +17,30 @@ export function canReachPrintHelper(printHelperUrl = '') {
 }
 
 /**
- * @param {string} printHelperUrl
- * @returns {Promise<string[]>}
+ * @returns {Promise<{ printers: string[], message?: string }>}
  */
 export async function fetchPrintHelperPrinters(printHelperUrl = '') {
   const base = normalizePrintHelperBase(printHelperUrl);
-  if (!base) return [];
+  if (!base) return { printers: [], message: 'Print Helper URL не задан' };
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 8000);
+  const t = setTimeout(() => ac.abort(), 12000);
   try {
     const r = await fetch(`${base}/printers`, { method: 'GET', mode: 'cors', signal: ac.signal });
-    if (!r.ok) return [];
     const body = await r.json().catch(() => ({}));
     const list = Array.isArray(body?.printers) ? body.printers : Array.isArray(body?.data) ? body.data : [];
-    return list.map((x) => String(x || '').trim()).filter(Boolean);
-  } catch {
-    return [];
+    const printers = list.map((x) => String(x || '').trim()).filter(Boolean);
+    if (!r.ok && !printers.length) {
+      return { printers: [], message: body?.message || `Print Helper HTTP ${r.status}` };
+    }
+    return {
+      printers,
+      message: printers.length ? undefined : body?.message || undefined,
+    };
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      return { printers: [], message: 'Таймаут запроса списка принтеров' };
+    }
+    return { printers: [], message: e?.message || 'Print Helper недоступен' };
   } finally {
     clearTimeout(t);
   }

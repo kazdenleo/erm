@@ -96,7 +96,14 @@ export function Labels() {
         clearTimeout(healthT);
       }
 
-      const { printers: list, message: printersMsg } = await fetchPrintHelperPrinters(base);
+      const fetched = await fetchPrintHelperPrinters(base);
+      // Совместимость: раньше API возвращал string[], сейчас { printers, message }.
+      const list = Array.isArray(fetched)
+        ? fetched
+        : Array.isArray(fetched?.printers)
+          ? fetched.printers
+          : [];
+      const printersMsg = Array.isArray(fetched) ? undefined : fetched?.message;
       setPrinters(list);
       if (!list.length && featuresOk) {
         setPrintersError(
@@ -240,7 +247,7 @@ export function Labels() {
             >
               {printersLoading ? 'Загрузка…' : 'Обновить список принтеров'}
             </button>
-            {printers.length ? (
+            {(printers || []).length ? (
               <span className="text-muted small">Найдено: {printers.length}</span>
             ) : null}
           </div>
@@ -254,6 +261,7 @@ export function Labels() {
                 (kind.id.startsWith('box_') ? printerMap.box : '') ||
                 (kind.id === 'box_ym' ? printerMap.cargo : '') ||
                 '';
+              const printerOptions = Array.isArray(printers) ? printers : [];
               return (
                 <div key={kind.id} className="form-group settings-labels-select settings-labels-printer-row">
                   <label htmlFor={`label-printer-${kind.id}`}>{kind.label}</label>
@@ -265,10 +273,10 @@ export function Labels() {
                     className="settings-labels-select-el"
                   >
                     <option value="">Принтер по умолчанию</option>
-                    {effective && !printers.includes(effective) ? (
+                    {effective && !printerOptions.includes(effective) ? (
                       <option value={effective}>{effective} (сохранён)</option>
                     ) : null}
-                    {printers.map((name) => (
+                    {printerOptions.map((name) => (
                       <option key={name} value={name}>
                         {name}
                       </option>
