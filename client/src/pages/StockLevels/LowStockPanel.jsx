@@ -9,8 +9,8 @@ export const LOW_STOCK_URGENCY = {
   soon: { label: 'Скоро', className: 'low-stock-badge--soon' },
 };
 
-const PERIOD_OPTIONS = [14, 30, 60, 90];
-const ALERT_OPTIONS = [5, 7, 10, 14, 21, 30, 45];
+const PERIOD_OPTIONS = [10, 14, 30, 60, 90];
+const ALERT_OPTIONS = [2, 5, 7, 10, 14, 21, 30, 45];
 const COVER_OPTIONS = [5, 7, 10, 14, 30, 45, 60, 90];
 
 function fmtQty(n) {
@@ -64,9 +64,9 @@ function downloadCsv(rows) {
 
 export function LowStockPanel({ ownWarehouses = [] }) {
   const [warehouseId, setWarehouseId] = useState('');
-  const [periodDays, setPeriodDays] = useState(30);
-  const [alertDays, setAlertDays] = useState(14);
-  const [coverDays, setCoverDays] = useState(30);
+  const [periodDays, setPeriodDays] = useState(10);
+  const [alertDays, setAlertDays] = useState(2);
+  const [coverDays, setCoverDays] = useState(5);
   const [urgency, setUrgency] = useState('all');
   const [supplier, setSupplier] = useState('');
   const [search, setSearch] = useState('');

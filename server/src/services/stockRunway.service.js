@@ -69,14 +69,16 @@ class StockRunwayService {
    * @param {number} [p.alertDays] «скоро закончится» — запаса меньше стольких дней
    * @param {number} [p.coverDays] на сколько дней предлагать заказ
    */
-  async getRunway({ profileId, warehouseId = null, periodDays = 30, alertDays = 14, coverDays = 30, limit = 1000 } = {}) {
+  async getRunway({ profileId, warehouseId = null, periodDays = 10, alertDays = 2, coverDays = 5, limit = 1000 } = {}) {
     const pid = Number(profileId);
     if (!Number.isFinite(pid) || pid < 1) throw httpError('Профиль не определён', 403);
     if (!repositoryFactory.isUsingPostgreSQL()) throw httpError('Доступно только с PostgreSQL', 501);
 
-    const days = clampInt(periodDays, 7, 120, 30);
-    const alert = clampInt(alertDays, 1, 120, 14);
-    const cover = clampInt(coverDays, 1, 180, 30);
+    const days = clampInt(periodDays, 7, 120, 10);
+    const alert = clampInt(alertDays, 1, 120, 2);
+    const cover = clampInt(coverDays, 1, 180, 5);
+    // «Критично» строго раньше «Скоро», иначе при alertDays ≤ 3 вкладка «Скоро» пустеет
+    const criticalDays = Math.min(CRITICAL_DAYS, Math.max(1, alert - 1));
     const lim = clampInt(limit, 1, 5000, 1000);
 
     const whRes = await query(
@@ -193,7 +195,7 @@ class StockRunwayService {
 
       let urgency = 'ok';
       if (available <= 0) urgency = 'out';
-      else if (daysLeft <= CRITICAL_DAYS) urgency = 'critical';
+      else if (daysLeft <= criticalDays) urgency = 'critical';
       else if (daysLeft <= alert) urgency = 'soon';
       if (urgency === 'ok') continue;
 
@@ -248,7 +250,7 @@ class StockRunwayService {
     }
 
     return {
-      params: { periodDays: days, alertDays: alert, coverDays: cover, criticalDays: CRITICAL_DAYS, warehouseId: wantWh },
+      params: { periodDays: days, alertDays: alert, coverDays: cover, criticalDays: criticalDays, warehouseId: wantWh },
       warehouses: allWarehouses,
       sources: { orders: countOrders, fboSupplies: countSupplies },
       summary,
