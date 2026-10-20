@@ -300,8 +300,9 @@ async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, days
 
     for (const st of stList) {
       let cursor = '';
-      const limit = 1000;
-      for (let safety = 0; safety < 200; safety++) {
+      /** v4: Limit must be in (0, 100] */
+      const limit = 100;
+      for (let safety = 0; safety < 500; safety++) {
         const r = await fetch('https://api-seller.ozon.ru/v4/posting/fbs/list', {
           method: 'POST',
           headers: {

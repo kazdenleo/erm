@@ -2154,9 +2154,10 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
   const ozonApiOpts = ozonApiOptsFromConfig(config);
   if (!ozonApiOpts) return [];
   const acc = [];
-  const limit = 1000;
+  /** v4: Limit must be in (0, 100]; v3 допускал до 1000. */
+  const limit = 100;
   let cursor = '';
-  for (let page = 0; page < 200; page++) {
+  for (let page = 0; page < 500; page++) {
     const body = {
       dir: 'ASC',
       cursor,
