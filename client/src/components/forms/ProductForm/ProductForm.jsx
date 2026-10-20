@@ -9064,18 +9064,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      {/* Баркоды */}
+      {/* Баркоды: сначала ШК коробки, затем ШК товара */}
       <div style={{marginTop: '12px'}}>
         <h4 style={{fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text)'}}>
           🏷️ Баркоды
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={addBarcodeField}
-            style={{padding: '4px 12px', fontSize: '11px', marginLeft: '8px'}}
-          >
-            + Добавить баркод
-          </Button>
         </h4>
         <div style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -9193,7 +9185,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div style={{ marginTop: 6, fontSize: 11, color: '#fca5a5' }}>{barcodeGenerateError}</div>
           ) : null}
         </div>
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>ШК товара</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>ШК товара</span>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={addBarcodeField}
+            style={{ padding: '4px 12px', fontSize: 11 }}
+          >
+            + Добавить баркод
+          </Button>
+        </div>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
           Если штрихкод не указан, он создастся сам перед отправкой карточки на маркетплейс. Кнопка «Сгенерировать» нужна, только если хотите увидеть код заранее.
           Иконки отмечают площадки, на которые этот код уже отправлен (и какой ШК печатать в FBO).
