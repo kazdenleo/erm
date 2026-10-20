@@ -88,6 +88,12 @@ export default function HomeScreen() {
         accent={colors.muted}
         onPress={() => router.push('/receipt')}
       />
+      <Tile
+        title="ШК упаковок"
+        subtitle="Скан товара — печать этикетки с штрихкодом коробки"
+        accent={colors.primary}
+        onPress={() => router.push('/packaging-print')}
+      />
       <View style={styles.spacer} />
     </ScrollView>
   );
