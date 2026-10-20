@@ -18,13 +18,18 @@ import {
   extractOzonCargoIdMapping,
   fetchOzonSupplyCargoes,
   fetchOzonSupplyCargoesDetailed,
+  invalidateOzonSuppliesGetCache,
   isOzonCargoFilled,
   ozonCargoKeyFromUnit,
 } from './fboSuppliesSubmit.service.js';
-import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { isOzonOrdersSyncWindowActive, ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { formatOzonCargoErrorReasons } from '../utils/ozonCargoErrors.js';
 import { toOzonJsonId } from '../utils/ozonJsonId.js';
 import logger from '../utils/logger.js';
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /** operation_id из ответов create/status Ozon (несколько вариантов обёртки). */
 function extractOzonLabelOperationId(data) {
@@ -169,18 +174,36 @@ function formatOzonCreateError(err, pollResult) {
   );
 }
 
-async function waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, { maxAttempts = 20, intervalMs = 3000 } = {}) {
+async function waitForNewOzonCargoIds(
+  ozonSupplyId,
+  beforeIds,
+  ozonApiOpts,
+  { maxAttempts = 8, intervalMs = 5000 } = {}
+) {
+  const beforeCount = beforeIds?.size ?? 0;
   for (let i = 0; i < maxAttempts; i++) {
-    if (i > 0) {
-      await new Promise((r) => setTimeout(r, intervalMs));
+    if (i > 0) await sleep(intervalMs);
+    // Не долбим Ozon во время FBS-синка заказов.
+    while (isOzonOrdersSyncWindowActive()) {
+      await sleep(200);
     }
-    const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    invalidateOzonSuppliesGetCache(ozonSupplyId, ozonApiOpts);
+    const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts, {
+      bypassCache: true,
+    });
     const newIds = ozonAfter
       .map((c) => c.cargoId)
       .filter((id) => id && !beforeIds.has(id));
     if (newIds.length) return { newIds, ozonAfter };
+    // Иногда cargo_id не меняется, но число коробов растёт — тоже успех ожидания.
+    if (ozonAfter.length > beforeCount) {
+      return { newIds: [], ozonAfter, countGrew: true };
+    }
   }
-  const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+  invalidateOzonSuppliesGetCache(ozonSupplyId, ozonApiOpts);
+  const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts, {
+    bypassCache: true,
+  });
   return {
     newIds: ozonAfter.map((c) => c.cargoId).filter((id) => id && !beforeIds.has(id)),
     ozonAfter,
@@ -531,6 +554,7 @@ class FboSuppliesOzonCargoesService {
       cargoKind: kind,
     }));
     logger.info('[FBO Ozon] create empty cargoes', { supplyId, ozonSupplyId, qty, kind });
+    invalidateOzonSuppliesGetCache(ozonSupplyId, ozonApiOpts);
 
     let operationId = null;
     let pollResult = null;
@@ -539,9 +563,9 @@ class FboSuppliesOzonCargoesService {
     } catch (err) {
       const waited = await waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, {
         maxAttempts: 5,
-        intervalMs: 2000,
+        intervalMs: 4000,
       });
-      if (waited.newIds.length) {
+      if (waited.newIds.length || waited.countGrew) {
         pollResult = { status: 'SUCCESS', ok: true };
       } else {
         const msg = formatOzonCreateError(err, pollResult);
@@ -558,7 +582,10 @@ class FboSuppliesOzonCargoesService {
       .filter(Boolean)
       .map(String);
 
-    let ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    invalidateOzonSuppliesGetCache(ozonSupplyId, ozonApiOpts);
+    let ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts, {
+      bypassCache: true,
+    });
     if (newCargoIds.length < qty) {
       newCargoIds = ozonAfter
         .map((c) => c.cargoId)

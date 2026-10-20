@@ -1,7 +1,11 @@
 import { describe, expect, test } from '@jest/globals';
 import {
+  beginOzonOrdersSyncWindow,
+  endOzonOrdersSyncWindow,
+  isOzonOrdersSyncWindowActive,
   isOzonRateLimitError,
   isOzonStockRateLimitPayload,
+  noteOzonClientRateLimited,
 } from '../src/utils/ozonSellerApi.js';
 
 describe('Ozon stock rate-limit detection', () => {
@@ -27,5 +31,21 @@ describe('Ozon stock rate-limit detection', () => {
     ).toBe(true);
     expect(isOzonStockRateLimitPayload([{ code: 'INVALID_ARGUMENT', message: 'bad' }])).toBe(false);
     expect(isOzonStockRateLimitPayload([])).toBe(false);
+  });
+
+  test('orders sync window nesting', () => {
+    expect(isOzonOrdersSyncWindowActive()).toBe(false);
+    beginOzonOrdersSyncWindow();
+    beginOzonOrdersSyncWindow();
+    expect(isOzonOrdersSyncWindowActive()).toBe(true);
+    endOzonOrdersSyncWindow();
+    expect(isOzonOrdersSyncWindowActive()).toBe(true);
+    endOzonOrdersSyncWindow();
+    expect(isOzonOrdersSyncWindowActive()).toBe(false);
+  });
+
+  test('noteOzonClientRateLimited accepts opts', () => {
+    expect(() => noteOzonClientRateLimited({ profileId: 1 }, 1000)).not.toThrow();
+    expect(() => noteOzonClientRateLimited('client-1', 1000)).not.toThrow();
   });
 });

@@ -16,6 +16,43 @@ import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { toOzonJsonId } from '../utils/ozonJsonId.js';
 import { formatOzonCargoErrorReasons } from '../utils/ozonCargoErrors.js';
 
+/** Кэш supplies/get: UI/wait часто дергают один supply подряд. */
+const SUPPLIES_GET_CACHE_TTL_MS = Math.max(
+  1000,
+  parseInt(process.env.OZON_SUPPLIES_GET_CACHE_TTL_MS || '5000', 10) || 5000
+);
+/** @type {Map<string, { at: number, value: { cargoes: any[], transportCargoes: any[] } }>} */
+const suppliesGetCache = new Map();
+
+function suppliesGetCacheKey(ozonSupplyId, ozonApiOpts) {
+  const pid = ozonApiOpts?.profileId ?? ozonApiOpts?.profile_id ?? '';
+  const org = ozonApiOpts?.organizationId ?? ozonApiOpts?.organization_id ?? '';
+  const cid =
+    ozonApiOpts?.ozonOverride?.client_id ??
+    ozonApiOpts?.ozonOverride?.clientId ??
+    ozonApiOpts?.client_id ??
+    '';
+  return `${cid || pid || org || 'default'}:${String(ozonSupplyId)}`;
+}
+
+function readSuppliesGetCache(key) {
+  const hit = suppliesGetCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > SUPPLIES_GET_CACHE_TTL_MS) {
+    suppliesGetCache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+export function invalidateOzonSuppliesGetCache(ozonSupplyId, ozonApiOpts) {
+  if (ozonSupplyId == null) {
+    suppliesGetCache.clear();
+    return;
+  }
+  suppliesGetCache.delete(suppliesGetCacheKey(ozonSupplyId, ozonApiOpts || {}));
+}
+
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
   if (m === 'wb' || m === 'wildberries') return 'wb';
@@ -333,7 +370,14 @@ export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
   return parseOzonSupplyCargoes(data, ozonSupplyId).map((c) => c.cargoId);
 }
 
-export async function fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts) {
+export async function fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts, opts = {}) {
+  const bypassCache = opts.bypassCache === true;
+  const cacheKey = suppliesGetCacheKey(ozonSupplyId, ozonApiOpts || {});
+  if (!bypassCache) {
+    const cached = readSuppliesGetCache(cacheKey);
+    if (cached) return cached;
+  }
+
   let fromSupplies = { cargoes: [], transportCargoes: [] };
   try {
     const data = await ozonApiPostWithRetry(
@@ -356,6 +400,7 @@ export async function fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts) 
       cargoes: fromSupplies.cargoes.length,
       transport: fromSupplies.transportCargoes.length,
     });
+    suppliesGetCache.set(cacheKey, { at: Date.now(), value: fromSupplies });
     return fromSupplies;
   }
 
@@ -373,11 +418,13 @@ export async function fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts) 
       unique: unique.length,
     });
   }
-  return { cargoes: unique, transportCargoes: [] };
+  const fallback = { cargoes: unique, transportCargoes: [] };
+  suppliesGetCache.set(cacheKey, { at: Date.now(), value: fallback });
+  return fallback;
 }
 
-export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts) {
-  const detailed = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts);
+export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts, opts = {}) {
+  const detailed = await fetchOzonSupplyCargoesDetailed(ozonSupplyId, ozonApiOpts, opts);
   return detailed.cargoes;
 }
 

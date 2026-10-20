@@ -16,7 +16,11 @@ import integrationsService from './integrations.service.js';
 import ordersService, { orderEligibleForProcurement, isOrderTerminalNoReserve } from './orders.service.js';
 import logger from '../utils/logger.js';
 import { ozonAssemblyStickerFromPosting, ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
-import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import {
+  beginOzonOrdersSyncWindow,
+  endOzonOrdersSyncWindow,
+  ozonApiPostWithRetry,
+} from '../utils/ozonSellerApi.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 /** Ключи Ozon из конфига синка — в общую очередь Seller API (пауза + retry 429). */
@@ -945,12 +949,17 @@ class OrdersSyncService {
         `keys=${Object.keys(ymConfig || {}).join(', ') || '(none)'}`
     );
 
-    // OZON
+    // OZON — окно синка: normal-очередь (stock/FBO) ждёт, пока идут FBS list/get
     try {
       if (hasOzonKeys) {
-        const ozonOrders = await fetchOzonFBSOrders(ozonConfig, OZON_DAYS_BACK);
-        results.ozon.success = ozonOrders.length;
-        results.ozon.orders = ozonOrders;
+        beginOzonOrdersSyncWindow();
+        try {
+          const ozonOrders = await fetchOzonFBSOrders(ozonConfig, OZON_DAYS_BACK);
+          results.ozon.success = ozonOrders.length;
+          results.ozon.orders = ozonOrders;
+        } finally {
+          endOzonOrdersSyncWindow();
+        }
       }
     } catch (error) {
       console.error('[Orders Sync] Ozon error:', error);
@@ -1549,26 +1558,31 @@ class OrdersSyncService {
     let syncRows = [];
     let errorMessage = null;
 
+    beginOzonOrdersSyncWindow();
     try {
-      const raw = await fetchOzonOrderDetailRaw(ozonConfig, postingNum);
-      syncRows = mapOzonPostingToSyncRows(raw);
-    } catch (error) {
-      console.error('[Order Refresh] Direct fetch failed:', error.message);
-      errorMessage = error.message;
       try {
-        const ozonOrders = await fetchOzonFBSOrders(ozonConfig);
-        syncRows = ozonOrders.filter(
-          (o) =>
-            ozonPostingNumberFromOrderId(o.orderId) === postingNum ||
-            o.orderId === storageOrderId
-        );
-      } catch (listError) {
-        const err = new Error(
-          `Ошибка получения заказа: ${errorMessage}. Дополнительная ошибка при попытке получить из списка: ${listError.message}`
-        );
-        err.statusCode = 500;
-        throw err;
+        const raw = await fetchOzonOrderDetailRaw(ozonConfig, postingNum);
+        syncRows = mapOzonPostingToSyncRows(raw);
+      } catch (error) {
+        console.error('[Order Refresh] Direct fetch failed:', error.message);
+        errorMessage = error.message;
+        try {
+          const ozonOrders = await fetchOzonFBSOrders(ozonConfig);
+          syncRows = ozonOrders.filter(
+            (o) =>
+              ozonPostingNumberFromOrderId(o.orderId) === postingNum ||
+              o.orderId === storageOrderId
+          );
+        } catch (listError) {
+          const err = new Error(
+            `Ошибка получения заказа: ${errorMessage}. Дополнительная ошибка при попытке получить из списка: ${listError.message}`
+          );
+          err.statusCode = 500;
+          throw err;
+        }
       }
+    } finally {
+      endOzonOrdersSyncWindow();
     }
 
     if (!syncRows.length) {
