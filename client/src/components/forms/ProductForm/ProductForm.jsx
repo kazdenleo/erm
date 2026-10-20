@@ -8788,10 +8788,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
           <h4 className="product-form-block__title">
             Остальные атрибуты
           </h4>
-          <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
-            Связь с характеристиками Ozon / WB / Яндекс.Маркета задаётся в «Настройки → Атрибуты»
-            (все категории или выбранные). Значки показывают, куда подставляется значение с «Основного».
-          </p>
           <div className="row g-3">
             {visibleCategoryAttributes.map((attr) => {
               const key = String(attr.id);
