@@ -191,7 +191,8 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
   if (!id || !code) return { ok: false, message: 'Нет товара или штрихкода упаковки' };
 
   const units = Math.floor(Number(unitsPerBox) || 0);
-  const params = { format: 'pdf', barcode: code, ...(units > 0 ? { units: String(units) } : {}) };
+  // Как у стикеров товаров: PNG + labelSize → Print Helper сам делает PDF (стабильнее для Sumatra).
+  const params = { format: 'png', barcode: code, ...(units > 0 ? { units: String(units) } : {}) };
 
   if (!canUsePrintHelper(printHelperUrl)) {
     const ok = openPackagingLabelPrintTab(id, code, units);
@@ -200,15 +201,28 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
       : { ok: false, message: 'Разрешите всплывающие окна для печати' };
   }
 
-  let pdfBlob;
+  let pngBlob;
   try {
     const res = await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
       params,
       responseType: 'blob',
       timeout: PRINT_HELPER_FETCH_MS,
-      headers: { Accept: 'application/pdf' },
+      headers: { Accept: 'image/png' },
     });
-    pdfBlob = res?.data instanceof Blob ? res.data : new Blob([res?.data], { type: 'application/pdf' });
+    const raw = res?.data;
+    const ab = raw instanceof Blob ? await raw.arrayBuffer() : raw;
+    const bytes = ab instanceof ArrayBuffer ? new Uint8Array(ab) : new Uint8Array(ab || []);
+    const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    if (!isPng) {
+      const text = new TextDecoder().decode(bytes.slice(0, 800));
+      try {
+        const j = JSON.parse(text);
+        return { ok: false, message: j?.message || 'Не удалось получить этикетку упаковки' };
+      } catch {
+        return { ok: false, message: 'Не удалось получить этикетку упаковки' };
+      }
+    }
+    pngBlob = new Blob([bytes], { type: 'image/png' });
   } catch (e) {
     return { ok: false, message: await errorMessageFromLabelRequest(e) };
   }
@@ -216,8 +230,9 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
   const printed = await printViaPrintHelper({
     printHelperUrl,
     kind: 'packaging',
-    pdfBuffer: pdfBlob,
-    orderId: `packaging-${id}-${code}`,
+    pdfBuffer: pngBlob,
+    labelSize: getStoredLabelSize() || '58x40',
+    orderId: `packaging-${id}-${Date.now()}`,
     timeoutMs: PRINT_HELPER_FETCH_MS,
   });
   if (printed.ok) return { ok: true };

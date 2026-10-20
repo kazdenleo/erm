@@ -65,9 +65,16 @@ export async function printViaPrintHelper(opts = {}) {
 
   const printer =
     opts.printer != null ? String(opts.printer).trim() : getLabelPrinter(opts.kind);
-  // labelSize нужен только для PNG→PDF; для готового PDF не шлём.
-  const labelSize = opts.pdfBuffer ? '' : opts.labelSize || getStoredLabelSize();
-  const orderId = opts.orderId != null ? String(opts.orderId) : `label-${Date.now()}`;
+  // labelSize: для PNG→PDF в Print Helper; явный opts.labelSize всегда передаём.
+  const labelSize =
+    opts.labelSize != null && String(opts.labelSize).trim() !== ''
+      ? String(opts.labelSize).trim()
+      : opts.pdfBuffer
+        ? ''
+        : getStoredLabelSize();
+  // orderId попадает в имя temp-файла — только безопасные символы (ШК в имени ломает Sumatra).
+  const orderIdRaw = opts.orderId != null ? String(opts.orderId) : `label-${Date.now()}`;
+  const orderId = orderIdRaw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/_+/g, '_').slice(0, 80) || `label-${Date.now()}`;
   const timeoutMs = Math.max(5000, Number(opts.timeoutMs) || PRINT_HELPER_FETCH_MS);
 
   const qs = new URLSearchParams();
@@ -88,12 +95,16 @@ export async function printViaPrintHelper(opts = {}) {
             : opts.pdfBuffer?.buffer
               ? opts.pdfBuffer
               : null;
-      if (!body) return { ok: false, message: 'Пустой PDF' };
+      if (!body) return { ok: false, message: 'Пустой файл этикетки' };
+      const contentType =
+        body instanceof Blob && body.type
+          ? body.type
+          : 'application/pdf';
       const r = await fetch(`${base}/print?${qs.toString()}`, {
         method: 'POST',
         mode: 'cors',
         signal: ac.signal,
-        headers: { 'Content-Type': 'application/pdf' },
+        headers: { 'Content-Type': contentType.includes('png') ? 'image/png' : 'application/pdf' },
         body,
       });
       if (r.ok) return { ok: true };

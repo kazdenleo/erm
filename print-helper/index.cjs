@@ -158,42 +158,120 @@ async function pngToPdfBuffer(pngBuffer, labelSizeParam) {
   return Buffer.from(await doc.save());
 }
 
-function listWindowsPrinters() {
+/** Запуск PowerShell с принудительным UTF-8 (иначе UTF-16 ломает имена принтеров). */
+function runPowerShell(command) {
   return new Promise((resolve) => {
-    if (process.platform !== 'win32') {
-      resolve([]);
-      return;
-    }
+    const wrapped =
+      '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
+      '$OutputEncoding = [Console]::OutputEncoding; ' +
+      command;
     const proc = spawn(
       'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        'Get-Printer | Select-Object -ExpandProperty Name',
-      ],
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', wrapped],
       { windowsHide: true, shell: false }
     );
-    let out = '';
+    const chunks = [];
     let err = '';
-    proc.stdout.on('data', (d) => {
-      out += String(d);
-    });
+    proc.stdout.on('data', (d) => chunks.push(Buffer.from(d)));
     proc.stderr.on('data', (d) => {
-      err += String(d);
+      err += Buffer.from(d).toString('utf8');
     });
-    proc.on('error', () => resolve([]));
+    proc.on('error', (e) => resolve({ names: [], err: e.message || 'powershell spawn failed' }));
     proc.on('close', () => {
-      const names = out
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (!names.length && err) {
-        console.warn('[print-helper] Get-Printer:', err.trim().slice(0, 200));
+      const raw = Buffer.concat(chunks);
+      // Иногда PS всё равно отдаёт UTF-16 — определяем по BOM / нулевым байтам.
+      let text;
+      if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) {
+        text = raw.slice(2).toString('utf16le');
+      } else if (raw.includes(0) && raw.length > 2) {
+        text = raw.toString('utf16le');
+      } else {
+        text = raw.toString('utf8');
       }
-      resolve(names);
+      const names = text
+        .split(/\r?\n/)
+        .map((s) => s.replace(/\u0000/g, '').trim())
+        .filter(Boolean)
+        .filter((s) => !/^name$/i.test(s));
+      resolve({ names: [...new Set(names)], err: err.trim() });
     });
   });
+}
+
+/**
+ * Список принтеров Windows.
+ * Get-Printer есть не везде (PrintManagement); Win32_Printer / wmic — запасные пути.
+ */
+async function listWindowsPrinters() {
+  if (process.platform !== 'win32') return { printers: [], source: null, error: null };
+
+  const attempts = [
+    {
+      source: 'Get-Printer',
+      command: 'Get-Printer | Select-Object -ExpandProperty Name',
+    },
+    {
+      source: 'Win32_Printer',
+      command:
+        'Get-CimInstance -ClassName Win32_Printer | Select-Object -ExpandProperty Name',
+    },
+    {
+      source: 'WMI',
+      command:
+        'Get-WmiObject -Class Win32_Printer | Select-Object -ExpandProperty Name',
+    },
+  ];
+
+  const errors = [];
+  for (const attempt of attempts) {
+    const { names, err } = await runPowerShell(attempt.command);
+    if (names.length) {
+      logTrayDiag(getExeDir(), `printers via ${attempt.source}: ${names.length}`);
+      return { printers: names, source: attempt.source, error: null };
+    }
+    if (err) {
+      errors.push(`${attempt.source}: ${err.slice(0, 180)}`);
+      console.warn(`[print-helper] ${attempt.source}:`, err.slice(0, 200));
+    }
+  }
+
+  // Последний запасной: wmic (OEM-кодировка, но имена латиницей обычно ок).
+  const wmic = await new Promise((resolve) => {
+    const proc = spawn('wmic', ['printer', 'get', 'name'], { windowsHide: true, shell: false });
+    const chunks = [];
+    let err = '';
+    proc.stdout.on('data', (d) => chunks.push(Buffer.from(d)));
+    proc.stderr.on('data', (d) => {
+      err += Buffer.from(d).toString('utf8');
+    });
+    proc.on('error', (e) => resolve({ names: [], err: e.message }));
+    proc.on('close', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      const names = text
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s && !/^name$/i.test(s));
+      resolve({ names: [...new Set(names)], err: err.trim() });
+    });
+  });
+  if (wmic.names.length) {
+    return { printers: wmic.names, source: 'wmic', error: null };
+  }
+  if (wmic.err) errors.push(`wmic: ${wmic.err.slice(0, 180)}`);
+
+  const error = errors.join('; ') || 'Windows не вернул ни одного принтера';
+  logTrayDiag(getExeDir(), `printers empty: ${error}`);
+  return { printers: [], source: null, error };
+}
+
+/** Имя temp-файла без символов ШК/кириллицы — иначе SumatraPDF часто даёт exit code 1. */
+function safeTempBaseName(orderId) {
+  const raw = String(orderId || Date.now())
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 80);
+  return `label-${raw || Date.now()}`;
 }
 
 function printFile(filePath, printerName) {
@@ -203,14 +281,16 @@ function printFile(filePath, printerName) {
   }
   const fullPath = path.resolve(filePath);
   const printer = printerName != null ? String(printerName).trim() : '';
+  const printSettings = '1,noscale,landscape';
   const args = printer
-    ? ['-print-to', printer, '-silent', '-exit-when-done', '-print-settings', '1,noscale,landscape', fullPath]
-    : ['-print-to-default', '-silent', '-exit-when-done', '-print-settings', '1,noscale,landscape', fullPath];
+    ? ['-print-to', printer, '-silent', '-exit-when-done', '-print-settings', printSettings, fullPath]
+    : ['-print-to-default', '-silent', '-exit-when-done', '-print-settings', printSettings, fullPath];
   return new Promise((resolve, reject) => {
     const proc = spawn(sumatra, args, {
       stdio: 'ignore',
       windowsHide: true,
       shell: false,
+      cwd: path.dirname(fullPath),
     });
     proc.on('error', reject);
     proc.on('close', (code) => {
@@ -222,7 +302,7 @@ function printFile(filePath, printerName) {
 
 async function saveAndPrintPdfBuffer(buf, orderId, labelSize, printerName) {
   const tempDir = getTempLabelDir();
-  const baseName = `label-${orderId || Date.now()}`;
+  const baseName = safeTempBaseName(orderId);
   let tmpPath = null;
   try {
     let toPrint;
@@ -279,8 +359,15 @@ app.get('/printers', async (req, res) => {
     return res.status(501).json({ ok: false, message: 'Список принтеров только на Windows', printers: [] });
   }
   try {
-    const printers = await listWindowsPrinters();
-    res.json({ ok: true, printers });
+    const { printers, source, error } = await listWindowsPrinters();
+    res.json({
+      ok: printers.length > 0,
+      printers,
+      source: source || undefined,
+      message: printers.length
+        ? undefined
+        : error || 'Принтеры не найдены. Проверьте службу «Диспетчер печати» и что принтеры видны в Windows.',
+    });
   } catch (err) {
     res.status(500).json({ ok: false, message: err.message || 'Не удалось получить принтеры', printers: [] });
   }
