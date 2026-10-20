@@ -191,7 +191,6 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
   if (!id || !code) return { ok: false, message: 'Нет товара или штрихкода упаковки' };
 
   const units = Math.floor(Number(unitsPerBox) || 0);
-  // Как у стикеров товаров: PNG + labelSize → Print Helper сам делает PDF (стабильнее для Sumatra).
   const params = { format: 'png', barcode: code, ...(units > 0 ? { units: String(units) } : {}) };
 
   if (!canUsePrintHelper(printHelperUrl)) {
@@ -201,40 +200,54 @@ export async function printPackagingBarcodeLabel(printHelperUrl, productId, barc
       : { ok: false, message: 'Разрешите всплывающие окна для печати' };
   }
 
-  let pngBlob;
+  // Прогрев с Bearer (как у стикеров товара), затем Print Helper качает публичный PNG по URL.
   try {
-    const res = await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
+    await api.get(`/products/${encodeURIComponent(id)}/packaging-label`, {
       params,
       responseType: 'blob',
       timeout: PRINT_HELPER_FETCH_MS,
       headers: { Accept: 'image/png' },
     });
-    const raw = res?.data;
-    const ab = raw instanceof Blob ? await raw.arrayBuffer() : raw;
-    const bytes = ab instanceof ArrayBuffer ? new Uint8Array(ab) : new Uint8Array(ab || []);
-    const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
-    if (!isPng) {
-      const text = new TextDecoder().decode(bytes.slice(0, 800));
-      try {
-        const j = JSON.parse(text);
-        return { ok: false, message: j?.message || 'Не удалось получить этикетку упаковки' };
-      } catch {
-        return { ok: false, message: 'Не удалось получить этикетку упаковки' };
-      }
-    }
-    pngBlob = new Blob([bytes], { type: 'image/png' });
   } catch (e) {
     return { ok: false, message: await errorMessageFromLabelRequest(e) };
   }
 
-  const printed = await printViaPrintHelper({
-    printHelperUrl,
+  const qs = new URLSearchParams({ format: 'png', barcode: code });
+  if (units > 0) qs.set('units', String(units));
+  const labelPngPath = `/products/${encodeURIComponent(id)}/packaging-label?${qs.toString()}`;
+  const labelPngUrl = `${resolveApiBaseUrl()}${labelPngPath}`;
+  const labelPngUrlAbs = (() => {
+    try {
+      return new URL(labelPngUrl, window.location.origin).toString();
+    } catch {
+      return labelPngUrl;
+    }
+  })();
+
+  const base = String(printHelperUrl || '').trim().replace(/\/$/, '');
+  const labelSize = getStoredLabelSize() || '58x40';
+
+  let printed = await printViaPrintHelper({
+    printHelperUrl: base,
     kind: 'packaging',
-    pdfBuffer: pngBlob,
-    labelSize: getStoredLabelSize() || '58x40',
+    labelUrl: labelPngUrlAbs,
     orderId: `packaging-${id}-${Date.now()}`,
+    labelSize,
     timeoutMs: PRINT_HELPER_FETCH_MS,
   });
+
+  // Если принтер «ШК упаковок» падает — тот же URL на принтер стикеров товара.
+  if (!printed.ok) {
+    printed = await printViaPrintHelper({
+      printHelperUrl: base,
+      kind: 'product',
+      labelUrl: labelPngUrlAbs,
+      orderId: `packaging-${id}-${Date.now()}`,
+      labelSize,
+      timeoutMs: PRINT_HELPER_FETCH_MS,
+    });
+  }
+
   if (printed.ok) return { ok: true };
   const ok = openPackagingLabelPrintTab(id, code, units);
   return ok

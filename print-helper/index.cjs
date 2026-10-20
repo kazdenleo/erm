@@ -31,6 +31,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process'); // Sumatra + restart
 const { PDFDocument } = require('pdf-lib');
 
@@ -103,7 +104,8 @@ function getSumatraPath() {
 }
 
 function getTempLabelDir() {
-  const dir = path.join(getExeDir(), 'temp');
+  // %TEMP% обычно без кириллицы в пути; рядом с exe путь пользователя часто ломает Sumatra (exit 1).
+  const dir = path.join(os.tmpdir(), 'erm-print-helper');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -274,14 +276,7 @@ function safeTempBaseName(orderId) {
   return `label-${raw || Date.now()}`;
 }
 
-function printFile(filePath, printerName) {
-  const sumatra = getSumatraPath();
-  if (!sumatra) {
-    return Promise.reject(new Error('Положите SumatraPDF.exe в папку с erm-print-helper.exe.'));
-  }
-  const fullPath = path.resolve(filePath);
-  const printer = printerName != null ? String(printerName).trim() : '';
-  const printSettings = '1,noscale,landscape';
+function runSumatraOnce(sumatra, fullPath, printer, printSettings) {
   const args = printer
     ? ['-print-to', printer, '-silent', '-exit-when-done', '-print-settings', printSettings, fullPath]
     : ['-print-to-default', '-silent', '-exit-when-done', '-print-settings', printSettings, fullPath];
@@ -295,9 +290,45 @@ function printFile(filePath, printerName) {
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`SumatraPDF exit code ${code}${printer ? ` (принтер: ${printer})` : ''}`));
+      else {
+        reject(
+          new Error(
+            `SumatraPDF exit code ${code}${printer ? ` (принтер: ${printer})` : ''}${printSettings ? ` [${printSettings}]` : ''}`
+          )
+        );
+      }
     });
   });
+}
+
+async function printFile(filePath, printerName) {
+  const sumatra = getSumatraPath();
+  if (!sumatra) {
+    return Promise.reject(new Error('Положите SumatraPDF.exe в папку с erm-print-helper.exe.'));
+  }
+  const fullPath = path.resolve(filePath);
+  const printer = printerName != null ? String(printerName).trim() : '';
+  // landscape часто даёт exit 1 на термопринтерах 58×40; сначала без поворота.
+  const settingsList = ['1,noscale', 'fit', '1,noscale,landscape'];
+  const printersToTry = printer ? [printer, ''] : [''];
+  let lastErr = null;
+  for (const p of printersToTry) {
+    for (const settings of settingsList) {
+      try {
+        await runSumatraOnce(sumatra, fullPath, p, settings);
+        if (p !== printer || settings !== settingsList[0]) {
+          console.log(
+            `[print-helper] Печать OK после fallback: printer=${p || 'default'} settings=${settings}`
+          );
+        }
+        return;
+      } catch (e) {
+        lastErr = e;
+        console.warn('[print-helper] Sumatra попытка не удалась:', e.message);
+      }
+    }
+  }
+  throw lastErr || new Error('SumatraPDF: не удалось напечатать');
 }
 
 async function saveAndPrintPdfBuffer(buf, orderId, labelSize, printerName) {
