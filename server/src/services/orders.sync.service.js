@@ -2094,7 +2094,9 @@ function mapOzonPostingToSyncRows(order) {
     const offerId = p?.offer_id != null ? String(p.offer_id).trim() : '';
     const skuVal = p?.sku != null && p.sku !== '' ? String(p.sku).trim() : '';
     const qty = parseInt(p?.quantity, 10);
-    const priceNum = parseFloat(p?.price);
+    // v4: price = { amount, currency }; v3: число/строка
+    const priceRaw = p?.price?.amount ?? p?.price;
+    const priceNum = parseFloat(priceRaw);
 
     return {
       marketplace: 'ozon',
