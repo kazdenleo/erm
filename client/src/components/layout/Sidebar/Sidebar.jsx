@@ -90,13 +90,6 @@ const stockWarehouseChildren = [
     sectionKey: 'warehouse_stock',
     requiresChestnyZnak: true,
   },
-  {
-    path: '/settings/labels?tab=packaging-print',
-    label: '🏷 ШК упаковок',
-    iconClass: 'pe-7s-print',
-    sectionKey: 'settings_labels',
-    labelsTab: 'packaging-print',
-  },
 ];
 
 const analyticsChildren = [
@@ -345,9 +338,6 @@ export function Sidebar({ onNavigate }) {
     if (sub.settingsTab) {
       return pathname === '/settings' && sp.get('tab') === String(sub.settingsTab);
     }
-    if (sub.labelsTab) {
-      return pathname === '/settings/labels' && sp.get('tab') === String(sub.labelsTab);
-    }
     const rawPath = String(sub.path || '');
     const base = rawPath.split('#')[0].split('?')[0];
     if (!base) return false;
@@ -356,13 +346,6 @@ export function Sidebar({ onNavigate }) {
       const hasSettingsTabSibling = siblings.some((other) => other?.settingsTab);
       if (hasSettingsTabSibling) {
         return !sp.get('tab');
-      }
-    }
-    // «Этикетки» в меню склада — только вкладка packaging-print; обычный пункт в Настройках без labelsTab
-    if (base === '/settings/labels' && pathname === '/settings/labels') {
-      const hasLabelsTabSibling = siblings.some((other) => other?.labelsTab);
-      if (hasLabelsTabSibling) {
-        return sp.get('tab') !== 'packaging-print';
       }
     }
     if (pathname === base) return true;
