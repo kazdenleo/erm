@@ -786,7 +786,8 @@ class OrdersSyncService {
     const fromScheduler = options.scheduler === true;
     const profileId = options.profileId ?? null;
     const organizationId = options.organizationId ?? null;
-    const catchUpLimit = refreshStatuses ? 500 : 40;
+    // Фоновый cron: короткий catch-up — иначе Ozon/YM get и WB status надолго блокируют upsert.
+    const catchUpLimit = refreshStatuses ? 500 : fromScheduler ? 10 : 40;
     const oneMinute = 60 * 1000;
     this.resetStaleSyncLockIfNeeded();
 
@@ -1305,7 +1306,8 @@ class OrdersSyncService {
       }
     }
 
-    if (ymApiKey && existingOrders.length > 0) {
+    // YM detail без таймаута часто «висит» на сети — в cron не догружаем, list уже есть.
+    if (ymApiKey && existingOrders.length > 0 && !fromScheduler) {
       try {
         const extraYm = await fetchYandexExtraOrdersFromExisting(
           existingOrders,
