@@ -125,7 +125,11 @@ export function resolveOzonPushTargetPrice(floor, sellingTarget) {
   return Math.max(selling, floorVal);
 }
 
-/** Payload для Ozon import/prices (price >= min_price). */
+/**
+ * Payload для Ozon import/prices (price >= min_price).
+ * declared_price (объявленная стоимость для возмещения/страховки, с 28.09.2026) —
+ * только если передан явно; в обычный пуш мин. цен / ERP не кладём, чтобы не затирать кабинет.
+ */
 export function buildOzonPriceImportEntry({
   floor,
   sellingTarget,
@@ -134,6 +138,8 @@ export function buildOzonPriceImportEntry({
   priceBeforeDiscount = null,
   /** Себестоимость ERP → Ozon net_price (юнит-экономика кабинета) */
   netPrice = null,
+  /** Объявленная стоимость → prices.declared_price (опционально) */
+  declaredPrice = null,
 }) {
   const floorVal = floorRub(floor);
   const targetPrice = resolveOzonPushTargetPrice(floor, sellingTarget);
@@ -142,7 +148,7 @@ export function buildOzonPriceImportEntry({
   const entry = {
     price: String(targetPrice),
     currency_code: 'RUB',
-    auto_action_enabled: 'DISABLED',
+    // auto_action_enabled / manage_elastic_boosting_through_price — устарели в import/prices (11.09.2026)
     auto_add_to_ozon_actions_list_enabled: 'DISABLED',
   };
   if (floorVal <= targetPrice) {
@@ -155,6 +161,10 @@ export function buildOzonPriceImportEntry({
   const costRaw = netPrice == null || netPrice === '' ? NaN : Number(netPrice);
   if (Number.isFinite(costRaw) && costRaw > 0) {
     entry.net_price = String(Math.round(costRaw));
+  }
+  const declared = floorRub(declaredPrice);
+  if (declared != null && declared > 0) {
+    entry.declared_price = String(declared);
   }
   if (ozonProductId) entry.product_id = ozonProductId;
   else if (offerId) entry.offer_id = offerId;

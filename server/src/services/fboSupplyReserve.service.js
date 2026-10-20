@@ -291,44 +291,50 @@ async function batchGetNetReservedOnWarehouses(productIds, warehouseIds) {
   return result;
 }
 
-/** Пул «в пути» для набора товаров (incoming_quantity + журнал incoming). */
-async function batchGetIncomingPoolForFboProducts(productIds) {
+/**
+ * Пул «в пути» для FBO: только незакрытый остаток открытых закупок
+ * на склады списания FBO (не глобальный products.incoming_quantity).
+ */
+async function batchGetIncomingPoolForFboProducts(productIds, { warehouseIds = [] } = {}) {
   const pids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const whs = normalizeWarehouseIdList(warehouseIds);
   const result = new Map();
-  if (!pids.length) return result;
+  for (const pid of pids) result.set(pid, 0);
+  if (!pids.length || !whs.length) return result;
 
-  const [prodR, movR] = await Promise.all([
-    query(
-      `SELECT id AS product_id, COALESCE(incoming_quantity, 0)::int AS inc
-       FROM products WHERE id = ANY($1::bigint[])`,
-      [pids]
-    ),
-    query(
-      `SELECT product_id,
-              GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS net
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND LOWER(TRIM(type::text)) = 'incoming'
-       GROUP BY product_id`,
-      [pids]
-    ),
-  ]);
-
-  for (const pid of pids) {
-    result.set(pid, 0);
-  }
-  for (const row of prodR.rows || []) {
+  const pendingR = await query(
+    `SELECT pi.product_id,
+            COALESCE(SUM(
+              GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
+            ), 0)::int AS pending
+     FROM purchase_items pi
+     INNER JOIN purchases p ON p.id = pi.purchase_id
+     WHERE pi.product_id = ANY($1::bigint[])
+       AND p.status = 'open'
+       AND p.warehouse_id = ANY($2::bigint[])
+     GROUP BY pi.product_id`,
+    [pids, whs]
+  );
+  for (const row of pendingR.rows || []) {
     const pid = Number(row.product_id);
-    result.set(pid, Math.max(result.get(pid) || 0, Number(row.inc) || 0));
-  }
-  for (const row of movR.rows || []) {
-    const pid = Number(row.product_id);
-    const net = Number(row.net) || 0;
-    if (net > 0) {
-      result.set(pid, Math.max(result.get(pid) || 0, net));
-    }
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    result.set(pid, Math.max(0, Number(row.pending) || 0));
   }
   return result;
+}
+
+/** Склады FBO для пула «путь»: профиль + склады списания из очереди поставок. */
+async function resolveFboIncomingWarehouseIds(profileId, queuesByProduct = null) {
+  const whs = [...(await getFboSourceWarehouseIds(profileId))];
+  if (queuesByProduct) {
+    for (const queue of queuesByProduct.values()) {
+      for (const row of queue || []) {
+        const wh = normalizeWarehouseId(row.deduction_warehouse_id);
+        if (wh != null && !whs.includes(wh)) whs.push(wh);
+      }
+    }
+  }
+  return whs;
 }
 
 function takeFromStockPoolsMaps(stockPools, onHandByWh, reservedByWh, warehouseIds, need) {
@@ -872,12 +878,15 @@ class FboSupplyReserveService {
     const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
     if (!uniquePids.length) return breakdown;
 
-    const [queuesByProduct, netReservedByItem, incomingByProduct, kitFlags] = await Promise.all([
+    const [queuesByProduct, netReservedByItem, kitFlags] = await Promise.all([
       findFboReserveQueuesByProducts(uniquePids, profileId),
       getNetReservedForFboItemsBatch(uniquePids),
-      batchGetIncomingPoolForFboProducts(uniquePids),
       batchIsKitProductIds(uniquePids),
     ]);
+    const fboIncomingWhs = await resolveFboIncomingWarehouseIds(profileId, queuesByProduct);
+    const incomingByProduct = await batchGetIncomingPoolForFboProducts(uniquePids, {
+      warehouseIds: fboIncomingWhs,
+    });
 
     const kitIds = uniquePids.filter((id) => kitFlags.get(id) === true);
     const kitQueueEntries = [];
@@ -935,7 +944,7 @@ class FboSupplyReserveService {
     const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
     const [onHandByProductWh, incomingByProduct] = await Promise.all([
       batchGetWarehouseOnHand(productIds, sourceWarehouseIds),
-      batchGetIncomingPoolForFboProducts(productIds),
+      batchGetIncomingPoolForFboProducts(productIds, { warehouseIds: sourceWarehouseIds }),
     ]);
     const sourceOnHandByProduct = new Map();
     const sourceIncomingByProduct = incomingByProduct;
@@ -1083,8 +1092,9 @@ class FboSupplyReserveService {
       ),
     ];
 
+    const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
     const [incomingByProduct, kitFlags] = await Promise.all([
-      batchGetIncomingPoolForFboProducts(productIds),
+      batchGetIncomingPoolForFboProducts(productIds, { warehouseIds: sourceWarehouseIds }),
       batchIsKitProductIds(productIds),
     ]);
 
@@ -1299,6 +1309,7 @@ class FboSupplyReserveService {
     // Снятие «осиротевшего» резерва только в рамках текущего товара.
     // Резерв комплектующих (meta.kit_product_id) не трогаем при пересчёте одиночного SKU —
     // иначе rebalanceReservesForProduct(компонент) снимает резерв активных строк комплекта.
+    // LEFT JOIN: строки поставки могли удалить, а нетто в журнале остаётся — иначе хвост вечный.
     const orphanR = isKit
       ? await query(
           `SELECT DISTINCT sm.meta->>'fbo_supply_item_id' AS item_id,
@@ -1314,9 +1325,9 @@ class FboSupplyReserveService {
           `SELECT DISTINCT sm.meta->>'fbo_supply_item_id' AS item_id,
                   sm.meta->>'fbo_supply_id' AS supply_id
            FROM stock_movements sm
-           INNER JOIN fbo_supply_items si ON si.id = (sm.meta->>'fbo_supply_item_id')::bigint
+           LEFT JOIN fbo_supply_items si ON si.id = (sm.meta->>'fbo_supply_item_id')::bigint
            WHERE sm.product_id = $1
-             AND si.product_id = $1
+             AND (si.id IS NULL OR si.product_id = $1)
              AND sm.type IN ('reserve', 'unreserve')
              AND sm.meta ? 'fbo_supply_item_id'
              AND sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`,
@@ -1356,6 +1367,96 @@ class FboSupplyReserveService {
     }
   }
 
+  /**
+   * Снять нетто-резерв FBO, у которого строка удалена или поставка уже неактивна.
+   * releaseReservesForSupply по текущим items такие хвосты не видит.
+   */
+  async releaseOrphanReservesForProfile(profileId, { skipMarketplaceSync = true } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { productIds: [], units: 0 };
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) return { productIds: [], units: 0 };
+
+    const stuckR = await query(
+      `SELECT sm.product_id,
+              sm.meta->>'fbo_supply_item_id' AS supply_item_id,
+              sm.meta->>'fbo_supply_id' AS supply_id,
+              sm.warehouse_id,
+              GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+       FROM stock_movements sm
+       LEFT JOIN fbo_supply_items si ON si.id = (sm.meta->>'fbo_supply_item_id')::bigint
+       LEFT JOIN fbo_supplies s ON s.id = COALESCE(si.fbo_supply_id, NULLIF(sm.meta->>'fbo_supply_id', '')::bigint)
+       WHERE sm.type IN ('reserve', 'unreserve')
+         AND sm.meta ? 'fbo_supply_item_id'
+         AND sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'
+         AND (
+           si.id IS NULL
+           OR s.id IS NULL
+           OR s.status IS NULL
+           OR NOT (s.status = ANY($2::text[]))
+         )
+         AND (
+           s.profile_id = $1
+           OR (
+             s.id IS NULL
+             AND EXISTS (
+               SELECT 1 FROM products p WHERE p.id = sm.product_id AND p.profile_id = $1
+             )
+           )
+         )
+       GROUP BY sm.product_id, sm.meta->>'fbo_supply_item_id', sm.meta->>'fbo_supply_id', sm.warehouse_id
+       HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0`,
+      [pid, FBO_RESERVE_ACTIVE_STATUSES]
+    );
+
+    const extraMeta = skipMarketplaceSync
+      ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
+      : {};
+    const releaseMeta = {
+      ...extraMeta,
+      manual_unreserve: true,
+      orphan_cleanup: true,
+      fbo_terminal_release: true,
+    };
+    const affected = new Set();
+    let units = 0;
+    for (const row of stuckR.rows || []) {
+      const net = parseInt(row.net ?? 0, 10) || 0;
+      if (net <= 0) continue;
+      const productId = Number(row.product_id);
+      if (Number.isFinite(productId) && productId > 0) affected.add(productId);
+      await applyFboReserveDelta({
+        productId: row.product_id,
+        warehouseId: row.warehouse_id,
+        supplyId: row.supply_id,
+        supplyItemId: row.supply_item_id,
+        delta: -net,
+        reason: 'Снятие резерва FBO (поставка закрыта или строка удалена)',
+        extraMeta: releaseMeta,
+      }).catch((err) => {
+        console.warn(
+          `[FBO reserve] orphan release item ${row.supply_item_id} product ${row.product_id}:`,
+          err?.message || err
+        );
+      });
+      units += net;
+    }
+
+    if (skipMarketplaceSync && affected.size > 0) {
+      try {
+        const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+        for (const productId of affected) {
+          await syncProductReservedQuantityFromJournal(productId).catch(() => {});
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (units > 0) {
+      console.log(`[FBO reserve] orphan cleanup profile=${pid}: products=${affected.size}, units=${units}`);
+    }
+    return { productIds: [...affected], units };
+  }
+
   /** Пересчёт резерва по всем товарам активных поставок аккаунта. */
   async rebalanceReservesForProfile(profileId, { skipMarketplaceSync = true } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return { products: 0, movements: 0 };
@@ -1369,6 +1470,9 @@ class FboSupplyReserveService {
     }
 
     try {
+      // Сначала хвосты на закрытых/удалённых строках — иначе товары без активных FBO никогда не чистятся.
+      const orphan = await this.releaseOrphanReservesForProfile(pid, { skipMarketplaceSync });
+
       const r = await query(
         `SELECT DISTINCT si.product_id
          FROM fbo_supply_items si
@@ -1381,9 +1485,14 @@ class FboSupplyReserveService {
          ORDER BY si.product_id`,
         [pid, FBO_RESERVE_ACTIVE_STATUSES]
       );
-      const productIds = (r.rows || [])
-        .map((row) => Number(row.product_id))
-        .filter((id) => Number.isFinite(id) && id > 0);
+      const productIds = [
+        ...new Set([
+          ...(r.rows || [])
+            .map((row) => Number(row.product_id))
+            .filter((id) => Number.isFinite(id) && id > 0),
+          ...(orphan.productIds || []).map((id) => Number(id)).filter((id) => id > 0),
+        ]),
+      ];
 
       const movBeforeR = await query(
         `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
@@ -1490,7 +1599,21 @@ class FboSupplyReserveService {
          AND si.product_id IS NOT NULL`,
       [supplyId, pid]
     );
-    const itemIds = (itemsR.rows || []).map((row) => String(row.id));
+    // Строки могли удалить при синхронизации с МП — подтягиваем item_id из журнала.
+    const movItemsR = await query(
+      `SELECT DISTINCT meta->>'fbo_supply_item_id' AS id
+       FROM stock_movements
+       WHERE meta->>'fbo_supply_id' = $1
+         AND type IN ('reserve', 'unreserve')
+         AND meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`,
+      [String(supplyId)]
+    );
+    const itemIds = [
+      ...new Set([
+        ...(itemsR.rows || []).map((row) => String(row.id)),
+        ...(movItemsR.rows || []).map((row) => String(row.id)).filter(Boolean),
+      ]),
+    ];
     return this.releaseReservesForSupplyItemIds(supplyId, itemIds, {
       profileId,
       skipMarketplaceSync,

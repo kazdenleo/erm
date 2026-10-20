@@ -230,6 +230,41 @@ export const createProductSchema = z.object({
   block_stock_ozon: z.boolean().optional(),
   block_stock_wb: z.boolean().optional(),
   block_stock_ym: z.boolean().optional(),
+  /** ШК упаковки / шт. в коробке — только приёмка ERM (на МП не уходит) */
+  box_barcode: z
+    .union([z.string(), z.number(), z.null()])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (v == null || v === '') return null;
+      const s = String(v).trim();
+      return s === '' ? null : s;
+    }),
+  units_per_box: z
+    .union([z.string(), z.number(), z.null()])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (v == null || v === '') return null;
+      const n = Math.floor(Number(v));
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }),
+  box_packagings: z
+    .array(
+      z.object({
+        barcode: z.union([z.string(), z.number()]).optional().nullable(),
+        box_barcode: z.union([z.string(), z.number()]).optional().nullable(),
+        boxBarcode: z.union([z.string(), z.number()]).optional().nullable(),
+        units_per_box: z.union([z.string(), z.number()]).optional().nullable(),
+        unitsPerBox: z.union([z.string(), z.number()]).optional().nullable(),
+        units: z.union([z.string(), z.number()]).optional().nullable(),
+      }).passthrough()
+    )
+    .optional()
+    .nullable(),
+  boxBarcode: z.union([z.string(), z.number(), z.null()]).optional(),
+  unitsPerBox: z.union([z.string(), z.number(), z.null()]).optional(),
+  boxPackagings: z.array(z.any()).optional().nullable(),
 });
 
 /**
@@ -288,6 +323,15 @@ export function validateUpdateProduct(req, res, next) {
     // алиас: additional_expenses -> additionalExpenses
     if ('additional_expenses' in raw && !('additionalExpenses' in raw)) {
       toValidate.additionalExpenses = raw.additional_expenses;
+    }
+    if ('boxBarcode' in raw && !('box_barcode' in raw)) {
+      toValidate.box_barcode = raw.boxBarcode;
+    }
+    if ('unitsPerBox' in raw && !('units_per_box' in raw)) {
+      toValidate.units_per_box = raw.unitsPerBox;
+    }
+    if ('boxPackagings' in raw && !('box_packagings' in raw)) {
+      toValidate.box_packagings = raw.boxPackagings;
     }
     req.body = updateProductSchema.parse(toValidate);
     next();

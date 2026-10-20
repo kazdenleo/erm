@@ -179,9 +179,47 @@ async function assertSessionInProfile(client, sessionId, profileId) {
   return row;
 }
 
+/** Поставки, после которых расчёт больше не нужен. */
+const CALC_SESSION_FINISHED_SUPPLY_STATUSES = ['shipped', 'closed', 'return'];
+
 class FboPurchaseCalcSessionService {
+  /**
+   * Удалить расчёты, у которых все связанные поставки отгружены/закрыты/возврат
+   * (или поставок уже нет в БД). Закупки не трогаем.
+   */
+  async purgeSessionsForFinishedSupplies({ profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const params = [CALC_SESSION_FINISHED_SUPPLY_STATUSES];
+    let sql = `
+      DELETE FROM fbo_purchase_calc_sessions s
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(COALESCE(s.supply_ids, '[]'::jsonb)) AS elem(txt)
+        INNER JOIN fbo_supplies fs
+          ON fs.id = NULLIF(TRIM(elem.txt), '')::bigint
+        WHERE fs.status <> ALL($1::text[])
+      )`;
+    if (pid != null) {
+      params.push(pid);
+      sql += ` AND s.profile_id = $${params.length}`;
+    }
+    sql += ` RETURNING s.id`;
+    const r = await query(sql, params);
+    return {
+      deletedIds: (r.rows || []).map((row) => Number(row.id)).filter((id) => Number.isFinite(id)),
+    };
+  }
+
   async listOpen({ profileId } = {}) {
     const pid = normalizeProfileId(profileId);
+    try {
+      await this.purgeSessionsForFinishedSupplies({ profileId: pid });
+    } catch (e) {
+      console.warn(
+        '[FboPurchaseCalcSession] purge on listOpen:',
+        e?.message || e
+      );
+    }
     const params = [];
     let sql = `SELECT s.id, s.supply_ids, s.status, s.created_at, s.updated_at,
               (SELECT COUNT(*)::int FROM fbo_purchase_calc_row_state rs WHERE rs.session_id = s.id) AS state_rows,
@@ -205,6 +243,7 @@ class FboPurchaseCalcSessionService {
         updatedAt: row.updated_at,
         purchasedQty,
         hasPurchaseProgress: purchasedQty > 0 || (Number(row.state_rows) || 0) > 0,
+        canDelete: true,
       };
     });
   }
@@ -309,6 +348,7 @@ class FboPurchaseCalcSessionService {
         createdAt: session.created_at,
         updatedAt: session.updated_at,
         completedAt: session.completed_at,
+        canDelete: true,
       },
       calc: merged,
       purchaseLinks: (linksR.rows || []).map((l) => ({
@@ -320,6 +360,33 @@ class FboPurchaseCalcSessionService {
         createdAt: l.created_at,
       })),
     };
+  }
+
+  /**
+   * Удалить сессию расчёта. Созданные закупки не трогаем — только книгу расчёта.
+   */
+  async deleteSession(sessionId, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (!pid) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const sid = parseInt(sessionId, 10);
+    if (!sid || Number.isNaN(sid)) {
+      const err = new Error('Некорректный ID сессии');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return transaction(async (client) => {
+      await assertSessionInProfile(client, sid, pid);
+      await client.query(`DELETE FROM fbo_purchase_calc_sessions WHERE id = $1 AND profile_id = $2`, [
+        sid,
+        pid,
+      ]);
+      return { id: sid, deleted: true };
+    });
   }
 
   /**

@@ -20,6 +20,12 @@ export const inventorySessionsApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Позиции с остатком, которые будут обнулены (не в списке пересчёта). */
+  previewUnlisted: async (payload) => {
+    const response = await api.post('/inventory-sessions/preview-unlisted', payload);
+    return response.data?.data ?? response.data;
+  },
+
   update: async (id, payload) => {
     const response = await api.put(`/inventory-sessions/${id}`, payload, { timeout: 300000 });
     return response.data?.data ?? response.data;

@@ -82,10 +82,10 @@ export const cargoApi = {
       method: 'PUT',
       body: { expectedCargoPlaces },
     }).then(unwrap),
-  acceptPlace: (purchaseId, barcode, { force = false } = {}) =>
+  acceptPlace: (purchaseId, barcode, { force = false, forceExceed = false } = {}) =>
     request(`/purchase-cargo/purchases/${purchaseId}/places`, {
       method: 'POST',
-      body: { barcode, force },
+      body: { barcode, force, forceExceed },
     }).then(unwrap),
   getPlace: (placeId) => request(`/purchase-cargo/places/${placeId}`).then(unwrap),
   removePlace: (placeId) => request(`/purchase-cargo/places/${placeId}/remove`, { method: 'POST' }).then(unwrap),

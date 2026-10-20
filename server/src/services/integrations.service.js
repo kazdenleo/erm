@@ -334,7 +334,7 @@ class IntegrationsService {
         checks.push({ scope: 'ozon_v1', valid: true, message: 'Ozon: v1 OK (categories)' });
 
         // Важно: часть ключей может быть "валидной" для справочников/цен, но отключена для Seller Posting API,
-        // из-за чего падают этикетки (/v3/posting/fbs/get, package-label/*).
+        // из-за чего падают этикетки (/v3/posting/fbs/get, v3 package-label/create + v2 get).
         // Поэтому делаем отдельную проверку контура постингов.
         try {
           const now = new Date();

@@ -446,7 +446,7 @@ class PurchaseCargoPlacesService {
   }
 
   /** Принять грузоместо по штрихкоду. Повторный скан того же места — не ошибка. */
-  async acceptPlace(purchaseId, { barcode, force = false } = {}, { profileId, userId } = {}) {
+  async acceptPlace(purchaseId, { barcode, force = false, forceExceed = false } = {}, { profileId, userId } = {}) {
     const pid = requireProfileId(profileId);
     const id = requireId(purchaseId, 'Некорректный ID закупки');
     const code = normalizeBarcode(barcode);
@@ -484,6 +484,26 @@ class PurchaseCargoPlacesService {
           const pr = await client.query(`SELECT name, sku FROM products WHERE id = $1`, [productId]);
           const name = pr.rows?.[0]?.name || pr.rows?.[0]?.sku || `#${productId}`;
           throw httpError(409, `Это штрихкод товара «${name}», а не грузоместа`, 'PRODUCT_BARCODE', { productId });
+        }
+      }
+
+      const expected =
+        purchase.expected_cargo_places != null && purchase.expected_cargo_places !== ''
+          ? Math.floor(Number(purchase.expected_cargo_places))
+          : null;
+      if (expected != null && Number.isFinite(expected) && expected >= 0 && !forceExceed) {
+        const cnt = await client.query(
+          `SELECT COUNT(*)::int AS c FROM purchase_cargo_places WHERE purchase_id = $1`,
+          [id]
+        );
+        const accepted = Number(cnt.rows?.[0]?.c) || 0;
+        if (accepted >= expected) {
+          throw httpError(
+            409,
+            `Уже принято ${accepted} из ${expected} грузомест — лишнее место не добавляем`,
+            'EXPECTED_EXCEEDED',
+            { accepted, expected }
+          );
         }
       }
 

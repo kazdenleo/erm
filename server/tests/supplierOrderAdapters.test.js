@@ -72,6 +72,15 @@ describe('supplierOrderAdapters/shared', () => {
     expect(picked?.gid).toBeTruthy();
   });
 
+  test('pickWarehouseLine preserves offer price', () => {
+    const lines = [
+      { warehouseName: 'Москва', stock: 5, gid: '1', price: 840 },
+      { warehouseName: 'СПб', stock: 20, gid: '2', price: 900 },
+    ];
+    const picked = pickWarehouseLine(lines, { warehouseName: 'Москва', quantity: 1 });
+    expect(picked.price).toBe(840);
+  });
+
   test('normalizeWarehouseName collapses spaces', () => {
     expect(normalizeWarehouseName('  Склад   MSK  ')).toBe('склад msk');
   });

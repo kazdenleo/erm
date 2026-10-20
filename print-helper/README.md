@@ -77,7 +77,11 @@ cd testCursor/print-helper
 
 Чтобы раздать установщик через ERM, скопируйте его на сервер в:
 
-`data/downloads/erm-print-helper-setup.exe`
+`/opt/erm/data/downloads/erm-print-helper-setup.exe`
+
+(не в `server/data/downloads` — API читает каталог из корня репозитория `data/downloads`).
+
+Перед обновлением на ПК закройте Print Helper в трее, иначе Windows не даст заменить exe.
 
 Примечание: установщик собирается как **per-user** (без прав администратора) и ставит программу в `%LocalAppData%`.
 

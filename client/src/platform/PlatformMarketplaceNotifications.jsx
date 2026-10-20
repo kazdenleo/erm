@@ -31,6 +31,7 @@ export function PlatformMarketplaceNotifications() {
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
   const [hookPath, setHookPath] = useState('/api/hooks/marketplaces');
+  const [ozonHookPath, setOzonHookPath] = useState('/api/hooks/ozon');
   const [form, setForm] = useState(emptyForm);
   const [events, setEvents] = useState([]);
   const [total, setTotal] = useState(0);
@@ -46,6 +47,7 @@ export function PlatformMarketplaceNotifications() {
       if (s?.ok && s?.data?.secrets) {
         setForm({ ...emptyForm(), ...s.data.secrets });
         if (s.data.hookPath) setHookPath(s.data.hookPath);
+        if (s.data.ozonHookPath) setOzonHookPath(s.data.ozonHookPath);
         setHint(s.data.hookHint || '');
       }
       const e = await platformMarketplaceNotificationsApi.listEvents({ limit: pageSize, offset });
@@ -87,6 +89,11 @@ export function PlatformMarketplaceNotifications() {
     return `${window.location.origin}${hookPath}`;
   }, [hookPath]);
 
+  const ozonOriginHint = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    return `${window.location.origin}${ozonHookPath}`;
+  }, [ozonHookPath]);
+
   const pageCount = total <= 0 ? 1 : Math.ceil(total / pageSize);
   const pageMax = Math.max(0, pageCount - 1);
   const pageIndex = Math.min(Math.floor(offset / pageSize), pageMax);
@@ -95,8 +102,8 @@ export function PlatformMarketplaceNotifications() {
     <div className="platform-page platform-mp-notifications">
       <h1 className="title">Уведомления маркетплейсов</h1>
       <p className="platform-muted" style={{ marginBottom: '1rem', maxWidth: '52rem' }}>
-        Журнал входящих событий по API (вебхуки и push). Укажите общий ключ приёма и при необходимости отдельные поля под
-        ключи Ozon, Wildberries и Яндекс Маркет — они понадобятся, когда подключим конкретные схемы уведомлений.
+        Журнал входящих событий по API (вебхуки и push). Для Ozon укажите URL push ниже в кабинете продавца — платформа
+        мониторит доступность (TYPE_PING) и приостанавливает доставку при частых ошибках или ответах дольше 5 с.
       </p>
 
       {error ? (
@@ -108,9 +115,20 @@ export function PlatformMarketplaceNotifications() {
       <section className="platform-mp-card" style={{ marginBottom: '1.25rem' }}>
         <h2 className="platform-mp-card__title">URL приёма</h2>
         <p className="platform-muted" style={{ marginBottom: '0.5rem', fontSize: '0.88rem' }}>
-          {hint || 'Заголовок X-Platform-Ingest-Key обязателен, если задан общий ключ ниже (или переменная PLATFORM_MP_INGEST_KEY на сервере).'}
+          {hint || 'Общий URL требует X-Platform-Ingest-Key. Для push Ozon — отдельный URL без ключа.'}
         </p>
-        <code className="platform-mp-code">{originHint}</code>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <div className="platform-muted" style={{ fontSize: '0.82rem', marginBottom: '0.25rem' }}>
+            Общий (с ключом)
+          </div>
+          <code className="platform-mp-code">{originHint}</code>
+        </div>
+        <div>
+          <div className="platform-muted" style={{ fontSize: '0.82rem', marginBottom: '0.25rem' }}>
+            Ozon Seller API push (TYPE_PING / события)
+          </div>
+          <code className="platform-mp-code">{ozonOriginHint}</code>
+        </div>
       </section>
 
       <section className="platform-mp-card" style={{ marginBottom: '1.25rem' }}>

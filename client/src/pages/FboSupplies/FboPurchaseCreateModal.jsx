@@ -84,7 +84,7 @@ export function FboPurchaseCreateModal({
               <th className="text-end" title="Сумма по выбранным поставкам FBO">
                 Нужно для поставок
               </th>
-              <th className="text-end" title="Ожидается по закупкам (в пути)">
+              <th className="text-end" title="Открытые закупки на склад FBO (в пути)">
                 В пути
               </th>
               <th className="text-end">Итого к закупке</th>

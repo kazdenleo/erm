@@ -8,6 +8,7 @@
 
 import integrationsService from './integrations.service.js';
 import { isOzonBlockAutoPromotionsEnabled } from '../utils/ozonAutoPromotions.js';
+import { ozonListTotal } from '../utils/ozonSellerApi.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import { query } from '../config/database.js';
 import { readData, writeData } from '../utils/storage.js';
@@ -50,6 +51,7 @@ import {
   applyOzonPercentAbove300FromOwnPrice,
   attachOzonTierRatesToCalculator,
   extractOzonCommissionTierContext,
+  isOzonLowTierCommissionPercent,
   mergeOzonPercentAbove300,
   ozonCommissionPriceTier,
   resolveOzonSalesCommissionPercent,
@@ -597,11 +599,16 @@ class PricesService {
     const products = raw.map((p) => this._normalizeOzonActionProduct(p));
     return {
       products,
-      total: result.total != null ? result.total : data?.total != null ? data.total : products.length,
+      // Seller API: total → total_items (см. ozonListTotal)
+      total: ozonListTotal(data, products.length),
       last_id: result.last_id || data?.last_id || '',
     };
   }
 
+  /**
+   * Список акций: GET /v1/actions (актуален; не входил в отключение v1 products/candidates/activate|deactivate).
+   * Товары/кандидаты/исключение — только /v2/actions/* (с ~19.10.2026 старые v1 этих операций отключены).
+   */
   async _fetchOzonActionsFromApiWithCreds(client_id, api_key) {
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
@@ -691,11 +698,16 @@ class PricesService {
     return [...new Set(ids)];
   }
 
+  /**
+   * Исключение из акции: POST /v2/actions/products/deactivate (не /v1 — отключён ~19.10.2026).
+   * Считает только реально снятые id; rejected / is_updated=false — в errors.
+   */
   async _deactivateOzonActionProducts(client_id, api_key, actionId, productIds) {
     const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
-    if (!unique.length) return { ok: true, deactivated: 0 };
+    if (!unique.length) return { ok: true, deactivated: 0, rejected: [] };
 
     let deactivated = 0;
+    const rejected = [];
     const batchSize = 100;
     for (let i = 0; i < unique.length; i += batchSize) {
       const chunk = unique.slice(i, i + batchSize);
@@ -710,11 +722,52 @@ class PricesService {
       });
       if (!response.ok) {
         const errorText = await response.text();
-        return { ok: false, error: `deactivate ${response.status}: ${errorText.substring(0, 200)}`, deactivated };
+        return {
+          ok: false,
+          error: `deactivate ${response.status}: ${errorText.substring(0, 200)}`,
+          deactivated,
+          rejected,
+        };
       }
-      deactivated += chunk.length;
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      const result = data?.result && typeof data.result === 'object' ? data.result : data || {};
+      const okIds = Array.isArray(result.product_ids)
+        ? result.product_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        : null;
+      const resultRows = Array.isArray(result.results) ? result.results : [];
+      const rejectedRows = Array.isArray(result.rejected) ? result.rejected : [];
+
+      if (okIds) {
+        deactivated += okIds.length;
+      } else if (resultRows.length) {
+        for (const row of resultRows) {
+          const pid = Number(row?.product_id);
+          if (row?.is_updated === false) {
+            rejected.push({
+              product_id: pid,
+              reason: Array.isArray(row.errors) ? row.errors.join('; ') : row.reason || 'not updated',
+            });
+          } else if (Number.isFinite(pid) && pid > 0) {
+            deactivated += 1;
+          }
+        }
+      } else {
+        // Пустой/неизвестный body при HTTP 200 — считаем batch принятым (как раньше).
+        deactivated += chunk.length;
+      }
+      for (const row of rejectedRows) {
+        rejected.push({
+          product_id: Number(row?.product_id) || null,
+          reason: row?.reason || 'rejected',
+        });
+      }
     }
-    return { ok: true, deactivated };
+    return { ok: true, deactivated, rejected };
   }
 
   async _disableOzonAutoPromotionFlags(client_id, api_key, productIds) {
@@ -727,7 +780,7 @@ class PricesService {
       const chunk = unique.slice(i, i + batchSize);
       const prices = chunk.map((product_id) => ({
         product_id,
-        auto_action_enabled: 'DISABLED',
+        // auto_action_enabled устарел в import/prices (11.09.2026)
         auto_add_to_ozon_actions_list_enabled: 'DISABLED',
       }));
       const response = await fetch('https://api-seller.ozon.ru/v1/product/import/prices', {
@@ -780,7 +833,18 @@ class PricesService {
         if (!deact.ok) {
           errors.push({ actionId, step: 'deactivate', error: deact.error });
         } else {
-          deactivated += deact.deactivated ?? autoIds.length;
+          deactivated += deact.deactivated ?? 0;
+          if (deact.rejected?.length) {
+            errors.push({
+              actionId,
+              step: 'deactivate_rejected',
+              error: deact.rejected
+                .slice(0, 5)
+                .map((r) => `${r.product_id}: ${r.reason}`)
+                .join('; '),
+              rejectedCount: deact.rejected.length,
+            });
+          }
         }
       } catch (e) {
         errors.push({ actionId, step: 'action_loop', error: e?.message || String(e) });
@@ -1933,15 +1997,20 @@ class PricesService {
 
   _extractOzonAbove300FromCalculator(calc) {
     if (!calc || typeof calc !== 'object') return null;
+    const tierRates =
+      calc.tier_rates && typeof calc.tier_rates === 'object' ? calc.tier_rates : null;
     const pick = (pack) => {
       if (!pack || typeof pack !== 'object') return null;
       const above = Number(pack.percent_above_300);
       if (Number.isFinite(above) && above > 0) return above;
+      const pct = Number(pack.percent);
+      if (!Number.isFinite(pct) || pct <= 0) return null;
       const basis = Number(calc.commission_price_basis ?? calc.price);
       if (Number.isFinite(basis) && ozonCommissionPriceTier(basis) === 'gt300') {
-        const pct = Number(pack.percent);
-        if (Number.isFinite(pct) && pct > 0) return pct;
+        return pct;
       }
+      // Старый кэш без price basis: высокий % (не 17/23) — почти наверняка категория.
+      if (!isOzonLowTierCommissionPercent(pct, tierRates)) return pct;
       return null;
     };
     const FBS = pick(calc.commissions?.FBS);
@@ -2048,31 +2117,43 @@ class PricesService {
       /** @type {Map<any, { FBS?: number, FBO?: number }>} */
       const byCategory = new Map();
       for (const row of res.rows) {
-        const calc = row.calculator;
-        if (!calc || typeof calc !== 'object') continue;
-        const basis = Number(calc.commission_price_basis ?? calc.price);
-        if (!Number.isFinite(basis) || ozonCommissionPriceTier(basis) !== 'gt300') continue;
+        const extracted = this._extractOzonAbove300FromCalculator(row.calculator);
+        if (!extracted) continue;
         const cur = byCategory.get(row.user_category_id) || {};
         for (const key of ['FBS', 'FBO']) {
-          const pack = calc.commissions?.[key];
-          if (!pack) continue;
-          const pct = Number(pack.percent_above_300 ?? pack.percent);
-          if (Number.isFinite(pct) && pct > 0 && cur[key] == null) cur[key] = pct;
+          if (extracted[key] != null && cur[key] == null) cur[key] = extracted[key];
         }
         if (cur.FBS != null || cur.FBO != null) byCategory.set(row.user_category_id, cur);
       }
 
+      let learnedRates = null;
+      try {
+        learnedRates = await loadLearnedOzonLowTierRates();
+      } catch {
+        learnedRates = null;
+      }
+
       for (const row of res.rows) {
         const rates = byCategory.get(row.user_category_id);
-        if (!rates) continue;
+        if (!rates && !learnedRates) continue;
         let calc = row.calculator;
         if (!calc || typeof calc !== 'object') continue;
         const beforeFbs = calc.commissions?.FBS?.percent_above_300;
         const beforeFbo = calc.commissions?.FBO?.percent_above_300;
-        calc = mergeOzonPercentAbove300(applyOzonPercentAbove300FromOwnPrice({ ...calc }), rates);
+        calc = applyOzonPercentAbove300FromOwnPrice({ ...calc });
+        if (rates) calc = mergeOzonPercentAbove300(calc, rates);
+        if (learnedRates) {
+          calc = attachOzonTierRatesToCalculator(calc, {
+            le100: learnedRates.le100,
+            le300: learnedRates.le300,
+            source: 'learned_api',
+          });
+        }
         const afterFbs = calc.commissions?.FBS?.percent_above_300;
         const afterFbo = calc.commissions?.FBO?.percent_above_300;
-        if (beforeFbs === afterFbs && beforeFbo === afterFbo) continue;
+        const tierBefore = JSON.stringify(row.calculator?.tier_rates || null);
+        const tierAfter = JSON.stringify(calc.tier_rates || null);
+        if (beforeFbs === afterFbs && beforeFbo === afterFbo && tierBefore === tierAfter) continue;
         await this._upsertMpCalculatorCache(row.product_id, 'ozon', calc, 'tier_propagate');
         updated++;
       }
@@ -2228,108 +2309,175 @@ class PricesService {
     return out;
   }
 
+  /**
+   * Все пары Client-Id / Api-Key Ozon по профилям (уникальные по client_id).
+   * Иначе sync обновляет только один кабинет (~часть каталога), остальные залипают со старыми %.
+   */
+  async _listOzonApiCredentialScopes() {
+    /** @type {Array<{ profileId: number|null, client_id: string, api_key: string }>} */
+    const out = [];
+    const seen = new Set();
+
+    const pushCreds = (profileId, cfg) => {
+      const client_id = cfg?.client_id ?? cfg?.clientId ?? null;
+      const api_key = cfg?.api_key ?? cfg?.apiKey ?? null;
+      if (!client_id || !api_key) return;
+      const key = String(client_id).trim();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push({ profileId: profileId ?? null, client_id: key, api_key: String(api_key) });
+    };
+
+    let profileIds = [];
+    try {
+      if (repositoryFactory.isUsingPostgreSQL()) {
+        const rows = await repositoryFactory.getProfilesRepository().findAll();
+        profileIds = (rows || [])
+          .map((r) => Number(r.id))
+          .filter((id) => Number.isFinite(id) && id > 0);
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] list Ozon profiles failed:', e?.message || e);
+    }
+    if (!profileIds.length) profileIds = [null];
+
+    for (const profileId of profileIds) {
+      try {
+        const cfg = await integrationsService.getMarketplaceConfig('ozon', { profileId });
+        pushCreds(profileId, cfg);
+      } catch (e) {
+        logger.warn('[Prices Service] Ozon config load failed', {
+          profileId,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    if (!out.length) {
+      try {
+        const integrations = await integrationsService.getAll();
+        const ozonIntegration = integrations.find((i) => i.code === 'ozon');
+        pushCreds(null, ozonIntegration?.config);
+      } catch {
+        /* ignore */
+      }
+    }
+    return out;
+  }
+
   async _syncOzonCalculatorCacheBatch({ limit, delayMs }) {
     const errors = [];
     let updated = 0;
     let requests = 0;
-    const integrations = await integrationsService.getAll();
-    const ozonIntegration = integrations.find(i => i.code === 'ozon');
-    const client_id = ozonIntegration?.config?.client_id;
-    const api_key = ozonIntegration?.config?.api_key;
-    if (!client_id || !api_key) {
+    const credsList = await this._listOzonApiCredentialScopes();
+    if (!credsList.length) {
       return { ok: false, updated: 0, requests: 0, errors: ['Не настроены Client ID / API Key Ozon'] };
     }
 
     const chunk = 100;
-    let offset = 0;
-    for (;;) {
-      if (limit != null && updated >= limit) break;
-      const need = limit != null ? Math.min(chunk, limit - updated) : chunk;
-      if (need <= 0) break;
+    for (const creds of credsList) {
+      const { client_id, api_key, profileId } = creds;
+      let offset = 0;
+      for (;;) {
+        if (limit != null && updated >= limit) break;
+        const need = limit != null ? Math.min(chunk, limit - updated) : chunk;
+        if (need <= 0) break;
 
-      const rowsRes = await query(
-        `SELECT TRIM(ps.sku) AS offer_id
-         FROM product_skus ps
-         WHERE ps.marketplace = 'ozon' AND ps.sku IS NOT NULL AND TRIM(ps.sku) <> ''
-         GROUP BY TRIM(ps.sku)
-         ORDER BY MIN(ps.product_id)
-         LIMIT $1 OFFSET $2`,
-        [need, offset]
-      );
-      const offerIds = rowsRes.rows.map(r => r.offer_id).filter(Boolean);
-      if (!offerIds.length) break;
-      offset += offerIds.length;
+        const rowsRes = await query(
+          `SELECT TRIM(ps.sku) AS offer_id
+           FROM product_skus ps
+           WHERE ps.marketplace = 'ozon' AND ps.sku IS NOT NULL AND TRIM(ps.sku) <> ''
+           GROUP BY TRIM(ps.sku)
+           ORDER BY MIN(ps.product_id)
+           LIMIT $1 OFFSET $2`,
+          [need, offset]
+        );
+        const offerIds = rowsRes.rows.map((r) => r.offer_id).filter(Boolean);
+        if (!offerIds.length) break;
+        offset += offerIds.length;
 
-      try {
-        const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            'Client-Id': String(client_id),
-            'Api-Key': String(api_key)
-          },
-          body: JSON.stringify({
-            cursor: '',
-            filter: { offer_id: offerIds, visibility: 'ALL' },
-            limit: 100
-          }),
-          timeout: 60000
-        });
-        requests++;
-        if (!response.ok) {
-          const errText = await response.text();
-          errors.push({ batch: offerIds.slice(0, 3), error: errText.substring(0, 200) });
-        } else {
-          const data = await response.json();
-          const items = data.items || (data.result && data.result.items) || [];
-          for (const item of items) {
-            const oid = item.offer_id != null ? String(item.offer_id).trim() : null;
-            if (!oid) continue;
-            const built = await applyOzonV5ItemToCalculator(item, oid, client_id, api_key);
-            if (built.found && built.calculator) {
-              const pidsRes = await query(
-                `SELECT product_id FROM product_skus WHERE marketplace = 'ozon' AND TRIM(sku) = $1`,
-                [oid]
-              );
-              for (const pr of pidsRes.rows) {
-                const calculator = await this._enrichOzonCalculatorForMinPrice(built.calculator, {
-                  productId: pr.product_id,
-                  offerId: oid,
-                });
-                await this._upsertMpCalculatorCache(pr.product_id, 'ozon', calculator, 'batch_v5');
-                updated++;
-                if (limit != null && updated >= limit) break;
+        try {
+          const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              'Client-Id': String(client_id),
+              'Api-Key': String(api_key),
+            },
+            body: JSON.stringify({
+              cursor: '',
+              filter: { offer_id: offerIds, visibility: 'ALL' },
+              limit: 100,
+            }),
+            timeout: 60000,
+          });
+          requests++;
+          if (!response.ok) {
+            const errText = await response.text();
+            errors.push({
+              profileId,
+              batch: offerIds.slice(0, 3),
+              error: errText.substring(0, 200),
+            });
+          } else {
+            const data = await response.json();
+            const items = data.items || (data.result && data.result.items) || [];
+            for (const item of items) {
+              const oid = item.offer_id != null ? String(item.offer_id).trim() : null;
+              if (!oid) continue;
+              const built = await applyOzonV5ItemToCalculator(item, oid, client_id, api_key);
+              if (built.found && built.calculator) {
+                const pidsRes = await query(
+                  `SELECT product_id FROM product_skus WHERE marketplace = 'ozon' AND TRIM(sku) = $1`,
+                  [oid]
+                );
+                for (const pr of pidsRes.rows) {
+                  const calculator = await this._enrichOzonCalculatorForMinPrice(built.calculator, {
+                    productId: pr.product_id,
+                    offerId: oid,
+                    integrationScope: { profileId },
+                  });
+                  await this._upsertMpCalculatorCache(pr.product_id, 'ozon', calculator, 'batch_v5');
+                  updated++;
+                  if (limit != null && updated >= limit) break;
+                }
               }
             }
           }
+        } catch (e) {
+          errors.push({
+            profileId,
+            batch: offerIds.slice(0, 3),
+            error: e.message || String(e),
+          });
         }
-      } catch (e) {
-        errors.push({ batch: offerIds.slice(0, 3), error: e.message || String(e) });
-      }
 
+        if (limit != null && updated >= limit) break;
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      }
       if (limit != null && updated >= limit) break;
-      if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
     }
 
     let propagated = 0;
     let learnedTiers = null;
+    try {
+      learnedTiers = await this._learnOzonLowTierRatesFromCache();
+    } catch (e) {
+      errors.push({ batch: 'tier_learn', error: e?.message || String(e) });
+    }
     try {
       const prop = await this._propagateOzonPercentAbove300InCache();
       propagated = Number(prop?.updated) || 0;
     } catch (e) {
       errors.push({ batch: 'tier_propagate', error: e?.message || String(e) });
     }
-    try {
-      learnedTiers = await this._learnOzonLowTierRatesFromCache();
-    } catch (e) {
-      errors.push({ batch: 'tier_learn', error: e?.message || String(e) });
-    }
 
     return {
       ok: errors.length === 0 || updated > 0,
       updated,
       requests,
+      cabinets: credsList.length,
       errors,
       percentAbove300Propagated: propagated,
       learnedLowTier: learnedTiers?.rates

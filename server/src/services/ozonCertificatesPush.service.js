@@ -1,6 +1,7 @@
 /**
  * Отправка локальных сертификатов ERP в раздел «Сертификаты» Ozon Seller.
  * v2 create (JSON, файл base64) → bind product_id → сохранение ozon_certificate_id.
+ * /v2/product/certificate/create с 09.10.2026 в основном разделе Seller API (не beta).
  */
 
 import fs from 'fs';
@@ -8,7 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { ozonApiPostWithRetry, ozonListTotal } from '../utils/ozonSellerApi.js';
 import {
   buildOzonCertificateName,
   buildOzonV2CertificateParams,
@@ -185,39 +186,50 @@ class OzonCertificatesPushService {
     return out;
   }
 
-  /** product_id товаров Ozon, привязанных к сертификату (первые 1000 — для определения бренда хватает). */
+  /**
+   * product_id товаров Ozon, привязанных к сертификату.
+   * Пагинация как в listCertificateProducts: limit + last_id (page/page_size удалены с 28.09.2026).
+   */
   async listCertificateProductIds(ozonCertificateId, { profileId = null, organizationId = null } = {}) {
-    const data = await ozonApiPostWithRetry(
-      '/v1/product/certificate/products/list',
-      { certificate_id: Number(ozonCertificateId), limit: OZON_CERT_PRODUCTS_LIMIT },
-      { profileId, organizationId }
-    );
-    return (data?.result?.items || [])
-      .map((it) => Number(it?.product_id))
-      .filter((n) => Number.isFinite(n) && n > 0);
+    const rows = await this.listCertificateProducts(ozonCertificateId, { profileId, organizationId });
+    return rows.map((it) => Number(it?.product_id)).filter((n) => Number.isFinite(n) && n > 0);
   }
 
-  /** Все товары сертификата на Ozon со статусом проверки: [{ product_id, product_status_code, sku }]. */
+  /**
+   * Все товары сертификата на Ozon: [{ product_id, product_status_code, sku }].
+   * /v1/product/certificate/products/list — только limit + last_id (не page/page_size).
+   */
   async listCertificateProducts(ozonCertificateId, { profileId = null, organizationId = null } = {}) {
     const opts = { profileId, organizationId };
     const id = Number(ozonCertificateId);
     const out = [];
     let lastId = null;
-    for (let page = 1; page <= OZON_LIST_MAX_PAGES; page++) {
+    for (let safety = 0; safety < OZON_LIST_MAX_PAGES; safety++) {
       const body = { certificate_id: id, limit: OZON_CERT_PRODUCTS_LIMIT };
-      if (lastId != null) body.last_id = String(lastId);
+      if (lastId != null && String(lastId).trim() !== '') {
+        body.last_id = String(lastId);
+      }
       const data = await ozonApiPostWithRetry('/v1/product/certificate/products/list', body, opts);
-      const items = data?.result?.items || [];
+      const result = data?.result && typeof data.result === 'object' ? data.result : {};
+      const items = Array.isArray(result.items) ? result.items : [];
       out.push(...items);
-      const total = Number(data?.result?.count);
-      const nextId = items.at(-1)?.product_id;
+      const total = ozonListTotal(result, NaN);
+      const cursorNext =
+        result.last_id != null && String(result.last_id).trim() !== ''
+          ? String(result.last_id)
+          : items.at(-1)?.product_id != null
+            ? String(items.at(-1).product_id)
+            : null;
       if (
+        items.length === 0 ||
         items.length < OZON_CERT_PRODUCTS_LIMIT ||
         (Number.isFinite(total) && out.length >= total) ||
-        nextId == null ||
-        String(nextId) === String(lastId)
-      ) break;
-      lastId = nextId;
+        cursorNext == null ||
+        cursorNext === String(lastId ?? '')
+      ) {
+        break;
+      }
+      lastId = cursorNext;
     }
     return out;
   }

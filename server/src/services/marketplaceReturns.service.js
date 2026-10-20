@@ -8,7 +8,7 @@ import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.s
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 
 const CACHE_TTL_MS = 3 * 60 * 1000;
-const CACHE_LOGIC_VERSION = 'pickup-ready-v3';
+const CACHE_LOGIC_VERSION = 'pickup-ready-v4-courier';
 const DEFAULT_DAYS = 31;
 
 /** @type {Map<string, { at: number, rows: object[] }>} */
@@ -89,6 +89,65 @@ function countWaitingByMarketplace(rows) {
 }
 
 const OZON_PICKUP_SYS_NAMES = new Set(['arrivedatreturnplace']);
+/** Курьер везёт возврат продавцу (returns.courier_delivery, с 15.10.2026). */
+const OZON_COURIER_RETURN_SYS_NAMES = new Set(['returningtosellerbycourier']);
+
+/**
+ * Нормализация returns.courier_delivery из /v1/returns/list (схема может расширяться).
+ * @returns {{ address: string|null, timeslotFrom: string|null, timeslotTo: string|null, status: string|null, warehouseId: string|null, raw: object }|null}
+ */
+export function normalizeOzonCourierDelivery(raw) {
+  const cd = raw?.courier_delivery ?? raw?.courierDelivery;
+  if (!cd || typeof cd !== 'object') return null;
+
+  const addrObj = cd.address && typeof cd.address === 'object' ? cd.address : null;
+  const address =
+    (typeof cd.address === 'string' && cd.address.trim()) ||
+    (addrObj?.address && String(addrObj.address).trim()) ||
+    (addrObj?.full_address && String(addrObj.full_address).trim()) ||
+    (cd.delivery_address && String(cd.delivery_address).trim()) ||
+    (cd.warehouse_address && String(cd.warehouse_address).trim()) ||
+    null;
+
+  const slot = cd.timeslot && typeof cd.timeslot === 'object' ? cd.timeslot : null;
+  const timeslotFrom =
+    cd.timeslot_from ??
+    cd.from ??
+    slot?.from ??
+    slot?.time_from ??
+    cd.delivery_date_from ??
+    null;
+  const timeslotTo =
+    cd.timeslot_to ??
+    cd.to ??
+    slot?.to ??
+    slot?.time_to ??
+    cd.delivery_date_to ??
+    null;
+
+  const status =
+    (cd.status && typeof cd.status === 'object'
+      ? cd.status.display_name ?? cd.status.name ?? cd.status.sys_name
+      : cd.status) ??
+    cd.state ??
+    null;
+
+  const warehouseId =
+    cd.warehouse_id != null
+      ? String(cd.warehouse_id)
+      : cd.warehouseId != null
+        ? String(cd.warehouseId)
+        : null;
+
+  return {
+    address: address || null,
+    timeslotFrom: timeslotFrom != null ? String(timeslotFrom) : null,
+    timeslotTo: timeslotTo != null ? String(timeslotTo) : null,
+    status: status != null ? String(status) : null,
+    warehouseId,
+    raw: cd,
+  };
+}
 
 export function isOzonReturnWaitingPickup(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
@@ -97,7 +156,9 @@ export function isOzonReturnWaitingPickup(raw) {
   const display = String(r.visual?.status?.display_name || '').trim().toLowerCase();
 
   if (OZON_PICKUP_SYS_NAMES.has(sys)) return true;
+  if (OZON_COURIER_RETURN_SYS_NAMES.has(sys)) return true;
   if (/пункт\s*выдачи|в\s*пункте\s*выдачи|прибыл.*пункт|на\s*пвз/.test(display)) return true;
+  if (/курьер/.test(display) && /продавц/.test(display)) return true;
 
   return false;
 }
@@ -140,20 +201,36 @@ function mapOzonRow(raw) {
   const waitingPickup = isOzonReturnWaitingPickup(r);
   const schema = r.schema ?? null;
   const type = r.type ?? null;
+  const courier = normalizeOzonCourierDelivery(r);
+  const sys = String(visual.sys_name || '').trim().toLowerCase();
+  const viaCourier = Boolean(courier) || OZON_COURIER_RETURN_SYS_NAMES.has(sys);
+  const detailParts = [schema, type];
+  if (viaCourier) detailParts.push('Курьер');
+  if (courier?.status) detailParts.push(courier.status);
   return {
     marketplace: 'ozon',
     id: String(r.id ?? `${r.order_number}-${product.offer_id}`),
     status: visual.display_name ?? r.status ?? null,
-    statusDetail: [schema, type].filter(Boolean).join(' · ') || null,
+    statusDetail: detailParts.filter(Boolean).join(' · ') || null,
     waitingPickup,
     sku: product.offer_id != null ? String(product.offer_id) : (product.sku != null ? String(product.sku) : null),
     barcode: r.logistic?.barcode ?? null,
     productName: product.name ?? null,
     productExtra: product.quantity != null ? `×${product.quantity}` : null,
-    pickupAddress: place.address || place.name || null,
+    pickupAddress: courier?.address || place.address || place.name || null,
     pickupPointId: place.id ?? null,
-    readyFromDt: storage.arrived_moment ?? r.visual?.change_moment ?? null,
-    expiredDt: storage.utilization_forecast_date ?? null,
+    deliveryMode: viaCourier ? 'courier' : 'pickup_point',
+    courierDelivery: courier
+      ? {
+          address: courier.address,
+          timeslotFrom: courier.timeslotFrom,
+          timeslotTo: courier.timeslotTo,
+          status: courier.status,
+          warehouseId: courier.warehouseId,
+        }
+      : null,
+    readyFromDt: storage.arrived_moment ?? courier?.timeslotFrom ?? r.visual?.change_moment ?? null,
+    expiredDt: storage.utilization_forecast_date ?? courier?.timeslotTo ?? null,
     reason: r.return_reason_name ?? null,
     orderId: r.order_number != null ? String(r.order_number) : (r.order_id != null ? String(r.order_id) : null),
     orderDt: r.logistic?.return_date ?? null,

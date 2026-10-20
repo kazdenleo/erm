@@ -22,8 +22,9 @@ export function ozonOrderNumberFromPostingNumber(postingNumberRaw) {
 
 /**
  * Номер, напечатанный на этикетке Ozon FBS (`ii50048401925`) — аналог стикера WB.
- * Приходит только в v3/posting/fbs/get (поле scanit); barcodes.lower/upper_barcode
- * на этикетке не печатаются и стикером не являются.
+ * Поле scanit: /v3/posting/fbs/get, списки FBS; с 13.10.2026 также act/get-postings.
+ * PDF этикетки: /v3/posting/fbs/package-label/create + /v2/.../get (старые методы — до 02.11.2026).
+ * barcodes.lower/upper_barcode на этикетке не печатаются и стикером не являются.
  */
 export function ozonStickerNumberFromPosting(posting) {
   if (!posting || typeof posting !== 'object') return null;

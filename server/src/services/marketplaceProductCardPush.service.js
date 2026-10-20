@@ -993,7 +993,7 @@ async function pushOzonPricesFromErp(offerId, productId, erp, apiOpts) {
   const entry = {
     price: formatMoneyStr(after),
     currency_code: 'RUB',
-    auto_action_enabled: 'DISABLED',
+    // auto_action_enabled устарел в import/prices (11.09.2026) — только auto_add_to_ozon_actions_list_enabled
     auto_add_to_ozon_actions_list_enabled: 'DISABLED',
   };
   if (erp.before != null && erp.before > after + 0.009) {

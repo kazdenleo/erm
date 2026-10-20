@@ -249,8 +249,8 @@ function addKitLine(
     const perKit = comp.quantity;
     const componentQty = kitQty * perKit;
     const info = productInfoById.get(compId) || {};
-    // Одна строка на комплектующий SKU — иначе один артикул дублируется под каждым комплектом.
-    const compKey = `p:${compId}`;
+    // Отдельная строка на пару «комплект + комплектующий» — одинаковый SKU в разных комплектах не сливается.
+    const compKey = `kit:${kitProductId}:p:${compId}`;
     const agg = ensureProductRow(productRowMap, compKey, {
       productId: compId,
       productName: info.name || `Товар #${compId}`,
@@ -261,15 +261,9 @@ function addKitLine(
       incoming: incomingByProduct.get(compId) ?? 0,
     });
     agg.rowType = 'component';
-    if (agg.kitProductId == null) {
-      agg.kitProductId = kitProductId;
-      agg.parentKey = header.key;
-    }
-    const sources = Array.isArray(agg.kitSources) ? agg.kitSources : [];
-    if (!sources.some((s) => Number(s.kitProductId) === Number(kitProductId))) {
-      sources.push({ kitProductId, label: kitLabel });
-    }
-    agg.kitSources = sources;
+    agg.kitProductId = kitProductId;
+    agg.parentKey = header.key;
+    agg.kitSources = [{ kitProductId, label: kitLabel }];
     const prevQty = agg.supplyQty[supplyId] || 0;
     agg.supplyQty[supplyId] = prevQty + componentQty;
     agg.supplyCells[supplyId] = mergeSupplyCell(agg.supplyCells[supplyId], {
@@ -318,7 +312,10 @@ function finalizePurchaseRow(r) {
   const isKitComponentRow = r.rowType === 'component' || (r.kitSources?.length ?? 0) > 0;
   const perKit = isKitComponentRow ? rowPerKitFromCells(r) : 1;
   r.supplyQtyTotal = computeSupplyComponentQtyTotal(r);
-  const available = (Number(r.onHand) || 0) + (Number(r.incoming) || 0);
+  const available =
+    r._availableForPurchase != null
+      ? Math.max(0, Number(r._availableForPurchase) || 0)
+      : (Number(r.onHand) || 0) + (Number(r.incoming) || 0);
   const toPurchase = Math.max(0, r.supplyQtyTotal - available);
   const lineCostTotal = Math.round(toPurchase * r.cost * 100) / 100;
   return {
@@ -329,6 +326,43 @@ function finalizePurchaseRow(r) {
     toPurchase,
     lineCostTotal,
   };
+}
+
+/**
+ * Один и тот же комплектующий в нескольких комплектах: наличие/путь делим по строкам,
+ * чтобы «к закупке» не занижалось двойным учётом остатка.
+ */
+function allocateSharedStockAcrossComponentRows(rawRows) {
+  const byPid = new Map();
+  for (const r of rawRows) {
+    const isComp = r.rowType === 'component' || (r.kitSources?.length ?? 0) > 0;
+    if (!isComp || r.productId == null) continue;
+    const pid = Number(r.productId);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    if (!byPid.has(pid)) byPid.set(pid, []);
+    byPid.get(pid).push(r);
+  }
+  for (const rows of byPid.values()) {
+    if (rows.length <= 1) continue;
+    const pool = Math.max(
+      0,
+      (Number(rows[0].onHand) || 0) + (Number(rows[0].incoming) || 0)
+    );
+    rows.sort((a, b) => {
+      const ka = Number(a.kitProductId) || 0;
+      const kb = Number(b.kitProductId) || 0;
+      if (ka !== kb) return ka - kb;
+      return String(a.key || '').localeCompare(String(b.key || ''));
+    });
+    let remaining = pool;
+    for (const r of rows) {
+      // need ≈ supplyQtyTotal до finalize
+      const need = Math.max(0, computeSupplyComponentQtyTotal(r));
+      const take = Math.min(need, remaining);
+      remaining -= take;
+      r._availableForPurchase = take;
+    }
+  }
 }
 
 function isRowFullyCleared(row) {
@@ -384,18 +418,20 @@ function sortPurchaseDisplayRows(rows) {
 function componentBelongsToKit(row, kitProductId) {
   const kid = Number(kitProductId);
   if (!Number.isFinite(kid)) return false;
-  if (Number(row.kitProductId) === kid) return true;
-  return (row.kitSources || []).some((s) => Number(s.kitProductId) === kid);
+  return Number(row.kitProductId) === kid;
 }
 
 function buildPurchaseDisplayRows(kitHeaderMap, productRowMap) {
-  const productRows = [...productRowMap.values()].map((r) => {
+  const rawRows = [...productRowMap.values()].map((r) => {
     const hasKitSources = (r.kitSources?.length ?? 0) > 0;
-    return finalizePurchaseRow({
+    return {
       ...r,
-      rowType: hasKitSources ? 'component' : r.rowType || 'plain',
-    });
+      rowType: hasKitSources || r.rowType === 'component' ? 'component' : r.rowType || 'plain',
+    };
   });
+  allocateSharedStockAcrossComponentRows(rawRows);
+
+  const productRows = rawRows.map((r) => finalizePurchaseRow(r));
 
   const componentRows = productRows.filter((r) => r.rowType === 'component');
   const plainRows = productRows
@@ -418,7 +454,6 @@ function buildPurchaseDisplayRows(kitHeaderMap, productRowMap) {
       .sort((a, b) =>
         String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
       );
-    // Комплектующие уже показаны под другим комплектом — шапку без строк не дублируем.
     if (!comps.length) continue;
     rows.push(header);
     for (const c of comps) {
@@ -600,16 +635,28 @@ class FboSuppliesPurchaseCalcService {
       }
     }
 
+    // «В пути» — только открытые закупки на склад FBO (не глобальный products.incoming_quantity).
     const incomingByProduct = new Map();
+    for (const stockPid of stockProductIds) incomingByProduct.set(stockPid, 0);
     if (stockProductIds.length) {
       const incR = await query(
-        `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming
-         FROM products
-         WHERE id = ANY($1::bigint[])`,
-        [stockProductIds]
+        `SELECT pi.product_id,
+                COALESCE(SUM(
+                  GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
+                ), 0)::int AS pending
+         FROM purchase_items pi
+         INNER JOIN purchases p ON p.id = pi.purchase_id
+         WHERE pi.product_id = ANY($1::bigint[])
+           AND p.status = 'open'
+           AND p.warehouse_id = $2
+         GROUP BY pi.product_id`,
+        [stockProductIds, fboWh.id]
       );
       for (const row of incR.rows || []) {
-        incomingByProduct.set(Number(row.id), Number(row.incoming) || 0);
+        incomingByProduct.set(
+          Number(row.product_id),
+          Math.max(0, Number(row.pending) || 0)
+        );
       }
     }
 

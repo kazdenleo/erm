@@ -4482,57 +4482,69 @@ async function fetchOzonLabel(order) {
       logLabelEvent(`[Ozon] posting not found: ${order.orderId}`);
       throw new Error('Ozon posting not found');
     }
-    // 2) Сначала пробуем v3: может вернуть ссылку на файл
-    let resp = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/package-label', {
+    // 2) Актуальный поток scanit (до 02.11.2026 старые package-label отключают):
+    // POST /v3/posting/fbs/package-label/create → POST /v2/posting/fbs/package-label/get
+    const ozonHeaders = {
+      'Client-Id': String(ozon.client_id),
+      'Api-Key': String(ozon.api_key),
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    const createResp = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/package-label/create', {
       method: 'POST',
-      headers: {
-        'Client-Id': String(ozon.client_id),
-        'Api-Key': String(ozon.api_key),
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        posting_number: [String(order.orderId)]
-      })
+      headers: ozonHeaders,
+      body: JSON.stringify({ posting_numbers: [String(order.orderId)] }),
     });
-    if (resp.ok) {
-      const dataV3 = await resp.json();
-      const url = dataV3?.result?.label_url || dataV3?.result?.file_url || dataV3?.result?.url;
-      if (url) {
-        const fileResp = await fetch(url);
+    if (!createResp.ok) {
+      const txt = await createResp.text();
+      logLabelEvent(`[Ozon] package-label/create ${createResp.status}: ${txt}`);
+      throw new Error(`Ozon label create error ${createResp.status}`);
+    }
+    const createData = await createResp.json();
+    const tasks = Array.isArray(createData?.tasks)
+      ? createData.tasks
+      : Array.isArray(createData?.result?.tasks)
+        ? createData.result.tasks
+        : [];
+    const task = tasks.find((t) => t.task_type === 'small_label') || tasks[0];
+    const taskId = task?.task_id;
+    if (taskId == null) {
+      logLabelEvent('[Ozon] package-label/create: no task_id');
+      return null;
+    }
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, attempt < 5 ? 1000 : 2000));
+      const getResp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/package-label/get', {
+        method: 'POST',
+        headers: ozonHeaders,
+        body: JSON.stringify({ task_id: taskId }),
+      });
+      if (!getResp.ok) {
+        const txt2 = await getResp.text();
+        logLabelEvent(`[Ozon] package-label/get ${getResp.status}: ${txt2}`);
+        throw new Error(`Ozon label get error ${getResp.status}`);
+      }
+      const getData = await getResp.json();
+      const fileUrl = getData?.file_url ?? getData?.result?.file_url;
+      const statusRaw = getData?.status ?? getData?.result?.status;
+      const statusCode =
+        typeof statusRaw === 'string' ? statusRaw : statusRaw?.code != null ? String(statusRaw.code) : '';
+      if (statusCode === 'completed' && fileUrl) {
+        const fileResp = await fetch(fileUrl);
         if (fileResp.ok) {
           const arr = await fileResp.arrayBuffer();
           return Buffer.from(arr);
         }
-        logLabelEvent(`[Ozon] v3 file download error ${fileResp.status}`);
+        logLabelEvent(`[Ozon] file_url download error ${fileResp.status}`);
+        return null;
       }
-    } else {
-      const txt = await resp.text();
-      logLabelEvent(`[Ozon] v3 label error ${resp.status}: ${txt}`);
+      if (statusCode === 'failed' || statusCode === 'error') {
+        logLabelEvent(`[Ozon] label task failed: ${getData?.error?.message || statusCode}`);
+        return null;
+      }
     }
-    // 3) Фолбэк на v2: иногда отдает base64 в result.file
-    resp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/package-label', {
-      method: 'POST',
-      headers: {
-        'Client-Id': String(ozon.client_id),
-        'Api-Key': String(ozon.api_key),
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        posting_number: [String(order.orderId)],
-        with_barcode: true
-      })
-    });
-    if (!resp.ok) {
-      const txt2 = await resp.text();
-      logLabelEvent(`[Ozon] v2 label error ${resp.status}: ${txt2}`);
-      throw new Error(`Ozon label error ${resp.status}`);
-    }
-    const dataV2 = await resp.json();
-    const base64 = dataV2?.result?.file;
-    if (!base64) return null;
-    return Buffer.from(base64, 'base64');
+    logLabelEvent('[Ozon] label task not ready in time');
+    return null;
   } catch (e) { throw e; }
 }
 async function fetchWBLabel(order) {

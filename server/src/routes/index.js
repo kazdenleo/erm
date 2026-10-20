@@ -235,6 +235,8 @@ router.post(
   '/hooks/marketplaces',
   wrapAsync(platformMarketplaceNotificationsController.ingestMarketplaceHook)
 );
+// Push Ozon Seller API (TYPE_PING / мониторинг доступности; без ingest-ключа)
+router.post('/hooks/ozon', wrapAsync(platformMarketplaceNotificationsController.ingestOzonPush));
 router.use('/platform/marketplace-notifications', platformMarketplaceNotificationsRoutes);
 router.use('/platform/marketplace-news', platformMarketplaceNewsRoutes);
 router.use('/reviews', reviewsRoutes);

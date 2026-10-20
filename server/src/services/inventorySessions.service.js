@@ -133,29 +133,26 @@ async function expandCategoryIds(client, profileId, categoryIds) {
 /** Позиции с остатком на складе, не попавшие в пересчёт (опционально — только выбранные категории). */
 async function findUnlistedWithStock(client, whId, profileId, listedIds, categoryIds = null) {
   const pid = normalizeProfileId(profileId);
-  const ids = [...listedIds].filter((id) => id != null && !Number.isNaN(Number(id)));
-  const catIds = Array.isArray(categoryIds) ? categoryIds.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0) : [];
+  const ids = [...listedIds]
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const catIds = Array.isArray(categoryIds)
+    ? categoryIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
+    : [];
   const hasCats = catIds.length > 0;
-  if (ids.length === 0) {
-    const res = await client.query(
-      `SELECT pws.product_id, pws.quantity
-       FROM product_warehouse_stock pws
-       INNER JOIN products p ON p.id = pws.product_id
-       WHERE pws.warehouse_id = $1 AND pws.quantity > 0
-         AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)
-         AND ($3::bigint[] IS NULL OR p.user_category_id = ANY($3::bigint[]))`,
-      [whId, pid, hasCats ? catIds : null]
-    );
-    return res.rows || [];
-  }
   const res = await client.query(
-    `SELECT pws.product_id, pws.quantity
+    `SELECT pws.product_id, pws.quantity,
+            p.sku, p.name, p.cost, p.user_category_id,
+            c.name AS category_name
      FROM product_warehouse_stock pws
      INNER JOIN products p ON p.id = pws.product_id
+     LEFT JOIN user_categories c ON c.id = p.user_category_id
      WHERE pws.warehouse_id = $1 AND pws.quantity > 0
        AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)
-       AND NOT (pws.product_id = ANY($3::bigint[]))
-       AND ($4::bigint[] IS NULL OR p.user_category_id = ANY($4::bigint[]))`,
+       AND (CARDINALITY($3::bigint[]) = 0 OR NOT (pws.product_id = ANY($3::bigint[])))
+       AND ($4::bigint[] IS NULL OR p.user_category_id = ANY($4::bigint[]))
+     ORDER BY c.name NULLS LAST, p.sku NULLS LAST, p.id
+     LIMIT 5000`,
     [whId, pid, ids, hasCats ? catIds : null]
   );
   return res.rows || [];
@@ -250,6 +247,7 @@ async function applyInventoryLine(client, {
 
   const delta = quantityAfter - before;
   const reason = lineReasonSuffix ? `${reasonBase}: ${lineReasonSuffix}` : reasonBase;
+  const unlistedZero = Boolean(lineReasonSuffix && String(lineReasonSuffix).includes('не пересчитан'));
   await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
     productId,
     type: 'inventory',
@@ -258,6 +256,7 @@ async function applyInventoryLine(client, {
     meta: {
       inventory_session_id: sessionId,
       warehouse_id: whId,
+      ...(unlistedZero ? { unlisted_zero: true } : {}),
       ...(isKit ? { kit_inventory: true } : {}),
     },
     warehouseId: whId,
@@ -671,14 +670,69 @@ class InventorySessionsService {
     }
     const lines = await query(
       `SELECT l.id, l.product_id, l.quantity_before, l.quantity_after,
-              p.sku AS product_sku, p.name AS product_name, p.cost AS product_cost
+              p.sku AS product_sku, p.name AS product_name, p.cost AS product_cost,
+              COALESCE(z.is_unlisted_zero, false) AS is_unlisted_zero
        FROM inventory_session_lines l
        JOIN products p ON p.id = l.product_id
+       LEFT JOIN LATERAL (
+         SELECT true AS is_unlisted_zero
+         FROM stock_movements sm
+         WHERE sm.product_id = l.product_id
+           AND (
+             (sm.meta->>'inventory_session_id') = $1::text
+             OR NULLIF(sm.meta->>'inventory_session_id', '')::bigint = $1::bigint
+           )
+           AND (
+             sm.meta->>'unlisted_zero' = 'true'
+             OR sm.reason ILIKE '%не пересчитан%'
+           )
+         LIMIT 1
+       ) z ON true
        WHERE l.session_id = $1
-       ORDER BY l.id ASC`,
+       ORDER BY COALESCE(z.is_unlisted_zero, false) DESC, l.id ASC`,
       [sid]
     );
     return { session, lines: lines.rows || [] };
+  }
+
+  /**
+   * Превью позиций, которые будут обнулены при zeroUnlisted (не в списке пересчёта).
+   * @param {{ warehouseId: number|string, profileId?: number|string|null, categoryIds?: number[], excludeProductIds?: number[] }} opts
+   */
+  async previewUnlisted({
+    warehouseId,
+    profileId = null,
+    categoryIds = null,
+    excludeProductIds = [],
+  } = {}) {
+    const whId = await requireInventoryWarehouseId(
+      { query: (...args) => query(...args) },
+      warehouseId
+    );
+    const pid = normalizeProfileId(profileId);
+    const roots = normalizeCategoryIds(categoryIds);
+    const expanded = await this.expandCategoryIds(pid, roots);
+    const listed = new Set(
+      (excludeProductIds || [])
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    );
+    const rows = await findUnlistedWithStock(
+      { query: (...args) => query(...args) },
+      whId,
+      pid,
+      listed,
+      expanded
+    );
+    return (rows || []).map((r) => ({
+      productId: Number(r.product_id),
+      sku: r.sku || null,
+      name: r.name || null,
+      cost: r.cost != null ? Number(r.cost) : null,
+      quantity: Math.max(0, Number(r.quantity) || 0),
+      userCategoryId: r.user_category_id != null ? Number(r.user_category_id) : null,
+      categoryName: r.category_name || null,
+    }));
   }
 
   /**

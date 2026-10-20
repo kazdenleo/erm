@@ -529,27 +529,34 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
       Accept: 'application/json'
     };
 
-    // 2) Поток create → get (для awaiting_deliver и др.): v2/create → v1/get
-    const createResp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/package-label/create', {
+    // 2) create → get (scanit): v3/create + v2/get.
+    // Старые v1/v2 create и v1 get отключают 02.11.2026.
+    const createResp = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/package-label/create', {
       method: 'POST',
       headers: ozonHeaders,
-      body: JSON.stringify({ posting_number: [postingNumber] })
+      body: JSON.stringify({ posting_numbers: [postingNumber] }),
     });
     const createBody = await createResp.text();
     if (createResp.ok) {
       try {
         const createData = JSON.parse(createBody);
-        const tasks = createData?.result?.tasks;
-        if (Array.isArray(tasks) && tasks.length > 0) {
-          const task = tasks.find(t => t.task_type === 'small_label') || tasks[0];
+        // v3: tasks на корне; старый v2 мог отдавать result.tasks
+        const tasks = Array.isArray(createData?.tasks)
+          ? createData.tasks
+          : Array.isArray(createData?.result?.tasks)
+            ? createData.result.tasks
+            : [];
+        if (tasks.length > 0) {
+          const task = tasks.find((t) => t.task_type === 'small_label') || tasks[0];
           const taskId = task?.task_id;
           if (taskId != null) {
-            for (let attempt = 0; attempt < 20; attempt++) {
-              if (attempt > 0) await new Promise(r => setTimeout(r, attempt < 3 ? 800 : 1500));
-              const getResp = await fetch('https://api-seller.ozon.ru/v1/posting/fbs/package-label/get', {
+            // После сборки этикетка может готовиться ~45–60 с (рекомендация Ozon).
+            for (let attempt = 0; attempt < 30; attempt++) {
+              if (attempt > 0) await new Promise((r) => setTimeout(r, attempt < 5 ? 1000 : 2000));
+              const getResp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/package-label/get', {
                 method: 'POST',
                 headers: ozonHeaders,
-                body: JSON.stringify({ task_id: taskId })
+                body: JSON.stringify({ task_id: taskId }),
               });
               const getBody = await getResp.text();
               if (!getResp.ok) {
@@ -557,9 +564,20 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
                 break;
               }
               const getData = JSON.parse(getBody);
-              const status = getData?.result?.status;
-              const fileUrl = getData?.result?.file_url;
-              if (status === 'completed' && fileUrl) {
+              // v2 get: file_url/status на корне; совместимость с result.*
+              const fileUrl = getData?.file_url ?? getData?.result?.file_url;
+              const statusRaw = getData?.status ?? getData?.result?.status;
+              const statusCode =
+                typeof statusRaw === 'string'
+                  ? statusRaw
+                  : statusRaw?.code != null
+                    ? String(statusRaw.code)
+                    : '';
+              const errMsg =
+                getData?.error?.message ||
+                getData?.result?.error ||
+                (typeof getData?.error === 'string' ? getData.error : null);
+              if (statusCode === 'completed' && fileUrl) {
                 const fileResp = await fetch(fileUrl);
                 if (fileResp.ok) {
                   const arr = await fileResp.arrayBuffer();
@@ -568,8 +586,8 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
                 logLabelEvent(`[Ozon] create/get file_url download error ${fileResp.status}`);
                 break;
               }
-              if (status === 'failed' || status === 'error') {
-                logLabelEvent(`[Ozon] create/get task failed: ${getData?.result?.error || status}`);
+              if (statusCode === 'failed' || statusCode === 'error') {
+                logLabelEvent(`[Ozon] create/get task failed: ${errMsg || statusCode}`);
                 break;
               }
             }
@@ -601,7 +619,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
     }
 
     const err = new Error(
-      'Ozon: этикетка недоступна. Задание создано, но файл не получен в течение 30 сек. Попробуйте запросить этикетку через минуту или создайте в ЛК Ozon.'
+      'Ozon: этикетка недоступна. Задание создано, но файл не получен в течение ~60 сек. Попробуйте запросить этикетку через минуту или создайте в ЛК Ozon.'
     );
     // Это не "Bad Gateway": Ozon ещё не отдал файл, чаще всего это временно.
     err.statusCode = 409;

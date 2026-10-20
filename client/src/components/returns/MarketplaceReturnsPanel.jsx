@@ -142,7 +142,7 @@ export function MarketplaceReturnsPanel({ embedded = false, onAcceptReturn }) {
           <div>
             <h1>Возвраты</h1>
             <p className="subtitle">
-              Возвраты и невыкупы, которые уже лежат в точке выдачи и их можно забрать.
+              Возвраты и невыкупы, готовые к забору в ПВЗ или ожидающие курьерскую доставку продавцу.
             </p>
           </div>
           <Button type="button" onClick={onRefresh} disabled={loading}>
@@ -220,7 +220,7 @@ export function MarketplaceReturnsPanel({ embedded = false, onAcceptReturn }) {
                 <th>Статус</th>
                 <th>SKU / штрихкод</th>
                 <th>Товар</th>
-                <th>ПВЗ / точка</th>
+                <th>ПВЗ / курьер</th>
                 <th>Готов с</th>
                 <th>Срок забора</th>
                 <th>Причина</th>
@@ -260,8 +260,25 @@ export function MarketplaceReturnsPanel({ embedded = false, onAcceptReturn }) {
                       {row.productExtra ? <div className="mp-returns-sub">{row.productExtra}</div> : null}
                     </td>
                     <td>
+                      {row.deliveryMode === 'courier' ? (
+                        <div className="mp-returns-tag">Курьер</div>
+                      ) : null}
                       <div>{row.pickupAddress || '—'}</div>
-                      {row.pickupPointId ? <div className="mp-returns-sub">ID: {row.pickupPointId}</div> : null}
+                      {row.courierDelivery?.timeslotFrom || row.courierDelivery?.timeslotTo ? (
+                        <div className="mp-returns-sub">
+                          Слот:{' '}
+                          {[row.courierDelivery.timeslotFrom, row.courierDelivery.timeslotTo]
+                            .filter(Boolean)
+                            .map((t) => formatDt(t))
+                            .join(' – ')}
+                        </div>
+                      ) : null}
+                      {row.pickupPointId && row.deliveryMode !== 'courier' ? (
+                        <div className="mp-returns-sub">ID: {row.pickupPointId}</div>
+                      ) : null}
+                      {row.courierDelivery?.warehouseId ? (
+                        <div className="mp-returns-sub">Склад: {row.courierDelivery.warehouseId}</div>
+                      ) : null}
                     </td>
                     <td>{formatDt(row.readyFromDt)}</td>
                     <td>

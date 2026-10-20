@@ -90,8 +90,8 @@ export default function CargoPurchaseScreen() {
 
   const openPlace = (placeId) => router.push(`/cargo/place/${placeId}`);
 
-  const accept = async (code, force = false) => {
-    const res = await cargoApi.acceptPlace(id, code, { force });
+  const accept = async (code, { force = false, forceExceed = false } = {}) => {
+    const res = await cargoApi.acceptPlace(id, code, { force, forceExceed });
     setData(res.state);
     if (res.alreadyAccepted) {
       scanOk();
@@ -129,10 +129,34 @@ export default function CargoPurchaseScreen() {
               text: 'Принять',
               onPress: () =>
                 runBusy(() =>
-                  accept(code, true).catch((err) => setMessage({ kind: 'error', text: errorMessage(err) }))
+                  accept(code, { force: true }).catch((err) =>
+                    setMessage({ kind: 'error', text: errorMessage(err) })
+                  )
                 ),
             },
           ]);
+          return;
+        }
+        if (e?.code === 'EXPECTED_EXCEEDED') {
+          const accepted = e?.data?.data?.accepted ?? data?.places?.length;
+          const expected = e?.data?.data?.expected ?? data?.expectedCargoPlaces;
+          Alert.alert(
+            'Все места уже приняты',
+            `Принято ${accepted} из ${expected}. Добавить ещё одно грузоместо?`,
+            [
+              { text: 'Отмена', style: 'cancel' },
+              {
+                text: 'Добавить',
+                style: 'destructive',
+                onPress: () =>
+                  runBusy(() =>
+                    accept(code, { forceExceed: true }).catch((err) =>
+                      setMessage({ kind: 'error', text: errorMessage(err) })
+                    )
+                  ),
+              },
+            ]
+          );
           return;
         }
         setMessage({ kind: 'error', text: `${code}: ${errorMessage(e, 'Не удалось принять грузоместо')}` });

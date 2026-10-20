@@ -194,9 +194,32 @@ export function resolveOzonSalesCommissionPercent(price, ctx = {}) {
   if (apiTier === 'gt300' && apiPercent != null && apiPercent > 0) return apiPercent;
   // Дешёвый SKU: API отдал только mid/low тир — категориальную ставку не выдумываем
   if (apiTier === 'le100' || apiTier === 'le300') return null;
-  // Legacy-кэш без commission_price_basis: percent считаем категориальным
-  if (apiPercent != null && apiPercent > 0) return apiPercent;
+  // Legacy-кэш без commission_price_basis: percent считаем категориальным,
+  // но не если это явная ставка дешёвого тира (17/23) — иначе «свыше 300» залипает на 23%.
+  if (apiPercent != null && apiPercent > 0) {
+    const rounded = roundOzonCommissionPercent(apiPercent);
+    if (rounded === roundOzonCommissionPercent(fallbackLe100)) return null;
+    if (rounded === roundOzonCommissionPercent(fallbackLe300)) return null;
+    return apiPercent;
+  }
   return null;
+}
+
+/**
+ * Похожа ли ставка на фиксированный дешёвый тир (≤100 / 101–300), а не на категорию.
+ * @param {number|null|undefined} percent
+ * @param {{ le100?: number|null, le300?: number|null }|null|undefined} [tierRates]
+ */
+export function isOzonLowTierCommissionPercent(percent, tierRates = null) {
+  const pct = roundOzonCommissionPercent(percent);
+  if (pct == null) return false;
+  const le100 =
+    roundOzonCommissionPercent(tierRates?.le100) ??
+    roundOzonCommissionPercent(OZON_COMMISSION_PERCENT_LE100);
+  const le300 =
+    roundOzonCommissionPercent(tierRates?.le300) ??
+    roundOzonCommissionPercent(OZON_COMMISSION_PERCENT_LE300);
+  return pct === le100 || pct === le300;
 }
 
 /**

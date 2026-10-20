@@ -2,6 +2,8 @@ import logger from '../utils/logger.js';
 import integrationsService from './integrations.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
+import { ozonListTotal } from '../utils/ozonSellerApi.js';
+import { appendOzonAnalyticsStockLines } from '../utils/ozonAnalyticsStocks.js';
 
 /**
  * Ежедневный импорт:
@@ -102,6 +104,7 @@ async function fetchYandexStocks({ apiKey, campaignId }) {
 
 /**
  * Все product_id (SKU в терминах Ozon) для кабинета — нужны для POST /v1/analytics/stocks.
+ * Пагинация по last_id; total_items (не устаревший total) — только для раннего выхода.
  */
 async function fetchOzonProductIdSkus({ clientId, apiKey }) {
   const cid = String(clientId || '').trim();
@@ -147,7 +150,14 @@ async function fetchOzonProductIdSkus({ clientId, apiKey }) {
     } else {
       lastId = '';
     }
-    if (items.length < 1000 || !lastId) break;
+    const totalItems = ozonListTotal(data, NaN);
+    if (
+      items.length < 1000 ||
+      !lastId ||
+      (Number.isFinite(totalItems) && acc.length >= totalItems)
+    ) {
+      break;
+    }
   }
   return [...new Set(acc)];
 }
@@ -542,18 +552,11 @@ export async function runMarketplaceInventoryDailySnapshot({ profileId = null, o
               const whName = String(row?.warehouse_name ?? row?.warehouseName ?? '').trim();
               const clName = String(row?.cluster_name ?? row?.clusterName ?? '').trim();
               const wh =
-                [whName, clName].filter(Boolean).join(' · ') || String(row?.warehouse_id ?? row?.cluster_id ?? '').trim() || 'ozon';
-
-              const available = toInt(row?.available_stock_count ?? row?.availableStockCount);
-              const fromClient = toInt(
-                row?.return_from_customer_stock_count ?? row?.returnFromCustomerStockCount
-              );
-              if (available) {
-                lines.push({ state: 'mp_warehouse', externalSku, warehouseName: wh, quantity: available });
-              }
-              if (fromClient) {
-                lines.push({ state: 'returning', externalSku, warehouseName: wh, quantity: fromClient });
-              }
+                [whName, clName].filter(Boolean).join(' · ') ||
+                String(row?.warehouse_id ?? row?.cluster_id ?? '').trim() ||
+                'ozon';
+              // available / inbound / returning / blocked — realtime-статусы analytics/stocks
+              appendOzonAnalyticsStockLines(row, lines, { externalSku, warehouseName: wh });
             }
             logger.info(`[MP Inventory] Ozon v1/analytics/stocks: product_ids=${idSkus.length} rows=${analyticsItems.length}`);
           }

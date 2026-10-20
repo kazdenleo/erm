@@ -98,13 +98,17 @@ export function MarketplaceInventorySummary({ visible }) {
     return defs.map((d) => {
       const row = mpInvByMp.get(d.mp);
       const w = pick(row, 'mp_warehouse');
+      const inbound = pick(row, 'inbound');
       const t = pick(row, 'to_customer');
       const r = pick(row, 'returning');
+      const blocked = pick(row, 'blocked');
       return {
         ...d,
         w,
+        inbound,
         t,
         r,
+        blocked,
         snapshotAt: row?.snapshot?.created_at
           ? new Date(row.snapshot.created_at).toLocaleString('ru-RU')
           : null,
@@ -132,7 +136,17 @@ export function MarketplaceInventorySummary({ visible }) {
   if (!visible) return null;
 
   const hasAnySnapshot = tableRows.some(
-    (p) => p.w?.qty || p.t?.qty || p.r?.qty || p.w?.cost || p.t?.cost || p.r?.cost
+    (p) =>
+      p.w?.qty ||
+      p.inbound?.qty ||
+      p.t?.qty ||
+      p.r?.qty ||
+      p.blocked?.qty ||
+      p.w?.cost ||
+      p.inbound?.cost ||
+      p.t?.cost ||
+      p.r?.cost ||
+      p.blocked?.cost
   );
 
   const cell = (b, { showErmTransit } = {}) => {
@@ -220,9 +234,23 @@ export function MarketplaceInventorySummary({ visible }) {
               <thead>
                 <tr>
                   <th>Маркетплейс</th>
-                  <th className="text-end">На складе МП</th>
+                  <th className="text-end" title="available_stock_count — доступно к продаже">
+                    На складе МП
+                  </th>
+                  <th
+                    className="text-end"
+                    title="Ozon: transit + requested + valid (в поставках / скоро на складе)"
+                  >
+                    В поставках
+                  </th>
                   <th className="text-end">В пути к клиенту</th>
                   <th className="text-end">От клиента (возвраты)</th>
+                  <th
+                    className="text-end"
+                    title="Ozon: брак, излишки, ожидание документов, проверка, истекающий срок"
+                  >
+                    Проблемные
+                  </th>
                   <th className="text-nowrap d-none d-md-table-cell">Снапшот</th>
                 </tr>
               </thead>
@@ -236,8 +264,10 @@ export function MarketplaceInventorySummary({ visible }) {
                       <span className="fw-semibold">{p.label}</span>
                     </td>
                     <td className="text-end">{cell(p.w)}</td>
+                    <td className="text-end">{cell(p.inbound)}</td>
                     <td className="text-end">{cell(p.t, { showErmTransit: true })}</td>
                     <td className="text-end">{cell(p.r)}</td>
+                    <td className="text-end">{cell(p.blocked)}</td>
                     <td className="text-muted small d-none d-md-table-cell">
                       {p.snapshotAt ?? '—'}
                     </td>

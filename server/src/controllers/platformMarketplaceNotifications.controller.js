@@ -6,8 +6,18 @@ import { getEnv } from '../config/env.js';
 import platformMpNotificationsRepo, {
   isMissingRelationError,
 } from '../repositories/platform_marketplace_notifications.repository.pg.js';
+import {
+  buildOzonAckResponse,
+  buildOzonPingResponse,
+  isOzonPingMessageType,
+  isOzonPushMessageType,
+  normalizeOzonMessageType,
+} from '../utils/ozonPushWebhook.js';
+import logger from '../utils/logger.js';
 
 const ALLOWED_SOURCES = new Set(['ozon', 'wildberries', 'yandex', 'unknown']);
+const OZON_HOOK_PATH = '/api/hooks/ozon';
+const GENERIC_HOOK_PATH = '/api/hooks/marketplaces';
 
 function normalizeSource(raw) {
   if (raw == null || raw === '') return 'unknown';
@@ -15,6 +25,34 @@ function normalizeSource(raw) {
   if (s === 'wb' || s === 'wildberry') return 'wildberries';
   if (ALLOWED_SOURCES.has(s)) return s;
   return 'unknown';
+}
+
+function extractEventType(body) {
+  if (!body || typeof body !== 'object') return null;
+  const raw =
+    body.message_type || body.type || body.event_type || body.MessageType || body.eventType || null;
+  return raw != null ? String(raw) : null;
+}
+
+async function tryInsertMarketplaceEvent(fields) {
+  try {
+    await platformMpNotificationsRepo.insertEvent(fields);
+    return true;
+  } catch (err) {
+    if (isMissingRelationError(err)) {
+      logger.warn('[MP hooks] platform_marketplace_events missing; event not stored');
+      return false;
+    }
+    logger.warn('[MP hooks] failed to store event', { message: err?.message || String(err) });
+    return false;
+  }
+}
+
+function respondOzonPush(res, messageType) {
+  if (isOzonPingMessageType(messageType)) {
+    return res.status(200).json(buildOzonPingResponse());
+  }
+  return res.status(200).json(buildOzonAckResponse());
 }
 
 function sanitizeHeaders(headers) {
@@ -58,9 +96,10 @@ export async function getSettings(req, res, next) {
       data: {
         secrets,
         updatedAt: data?.updatedAt ?? null,
-        hookPath: '/api/hooks/marketplaces',
+        hookPath: GENERIC_HOOK_PATH,
+        ozonHookPath: OZON_HOOK_PATH,
         hookHint:
-          'Передавайте заголовок X-Platform-Ingest-Key с общим ключом ниже и при необходимости X-Marketplace-Source: ozon | wildberries | yandex',
+          'Общий URL: заголовок X-Platform-Ingest-Key и при необходимости X-Marketplace-Source: ozon | wildberries | yandex. Для push Ozon используйте отдельный URL /api/hooks/ozon (без ingest-ключа; ответ TYPE_PING и {"result":true}).',
       },
     });
   } catch (err) {
@@ -84,7 +123,8 @@ export async function putSettings(req, res, next) {
       data: {
         secrets: mergeSecrets(data?.secrets),
         updatedAt: data?.updatedAt ?? null,
-        hookPath: '/api/hooks/marketplaces',
+        hookPath: GENERIC_HOOK_PATH,
+        ozonHookPath: OZON_HOOK_PATH,
       },
     });
   } catch (err) {
@@ -117,6 +157,7 @@ export async function listEvents(req, res, next) {
 
 /**
  * Приём вебхуков маркетплейсов (без сессии пользователя, только по ключу).
+ * Если тело похоже на push Ozon (message_type TYPE_*), ответ в формате Seller API.
  */
 export async function ingestMarketplaceHook(req, res, next) {
   try {
@@ -153,24 +194,51 @@ export async function ingestMarketplaceHook(req, res, next) {
       return res.status(401).json({ ok: false, message: 'Неверный ключ приёма (X-Platform-Ingest-Key)' });
     }
 
-    const source = normalizeSource(
-      req.get('x-marketplace-source') || req.get('X-Marketplace-Source') || req.body?.source
-    );
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const eventType =
-      body.message_type || body.type || body.event_type || body.MessageType || body.eventType || null;
+    const eventType = extractEventType(body);
+    const sourceHint = req.get('x-marketplace-source') || req.get('X-Marketplace-Source') || body?.source;
+    const source = normalizeSource(
+      isOzonPushMessageType(eventType) && !sourceHint ? 'ozon' : sourceHint
+    );
 
-    await platformMpNotificationsRepo.insertEvent({
+    await tryInsertMarketplaceEvent({
       source,
-      eventType: eventType != null ? String(eventType) : null,
+      eventType,
       requestMethod: req.method,
-      pathHint: req.originalUrl || '/api/hooks/marketplaces',
+      pathHint: req.originalUrl || GENERIC_HOOK_PATH,
       payload: body,
       headersSnapshot: sanitizeHeaders(req.headers),
     });
+
+    if (isOzonPushMessageType(eventType) || source === 'ozon') {
+      return respondOzonPush(res, eventType);
+    }
 
     res.status(200).json({ ok: true });
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * Публичный приём push Ozon Seller API (без ingest-ключа).
+ * Нужен для TYPE_PING и непрерывного мониторинга доступности вебхука.
+ * События пишем в журнал; бизнес-обработку пока не запускаем — только быстрый ack.
+ */
+export async function ingestOzonPush(req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const eventType = extractEventType(body);
+  const messageType = normalizeOzonMessageType(eventType);
+
+  // TYPE_PING подтверждаем даже если журнал недоступен — иначе Ozon приостановит доставку.
+  await tryInsertMarketplaceEvent({
+    source: 'ozon',
+    eventType: eventType || (messageType || null),
+    requestMethod: req.method,
+    pathHint: req.originalUrl || OZON_HOOK_PATH,
+    payload: body,
+    headersSnapshot: sanitizeHeaders(req.headers),
+  });
+
+  return respondOzonPush(res, messageType || eventType);
 }

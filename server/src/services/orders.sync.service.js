@@ -1054,6 +1054,7 @@ class OrdersSyncService {
     // существующие заказы (из БД или файла — в зависимости от настроек)
     let existingOrders = [];
     try {
+      logger.info(`[Orders Sync] load existing (profile=${profileId ?? 'all'})…`);
       if (repositoryFactory.isUsingPostgreSQL()) {
         const ordersRepo = repositoryFactory.getOrdersRepository();
         existingOrders =
@@ -1065,6 +1066,7 @@ class OrdersSyncService {
         const existingData = await readData('orders');
         existingOrders = (existingData && existingData.orders) || [];
       }
+      logger.info(`[Orders Sync] existing=${existingOrders.length}`);
     } catch (e) {
       console.warn('[Orders Sync] Failed to load existing orders:', e.message);
     }

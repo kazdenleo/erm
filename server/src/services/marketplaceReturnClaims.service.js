@@ -640,6 +640,8 @@ function mapOzonClaim(raw, profileId, detail = null, extraMeta = {}) {
       ozonKind: extraMeta.ozonKind || (sys ? 'returns_list' : 'rfbs'),
       ozonClientId: extraMeta.ozonClientId ?? null,
       companyId: src.company_id ?? extraMeta.companyId ?? null,
+      /** returns.courier_delivery из /v1/returns/list (с 15.10.2026) */
+      courierDelivery: src.courier_delivery ?? src.courierDelivery ?? null,
     },
     raw_payload: src,
     source_created_at: createdAt ? new Date(createdAt) : null,

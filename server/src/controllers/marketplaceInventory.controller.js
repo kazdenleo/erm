@@ -16,8 +16,10 @@ function normMp(mp) {
 function stateLabel(state) {
   const s = String(state || '').toLowerCase();
   if (s === 'mp_warehouse') return 'На складах МП';
+  if (s === 'inbound') return 'В поставках / скоро на складе';
   if (s === 'to_customer') return 'В пути к клиенту';
   if (s === 'returning') return 'Возвраты / обратно';
+  if (s === 'blocked') return 'Проблемные / прочие статусы';
   return s;
 }
 

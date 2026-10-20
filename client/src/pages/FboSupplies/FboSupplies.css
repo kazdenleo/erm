@@ -430,6 +430,25 @@
   color: #475569;
 }
 
+.fbo-open-calc-sessions-banner__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fbo-open-calc-sessions-banner__delete {
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.fbo-open-calc-sessions-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .fbo-open-calc-sessions-banner__links {
   display: flex;
   flex-wrap: wrap;

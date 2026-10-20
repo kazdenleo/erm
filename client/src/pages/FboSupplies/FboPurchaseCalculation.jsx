@@ -98,6 +98,7 @@ export function FboPurchaseCalculation() {
   const [purchaseDraftQty, setPurchaseDraftQty] = useState({});
   const [purchaseModalErr, setPurchaseModalErr] = useState(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [deletingSession, setDeletingSession] = useState(false);
   const [filterSupplierId, setFilterSupplierId] = useState('');
   const [restoringCell, setRestoringCell] = useState(null);
   const [search, setSearch] = useState('');
@@ -638,6 +639,28 @@ export function FboPurchaseCalculation() {
     }
   };
 
+  const handleDeleteSession = async () => {
+    const sid = session?.id ?? sessionIdFromUrl;
+    if (!sid) return;
+    if (
+      !window.confirm(
+        `Удалить расчёт №${sid}?\nЗакупки, созданные из него, останутся. Удаляется только книга расчёта.`
+      )
+    ) {
+      return;
+    }
+    setDeletingSession(true);
+    setErr(null);
+    try {
+      await fboSuppliesApi.deletePurchaseCalcSession(sid);
+      navigate('/stock-levels/fbo-supplies', { replace: true });
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось удалить расчёт');
+    } finally {
+      setDeletingSession(false);
+    }
+  };
+
   if (loading) return <div className="fbo-supplies-page">Расчёт закупки…</div>;
 
   return (
@@ -683,6 +706,18 @@ export function FboPurchaseCalculation() {
               ? `Осталось оформить: ${selectableRows.filter(isRowPendingPurchase).length} поз. Прогресс сохраняется — можно вернуться позже через «Поставки FBO».`
               : 'Расчётная потребность закрыта остатком или уже оформлена. Можно отметить позиции и закупить дополнительно.'}
           </p>
+          <div className="fbo-open-calc-sessions-banner__actions">
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              className="fbo-open-calc-sessions-banner__delete"
+              disabled={deletingSession}
+              onClick={() => void handleDeleteSession()}
+            >
+              {deletingSession ? 'Удаление…' : 'Удалить расчёт'}
+            </Button>
+          </div>
         </div>
       ) : null}
 

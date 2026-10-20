@@ -1,6 +1,7 @@
 import {
   isOzonReturnWaitingPickup,
   isYmReturnWaitingPickup,
+  normalizeOzonCourierDelivery,
 } from '../src/services/marketplaceReturns.service.js';
 import {
   buildGoodsReturnDateRanges,
@@ -12,6 +13,20 @@ describe('isOzonReturnWaitingPickup', () => {
     expect(
       isOzonReturnWaitingPickup({
         visual: { status: { sys_name: 'ArrivedAtReturnPlace', display_name: 'В пункте выдачи' } },
+      })
+    ).toBe(true);
+  });
+
+  test('courier return to seller is waiting', () => {
+    expect(
+      isOzonReturnWaitingPickup({
+        visual: {
+          status: {
+            sys_name: 'ReturningToSellerByCourier',
+            display_name: 'Курьер везёт возврат продавцу',
+          },
+        },
+        courier_delivery: { address: 'Москва, ул. Примерная, 1' },
       })
     ).toBe(true);
   });
@@ -31,6 +46,30 @@ describe('isOzonReturnWaitingPickup', () => {
         visual: { status: { sys_name: 'ArrivedAtReturnPlace' } },
       })
     ).toBe(false);
+  });
+});
+
+describe('normalizeOzonCourierDelivery', () => {
+  test('returns null without courier_delivery', () => {
+    expect(normalizeOzonCourierDelivery({})).toBeNull();
+  });
+
+  test('extracts address and timeslot', () => {
+    const n = normalizeOzonCourierDelivery({
+      courier_delivery: {
+        address: 'Склад продавца, Москва',
+        timeslot: { from: '2026-10-16T10:00:00Z', to: '2026-10-16T14:00:00Z' },
+        warehouse_id: 911,
+        status: 'planned',
+      },
+    });
+    expect(n).toMatchObject({
+      address: 'Склад продавца, Москва',
+      timeslotFrom: '2026-10-16T10:00:00Z',
+      timeslotTo: '2026-10-16T14:00:00Z',
+      warehouseId: '911',
+      status: 'planned',
+    });
   });
 });
 

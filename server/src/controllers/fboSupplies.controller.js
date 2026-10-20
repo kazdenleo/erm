@@ -649,6 +649,27 @@ class FboSuppliesController {
     }
   }
 
+  async deletePurchaseCalcSession(req, res, next) {
+    try {
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const data = await fboPurchaseCalcSessionService.deleteSession(req.params.sessionId, {
+        profileId: tid,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 403) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async addSupplyItem(req, res, next) {
     try {
       const { id: supplyId } = req.params;

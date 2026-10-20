@@ -14,6 +14,23 @@ const WB_SALES_FUNNEL_URL =
   'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products';
 const YM_API = 'https://api.partner.market.yandex.ru';
 
+/**
+ * /v1/analytics/data: с 09.2026 ужесточены лимиты частоты.
+ * Документация Seller API: не чаще 1 запроса в минуту; без Premium Plus —
+ * до ~50 запросов/сутки и окно данных ~3 месяца.
+ * @see https://dev.ozon.ru/news/797-Izmenenie-limitov-na-metod-v1-analytics-data/
+ */
+const OZON_ANALYTICS_DATA_MIN_GAP_MS = Math.max(
+  60_000,
+  parseInt(process.env.OZON_ANALYTICS_DATA_MIN_GAP_MS || '60000', 10) || 60_000
+);
+const OZON_ANALYTICS_DATA_MAX_ATTEMPTS = Math.max(
+  1,
+  parseInt(process.env.OZON_ANALYTICS_DATA_MAX_ATTEMPTS || '3', 10) || 3
+);
+/** clientId → timestamp последнего успешного/принятого запроса */
+const ozonAnalyticsDataLastAt = new Map();
+
 /** Кэш shows-sales: 1 генерация / 10 мин на businessId у YM. */
 const ymShowsSalesCache = new Map();
 const YM_SHOWS_SALES_CACHE_MS = 15 * 60 * 1000;
@@ -39,6 +56,71 @@ function fetchDelayMs() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitOzonAnalyticsDataSlot(clientId) {
+  const key = String(clientId || '').trim() || 'default';
+  const last = ozonAnalyticsDataLastAt.get(key) || 0;
+  const wait = OZON_ANALYTICS_DATA_MIN_GAP_MS - (Date.now() - last);
+  if (wait > 0) await sleep(wait);
+}
+
+function markOzonAnalyticsDataUsed(clientId) {
+  const key = String(clientId || '').trim() || 'default';
+  ozonAnalyticsDataLastAt.set(key, Date.now());
+}
+
+function parseRetryAfterMs(response) {
+  const raw = response?.headers?.get?.('retry-after') || response?.headers?.get?.('Retry-After');
+  if (raw == null || raw === '') return null;
+  const sec = Number(raw);
+  if (Number.isFinite(sec) && sec >= 0) return Math.round(sec * 1000);
+  const when = Date.parse(raw);
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now());
+  return null;
+}
+
+/**
+ * POST /v1/analytics/data с паузой ≥1 мин между запросами и retry на 429.
+ * @returns {Promise<Response|null>}
+ */
+async function fetchOzonAnalyticsData(clientId, apiKey, body) {
+  const cid = String(clientId || '').trim();
+  const key = String(apiKey || '').trim();
+  if (!cid || !key) return null;
+
+  for (let attempt = 1; attempt <= OZON_ANALYTICS_DATA_MAX_ATTEMPTS; attempt++) {
+    await waitOzonAnalyticsDataSlot(cid);
+    let response;
+    try {
+      response = await fetch(OZON_ANALYTICS_URL, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Client-Id': cid,
+          'Api-Key': key,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      logger.warn('[BuyoutFetch] Ozon analytics request failed', { message: e?.message || String(e) });
+      return null;
+    }
+    markOzonAnalyticsDataUsed(cid);
+
+    if (response.status !== 429) return response;
+
+    const retryAfter = parseRetryAfterMs(response) ?? OZON_ANALYTICS_DATA_MIN_GAP_MS;
+    logger.warn('[BuyoutFetch] Ozon analytics 429, waiting', {
+      attempt,
+      retryAfterMs: retryAfter,
+      clientId: cid,
+    });
+    if (attempt >= OZON_ANALYTICS_DATA_MAX_ATTEMPTS) return response;
+    await sleep(retryAfter);
+  }
+  return null;
 }
 
 function dateRangeYmd(days) {
@@ -269,35 +351,30 @@ async function fetchOzonBuyoutMap(scope, days, minSample) {
   const cfg = await integrationsService.getMarketplaceConfig('ozon', scope);
   if (!cfg?.client_id || !cfg?.api_key) return new Map();
 
-  const { dateFrom, dateTo } = dateRangeYmd(days);
+  // Без Premium Plus API отдаёт ~3 месяца; держим окно в пределах этого.
+  const requestedDays = Math.max(7, Number(days) || 30);
+  const safeDays = Math.min(requestedDays, 90);
+  if (safeDays < requestedDays) {
+    logger.info('[BuyoutFetch] Ozon analytics window capped to 90 days (API limit without Premium Plus)', {
+      requestedDays,
+      organizationId: scope.organizationId ?? null,
+    });
+  }
+  const { dateFrom, dateTo } = dateRangeYmd(safeDays);
   const map = new Map();
   let offset = 0;
   const limit = 1000;
 
   while (true) {
-    let response;
-    try {
-      response = await fetch(OZON_ANALYTICS_URL, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'Client-Id': String(cfg.client_id),
-          'Api-Key': String(cfg.api_key),
-        },
-        body: JSON.stringify({
-          date_from: dateFrom,
-          date_to: dateTo,
-          dimension: ['sku'],
-          metrics: ['ordered_units', 'delivered_units', 'returns'],
-          limit,
-          offset,
-        }),
-      });
-    } catch (e) {
-      logger.warn('[BuyoutFetch] Ozon analytics request failed', { message: e?.message || String(e) });
-      break;
-    }
+    const response = await fetchOzonAnalyticsData(cfg.client_id, cfg.api_key, {
+      date_from: dateFrom,
+      date_to: dateTo,
+      dimension: ['sku'],
+      metrics: ['ordered_units', 'delivered_units', 'returns'],
+      limit,
+      offset,
+    });
+    if (!response) break;
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
@@ -322,7 +399,7 @@ async function fetchOzonBuyoutMap(scope, days, minSample) {
 
     if (rows.length < limit) break;
     offset += limit;
-    await sleep(fetchDelayMs());
+    // Следующая страница — снова через waitOzonAnalyticsDataSlot (≥1 мин).
   }
 
   return map;

@@ -22,9 +22,23 @@ function statSafe(p) {
 export async function downloadPrintHelperInstaller(req, res) {
   const downloadsDir = getDownloadsDir();
   const fileName = 'erm-print-helper-setup.exe';
-  const filePath = path.join(downloadsDir, fileName);
-  const st = statSafe(filePath);
-  if (!st || !st.isFile()) {
+  // Основной путь: <repo>/data/downloads. Запасной — server/data/downloads (часто кладут туда по ошибке).
+  const candidates = [
+    path.join(downloadsDir, fileName),
+    path.join(config.paths.dataDir, '..', 'server', 'data', 'downloads', fileName),
+    path.join(process.cwd(), 'data', 'downloads', fileName),
+  ];
+  let filePath = null;
+  let st = null;
+  for (const p of candidates) {
+    const s = statSafe(p);
+    if (s?.isFile()) {
+      filePath = p;
+      st = s;
+      break;
+    }
+  }
+  if (!filePath || !st) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(404).json({
       ok: false,

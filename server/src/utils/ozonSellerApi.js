@@ -251,3 +251,30 @@ export async function ozonApiMultipartPostWithRetry(path, formData, ozonApiOpts,
     )
   );
 }
+
+/**
+ * Число элементов в ответе списка Seller API.
+ * С ~09.2026 поле `total` устаревает → `total_items` (дедлайн 23.11.2026 для product/list, stocks, prices).
+ * Смотрим result и корень; `count` — у части методов (сертификаты).
+ *
+ * @param {object|null|undefined} data — тело ответа или data.result
+ * @param {number} [fallback=0]
+ * @returns {number}
+ */
+export function ozonListTotal(data, fallback = 0) {
+  const roots = [];
+  if (data && typeof data === 'object') {
+    roots.push(data);
+    if (data.result && typeof data.result === 'object' && !Array.isArray(data.result)) {
+      roots.push(data.result);
+    }
+  }
+  for (const root of roots) {
+    for (const key of ['total_items', 'count', 'total']) {
+      const n = Number(root[key]);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+  }
+  const fb = Number(fallback);
+  return Number.isFinite(fb) && fb >= 0 ? fb : 0;
+}

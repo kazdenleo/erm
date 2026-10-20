@@ -100,6 +100,12 @@ export function resolveOzonSalesCommissionPercent(price, ctx = {}) {
   if (percentAbove300 != null && percentAbove300 > 0) return percentAbove300;
   if (apiTier === 'gt300' && apiPercent != null && apiPercent > 0) return apiPercent;
   if (apiTier === 'le100' || apiTier === 'le300') return null;
-  if (apiPercent != null && apiPercent > 0) return apiPercent;
+  // Legacy без basis: 17/23% — дешёвые тиры, не категория «свыше 300»
+  if (apiPercent != null && apiPercent > 0) {
+    const rounded = Math.round(apiPercent * 10) / 10;
+    if (rounded === Math.round(fallbackLe100 * 10) / 10) return null;
+    if (rounded === Math.round(fallbackLe300 * 10) / 10) return null;
+    return apiPercent;
+  }
   return null;
 }

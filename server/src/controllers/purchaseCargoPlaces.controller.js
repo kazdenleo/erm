@@ -65,7 +65,11 @@ class PurchaseCargoPlacesController {
   acceptPlace = handle((req) =>
     purchaseCargoPlacesService.acceptPlace(
       req.params.purchaseId,
-      { barcode: req.body?.barcode, force: req.body?.force === true },
+      {
+        barcode: req.body?.barcode,
+        force: req.body?.force === true,
+        forceExceed: req.body?.forceExceed === true,
+      },
       ctx(req)
     )
   );

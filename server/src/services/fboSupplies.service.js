@@ -856,6 +856,20 @@ class FboSuppliesService {
       });
     }
 
+    // Расчёты закупки по полностью отгруженным/закрытым наборам поставок — убрать сами.
+    if (
+      FBO_RESERVE_TERMINAL_STATUSES.has(result.status) &&
+      prevStatus !== result.status
+    ) {
+      import('./fboPurchaseCalcSession.service.js')
+        .then((mod) =>
+          mod.default.purgeSessionsForFinishedSupplies({ profileId: pid })
+        )
+        .catch((e) => {
+          console.warn('[FboSupplies] purge purchase calc sessions:', e?.message || e);
+        });
+    }
+
     // Терминальные статусы: всегда снимаем резерв (идемпотентно).
     // После willDeduct release уже выполнен — не дублируем.
     // skipMarketplaceSync: push на МП пакетом в фоне (иначе статус «Отгружен» ждёт API МП построчно).

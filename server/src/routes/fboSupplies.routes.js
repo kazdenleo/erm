@@ -43,6 +43,10 @@ router.post(
   '/purchase-calculation/sessions/:sessionId/purchase',
   wrapAsync(fboSuppliesController.createPurchaseFromCalcSession.bind(fboSuppliesController))
 );
+router.delete(
+  '/purchase-calculation/sessions/:sessionId',
+  wrapAsync(fboSuppliesController.deletePurchaseCalcSession.bind(fboSuppliesController))
+);
 
 router.get(
   '/forecast/wb',

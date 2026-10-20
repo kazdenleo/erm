@@ -126,6 +126,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  deletePurchaseCalcSession: async (sessionId) => {
+    const response = await api.delete(`/fbo-supplies/purchase-calculation/sessions/${sessionId}`);
+    return response.data?.data ?? response.data;
+  },
+
   downloadPurchaseCalcExcel: async ({ supplyIds, calc }) => {
     const response = await api.post(
       '/fbo-supplies/purchase-calculation/export/excel',

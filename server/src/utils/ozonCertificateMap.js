@@ -1,5 +1,10 @@
 /**
  * Маппинг локальных сертификатов ERP → поля Certification API Ozon.
+ *
+ * С 09.10.2026 методы /v2/product/certification/* и /v2/product/certificate/create
+ * в основном разделе (не beta). В accordance_type API оставлены только EAEU и NATIONAL
+ * (TECHNICAL_REGULATIONS_RF/CU и GOST удалены). Локальные коды ниже — UX формы,
+ * в запрос уходит toOzonV2AccordanceType → EAEU | NATIONAL.
  */
 
 export const OZON_DOC_TYPE_BY_ERP = {
@@ -8,11 +13,15 @@ export const OZON_DOC_TYPE_BY_ERP = {
   registration: 'certificate_of_registration',
 };
 
+/** UI-коды формы «тип соответствия»; в Seller API → EAEU | NATIONAL. */
 export const OZON_ACCORDANCE_TYPES = [
   { code: 'technical_regulations_cu', label: 'Технический регламент ТС' },
   { code: 'technical_regulations_rf', label: 'Технический регламент РФ' },
   { code: 'gost', label: 'ГОСТ' },
 ];
+
+/** Допустимые значения params.accordance_type в /v2/product/certificate/create (с 09.10.2026). */
+export const OZON_V2_ACCORDANCE_TYPES = new Set(['EAEU', 'NATIONAL']);
 
 const TYPES_NEEDING_ACCORDANCE = new Set([
   'certificate_of_conformity',
@@ -153,12 +162,25 @@ export function toOzonV2CertificateType(typeCode) {
   return String(typeCode || 'certificate_of_conformity').trim().toUpperCase();
 }
 
-/** Ozon v2: EAEU (ТР ТС / ЕАЭС) или NATIONAL (ТР РФ / ГОСТ Р). Префикс номера важнее выбора в форме. */
+/**
+ * Ozon v2 accordance_type: только EAEU | NATIONAL.
+ * TECHNICAL_REGULATIONS_RF / TECHNICAL_REGULATIONS_CU / GOST из API убраны (09.10.2026).
+ * Префикс номера важнее выбора в форме.
+ */
 export function toOzonV2AccordanceType(normalizedNumber, accordanceTypeCode) {
   const n = String(normalizedNumber || '');
   if (/^(ТС|ЕАЭС)\s/.test(n)) return 'EAEU';
   if (/^РОСС\s/.test(n)) return 'NATIONAL';
-  return String(accordanceTypeCode || '') === 'technical_regulations_cu' ? 'EAEU' : 'NATIONAL';
+  // Локальные UI-коды и на всякий случай старые UPPER_SNAKE из прошлых версий API.
+  const code = String(accordanceTypeCode || '').trim();
+  if (
+    code === 'technical_regulations_cu' ||
+    code === 'TECHNICAL_REGULATIONS_CU' ||
+    code === 'EAEU'
+  ) {
+    return 'EAEU';
+  }
+  return 'NATIONAL';
 }
 
 const CYRILLIC_TO_LATIN_LOOKALIKE = Object.fromEntries(
@@ -226,7 +248,10 @@ const OZON_V2_PARAM_LABELS = {
   SKUS: 'Товары',
 };
 
-/** Человекочитаемые ошибки из ответа v2 create (params[].state != VALID). */
+/**
+ * Человекочитаемые ошибки из ответа v2 create (params[].state != VALID).
+ * params[].number_mask — в ответе create с 09.10.2026 (ожидаемые маски номера).
+ */
 export function describeOzonV2CreateErrors(data) {
   const params = Array.isArray(data?.params) ? data.params : [];
   return params

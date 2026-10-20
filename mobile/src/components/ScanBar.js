@@ -41,6 +41,8 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   const draining = useRef(false);
   const lastAccepted = useRef({ code: '', at: 0 });
   const busyWas = useRef(busy);
+  /** Экран в стеке может оставаться смонтированным — без фокуса сканы не принимаем. */
+  const focusedRef = useRef(false);
 
   useEffect(() => {
     onScanRef.current = onScan;
@@ -59,15 +61,31 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   };
 
   const focus = useCallback(() => {
-    setTimeout(() => inputRef.current?.focus(), 50);
+    if (!focusedRef.current) return;
+    setTimeout(() => {
+      if (focusedRef.current) inputRef.current?.focus();
+    }, 50);
+  }, []);
+
+  const blur = useCallback(() => {
+    clearIdleTimer();
+    setValue('');
+    setCameraOpen(false);
+    queue.current = [];
+    inputRef.current?.blur?.();
   }, []);
 
   useImperativeHandle(ref, () => ({ focus }), [focus]);
 
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       focus();
-    }, [focus])
+      return () => {
+        focusedRef.current = false;
+        blur();
+      };
+    }, [focus, blur])
   );
 
   useEffect(() => {
@@ -76,6 +94,7 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   }, [busy, focus]);
 
   const enqueue = useCallback(async (code) => {
+    if (!focusedRef.current) return;
     const now = Date.now();
     if (code === lastAccepted.current.code && now - lastAccepted.current.at < DUPLICATE_COOLDOWN_MS) {
       return;
@@ -88,6 +107,10 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
     draining.current = true;
     try {
       while (queue.current.length) {
+        if (!focusedRef.current) {
+          queue.current = [];
+          break;
+        }
         const next = queue.current.shift();
         try {
           await onScanRef.current(next);
@@ -105,11 +128,16 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
     clearIdleTimer();
     const code = cleanCode(raw);
     setValue('');
+    if (!focusedRef.current) return;
     if (code.length >= 2) enqueue(code);
     focus();
   };
 
   const onChangeText = (text) => {
+    if (!focusedRef.current) {
+      setValue('');
+      return;
+    }
     if (/[\r\n]/.test(text)) {
       submit(text);
       return;

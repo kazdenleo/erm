@@ -8,8 +8,10 @@ import {
   needsAccordanceType,
   normalizeOzonCertificateNumber,
   ozonCertificateCountry,
+  OZON_V2_ACCORDANCE_TYPES,
   parseOzonCertificateCreateId,
   toOzonDateTime,
+  toOzonV2AccordanceType,
 } from '../src/utils/ozonCertificateMap.js';
 
 describe('ozonCertificateMap', () => {
@@ -97,6 +99,7 @@ describe('ozonCertificateMap', () => {
       expired_date: { infinite: true },
       files: [{ name: 'a.pdf', file_content: 'AAA' }],
     });
+    expect(OZON_V2_ACCORDANCE_TYPES.has(params.accordance_type)).toBe(true);
     const dated = buildOzonV2CertificateParams({
       typeCode: 'declaration',
       number: 'РОСС RU Д-RU.АБ12.В.00001/24',
@@ -107,6 +110,17 @@ describe('ozonCertificateMap', () => {
     expect(dated.accordance_type).toBe('NATIONAL');
     expect(dated.expired_date).toEqual({ date: { year: 2029, month: 1, day: 14 } });
     expect(dated.files).toBeUndefined();
+  });
+
+  test('never emits removed accordance_type enums', () => {
+    const removed = ['TECHNICAL_REGULATIONS_RF', 'TECHNICAL_REGULATIONS_CU', 'GOST'];
+    for (const ui of ['technical_regulations_cu', 'technical_regulations_rf', 'gost', 'TECHNICAL_REGULATIONS_CU']) {
+      const v = toOzonV2AccordanceType('ABC-123', ui);
+      expect(OZON_V2_ACCORDANCE_TYPES.has(v)).toBe(true);
+      expect(removed).not.toContain(v);
+    }
+    expect(toOzonV2AccordanceType('ТС RU C-1', 'gost')).toBe('EAEU');
+    expect(toOzonV2AccordanceType('РОСС RU.1', 'technical_regulations_cu')).toBe('NATIONAL');
   });
 
   test('extracts certification country from number', () => {

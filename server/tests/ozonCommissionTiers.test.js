@@ -42,6 +42,11 @@ describe('ozonCommissionTiers', () => {
     expect(
       resolveOzonSalesCommissionPercent(337, { apiPercent: 23, apiPrice: 250 })
     ).toBeNull();
+    // Legacy без basis: 23% — это mid-tier, не категория
+    expect(resolveOzonSalesCommissionPercent(337, { apiPercent: 23 })).toBeNull();
+    expect(resolveOzonSalesCommissionPercent(337, { apiPercent: 17 })).toBeNull();
+    // Legacy без basis: высокий % считаем категориальным
+    expect(resolveOzonSalesCommissionPercent(337, { apiPercent: 47 })).toBe(47);
     expect(
       resolveOzonSalesCommissionPercent(400, { apiPercent: 12, apiPrice: 400 })
     ).toBe(12);

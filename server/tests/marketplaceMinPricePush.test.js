@@ -117,6 +117,18 @@ describe('marketplaceMinPricePush helpers', () => {
     expect(entry.min_price).toBe('3071');
   });
 
+  test('buildOzonPriceImportEntry omits deprecated auto_action_enabled', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const entry = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2000,
+      ozonProductId: 1,
+    });
+    expect(entry.auto_action_enabled).toBeUndefined();
+    expect(entry.manage_elastic_boosting_through_price).toBeUndefined();
+    expect(entry.auto_add_to_ozon_actions_list_enabled).toBe('DISABLED');
+  });
+
   test('buildOzonPriceImportEntry sends net_price from ERP cost', () => {
     delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
     const entry = buildOzonPriceImportEntry({
@@ -137,6 +149,23 @@ describe('marketplaceMinPricePush helpers', () => {
       netPrice: null,
     });
     expect(entry.net_price).toBeUndefined();
+  });
+
+  test('buildOzonPriceImportEntry sends declared_price only when explicit', () => {
+    delete process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
+    const without = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2000,
+      ozonProductId: 1,
+    });
+    expect(without.declared_price).toBeUndefined();
+    const withDeclared = buildOzonPriceImportEntry({
+      floor: 2000,
+      sellingTarget: 2000,
+      ozonProductId: 1,
+      declaredPrice: 1800,
+    });
+    expect(withDeclared.declared_price).toBe('1800');
   });
 
   test('buildWbPriceUploadPayload sync mode uses exact price without stale WB discount', () => {

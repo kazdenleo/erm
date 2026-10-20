@@ -67,7 +67,8 @@ export function FboOpenCalcSessionsBanner({ excludeSessionId = null, compact = f
       <div className="fbo-open-calc-sessions-banner__title">Незавершённые расчёты закупки</div>
       {!compact ? (
         <p className="fbo-open-calc-sessions-banner__hint">
-          Можно прерваться и продолжить позже — прогресс закупок сохраняется.
+          Можно прерваться и продолжить позже — прогресс закупок сохраняется. Удалить расчёт можно
+          внутри него.
         </p>
       ) : null}
       <div className="fbo-open-calc-sessions-banner__links">

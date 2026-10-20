@@ -233,7 +233,7 @@ function estimateElementMinHeight(el, ctx) {
     if (!barcodeValue) return 0;
     const hMm = Number(el.heightMm) || 12;
     const hPx = Math.round(hMm * mmToPx);
-    const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
+    const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, isPackaging ? 36 : 14);
     const textUnderH = el.showText !== false ? digitFs + 4 : 0;
     return hPx + (textUnderH ? 2 + textUnderH : 0) + gap;
   }
@@ -241,7 +241,7 @@ function estimateElementMinHeight(el, ctx) {
   if (el.type === 'name') {
     const name = String(product?.name || product?.mp_ozon_name || '').trim();
     if (!name) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isPackaging ? 48 : 24);
     const lines = wrapTextLines(name, innerW, fs, Boolean(el.bold));
     return textBlockHeight(Math.max(1, lines.length), fs, lineGapPx) + gap;
   }
@@ -251,14 +251,14 @@ function estimateElementMinHeight(el, ctx) {
       String(product?.sku || '').trim() ||
       (isPackaging ? String(product?.name || '').trim() : '');
     if (!sku) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isPackaging ? 48 : 20);
     return textBlockHeight(1, fs, lineGapPx) + gap;
   }
 
   if (el.type === 'units_per_box') {
     const units = Math.floor(Number(packagingUnits ?? 0));
     if (!Number.isFinite(units) || units <= 0) return 0;
-    const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, isPackaging ? 48 : 20);
     return textBlockHeight(1, fs, lineGapPx) + gap;
   }
 
@@ -732,7 +732,7 @@ async function buildLabelSvg({
     const slotMaxY = maxContentY - reservedBelow;
 
     if (el.type === 'name') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 24);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -749,7 +749,7 @@ async function buildLabelSvg({
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 20);
       const sku =
         String(product.sku || '').trim() ||
         (packaging ? String(product.name || '').trim() : '');
@@ -772,7 +772,7 @@ async function buildLabelSvg({
     } else if (el.type === 'units_per_box') {
       const units = layoutCtx.packagingUnits;
       if (units && y < slotMaxY) {
-        const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+        const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 20);
         const weight = el.bold ? 'bold' : 'normal';
         y = appendWrappedTextSvg(blocks, {
           text: `${units} шт.`,
@@ -793,7 +793,7 @@ async function buildLabelSvg({
       let hPx = Math.round(hMm * mmToPx);
       const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
       const barX = padL + barOffsetX;
-      const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
+      const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, packaging ? 36 : 14);
       const textUnderH = el.showText !== false ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
       const minBarcodePx = Math.round(8 * mmToPx);

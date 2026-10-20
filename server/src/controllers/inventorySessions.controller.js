@@ -40,6 +40,28 @@ class InventorySessionsController {
     }
   }
 
+  async previewUnlisted(req, res, next) {
+    try {
+      const warehouseId = req.body?.warehouseId ?? req.body?.warehouse_id ?? req.query?.warehouseId ?? null;
+      const categoryIds = req.body?.categoryIds ?? req.body?.category_ids ?? null;
+      const excludeProductIds =
+        req.body?.excludeProductIds ?? req.body?.exclude_product_ids ?? [];
+      const profileId = req.user?.profileId ?? null;
+      const data = await inventorySessionsService.previewUnlisted({
+        warehouseId,
+        profileId,
+        categoryIds,
+        excludeProductIds,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async apply(req, res, next) {
     try {
       const lines = req.body?.lines;
@@ -196,7 +218,15 @@ class InventorySessionsController {
   async completeLiveSession(req, res, next) {
     try {
       const { id } = req.params;
-      const { zeroUnlisted, zero_unlisted, note, updateSessionId, update_session_id } = req.body || {};
+      const {
+        zeroUnlisted,
+        zero_unlisted,
+        note,
+        updateSessionId,
+        update_session_id,
+        categoryIds,
+        category_ids,
+      } = req.body || {};
       const data = await inventorySessionsLiveService.complete({
         sessionId: id,
         userId: req.user?.id ?? null,
@@ -204,6 +234,7 @@ class InventorySessionsController {
         zeroUnlisted: zeroUnlisted ?? zero_unlisted,
         note: note ?? null,
         updateSessionId: updateSessionId ?? update_session_id ?? null,
+        categoryIds: categoryIds ?? category_ids,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

@@ -397,10 +397,18 @@ async function replaceBoxPackagings(client, productId, packagings) {
 
 function attachBoxPackagingsToProduct(product, packagings) {
   if (!product) return product;
-  const list =
+  let list =
     packagings != null
       ? normalizeBoxPackagings(packagings)
       : boxPackagingsFromLegacy(product);
+  // Пустая таблица упаковок не должна затирать legacy-поля products.box_barcode / units_per_box.
+  if ((!list || list.length === 0) && packagings != null) {
+    const fromLegacy = boxPackagingsFromLegacy({
+      box_barcode: product.box_barcode ?? product.boxBarcode,
+      units_per_box: product.units_per_box ?? product.unitsPerBox,
+    });
+    if (fromLegacy.length) list = fromLegacy;
+  }
   product.box_packagings = list;
   const legacy = legacyFieldsFromBoxPackagings(list);
   product.box_barcode = legacy.box_barcode;
@@ -3259,8 +3267,12 @@ class ProductsRepositoryPG {
         product.box_barcode = legacy.box_barcode;
         product.units_per_box = legacy.units_per_box;
       } catch (packErr) {
-        if (!String(packErr?.message || '').includes('product_box_packagings')) throw packErr;
-        console.warn('[Products Repository] create box packagings skipped:', packErr?.message || packErr);
+        const msg = String(packErr?.message || packErr || '');
+        const tableMissing =
+          /product_box_packagings/i.test(msg) &&
+          /(does not exist|не существует|undefined_table)/i.test(msg);
+        if (!tableMissing) throw packErr;
+        console.warn('[Products Repository] create box packagings skipped:', msg);
       }
       
       // SKU маркетплейсов: Ozon — offer_id и/или product_id; WB/ЯМ — непустой sku
@@ -3645,8 +3657,13 @@ class ProductsRepositoryPG {
         try {
           await replaceBoxPackagings(client, numId, packagingsToReplace);
         } catch (packErr) {
-          if (!String(packErr?.message || '').includes('product_box_packagings')) throw packErr;
-          console.warn('[Products Repository] update box packagings skipped:', packErr?.message || packErr);
+          const msg = String(packErr?.message || packErr || '');
+          // Только отсутствие таблицы — не глотаем unique/check (иначе «сохранилось», а упаковок нет).
+          const tableMissing =
+            /product_box_packagings/i.test(msg) &&
+            /(does not exist|не существует|undefined_table)/i.test(msg);
+          if (!tableMissing) throw packErr;
+          console.warn('[Products Repository] update box packagings skipped:', msg);
         }
       }
 

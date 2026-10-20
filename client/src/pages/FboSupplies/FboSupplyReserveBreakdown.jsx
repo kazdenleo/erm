@@ -55,7 +55,11 @@ export function FboSupplyReserveBreakdown({
 
   if (incoming > 0) {
     parts.push(
-      <span key="incoming" className="fbo-reserve-breakdown__part" title="Из ожидаемых поступлений">
+        <span
+          key="incoming"
+          className="fbo-reserve-breakdown__part"
+          title="Из открытых закупок на склад списания FBO"
+        >
         путь: {incoming}
       </span>
     );

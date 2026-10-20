@@ -86,7 +86,7 @@ function normalizeTemplate(data, { packaging = false } = {}) {
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
-    elements: hasElementsList ? clampElementsForSave(d.elements) : fallback,
+    elements: hasElementsList ? clampElementsForSave(d.elements, { packaging }) : fallback,
   };
 }
 
@@ -113,12 +113,14 @@ function normalizeAlign(v, fallback = 'left') {
   return fallback;
 }
 
-function clampElementsForSave(elements) {
+function clampElementsForSave(elements, { packaging = false } = {}) {
+  const textMax = packaging ? 48 : 24;
+  const barcodeTextMax = packaging ? 36 : 14;
   return (elements || []).map((el) => {
     const next = { ...el };
     if (el.type === 'barcode') {
       if (next.textFontSize != null) {
-        next.textFontSize = clampFontSize(next.textFontSize, 8, 14);
+        next.textFontSize = clampFontSize(next.textFontSize, 8, barcodeTextMax);
       }
       if (next.widthMm != null) {
         next.widthMm = Math.min(120, Math.max(15, Number(next.widthMm) || 15));
@@ -140,11 +142,12 @@ function clampElementsForSave(elements) {
       if (next.fontSize != null) {
         next.fontSize = clampFontSize(
           next.fontSize,
-          el.type === 'name' ? 11 : el.type === 'units_per_box' ? 16 : 9
+          el.type === 'name' ? 11 : el.type === 'units_per_box' ? 16 : 9,
+          textMax
         );
       }
       if (next.titleFontSize != null) {
-        next.titleFontSize = clampFontSize(next.titleFontSize, 8, 20);
+        next.titleFontSize = clampFontSize(next.titleFontSize, 8, packaging ? 36 : 20);
       }
       next.align = normalizeAlign(
         next.align,
@@ -156,7 +159,7 @@ function clampElementsForSave(elements) {
 }
 
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
-function buildTemplatePayload(form) {
+function buildTemplatePayload(form, { packaging = false } = {}) {
   return {
     size_preset: form.size_preset,
     margin_top_mm: parseMmValue(form.margin_top_mm, 2),
@@ -164,7 +167,7 @@ function buildTemplatePayload(form) {
     margin_bottom_mm: parseMmValue(form.margin_bottom_mm, 2),
     margin_left_mm: parseMmValue(form.margin_left_mm, 2),
     line_gap_mm: parseMmValue(form.line_gap_mm, 1),
-    elements: clampElementsForSave(form.elements),
+    elements: clampElementsForSave(form.elements, { packaging }),
   };
 }
 
@@ -337,7 +340,7 @@ export function LabelConstructor() {
       setPreviewError('');
       try {
         const blob = isPackaging
-          ? await packagingLabelTemplatesApi.preview(buildTemplatePayload(form), {
+          ? await packagingLabelTemplatesApi.preview(buildTemplatePayload(form, { packaging: true }), {
               productId: previewProductId || undefined,
               scale: 4,
             })
@@ -552,7 +555,7 @@ export function LabelConstructor() {
     setError('');
     try {
       if (isPackaging) {
-        await packagingLabelTemplatesApi.save(buildTemplatePayload(form));
+        await packagingLabelTemplatesApi.save(buildTemplatePayload(form, { packaging: true }));
         setPackagingSaved(true);
         setMessage('Шаблон упаковки сохранён');
       } else {
@@ -774,7 +777,7 @@ export function LabelConstructor() {
                             <input
                               type="number"
                               min={6}
-                              max={24}
+                              max={isPackaging ? 48 : 24}
                               value={el.fontSize ?? 9}
                               onChange={(e) =>
                                 updateElement(idx, { fontSize: Number(e.target.value) || 9 })
@@ -855,7 +858,7 @@ export function LabelConstructor() {
                               <input
                                 type="number"
                                 min={6}
-                                max={24}
+                                max={isPackaging ? 36 : 24}
                                 value={el.textFontSize ?? el.fontSize ?? 8}
                                 onChange={(e) =>
                                   updateElement(idx, { textFontSize: Number(e.target.value) || 8 })

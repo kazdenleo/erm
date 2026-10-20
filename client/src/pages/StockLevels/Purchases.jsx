@@ -16,6 +16,7 @@ import {
 import { clearScanField, readScanFieldValue } from '../../utils/scanInput';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
+import { purchaseCargoApi } from '../../services/purchaseCargo.api';
 import { productsApi } from '../../services/products.api';
 import { usersApi } from '../../services/users.api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -78,6 +79,17 @@ function receiptItemRowKey(it) {
   const id = Number(it?.id);
   if (Number.isFinite(id) && id > 0) return `i-${id}`;
   return String(it?.product_sku || 'row');
+}
+
+const CARGO_PLACE_STATUS_LABEL = {
+  accepted: 'Принято',
+  opened: 'В работе',
+  closed: 'Разобрано',
+  received: 'Оприходовано',
+};
+
+function cargoPlaceStatusLabel(status) {
+  return CARGO_PLACE_STATUS_LABEL[String(status || '')] || String(status || '—');
 }
 
 function parseReceiptScanMeta(raw) {
@@ -381,6 +393,10 @@ export function Purchases() {
   const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [cargoState, setCargoState] = useState(null);
+  const [cargoLoading, setCargoLoading] = useState(false);
+  const [cargoBusy, setCargoBusy] = useState(false);
+  const [cargoExpectedDraft, setCargoExpectedDraft] = useState('');
   const [receipt, setReceipt] = useState(null);
   const scanRef = useRef(null);
   const scanDebounceRef = useRef(null);
@@ -1088,19 +1104,101 @@ export function Purchases() {
     }
   }, [err, detail]);
 
+  const loadCargoState = useCallback(async (purchaseId) => {
+    const pid = Number(purchaseId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      setCargoState(null);
+      return null;
+    }
+    setCargoLoading(true);
+    try {
+      const data = await purchaseCargoApi.getPurchase(pid);
+      setCargoState(data);
+      setCargoExpectedDraft(
+        data?.expectedCargoPlaces != null && data.expectedCargoPlaces !== ''
+          ? String(data.expectedCargoPlaces)
+          : ''
+      );
+      return data;
+    } catch (e) {
+      // Грузоместа — опциональный контур; карточку закупки не блокируем.
+      setCargoState(null);
+      return null;
+    } finally {
+      setCargoLoading(false);
+    }
+  }, []);
+
   const openDetail = async (id) => {
     setErr(null);
     setDetailLoading(true);
     setDetail(null);
+    setCargoState(null);
     setEditOriginal(null);
     try {
       const data = await purchasesApi.getById(id);
       setDetail(data);
       syncPurchaseDraftFromDetail(data);
+      await loadCargoState(id);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить закупку');
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const saveCargoExpected = async () => {
+    const purchaseId = detail?.purchase?.id;
+    if (!purchaseId || cargoBusy) return;
+    const trimmed = String(cargoExpectedDraft || '').trim();
+    let value = null;
+    if (trimmed !== '') {
+      value = Math.floor(Number(trimmed.replace(/\D+/g, '')));
+      if (!Number.isFinite(value) || value < 0) {
+        setErr('Некорректное ожидаемое число грузомест');
+        return;
+      }
+    }
+    setCargoBusy(true);
+    setErr(null);
+    try {
+      const data = await purchaseCargoApi.setExpected(purchaseId, value);
+      setCargoState(data);
+      setCargoExpectedDraft(
+        data?.expectedCargoPlaces != null && data.expectedCargoPlaces !== ''
+          ? String(data.expectedCargoPlaces)
+          : ''
+      );
+    } catch (e) {
+      setErr(getApiErrorMessage(e, 'Не удалось сохранить ожидаемое число грузомест'));
+    } finally {
+      setCargoBusy(false);
+    }
+  };
+
+  const removeCargoPlace = async (place) => {
+    if (!place?.id || cargoBusy) return;
+    if (
+      !window.confirm(
+        `Удалить грузоместо «${place.barcode}»? Можно только если в нём ещё нет принятого товара.`
+      )
+    ) {
+      return;
+    }
+    setCargoBusy(true);
+    setErr(null);
+    try {
+      const data = await purchaseCargoApi.removePlace(place.id);
+      setCargoState(data);
+      setCargoExpectedDraft(
+        data?.expectedCargoPlaces != null && data.expectedCargoPlaces !== ''
+          ? String(data.expectedCargoPlaces)
+          : ''
+      );
+    } catch (e) {
+      setErr(getApiErrorMessage(e, 'Не удалось удалить грузоместо'));
+    } finally {
+      setCargoBusy(false);
     }
   };
 
@@ -1112,6 +1210,7 @@ export function Purchases() {
       return;
     }
     setDetail(null);
+    setCargoState(null);
     setEditOriginal(null);
     setEditItems([]);
     closeEditModal();
@@ -1986,6 +2085,142 @@ export function Purchases() {
                 ))}
               </select>
             </div>
+
+            <h4 style={{ marginTop: 8 }}>Грузоместа</h4>
+            <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
+              Приёмка грузомест и товара из них — в мобильном приложении. Здесь видно, сколько мест
+              принято и что в них разобрано.
+            </p>
+            {cargoLoading && !cargoState ? (
+              <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
+                Загрузка грузомест…
+              </p>
+            ) : (
+              <div style={{ marginBottom: 20 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    marginBottom: 10,
+                  }}
+                >
+                  <span className="muted" style={{ fontSize: 13 }}>
+                    Ожидается мест
+                  </span>
+                  <input
+                    className="warehouse-ops-input"
+                    style={{ width: 88 }}
+                    inputMode="numeric"
+                    value={cargoExpectedDraft}
+                    disabled={!isDetailEditable || cargoBusy}
+                    placeholder="—"
+                    onChange={(e) => setCargoExpectedDraft(e.target.value)}
+                  />
+                  <Button
+                    variant="secondary"
+                    disabled={!isDetailEditable || cargoBusy}
+                    onClick={saveCargoExpected}
+                  >
+                    {cargoBusy ? 'Сохраняю…' : 'Сохранить'}
+                  </Button>
+                  <span style={{ fontSize: 14 }}>
+                    Принято:{' '}
+                    <strong>
+                      {(cargoState?.places || []).length}
+                      {cargoState?.expectedCargoPlaces != null
+                        ? ` из ${cargoState.expectedCargoPlaces}`
+                        : ''}
+                    </strong>
+                    {cargoState?.report?.totalQuantity != null ? (
+                      <span className="muted">
+                        {' '}
+                        · товара в местах {cargoState.report.totalQuantity} шт
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+                {cargoState?.expectedCargoPlaces != null &&
+                (cargoState.places || []).length > Number(cargoState.expectedCargoPlaces) ? (
+                  <p className="error" style={{ marginBottom: 10 }} role="alert">
+                    Принято мест больше ожидаемого (
+                    {(cargoState.places || []).length} &gt; {cargoState.expectedCargoPlaces}). Лишнее
+                    место можно удалить, если в нём ещё нет товара.
+                  </p>
+                ) : null}
+                {(cargoState?.places || []).length === 0 ? (
+                  <p className="muted" style={{ fontSize: 13 }}>
+                    Пока нет принятых грузомест.
+                  </p>
+                ) : (
+                  <div className="warehouse-ops-table-wrap">
+                    <table className="warehouse-ops-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 48 }}>№</th>
+                          <th>Штрихкод</th>
+                          <th>Статус</th>
+                          <th>Позиций</th>
+                          <th>Шт</th>
+                          <th>Принято</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(cargoState.places || []).map((place, index) => (
+                          <tr key={place.id}>
+                            <td>{index + 1}</td>
+                            <td style={{ fontFamily: 'ui-monospace, monospace' }}>{place.barcode}</td>
+                            <td>{cargoPlaceStatusLabel(place.status)}</td>
+                            <td>{place.itemsCount ?? 0}</td>
+                            <td>{place.quantity ?? 0}</td>
+                            <td>{fmtDt(place.acceptedAt)}</td>
+                            <td>
+                              {place.status === 'accepted' && isDetailEditable ? (
+                                <Button
+                                  variant="secondary"
+                                  disabled={cargoBusy}
+                                  onClick={() => removeCargoPlace(place)}
+                                >
+                                  Удалить
+                                </Button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {(cargoState?.report?.places || []).some((p) => (p.items || []).length > 0) ? (
+                  <div style={{ marginTop: 12 }}>
+                    <h5 style={{ margin: '0 0 8px' }}>Товар по грузоместам</h5>
+                    {(cargoState.report.places || []).map((place) =>
+                      (place.items || []).length ? (
+                        <div key={place.placeId} style={{ marginBottom: 10 }}>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            {place.barcode}
+                            <span className="muted" style={{ fontWeight: 400 }}>
+                              {' '}
+                              · {place.quantity} шт
+                            </span>
+                          </div>
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                            {(place.items || []).map((item) => (
+                              <li key={`${place.placeId}-${item.productId}`}>
+                                {item.name || item.sku || `#${item.productId}`} — {item.quantity} шт
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )}
+
             <h4>Позиции</h4>
             {isDetailEditable ? (
               <>

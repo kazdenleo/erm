@@ -81,6 +81,9 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
   }
 
   const priceNum = parseFloat(item.price?.price || 0);
+  /** Объявленная стоимость (возмещение/страховка), с 28.09.2026: price.declared_price в v5. */
+  const declaredRaw = item.price?.declared_price ?? item.declared_price;
+  const declaredNum = parseFloat(declaredRaw);
   let calculatorData = {
     offer_id: item.offer_id,
     product_id: item.product_id,
@@ -90,6 +93,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     old_price: parseFloat(item.price?.old_price || 0),
     marketing_price: parseFloat(item.price?.marketing_price || 0),
     min_price: parseFloat(item.price?.min_price || 0),
+    declared_price: Number.isFinite(declaredNum) && declaredNum > 0 ? declaredNum : null,
     currency_code: item.price?.currency_code || 'RUB',
     commissions: {},
     fullCommissions: rawCommissionsData,
@@ -231,6 +235,11 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
         const v3Data = await v3Response.json();
         if (v3Data.result?.items?.length > 0) {
           const v3Item = v3Data.result.items[0];
+          // v3: items.declared_price (с 28.09.2026), если в v5 не пришло.
+          if (calculatorData.declared_price == null && v3Item.declared_price != null) {
+            const d = parseFloat(v3Item.declared_price);
+            if (Number.isFinite(d) && d > 0) calculatorData.declared_price = d;
+          }
           if (v3Item.commissions && Array.isArray(v3Item.commissions)) {
             v3Item.commissions.forEach((comm) => {
               const schema = comm.sale_schema || 'FBS';

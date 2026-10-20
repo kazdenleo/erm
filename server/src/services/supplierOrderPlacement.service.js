@@ -300,6 +300,54 @@ async function releasePurchaseSupplierSubmitClaim(purchaseId) {
   );
 }
 
+/**
+ * После успешной отправки поставщику — записать в purchase_items фактическую цену оффера
+ * (иначе остаётся устаревшая цена из кэша supplier_stocks на момент автозакупки).
+ */
+export async function syncPurchasePricesFromSubmittedLines(purchaseId, submittedLines) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return { updated: 0 };
+  const updates = [];
+  for (const line of submittedLines || []) {
+    const productId = Number(line?.productId ?? line?.product_id);
+    const price = Number(line?.price ?? line?.purchase_price ?? line?.purchasePrice);
+    if (!Number.isFinite(productId) || productId < 1) continue;
+    if (!Number.isFinite(price) || price <= 0) continue;
+    updates.push({ productId, price });
+  }
+  if (!updates.length) return { updated: 0 };
+
+  let updated = 0;
+  for (const { productId, price } of updates) {
+    try {
+      const r = await query(
+        `UPDATE purchase_items
+         SET purchase_price = $3,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE purchase_id = $1
+           AND product_id = $2
+           AND (purchase_price IS DISTINCT FROM $3::numeric)`,
+        [pid, productId, price]
+      );
+      updated += r.rowCount || 0;
+    } catch (e) {
+      logger.warn('[SupplierOrderPlacement] sync purchase_price failed', {
+        purchaseId: pid,
+        productId,
+        price,
+        message: e?.message || String(e),
+      });
+    }
+  }
+  if (updated > 0) {
+    logger.info('[SupplierOrderPlacement] synced purchase_price from supplier offer', {
+      purchaseId: pid,
+      updated,
+    });
+  }
+  return { updated };
+}
+
 export async function markPurchaseSupplierSubmitted(
   purchaseId,
   { supplierOrderRef = null, force = false, append = false } = {}
@@ -923,6 +971,7 @@ export async function trySubmitPurchaseToSupplier({
             });
           }
         }
+        await syncPurchasePricesFromSubmittedLines(pid, adapterResult.lines);
       } catch (markErr) {
         // Позиции уже у поставщика — нельзя вернуть submitted:false (иначе откат → дубли в корзине).
         logger.error('[SupplierOrderPlacement] mark submitted failed after supplier accept', {
@@ -1108,5 +1157,6 @@ export default {
   filterPendingSupplierSubmitLines,
   purchaseLinesFullySubmitted,
   markPurchaseSupplierSubmitted,
+  syncPurchasePricesFromSubmittedLines,
   cleanupSupplierBasketOnRollback,
 };

@@ -871,6 +871,17 @@
   margin-top: 8px;
 }
 
+.warehouse-ops-inventory-row--will-zero td {
+  background: rgba(239, 68, 68, 0.06);
+}
+.warehouse-ops-inventory-will-zero-badge {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger, #b91c1c);
+  line-height: 1.25;
+}
 .warehouse-ops-inventory-category-chip {
   font-size: 11px;
   padding: 2px 8px;

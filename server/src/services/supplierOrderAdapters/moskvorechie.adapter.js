@@ -476,6 +476,7 @@ export async function submitMoskvorechiePurchase(ctx) {
         warehouseName: o.warehouseName,
         stock: o.stock,
         brand: o.brand,
+        price: o.price,
       })),
       { warehouseName, quantity: qty }
     );
@@ -498,12 +499,15 @@ export async function submitMoskvorechiePurchase(ctx) {
       });
     }
 
+    const offerPrice = Number(offer.price);
     orderLines.push({
       productId: line.product_id,
       sku,
       gid: offer.gid,
       quantity: qty,
       warehouseName: offer.warehouseName,
+      // Фактическая цена оффера portal.api на момент заказа (для purchase_items / себестоимости).
+      price: Number.isFinite(offerPrice) && offerPrice > 0 ? offerPrice : null,
     });
   }
 
