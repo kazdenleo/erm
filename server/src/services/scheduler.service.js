@@ -478,6 +478,19 @@ function isBirthdayNotificationsEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+/** Автосбор новостей МП (API / крупные изменения) для супер-админа. Выкл: PLATFORM_MP_NEWS_SYNC_ENABLED=0 */
+function isPlatformMpNewsSyncEnabled() {
+  const v = process.env.PLATFORM_MP_NEWS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию ежедневно в 06:30; PLATFORM_MP_NEWS_SYNC_CRON */
+function getPlatformMpNewsSyncCron() {
+  const c = process.env.PLATFORM_MP_NEWS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '30 6 * * *';
+}
+
 function reportsDailyDateRangeYmd(daysBack = 7) {
   const to = new Date();
   const from = new Date(to);
@@ -1336,6 +1349,43 @@ class SchedulerService {
         logger.info('[Scheduler] Birthday notifications disabled (BIRTHDAY_NOTIFICATIONS_ENABLED)');
       }
 
+      let platformMpNewsSyncJob = null;
+      const platformMpNewsSyncCron = getPlatformMpNewsSyncCron();
+      if (isPlatformMpNewsSyncEnabled()) {
+        platformMpNewsSyncJob = cron.schedule(
+          platformMpNewsSyncCron,
+          async () => {
+            await runSchedulerDbJob('platform-marketplace-news', async () => {
+              logger.info('[Scheduler] Platform marketplace news sync...');
+              try {
+                const { syncMarketplaceNews } = await import('./platformMarketplaceNews.service.js');
+                const out = await syncMarketplaceNews();
+                logger.info('[Scheduler] Platform marketplace news sync done', {
+                  inserted: out?.inserted,
+                  updated: out?.updated,
+                  errors: out?.errors?.length || 0,
+                });
+              } catch (error) {
+                logger.error('[Scheduler] Platform marketplace news sync failed:', error);
+                await addRuntimeNotification({
+                  type: 'job_failed',
+                  severity: 'warning',
+                  source: 'scheduler',
+                  title: 'Сбой сбора новостей маркетплейсов',
+                  message: `platform marketplace news sync failed: ${error?.message || String(error)}`,
+                });
+              }
+            });
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow',
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Platform marketplace news sync disabled (PLATFORM_MP_NEWS_SYNC_ENABLED)');
+      }
+
       let certificatesStatusSyncJob = null;
       const certificatesStatusSyncCron =
         String(process.env.CERTIFICATES_STATUS_SYNC_CRON || '').trim() || '20 * * * *';
@@ -1739,6 +1789,16 @@ class SchedulerService {
         });
       }
 
+      if (platformMpNewsSyncJob) {
+        this.jobs.push({
+          name: 'platform-marketplace-news',
+          job: platformMpNewsSyncJob,
+          schedule: platformMpNewsSyncCron,
+          description:
+            'Новости МП (API / крупные изменения) для супер-админа. PLATFORM_MP_NEWS_SYNC_CRON, по умолчанию 30 6 * * * (МСК)',
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -1785,6 +1845,9 @@ class SchedulerService {
       }
       if (birthdayNotificationsJob) {
         birthdayNotificationsJob.start();
+      }
+      if (platformMpNewsSyncJob) {
+        platformMpNewsSyncJob.start();
       }
       if (certificatesStatusSyncJob) {
         certificatesStatusSyncJob.start();

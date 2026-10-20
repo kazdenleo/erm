@@ -11,6 +11,7 @@ import './platform.css';
 const nav = [
   { to: '/platform/accounts', label: 'Аккаунты' },
   { to: '/platform/inquiries', label: 'Обращения' },
+  { to: '/platform/news', label: 'Новости МП' },
   { to: '/platform/notifications', label: 'Уведомления' },
 ];
 

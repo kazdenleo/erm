@@ -55,6 +55,7 @@ import globalSearchController from '../controllers/globalSearch.controller.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
 import * as platformMarketplaceNotificationsController from '../controllers/platformMarketplaceNotifications.controller.js';
+import platformMarketplaceNewsRoutes from './platformMarketplaceNews.routes.js';
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
@@ -235,6 +236,7 @@ router.post(
   wrapAsync(platformMarketplaceNotificationsController.ingestMarketplaceHook)
 );
 router.use('/platform/marketplace-notifications', platformMarketplaceNotificationsRoutes);
+router.use('/platform/marketplace-news', platformMarketplaceNewsRoutes);
 router.use('/reviews', reviewsRoutes);
 router.use('/downloads', downloadsRoutes);
 router.use('/marketplace-inventory', marketplaceInventoryRoutes);
