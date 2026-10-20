@@ -9070,7 +9070,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
           🏷️ Баркоды
         </h4>
         <div style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 600 }}>ШК коробки</span>
             <Button
               type="button"
@@ -9080,10 +9080,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
             >
               + Добавить упаковку
             </Button>
-          </div>
-          <div className="text-muted" style={{ fontSize: 11, marginBottom: 8, lineHeight: 1.35, maxWidth: 640 }}>
-            Только для приёмки в ERM — на маркетплейс не отправляется. Сгенерируйте ШК заранее (как у товара) или впишите свой;
-            в приёмке скан добавляет указанное количество штук. «Печать» — этикетка ШК упаковки.
+            <span className="text-muted" style={{ fontSize: 11, lineHeight: 1.35 }}>
+              Только приёмка ERM · скан = N шт. · на МП не уходит
+            </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(Array.isArray(formData.box_packagings) && formData.box_packagings.length
@@ -9094,62 +9093,56 @@ export const ProductForm = React.forwardRef(function ProductForm({
               const generating = boxBarcodeGeneratingIndex === index;
               const packingRows = Array.isArray(formData.box_packagings) ? formData.box_packagings : [];
               return (
-                <div key={index} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
-                  <div style={{ minWidth: 180, flex: '1 1 180px' }}>
-                    {index === 0 ? (
-                      <label className="form-label" style={{ fontSize: 12 }}>ШК коробки</label>
-                    ) : null}
-                    <div className="product-form-barcode" style={{ position: 'relative' }}>
-                      <input
-                        type="text"
-                        className="form-control form-control-sm"
-                        value={row?.barcode || ''}
-                        onChange={(e) => handleBoxPackagingChange(index, 'barcode', e.target.value)}
-                        placeholder="Штрихкод упаковки"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      {!code ? (
-                        <button
-                          type="button"
-                          disabled={generating}
-                          onClick={() => handleGenerateBoxBarcode(index)}
-                          title="Сгенерировать штрихкод упаковки"
-                          style={{
-                            position: 'absolute',
-                            left: 10,
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            border: 0,
-                            background: 'transparent',
-                            padding: 0,
-                            color: generating ? 'var(--muted)' : '#2563eb',
-                            cursor: generating ? 'wait' : 'pointer',
-                            fontSize: '13px',
-                            lineHeight: 1,
-                            textDecoration: generating ? 'none' : 'underline',
-                            textUnderlineOffset: '2px',
-                          }}
-                        >
-                          {generating ? 'Генерация…' : 'Сгенерировать'}
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div style={{ width: 120 }}>
-                    {index === 0 ? (
-                      <label className="form-label" style={{ fontSize: 12 }}>Шт. в упаковке</label>
-                    ) : null}
+                <div key={index} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div className="product-form-barcode" style={{ position: 'relative', width: '18rem', maxWidth: '100%' }}>
                     <input
-                      type="number"
-                      min={1}
-                      step={1}
+                      type="text"
                       className="form-control form-control-sm"
-                      value={row?.units_per_box || ''}
-                      onChange={(e) => handleBoxPackagingChange(index, 'units_per_box', e.target.value)}
-                      placeholder="N"
+                      value={row?.barcode || ''}
+                      onChange={(e) => handleBoxPackagingChange(index, 'barcode', e.target.value)}
+                      placeholder=""
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label="ШК коробки"
                     />
+                    {!code ? (
+                      <button
+                        type="button"
+                        disabled={generating}
+                        onClick={() => handleGenerateBoxBarcode(index)}
+                        title="Сгенерировать штрихкод упаковки"
+                        style={{
+                          position: 'absolute',
+                          left: 10,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          border: 0,
+                          background: 'transparent',
+                          padding: 0,
+                          color: generating ? 'var(--muted)' : '#2563eb',
+                          cursor: generating ? 'wait' : 'pointer',
+                          fontSize: '13px',
+                          lineHeight: 1,
+                          textDecoration: generating ? 'none' : 'underline',
+                          textUnderlineOffset: '2px',
+                        }}
+                      >
+                        {generating ? 'Генерация…' : 'Сгенерировать'}
+                      </button>
+                    ) : null}
                   </div>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    className="form-control form-control-sm"
+                    value={row?.units_per_box || ''}
+                    onChange={(e) => handleBoxPackagingChange(index, 'units_per_box', e.target.value)}
+                    placeholder="шт."
+                    title="Штук в упаковке"
+                    aria-label="Штук в упаковке"
+                    style={{ width: 72 }}
+                  />
                   <Button
                     type="button"
                     variant="secondary"
