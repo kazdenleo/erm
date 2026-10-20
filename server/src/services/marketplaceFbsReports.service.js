@@ -12,6 +12,7 @@ import { extractOzonFinanceAmounts } from '../utils/ozonFinanceReportAmounts.js'
 import { fetchOzonFinanceAccrualOperations } from '../utils/ozonFinanceAccrualFetch.js';
 import { extractYmFinanceAmounts } from '../utils/ymFinanceReportAmounts.js';
 import { extractWbFinanceAmounts } from '../utils/wbFinanceReportAmounts.js';
+import { fetchWbSalesReportsDetailed } from '../utils/wbSalesReportsDetailed.js';
 import { buildOrderBreakdownFromLines, buildAmountTooltips } from '../utils/marketplaceReportBreakdown.js';
 import { attachOrderEconomics, backfillReportOrderIds } from '../utils/marketplaceOrderEconomics.js';
 import { lookupMarketplaceOrderEconomics } from '../utils/marketplaceOrderEconomicsLookup.js';
@@ -345,8 +346,10 @@ function mapWbSku(row) {
 }
 
 function mapWbProductName(row) {
-  const article = String(row?.sa_name ?? row?.sa ?? row?.supplierArticle ?? '').trim();
-  const brand = String(row?.brand_name ?? '').trim();
+  const title = String(row?.title ?? '').trim();
+  if (title) return title;
+  const article = String(row?.sa_name ?? row?.sa ?? row?.supplierArticle ?? row?.vendorCode ?? '').trim();
+  const brand = String(row?.brand_name ?? row?.brandName ?? '').trim();
   if (brand && article) return `${brand} ${article}`;
   if (article) return article;
   const subject = row?.subject_name != null ? String(row.subject_name).trim() : '';
@@ -1278,54 +1281,9 @@ async function deleteFbsLinesForPeriod(profileId, marketplace, dateFrom, dateTo)
   );
 }
 
+/** WB: finance-api v1 (старый reportDetailByPeriod отключён с 15.07.2026). */
 async function fetchWbReportDetailByPeriod(apiKey, dateFrom, dateTo) {
-  const token = String(apiKey || '').trim();
-  if (!token) throw new Error('Не настроен API-ключ Wildberries');
-
-  const allRows = [];
-  let rrdid = 0;
-  const limit = 100000;
-
-  for (let page = 0; page < 50; page += 1) {
-    const url = new URL('https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod');
-    url.searchParams.set('dateFrom', dateFrom);
-    url.searchParams.set('dateTo', dateTo);
-    url.searchParams.set('limit', String(limit));
-    url.searchParams.set('rrdid', String(rrdid));
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: { Authorization: token, Accept: 'application/json' },
-    });
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      if (response.status === 404 || page === 0) {
-        const fallbackUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/reportDetailByPeriod?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`;
-        const r2 = await fetch(fallbackUrl, {
-          method: 'GET',
-          headers: { Authorization: token, Accept: 'application/json' },
-        });
-        if (!r2.ok) {
-          throw new Error(`WB reportDetailByPeriod: ${r2.status} ${await r2.text().catch(() => '')}`);
-        }
-        const data2 = await r2.json();
-        return Array.isArray(data2) ? data2 : [];
-      }
-      throw new Error(`WB reportDetailByPeriod: ${response.status} ${errText.slice(0, 300)}`);
-    }
-
-    const data = await response.json();
-    const chunk = Array.isArray(data) ? data : [];
-    if (!chunk.length) break;
-    allRows.push(...chunk);
-    const last = chunk[chunk.length - 1];
-    const nextRrdid = last?.rrd_id ?? last?.rrdid;
-    if (nextRrdid == null || nextRrdid === rrdid || chunk.length < limit) break;
-    rrdid = nextRrdid;
-  }
-
-  return allRows;
+  return fetchWbSalesReportsDetailed(apiKey, dateFrom, dateTo);
 }
 
 /** Ozon finance: /v1/finance/accrual/* (вместо отключённого v3/transaction/list). */
