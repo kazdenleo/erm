@@ -260,6 +260,80 @@ export function ProductPricesTab({
 
       <div className="row g-3 mt-2">
         <div className="col-12">
+          <h3 className="h6 mb-0">Процент выкупа</h3>
+          <p className="text-muted small mb-0">
+            Общий — запасной для расчёта мин. цены, если по МП ещё нет статистики («нет данных»).
+            Ozon / WB / Я.Маркет обновляются раз в сутки из API (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
+          </p>
+        </div>
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="buyout_rate">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <span
+                style={{
+                  background: '#10b981',
+                  color: '#fff',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '10px',
+                  fontWeight: 600,
+                }}
+              >
+                %
+              </span>
+              Общий (средний)
+            </span>
+          </label>
+          <input
+            id="buyout_rate"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 160 }}
+            min="0"
+            max="100"
+            step="0.1"
+            value={formData.buyout_rate}
+            onChange={(e) => handleChange('buyout_rate', e.target.value)}
+            placeholder="95"
+          />
+        </div>
+        <div className="col-auto product-form-num-col">
+          <label className="form-label" htmlFor="buyout_rate_ozon">Ozon, %</label>
+          <input
+            id="buyout_rate_ozon"
+            type="number"
+            className="form-control form-control-sm"
+            readOnly
+            value={formData.buyout_rate_ozon}
+            placeholder="нет данных"
+          />
+        </div>
+        <div className="col-auto product-form-num-col">
+          <label className="form-label" htmlFor="buyout_rate_wb">WB, %</label>
+          <input
+            id="buyout_rate_wb"
+            type="number"
+            className="form-control form-control-sm"
+            readOnly
+            value={formData.buyout_rate_wb}
+            placeholder="нет данных"
+          />
+        </div>
+        <div className="col-auto product-form-num-col">
+          <label className="form-label" htmlFor="buyout_rate_ym">Я.Маркет, %</label>
+          <input
+            id="buyout_rate_ym"
+            type="number"
+            className="form-control form-control-sm"
+            readOnly
+            value={formData.buyout_rate_ym}
+            placeholder="нет данных"
+          />
+        </div>
+      </div>
+
+      <div className="row g-3 mt-2">
+        <div className="col-12">
           <h3 className="h6 mb-0">Цены карточки</h3>
           <p className="text-muted small mb-0">
             Рассчитываемые поля «до скидки» и «после скидки». При отправке на маркетплейсы обе

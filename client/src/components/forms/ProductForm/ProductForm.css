@@ -228,6 +228,50 @@
   white-space: nowrap;
 }
 
+/* Габариты слева, наши атрибуты столбцом справа */
+.product-form-dims-attrs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 12px;
+}
+
+.product-form-dims-attrs-row--with-attrs {
+  grid-template-columns: minmax(280px, 1.25fr) minmax(220px, 0.75fr);
+}
+
+.product-form-dims-attrs-row > .product-form-block {
+  margin-top: 0;
+}
+
+.product-form-dims-attrs-row > .product-form-block + .product-form-block {
+  margin-top: 0;
+}
+
+.product-form-side-attrs .row {
+  --bs-gutter-x: 0;
+  --bs-gutter-y: 0.65rem;
+}
+
+.product-form-side-attrs .row > [class*='col-'] {
+  flex: 0 0 100%;
+  width: 100%;
+  max-width: 100%;
+}
+
+.product-form-side-attrs .form-select,
+.product-form-side-attrs .form-control {
+  width: 100%;
+  max-width: 100%;
+}
+
+@media (max-width: 991.98px) {
+  .product-form-dims-attrs-row--with-attrs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .product-form textarea.form-control {
   max-width: 100%;
 }

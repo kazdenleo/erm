@@ -8531,6 +8531,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
       </div>
       </div>
 
+      <div
+        className={`product-form-dims-attrs-row${
+          visibleCategoryAttributes.length > 0 ? ' product-form-dims-attrs-row--with-attrs' : ''
+        }`}
+      >
       <div className="product-form-block product-form-dims">
         <h4 className="product-form-block__title">
           Габариты
@@ -8778,8 +8783,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
         </div>
       </div>
 
-      {visibleCategoryAttributes.length > 0 && (
-        <div className="product-form-block">
+      {visibleCategoryAttributes.length > 0 ? (
+        <div className="product-form-block product-form-side-attrs">
           <h4 className="product-form-block__title">
             Остальные атрибуты
           </h4>
@@ -8990,75 +8995,11 @@ export const ProductForm = React.forwardRef(function ProductForm({
             })}
           </div>
         </div>
-      )}
+      ) : null}
+      </div>
 
       {/* SKU перенесён рядом с названием в верхнюю строку */}
-
-      {/* Процент выкупа */}
-      <div style={{marginTop: '12px'}}>
-        <h4 style={{fontSize: '13px', fontWeight: 600, color: 'var(--text)', marginBottom: '8px'}}>
-          📊 Процент выкупа
-        </h4>
-        <div style={{marginTop: '8px'}}>
-          <label className="form-label" htmlFor="buyout_rate" style={{fontSize: '12px'}}>
-            <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
-              <span style={{background: '#10b981', color: '#fff', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 600}}>%</span>
-              Общий процент выкупа (средний)
-            </span>
-          </label>
-          <input
-            id="buyout_rate"
-            type="number"
-            className="form-control form-control-sm"
-            style={{ maxWidth: 160 }}
-            min="0"
-            max="100"
-            step="0.1"
-            value={formData.buyout_rate}
-            onChange={(e) => handleChange('buyout_rate', e.target.value)}
-            placeholder="95"
-          />
-          <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Общий — запасной для расчёта мин. цены, если по МП ещё нет статистики («нет данных»).
-            Ozon / WB / Я.Маркет обновляются раз в сутки из API (Ozon Analytics, WB Sales Funnel; Я.Маркет — по заказам FBS).
-          </div>
-          <div className="row g-2 mt-1">
-            <div className="col-auto product-form-num-col">
-              <label className="form-label" htmlFor="buyout_rate_ozon">Ozon, %</label>
-              <input
-                id="buyout_rate_ozon"
-                type="number"
-                className="form-control form-control-sm"
-                readOnly
-                value={formData.buyout_rate_ozon}
-                placeholder="нет данных"
-              />
-            </div>
-            <div className="col-auto product-form-num-col">
-              <label className="form-label" htmlFor="buyout_rate_wb">WB, %</label>
-              <input
-                id="buyout_rate_wb"
-                type="number"
-                className="form-control form-control-sm"
-                readOnly
-                value={formData.buyout_rate_wb}
-                placeholder="нет данных"
-              />
-            </div>
-            <div className="col-auto product-form-num-col">
-              <label className="form-label" htmlFor="buyout_rate_ym">Я.Маркет, %</label>
-              <input
-                id="buyout_rate_ym"
-                type="number"
-                className="form-control form-control-sm"
-                readOnly
-                value={formData.buyout_rate_ym}
-                placeholder="нет данных"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* Процент выкупа — на вкладке «Цены» */}
 
       {/* Баркоды: сначала ШК коробки, затем ШК товара */}
       <div style={{marginTop: '12px'}}>
