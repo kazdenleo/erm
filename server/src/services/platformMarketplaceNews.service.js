@@ -46,6 +46,17 @@ function stripHtml(html) {
   return String(html)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
+    // Ссылки: «текст (url)», если текст ≠ url
+    .replace(/<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
+      const label = String(inner)
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .trim();
+      const url = String(href || '').trim();
+      if (!url) return label;
+      if (!label || label === url) return url;
+      return `${label} (${url})`;
+    })
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -56,6 +67,37 @@ function stripHtml(html) {
     .replace(/\s+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Текст самого поста, не цитаты reply.
+ * В t.me/s HTML у ответов первый .tgme_widget_message_text — в блоке reply.
+ */
+export function getMainTelegramMessageTextEl(msg) {
+  if (!msg) return null;
+  const texts = msg.querySelectorAll('.tgme_widget_message_text');
+  if (!texts.length) return null;
+  for (const el of texts) {
+    try {
+      if (typeof el.closest === 'function' && el.closest('.tgme_widget_message_reply')) continue;
+    } catch {
+      // ignore
+    }
+    // Fallback без closest: обойти родителей
+    let p = el.parentNode;
+    let inReply = false;
+    while (p && p !== msg) {
+      const cls = typeof p.getAttribute === 'function' ? String(p.getAttribute('class') || '') : '';
+      if (cls.includes('tgme_widget_message_reply')) {
+        inReply = true;
+        break;
+      }
+      p = p.parentNode;
+    }
+    if (!inReply) return el;
+  }
+  // Если все тексты внутри reply — берём последний (обычно сам ответ)
+  return texts[texts.length - 1] || null;
 }
 
 function truncate(text, max = 600) {
@@ -97,7 +139,9 @@ function titleFromBody(body) {
     .map((l) => l.trim())
     .filter(Boolean);
   if (!lines.length) return 'Обновление';
-  const first = lines[0];
+  // В заголовке не дублируем длинные URL — они остаются в полном тексте
+  let first = lines[0].replace(/\s*\(https?:\/\/[^)\s]+\)/gi, '').trim();
+  if (!first) first = lines[0];
   if (first.length <= 140) return first;
   return `${first.slice(0, 137).trim()}…`;
 }
@@ -146,7 +190,7 @@ export function parseTelegramChannelHtml(html, { source, channelUrl }) {
     if (!dataPost) continue;
     const externalId = dataPost.includes('/') ? dataPost.split('/').pop() : dataPost;
 
-    const textEl = msg.querySelector('.tgme_widget_message_text');
+    const textEl = getMainTelegramMessageTextEl(msg);
     const body = stripHtml(textEl ? textEl.innerHTML : '');
     if (!body) continue;
 
@@ -333,6 +377,7 @@ export default {
   markAllMarketplaceNewsRead,
   isRelevantNews,
   stripLeadingDate,
+  getMainTelegramMessageTextEl,
   parseTelegramChannelHtml,
   parseYandexChangelogMarkdown,
 };

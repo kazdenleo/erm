@@ -36,6 +36,44 @@ describe('platformMarketplaceNews parsers', () => {
     expect(items[0].publishedAt).toBe('2026-10-15T12:00:00.000Z');
   });
 
+  test('parseTelegramChannelHtml uses reply message text, not quoted original', () => {
+    const html = `
+      <div class="tgme_widget_message" data-post="OzonSellerAPI/709">
+        <div class="tgme_widget_message_reply">
+          <div class="tgme_widget_message_text">Обновление методов работы с акциями в Seller API (v2) старый текст цитаты</div>
+        </div>
+        <div class="tgme_widget_message_text">Важное обновление: дата перенесена на 19 октября 2026 года.</div>
+        <time datetime="2026-10-14T09:30:00+00:00"></time>
+      </div>
+    `;
+    const items = parseTelegramChannelHtml(html, {
+      source: 'ozon',
+      channelUrl: 'https://t.me/s/OzonSellerAPI',
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].body).toMatch(/дата перенесена на 19 октября/);
+    expect(items[0].body).not.toMatch(/старый текст цитаты/);
+    expect(items[0].title).toMatch(/Важное обновление/);
+  });
+
+  test('parseTelegramChannelHtml keeps link urls next to labels', () => {
+    const html = `
+      <div class="tgme_widget_message" data-post="OzonSellerAPI/707">
+        <div class="tgme_widget_message_text">
+          <a href="https://docs.ozon.ru/api/seller/#operation/X">/v1/supply-order/shipment-plan-compliance/get</a>: Добавили бета-метод
+        </div>
+        <time datetime="2026-10-12T08:00:00+00:00"></time>
+      </div>
+    `;
+    const items = parseTelegramChannelHtml(html, {
+      source: 'ozon',
+      channelUrl: 'https://t.me/s/OzonSellerAPI',
+    });
+    expect(items[0].body).toContain(
+      '/v1/supply-order/shipment-plan-compliance/get (https://docs.ozon.ru/api/seller/#operation/X)'
+    );
+  });
+
   test('parseYandexChangelogMarkdown extracts sections by anchor without date-only title', () => {
     const md = `
 ### 6 октября {#06-10-26}
