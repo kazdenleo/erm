@@ -343,7 +343,7 @@ class IntegrationsService {
           await this._ozonApiPost(
             '/v4/posting/fbs/list',
             {
-              sort_dir: 'ASC',
+              dir: 'ASC',
               cursor: '',
               limit: 1,
               filter: { since, to },

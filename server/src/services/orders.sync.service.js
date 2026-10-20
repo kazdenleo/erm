@@ -2158,7 +2158,7 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
   let cursor = '';
   for (let page = 0; page < 200; page++) {
     const body = {
-      sort_dir: 'ASC',
+      dir: 'ASC',
       cursor,
       limit,
       filter: {

@@ -311,7 +311,7 @@ async function fetchOzonFbsPostingsByStatuses({ clientId, apiKey, statuses, days
             Accept: 'application/json',
           },
           body: JSON.stringify({
-            sort_dir: 'ASC',
+            dir: 'ASC',
             cursor,
             limit,
             filter: {
