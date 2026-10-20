@@ -19,6 +19,9 @@ import { ozonAssemblyStickerFromPosting, ozonPostingNumberFromOrderId } from '..
 import {
   beginOzonOrdersSyncWindow,
   endOzonOrdersSyncWindow,
+  getOzonClientCooldownRemainingMs,
+  noteOzonClientRateLimited,
+  OZON_FBS_BLACKOUT_MS,
   ozonApiPostWithRetry,
 } from '../utils/ozonSellerApi.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
@@ -2187,6 +2190,15 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
     const { client_id, api_key } = config;
     if (!client_id || !api_key) return [];
 
+    const ozonApiOpts = ozonApiOptsFromConfig(config);
+    const coolLeft = getOzonClientCooldownRemainingMs(ozonApiOpts || { ozonOverride: { client_id } });
+    if (coolLeft > 0) {
+      logger.warn(
+        `[Ozon Orders] пропуск list: Client-Id в cooldown ещё ${Math.ceil(coolLeft / 1000)}с (blackout после 429)`
+      );
+      return [];
+    }
+
     // Дать Client-Id «остыть» после stock/FBO перед первым list.
     const quietMs = Math.max(
       0,
@@ -2227,6 +2239,10 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
         );
         // Не долбить следующие чанки в том же прогоне — только усугубляет ban.
         if (String(e?.code || e?.message || '').includes('RATE_LIMIT') || /429|ограничил частоту/i.test(String(e?.message || ''))) {
+          noteOzonClientRateLimited(ozonApiOpts || { ozonOverride: { client_id } }, OZON_FBS_BLACKOUT_MS);
+          logger.warn(
+            `[Ozon Orders] blackout ${Math.round(OZON_FBS_BLACKOUT_MS / 60000)} мин — следующие синки list пропускаем`
+          );
           break;
         }
       }

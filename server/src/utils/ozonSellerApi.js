@@ -94,6 +94,21 @@ export function noteOzonClientRateLimited(clientIdOrOpts, cooldownMs = OZON_SELL
   if (until > prev) cooldownUntilByClient.set(key, until);
 }
 
+/** Сколько мс осталось до снятия cooldown (0 = можно слать). */
+export function getOzonClientCooldownRemainingMs(clientIdOrOpts) {
+  const key =
+    typeof clientIdOrOpts === 'string' || typeof clientIdOrOpts === 'number'
+      ? String(clientIdOrOpts)
+      : clientKeyFromOpts(clientIdOrOpts || {});
+  return Math.max(0, (cooldownUntilByClient.get(key) || 0) - Date.now());
+}
+
+/** Долгий blackout после исчерпания retry FBS list — иначе cron снова бьёт каждые ~5–10 мин. */
+export const OZON_FBS_BLACKOUT_MS = Math.max(
+  60_000,
+  parseInt(process.env.OZON_FBS_BLACKOUT_MS || '1800000', 10) || 1_800_000
+);
+
 export function beginOzonOrdersSyncWindow() {
   ozonOrdersSyncWindowDepth += 1;
 }
