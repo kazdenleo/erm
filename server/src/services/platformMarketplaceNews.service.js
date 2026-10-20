@@ -64,8 +64,35 @@ function truncate(text, max = 600) {
   return `${s.slice(0, max - 1).trim()}…`;
 }
 
+/** Строка целиком — дата («11 сентября 2026», «01/29/2026»). */
+const DATE_ONLY_LINE_RE =
+  /^(\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(\s+\d{4})?|\d{1,2}[./]\d{1,2}[./]\d{2,4}|january|february|march|april|may|june|july|august|september|october|november|december)\s*$/i;
+
+/** Дата в начале строки перед текстом («11 сентября 2026 /v1/...»). */
+const LEADING_DATE_RE =
+  /^(\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(\s+\d{4})?|\d{1,2}[./]\d{1,2}[./]\d{2,4})\s*([—\-–:]\s*|\s+)/i;
+
+/**
+ * Убираем дату из текста — она уже показывается отдельно в UI.
+ */
+export function stripLeadingDate(text) {
+  const original = String(text || '').trim();
+  const lines = original
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  while (lines.length && DATE_ONLY_LINE_RE.test(lines[0])) {
+    lines.shift();
+  }
+  // Весь текст был только датой — убираем её (дата уже в UI).
+  if (!lines.length) return '';
+  lines[0] = lines[0].replace(LEADING_DATE_RE, '');
+  return lines.filter(Boolean).join('\n').trim();
+}
+
 function titleFromBody(body) {
-  const lines = String(body || '')
+  const cleaned = stripLeadingDate(body);
+  const lines = String(cleaned || '')
     .split(/\n+/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -132,12 +159,14 @@ export function parseTelegramChannelHtml(html, { source, channelUrl }) {
     }
 
     const url = `https://t.me/${dataPost}`;
+    const displayBody = stripLeadingDate(body) || body;
     const title = titleFromBody(body);
     items.push({
       source,
       externalId: String(externalId),
       title,
-      summary: truncate(body, 800),
+      body: displayBody,
+      summary: truncate(displayBody, 400),
       url,
       publishedAt,
       tags: ['api'],
@@ -204,11 +233,14 @@ export function parseYandexChangelogMarkdown(md) {
       }
     }
 
+    const headingClean = stripLeadingDate(heading);
+    const bodyFull = body || headingClean || heading;
     items.push({
       source: 'yandex',
       externalId: `changelog-${anchor}`,
-      title: `Яндекс Маркет API — ${heading}`,
-      summary: truncate(body || heading, 800),
+      title: headingClean ? `Яндекс Маркет API — ${headingClean}` : 'Яндекс Маркет API',
+      body: bodyFull,
+      summary: truncate(bodyFull, 400),
       url: `https://yandex.ru/dev/market/partner-api/doc/ru/changelog/all#${anchor}`,
       publishedAt,
       tags: ['api', 'changelog'],
@@ -281,10 +313,26 @@ export async function listMarketplaceNews(params) {
   return platformMarketplaceNewsRepo.list(params);
 }
 
+export async function getMarketplaceNewsById(id, userId) {
+  return platformMarketplaceNewsRepo.getById(id, userId);
+}
+
+export async function markMarketplaceNewsRead(newsId, userId) {
+  return platformMarketplaceNewsRepo.markRead(newsId, userId);
+}
+
+export async function markAllMarketplaceNewsRead(userId, opts) {
+  return platformMarketplaceNewsRepo.markAllRead(userId, opts);
+}
+
 export default {
   syncMarketplaceNews,
   listMarketplaceNews,
+  getMarketplaceNewsById,
+  markMarketplaceNewsRead,
+  markAllMarketplaceNewsRead,
   isRelevantNews,
+  stripLeadingDate,
   parseTelegramChannelHtml,
   parseYandexChangelogMarkdown,
 };

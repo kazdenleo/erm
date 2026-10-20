@@ -14,5 +14,8 @@ router.use(requireAdmin);
 
 router.get('/', wrapAsync(controller.listNews));
 router.post('/sync', wrapAsync(controller.syncNews));
+router.post('/read-all', wrapAsync(controller.markAllRead));
+router.get('/:id', wrapAsync(controller.getNews));
+router.post('/:id/read', wrapAsync(controller.markRead));
 
 export default router;
