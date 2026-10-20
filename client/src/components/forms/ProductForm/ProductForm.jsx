@@ -1095,7 +1095,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
   okpd2_code: '',
   box_barcode: '',
   units_per_box: '',
-  box_packagings: [{ barcode: '', units_per_box: '' }],
+  box_packagings: [],
     cost: '',
   additionalExpenses: '',
     minPrice: '',
@@ -2126,8 +2126,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               : currentProduct.unitsPerBox != null && currentProduct.unitsPerBox !== ''
                 ? String(currentProduct.unitsPerBox)
                 : '';
-          // Всегда одна строка в форме — как у ШК товара: сразу можно сгенерировать и печатать.
-          return [{ barcode: bc, units_per_box: u }];
+          return bc || u ? [{ barcode: bc, units_per_box: u }] : [];
         })(),
         cost: currentProduct.cost || '',
         additionalExpenses: (() => {
@@ -6229,13 +6228,10 @@ export const ProductForm = React.forwardRef(function ProductForm({
   };
 
   const removeBoxPackagingRow = (index) => {
-    setFormData((prev) => {
-      const next = (Array.isArray(prev.box_packagings) ? prev.box_packagings : []).filter((_, i) => i !== index);
-      return {
-        ...prev,
-        box_packagings: next.length ? next : [{ barcode: '', units_per_box: '' }],
-      };
-    });
+    setFormData((prev) => ({
+      ...prev,
+      box_packagings: (Array.isArray(prev.box_packagings) ? prev.box_packagings : []).filter((_, i) => i !== index),
+    }));
   };
 
   const handleGenerateBoxBarcode = async (index) => {
@@ -9084,14 +9080,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
               Только приёмка ERM · скан = N шт. · на МП не уходит
             </span>
           </div>
+          {(Array.isArray(formData.box_packagings) ? formData.box_packagings : []).length === 0 ? (
+            <div className="text-muted" style={{ fontSize: 12, marginBottom: 4 }}>
+              Упаковок нет — приёмка только поштучно по обычному ШК.
+            </div>
+          ) : null}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(Array.isArray(formData.box_packagings) && formData.box_packagings.length
-              ? formData.box_packagings
-              : [{ barcode: '', units_per_box: '' }]
-            ).map((row, index) => {
+            {(Array.isArray(formData.box_packagings) ? formData.box_packagings : []).map((row, index) => {
               const code = String(row?.barcode || '').trim();
               const generating = boxBarcodeGeneratingIndex === index;
-              const packingRows = Array.isArray(formData.box_packagings) ? formData.box_packagings : [];
               return (
                 <div key={index} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <div className="product-form-barcode" style={{ position: 'relative', width: '18rem', maxWidth: '100%' }}>
@@ -9159,17 +9156,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   >
                     {boxBarcodePrintingIndex === index ? 'Печать…' : 'Печать'}
                   </Button>
-                  {packingRows.length > 1 ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => removeBoxPackagingRow(index)}
-                      style={{ padding: '6px 10px', fontSize: 12, color: '#fca5a5', borderColor: '#fca5a5' }}
-                      title="Удалить упаковку"
-                    >
-                      ✕
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => removeBoxPackagingRow(index)}
+                    style={{ padding: '6px 10px', fontSize: 12, color: '#fca5a5', borderColor: '#fca5a5' }}
+                    title="Удалить упаковку"
+                  >
+                    ✕
+                  </Button>
                 </div>
               );
             })}
