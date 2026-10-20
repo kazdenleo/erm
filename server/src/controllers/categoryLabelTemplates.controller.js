@@ -37,6 +37,13 @@ function normalizeElements(body) {
     titleFontSize: el.titleFontSize != null ? Number(el.titleFontSize) : undefined,
     attributeId: el.attributeId != null ? Number(el.attributeId) : undefined,
     fieldKey: el.fieldKey != null ? String(el.fieldKey) : undefined,
+    align: (() => {
+      const a = String(el.align ?? el.textAlign ?? '').trim().toLowerCase();
+      if (a === 'center' || a === 'middle') return 'center';
+      if (a === 'right' || a === 'end') return 'right';
+      if (a === 'left' || a === 'start') return 'left';
+      return undefined;
+    })(),
   }));
 }
 

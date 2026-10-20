@@ -105,6 +105,14 @@ function clampFontSize(v, fallback, max = 24) {
   return Math.min(max, Math.max(6, n));
 }
 
+function normalizeAlign(v, fallback = 'left') {
+  const a = String(v ?? '').trim().toLowerCase();
+  if (a === 'center' || a === 'middle') return 'center';
+  if (a === 'right' || a === 'end') return 'right';
+  if (a === 'left' || a === 'start') return 'left';
+  return fallback;
+}
+
 function clampElementsForSave(elements) {
   return (elements || []).map((el) => {
     const next = { ...el };
@@ -118,6 +126,7 @@ function clampElementsForSave(elements) {
       if (next.heightMm != null) {
         next.heightMm = Math.min(40, Math.max(6, Number(next.heightMm) || 12));
       }
+      next.align = normalizeAlign(next.align, 'center');
       return next;
     }
     if (
@@ -137,6 +146,10 @@ function clampElementsForSave(elements) {
       if (next.titleFontSize != null) {
         next.titleFontSize = clampFontSize(next.titleFontSize, 8, 20);
       }
+      next.align = normalizeAlign(
+        next.align,
+        el.type === 'units_per_box' ? 'center' : 'left'
+      );
     }
     return next;
   });
@@ -755,21 +768,50 @@ export function LabelConstructor() {
                       el.type === 'attribute' ||
                       el.type === 'product_field' ||
                       el.type === 'units_per_box' ? (
-                        <label className="label-constructor-mini">
-                          Шрифт
-                          <input
-                            type="number"
-                            min={6}
-                            max={24}
-                            value={el.fontSize ?? 9}
-                            onChange={(e) =>
-                              updateElement(idx, { fontSize: Number(e.target.value) || 9 })
-                            }
-                          />
-                        </label>
+                        <>
+                          <label className="label-constructor-mini">
+                            Шрифт
+                            <input
+                              type="number"
+                              min={6}
+                              max={24}
+                              value={el.fontSize ?? 9}
+                              onChange={(e) =>
+                                updateElement(idx, { fontSize: Number(e.target.value) || 9 })
+                              }
+                            />
+                          </label>
+                          <label className="label-constructor-mini">
+                            Выравнивание
+                            <select
+                              className="label-constructor-select-sm"
+                              value={normalizeAlign(
+                                el.align,
+                                el.type === 'units_per_box' ? 'center' : 'left'
+                              )}
+                              onChange={(e) => updateElement(idx, { align: e.target.value })}
+                            >
+                              <option value="left">Слева</option>
+                              <option value="center">По центру</option>
+                              <option value="right">Справа</option>
+                            </select>
+                          </label>
+                        </>
                       ) : null}
                       {el.type === 'barcode' ? (
                         <>
+                          <label className="label-constructor-mini">
+                            Выравнивание
+                            <select
+                              className="label-constructor-select-sm"
+                              value={normalizeAlign(el.align, 'center')}
+                              onChange={(e) => updateElement(idx, { align: e.target.value })}
+                            >
+                              <option value="left">Слева</option>
+                              <option value="center">По центру</option>
+                              <option value="right">Справа</option>
+                            </select>
+                          </label>
                           <label className="label-constructor-mini">
                             Ширина кода (мм)
                             <input

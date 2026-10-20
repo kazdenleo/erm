@@ -311,6 +311,16 @@ function reserveHeightBelow(elements, startIdx, ctx) {
   return total;
 }
 
+/** Выравнивание из шаблона: left | center | right → SVG text-anchor. */
+function resolveTextAlign(el, fallback = 'left') {
+  const raw = String(el?.align ?? el?.textAlign ?? fallback)
+    .trim()
+    .toLowerCase();
+  if (raw === 'center' || raw === 'middle') return 'middle';
+  if (raw === 'right' || raw === 'end') return 'end';
+  return 'start';
+}
+
 /**
  * Многострочный текст в SVG (tspan); не выходит за maxY.
  * @returns {number} y после блока (до отступа между полями)
@@ -332,7 +342,12 @@ function appendWrappedTextSvg(blocks, {
   if (!allLines.length) return y;
 
   const lineStep = fontSize + Math.max(0, lineGapPx);
-  const xAttr = textAnchor === 'middle' ? x + maxWidthPx / 2 : x;
+  const xAttr =
+    textAnchor === 'middle'
+      ? x + maxWidthPx / 2
+      : textAnchor === 'end'
+        ? x + maxWidthPx
+        : x;
   const anchorAttr = textAnchor !== 'start' ? ` text-anchor="${textAnchor}"` : '';
   const firstBaseline = y + fontSize;
 
@@ -355,8 +370,9 @@ function appendWrappedTextSvg(blocks, {
   }
   if (!lineCount) return y;
 
+  // Цифры штрихкода по центру — моноширинный; обычный текст — Arial.
   const fontFamily =
-    textAnchor === 'middle'
+    textAnchor === 'middle' && /^\d[\d\s-]*$/.test(String(text || '').trim())
       ? "Consolas, 'Courier New', monospace"
       : 'Arial, sans-serif';
   blocks.push(
@@ -522,10 +538,11 @@ function resolveBarcodeSlot(el, innerW, mmToPx) {
     Number.isFinite(wMm) && wMm > 0
       ? Math.min(innerW, Math.round(Math.min(120, Math.max(15, wMm)) * mmToPx))
       : innerW;
-  return {
-    widthPx,
-    offsetX: Math.max(0, Math.round((innerW - widthPx) / 2)),
-  };
+  const align = resolveTextAlign(el, 'center');
+  let offsetX = Math.max(0, Math.round((innerW - widthPx) / 2));
+  if (align === 'start') offsetX = 0;
+  else if (align === 'end') offsetX = Math.max(0, innerW - widthPx);
+  return { widthPx, offsetX };
 }
 
 function pickBarcodeScale(bcid, text, targetWidthPx) {
@@ -728,6 +745,7 @@ async function buildLabelSvg({
         maxWidthPx: innerW,
         maxY: Math.max(y + fs, slotMaxY),
         lineGapPx,
+        textAnchor: resolveTextAlign(el, 'left'),
       });
       y += blockGap;
     } else if (el.type === 'sku') {
@@ -747,6 +765,7 @@ async function buildLabelSvg({
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
+          textAnchor: resolveTextAlign(el, 'left'),
         });
         y += blockGap;
       }
@@ -765,7 +784,7 @@ async function buildLabelSvg({
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
-          textAnchor: 'middle',
+          textAnchor: resolveTextAlign(el, 'center'),
         });
         y += blockGap;
       }
@@ -809,7 +828,7 @@ async function buildLabelSvg({
           maxWidthPx: barWidthPx,
           maxY: slotMaxY,
           lineGapPx,
-          textAnchor: 'middle',
+          textAnchor: resolveTextAlign(el, 'center'),
         });
       }
       y += blockGap;
@@ -830,6 +849,7 @@ async function buildLabelSvg({
         maxWidthPx: innerW,
         maxY: slotMaxY,
         lineGapPx,
+        textAnchor: resolveTextAlign(el, 'left'),
       });
       y += blockGap;
     } else if (el.type === 'product_field' && el.fieldKey) {
@@ -847,6 +867,7 @@ async function buildLabelSvg({
         maxWidthPx: innerW,
         maxY: slotMaxY,
         lineGapPx,
+        textAnchor: resolveTextAlign(el, 'left'),
       });
       y += blockGap;
     } else if (el.type === 'kit_components') {
@@ -856,6 +877,7 @@ async function buildLabelSvg({
       const fs = resolveFontSizePx(el.fontSize, mmToPx);
       const titleFs = resolveFontSizePx(el.titleFontSize ?? fs, mmToPx, 20);
       const weight = el.bold ? 'bold' : 'normal';
+      const kitAlign = resolveTextAlign(el, 'left');
 
       if (el.showTitle !== false && y < slotMaxY) {
         y = appendWrappedTextSvg(blocks, {
@@ -868,6 +890,7 @@ async function buildLabelSvg({
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
+          textAnchor: kitAlign,
         });
         y += blockGap;
       }
@@ -884,6 +907,7 @@ async function buildLabelSvg({
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
+          textAnchor: kitAlign,
         });
       }
       y += blockGap;
