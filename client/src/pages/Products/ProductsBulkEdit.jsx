@@ -1755,6 +1755,21 @@ const COLUMNS = [
   /* артикулы / идентификаторы */
   { key: 'sku', label: 'Артикул', input: 'text', minW: 120, linkFieldKey: 'sku', showLinkToggles: true },
   { key: 'barcodes', label: 'ШК', title: 'Штрихкоды. Можно вставить свой или сгенерировать иконкой справа. Если пусто — перед отправкой на МП код создастся сам', input: 'textarea', minW: 148, hint: 'Через запятую или с новой строки. Свой ШК — в ячейку, новый — иконка справа' },
+  {
+    key: 'box_barcode',
+    label: 'ШК коробки',
+    title: 'Штрихкод упаковки для приёмки в ERM (на маркетплейс не отправляется). Сгенерируйте заранее иконкой справа или впишите свой',
+    input: 'text',
+    minW: 140,
+    hint: 'Только приёмка ERM · иконка справа — сгенерировать',
+  },
+  {
+    key: 'units_per_box',
+    label: 'Шт. в уп.',
+    title: 'Сколько штук добавляет скан ШК коробки в приёмке. На маркетплейс не отправляется',
+    input: 'number',
+    minW: 72,
+  },
   { key: 'id', label: 'ID', readonly: true, noBulk: true, width: 56, minW: 56 },
   {
     key: '_photo',
@@ -4054,6 +4069,22 @@ function productToRow(p, mpAttrColDefs = [], lengthUnit = 'mm', weightUnit = 'g'
     description: str(p.description),
     country_of_origin: str(p.country_of_origin),
     barcodes: formatBarcodesCell(p.barcodes),
+    box_barcode: (() => {
+      const packs = p.box_packagings ?? p.boxPackagings;
+      if (Array.isArray(packs) && packs.length) {
+        return str(packs[0]?.barcode ?? packs[0]?.box_barcode ?? '');
+      }
+      return str(p.box_barcode ?? p.boxBarcode ?? '');
+    })(),
+    units_per_box: (() => {
+      const packs = p.box_packagings ?? p.boxPackagings;
+      if (Array.isArray(packs) && packs.length) {
+        const u = packs[0]?.units_per_box ?? packs[0]?.unitsPerBox;
+        return u != null && u !== '' ? str(u) : '';
+      }
+      const u = p.units_per_box ?? p.unitsPerBox;
+      return u != null && u !== '' ? str(u) : '';
+    })(),
     sku_ozon: str(p.sku_ozon ?? p.marketplace_skus?.ozon ?? ''),
     ozon_product_id: str(p.ozon_product_id ?? p.marketplace_ozon_product_id ?? ''),
     sku_wb: str(p.sku_wb ?? p.marketplace_skus?.wb ?? ''),
@@ -4249,6 +4280,20 @@ function buildUpdatePayload(original, current, mpAttrColDefs = [], lengthUnit = 
   if (ob !== cb) {
     const nextBc = parseBarcodesCell(current.barcodes);
     if (nextBc.length) touch('barcodes', nextBc);
+  }
+
+  if (!eq(original.box_barcode, current.box_barcode)) {
+    const boxBc = str(current.box_barcode).trim();
+    touch('box_barcode', boxBc || null);
+  }
+  if (!eq(original.units_per_box, current.units_per_box)) {
+    const unitsRaw = str(current.units_per_box).trim();
+    if (unitsRaw === '') {
+      touch('units_per_box', null);
+    } else {
+      const unitsN = Math.floor(Number(unitsRaw));
+      touch('units_per_box', Number.isFinite(unitsN) && unitsN > 0 ? unitsN : null);
+    }
   }
 
   if (!eq(original.sku_ozon, current.sku_ozon)) touch('sku_ozon', normTextOrNull(current.sku_ozon));
@@ -4960,6 +5005,7 @@ function bulkRowMatchesLocalSearch(row, query) {
   const qCompact = compactSearchText(q);
   // Штрихкод — только полное совпадение, как в серверном поиске.
   if (parseBarcodesCell(row.barcodes).some((b) => str(b).trim().toLowerCase() === q)) return true;
+  if (str(row.box_barcode).trim().toLowerCase() === q) return true;
   const fields = [
     row.sku,
     row.name,
@@ -5495,6 +5541,7 @@ export function ProductsBulkEdit() {
   const [videoCoverBulkLoading, setVideoCoverBulkLoading] = useState(false);
   const [pushMpMessage, setPushMpMessage] = useState(null);
   const [barcodeGeneratingId, setBarcodeGeneratingId] = useState(null);
+  const [boxBarcodeGeneratingId, setBoxBarcodeGeneratingId] = useState(null);
   const [pullMpLoading, setPullMpLoading] = useState(null);
   const [pullMpMessage, setPullMpMessage] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -7463,6 +7510,29 @@ export function ProductsBulkEdit() {
     [updateCell]
   );
 
+  const handleGenerateBoxBarcode = useCallback(
+    async (row) => {
+      const id = row?.id;
+      if (id == null) return;
+      setBoxBarcodeGeneratingId(id);
+      try {
+        const savedId = isNewBulkRowId(id) ? undefined : id;
+        const body = await productsApi.generateBarcode({
+          productId: savedId,
+          organizationId: row.organizationId || undefined,
+        });
+        const code = coerceBarcodeString(body?.data?.barcode ?? body?.barcode ?? body?.data);
+        if (!code || isCorruptBarcodeString(code)) throw new Error('Не удалось сгенерировать штрихкод упаковки');
+        updateCell(id, 'box_barcode', code);
+      } catch (e) {
+        window.alert(e?.response?.data?.message || e?.message || 'Не удалось сгенерировать штрихкод упаковки');
+      } finally {
+        setBoxBarcodeGeneratingId(null);
+      }
+    },
+    [updateCell]
+  );
+
   /** Тумблеры в шапке: включают/выключают связь для всех строк на экране. */
   const applyBulkLinkToRow = useCallback(
     (r, fieldKey, mp, enable, supported) => {
@@ -8408,6 +8478,35 @@ export function ProductsBulkEdit() {
               e.preventDefault();
               e.stopPropagation();
               void handleGenerateBarcode(row);
+            }}
+          >
+            <BulkBarcodeGenerateIcon />
+          </button>
+        </span>
+      );
+    }
+    if (col.key === 'box_barcode') {
+      const generating = boxBarcodeGeneratingId === row.id;
+      return (
+        <span className="products-bulk-barcode-cell">
+          <input
+            {...common}
+            className={`${common.className} products-bulk-barcode-input`}
+            type="text"
+            autoComplete="off"
+            placeholder="ШК упаковки"
+          />
+          <button
+            type="button"
+            className={`products-bulk-barcode-generate${generating ? ' is-busy' : ''}`}
+            disabled={generating}
+            title="Сгенерировать штрихкод упаковки"
+            aria-label="Сгенерировать штрихкод упаковки"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleGenerateBoxBarcode(row);
             }}
           >
             <BulkBarcodeGenerateIcon />
