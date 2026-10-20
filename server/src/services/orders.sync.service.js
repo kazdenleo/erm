@@ -16,7 +16,14 @@ import integrationsService from './integrations.service.js';
 import ordersService, { orderEligibleForProcurement, isOrderTerminalNoReserve } from './orders.service.js';
 import logger from '../utils/logger.js';
 import { ozonAssemblyStickerFromPosting, ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
+
+/** Ключи Ozon из конфига синка — в общую очередь Seller API (пауза + retry 429). */
+function ozonApiOptsFromConfig(config) {
+  if (!config?.client_id || !config?.api_key) return null;
+  return { ozonOverride: { client_id: config.client_id, api_key: config.api_key } };
+}
 
 /**
  * Перед upsert: сопоставить offer/sku/штрихкод → product_id (как WB после авторезерва),
@@ -1898,35 +1905,39 @@ async function fetchOzonOrderDetailRaw(config, postingNumberRaw) {
     err.statusCode = 400;
     throw err;
   }
-  const { client_id, api_key } = config;
-  const response = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
-    method: 'POST',
-    headers: {
-      'Client-Id': String(client_id),
-      'Api-Key': String(api_key),
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      posting_number: String(posting_number),
-      with: {
-        analytics_data: false,
-        barcodes: true,
-        financial_data: false,
-        legal_info: false,
-        product_exemplars: false,
-        related_postings: true,
-        translit: false
-      }
-    })
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    const err = new Error(`Ozon API error ${response.status}: ${errorText.substring(0, 200)}`);
-    err.statusCode = response.status === 404 ? 404 : 502;
+  const ozonApiOpts = ozonApiOptsFromConfig(config);
+  if (!ozonApiOpts) {
+    const err = new Error('Ozon API не настроен');
+    err.statusCode = 400;
     throw err;
   }
-  const data = await response.json();
-  if (!data.result) {
+  let data;
+  try {
+    data = await ozonApiPostWithRetry(
+      '/v3/posting/fbs/get',
+      {
+        posting_number: String(posting_number),
+        with: {
+          analytics_data: false,
+          barcodes: true,
+          financial_data: false,
+          legal_info: false,
+          product_exemplars: false,
+          related_postings: true,
+          translit: false
+        }
+      },
+      ozonApiOpts,
+      { maxAttempts: 6 }
+    );
+  } catch (e) {
+    const upstream = e?.upstreamStatus ?? e?.statusCode ?? e?.cause?.upstreamStatus;
+    const err = new Error(e?.message || `Ozon API error: ${String(e)}`);
+    err.statusCode = upstream === 404 ? 404 : e?.statusCode === 429 ? 429 : 502;
+    err.cause = e;
+    throw err;
+  }
+  if (!data?.result) {
     const err = new Error(`Заказ ${posting_number} не найден в Ozon`);
     err.statusCode = 404;
     throw err;
@@ -2121,19 +2132,17 @@ async function persistOzonAssemblyStickersFromSyncRows(rows, profileId = null) {
 }
 
 async function fetchOzonFbsListForPeriod(config, since, to) {
-  const { client_id, api_key } = config;
+  const ozonApiOpts = ozonApiOptsFromConfig(config);
+  if (!ozonApiOpts) return [];
   const acc = [];
   let offset = 0;
   const limit = 1000;
   while (true) {
-    const response = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/list', {
-      method: 'POST',
-      headers: {
-        'Client-Id': String(client_id),
-        'Api-Key': String(api_key),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
+    // Через общую очередь Seller API: иначе параллельный push остатков/FBO даёт 429
+    // и сик FBS молча возвращает 0 заказов.
+    const data = await ozonApiPostWithRetry(
+      '/v3/posting/fbs/list',
+      {
         dir: 'ASC',
         filter: {
           since: since.toISOString(),
@@ -2147,16 +2156,11 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
           transliteration: false,
           barcodes: true
         }
-      })
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`${response.status}: ${errorText.substring(0, 400)}`);
-    }
-
-    const data = await response.json();
-    const postings = data.result?.postings ?? [];
+      },
+      ozonApiOpts,
+      { maxAttempts: 8 }
+    );
+    const postings = data?.result?.postings ?? [];
     acc.push(...postings);
     if (postings.length < limit) break;
     offset += limit;
