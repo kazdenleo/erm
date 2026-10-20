@@ -106,7 +106,7 @@ function extractOzonCreateInfoStatus(data) {
 async function pollOzonCargoesCreateInfo(
   operationId,
   ozonApiOpts,
-  { maxAttempts = 40, pollIntervalMs = 2500 } = {}
+  { maxAttempts = 24, pollIntervalMs = 4000 } = {}
 ) {
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) {

@@ -3765,7 +3765,20 @@ class IntegrationsService {
    * @param {object} body - тело запроса
    * @returns {Promise<object>} - ответ result или весь data
    */
-  async _ozonApiPost(path, body, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+  async _ozonApiPost(path, body, opts = {}) {
+    const {
+      profileId = null,
+      organizationId = null,
+      ozonOverride = null,
+      __ozonRaw = false,
+    } = opts || {};
+    // Прямые вызовы (reviews/questions/FBO import) тоже через очередь — иначе съедают лимит FBS.
+    if (!__ozonRaw) {
+      const { ozonApiPostWithRetry } = await import('../utils/ozonSellerApi.js');
+      return ozonApiPostWithRetry(path, body, { profileId, organizationId, ozonOverride }, {
+        maxAttempts: 4,
+      });
+    }
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
     const url = this._ozonSellerUrl(path);
@@ -3791,7 +3804,17 @@ class IntegrationsService {
   /**
    * GET к Ozon Seller API (справочники сертификатов и т.п.).
    */
-  async _ozonApiGet(path, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+  async _ozonApiGet(path, opts = {}) {
+    const {
+      profileId = null,
+      organizationId = null,
+      ozonOverride = null,
+      __ozonRaw = false,
+    } = opts || {};
+    if (!__ozonRaw) {
+      const { ozonApiGetWithRetry } = await import('../utils/ozonSellerApi.js');
+      return ozonApiGetWithRetry(path, { profileId, organizationId, ozonOverride }, { maxAttempts: 4 });
+    }
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
     const url = this._ozonSellerUrl(path);
@@ -3817,7 +3840,19 @@ class IntegrationsService {
    * @param {string} path
    * @param {FormData} formData — нативный FormData (Node 18+)
    */
-  async _ozonApiMultipartPost(path, formData, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
+  async _ozonApiMultipartPost(path, formData, opts = {}) {
+    const {
+      profileId = null,
+      organizationId = null,
+      ozonOverride = null,
+      __ozonRaw = false,
+    } = opts || {};
+    if (!__ozonRaw) {
+      const { ozonApiMultipartPostWithRetry } = await import('../utils/ozonSellerApi.js');
+      return ozonApiMultipartPostWithRetry(path, formData, { profileId, organizationId, ozonOverride }, {
+        maxAttempts: 3,
+      });
+    }
     const { client_id, api_key } = await this._resolveOzonCredentials({ profileId, organizationId, ozonOverride });
     const fetch = (await import('node-fetch')).default;
     const url = this._ozonSellerUrl(path);

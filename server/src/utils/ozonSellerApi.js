@@ -8,13 +8,13 @@ import integrationsService from '../services/integrations.service.js';
 /** Мин. интервал между запросами одного Client-Id (Ozon — лимит на секунду). */
 export const OZON_SELLER_API_MIN_GAP_MS = Math.max(
   400,
-  parseInt(process.env.OZON_SELLER_API_MIN_GAP_MS || '900', 10) || 900
+  parseInt(process.env.OZON_SELLER_API_MIN_GAP_MS || '1100', 10) || 1100
 );
 
 /** После 429 не бить этот Client-Id ещё N мс. */
 export const OZON_SELLER_API_COOLDOWN_MS = Math.max(
   5_000,
-  parseInt(process.env.OZON_SELLER_API_COOLDOWN_MS || '20000', 10) || 20_000
+  parseInt(process.env.OZON_SELLER_API_COOLDOWN_MS || '45000', 10) || 45_000
 );
 
 let ozonSellerApiNormalQueue = Promise.resolve();
@@ -157,27 +157,36 @@ async function waitClientGapAndCooldown(clientKey, minGapMs) {
 
 async function runWithGapAndRetry(
   callFn,
-  { maxAttempts = 6, minGapMs = OZON_SELLER_API_MIN_GAP_MS, clientKey = 'default' } = {}
+  { maxAttempts = 5, minGapMs = OZON_SELLER_API_MIN_GAP_MS, clientKey = 'default' } = {}
 ) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       return await withOzonSellerApiExecLock(async () => {
         await waitClientGapAndCooldown(clientKey, minGapMs);
-        lastAtByClient.set(clientKey, Date.now());
-        return await callFn();
+        try {
+          return await callFn();
+        } finally {
+          // Пауза от конца ответа — иначе быстрые 200 мс-запросы снова бьют per-second.
+          lastAtByClient.set(clientKey, Date.now());
+        }
       });
     } catch (e) {
       if (!isOzonRateLimitError(e) || attempt >= maxAttempts - 1) {
         if (isOzonRateLimitError(e)) {
-          noteOzonClientRateLimited(clientKey);
+          noteOzonClientRateLimited(clientKey, Math.min(90_000, OZON_SELLER_API_COOLDOWN_MS * 2));
           throw rateLimitError(e);
         }
         throw e;
       }
-      noteOzonClientRateLimited(clientKey, Math.min(60_000, OZON_SELLER_API_COOLDOWN_MS * (attempt + 1)));
-      await sleep(1000 * 2 ** attempt);
+      const coolMs = Math.min(90_000, OZON_SELLER_API_COOLDOWN_MS + attempt * 15_000);
+      noteOzonClientRateLimited(clientKey, coolMs);
+      await sleep(Math.min(30_000, 1500 * 2 ** attempt));
     }
   }
+}
+
+function withRawFlag(ozonApiOpts) {
+  return { ...(ozonApiOpts || {}), __ozonRaw: true };
 }
 
 export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
@@ -185,7 +194,7 @@ export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
   const clientKey = clientKeyFromOpts(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
-      () => integrationsService._ozonApiPost(path, body, ozonApiOpts),
+      () => integrationsService._ozonApiPost(path, body, withRawFlag(ozonApiOpts)),
       { ...retryOpts, clientKey }
     )
   );
@@ -195,7 +204,7 @@ export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
   const { priority = 'normal', ...retryOpts } = opts;
   const clientKey = clientKeyFromOpts(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
-    runWithGapAndRetry(() => integrationsService._ozonApiGet(path, ozonApiOpts), {
+    runWithGapAndRetry(() => integrationsService._ozonApiGet(path, withRawFlag(ozonApiOpts)), {
       ...retryOpts,
       clientKey,
     })
@@ -207,7 +216,7 @@ export async function ozonApiMultipartPostWithRetry(path, formData, ozonApiOpts,
   const clientKey = clientKeyFromOpts(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
-      () => integrationsService._ozonApiMultipartPost(path, formData, ozonApiOpts),
+      () => integrationsService._ozonApiMultipartPost(path, formData, withRawFlag(ozonApiOpts)),
       { maxAttempts, minGapMs, clientKey }
     )
   );

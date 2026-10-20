@@ -210,7 +210,7 @@ async function waitForNewOzonCargoIds(
   };
 }
 
-async function pollOzonTransportStatus(statusPath, operationId, ozonApiOpts, { maxAttempts = 30, intervalMs = 2000 } = {}) {
+async function pollOzonTransportStatus(statusPath, operationId, ozonApiOpts, { maxAttempts = 20, intervalMs = 4000 } = {}) {
   let last = null;
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, intervalMs));

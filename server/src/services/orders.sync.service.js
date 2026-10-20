@@ -1942,7 +1942,7 @@ async function fetchOzonOrderDetailRaw(config, postingNumberRaw) {
         }
       },
       ozonApiOpts,
-      { maxAttempts: 8, priority: 'high' }
+      { maxAttempts: 5, priority: 'high' }
     );
   } catch (e) {
     const upstream = e?.upstreamStatus ?? e?.statusCode ?? e?.cause?.upstreamStatus;
@@ -2172,7 +2172,7 @@ async function fetchOzonFbsListForPeriod(config, since, to) {
         }
       },
       ozonApiOpts,
-      { maxAttempts: 10, priority: 'high' }
+      { maxAttempts: 5, priority: 'high' }
     );
     const postings = data?.result?.postings ?? [];
     acc.push(...postings);
