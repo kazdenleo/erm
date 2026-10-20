@@ -325,7 +325,12 @@ class IntegrationsService {
     try {
       if (type === 'ozon') {
         // лёгкий запрос, который проверяет Client-Id/Api-Key
-        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, { profileId, ozonOverride: cfg });
+        // Без очереди/retry: проверка токена не должна блокировать старт scheduler на минуты.
+        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, {
+          profileId,
+          ozonOverride: cfg,
+          __ozonRaw: true,
+        });
         checks.push({ scope: 'ozon_v1', valid: true, message: 'Ozon: v1 OK (categories)' });
 
         // Важно: часть ключей может быть "валидной" для справочников/цен, но отключена для Seller Posting API,
@@ -343,7 +348,7 @@ class IntegrationsService {
               limit: 1,
               offset: 0
             },
-            { profileId, ozonOverride: cfg }
+            { profileId, ozonOverride: cfg, __ozonRaw: true }
           );
           checks.push({ scope: 'ozon_v3_postings', valid: true, message: 'Ozon: v3 OK (postings)' });
         } catch (e) {
@@ -408,7 +413,7 @@ class IntegrationsService {
               cursor: '',
               filter: { offer_id: [probeOfferId], visibility: 'ALL' },
               limit: 1
-            }, { profileId, ozonOverride: cfg });
+            }, { profileId, ozonOverride: cfg, __ozonRaw: true });
             checks.push({ scope: 'ozon_v5_prices', valid: true, message: 'Ozon: v5 OK (prices)' });
             valid = true;
             message = 'Ozon: ключ валиден';

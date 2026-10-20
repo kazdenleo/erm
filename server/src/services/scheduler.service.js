@@ -572,7 +572,8 @@ class SchedulerService {
     // Проверяем наличие комиссий WB и загружаем при необходимости
     await this.checkAndLoadInitialData();
 
-    // Однократная проверка API интеграций при старте (для уведомлений)
+    // Однократная проверка API интеграций при старте (для уведомлений).
+    // Таймаут: иначе 429/очередь Ozon могут на минуты отложить cron и deferred FBS.
     try {
       const marketplaces = ['ozon', 'wildberries', 'yandex'];
       for (const code of marketplaces) {
@@ -580,7 +581,12 @@ class SchedulerService {
           const config = await integrationsService.getMarketplaceConfig(code);
           const hasKey = config?.api_key != null && String(config.api_key).trim() !== '';
           if (!hasKey) continue;
-          await integrationsService.getMarketplaceTokenStatus(code);
+          await Promise.race([
+            integrationsService.getMarketplaceTokenStatus(code),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('startup API check timeout')), 12_000)
+            ),
+          ]);
         } catch (err) {
           logger.warn(`[Scheduler] Startup API check ${code}:`, err?.message);
         }
