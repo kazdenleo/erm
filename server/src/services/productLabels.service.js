@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
+import { packagingLabelTemplatesRepository } from '../repositories/packagingLabelTemplates.repository.pg.js';
 import productsService from './products.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { pickBarcodeForMarketplace, shouldUseBarcodeDigitFallback } from '../utils/productBarcodes.js';
@@ -213,8 +214,19 @@ function maxTextLinesForHeight(y, maxY, fontSize, lineGapPx) {
  * Минимальная высота блока (px) для планирования раскладки этикетки.
  */
 function estimateElementMinHeight(el, ctx) {
-  const { mmToPx, lineGapPx, blockGap, innerW, barcodeValue, product, attrValues, attributeNames, catAttrSet } =
-    ctx;
+  const {
+    mmToPx,
+    lineGapPx,
+    blockGap,
+    innerW,
+    barcodeValue,
+    product,
+    attrValues,
+    attributeNames,
+    catAttrSet,
+    packagingUnits,
+    isPackaging,
+  } = ctx;
   const gap = blockGap;
 
   if (el.type === 'barcode') {
@@ -226,9 +238,26 @@ function estimateElementMinHeight(el, ctx) {
     return hPx + (textUnderH ? 2 + textUnderH : 0) + gap;
   }
 
+  if (el.type === 'name') {
+    const name = String(product?.name || product?.mp_ozon_name || '').trim();
+    if (!name) return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx);
+    const lines = wrapTextLines(name, innerW, fs, Boolean(el.bold));
+    return textBlockHeight(Math.max(1, lines.length), fs, lineGapPx) + gap;
+  }
+
   if (el.type === 'sku') {
-    const sku = String(product?.sku || '').trim();
+    const sku =
+      String(product?.sku || '').trim() ||
+      (isPackaging ? String(product?.name || '').trim() : '');
     if (!sku) return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+    return textBlockHeight(1, fs, lineGapPx) + gap;
+  }
+
+  if (el.type === 'units_per_box') {
+    const units = Math.floor(Number(packagingUnits ?? 0));
+    if (!Number.isFinite(units) || units <= 0) return 0;
     const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
     return textBlockHeight(1, fs, lineGapPx) + gap;
   }
@@ -357,6 +386,35 @@ export function defaultLabelElements() {
     { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
     { id: 'barcode', type: 'barcode', enabled: true, widthMm: 54, heightMm: 14, showText: true, textFontSize: 8 },
   ];
+}
+
+/** Шаблон этикетки ШК упаковки по умолчанию (как прежний хардкод: артикул + ШК + N шт.). */
+export function defaultPackagingLabelElements() {
+  return [
+    { id: 'sku', type: 'sku', enabled: true, fontSize: 14, bold: true },
+    {
+      id: 'barcode',
+      type: 'barcode',
+      enabled: true,
+      widthMm: 54,
+      heightMm: 16,
+      showText: true,
+      textFontSize: 12,
+    },
+    { id: 'units_per_box', type: 'units_per_box', enabled: true, fontSize: 16, bold: true },
+  ];
+}
+
+export function defaultPackagingTemplate() {
+  return {
+    size_preset: '58x40',
+    margin_top_mm: 2,
+    margin_right_mm: 2,
+    margin_bottom_mm: 2,
+    margin_left_mm: 2,
+    line_gap_mm: 1,
+    elements: defaultPackagingLabelElements(),
+  };
 }
 
 function normalizeElements(elements) {
@@ -597,7 +655,15 @@ async function duplicateLabelPdf(pdfBuffer, copies) {
   return Buffer.from(await out.save());
 }
 
-async function buildLabelSvg({ template, product, attributeNames, categoryAttributeIds = null, mmToPx = MM_TO_PX, marketplace = null }) {
+async function buildLabelSvg({
+  template,
+  product,
+  attributeNames,
+  categoryAttributeIds = null,
+  mmToPx = MM_TO_PX,
+  marketplace = null,
+  packaging = null,
+}) {
   const { widthMm, heightMm, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm } = parseSize(template);
   const widthPx = Math.round(widthMm * mmToPx);
   const heightPx = Math.round(heightMm * mmToPx);
@@ -613,10 +679,13 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
   const innerW = Math.max(10, widthPx - padL - padR);
   const elements = normalizeElements(template.elements);
   const attrValues = product.attribute_values || product.attributeValues || {};
-  const barcodeValue =
-    pickBarcodeForMarketplace(product.barcodes, marketplace) ||
-    String(product.sku || '').trim() ||
-    '';
+  const packagingBarcode = packaging?.barcode != null ? String(packaging.barcode).trim() : '';
+  const packagingUnits = Math.floor(Number(packaging?.unitsPerBox ?? packaging?.units_per_box ?? 0));
+  const barcodeValue = packaging
+    ? packagingBarcode
+    : pickBarcodeForMarketplace(product.barcodes, marketplace) ||
+      String(product.sku || '').trim() ||
+      '';
 
   const lineGapPx = resolveLineGapPx(template, mmToPx);
   const blockGap = lineGapPx;
@@ -631,6 +700,8 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
     attrValues,
     attributeNames,
     catAttrSet,
+    packagingUnits: Number.isFinite(packagingUnits) && packagingUnits > 0 ? packagingUnits : null,
+    isPackaging: Boolean(packaging),
   };
 
   const blocks = [];
@@ -661,17 +732,40 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       y += blockGap;
     } else if (el.type === 'sku') {
       const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
-      const sku = String(product.sku || '').trim();
+      const sku =
+        String(product.sku || '').trim() ||
+        (packaging ? String(product.name || '').trim() : '');
       if (sku && y < slotMaxY) {
+        const weight = el.bold ? 'bold' : 'normal';
         y = appendWrappedTextSvg(blocks, {
-          text: `SKU: ${sku}`,
+          text: packaging ? sku : `SKU: ${sku}`,
           x: padL,
           y,
           fontSize: fs,
-          fill: '#333',
+          fontWeight: weight,
+          fill: packaging ? '#000' : '#333',
           maxWidthPx: innerW,
           maxY: slotMaxY,
           lineGapPx,
+        });
+        y += blockGap;
+      }
+    } else if (el.type === 'units_per_box') {
+      const units = layoutCtx.packagingUnits;
+      if (units && y < slotMaxY) {
+        const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+        const weight = el.bold ? 'bold' : 'normal';
+        y = appendWrappedTextSvg(blocks, {
+          text: `${units} шт.`,
+          x: padL,
+          y,
+          fontSize: fs,
+          fontWeight: weight,
+          fill: '#000',
+          maxWidthPx: innerW,
+          maxY: slotMaxY,
+          lineGapPx,
+          textAnchor: 'middle',
         });
         y += blockGap;
       }
@@ -873,16 +967,23 @@ function templateFromPayload(body, categoryId) {
   };
 }
 
-async function renderWithTemplate(template, product, format = 'png', { previewScale = null, marketplace = null } = {}) {
+async function renderWithTemplate(
+  template,
+  product,
+  format = 'png',
+  { previewScale = null, marketplace = null, packaging = null } = {}
+) {
   const categoryId = template.user_category_id ?? template.userCategoryId;
-  const categoryAttributeIds = await loadCategoryAttributeIds(categoryId);
-  const attrIds = (template.elements || [])
-    .filter((el) => el.type === 'attribute' && el.attributeId != null)
-    .map((el) => Number(el.attributeId))
-    .filter((id) => Number.isFinite(id));
+  const categoryAttributeIds = packaging ? [] : await loadCategoryAttributeIds(categoryId);
+  const attrIds = packaging
+    ? []
+    : (template.elements || [])
+        .filter((el) => el.type === 'attribute' && el.attributeId != null)
+        .map((el) => Number(el.attributeId))
+        .filter((id) => Number.isFinite(id));
   const attributeNames = await loadAttributeNames(attrIds);
   const mmToPx = resolveMmToPx(previewScale);
-  const productForLabel = await enrichProductForLabel(product, template);
+  const productForLabel = packaging ? product : await enrichProductForLabel(product, template);
   const { svg, widthMm, heightMm } = await buildLabelSvg({
     template,
     product: productForLabel,
@@ -890,6 +991,7 @@ async function renderWithTemplate(template, product, format = 'png', { previewSc
     categoryAttributeIds,
     mmToPx,
     marketplace,
+    packaging,
   });
   const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
   if (format === 'pdf') {
@@ -902,8 +1004,17 @@ async function renderWithTemplate(template, product, format = 'png', { previewSc
 export const productLabelsService = {
   SIZE_PRESETS,
   defaultElements: defaultLabelElements,
+  defaultPackagingElements: defaultPackagingLabelElements,
   templateFromPayload,
   buildSampleProduct,
+
+  async getPackagingTemplate(profileId = null) {
+    if (profileId != null && profileId !== '') {
+      const saved = await packagingLabelTemplatesRepository.findByProfileId(profileId);
+      if (saved) return saved;
+    }
+    return defaultPackagingTemplate();
+  },
 
   async getTemplateForProduct(product, profileId = null) {
     const categoryId = product.user_category_id ?? product.userCategoryId ?? product.categoryId;
@@ -1041,9 +1152,9 @@ export const productLabelsService = {
   },
 
   /**
-   * Этикетка ШК упаковки: штрихкод + артикул + «N шт.»
+   * Этикетка ШК упаковки по шаблону профиля (Настройки → Этикетки → Упаковка).
    * @param {number|string} productId
-   * @param {{ barcode: string, unitsPerBox?: number|string, format?: 'png'|'pdf', sizePreset?: string }} opts
+   * @param {{ barcode: string, unitsPerBox?: number|string, format?: 'png'|'pdf', profileId?: number|string|null }} opts
    */
   async renderPackagingBarcodeLabel(productId, opts = {}) {
     const barcode = String(opts.barcode || '').trim();
@@ -1059,73 +1170,79 @@ export const productLabelsService = {
       err.statusCode = 404;
       throw err;
     }
-    const presetKey = SIZE_PRESETS[opts.sizePreset] ? opts.sizePreset : '58x40';
-    const { widthMm, heightMm } = SIZE_PRESETS[presetKey];
-    const pad = Math.round(2 * MM_TO_PX);
-    const widthPx = Math.round(widthMm * MM_TO_PX);
-    const heightPx = Math.round(heightMm * MM_TO_PX);
-    const innerW = Math.max(10, widthPx - pad * 2);
-    const sku = String(product.sku || '').trim();
-    const name = String(product.name || '').trim();
-    const title = sku || name || 'Упаковка';
-    const unitsLine = Number.isFinite(units) && units > 0 ? `${units} шт.` : '';
-
-    const escapeXml = (s) =>
-      String(s || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-
-    const titleFs = 14;
-    const unitsFs = 16;
-    const codeFs = 12;
-    let y = pad + titleFs;
-    const blocks = [];
-    blocks.push(
-      `<text x="${pad}" y="${y}" font-family="Arial, Helvetica, sans-serif" font-size="${titleFs}" font-weight="bold" fill="#000">${escapeXml(title.slice(0, 48))}</text>`
-    );
-    y += 6;
-
-    const textUnderH = codeFs + 4;
-    const unitsH = unitsLine ? unitsFs + 4 : 0;
-    const barSlotH = Math.max(40, heightPx - y - pad - textUnderH - unitsH - 8);
-    const barHeightMm = barSlotH / MM_TO_PX;
-    const barcodePng = await generateBarcodePng(barcode, { widthPx: innerW, barHeightMm });
-    if (!barcodePng) {
-      const err = new Error('Не удалось сформировать штрихкод упаковки');
-      err.statusCode = 400;
-      throw err;
+    let profileId = opts.profileId ?? null;
+    if (profileId == null || profileId === '') {
+      profileId = product.profile_id ?? product.profileId ?? null;
     }
-    const fitted = await fitBarcodePngToSlot(barcodePng, innerW, barSlotH);
-    if (!fitted) {
-      const err = new Error('Не удалось вписать штрихкод на этикетку');
-      err.statusCode = 500;
-      throw err;
-    }
-    const b64 = fitted.toString('base64');
-    blocks.push(`<image x="${pad}" y="${y}" width="${innerW}" height="${barSlotH}" href="data:image/png;base64,${b64}" />`);
-    y += barSlotH + codeFs + 2;
-    blocks.push(
-      `<text x="${widthPx / 2}" y="${y}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${codeFs}" fill="#111">${escapeXml(barcode)}</text>`
-    );
-    if (unitsLine) {
-      y += unitsFs + 2;
-      blocks.push(
-        `<text x="${widthPx / 2}" y="${y}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="${unitsFs}" font-weight="bold" fill="#000">${escapeXml(unitsLine)}</text>`
-      );
+    const template = await this.getPackagingTemplate(profileId);
+    return renderWithTemplate(template, product, opts.format === 'pdf' ? 'pdf' : 'png', {
+      packaging: {
+        barcode,
+        unitsPerBox: Number.isFinite(units) && units > 0 ? units : null,
+      },
+    });
+  },
+
+  /**
+   * Предпросмотр шаблона упаковки (черновик из конструктора).
+   */
+  async renderPackagingPreview(body, { productId = null, barcode = null, unitsPerBox = null, previewScale = 4 } = {}) {
+    const template = {
+      ...defaultPackagingTemplate(),
+      size_preset: body.size_preset || body.sizePreset || '58x40',
+      width_mm: body.width_mm ?? body.widthMm ?? null,
+      height_mm: body.height_mm ?? body.heightMm ?? null,
+      margin_top_mm: Number(body.margin_top_mm ?? body.marginTopMm ?? 2),
+      margin_right_mm: Number(body.margin_right_mm ?? body.marginRightMm ?? 2),
+      margin_bottom_mm: Number(body.margin_bottom_mm ?? body.marginBottomMm ?? 2),
+      margin_left_mm: Number(body.margin_left_mm ?? body.marginLeftMm ?? 2),
+      line_gap_mm: Number(body.line_gap_mm ?? body.lineGapMm ?? 1),
+      elements:
+        Array.isArray(body.elements) && body.elements.length
+          ? body.elements
+          : defaultPackagingLabelElements(),
+    };
+
+    let product;
+    let packBarcode = barcode != null ? String(barcode).trim() : '';
+    let packUnits = Math.floor(Number(unitsPerBox ?? 0));
+
+    if (productId != null && String(productId).trim() !== '') {
+      product = await loadProductForLabel(productId);
+      if (!product) {
+        const err = new Error('Товар не найден');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (!packBarcode) {
+        const packs = product.box_packagings ?? product.boxPackagings;
+        if (Array.isArray(packs) && packs.length) {
+          packBarcode = String(packs[0]?.barcode ?? '').trim();
+          if (!Number.isFinite(packUnits) || packUnits <= 0) {
+            packUnits = Math.floor(Number(packs[0]?.units_per_box ?? packs[0]?.unitsPerBox ?? 0));
+          }
+        } else {
+          packBarcode = String(product.box_barcode ?? product.boxBarcode ?? '').trim();
+          if (!Number.isFinite(packUnits) || packUnits <= 0) {
+            packUnits = Math.floor(Number(product.units_per_box ?? product.unitsPerBox ?? 0));
+          }
+        }
+      }
+    } else {
+      product = {
+        name: 'Пример товара для этикетки упаковки',
+        sku: 'ART-BOX-001',
+        barcodes: [],
+      };
     }
 
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}">
-  <rect width="100%" height="100%" fill="#fff"/>
-  ${blocks.join('\n  ')}
-</svg>`;
-    const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
-    if (opts.format === 'pdf') {
-      const pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
-      return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm, pngBuffer };
-    }
-    return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm, pngBuffer };
+    if (!packBarcode) packBarcode = '2000000000008';
+    if (!Number.isFinite(packUnits) || packUnits <= 0) packUnits = 12;
+
+    return renderWithTemplate(template, product, 'png', {
+      previewScale,
+      packaging: { barcode: packBarcode, unitsPerBox: packUnits },
+    });
   },
 
   buildPackagingPrintHtml(productId, { barcode, unitsPerBox } = {}) {

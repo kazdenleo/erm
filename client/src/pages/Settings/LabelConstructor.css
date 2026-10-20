@@ -1,3 +1,26 @@
+.label-constructor-mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.label-constructor-mode-tab {
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--surface, #f3f4f6);
+  color: var(--text, #111827);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.label-constructor-mode-tab.is-active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
 .label-constructor .subtitle {
   margin-bottom: 16px;
 }

@@ -20,6 +20,7 @@ import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.j
 const PROFILE_SCOPED_TABLES = Object.freeze([
   'brands',
   'category_label_templates',
+  'packaging_label_templates',
   'category_rich_content_templates',
   'category_video_cover_templates',
   'employee_tasks',
@@ -62,6 +63,7 @@ const PROFILE_SCOPED_TABLES = Object.freeze([
 const TABLE_LABELS_RU = Object.freeze({
   brands: 'Бренды',
   category_label_templates: 'Шаблоны этикеток категорий',
+  packaging_label_templates: 'Шаблон этикетки ШК упаковки',
   category_rich_content_templates: 'Шаблоны Rich-контента категорий',
   category_video_cover_templates: 'Шаблоны видеообложки Ozon',
   employee_tasks: 'Задачи сотрудников',
@@ -105,7 +107,7 @@ const TABLE_CATEGORIES = Object.freeze([
   {
     key: 'products',
     label: 'Товары',
-    tables: ['products', 'brands', 'pricing_strategies', 'category_label_templates'],
+    tables: ['products', 'brands', 'pricing_strategies', 'category_label_templates', 'packaging_label_templates'],
   },
   {
     key: 'orders',

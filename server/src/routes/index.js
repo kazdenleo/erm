@@ -61,6 +61,7 @@ import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
 import marketplaceReturnClaimsRoutes from './marketplaceReturnClaims.routes.js';
 import downloadsRoutes from './downloads.routes.js';
 import categoryLabelTemplatesRoutes from './categoryLabelTemplates.routes.js';
+import packagingLabelTemplatesRoutes from './packagingLabelTemplates.routes.js';
 import categoryRichContentTemplatesRoutes from './categoryRichContentTemplates.routes.js';
 import categoryVideoCoverTemplatesRoutes from './categoryVideoCoverTemplates.routes.js';
 import productLabelsController from '../controllers/productLabels.controller.js';
@@ -329,8 +330,9 @@ router.use('/pricing-strategies', pricingStrategiesRoutes);
 // User Categories API (пользовательские категории)
 router.use('/user-categories', userCategoriesRoutes);
 
-// Шаблоны этикеток по категориям
+// Шаблоны этикеток по категориям и ШК упаковки
 router.use('/category-label-templates', categoryLabelTemplatesRoutes);
+router.use('/packaging-label-templates', packagingLabelTemplatesRoutes);
 router.use('/category-rich-content-templates', categoryRichContentTemplatesRoutes);
 router.use('/category-video-cover-templates', categoryVideoCoverTemplatesRoutes);
 

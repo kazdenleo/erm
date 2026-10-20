@@ -1,10 +1,11 @@
 /**
- * Конструктор этикеток по категориям
+ * Конструктор этикеток: товар по категориям + ШК упаковки
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { categoryLabelTemplatesApi } from '../../services/categoryLabelTemplates.api.js';
+import { packagingLabelTemplatesApi } from '../../services/packagingLabelTemplates.api.js';
 import { userCategoriesApi } from '../../services/userCategories.api.js';
 import { productAttributesApi } from '../../services/productAttributes.api.js';
 import { productsApi } from '../../services/products.api.js';
@@ -18,6 +19,14 @@ const ELEMENT_TYPES = [
   { type: 'barcode', label: 'Штрихкод' },
   { type: 'kit_components', label: 'Комплектующие (только комплект)' },
   { type: 'attribute', label: 'Атрибут карточки' },
+  { type: 'units_per_box', label: 'Шт. в упаковке' },
+];
+
+const PACKAGING_ELEMENT_TYPES = [
+  { type: 'name', label: 'Название товара' },
+  { type: 'sku', label: 'Артикул (SKU)' },
+  { type: 'barcode', label: 'ШК упаковки' },
+  { type: 'units_per_box', label: 'Шт. в упаковке' },
 ];
 
 const LABEL_PRESET_MM = {
@@ -49,9 +58,27 @@ function defaultElements(form) {
   ];
 }
 
-function normalizeTemplate(data) {
+function defaultPackagingElements(form) {
+  const innerW = innerLabelWidthMm(form);
+  return [
+    { id: 'sku', type: 'sku', enabled: true, fontSize: 14, bold: true },
+    {
+      id: 'barcode',
+      type: 'barcode',
+      enabled: true,
+      widthMm: innerW,
+      heightMm: 16,
+      showText: true,
+      textFontSize: 12,
+    },
+    { id: 'units_per_box', type: 'units_per_box', enabled: true, fontSize: 16, bold: true },
+  ];
+}
+
+function normalizeTemplate(data, { packaging = false } = {}) {
   const d = data?.data ?? data ?? {};
   const hasElementsList = Array.isArray(d.elements);
+  const fallback = packaging ? defaultPackagingElements(d) : defaultElements(d);
   return {
     size_preset: d.size_preset || d.sizePreset || '58x40',
     margin_top_mm: Number(d.margin_top_mm ?? d.marginTopMm ?? 2),
@@ -59,7 +86,7 @@ function normalizeTemplate(data) {
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
-    elements: hasElementsList ? clampElementsForSave(d.elements) : defaultElements(d),
+    elements: hasElementsList ? clampElementsForSave(d.elements) : fallback,
   };
 }
 
@@ -98,10 +125,14 @@ function clampElementsForSave(elements) {
       el.type === 'sku' ||
       el.type === 'attribute' ||
       el.type === 'product_field' ||
-      el.type === 'kit_components'
+      el.type === 'kit_components' ||
+      el.type === 'units_per_box'
     ) {
       if (next.fontSize != null) {
-        next.fontSize = clampFontSize(next.fontSize, el.type === 'name' ? 11 : 9);
+        next.fontSize = clampFontSize(
+          next.fontSize,
+          el.type === 'name' ? 11 : el.type === 'units_per_box' ? 16 : 9
+        );
       }
       if (next.titleFontSize != null) {
         next.titleFontSize = clampFontSize(next.titleFontSize, 8, 20);
@@ -125,9 +156,11 @@ function buildTemplatePayload(form) {
 }
 
 export function LabelConstructor() {
+  const [editorMode, setEditorMode] = useState('product'); // 'product' | 'packaging'
   const [categories, setCategories] = useState([]);
   const [allAttributes, setAllAttributes] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [packagingSaved, setPackagingSaved] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [form, setForm] = useState(() => normalizeTemplate({}));
   const [loading, setLoading] = useState(true);
@@ -140,8 +173,10 @@ export function LabelConstructor() {
   const [previewProductId, setPreviewProductId] = useState('');
   const [previewProductDetail, setPreviewProductDetail] = useState(null);
   const [categoryProducts, setCategoryProducts] = useState([]);
+  const [packagingProducts, setPackagingProducts] = useState([]);
   const [dragElementIndex, setDragElementIndex] = useState(null);
   const [dragOverElementIndex, setDragOverElementIndex] = useState(null);
+  const isPackaging = editorMode === 'packaging';
 
   const categoryById = useMemo(() => {
     const m = {};
@@ -201,7 +236,7 @@ export function LabelConstructor() {
   }, [loadBase]);
 
   useEffect(() => {
-    if (!selectedCategoryId) return;
+    if (isPackaging || !selectedCategoryId) return;
     let cancelled = false;
     setPreviewProductId('');
     setPreviewProductDetail(null);
@@ -225,7 +260,36 @@ export function LabelConstructor() {
     return () => {
       cancelled = true;
     };
-  }, [selectedCategoryId]);
+  }, [selectedCategoryId, isPackaging]);
+
+  useEffect(() => {
+    if (!isPackaging) return;
+    let cancelled = false;
+    setPreviewProductId('');
+    setPreviewProductDetail(null);
+    setError('');
+    (async () => {
+      try {
+        const res = await packagingLabelTemplatesApi.get();
+        if (cancelled) return;
+        setForm(normalizeTemplate(res, { packaging: true }));
+        setPackagingSaved(Boolean(res?.saved));
+      } catch (e) {
+        if (!cancelled) setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки шаблона упаковки');
+      }
+    })();
+    (async () => {
+      try {
+        const res = await productsApi.getAll({ limit: 50 });
+        if (!cancelled) setPackagingProducts((res?.data || []).slice(0, 50));
+      } catch {
+        if (!cancelled) setPackagingProducts([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPackaging]);
 
   useEffect(() => {
     if (!previewProductId) {
@@ -248,7 +312,7 @@ export function LabelConstructor() {
   }, [previewProductId]);
 
   useEffect(() => {
-    if (!selectedCategoryId) {
+    if (!isPackaging && !selectedCategoryId) {
       setPreviewUrl('');
       return undefined;
     }
@@ -259,14 +323,19 @@ export function LabelConstructor() {
       setPreviewLoading(true);
       setPreviewError('');
       try {
-        const blob = await categoryLabelTemplatesApi.preview(
-          selectedCategoryId,
-          buildTemplatePayload(form),
-          {
-            productId: previewProductId || undefined,
-            scale: 4,
-          }
-        );
+        const blob = isPackaging
+          ? await packagingLabelTemplatesApi.preview(buildTemplatePayload(form), {
+              productId: previewProductId || undefined,
+              scale: 4,
+            })
+          : await categoryLabelTemplatesApi.preview(
+              selectedCategoryId,
+              buildTemplatePayload(form),
+              {
+                productId: previewProductId || undefined,
+                scale: 4,
+              }
+            );
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
         setPreviewUrl((prev) => {
@@ -292,6 +361,7 @@ export function LabelConstructor() {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [
+    isPackaging,
     selectedCategoryId,
     previewProductId,
     form.size_preset,
@@ -386,6 +456,17 @@ export function LabelConstructor() {
     });
   };
 
+  const addUnitsPerBoxElement = () => {
+    if (hasElementType(form.elements, 'units_per_box')) return;
+    appendElement({
+      id: 'units_per_box',
+      type: 'units_per_box',
+      enabled: true,
+      fontSize: 16,
+      bold: true,
+    });
+  };
+
   const addProductFieldElement = () => {
     const first = LABEL_PRODUCT_FIELDS[0];
     if (!first) return;
@@ -452,15 +533,21 @@ export function LabelConstructor() {
   };
 
   const handleSave = async () => {
-    if (!selectedCategoryId) return;
+    if (!isPackaging && !selectedCategoryId) return;
     setSaving(true);
     setMessage('');
     setError('');
     try {
-      await categoryLabelTemplatesApi.save(selectedCategoryId, buildTemplatePayload(form));
-      setMessage('Шаблон сохранён');
-      const tplRes = await categoryLabelTemplatesApi.getAll();
-      setTemplates(tplRes?.data || []);
+      if (isPackaging) {
+        await packagingLabelTemplatesApi.save(buildTemplatePayload(form));
+        setPackagingSaved(true);
+        setMessage('Шаблон упаковки сохранён');
+      } else {
+        await categoryLabelTemplatesApi.save(selectedCategoryId, buildTemplatePayload(form));
+        setMessage('Шаблон сохранён');
+        const tplRes = await categoryLabelTemplatesApi.getAll();
+        setTemplates(tplRes?.data || []);
+      }
       setTimeout(() => setMessage(''), 3000);
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось сохранить');
@@ -468,6 +555,10 @@ export function LabelConstructor() {
       setSaving(false);
     }
   };
+
+  const elementTypeMeta = isPackaging ? PACKAGING_ELEMENT_TYPES : ELEMENT_TYPES;
+  const previewProductList = isPackaging ? packagingProducts : categoryProducts;
+  const showEditor = isPackaging || Boolean(selectedCategoryId);
 
   const previewSize = LABEL_SIZES.find((s) => s.value === form.size_preset)?.label || form.size_preset;
   const previewAspect = form.size_preset === '75x120' ? '75 / 120' : '58 / 40';
@@ -478,8 +569,30 @@ export function LabelConstructor() {
 
   return (
     <div className="label-constructor">
+      <div className="label-constructor-mode-tabs" role="tablist" aria-label="Тип этикетки">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!isPackaging}
+          className={`label-constructor-mode-tab${!isPackaging ? ' is-active' : ''}`}
+          onClick={() => setEditorMode('product')}
+        >
+          Товар
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={isPackaging}
+          className={`label-constructor-mode-tab${isPackaging ? ' is-active' : ''}`}
+          onClick={() => setEditorMode('packaging')}
+        >
+          Упаковка (ШК коробки)
+        </button>
+      </div>
       <p className="subtitle">
-        Настройте содержимое и отступы этикетки для каждой категории. При печати стикера товара используется шаблон его категории.
+        {isPackaging
+          ? 'Шаблон этикетки ШК упаковки для приёмки. Один на весь профиль — используется при печати из карточки товара.'
+          : 'Настройте содержимое и отступы этикетки для каждой категории. При печати стикера товара используется шаблон его категории.'}
       </p>
 
       {error && <p className="error label-constructor-msg">{error}</p>}
@@ -487,38 +600,48 @@ export function LabelConstructor() {
 
       <div className="label-constructor-layout">
         <div className="label-constructor-sidebar">
-          <label className="label-constructor-label" htmlFor="lc-category">
-            Категория
-          </label>
-          <select
-            id="lc-category"
-            className="label-constructor-select"
-            value={selectedCategoryId}
-            onChange={(e) => setSelectedCategoryId(e.target.value)}
-          >
-            <option value="">— выберите категорию —</option>
-            {categories.map((c) => {
-              const hasTpl = templates.some(
-                (t) => String(t.user_category_id ?? t.userCategoryId) === String(c.id)
-              );
-              return (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                  {hasTpl ? ' ✓' : ''}
-                </option>
-              );
-            })}
-          </select>
-          {selectedCategoryId && (
-            <p className="label-constructor-hint">
-              {hasSavedTemplate
-                ? 'Для категории сохранён свой шаблон.'
+          {isPackaging ? (
+            <p className="label-constructor-hint" style={{ marginTop: 0 }}>
+              {packagingSaved
+                ? 'Шаблон упаковки сохранён.'
                 : 'Шаблон не сохранён — при печати используются значения по умолчанию.'}
             </p>
+          ) : (
+            <>
+              <label className="label-constructor-label" htmlFor="lc-category">
+                Категория
+              </label>
+              <select
+                id="lc-category"
+                className="label-constructor-select"
+                value={selectedCategoryId}
+                onChange={(e) => setSelectedCategoryId(e.target.value)}
+              >
+                <option value="">— выберите категорию —</option>
+                {categories.map((c) => {
+                  const hasTpl = templates.some(
+                    (t) => String(t.user_category_id ?? t.userCategoryId) === String(c.id)
+                  );
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {hasTpl ? ' ✓' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedCategoryId && (
+                <p className="label-constructor-hint">
+                  {hasSavedTemplate
+                    ? 'Для категории сохранён свой шаблон.'
+                    : 'Шаблон не сохранён — при печати используются значения по умолчанию.'}
+                </p>
+              )}
+            </>
           )}
         </div>
 
-        {selectedCategoryId ? (
+        {showEditor ? (
           <div className="label-constructor-main">
           <div className="label-constructor-editor">
             <div className="label-constructor-row">
@@ -582,7 +705,7 @@ export function LabelConstructor() {
               </p>
               <ul className="label-constructor-elements">
                 {(form.elements || []).map((el, idx) => {
-                  const meta = ELEMENT_TYPES.find((t) => t.type === el.type);
+                  const meta = elementTypeMeta.find((t) => t.type === el.type);
                   const rowClass = [
                     'label-constructor-element',
                     dragElementIndex === idx ? 'is-dragging' : '',
@@ -630,7 +753,8 @@ export function LabelConstructor() {
                       el.type === 'sku' ||
                       el.type === 'kit_components' ||
                       el.type === 'attribute' ||
-                      el.type === 'product_field' ? (
+                      el.type === 'product_field' ||
+                      el.type === 'units_per_box' ? (
                         <label className="label-constructor-mini">
                           Шрифт
                           <input
@@ -805,15 +929,20 @@ export function LabelConstructor() {
                 ) : null}
                 {!hasElementType(form.elements, 'sku') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addSkuElement}>
-                    + SKU
+                    + {isPackaging ? 'Артикул' : 'SKU'}
                   </button>
                 ) : null}
                 {!hasElementType(form.elements, 'barcode') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addBarcodeElement}>
-                    + Штрихкод
+                    + {isPackaging ? 'ШК упаковки' : 'Штрихкод'}
                   </button>
                 ) : null}
-                {!hasElementType(form.elements, 'kit_components') ? (
+                {isPackaging && !hasElementType(form.elements, 'units_per_box') ? (
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={addUnitsPerBoxElement}>
+                    + Шт. в упаковке
+                  </button>
+                ) : null}
+                {!isPackaging && !hasElementType(form.elements, 'kit_components') ? (
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
@@ -823,33 +952,37 @@ export function LabelConstructor() {
                     + Комплектующие
                   </button>
                 ) : null}
-                {availableAttributes.length > 0 ? (
+                {!isPackaging && availableAttributes.length > 0 ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addAttributeElement}>
                     + Добавить атрибут
                   </button>
-                ) : categoryAttributeIds.length > 0 ? (
+                ) : null}
+                {!isPackaging && availableAttributes.length === 0 && categoryAttributeIds.length > 0 ? (
                   <span className="text-muted small">
                     {previewProductId
                       ? 'У выбранного товара нет заполненных атрибутов категории.'
                       : 'Выберите товар для предпросмотра или заполните атрибуты в карточках.'}
                   </span>
-                ) : (
+                ) : null}
+                {!isPackaging && availableAttributes.length === 0 && categoryAttributeIds.length === 0 ? (
                   <span className="text-muted small">К категории не прикреплены атрибуты (Настройки → Категории).</span>
-                )}
-                <button type="button" className="btn btn-secondary btn-sm" onClick={addProductFieldElement}>
-                  + Добавить поле карточки
-                </button>
+                ) : null}
+                {!isPackaging ? (
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={addProductFieldElement}>
+                    + Добавить поле карточки
+                  </button>
+                ) : null}
               </div>
               <p className="text-muted small mt-2 mb-0">
-                Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с
-                составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин.
-                чистая прибыль.
+                {isPackaging
+                  ? 'На этикетке упаковки печатаются поля шаблона: артикул/название товара, ШК коробки и количество штук в упаковке. На маркетплейс не отправляется.'
+                  : 'Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин. чистая прибыль.'}
               </p>
             </fieldset>
 
             <div className="label-constructor-actions">
               <Button type="button" variant="primary" onClick={handleSave} disabled={saving}>
-                {saving ? 'Сохранение…' : 'Сохранить шаблон'}
+                {saving ? 'Сохранение…' : isPackaging ? 'Сохранить шаблон упаковки' : 'Сохранить шаблон'}
               </Button>
             </div>
 
@@ -868,14 +1001,16 @@ export function LabelConstructor() {
                 onChange={(e) => setPreviewProductId(e.target.value)}
               >
                 <option value="">Пример (тестовые данные)</option>
-                {categoryProducts.map((p) => (
+                {previewProductList.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name || p.sku || `Товар #${p.id}`}
                   </option>
                 ))}
               </select>
-              {categoryProducts.length === 0 && (
-                <p className="label-constructor-hint">В категории нет товаров — показан пример.</p>
+              {previewProductList.length === 0 && (
+                <p className="label-constructor-hint">
+                  {isPackaging ? 'Нет товаров — показан пример.' : 'В категории нет товаров — показан пример.'}
+                </p>
               )}
             </div>
             <div
@@ -899,8 +1034,9 @@ export function LabelConstructor() {
               ) : null}
             </div>
             <p className="label-constructor-hint">
-              Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих
-              выберите комплект в списке или смотрите пример с тестовым составом.
+              {isPackaging
+                ? 'Предпросмотр увеличен. Если у товара есть ШК коробки — он подставится; иначе используются тестовые данные.'
+                : 'Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих выберите комплект в списке или смотрите пример с тестовым составом.'}
             </p>
           </aside>
           </div>

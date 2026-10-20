@@ -68,7 +68,7 @@ class ProductLabelsController {
         barcode: req.query?.barcode,
         unitsPerBox: req.query?.units ?? req.query?.units_per_box,
         format,
-        sizePreset: req.query?.size || req.query?.sizePreset,
+        profileId: resolveProfileIdForLabel(req),
       });
       res.setHeader('Content-Type', result.contentType);
       res.setHeader('Cache-Control', 'no-store');
