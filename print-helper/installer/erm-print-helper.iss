@@ -8,7 +8,7 @@
 #define MyAppExeName "erm-print-helper.exe"
 
 ; Версию можно подставлять из package.json вручную или скриптом (см. build-installer.ps1)
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 
 [Setup]
 AppId={{8B5B7F35-8A66-4A4E-A8C3-0D5C2B9F1E4A}

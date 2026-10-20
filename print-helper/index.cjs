@@ -308,8 +308,9 @@ async function printFile(filePath, printerName) {
   }
   const fullPath = path.resolve(filePath);
   const printer = printerName != null ? String(printerName).trim() : '';
-  // landscape часто даёт exit 1 на термопринтерах 58×40; сначала без поворота.
-  const settingsList = ['1,noscale', 'fit', '1,noscale,landscape'];
+  // Этикетки 58×40 (шир×выс) — landscape обязателен, иначе стикер выходит «книжкой».
+  // Без landscape оставляем только как fallback при exit code ≠ 0.
+  const settingsList = ['1,noscale,landscape', 'fit,landscape', '1,noscale', 'fit'];
   const printersToTry = printer ? [printer, ''] : [''];
   let lastErr = null;
   for (const p of printersToTry) {
