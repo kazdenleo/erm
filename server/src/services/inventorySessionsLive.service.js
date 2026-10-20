@@ -6,6 +6,10 @@ import repositoryFactory from '../config/repository-factory.js';
 import inventorySessionsService from './inventorySessions.service.js';
 import productsService from './products.service.js';
 import { coerceBarcodeString, isCorruptBarcodeString } from '../utils/productBarcodes.js';
+import {
+  boxPackagingsFromLegacy,
+  matchBoxPackaging,
+} from '../utils/productBoxPackagings.js';
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -241,6 +245,40 @@ class InventorySessionsLiveService {
     return bySku || null;
   }
 
+  /**
+   * ШК упаковки → количество штук в коробке; обычный ШК / артикул / id → null.
+   * Если ШК коробки совпал, но units_per_box не задан — 0 (ошибка в addScan).
+   */
+  _boxUnitsForScan(product, scannedCode) {
+    if (!product) return null;
+    const code = String(scannedCode || '').trim();
+    if (!code) return null;
+    const packs =
+      Array.isArray(product.box_packagings) || Array.isArray(product.boxPackagings)
+        ? product.box_packagings ?? product.boxPackagings
+        : boxPackagingsFromLegacy(product);
+    const hit = matchBoxPackaging(packs, code);
+    if (hit) {
+      const units = Math.floor(Number(hit.units_per_box) || 0);
+      return Number.isFinite(units) && units > 0 ? units : 0;
+    }
+    // barcode есть, а units отфильтровались нормализацией — всё равно считаем сканом коробки
+    const lower = code.toLowerCase();
+    const digits = code.replace(/\D+/g, '');
+    const rawList = Array.isArray(packs) ? packs : [];
+    const legacyBarcode = String(product.box_barcode ?? product.boxBarcode ?? '').trim();
+    const candidates = [
+      ...rawList.map((r) => String(r?.barcode ?? r?.box_barcode ?? r?.boxBarcode ?? '').trim()),
+      legacyBarcode,
+    ].filter(Boolean);
+    for (const box of candidates) {
+      const matched =
+        box.toLowerCase() === lower || (digits && box.replace(/\D+/g, '') === digits);
+      if (matched) return 0;
+    }
+    return null;
+  }
+
   async _warehouseQty(productId, warehouseId) {
     const pid = Number(productId);
     const wid = Number(warehouseId);
@@ -283,18 +321,44 @@ class InventorySessionsLiveService {
 
   async addScan({ sessionId, code, quantity = 1, userId = null }) {
     const s = this._getSessionStrict(sessionId);
-    const q = clampInt(quantity, 1, 1000000);
-    const product = await this._resolveProduct(code);
+    const boxes = clampInt(quantity, 1, 1000000);
+    const rawCode = String(code || '')
+      .replace(/[\r\n]+/g, '')
+      .trim();
+    const product = await this._resolveProduct(rawCode);
     if (!product?.id) {
       const err = new Error('Товар не найден');
       err.statusCode = 404;
       throw err;
     }
 
+    const boxUnits = this._boxUnitsForScan(product, coerceBarcodeString(rawCode) || rawCode);
+    let q = boxes;
+    let isBox = false;
+    if (boxUnits != null) {
+      if (boxUnits <= 0) {
+        const err = new Error(
+          'У товара указан ШК упаковки, но не задано количество штук. Заполните упаковку в карточке товара.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      q = clampInt(boxes * boxUnits, 1, 1000000);
+      isBox = true;
+    }
+
     await this._addProductScan(s, product, q, userId);
 
     this._touch(s);
-    return this._serialize(s, { sortUserId: userId });
+    return {
+      ...this._serialize(s, { sortUserId: userId }),
+      lastScan: {
+        productId: Number(product.id),
+        quantityDelta: q,
+        isBox,
+        unitsPerBox: isBox ? boxUnits : null,
+      },
+    };
   }
 
   async removeItem({ sessionId, productId }) {
@@ -333,6 +397,7 @@ class InventorySessionsLiveService {
     zeroUnlisted = null,
     note = null,
     updateSessionId = null,
+    categoryIds = undefined,
   } = {}) {
     const s = this._getSessionStrict(sessionId);
     const uid = userId != null && userId !== '' ? Number(userId) : null;
@@ -366,14 +431,20 @@ class InventorySessionsLiveService {
       updateIdRaw != null && updateIdRaw !== '' && Number.isFinite(Number(updateIdRaw))
         ? Number(updateIdRaw)
         : null;
-    const categoryIds = Array.isArray(s.categoryIds) ? s.categoryIds : [];
+    // Категории с клиента (актуальные галочки) важнее снимка на момент создания live-сессии.
+    const cats =
+      categoryIds !== undefined
+        ? inventorySessionsService.normalizeCategoryIds(categoryIds)
+        : Array.isArray(s.categoryIds)
+          ? s.categoryIds
+          : [];
 
     let result;
     if (updateId) {
       result = await inventorySessionsService.updateSession(updateId, lines, {
         profileId,
         zeroUnlisted: zeroFlag,
-        categoryIds,
+        categoryIds: cats,
       });
     } else {
       result = await inventorySessionsService.apply(lines, {
@@ -382,7 +453,7 @@ class InventorySessionsLiveService {
         note: note || null,
         warehouseId: s.warehouseId,
         zeroUnlisted: zeroFlag,
-        categoryIds,
+        categoryIds: cats,
       });
     }
     this._sessions.delete(s.id);

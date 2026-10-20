@@ -3493,6 +3493,7 @@ export function WarehouseOperations({
     const resolved = resolveProductForInventory(product);
     const live = inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim();
     const scanCode = String(code || resolved.id || '').trim();
+    const { qty, isBox } = receiptQtyForProductScan(resolved, scanCode);
     if (remove) {
       if (live) {
         const sid = String(inventoryLiveSessionId).trim();
@@ -3500,7 +3501,7 @@ export function WarehouseOperations({
         if (!existing) {
           throw new Error('Товара нет в списке пересчёта');
         }
-        const nextFact = Math.max(0, (Number(existing.fact) || 0) - 1);
+        const nextFact = Math.max(0, (Number(existing.fact) || 0) - qty);
         if (nextFact <= 0) {
           await inventorySessionsApi.removeSessionItem(sid, { productId: Number(resolved.id) });
           applyInventoryLiveStateToRows(await inventorySessionsApi.getSession(sid));
@@ -3512,20 +3513,33 @@ export function WarehouseOperations({
             })
           );
         }
-        return { fact: nextFact, removed: nextFact <= 0, product: resolved };
+        return {
+          fact: nextFact,
+          removed: nextFact <= 0,
+          product: resolved,
+          quantityDelta: -qty,
+          isBox,
+        };
       }
-      const res = await appendInventoryRowDelta(resolved, -1);
+      const res = await appendInventoryRowDelta(resolved, -qty);
       if (res?.missing) {
         throw new Error('Товара нет в списке пересчёта');
       }
-      return { ...res, product: resolved };
+      return { ...res, product: resolved, quantityDelta: -qty, isBox };
     }
     if (live) {
-      await scanInventoryLive(scanCode);
-      return { fact: null, removed: false, product: resolved };
+      const data = await scanInventoryLive(scanCode);
+      const last = data?.lastScan;
+      return {
+        fact: null,
+        removed: false,
+        product: resolved,
+        quantityDelta: Number(last?.quantityDelta) || qty,
+        isBox: Boolean(last?.isBox ?? isBox),
+      };
     }
-    const res = await appendInventoryRowDelta(resolved, 1);
-    return { ...res, product: resolved };
+    const res = await appendInventoryRowDelta(resolved, qty);
+    return { ...res, product: resolved, quantityDelta: qty, isBox };
   };
 
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
@@ -3552,25 +3566,29 @@ export function WarehouseOperations({
     setOpMessage('Поиск товара…');
     try {
       if (!remove && inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
-        await scanInventoryLive(v);
+        const data = await scanInventoryLive(v);
+        const delta = Math.abs(Number(data?.lastScan?.quantityDelta) || 1);
+        const boxHint = data?.lastScan?.isBox ? ' (коробка)' : '';
         setLookupError(null);
-        setOpMessage('Пересчёт: +1 шт');
+        setOpMessage(`Пересчёт: +${delta} шт${boxHint}`);
         playEventSound(SOUND_EVENTS.scan_ok);
         return;
       }
       const product = await fetchProductByScanCode(v);
       const res = await applyInventoryScanProduct(product, { remove, code: v });
       const label = res?.product?.name || res?.product?.sku || product.name || product.sku;
+      const delta = Math.abs(Number(res?.quantityDelta) || 1);
+      const boxHint = res?.isBox ? ' (коробка)' : '';
       setLookupError(null);
       if (remove) {
         setOpMessage(
           res?.removed
             ? `Удалено из пересчёта — ${label}`
-            : `Пересчёт: −1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+            : `Пересчёт: −${delta} шт${boxHint} — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
         );
       } else {
         setOpMessage(
-          `Пересчёт: +1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+          `Пересчёт: +${delta} шт${boxHint} — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
         );
       }
       playEventSound(SOUND_EVENTS.scan_ok);
@@ -3631,14 +3649,18 @@ export function WarehouseOperations({
       });
       const label = res?.product?.name || product.name || product.sku;
       const wasRemove = remove || (isReceiptScannerMode && inventoryRemoveMode);
+      const delta = Math.abs(Number(res?.quantityDelta) || 1);
+      const boxHint = res?.isBox ? ' (коробка)' : '';
       if (wasRemove) {
         setOpMessage(
           res?.removed
             ? `Удалено из пересчёта — ${label}`
-            : `Пересчёт: −1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+            : `Пересчёт: −${delta} шт${boxHint} — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
         );
       } else {
-        setOpMessage(`Пересчёт: +1 шт — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`);
+        setOpMessage(
+          `Пересчёт: +${delta} шт${boxHint} — ${label}${res?.fact != null ? ` (факт ${res.fact})` : ''}`
+        );
       }
       setLookupError(null);
       focusInventoryScanInput(50);
