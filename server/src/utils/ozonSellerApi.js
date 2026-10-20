@@ -69,6 +69,21 @@ function clientKeyFromOpts(ozonApiOpts) {
   return 'default';
 }
 
+/** Реальный Client-Id: иначе stock (profile:N) и FBS (client_id) жили в разных cooldown-бакетах. */
+async function resolveOzonClientKey(ozonApiOpts) {
+  const fromOpts = clientKeyFromOpts(ozonApiOpts || {});
+  if (fromOpts && !fromOpts.startsWith('profile:') && !fromOpts.startsWith('org:') && fromOpts !== 'default') {
+    return fromOpts;
+  }
+  try {
+    const { client_id } = await integrationsService._resolveOzonCredentials(ozonApiOpts || {});
+    if (client_id != null && String(client_id).trim() !== '') return String(client_id).trim();
+  } catch {
+    /* оставим fallback */
+  }
+  return fromOpts;
+}
+
 export function noteOzonClientRateLimited(clientIdOrOpts, cooldownMs = OZON_SELLER_API_COOLDOWN_MS) {
   const key =
     typeof clientIdOrOpts === 'string' || typeof clientIdOrOpts === 'number'
@@ -191,7 +206,7 @@ function withRawFlag(ozonApiOpts) {
 
 export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
   const { priority = 'normal', ...retryOpts } = opts;
-  const clientKey = clientKeyFromOpts(ozonApiOpts || {});
+  const clientKey = await resolveOzonClientKey(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
       () => integrationsService._ozonApiPost(path, body, withRawFlag(ozonApiOpts)),
@@ -202,7 +217,7 @@ export async function ozonApiPostWithRetry(path, body, ozonApiOpts, opts = {}) {
 
 export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
   const { priority = 'normal', ...retryOpts } = opts;
-  const clientKey = clientKeyFromOpts(ozonApiOpts || {});
+  const clientKey = await resolveOzonClientKey(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(() => integrationsService._ozonApiGet(path, withRawFlag(ozonApiOpts)), {
       ...retryOpts,
@@ -213,7 +228,7 @@ export async function ozonApiGetWithRetry(path, ozonApiOpts, opts = {}) {
 
 export async function ozonApiMultipartPostWithRetry(path, formData, ozonApiOpts, opts = {}) {
   const { priority = 'normal', maxAttempts = 4, minGapMs = OZON_SELLER_API_MIN_GAP_MS } = opts;
-  const clientKey = clientKeyFromOpts(ozonApiOpts || {});
+  const clientKey = await resolveOzonClientKey(ozonApiOpts || {});
   return enqueueOzonSellerApi(priority, () =>
     runWithGapAndRetry(
       () => integrationsService._ozonApiMultipartPost(path, formData, withRawFlag(ozonApiOpts)),
