@@ -1236,14 +1236,21 @@ class OrdersSyncService {
     }
 
     // Терминальные для доп. опроса WB: только доставлен/отменён («Отгружен» в ERM не блокирует синк).
+    // Лимит как у Ozon/YM catch-up: иначе тысячи /orders/status блокируют upsert Ozon на минуты.
     const finalStatuses = ['delivered', 'cancelled'];
-    const wbExistingIds = existingOrders
+    const wbExistingIdsAll = existingOrders
       .filter(o => {
         const mp = (o.marketplace || '').toLowerCase();
         return (mp === 'wb' || mp === 'wildberries') && o.status && !finalStatuses.includes(o.status);
       })
       .map(o => o.orderId ?? o.order_id)
       .filter(Boolean);
+    const wbExistingIds = wbExistingIdsAll.slice(0, catchUpLimit);
+    if (wbExistingIdsAll.length > wbExistingIds.length) {
+      logger.info(
+        `[Orders Sync] WB catch-up: ${wbExistingIds.length}/${wbExistingIdsAll.length} (лимит ${catchUpLimit})`
+      );
+    }
     if (wbExistingIds.length > 0 && wbConfig?.api_key) {
       try {
         const statuses = await fetchWBOrdersStatuses(wbConfig, wbExistingIds);
