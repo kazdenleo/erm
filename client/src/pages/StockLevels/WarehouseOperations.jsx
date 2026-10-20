@@ -569,6 +569,21 @@ export function WarehouseOperations({
     [ownWarehouses, receiptEditForm?.organizationId]
   );
   const [customerReturnList, setCustomerReturnList] = useState([]);
+  const customerReturnAddressProductIds = useMemo(
+    () =>
+      (customerReturnList || [])
+        .map((item) => Number(item.productId))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    [customerReturnList]
+  );
+  const customerReturnAddresses = useProductAddresses(customerReturnAddressProductIds);
+  const customerReturnAssignedCode = useCallback(
+    (productId) => {
+      const p = customerReturnAddresses.primaryFor(productId, customerReturnWarehouseId || null);
+      return p?.assigned ? p.code : null;
+    },
+    [customerReturnAddresses, customerReturnWarehouseId]
+  );
   const [customerReturnsInnerTab, setCustomerReturnsInnerTab] = useState('claims'); // 'claims' | 'pickup'
   const [claimsPendingCount, setClaimsPendingCount] = useState(0);
   const customerReturnScanDebounceRef = useRef(null);
@@ -2984,7 +2999,21 @@ export function WarehouseOperations({
     try {
       const product = await lookupProductByAny(v, { title: 'Выберите товар для возврата от клиента' });
       addToCustomerReturnList(product, 1);
-      setOpMessage(`В список возврата от клиента: +1 шт — ${product.name || product.sku}`);
+      let cellHint = '';
+      try {
+        const map = await addressStorageApi.lookup([product.id]);
+        const list = map?.[Number(product.id)] || [];
+        const wid = Number(customerReturnWarehouseId);
+        const own =
+          list.find((x) => x.assigned && Number(x.warehouseId) === wid) ||
+          list.find((x) => x.assigned);
+        if (own?.code) cellHint = ` → 📍 ${own.code}`;
+      } catch {
+        /* адрес необязателен для приёмки возврата */
+      }
+      setOpMessage(
+        `В список возврата от клиента: +1 шт — ${product.name || product.sku}${cellHint}`
+      );
       playEventSound(SOUND_EVENTS.scan_ok);
       clearScanField(customerReturnScanInputRef.current);
       customerReturnScanInputRef.current?.focus();
@@ -4392,6 +4421,12 @@ export function WarehouseOperations({
                   </option>
                 ))}
               </select>
+              {customerReturnAddresses.enabled ? (
+                <p className="muted-hint" style={{ margin: '6px 0 0' }}>
+                  В списке — закреплённая ячейка; если нет — можно закрепить прямо при приёмке. При оформлении
+                  (если включён учёт по ячейкам) товар попадёт в неё сам — спрашивать «куда» не нужно.
+                </p>
+              ) : null}
             </div>
           </div>
           <p className="warehouse-ops-hint">
@@ -4459,15 +4494,30 @@ export function WarehouseOperations({
                       <tr>
                         <th>Артикул</th>
                         <th>Товар</th>
+                        {customerReturnAddresses.enabled ? <th>Ячейка</th> : null}
                         <th>Кол-во</th>
                         <th></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {customerReturnList.map((item, index) => (
+                      {customerReturnList.map((item, index) => {
+                        const cellCode = customerReturnAddresses.enabled
+                          ? customerReturnAssignedCode(item.productId)
+                          : null;
+                        return (
                         <tr key={`${item.productId}-${index}`}>
                           <td className="sku-cell">{item.sku}</td>
                           <td className="name-cell">{item.name}</td>
+                          {customerReturnAddresses.enabled ? (
+                            <td>
+                              <ReceiptAssignCell
+                                warehouseId={customerReturnWarehouseId}
+                                productId={item.productId}
+                                address={cellCode}
+                                onAssigned={customerReturnAddresses.reload}
+                              />
+                            </td>
+                          ) : null}
                           <td>
                             <input
                               type="number"
@@ -4488,7 +4538,8 @@ export function WarehouseOperations({
                             </button>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

@@ -37,15 +37,23 @@
 
 .products-bulk-filters-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 12px 16px;
+  gap: 8px 12px;
   width: 100%;
 }
 
 .products-bulk-filter-item {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
+}
+
+.products-bulk-filter-item .form-select {
+  width: auto;
+  min-width: 7.25rem;
+  max-width: min(16rem, 100%);
+  field-sizing: content;
 }
 
 .products-bulk-filters-row--attrs {
@@ -57,13 +65,9 @@
 }
 
 @media (max-width: 992px) {
-  .products-bulk-filters-row {
-    flex-wrap: wrap;
-  }
-
   .products-bulk-filter-item {
-    flex: 1 1 calc(50% - 12px);
-    min-width: 160px;
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .products-bulk-filter-item--mp {
