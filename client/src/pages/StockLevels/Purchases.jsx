@@ -2876,7 +2876,13 @@ export function Purchases() {
                 </div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Принято {lastScanLine.scanned}/{lastScanLine.expected ?? '—'}
-                  {lastScanLine.over ? ' · Перескан!' : ''}
+                  {lastScanLine.over
+                    ? ` · Перескан +${Math.max(
+                        0,
+                        (Number(lastScanLine.scanned) || 0) -
+                          (Number(lastScanLine.expected) || 0)
+                      )} шт`
+                    : ''}
                   {chestnyZnakEnabled && lastScanLine.cis ? ' · КИ записан' : ''}
                 </div>
               </div>
@@ -2891,7 +2897,24 @@ export function Purchases() {
               </p>
             ) : null}
             {Array.isArray(receipt.items) && receipt.items.length > 0 ? (
+              (() => {
+                const overscanTotal = sortedReceiptItems.reduce((sum, it) => {
+                  const expected = receiptItemExpectedQty(it, { scanning: isReceiptScanning });
+                  const scanned = Number(it.scanned_quantity) || 0;
+                  if (expected == null) return sum + (scanned > 0 ? scanned : 0);
+                  return sum + Math.max(0, scanned - expected);
+                }, 0);
+                return (
               <div className="warehouse-ops-receipt-list-wrap">
+                {overscanTotal > 0 ? (
+                  <p
+                    className="warehouse-ops-hint"
+                    style={{ marginBottom: 8, color: '#b00020', fontWeight: 600 }}
+                    role="status"
+                  >
+                    Перескан: {overscanTotal} шт. сверх ожидания
+                  </p>
+                ) : null}
                 <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--purchase-scan table">
                   <thead>
                     <tr>
@@ -2902,6 +2925,9 @@ export function Purchases() {
                       <th className="warehouse-ops-receipt-num">Ожидается</th>
                       <th className="warehouse-ops-receipt-num">Было</th>
                       <th className="warehouse-ops-receipt-num">Принято</th>
+                      <th className="warehouse-ops-receipt-num" title="Сколько ещё нужно / сколько сверх плана">
+                        Осталось / перескан
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2914,10 +2940,16 @@ export function Purchases() {
                       const rec = Number(it.received_quantity);
                       const received = Number.isFinite(rec) ? rec : null;
                       const remain = expected != null ? Math.max(0, expected - scanned) : null;
-                      const diff = expected != null ? scanned - expected : null;
-                      const isOver = diff != null && diff > 0;
+                      const overQty =
+                        expected == null
+                          ? scanned > 0
+                            ? scanned
+                            : 0
+                          : Math.max(0, scanned - expected);
+                      const diff = expected != null ? scanned - expected : scanned > 0 ? scanned : null;
+                      const isOver = overQty > 0;
                       const isExact = diff != null && diff === 0 && expected !== 0;
-                      const isUnder = diff != null && diff < 0;
+                      const isUnder = remain != null && remain > 0 && scanned > 0;
                       const cellStyle = isOver
                         ? { color: '#b00020', fontWeight: 700 }
                         : isExact
@@ -2968,7 +3000,9 @@ export function Purchases() {
                             it.purchase_price ?? it.product_cost ?? '—'
                           )}
                         </td>
-                              <td className="warehouse-ops-receipt-num">{remain != null ? remain : '—'}</td>
+                              <td className="warehouse-ops-receipt-num">
+                                {expected != null ? expected : '—'}
+                              </td>
                               <td className="warehouse-ops-receipt-num muted">
                                 {received != null ? received : '—'}
                               </td>
@@ -2991,12 +3025,24 @@ export function Purchases() {
                                   scanned
                                 )}
                               </td>
+                              <td
+                                className="warehouse-ops-receipt-num"
+                                style={isOver ? { color: '#b00020', fontWeight: 700 } : undefined}
+                              >
+                                {isOver
+                                  ? `+${overQty}`
+                                  : remain != null
+                                    ? remain
+                                    : '—'}
+                              </td>
                       </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
+                );
+              })()
             ) : (
               <p className="muted">Пока ничего не отсканировано.</p>
             )}
