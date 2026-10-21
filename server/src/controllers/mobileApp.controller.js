@@ -40,10 +40,15 @@ class MobileAppController {
       const filePath = getApkPath();
       const version = info.versionCode || info.version || 'latest';
       const fileName = `erm-warehouse-${version}.apk`;
+      const size = fs.statSync(filePath).size;
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(size));
       res.setHeader('Cache-Control', 'no-cache');
-      return fs.createReadStream(filePath).pipe(res);
+      // sendFile задаёт длину и корректно отдаёт файл для установщика Android.
+      return res.sendFile(filePath, { acceptRanges: true }, (err) => {
+        if (err && !res.headersSent) next(err);
+      });
     } catch (error) {
       next(error);
     }
