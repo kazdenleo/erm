@@ -37,6 +37,10 @@
   font-weight: 600;
 }
 
+.fbo-supply-qty-with-reserve__qty--covered {
+  color: #15803d;
+}
+
 .fbo-reserve-breakdown {
   display: flex;
   flex-direction: column;
@@ -1200,6 +1204,18 @@
   overflow-y: auto;
 }
 
+.fbo-pc-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.fbo-pc-preview-search {
+  width: min(360px, 100%);
+}
+
 .fbo-pc-preview-table-wrap {
   max-height: min(48vh, 420px);
   overflow: auto;
@@ -1371,6 +1387,10 @@
   gap: 0.35rem;
   min-width: 0;
   max-width: 100%;
+}
+
+.fbo-pc-row-replace-btn {
+  flex-shrink: 0;
 }
 
 .fbo-pc-kit-header-name {

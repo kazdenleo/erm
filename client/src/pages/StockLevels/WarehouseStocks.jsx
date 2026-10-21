@@ -1722,10 +1722,7 @@ function getMovementLink(m) {
     String(purchaseId).trim() !== ''
   ) {
     return {
-      to: {
-        pathname: '/stock-levels/purchases',
-        search: `?purchase=${encodeURIComponent(String(purchaseId).trim())}&purchase_receipt=${encodeURIComponent(String(purchaseReceiptId).trim())}`,
-      },
+      to: `/stock-levels/purchases/${encodeURIComponent(String(purchaseId).trim())}/receipts/${encodeURIComponent(String(purchaseReceiptId).trim())}`,
       state: null,
       label: reasonText,
     };
@@ -1770,7 +1767,7 @@ function getMovementLink(m) {
     const purchaseId = meta.purchase_id ?? meta.purchaseId;
     if (purchaseId != null && String(purchaseId).trim() !== '') {
       return {
-        to: { pathname: '/stock-levels/purchases', search: `?purchase=${encodeURIComponent(String(purchaseId).trim())}` },
+        to: `/stock-levels/purchases/${encodeURIComponent(String(purchaseId).trim())}`,
         state: null,
         label: reasonText
       };

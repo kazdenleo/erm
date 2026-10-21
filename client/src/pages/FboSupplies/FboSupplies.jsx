@@ -335,25 +335,49 @@ export function FboSupplies() {
                   </td>
                   <td>{row.organizationName || '—'}</td>
                   <td>
-                    <div className="fbo-supply-qty-with-reserve">
-                      <span className="fbo-supply-qty-with-reserve__qty">{row.itemCount ?? '—'}</span>
-                      {reserveLoading && row.deductStock !== false ? (
-                        <span className="muted" style={{ fontSize: 11 }}>
-                          резерв…
-                        </span>
-                      ) : (
-                        <FboSupplyReserveBreakdown
-                          inline
-                          reserveDisabled={row.deductStock === false}
-                          reservedFromStock={
-                            row.reservedFromStockTotal ?? row.reserved_from_stock_total
-                          }
-                          reservedFromIncoming={
-                            row.reservedFromIncomingTotal ?? row.reserved_from_incoming_total
-                          }
-                        />
-                      )}
-                    </div>
+                    {(() => {
+                      const qty = Number(row.itemCount) || 0;
+                      const stock =
+                        Number(row.reservedFromStockTotal ?? row.reserved_from_stock_total) || 0;
+                      const path =
+                        Number(
+                          row.reservedFromIncomingTotal ?? row.reserved_from_incoming_total
+                        ) || 0;
+                      const reserveOn = row.deductStock !== false;
+                      const covered =
+                        reserveOn && !reserveLoading && qty > 0 && stock + path >= qty;
+                      return (
+                        <div className="fbo-supply-qty-with-reserve">
+                          <span
+                            className={[
+                              'fbo-supply-qty-with-reserve__qty',
+                              covered ? 'fbo-supply-qty-with-reserve__qty--covered' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                            title={
+                              covered
+                                ? 'Все позиции покрыты наличием или закупками в пути'
+                                : undefined
+                            }
+                          >
+                            {row.itemCount ?? '—'}
+                          </span>
+                          {reserveLoading && reserveOn ? (
+                            <span className="muted" style={{ fontSize: 11 }}>
+                              резерв…
+                            </span>
+                          ) : (
+                            <FboSupplyReserveBreakdown
+                              inline
+                              reserveDisabled={!reserveOn}
+                              reservedFromStock={stock}
+                              reservedFromIncoming={path}
+                            />
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <FboSupplyStatusSelect

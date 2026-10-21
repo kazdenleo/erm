@@ -237,10 +237,14 @@ export function formatProductOptionLabel(p) {
   return sku || name || `Товар #${p.id}`;
 }
 
-/** Строка поставки FBO: название, артикул, штрихкод. */
+/** Строка поставки / закупки: название, артикул, штрихкод. */
 export function supplyItemSearchHaystack(it) {
-  const name = String(it?.productName || it?.name || '').trim().toLowerCase();
-  const sku = String(it?.sku || '').trim().toLowerCase();
+  const name = String(it?.productName || it?.product_name || it?.name || '')
+    .trim()
+    .toLowerCase();
+  const sku = String(it?.sku || it?.productSku || it?.product_sku || '')
+    .trim()
+    .toLowerCase();
   const barcode = String(it?.barcode || '').trim().toLowerCase();
   const extraBarcodes = barcodeStringsFromProduct(it?.barcodes)
     .map((b) => String(b || '').trim().toLowerCase())
@@ -256,8 +260,28 @@ export function supplyItemMatchesQuery(it, query) {
   return name.includes(q) || sku.includes(q) || barcode.includes(q) || extraBarcodes.some((b) => b.includes(q));
 }
 
-export function filterSupplyItemsByQuery(items, query) {
+/**
+ * @param {object[]} items
+ * @param {string} query
+ * @param {{ productById?: Map<string, object> }} [opts] — каталог для поиска по ШК, если в строке нет barcodes
+ */
+export function filterSupplyItemsByQuery(items, query, { productById } = {}) {
   const q = normalizeProductSearchQuery(query);
   if (!q) return Array.isArray(items) ? items : [];
-  return (items || []).filter((it) => supplyItemMatchesQuery(it, q));
+  return (items || []).filter((it) => {
+    if (!productById) return supplyItemMatchesQuery(it, q);
+    const pid = it?.product_id ?? it?.productId;
+    const p = pid != null ? productById.get(String(pid)) : null;
+    if (!p) return supplyItemMatchesQuery(it, q);
+    return supplyItemMatchesQuery(
+      {
+        ...it,
+        barcodes: it.barcodes || p.barcodes,
+        barcode: it.barcode || undefined,
+        sku: it.sku || it.productSku || it.product_sku || p.sku,
+        productName: it.productName || it.product_name || p.name,
+      },
+      q
+    );
+  });
 }

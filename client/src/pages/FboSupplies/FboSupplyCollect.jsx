@@ -181,7 +181,7 @@ export function FboSupplyCollect({
         it.isKit && it.kitComponents?.length ? it.kitComponents.map((c) => c.productId) : [it.productId];
       return Math.min(...pids.map((pid) => routeFor(pid)));
     };
-    // Без остатка на складе — ниже позиций, которые можно собирать (кроме уже начатых).
+    // Есть на складе — выше; среди них по убыванию «нужно» к сборке. Без остатка и собранные — ниже.
     list = [...list].sort((a, b) => {
       const tier = (it) => {
         if (it.complete) return 3;
@@ -189,9 +189,14 @@ export function FboSupplyCollect({
         if (it.inStock === false) return 2;
         return 1;
       };
+      const needQty = (it) =>
+        Math.max(0, Number(it.remaining ?? it.planned ?? it.quantity) || 0);
       const tA = tier(a);
       const tB = tier(b);
       if (tA !== tB) return tA - tB;
+      const needA = needQty(a);
+      const needB = needQty(b);
+      if (needA !== needB) return needB - needA;
       const rA = routeOf(a);
       const rB = routeOf(b);
       if (rA !== rB) return rA < rB ? -1 : 1;

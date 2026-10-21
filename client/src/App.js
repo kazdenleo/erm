@@ -224,6 +224,8 @@ function App() {
             <Route path="suppliers" element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases/forecast" element={<ProcurementForecast />} />
+            <Route path="purchases/:purchaseId/receipts/:receiptId" element={<Purchases />} />
+            <Route path="purchases/:purchaseId" element={<Purchases />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="marking" element={<ChestnyZnakMarking />} />
             <Route path="address-storage" element={<AddressStorage />} />

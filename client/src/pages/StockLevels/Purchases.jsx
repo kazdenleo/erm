@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
 import {
+  filterSupplyItemsByQuery,
   isLikelyBarcodeScan,
   matchProductsLocal,
   mergeProductLists,
@@ -14,7 +15,7 @@ import {
   searchProductsRemote,
 } from '../../utils/productSearch';
 import { clearScanField, readScanFieldValue } from '../../utils/scanInput';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
 import { productsApi } from '../../services/products.api';
 import { PurchaseCargoReceive } from './PurchaseCargoReceive.jsx';
@@ -42,6 +43,11 @@ import { PurchaseExpectedDraftModal } from './PurchaseExpectedDraftModal.jsx';
 import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
 import { useProductAddresses } from '../../hooks/useProductAddresses';
 import { ReceiptAssignCell } from '../../components/addressStorage/ReceiptAssignCell';
+import {
+  purchaseDetailPath,
+  purchaseReceiptPath,
+  purchasesListPath,
+} from './purchasePaths.js';
 
 const RECEIPT_SCANNER_ID_LS = 'erm:purchase-receipt-scanner-id';
 
@@ -59,18 +65,6 @@ function getOrCreateScannerId() {
     /* ignore */
   }
   return next;
-}
-
-function syncPurchaseReceiptInUrl(receiptId) {
-  const rid = String(receiptId || '').trim();
-  try {
-    const url = new URL(window.location.href);
-    if (rid) url.searchParams.set('purchase_receipt', rid);
-    else url.searchParams.delete('purchase_receipt');
-    window.history.replaceState({}, '', url.toString());
-  } catch {
-    /* ignore */
-  }
 }
 
 function receiptItemRowKey(it) {
@@ -335,6 +329,18 @@ function formatSourceOrders(raw) {
 export function Purchases() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { purchaseId: purchaseIdParam, receiptId: receiptIdParam } = useParams();
+  const routePurchaseId = useMemo(() => {
+    const n = Number(purchaseIdParam);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [purchaseIdParam]);
+  const routeReceiptId = useMemo(() => {
+    const n = Number(receiptIdParam);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [receiptIdParam]);
+  const isListView = routePurchaseId == null && routeReceiptId == null;
+  const isReceiptView = routeReceiptId != null;
+  const isPurchaseView = routePurchaseId != null && !isReceiptView;
   const { user, profile } = useAuth();
   const receiptMode =
     String(profile?.purchase_receipt_mode ?? profile?.purchaseReceiptMode ?? 'scanner')
@@ -406,6 +412,9 @@ export function Purchases() {
   const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
   /** null | 'asc' | 'desc' — сортировка позиций закупки по «Ожидалось» */
   const [detailExpectedQtySort, setDetailExpectedQtySort] = useState(null);
+  const [detailItemSearch, setDetailItemSearch] = useState('');
+  /** productId, найденный по ШК в поле фильтра позиций (каталог на странице может быть пуст). */
+  const [detailItemSearchProductId, setDetailItemSearchProductId] = useState(null);
   const [lineActionBusy, setLineActionBusy] = useState(null);
   const [deletePurchaseBusy, setDeletePurchaseBusy] = useState(false);
   const detailErrRef = useRef(null);
@@ -442,6 +451,14 @@ export function Purchases() {
     return Number(receiptOwnerUserId) !== Number(currentUserId);
   }, [receiptOwnerUserId, currentUserId]);
 
+  const productsById = useMemo(() => {
+    const m = new Map();
+    for (const p of products || []) {
+      if (p?.id != null) m.set(String(p.id), p);
+    }
+    return m;
+  }, [products]);
+
   const sortedDetailItems = useMemo(() => {
     const items = detail?.items;
     if (!Array.isArray(items) || items.length === 0) return [];
@@ -460,6 +477,38 @@ export function Purchases() {
     });
   }, [detail?.items, detailExpectedQtySort]);
 
+  const detailItemSearchActive = Boolean(normalizeProductSearchQuery(detailItemSearch));
+
+  const purchaseLineMatchesDetailSearch = useCallback(
+    (it) => {
+      if (!detailItemSearchActive) return true;
+      if (
+        detailItemSearchProductId != null &&
+        String(it.product_id ?? it.productId) === String(detailItemSearchProductId)
+      ) {
+        return true;
+      }
+      return (
+        filterSupplyItemsByQuery([it], detailItemSearch, { productById: productsById }).length > 0
+      );
+    },
+    [detailItemSearch, detailItemSearchActive, detailItemSearchProductId, productsById]
+  );
+
+  const filteredSortedDetailItems = useMemo(
+    () =>
+      detailItemSearchActive
+        ? sortedDetailItems.filter((it) => purchaseLineMatchesDetailSearch(it))
+        : sortedDetailItems,
+    [sortedDetailItems, detailItemSearchActive, purchaseLineMatchesDetailSearch]
+  );
+
+  const filteredEditItemRows = useMemo(() => {
+    const rows = (editItems || []).map((it, idx) => ({ it, idx }));
+    if (!detailItemSearchActive) return rows;
+    return rows.filter(({ it }) => purchaseLineMatchesDetailSearch(it));
+  }, [editItems, detailItemSearchActive, purchaseLineMatchesDetailSearch]);
+
   const receiptAddressProductIds = useMemo(
     () =>
       (Array.isArray(receipt?.items) ? receipt.items : [])
@@ -467,7 +516,9 @@ export function Purchases() {
         .filter((n) => Number.isFinite(n) && n > 0),
     [receipt?.items]
   );
-  const receiptAddresses = useProductAddresses(receiptAddressProductIds);
+  const receiptAddresses = useProductAddresses(receiptAddressProductIds, {
+    warehouseId: receiptWarehouseId || null,
+  });
   const receiptAssignedCode = useCallback(
     (productId) => {
       const p = receiptAddresses.primaryFor(productId, receiptWarehouseId || null);
@@ -508,29 +559,79 @@ export function Purchases() {
 
   useEffect(() => {
     setDetailExpectedQtySort(null);
+    setDetailItemSearch('');
+    setDetailItemSearchProductId(null);
   }, [detail?.purchase?.id]);
+
+  useEffect(() => {
+    const q = normalizeProductSearchQuery(detailItemSearch);
+    if (!q || !isLikelyBarcodeScan(q)) {
+      setDetailItemSearchProductId(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await productsApi.getByBarcode(q);
+        const p = res?.data ?? res;
+        if (!cancelled) {
+          setDetailItemSearchProductId(p?.id != null ? String(p.id) : null);
+        }
+      } catch {
+        if (!cancelled) setDetailItemSearchProductId(null);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [detailItemSearch]);
 
   useEffect(() => {
     setReceiptScannedQtySort(null);
   }, [receipt?.receipt?.id]);
 
+  // Старые ссылки ?purchase= / ?purchase_receipt= → канонические пути страниц.
   useEffect(() => {
     const sp = new URLSearchParams(location.search);
     const purchaseRaw = String(sp.get('purchase') || '').trim();
-    if (purchaseRaw && /^\d+$/.test(purchaseRaw)) {
-      const pid = Number(purchaseRaw);
-      if (Number.isFinite(pid) && pid > 0 && Number(detail?.purchase?.id) !== pid) {
-        openDetail(pid);
-      }
-    }
     const ridRaw = String(sp.get('purchase_receipt') || '').trim();
-    if (!ridRaw || !/^\d+$/.test(ridRaw)) return;
-    const rid = Number(ridRaw);
-    if (!Number.isFinite(rid) || rid < 1) return;
-    if (Number(receipt?.receipt?.id) === rid) return;
-    openReceipt(rid);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search]);
+    if (!purchaseRaw && !ridRaw) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      if (ridRaw && /^\d+$/.test(ridRaw)) {
+        const rid = Number(ridRaw);
+        if (purchaseRaw && /^\d+$/.test(purchaseRaw)) {
+          navigate(purchaseReceiptPath(purchaseRaw, rid), { replace: true });
+          return;
+        }
+        try {
+          const data = await purchasesApi.getReceipt(rid);
+          const pid = Number(data?.receipt?.purchase_id);
+          if (cancelled) return;
+          if (Number.isFinite(pid) && pid > 0) {
+            navigate(purchaseReceiptPath(pid, rid), { replace: true });
+          }
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      if (purchaseRaw && /^\d+$/.test(purchaseRaw) && routePurchaseId == null) {
+        navigate(purchaseDetailPath(purchaseRaw), { replace: true });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.search, navigate, routePurchaseId]);
+
+  useEffect(() => {
+    const openId = location.state?.openPurchaseId;
+    if (openId == null || openId === '') return;
+    navigate(purchaseDetailPath(openId), { replace: true, state: {} });
+  }, [location.state, navigate]);
 
   useEffect(() => {
     const rid = receipt?.receipt?.id;
@@ -743,9 +844,14 @@ export function Purchases() {
       setReceiptCloseConfirm(true);
       return;
     }
-    syncPurchaseReceiptInUrl('');
+    const pid =
+      receipt?.receipt?.purchase_id != null
+        ? Number(receipt.receipt.purchase_id)
+        : routePurchaseId;
     setReceipt(null);
-  }, [receipt?.receipt?.status]);
+    if (Number.isFinite(pid) && pid > 0) navigate(purchaseDetailPath(pid));
+    else navigate(purchasesListPath());
+  }, [receipt?.receipt?.status, receipt?.receipt?.purchase_id, routePurchaseId, navigate]);
 
   const createSupplierPrefixes = useMemo(() => {
     if (!createSupplierId) return [];
@@ -1089,21 +1195,37 @@ export function Purchases() {
     }
   }, [err, detail]);
 
-  const openDetail = async (id) => {
-    setErr(null);
-    setDetailLoading(true);
-    setDetail(null);
-    setEditOriginal(null);
-    try {
-      const data = await purchasesApi.getById(id);
-      setDetail(data);
-      syncPurchaseDraftFromDetail(data);
-    } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось загрузить закупку');
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+  const loadDetail = useCallback(
+    async (id) => {
+      const pid = Number(id);
+      if (!Number.isFinite(pid) || pid < 1) return null;
+      setErr(null);
+      setDetailLoading(true);
+      try {
+        const data = await purchasesApi.getById(pid);
+        setDetail(data);
+        syncPurchaseDraftFromDetail(data);
+        return data;
+      } catch (e) {
+        setErr(e.response?.data?.message || e.message || 'Не удалось загрузить закупку');
+        setDetail(null);
+        setEditOriginal(null);
+        return null;
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [syncPurchaseDraftFromDetail]
+  );
+
+  const openDetail = useCallback(
+    (id, { replace = false } = {}) => {
+      const pid = Number(id);
+      if (!Number.isFinite(pid) || pid < 1) return;
+      navigate(purchaseDetailPath(pid), replace ? { replace: true } : undefined);
+    },
+    [navigate]
+  );
 
   const requestCloseDetail = useCallback(() => {
     if (
@@ -1116,83 +1238,19 @@ export function Purchases() {
     setEditOriginal(null);
     setEditItems([]);
     closeEditModal();
-  }, [purchaseDraftDirty, closeEditModal]);
+    navigate(purchasesListPath());
+  }, [purchaseDraftDirty, closeEditModal, navigate]);
 
-  const startPurchaseReceipt = useCallback(
-    async ({ forceNew = false } = {}) => {
-      const purchaseId = detail?.purchase?.id;
-      if (!purchaseId) return null;
-      setCreateReceiptBusy(true);
-      try {
-        setErr(null);
-        const r = await purchasesApi.createReceipt(purchaseId, forceNew ? { forceNew: true } : {});
-        await openDetail(purchaseId);
-        await openReceipt(r.id);
-        return r;
-      } catch (ex) {
-        setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
-        return null;
-      } finally {
-        setCreateReceiptBusy(false);
-      }
-    },
-    // openDetail/openReceipt ниже по файлу — стабильные колбэки не требуются
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [detail?.purchase?.id]
-  );
-
-  const handleDeletePurchaseReceipt = useCallback(
-    async (receiptRow, { closeModal = false } = {}) => {
-      const rid = receiptRow?.id;
-      if (!rid) return;
-      const completed = String(receiptRow.status) === 'completed';
-      const msg = completed
-        ? `Отменить приёмку №${rid}? Остатки и «в пути» будут откачены; приёмка останется в списке со статусом «отменена».`
-        : `Удалить приёмку №${rid} (сканирование)? Черновик и строки складской приёмки будут сняты.`;
-      if (!window.confirm(msg)) return;
-      try {
-        setDeleteReceiptBusy(rid);
-        setErr(null);
-        await purchasesApi.deleteReceipt(rid);
-        if (closeModal || Number(receipt?.receipt?.id) === Number(rid)) {
-          syncPurchaseReceiptInUrl('');
-          setReceipt(null);
-          setScanMsg(null);
-          setReceiptCloseConfirm(false);
-        }
-        if (detail?.purchase?.id) await openDetail(detail.purchase.id);
-        await reload();
-      } catch (ex) {
-        setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить приёмку');
-      } finally {
-        setDeleteReceiptBusy(null);
-      }
-    },
-    [detail?.purchase?.id, receipt?.receipt?.id, reload]
-  );
-
-  const openReceipt = async (receiptId) => {
-    const rid = Number(receiptId);
-    if (!Number.isFinite(rid) || rid < 1) return;
-    setReceiptLoading(true);
-    setErr(null);
-    try {
-      const data = await purchasesApi.getReceipt(rid);
-      if (!data?.receipt?.id) {
-        setErr('Приёмка не найдена или недоступна');
-        return;
-      }
+  const applyReceiptPayload = useCallback(
+    (data) => {
+      if (!data?.receipt?.id) return;
       setReceipt(data);
       setReceiptRemoveMode(false);
-      syncPurchaseReceiptInUrl(data.receipt.id);
       setScanMsg(null);
       setLastScanLine(null);
       setReceiptScanQuery('');
       const p = data?.purchase || {};
       const dp = detail?.purchase;
-      if (p.id != null && Number(dp?.id) !== Number(p.id)) {
-        await openDetail(p.id);
-      }
       setReceiptWarehouseId(
         p.warehouseId != null
           ? String(p.warehouseId)
@@ -1217,12 +1275,168 @@ export function Purchases() {
       if (String(data.receipt.status) === 'scanning') {
         setTimeout(() => scanRef.current?.focus(), 80);
       }
-    } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось открыть приёмку');
-    } finally {
-      setReceiptLoading(false);
+    },
+    [detail?.purchase, singleWarehouseId]
+  );
+
+  const loadReceipt = useCallback(
+    async (receiptId) => {
+      const rid = Number(receiptId);
+      if (!Number.isFinite(rid) || rid < 1) return null;
+      setReceiptLoading(true);
+      setErr(null);
+      try {
+        const data = await purchasesApi.getReceipt(rid);
+        if (!data?.receipt?.id) {
+          setErr('Приёмка не найдена или недоступна');
+          return null;
+        }
+        applyReceiptPayload(data);
+        const pid = Number(data.receipt.purchase_id);
+        if (Number.isFinite(pid) && pid > 0 && Number(detail?.purchase?.id) !== pid) {
+          await loadDetail(pid);
+        }
+        return data;
+      } catch (e) {
+        setErr(e.response?.data?.message || e.message || 'Не удалось открыть приёмку');
+        return null;
+      } finally {
+        setReceiptLoading(false);
+      }
+    },
+    [applyReceiptPayload, detail?.purchase?.id, loadDetail]
+  );
+
+  const openReceipt = useCallback(
+    (receiptId, purchaseId = null) => {
+      const rid = Number(receiptId);
+      if (!Number.isFinite(rid) || rid < 1) return;
+      const pid = Number(purchaseId ?? detail?.purchase?.id ?? routePurchaseId);
+      if (Number.isFinite(pid) && pid > 0) {
+        navigate(purchaseReceiptPath(pid, rid));
+        return;
+      }
+      void (async () => {
+        const data = await loadReceipt(rid);
+        const fromApi = Number(data?.receipt?.purchase_id);
+        if (Number.isFinite(fromApi) && fromApi > 0) {
+          navigate(purchaseReceiptPath(fromApi, rid), { replace: true });
+        }
+      })();
+    },
+    [detail?.purchase?.id, routePurchaseId, navigate, loadReceipt]
+  );
+
+  const startPurchaseReceipt = useCallback(
+    async ({ forceNew = false } = {}) => {
+      const purchaseId = detail?.purchase?.id ?? routePurchaseId;
+      if (!purchaseId) return null;
+      setCreateReceiptBusy(true);
+      try {
+        setErr(null);
+        const r = await purchasesApi.createReceipt(purchaseId, forceNew ? { forceNew: true } : {});
+        navigate(purchaseReceiptPath(purchaseId, r.id));
+        return r;
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
+        return null;
+      } finally {
+        setCreateReceiptBusy(false);
+      }
+    },
+    [detail?.purchase?.id, routePurchaseId, navigate]
+  );
+
+  const handleDeletePurchaseReceipt = useCallback(
+    async (receiptRow, { closeModal = false } = {}) => {
+      const rid = receiptRow?.id;
+      if (!rid) return;
+      const completed = String(receiptRow.status) === 'completed';
+      const msg = completed
+        ? `Отменить приёмку №${rid}? Остатки и «в пути» будут откачены; приёмка останется в списке со статусом «отменена».`
+        : `Удалить приёмку №${rid} (сканирование)? Черновик и строки складской приёмки будут сняты.`;
+      if (!window.confirm(msg)) return;
+      const pid =
+        detail?.purchase?.id ??
+        receiptRow?.purchase_id ??
+        receipt?.receipt?.purchase_id ??
+        routePurchaseId;
+      try {
+        setDeleteReceiptBusy(rid);
+        setErr(null);
+        await purchasesApi.deleteReceipt(rid);
+        if (closeModal || Number(receipt?.receipt?.id) === Number(rid)) {
+          setReceipt(null);
+          setScanMsg(null);
+          setReceiptCloseConfirm(false);
+          if (Number.isFinite(Number(pid)) && Number(pid) > 0) {
+            navigate(purchaseDetailPath(pid));
+          } else {
+            navigate(purchasesListPath());
+          }
+        } else if (Number.isFinite(Number(pid)) && Number(pid) > 0) {
+          await loadDetail(pid);
+        }
+        await reload();
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить приёмку');
+      } finally {
+        setDeleteReceiptBusy(null);
+      }
+    },
+    [
+      detail?.purchase?.id,
+      receipt?.receipt?.id,
+      receipt?.receipt?.purchase_id,
+      routePurchaseId,
+      reload,
+      loadDetail,
+      navigate,
+    ]
+  );
+
+  useEffect(() => {
+    if (routePurchaseId == null) {
+      if (isListView) {
+        setDetail(null);
+        setEditOriginal(null);
+        setEditItems([]);
+        closeEditModal();
+      }
+      return undefined;
     }
-  };
+    if (Number(detail?.purchase?.id) === routePurchaseId) return undefined;
+    let cancelled = false;
+    (async () => {
+      await loadDetail(routePurchaseId);
+      if (cancelled) return;
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routePurchaseId, isListView]);
+
+  useEffect(() => {
+    if (routeReceiptId == null) {
+      if (!isReceiptView) {
+        setReceipt(null);
+        setScanMsg(null);
+        setReceiptCloseConfirm(false);
+      }
+      return undefined;
+    }
+    if (Number(receipt?.receipt?.id) === routeReceiptId) return undefined;
+    let cancelled = false;
+    (async () => {
+      await loadReceipt(routeReceiptId);
+      if (cancelled) return;
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeReceiptId, isReceiptView]);
 
   const createPurchase = async () => {
     const items = createItems
@@ -1359,7 +1573,6 @@ export function Purchases() {
         try {
           const data = await purchasesApi.getReceipt(id);
           setReceipt(data);
-      setReceiptRemoveMode(false);
         } catch {
           /* ignore */
         } finally {
@@ -1560,7 +1773,6 @@ export function Purchases() {
 
   return (
     <>
-      {err && <p className="error">{err}</p>}
       {importOk && (
         <p className="muted" style={{ color: 'var(--success, #198754)', marginBottom: 12 }}>
           {importOk}
@@ -1571,6 +1783,9 @@ export function Purchases() {
           {receiptCompleteInfo}
         </p>
       )}
+      {isListView ? (
+        <>
+      {err && <p className="error">{err}</p>}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         <Button onClick={openCreatePurchase}>Новая закупка</Button>
         <Button variant="secondary" onClick={() => navigate('/stock-levels/purchases/forecast')}>
@@ -1810,12 +2025,16 @@ export function Purchases() {
           <Button onClick={createPurchase}>Сохранить</Button>
         </div>
       </Modal>
+        </>
+      ) : null}
 
-      <Modal
-        isOpen={!!detail && !receipt?.receipt?.id && !receiptLoading}
-        onClose={requestCloseDetail}
-        title={
-          detail?.purchase?.id ? (
+      {isPurchaseView ? (
+      <div className="purchase-page">
+        <div className="purchase-page__header">
+          <Button variant="secondary" onClick={requestCloseDetail}>
+            ← К списку
+          </Button>
+          {detail?.purchase?.id ? (
             <div className="purchase-detail-modal-title">
               <span className="purchase-detail-modal-title__heading">
                 Закупка №{detail.purchase.id}
@@ -1839,6 +2058,7 @@ export function Purchases() {
                       setErr(null);
                       await purchasesApi.deletePurchase(detail.purchase.id);
                       setDetail(null);
+                      navigate(purchasesListPath());
                       await reload();
                     } catch (ex) {
                       setErr(formatPurchaseApiError(ex, 'Не удалось удалить закупку'));
@@ -1895,11 +2115,10 @@ export function Purchases() {
               </div>
             </div>
           ) : (
-            'Закупка'
-          )
-        }
-        size="xl"
-      >
+            <span className="purchase-detail-modal-title__heading">Закупка</span>
+          )}
+        </div>
+        <div className="purchase-page__body">
         {detailLoading ? (
           <div className="loading">Загрузка…</div>
         ) : detail?.purchase ? (
@@ -1988,15 +2207,29 @@ export function Purchases() {
               </select>
             </div>
 
-            <div style={{ marginBottom: 20 }}>
-              <PurchaseCargoReceive
-                purchaseId={detail.purchase.id}
-                editable={isDetailEditable}
-                currentUserId={currentUserId}
-              />
-            </div>
-
             <h4>Позиции</h4>
+            <div className="warehouse-ops-list-form" style={{ marginBottom: 12 }}>
+              <label htmlFor="purchase-detail-item-filter">Поиск в позициях</label>
+              <input
+                id="purchase-detail-item-filter"
+                className="warehouse-ops-scan-input"
+                type="search"
+                value={detailItemSearch}
+                onChange={(e) => setDetailItemSearch(e.target.value)}
+                placeholder="Артикул, штрихкод или название"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {detailItemSearchActive ? (
+                <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+                  Найдено:{' '}
+                  <strong>
+                    {isDetailEditable ? filteredEditItemRows.length : filteredSortedDetailItems.length}
+                  </strong>{' '}
+                  из <strong>{isDetailEditable ? editItems.length : sortedDetailItems.length}</strong>
+                </p>
+              ) : null}
+            </div>
             {isDetailEditable ? (
               <>
                 <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
@@ -2005,7 +2238,7 @@ export function Purchases() {
                   изменения». «Ожидалось» не может быть меньше принятого.
                 </p>
                 <div className="warehouse-ops-list-form" style={{ marginBottom: 12 }}>
-                  <label htmlFor="purchase-detail-product-search">Поиск товара (сканер или ввод)</label>
+                  <label htmlFor="purchase-detail-product-search">Добавить товар (сканер или ввод)</label>
                   <ProductSearchInput
                     id="purchase-detail-product-search"
                     value={editProductSearch}
@@ -2027,7 +2260,7 @@ export function Purchases() {
                     </p>
                   )}
                 </div>
-                {editItems.length > 0 ? (
+                {editItems.length > 0 && filteredEditItemRows.length > 0 ? (
                   <div className="warehouse-ops-receipt-list-wrap">
                     <table className="warehouse-ops-receipt-list-table table">
                       <thead>
@@ -2042,7 +2275,7 @@ export function Purchases() {
                         </tr>
                       </thead>
                       <tbody>
-                        {editItems.map((it, idx) => {
+                        {filteredEditItemRows.map(({ it, idx }) => {
                           const received = Math.max(0, Math.floor(Number(it.receivedQuantity) || 0));
                           const minQty = received > 0 ? received : 1;
                           const canRemove = received <= 0;
@@ -2114,6 +2347,8 @@ export function Purchases() {
                       </tbody>
                     </table>
                   </div>
+                ) : editItems.length > 0 && detailItemSearchActive ? (
+                  <p className="muted">Ничего не найдено по запросу.</p>
                 ) : (
                   <p className="muted">Нет строк — добавьте товар через поиск.</p>
                 )}
@@ -2126,6 +2361,7 @@ export function Purchases() {
               затрагивается. Заказы в привязке сверх нового «ожидалось» вернутся в «Новый», если нет другой закупки.
             </p>
             {Array.isArray(detail.items) && detail.items.length > 0 ? (
+              filteredSortedDetailItems.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
                 <table className="warehouse-ops-receipt-list-table table">
                   <thead>
@@ -2171,7 +2407,7 @@ export function Purchases() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedDetailItems.map((it) => (
+                    {filteredSortedDetailItems.map((it) => (
                       <tr key={it.id}>
                         <td className="sku-cell">{it.product_sku || '—'}</td>
                         <td className="name-cell">{it.product_name || '—'}</td>
@@ -2210,7 +2446,7 @@ export function Purchases() {
                                 busy={lineActionBusy === it.id}
                                 setBusy={setLineActionBusy}
                                 onDone={async () => {
-                                  await openDetail(detail.purchase.id);
+                                  await loadDetail(detail.purchase.id);
                                   await reload();
                                 }}
                               />
@@ -2222,6 +2458,9 @@ export function Purchases() {
                   </tbody>
                 </table>
               </div>
+              ) : (
+                <p className="muted">Ничего не найдено по запросу.</p>
+              )
             ) : (
               <p className="muted">Нет строк.</p>
             )}
@@ -2301,122 +2540,129 @@ export function Purchases() {
             )}
           </>
         ) : null}
-      </Modal>
+        </div>
+      </div>
+      ) : null}
 
-      <Modal
-        isOpen={!!receipt?.receipt?.id || receiptLoading}
-        onClose={requestCloseReceipt}
-        title={
-          receiptLoading && !receipt?.receipt?.id
-            ? 'Загрузка приёмки…'
-            : receipt?.receipt?.id
-              ? `Приёмка №${receipt.receipt.id}`
-              : 'Приёмка'
-        }
-        headerExtra={
-          receipt?.receipt?.id
-            ? (() => {
-                const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
-                return (
-                  <div className="purchase-detail-modal-title__actions">
-                    {isReceiptScanning && !isReceiptGuest ? (
-                      <InviteUserButton
-                        users={inviteUsers}
-                        busy={inviteBusy}
-                        excludeUserId={currentUserId}
-                        onInvite={async (uid) => {
-                          const rid = receipt?.receipt?.id;
-                          if (!rid || inviteBusy) return;
-                          try {
-                            setInviteBusy(true);
-                            setErr(null);
-                            await purchasesApi.inviteToReceipt(rid, { userId: uid });
-                            setReceiptCompleteInfo('Приглашение отправлено в уведомления.');
-                          } catch (ex) {
-                            setErr(
-                              ex.response?.data?.message ||
-                                ex.message ||
-                                'Не удалось отправить приглашение'
-                            );
-                          } finally {
-                            setInviteBusy(false);
+      {isReceiptView ? (
+      <div className="purchase-page">
+        <div className="purchase-page__header">
+          <Button variant="secondary" onClick={requestCloseReceipt}>
+            ← К закупке
+          </Button>
+          <div className="purchase-detail-modal-title">
+            <span className="purchase-detail-modal-title__heading">
+              {receiptLoading && !receipt?.receipt?.id
+                ? 'Загрузка приёмки…'
+                : receipt?.receipt?.id
+                  ? `Приёмка №${receipt.receipt.id}`
+                  : 'Приёмка'}
+            </span>
+            {receipt?.receipt?.id
+              ? (() => {
+                  const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
+                  return (
+                    <div className="purchase-detail-modal-title__actions">
+                      {isReceiptScanning && !isReceiptGuest ? (
+                        <InviteUserButton
+                          users={inviteUsers}
+                          busy={inviteBusy}
+                          excludeUserId={currentUserId}
+                          onInvite={async (uid) => {
+                            const rid = receipt?.receipt?.id;
+                            if (!rid || inviteBusy) return;
+                            try {
+                              setInviteBusy(true);
+                              setErr(null);
+                              await purchasesApi.inviteToReceipt(rid, { userId: uid });
+                              setReceiptCompleteInfo('Приглашение отправлено в уведомления.');
+                            } catch (ex) {
+                              setErr(
+                                ex.response?.data?.message ||
+                                  ex.message ||
+                                  'Не удалось отправить приглашение'
+                              );
+                            } finally {
+                              setInviteBusy(false);
+                            }
+                          }}
+                        />
+                      ) : null}
+                      {isReceiptScanning ? (
+                        <Button
+                          disabled={isReceiptGuest}
+                          title={
+                            isReceiptGuest ? 'Завершить может только создатель приёмки' : undefined
                           }
-                        }}
-                      />
-                    ) : null}
-                    {isReceiptScanning ? (
-                      <Button
-                        disabled={isReceiptGuest}
-                        title={
-                          isReceiptGuest ? 'Завершить может только создатель приёмки' : undefined
-                        }
-                        onClick={async () => {
-                          const completedReceiptId = receipt.receipt.id;
-                          let res;
-                          try {
-                            setErr(null);
-                            res = await purchasesApi.completeReceipt(completedReceiptId, {
-                              warehouseId: receiptWarehouseId || null,
-                            });
-                          } catch (ex) {
-                            setErr(
-                              ex.response?.data?.message ||
-                                ex.message ||
-                                'Не удалось завершить приёмку'
-                            );
-                            return;
+                          onClick={async () => {
+                            const completedReceiptId = receipt.receipt.id;
+                            const completedPurchaseId =
+                              detail?.purchase?.id ?? receipt.receipt.purchase_id ?? routePurchaseId;
+                            let res;
+                            try {
+                              setErr(null);
+                              res = await purchasesApi.completeReceipt(completedReceiptId, {
+                                warehouseId: receiptWarehouseId || null,
+                              });
+                            } catch (ex) {
+                              setErr(
+                                ex.response?.data?.message ||
+                                  ex.message ||
+                                  'Не удалось завершить приёмку'
+                              );
+                              return;
+                            }
+                            setReceipt(null);
+                            setScanMsg(null);
+                            setReceiptCloseConfirm(false);
+                            await reload();
+                            if (completedPurchaseId) openDetail(completedPurchaseId);
+                            else navigate(purchasesListPath());
+                            if (Array.isArray(res?.extras) && res.extras.length > 0) {
+                              const totalExtra = res.extras.reduce(
+                                (s, x) => s + (Number(x.quantity) || 0),
+                                0
+                              );
+                              setReceiptCompleteInfo(
+                                `Приёмка завершена. Излишек: ${res.extras.length} поз., ${totalExtra} шт. — товар уже принят на склад.`
+                              );
+                            }
+                            if (res?.stockProblems?.length) {
+                              setErr(`Проблемы с покрытием резерва: ${res.stockProblems.length} SKU`);
+                            }
+                            if (res?.warehouseReceiptId) {
+                              navigate('/stock-levels/warehouse?op=receipts_list', {
+                                state: { openReceiptId: res.warehouseReceiptId },
+                              });
+                            }
+                          }}
+                        >
+                          Завершить приёмку
+                        </Button>
+                      ) : null}
+                      {isReceiptScanning ? (
+                        <Button variant="secondary" onClick={requestCloseReceipt}>
+                          Закрыть (сохранить черновик)
+                        </Button>
+                      ) : null}
+                      {!isReceiptGuest ? (
+                        <Button
+                          variant="secondary"
+                          disabled={deleteReceiptBusy === receipt.receipt.id}
+                          onClick={() =>
+                            handleDeletePurchaseReceipt(receipt.receipt, { closeModal: true })
                           }
-                          syncPurchaseReceiptInUrl('');
-                          setReceipt(null);
-                          setScanMsg(null);
-                          setReceiptCloseConfirm(false);
-                          await reload();
-                          if (detail?.purchase?.id) await openDetail(detail.purchase.id);
-                          if (Array.isArray(res?.extras) && res.extras.length > 0) {
-                            const totalExtra = res.extras.reduce(
-                              (s, x) => s + (Number(x.quantity) || 0),
-                              0
-                            );
-                            setReceiptCompleteInfo(
-                              `Приёмка завершена. Излишек: ${res.extras.length} поз., ${totalExtra} шт. — товар уже принят на склад.`
-                            );
-                          }
-                          if (res?.stockProblems?.length) {
-                            setErr(`Проблемы с покрытием резерва: ${res.stockProblems.length} SKU`);
-                          }
-                          if (res?.warehouseReceiptId) {
-                            navigate('/stock-levels/warehouse?op=receipts_list', {
-                              state: { openReceiptId: res.warehouseReceiptId },
-                            });
-                          }
-                        }}
-                      >
-                        Завершить приёмку
-                      </Button>
-                    ) : null}
-                    {isReceiptScanning ? (
-                      <Button variant="secondary" onClick={requestCloseReceipt}>
-                        Закрыть (сохранить черновик)
-                      </Button>
-                    ) : null}
-                    {!isReceiptGuest ? (
-                      <Button
-                        variant="secondary"
-                        disabled={deleteReceiptBusy === receipt.receipt.id}
-                        onClick={() =>
-                          handleDeletePurchaseReceipt(receipt.receipt, { closeModal: true })
-                        }
-                      >
-                        {deleteReceiptBusy === receipt.receipt.id ? 'Удаляю…' : 'Удалить приёмку'}
-                      </Button>
-                    ) : null}
-                  </div>
-                );
-              })()
-            : null
-        }
-        size="xl"
-      >
+                        >
+                          {deleteReceiptBusy === receipt.receipt.id ? 'Удаляю…' : 'Удалить приёмку'}
+                        </Button>
+                      ) : null}
+                    </div>
+                  );
+                })()
+              : null}
+          </div>
+        </div>
+        <div className="purchase-page__body">
         {receiptLoading && !receipt?.receipt?.id ? (
           <div className="loading">Загрузка приёмки…</div>
         ) : null}
@@ -2468,8 +2714,8 @@ export function Purchases() {
                     await purchasesApi.updatePurchase(receipt.receipt.purchase_id, {
                       supplierId: Number(v),
                     });
-                    if (detail?.purchase?.id) await openDetail(detail.purchase.id);
-                    await openReceipt(receipt.receipt.id);
+                    if (detail?.purchase?.id) await loadDetail(detail.purchase.id);
+                    await loadReceipt(receipt.receipt.id);
                   } catch (ex) {
                     setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить поставщика');
                   }
@@ -2495,8 +2741,8 @@ export function Purchases() {
                     await purchasesApi.updatePurchase(receipt.receipt.purchase_id, {
                       organizationId: v === '' ? null : Number(v),
                     });
-                    if (detail?.purchase?.id) await openDetail(detail.purchase.id);
-                    await openReceipt(receipt.receipt.id);
+                    if (detail?.purchase?.id) await loadDetail(detail.purchase.id);
+                    await loadReceipt(receipt.receipt.id);
                   } catch (ex) {
                     setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить организацию');
                   }
@@ -2527,6 +2773,19 @@ export function Purchases() {
               <p className="warehouse-ops-hint" style={{ marginBottom: 10 }}>
                 Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
               </p>
+            ) : null}
+            {receipt?.receipt?.purchase_id ? (
+              <div style={{ marginBottom: 16 }}>
+                <PurchaseCargoReceive
+                  purchaseId={receipt.receipt.purchase_id}
+                  editable={isReceiptScanning}
+                  currentUserId={currentUserId}
+                  embeddedInReceipt
+                  onChanged={() => {
+                    if (receipt?.receipt?.id) scheduleReceiptRefresh(receipt.receipt.id);
+                  }}
+                />
+              </div>
             ) : null}
             {isReceiptScanning && isReceiptScannerMode ? (
             <div className="warehouse-ops-list-form" style={{ marginBottom: 8, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -2698,8 +2957,8 @@ export function Purchases() {
                                   await purchasesApi.updatePurchaseItem(receipt.receipt.purchase_id, purchaseItemId, {
                                     purchasePrice: v === '' ? null : Number(v),
                                   });
-                                  await openReceipt(receipt.receipt.id);
-                                  if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+                                  await loadReceipt(receipt.receipt.id);
+                                  if (detail?.purchase?.id) await loadDetail(detail.purchase.id);
                                 } catch (ex) {
                                   setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить цену');
                                 }
@@ -2746,7 +3005,9 @@ export function Purchases() {
             })()}
           </>
         ) : null}
-      </Modal>
+        </div>
+      </div>
+      ) : null}
 
       <Modal
         isOpen={!!receiptDraftChoice}
@@ -2767,10 +3028,11 @@ export function Purchases() {
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               <Button
-                onClick={async () => {
+                onClick={() => {
                   const rid = receiptDraftChoice.existingReceiptId;
+                  const pid = receiptDraftChoice.purchaseId;
                   setReceiptDraftChoice(null);
-                  await openReceipt(rid);
+                  openReceipt(rid, pid);
                 }}
               >
                 Продолжить приёмку
@@ -2806,9 +3068,12 @@ export function Purchases() {
           <Button
             onClick={() => {
               setReceiptCloseConfirm(false);
-              syncPurchaseReceiptInUrl('');
+              const pid =
+                detail?.purchase?.id ?? receipt?.receipt?.purchase_id ?? routePurchaseId;
               setReceipt(null);
               setScanMsg(null);
+              if (pid) openDetail(pid);
+              else navigate(purchasesListPath());
             }}
           >
             Сохранить черновик и закрыть
@@ -2824,10 +3089,12 @@ export function Purchases() {
                 setErr(null);
                 await purchasesApi.deleteReceipt(rid);
                 setReceiptCloseConfirm(false);
-                syncPurchaseReceiptInUrl('');
+                const pid =
+                  detail?.purchase?.id ?? receipt?.receipt?.purchase_id ?? routePurchaseId;
                 setReceipt(null);
                 setScanMsg(null);
-                if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+                if (pid) openDetail(pid);
+                else navigate(purchasesListPath());
                 await reload();
               } catch (ex) {
                 setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить черновик');
@@ -2918,11 +3185,11 @@ export function Purchases() {
         products={products}
         setErr={setErr}
         onSaved={async () => {
-          if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+          if (detail?.purchase?.id) await loadDetail(detail.purchase.id);
         }}
         onApplied={async () => {
           if (detail?.purchase?.id) {
-            await openDetail(detail.purchase.id);
+            await loadDetail(detail.purchase.id);
             await reload();
           }
         }}

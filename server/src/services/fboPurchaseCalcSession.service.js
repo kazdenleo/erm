@@ -447,11 +447,8 @@ class FboPurchaseCalcSessionService {
         err.statusCode = 400;
         throw err;
       }
-      if (Number(row.productId) !== productId) {
-        const err = new Error(`Несовпадение товара в строке ${rowKey}`);
-        err.statusCode = 400;
-        throw err;
-      }
+      // Можно подставить другой товар (замена в предпросмотре) — прогресс всё равно по rowKey.
+      const purchaseProductId = productId;
       const remaining = Math.max(0, Number(row.remainingToPurchase) || 0);
       let qty = it?.quantity != null ? parseInt(it.quantity, 10) : remaining;
       if (!Number.isFinite(qty) || qty < 1) continue;
@@ -460,8 +457,8 @@ class FboPurchaseCalcSessionService {
         err.statusCode = 400;
         throw err;
       }
-      purchaseLines.push({ productId, quantity: qty });
-      linkItems.push({ rowKey, productId, quantity: qty });
+      purchaseLines.push({ productId: purchaseProductId, quantity: qty });
+      linkItems.push({ rowKey, productId: purchaseProductId, quantity: qty });
     }
 
     if (!purchaseLines.length) {

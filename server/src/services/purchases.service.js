@@ -5352,6 +5352,41 @@ class PurchasesService {
 
       const removalMovements = await removeRemainingIncomingForPurchaseInTx(client, id);
 
+      // Откат прогресса FBO-расчёта: иначе row_state остаётся «куплено», а документа уже нет.
+      const calcLinks = await client.query(
+        `SELECT session_id, items
+         FROM fbo_purchase_calc_purchase_links
+         WHERE purchase_id = $1`,
+        [id]
+      );
+      for (const link of calcLinks.rows || []) {
+        const sessionId = Number(link.session_id);
+        const items = Array.isArray(link.items) ? link.items : [];
+        for (const it of items) {
+          const rowKey = String(it?.rowKey ?? it?.row_key ?? '').trim();
+          const qty = Math.max(0, parseInt(it?.quantity, 10) || 0);
+          if (!sessionId || !rowKey || qty < 1) continue;
+          await client.query(
+            `UPDATE fbo_purchase_calc_row_state
+             SET purchased_qty = GREATEST(0, purchased_qty - $3),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE session_id = $1 AND row_key = $2`,
+            [sessionId, rowKey, qty]
+          );
+        }
+        await client.query(
+          `DELETE FROM fbo_purchase_calc_row_state
+           WHERE session_id = $1 AND purchased_qty <= 0`,
+          [sessionId]
+        );
+        await client.query(
+          `UPDATE fbo_purchase_calc_sessions
+           SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND status = 'completed'`,
+          [sessionId]
+        );
+      }
+
       sourceList = await collectAllSourceOrdersFromPurchaseInTx(client, id);
       await revertInProcurementOrdersFromSourceListInTx(client, sourceList, {
         profileId: prof,

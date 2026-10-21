@@ -1,5 +1,5 @@
 /**
- * Приёмка грузомест по закупке: скан места → скан товаров → оформление.
+ * Грузоместа в приёмке: скан места → скан товаров внутри → оформление через приёмку.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -53,7 +53,14 @@ function applyCargoState(data, setState, setExpectedDraft) {
   );
 }
 
-export function PurchaseCargoReceive({ purchaseId, editable = true, currentUserId = null }) {
+export function PurchaseCargoReceive({
+  purchaseId,
+  editable = true,
+  currentUserId = null,
+  /** В модалке приёмки: скрываем дубль «Оформить приёмку» (есть в шапке). */
+  embeddedInReceipt = false,
+  onChanged = null,
+}) {
   const [cargoState, setCargoState] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -67,8 +74,10 @@ export function PurchaseCargoReceive({ purchaseId, editable = true, currentUserI
   const busyRef = useRef(false);
   const purchaseIdRef = useRef(purchaseId);
   purchaseIdRef.current = purchaseId;
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
 
-  const refreshPurchase = useCallback(async () => {
+  const refreshPurchase = useCallback(async ({ notify = true } = {}) => {
     const pid = Number(purchaseIdRef.current);
     if (!Number.isFinite(pid) || pid < 1) {
       setCargoState(null);
@@ -76,6 +85,13 @@ export function PurchaseCargoReceive({ purchaseId, editable = true, currentUserI
     }
     const data = await purchaseCargoApi.getPurchase(pid);
     applyCargoState(data, setCargoState, setExpectedDraft);
+    if (notify) {
+      try {
+        onChangedRef.current?.(data);
+      } catch {
+        /* ignore */
+      }
+    }
     return data;
   }, []);
 
@@ -132,7 +148,7 @@ export function PurchaseCargoReceive({ purchaseId, editable = true, currentUserI
         next = await purchaseCargoApi.openPlace(id);
       }
       setPlaceData(next);
-      await refreshPurchase();
+      await refreshPurchase({ notify: false });
     } catch (e) {
       setMessage({ kind: 'error', text: getApiErrorMessage(e, 'Не удалось открыть грузоместо') });
       setActivePlaceId(null);
@@ -785,7 +801,7 @@ export function PurchaseCargoReceive({ purchaseId, editable = true, currentUserI
             </div>
           ) : null}
 
-          {receipt ? (
+          {receipt && !embeddedInReceipt ? (
             <div
               className="warehouse-ops-product-card"
               style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}

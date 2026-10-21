@@ -96,6 +96,7 @@ export function FboPurchaseCalculation() {
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
   const [purchaseDraftQty, setPurchaseDraftQty] = useState({});
+  const [purchaseProductOverrideByKey, setPurchaseProductOverrideByKey] = useState({});
   const [purchaseModalErr, setPurchaseModalErr] = useState(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [deletingSession, setDeletingSession] = useState(false);
@@ -482,28 +483,88 @@ export function FboPurchaseCalculation() {
     [calc?.rows, updateRows, load, applyDeletedSupplyCell]
   );
 
-  const openReplace = (row, supply, cell) => {
-    const isKitComponent = cell.isKitComponent && cell.kitProductId;
-    const inSupply = Number(row.supplyQty[supply.id]) || 0;
-    const defaultQty = inSupply > 0 ? inSupply : Math.max(1, row.toPurchase || 1);
+  const collectReplaceTargets = (row) => {
+    const supplies = calc?.supplies || [];
+    const targets = [];
+    for (const s of supplies) {
+      const cell = row.supplyCells?.[s.id];
+      if (!cell?.supplyItemId || cell.deleted) continue;
+      if (cell.multiSource || (cell.parts?.length ?? 0) > 1) continue;
+      const isKitComponent = Boolean(cell.isKitComponent && cell.kitProductId);
+      const qtyRaw = isKitComponent
+        ? Number(row.supplyQty?.[s.id]) || 0
+        : Number(cell.quantity) || Number(row.supplyQty?.[s.id]) || 0;
+      const quantity = Math.max(0, Math.floor(qtyRaw));
+      if (quantity < 1) continue;
+      targets.push({
+        supplyId: s.id,
+        supplyLabel: s.label,
+        supplyItemId: cell.supplyItemId,
+        quantity,
+        isKitComponent,
+      });
+    }
+    return targets;
+  };
+
+  const openReplaceRow = (row) => {
+    if (!row || row.rowType === 'kit' || row.isKitHeader) return;
+    const targets = collectReplaceTargets(row);
+    if (!targets.length) {
+      setErr('Нет поставок для замены по этой строке');
+      return;
+    }
+    const anyKit = targets.some((t) => t.isKitComponent);
     setReplaceCtx({
-      supplyId: supply.id,
-      supplyLabel: supply.label,
-      mode: isKitComponent ? 'add' : 'replace',
-      supplyItemId: cell.supplyItemId,
+      mode: anyKit ? 'add_all' : 'replace_all',
+      targets,
+      supplyLabel: `${targets.length} ${targets.length === 1 ? 'поставка' : 'поставок'}`,
       currentProductName: row.productName,
       currentSku: row.sku,
-      defaultQty: isKitComponent && row.toPurchase > 0 ? row.toPurchase : defaultQty,
+      defaultQty: Number(row.supplyQtyTotal) || targets[0].quantity,
     });
     setErr(null);
   };
 
-  const handleReplaceConfirm = async ({ productId, quantity }) => {
+  const handleReplaceConfirm = async ({ productId, quantity, product }) => {
     if (!replaceCtx) return;
+    if (replaceCtx.mode === 'purchase_replace') {
+      const rowKey = replaceCtx.rowKey;
+      if (!rowKey || !productId) return;
+      setPurchaseProductOverrideByKey((prev) => ({
+        ...prev,
+        [rowKey]: {
+          productId: Number(productId),
+          name: product?.name || product?.sku || `Товар #${productId}`,
+          sku: product?.sku || null,
+          barcode: product?.barcode || null,
+          barcodes: Array.isArray(product?.barcodes) ? product.barcodes : undefined,
+          cost: product?.cost != null ? Number(product.cost) : undefined,
+        },
+      }));
+      setReplaceCtx(null);
+      setPurchaseModalErr(null);
+      return;
+    }
     setReplaceSaving(true);
     setErr(null);
     try {
-      if (replaceCtx.mode === 'add') {
+      if (replaceCtx.mode === 'replace_all' || replaceCtx.mode === 'add_all') {
+        const targets = Array.isArray(replaceCtx.targets) ? replaceCtx.targets : [];
+        for (const t of targets) {
+          if (replaceCtx.mode === 'add_all' || t.isKitComponent) {
+            await fboSuppliesApi.addSupplyItem(t.supplyId, {
+              productId,
+              quantity: t.quantity,
+            });
+          } else {
+            await fboSuppliesApi.replaceSupplyItem(t.supplyId, t.supplyItemId, {
+              productId,
+              quantity: t.quantity,
+            });
+          }
+        }
+      } else if (replaceCtx.mode === 'add') {
         await fboSuppliesApi.addSupplyItem(replaceCtx.supplyId, { productId, quantity });
       } else {
         await fboSuppliesApi.replaceSupplyItem(replaceCtx.supplyId, replaceCtx.supplyItemId, {
@@ -528,15 +589,18 @@ export function FboPurchaseCalculation() {
   const selectedPurchaseItems = useMemo(
     () =>
       selectedPurchaseRows
-        .map((r) => ({
-          rowKey: r.key,
-          productId: r.productId,
-          quantity: purchaseOpen
-            ? parseDraftQty(purchaseDraftQty[r.key])
-            : Number(r.remainingToPurchase) || 0,
-        }))
+        .map((r) => {
+          const override = purchaseProductOverrideByKey[r.key];
+          return {
+            rowKey: r.key,
+            productId: override?.productId ?? r.productId,
+            quantity: purchaseOpen
+              ? parseDraftQty(purchaseDraftQty[r.key])
+              : Number(r.remainingToPurchase) || 0,
+          };
+        })
         .filter((it) => it.quantity > 0),
-    [selectedPurchaseRows, purchaseOpen, purchaseDraftQty]
+    [selectedPurchaseRows, purchaseOpen, purchaseDraftQty, purchaseProductOverrideByKey]
   );
 
   const openPurchaseModal = () => {
@@ -545,9 +609,25 @@ export function FboPurchaseCalculation() {
       draft[row.key] = String(Math.max(0, Number(row.remainingToPurchase) || 0));
     }
     setPurchaseDraftQty(draft);
+    setPurchaseProductOverrideByKey({});
     setPurchaseModalErr(null);
     setErr(null);
     setPurchaseOpen(true);
+  };
+
+  const openPurchaseProductReplace = (row) => {
+    if (!row?.key) return;
+    const qty = parseDraftQty(purchaseDraftQty[row.key]);
+    const defaultQty = qty > 0 ? qty : Math.max(1, Number(row.remainingToPurchase) || 1);
+    setReplaceCtx({
+      mode: 'purchase_replace',
+      rowKey: row.key,
+      supplyLabel: null,
+      currentProductName: purchaseProductOverrideByKey[row.key]?.name || row.productName,
+      currentSku: purchaseProductOverrideByKey[row.key]?.sku || row.sku,
+      defaultQty,
+    });
+    setPurchaseModalErr(null);
   };
 
   const handleExportExcel = async () => {
@@ -744,7 +824,7 @@ export function FboPurchaseCalculation() {
           type="search"
           className="form-control form-control-sm"
           style={{ width: 280 }}
-          placeholder="Поиск по названию или артикулу"
+          placeholder="Поиск: название, артикул или штрихкод"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -776,7 +856,7 @@ export function FboPurchaseCalculation() {
               type="button"
               className="btn btn-link btn-sm p-0 me-2"
               onClick={() =>
-                navigate('/stock-levels/purchases', { state: { openPurchaseId: l.purchaseId } })
+                navigate(`/stock-levels/purchases/${l.purchaseId}`)
               }
             >
               №{l.purchaseId}
@@ -829,6 +909,7 @@ export function FboPurchaseCalculation() {
                 const isComponent = row.rowType === 'component';
                 const selectable = isRowSelectable(row);
                 const checked = selectedRowKeys.has(row.key);
+                const rowReplaceTargets = isKitHeader ? [] : collectReplaceTargets(row);
                 return (
                 <tr
                   key={row.key}
@@ -867,11 +948,38 @@ export function FboPurchaseCalculation() {
                         </span>
                       </div>
                     ) : (
-                      <div className={isComponent ? 'fbo-pc-kit-component-name' : 'fbo-pc-plain-name'}>
+                      <div
+                        className={`${isComponent ? 'fbo-pc-kit-component-name' : 'fbo-pc-plain-name'} fbo-pc-row-replace`}
+                      >
                         {isComponent ? <span className="fbo-pc-kit-component-marker" aria-hidden>↳</span> : null}
                         <span className="fbo-pc-name" title={getPurchaseRowDisplayName(row)}>
                           {getPurchaseRowDisplayName(row)}
                         </span>
+                        {rowReplaceTargets.length > 0 ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="small"
+                            className="btn-icon btn-icon-only fbo-pc-row-replace-btn"
+                            disabled={replaceSaving}
+                            title={
+                              isComponent
+                                ? 'Добавить аналог во все поставки (кол-во сохранится)'
+                                : 'Заменить товар во всех поставках (кол-во сохранится)'
+                            }
+                            aria-label={
+                              isComponent
+                                ? 'Добавить аналог во все поставки'
+                                : 'Заменить товар во всех поставках'
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openReplaceRow(row);
+                            }}
+                          >
+                            ⇄
+                          </Button>
+                        ) : null}
                       </div>
                     )}
                   </td>
@@ -930,14 +1038,6 @@ export function FboPurchaseCalculation() {
                       !cell?.supplyItemId ||
                       cell.multiSource ||
                       (cell.parts?.length ?? 0) > 1;
-                    const canReplace =
-                      !isKitHeader &&
-                      cell?.supplyItemId &&
-                      !cell.multiSource &&
-                      !(cell.parts?.length > 1);
-                    const replaceTitle = cell?.isKitComponent
-                      ? 'Добавить аналог в поставку'
-                      : 'Заменить товар в поставке';
 
                     if (readOnlyCell) {
                       return (
@@ -970,19 +1070,6 @@ export function FboPurchaseCalculation() {
                             }
                             onBlur={() => handleSupplyQtyBlur(row.key, s.id)}
                           />
-                          {canReplace ? (
-                            <Button
-                              variant="secondary"
-                              size="small"
-                              className="btn-icon btn-icon-only"
-                              disabled={isSaving || replaceSaving}
-                              title={replaceTitle}
-                              aria-label={replaceTitle}
-                              onClick={() => openReplace(row, s, cell)}
-                            >
-                              ⇄
-                            </Button>
-                          ) : null}
                         </div>
                       </td>
                     );
@@ -1028,10 +1115,12 @@ export function FboPurchaseCalculation() {
         saving={purchaseSaving}
         rows={selectedPurchaseRows}
         qtyByKey={purchaseDraftQty}
+        productOverrideByKey={purchaseProductOverrideByKey}
         onQtyChange={(rowKey, value) => {
           setPurchaseDraftQty((prev) => ({ ...prev, [rowKey]: value }));
           setPurchaseModalErr(null);
         }}
+        onReplaceProduct={openPurchaseProductReplace}
         suppliers={suppliers}
         organizations={organizations}
         warehouses={warehouses}

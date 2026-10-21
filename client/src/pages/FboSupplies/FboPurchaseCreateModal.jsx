@@ -2,10 +2,10 @@
  * Предпросмотр позиций перед созданием закупки из расчёта FBO
  */
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
-import { getPurchaseRowDisplayName } from './fboPurchaseCalcUtils';
+import { getPurchaseRowDisplayName, rowMatchesPurchaseSearch } from './fboPurchaseCalcUtils';
 
 function fmtMoney(n) {
   const v = Number(n);
@@ -25,7 +25,9 @@ export function FboPurchaseCreateModal({
   saving,
   rows = [],
   qtyByKey = {},
+  productOverrideByKey = {},
   onQtyChange,
+  onReplaceProduct,
   suppliers = [],
   organizations = [],
   warehouses = [],
@@ -39,11 +41,18 @@ export function FboPurchaseCreateModal({
   onClose,
   onConfirm,
 }) {
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (isOpen) setSearch('');
+  }, [isOpen]);
+
   const totals = useMemo(() => {
     return rows.reduce(
       (acc, row) => {
         const qty = parseDraftQty(qtyByKey[row.key]);
-        const cost = Number(row.cost) || 0;
+        const override = productOverrideByKey[row.key];
+        const cost = Number(override?.cost ?? row.cost) || 0;
         acc.onHand += Number(row.onHand) || 0;
         acc.need += Number(row.supplyQtyTotal) || 0;
         acc.incoming += Number(row.incoming) || 0;
@@ -54,9 +63,16 @@ export function FboPurchaseCreateModal({
       },
       { onHand: 0, need: 0, incoming: 0, toPurchase: 0, costSum: 0, lines: 0 }
     );
-  }, [rows, qtyByKey]);
+  }, [rows, qtyByKey, productOverrideByKey]);
+
+  const visibleRows = useMemo(() => {
+    const q = String(search || '').trim();
+    if (!q) return rows;
+    return rows.filter((row) => rowMatchesPurchaseSearch(row, q, productOverrideByKey[row.key]));
+  }, [rows, search, productOverrideByKey]);
 
   const destWarehouses = (warehouses || []).filter((w) => w.type === 'warehouse' && !w.supplierId);
+  const searchActive = Boolean(String(search || '').trim());
 
   return (
     <Modal
@@ -71,6 +87,23 @@ export function FboPurchaseCreateModal({
       </p>
 
       {error ? <div className="alert alert-danger py-2">{error}</div> : null}
+
+      <div className="fbo-pc-preview-toolbar">
+        <input
+          type="search"
+          className="form-control form-control-sm fbo-pc-preview-search"
+          placeholder="Поиск: артикул, название или штрихкод"
+          value={search}
+          disabled={saving || rows.length === 0}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Поиск по артикулу, названию или штрихкоду"
+        />
+        {searchActive ? (
+          <span className="text-muted small">
+            Найдено: {visibleRows.length} из {rows.length}
+          </span>
+        ) : null}
+      </div>
 
       <div className="fbo-pc-preview-table-wrap">
         <table className="table table-sm table-bordered fbo-pc-preview-table">
@@ -88,21 +121,32 @@ export function FboPurchaseCreateModal({
                 В пути
               </th>
               <th className="text-end">Итого к закупке</th>
+              <th style={{ width: 44 }} />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="text-center text-muted">
+                <td colSpan={7} className="text-center text-muted">
                   Нет выбранных позиций
                 </td>
               </tr>
+            ) : visibleRows.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="text-center text-muted">
+                  Ничего не найдено
+                </td>
+              </tr>
             ) : (
-              rows.map((row) => {
+              visibleRows.map((row) => {
                 const qtyRaw = qtyByKey[row.key] ?? '';
                 const qty = parseDraftQty(qtyRaw);
                 const purchased = Number(row.purchasedQty) || 0;
                 const suggested = Number(row.remainingToPurchase ?? row.toPurchase) || 0;
+                const override = productOverrideByKey[row.key];
+                const displayName = override?.name || getPurchaseRowDisplayName(row);
+                const displaySku = override?.sku || row.sku || '—';
+                const lineCost = Number(override?.cost ?? row.cost) || 0;
                 return (
                   <tr key={row.key}>
                     <td className="fbo-pc-preview-name">
@@ -112,15 +156,21 @@ export function FboPurchaseCreateModal({
                             ↳
                           </span>
                         ) : null}
-                        <span className="fbo-pc-name" title={getPurchaseRowDisplayName(row)}>
-                          {getPurchaseRowDisplayName(row)}
+                        <span className="fbo-pc-name" title={displayName}>
+                          {displayName}
                         </span>
                       </div>
+                      {override ? (
+                        <div className="text-muted small">
+                          Было: {getPurchaseRowDisplayName(row)}
+                          {row.sku ? ` (${row.sku})` : ''}
+                        </div>
+                      ) : null}
                       {purchased > 0 ? (
                         <div className="text-muted small">Уже оформлено: {purchased} шт.</div>
                       ) : null}
                     </td>
-                    <td>{row.sku || '—'}</td>
+                    <td>{displaySku}</td>
                     <td className="text-end">{row.onHand ?? 0}</td>
                     <td className="text-end">{row.supplyQtyTotal ?? 0}</td>
                     <td className="text-end">{row.incoming ?? 0}</td>
@@ -133,7 +183,7 @@ export function FboPurchaseCreateModal({
                         className="form-control form-control-sm fbo-pc-preview-qty"
                         value={qtyRaw}
                         disabled={saving}
-                        aria-label={`К закупке ${row.sku || getPurchaseRowDisplayName(row)}`}
+                        aria-label={`К закупке ${displaySku || displayName}`}
                         title={suggested > 0 ? `По расчёту: ${suggested} шт.` : undefined}
                         onChange={(e) => {
                           const v = e.target.value;
@@ -146,8 +196,24 @@ export function FboPurchaseCreateModal({
                           onQtyChange(row.key, String(Math.min(99999, n)));
                         }}
                       />
-                      {qty > 0 && Number(row.cost) > 0 ? (
-                        <div className="text-muted small">{fmtMoney(qty * Number(row.cost))}</div>
+                      {qty > 0 && lineCost > 0 ? (
+                        <div className="text-muted small">{fmtMoney(qty * lineCost)}</div>
+                      ) : null}
+                    </td>
+                    <td className="text-center">
+                      {typeof onReplaceProduct === 'function' ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="small"
+                          className="btn-icon btn-icon-only"
+                          disabled={saving}
+                          title="Заменить товар (количество сохранится)"
+                          aria-label="Заменить товар"
+                          onClick={() => onReplaceProduct(row)}
+                        >
+                          ⇄
+                        </Button>
                       ) : null}
                     </td>
                   </tr>
@@ -167,6 +233,7 @@ export function FboPurchaseCreateModal({
                 <strong>{totals.toPurchase}</strong>
                 <div className="text-muted small fw-normal">{fmtMoney(totals.costSum)}</div>
               </th>
+              <th />
             </tr>
           </tfoot>
         </table>
@@ -224,13 +291,19 @@ export function FboPurchaseCreateModal({
         </div>
       </div>
 
-      <div className="d-flex justify-content-end gap-2">
-        <Button variant="secondary" onClick={onClose} disabled={saving}>
-          Отмена
-        </Button>
-        <Button variant="primary" onClick={onConfirm} disabled={saving || totals.lines === 0}>
-          {saving ? 'Создание…' : `Создать закупку (${totals.lines})`}
-        </Button>
+      <div className="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <div className="text-muted small">
+          Позиций: {totals.lines} · Всего: <strong>{totals.toPurchase}</strong> шт.
+          {totals.costSum > 0 ? <> · {fmtMoney(totals.costSum)}</> : null}
+        </div>
+        <div className="d-flex gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={onConfirm} disabled={saving || totals.lines === 0}>
+            {saving ? 'Создание…' : `Создать закупку (${totals.toPurchase} шт.)`}
+          </Button>
+        </div>
       </div>
     </Modal>
   );

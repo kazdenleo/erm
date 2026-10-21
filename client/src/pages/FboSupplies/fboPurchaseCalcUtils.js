@@ -210,18 +210,46 @@ function normalizeSearchText(v) {
   return String(v ?? '').toLowerCase().replace(/ё/g, 'е');
 }
 
-function rowMatchesSearch(row, needle) {
-  return [row?.productName, row?.sku].some((v) => normalizeSearchText(v).includes(needle));
+function pushBarcodeValues(values, list) {
+  if (!Array.isArray(list)) return;
+  for (const item of list) {
+    if (item == null) continue;
+    if (typeof item === 'string' || typeof item === 'number') {
+      values.push(item);
+      continue;
+    }
+    if (typeof item === 'object') values.push(item.barcode);
+  }
 }
 
-/** Поиск по названию и артикулу; комплект показывается целиком, если совпала любая его строка. */
+function collectSearchHaystack(row, extra = null) {
+  const values = [
+    row?.productName,
+    row?.sku,
+    row?.barcode,
+    extra?.name,
+    extra?.sku,
+    extra?.barcode,
+  ];
+  pushBarcodeValues(values, row?.barcodes);
+  pushBarcodeValues(values, extra?.barcodes);
+  return values;
+}
+
+export function rowMatchesPurchaseSearch(row, search, extra = null) {
+  const needle = normalizeSearchText(search).trim();
+  if (!needle) return true;
+  return collectSearchHaystack(row, extra).some((v) => normalizeSearchText(v).includes(needle));
+}
+
+/** Поиск по названию, артикулу и штрихкоду; комплект показывается целиком, если совпала любая его строка. */
 export function filterPurchaseRows(rows, search) {
   const needle = normalizeSearchText(search).trim();
   if (!needle) return rows;
   const out = [];
   for (const g of partitionPurchaseGroups(rows)) {
     const groupRows = g.header ? [g.header, ...g.components] : g.components;
-    if (groupRows.some((r) => rowMatchesSearch(r, needle))) out.push(...groupRows);
+    if (groupRows.some((r) => rowMatchesPurchaseSearch(r, needle))) out.push(...groupRows);
   }
   return out;
 }

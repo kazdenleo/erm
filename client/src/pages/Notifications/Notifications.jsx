@@ -21,6 +21,10 @@ function notificationOpenUrl(n) {
   }
   const receiptId = n?.meta?.receipt_id ?? n?.meta?.receiptId ?? null;
   if (n?.type === 'purchase_receipt_invite' && receiptId != null && String(receiptId).trim() !== '') {
+    const purchaseId = n?.meta?.purchase_id ?? n?.meta?.purchaseId ?? null;
+    if (purchaseId != null && String(purchaseId).trim() !== '') {
+      return `/stock-levels/purchases/${encodeURIComponent(String(purchaseId).trim())}/receipts/${encodeURIComponent(String(receiptId).trim())}`;
+    }
     return `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(receiptId).trim())}`;
   }
   if (n?.type === 'employee_birthday_soon') {

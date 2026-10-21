@@ -481,7 +481,9 @@ export function WarehouseOperations({
     () => (receiptList || []).map((item) => Number(item.productId)).filter((n) => Number.isFinite(n) && n > 0),
     [receiptList]
   );
-  const receiptAddresses = useProductAddresses(receiptAddressProductIds);
+  const receiptAddresses = useProductAddresses(receiptAddressProductIds, {
+    warehouseId: receiptWarehouseId || null,
+  });
   const receiptAssignedCode = useCallback(
     (productId) => {
       const p = receiptAddresses.primaryFor(productId, receiptWarehouseId || null);
@@ -576,7 +578,9 @@ export function WarehouseOperations({
         .filter((n) => Number.isFinite(n) && n > 0),
     [customerReturnList]
   );
-  const customerReturnAddresses = useProductAddresses(customerReturnAddressProductIds);
+  const customerReturnAddresses = useProductAddresses(customerReturnAddressProductIds, {
+    warehouseId: customerReturnWarehouseId || null,
+  });
   const customerReturnAssignedCode = useCallback(
     (productId) => {
       const p = customerReturnAddresses.primaryFor(productId, customerReturnWarehouseId || null);
@@ -775,7 +779,9 @@ export function WarehouseOperations({
     }
     return [...ids];
   }, [inventoryNewRows, inventoryWillZeroRows]);
-  const inventoryAddresses = useProductAddresses(inventoryAddressProductIds);
+  const inventoryAddresses = useProductAddresses(inventoryAddressProductIds, {
+    warehouseId: inventorySessionWarehouseId || null,
+  });
   const inventoryAssignedCode = useCallback(
     (productId) => {
       const p = inventoryAddresses.primaryFor(productId, inventorySessionWarehouseId || null);
@@ -2265,9 +2271,7 @@ export function WarehouseOperations({
             const map = await addressStorageApi.lookup([p.id]);
             const list = map?.[Number(p.id)] || [];
             const wid = Number(receiptWarehouseId);
-            const own =
-              list.find((x) => x.assigned && Number(x.warehouseId) === wid) ||
-              list.find((x) => x.assigned);
+            const own = list.find((x) => x.assigned && Number(x.warehouseId) === wid);
             if (own?.code) cellHint = ` → 📍 ${own.code}`;
           } catch {
             /* адрес необязателен */
@@ -5581,11 +5585,14 @@ export function WarehouseOperations({
                   onClick={() => {
                     const prId = receiptDetail.purchase_receipt_id;
                     const purchaseId = receiptDetail.purchase_id;
-                    const params = new URLSearchParams();
-                    params.set('purchase_receipt', String(prId));
-                    if (purchaseId != null) params.set('purchase', String(purchaseId));
                     setReceiptDetail(null);
-                    navigate(`/stock-levels/purchases?${params.toString()}`);
+                    if (purchaseId != null) {
+                      navigate(`/stock-levels/purchases/${purchaseId}/receipts/${prId}`);
+                    } else {
+                      navigate(
+                        `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(prId))}`
+                      );
+                    }
                   }}
                 >
                   Редактировать приёмку
@@ -5596,11 +5603,14 @@ export function WarehouseOperations({
                   onClick={() => {
                     const prId = receiptDetail.purchase_receipt_id;
                     const purchaseId = receiptDetail.purchase_id;
-                    const params = new URLSearchParams();
-                    params.set('purchase_receipt', String(prId));
-                    if (purchaseId != null) params.set('purchase', String(purchaseId));
                     setReceiptDetail(null);
-                    navigate(`/stock-levels/purchases?${params.toString()}`);
+                    if (purchaseId != null) {
+                      navigate(`/stock-levels/purchases/${purchaseId}/receipts/${prId}`);
+                    } else {
+                      navigate(
+                        `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(prId))}`
+                      );
+                    }
                   }}
                 >
                   Открыть в закупке

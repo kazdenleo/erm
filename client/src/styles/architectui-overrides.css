@@ -343,6 +343,31 @@
   flex-shrink: 0;
 }
 
+.purchase-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.purchase-page__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border, #e8e8e8);
+}
+
+.purchase-page__header .purchase-detail-modal-title {
+  flex: 1;
+  min-width: 200px;
+}
+
+.purchase-page__body {
+  min-width: 0;
+}
+
 /* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */
 .app-sidebar .vertical-nav-menu > li > ul {
   display: none;

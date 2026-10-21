@@ -12,6 +12,7 @@ import { getProductSupplySnapshotWithClient } from './sellableQuantity.service.j
 import { NET_RESERVED_MOVEMENT_ROW_CASE_SQL } from '../constants/netReservedStockSql.js';
 import {
   allocateKitReservePriority,
+  aggregateKitComponents,
   buildKitComponentQtyMap,
   computeAssemblableFromComponentPoolMap,
   computeAssemblableFromComponents,
@@ -323,6 +324,22 @@ async function batchGetIncomingPoolForFboProducts(productIds, { warehouseIds = [
   return result;
 }
 
+/** Списать комплектующие из пула «в пути» на N полных комплектов. */
+function takeKitsFromComponentIncomingPools(components, componentPools, kitsWanted) {
+  const wanted = Math.max(0, Math.floor(Number(kitsWanted) || 0));
+  if (wanted <= 0 || !components?.length) return 0;
+  const can = computeAssemblableFromComponentPoolMap(components, componentPools);
+  const take = Math.min(wanted, can);
+  if (take <= 0) return 0;
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    componentPools.set(pid, Math.max(0, (Number(componentPools.get(pid)) || 0) - take * perKit));
+  }
+  return take;
+}
+
 /** Склады FBO для пула «путь»: профиль + склады списания из очереди поставок. */
 async function resolveFboIncomingWarehouseIds(profileId, queuesByProduct = null) {
   const whs = [...(await getFboSourceWarehouseIds(profileId))];
@@ -511,6 +528,9 @@ async function batchGetKitComponentsMap(kitIds) {
       component_product_id: Number(row.component_product_id),
       quantity: Math.max(1, parseInt(row.quantity, 10) || 1),
     });
+  }
+  for (const [kid, comps] of result) {
+    result.set(kid, aggregateKitComponents(comps));
   }
   return result;
 }
@@ -883,12 +903,28 @@ class FboSupplyReserveService {
       getNetReservedForFboItemsBatch(uniquePids),
       batchIsKitProductIds(uniquePids),
     ]);
+
+    const kitIds = uniquePids.filter((id) => kitFlags.get(id) === true);
+    const kitComponentsByKit = await batchGetKitComponentsMap(kitIds);
+    const componentIds = [];
+    for (const comps of kitComponentsByKit.values()) {
+      for (const c of comps) componentIds.push(Number(c.component_product_id));
+    }
+
     const fboIncomingWhs = await resolveFboIncomingWarehouseIds(profileId, queuesByProduct);
-    const incomingByProduct = await batchGetIncomingPoolForFboProducts(uniquePids, {
+    const incomingLookupIds = [...new Set([...uniquePids, ...componentIds.filter((id) => id > 0)])];
+    const incomingByProduct = await batchGetIncomingPoolForFboProducts(incomingLookupIds, {
       warehouseIds: fboIncomingWhs,
     });
 
-    const kitIds = uniquePids.filter((id) => kitFlags.get(id) === true);
+    /** Общий пул закупок комплектующих — делится между комплектами FIFO. */
+    const componentIncomingPools = new Map();
+    for (const cid of componentIds) {
+      if (!componentIncomingPools.has(cid)) {
+        componentIncomingPools.set(cid, Math.max(0, Number(incomingByProduct.get(cid)) || 0));
+      }
+    }
+
     const kitQueueEntries = [];
     for (const productId of kitIds) {
       for (const row of queuesByProduct.get(productId) || []) {
@@ -901,10 +937,16 @@ class FboSupplyReserveService {
     }
     const kitReservedByItem = await batchGetReservedKitUnitsForFboItems(kitQueueEntries);
 
+    /** Прямые закупки самого SKU (не комплектующих) — по каждому product_id. */
+    const directIncomingPools = new Map();
+    for (const productId of uniquePids) {
+      directIncomingPools.set(productId, Math.max(0, Number(incomingByProduct.get(productId)) || 0));
+    }
+
     for (const productId of uniquePids) {
       const queue = queuesByProduct.get(productId) || [];
-      let incomingPool = incomingByProduct.get(productId) || 0;
       const isKit = kitFlags.get(productId) === true;
+      const components = isKit ? kitComponentsByKit.get(productId) || [] : [];
 
       for (const row of queue) {
         const itemId = String(row.supply_item_id);
@@ -915,8 +957,23 @@ class FboSupplyReserveService {
           : netReservedByItem.get(itemId) || 0;
 
         const gap = Math.max(0, qty - reservedFromStock);
-        const reservedFromIncoming = Math.min(gap, incomingPool);
-        incomingPool = Math.max(0, incomingPool - reservedFromIncoming);
+        let reservedFromIncoming = 0;
+        if (gap > 0) {
+          const directPool = directIncomingPools.get(productId) || 0;
+          const fromDirect = Math.min(gap, directPool);
+          if (fromDirect > 0) {
+            directIncomingPools.set(productId, Math.max(0, directPool - fromDirect));
+            reservedFromIncoming += fromDirect;
+          }
+          const still = gap - fromDirect;
+          if (still > 0 && isKit && components.length) {
+            reservedFromIncoming += takeKitsFromComponentIncomingPools(
+              components,
+              componentIncomingPools,
+              still
+            );
+          }
+        }
 
         breakdown.set(itemId, { reservedFromStock, reservedFromIncoming });
       }
@@ -942,13 +999,34 @@ class FboSupplyReserveService {
         ? await this._computeReserveBreakdownByItem(productIds, { profileId })
         : new Map();
     const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
+    const kitFlags = await batchIsKitProductIds(productIds);
+    const kitIds = productIds.filter((id) => kitFlags.get(id) === true);
+    const kitComponentsByKit = await batchGetKitComponentsMap(kitIds);
+    const incomingLookupIds = [...productIds];
+    for (const comps of kitComponentsByKit.values()) {
+      for (const c of comps) incomingLookupIds.push(Number(c.component_product_id));
+    }
     const [onHandByProductWh, incomingByProduct] = await Promise.all([
       batchGetWarehouseOnHand(productIds, sourceWarehouseIds),
-      batchGetIncomingPoolForFboProducts(productIds, { warehouseIds: sourceWarehouseIds }),
+      batchGetIncomingPoolForFboProducts(incomingLookupIds, { warehouseIds: sourceWarehouseIds }),
     ]);
     const sourceOnHandByProduct = new Map();
-    const sourceIncomingByProduct = incomingByProduct;
-    const kitFlags = await batchIsKitProductIds(productIds);
+    const sourceIncomingByProduct = new Map();
+    for (const productId of productIds) {
+      const direct = Math.max(0, Number(incomingByProduct.get(productId)) || 0);
+      if (kitFlags.get(productId) === true) {
+        const comps = kitComponentsByKit.get(productId) || [];
+        const pools = new Map();
+        for (const c of comps) {
+          const cid = Number(c.component_product_id);
+          pools.set(cid, Math.max(0, Number(incomingByProduct.get(cid)) || 0));
+        }
+        const fromComponents = computeAssemblableFromComponentPoolMap(comps, pools);
+        sourceIncomingByProduct.set(productId, direct + fromComponents);
+      } else {
+        sourceIncomingByProduct.set(productId, direct);
+      }
+    }
     await Promise.all(
       productIds.map(async (productId) => {
         if (kitFlags.get(productId) === true) {
@@ -1093,10 +1171,16 @@ class FboSupplyReserveService {
     ];
 
     const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
-    const [incomingByProduct, kitFlags] = await Promise.all([
-      batchGetIncomingPoolForFboProducts(productIds, { warehouseIds: sourceWarehouseIds }),
-      batchIsKitProductIds(productIds),
-    ]);
+    const kitFlags = await batchIsKitProductIds(productIds);
+    const kitIdsForIncoming = productIds.filter((id) => kitFlags.get(id) === true);
+    const kitCompsForIncoming = await batchGetKitComponentsMap(kitIdsForIncoming);
+    const incomingLookupIds = [...productIds];
+    for (const comps of kitCompsForIncoming.values()) {
+      for (const c of comps) incomingLookupIds.push(Number(c.component_product_id));
+    }
+    const incomingByProduct = await batchGetIncomingPoolForFboProducts(incomingLookupIds, {
+      warehouseIds: sourceWarehouseIds,
+    });
 
     const hasIncoming = [...incomingByProduct.values()].some((v) => (Number(v) || 0) > 0);
 
@@ -1104,6 +1188,7 @@ class FboSupplyReserveService {
     let breakdown;
     if (hasIncoming) {
       // «Путь» зависит от FIFO по всем активным поставкам товара — полный разбор.
+      // Для комплектов учитываются открытые закупки комплектующих на склад FBO.
       breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
     } else {
       // Нет ожидаемых поступлений — только hard из журнала по строкам страницы.

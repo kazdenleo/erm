@@ -91,22 +91,68 @@ export function FboPurchaseReplaceModal({ context, saving, onClose, onConfirm })
 
   if (!context) return null;
 
-  const isAdd = context.mode === 'add';
-  const title = isAdd ? 'Добавить аналог в поставку' : 'Заменить товар в поставке';
+  const isAdd = context.mode === 'add' || context.mode === 'add_all';
+  const isPurchaseReplace = context.mode === 'purchase_replace';
+  const isBulkAll =
+    context.mode === 'replace_all' || context.mode === 'add_all' || isPurchaseReplace;
+  const title = isPurchaseReplace
+    ? 'Заменить товар в закупке'
+    : context.mode === 'replace_all'
+      ? 'Заменить товар во всех поставках'
+      : context.mode === 'add_all'
+        ? 'Добавить аналог во все поставки'
+        : isAdd
+          ? 'Добавить аналог в поставку'
+          : 'Заменить товар в поставке';
+
+  const handleLockedQtySubmit = () => {
+    if (!selectedProduct?.id) {
+      setLocalErr('Выберите товар из списка');
+      return;
+    }
+    const qty = Math.max(1, parseInt(String(context.defaultQty || quantity), 10) || 1);
+    onConfirm({
+      productId: Number(selectedProduct.id),
+      quantity: qty,
+      product: selectedProduct,
+    });
+  };
 
   return (
     <Modal isOpen onClose={() => !saving && onClose()} title={title} size="medium">
       <p className="text-muted small mb-2">
-        Поставка: <strong>{context.supplyLabel}</strong>
+        {context.supplyLabel ? (
+          <>
+            Поставка: <strong>{context.supplyLabel}</strong>
+            <br />
+          </>
+        ) : null}
         {context.currentProductName ? (
           <>
-            <br />
             Сейчас: <strong>{context.currentProductName}</strong>
             {context.currentSku ? ` (${context.currentSku})` : ''}
           </>
         ) : null}
       </p>
-      {isAdd ? (
+      {isPurchaseReplace ? (
+        <p className="text-muted small">
+          В закупку попадёт выбранный товар. Количество останется{' '}
+          <strong>{context.defaultQty > 0 ? context.defaultQty : 1}</strong> шт. Поставка FBO не
+          меняется.
+        </p>
+      ) : context.mode === 'replace_all' ? (
+        <p className="text-muted small">
+          Товар будет заменён сразу во всех поставках этой строки (
+          <strong>{Array.isArray(context.targets) ? context.targets.length : 0}</strong>
+          ). Количество в каждой поставке сохранится.
+        </p>
+      ) : context.mode === 'add_all' ? (
+        <p className="text-muted small">
+          Аналог будет добавлен во все поставки этой строки (
+          <strong>{Array.isArray(context.targets) ? context.targets.length : 0}</strong>
+          ). Количество по каждой поставке сохранится; исходные позиции комплекта не меняются.
+        </p>
+      ) : isAdd ? (
         <p className="text-muted small">
           Исходная позиция комплекта в поставке сохранится. В таблице появится строка с выбранным
           товаром, если его ещё не было.
@@ -169,25 +215,39 @@ export function FboPurchaseReplaceModal({ context, saving, onClose, onConfirm })
         </div>
       )}
 
-      <div className="mb-3">
-        <label className="form-label">Количество в поставке</label>
-        <input
-          type="number"
-          min={1}
-          max={99999}
-          className="form-control form-control-sm"
-          style={{ maxWidth: 120 }}
-          value={quantity}
-          onChange={(e) => setQuantity(e.target.value)}
-        />
-      </div>
+      {!isBulkAll ? (
+        <div className="mb-3">
+          <label className="form-label">Количество в поставке</label>
+          <input
+            type="number"
+            min={1}
+            max={99999}
+            className="form-control form-control-sm"
+            style={{ maxWidth: 120 }}
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+          />
+        </div>
+      ) : null}
 
       <div className="d-flex justify-content-end gap-2">
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Отмена
         </Button>
-        <Button variant="primary" onClick={handleSubmit} disabled={saving}>
-          {saving ? 'Сохранение…' : isAdd ? 'Добавить' : 'Заменить'}
+        <Button
+          variant="primary"
+          onClick={isBulkAll ? handleLockedQtySubmit : handleSubmit}
+          disabled={saving}
+        >
+          {saving
+            ? 'Сохранение…'
+            : context.mode === 'add_all'
+              ? 'Добавить во все'
+              : isAdd
+                ? 'Добавить'
+                : context.mode === 'replace_all'
+                  ? 'Заменить во всех'
+                  : 'Заменить'}
         </Button>
       </div>
     </Modal>
