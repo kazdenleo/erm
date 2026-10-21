@@ -1,6 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import {
+  CAMERA_SCAN_MODES,
+  loadCameraScanMode,
+  normalizeCameraScanMode,
+} from '../lib/cameraScanMode';
 import { Button } from '../ui/components';
 import { colors } from '../ui/theme';
 
@@ -18,26 +23,89 @@ const BARCODE_TYPES = [
   'datamatrix',
 ];
 
-/** Тот же код повторно не принимаем, пока он в кадре (камера шлёт десятки событий в секунду). */
-const SAME_CODE_PAUSE_MS = 2000;
+/** В continuous: пауза между авто-приёмами одного и того же кода. */
+const SAME_CODE_PAUSE_MS = 2500;
 
-/** Встроенный сканер камеры (без модалки и без кнопки «Готово»). */
-export function CameraScanner({ active, onScan, hint }) {
+/**
+ * Встроенный сканер камеры.
+ * mode: continuous | button (если не передан — читается из настроек).
+ */
+export function CameraScanner({ active, onScan, hint, mode: modeProp, busy = false }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [torch, setTorch] = useState(false);
-  const [lastCode, setLastCode] = useState('');
-  const lastRef = useRef({ code: '', at: 0 });
+  const [mode, setMode] = useState(() => normalizeCameraScanMode(modeProp));
+  const [previewCode, setPreviewCode] = useState('');
+  const lastAutoRef = useRef({ code: '', at: 0 });
+  /** После авто-приёма этот код игнорируем, пока в кадре не появится другой. */
+  const lockedCodeRef = useRef('');
+  const previewRef = useRef('');
+
+  useEffect(() => {
+    if (modeProp) {
+      setMode(normalizeCameraScanMode(modeProp));
+      return undefined;
+    }
+    let cancelled = false;
+    loadCameraScanMode().then((m) => {
+      if (!cancelled) setMode(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [modeProp]);
+
+  useEffect(() => {
+    if (!active) {
+      setPreviewCode('');
+      previewRef.current = '';
+      lockedCodeRef.current = '';
+      lastAutoRef.current = { code: '', at: 0 };
+    }
+  }, [active]);
 
   if (!active) return null;
 
+  const isButton = mode === CAMERA_SCAN_MODES.button;
+
   const handleScanned = ({ data }) => {
+    if (busy) return;
     const code = String(data || '').trim();
     if (!code) return;
+
+    if (isButton) {
+      if (previewRef.current !== code) {
+        previewRef.current = code;
+        setPreviewCode(code);
+      }
+      return;
+    }
+
+    // continuous: другой код снимает блокировку предыдущего
+    if (lockedCodeRef.current && lockedCodeRef.current !== code) {
+      lockedCodeRef.current = '';
+    }
+    if (lockedCodeRef.current === code) return;
+
     const now = Date.now();
-    if (lastRef.current.code === code && now - lastRef.current.at < SAME_CODE_PAUSE_MS) return;
-    lastRef.current = { code, at: now };
-    setLastCode(code);
+    if (lastAutoRef.current.code === code && now - lastAutoRef.current.at < SAME_CODE_PAUSE_MS) {
+      return;
+    }
+    lastAutoRef.current = { code, at: now };
+    lockedCodeRef.current = code;
+    previewRef.current = code;
+    setPreviewCode(code);
     onScan(code);
+  };
+
+  const acceptPreview = () => {
+    if (busy) return;
+    const code = String(previewRef.current || previewCode || '').trim();
+    if (!code) return;
+    lockedCodeRef.current = code;
+    onScan(code);
+    // После приёма по кнопке сбрасываем превью — следующий тот же ШК нужно снова навести и нажать.
+    previewRef.current = '';
+    setPreviewCode('');
   };
 
   if (!permission) return <View style={styles.panel} />;
@@ -60,15 +128,30 @@ export function CameraScanner({ active, onScan, hint }) {
           facing="back"
           enableTorch={torch}
           barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
-          onBarcodeScanned={handleScanned}
+          onBarcodeScanned={busy ? undefined : handleScanned}
         />
         <View pointerEvents="none" style={styles.frame} />
       </View>
       <View style={styles.overlay}>
         {hint ? <Text style={styles.hint}>{hint}</Text> : null}
-        <Text style={styles.last} numberOfLines={1}>
-          {lastCode ? `Последний: ${lastCode}` : 'Наведите на штрихкод'}
+        <Text style={styles.modeBadge}>
+          {isButton ? 'Режим: по кнопке' : 'Режим: постоянно'}
         </Text>
+        <Text style={styles.last} numberOfLines={1}>
+          {previewCode
+            ? isButton
+              ? `Найден: ${previewCode}`
+              : `Последний: ${previewCode}`
+            : 'Наведите на штрихкод'}
+        </Text>
+        {isButton ? (
+          <Button
+            title={busy ? 'Обработка…' : previewCode ? 'Сканировать' : 'Наведите на код'}
+            onPress={acceptPreview}
+            disabled={busy || !previewCode}
+            style={styles.acceptBtn}
+          />
+        ) : null}
         <Pressable style={styles.torch} onPress={() => setTorch((t) => !t)}>
           <Text style={styles.torchText}>{torch ? 'Фонарик: вкл' : 'Фонарик'}</Text>
         </Pressable>
@@ -79,7 +162,7 @@ export function CameraScanner({ active, onScan, hint }) {
 
 const styles = StyleSheet.create({
   panel: {
-    height: 260,
+    height: 300,
     borderRadius: 14,
     backgroundColor: '#111',
     borderWidth: 1,
@@ -103,8 +186,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: '12%',
     right: '12%',
-    top: '22%',
-    height: '42%',
+    top: '18%',
+    height: '40%',
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.85)',
     borderRadius: 12,
@@ -118,7 +201,9 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 14,
   },
   hint: { color: '#FDE68A', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  modeBadge: { color: '#93C5FD', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   last: { color: '#fff', fontSize: 13, textAlign: 'center' },
+  acceptBtn: { alignSelf: 'stretch', marginTop: 2 },
   torch: {
     alignSelf: 'center',
     paddingHorizontal: 14,

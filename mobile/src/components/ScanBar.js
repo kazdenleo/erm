@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { CameraScanner } from './CameraScanner';
+import { loadCameraScanMode } from '../lib/cameraScanMode';
 import { colors } from '../ui/theme';
 
 function cleanCode(raw) {
@@ -14,7 +15,7 @@ function cleanCode(raw) {
 const SCAN_IDLE_MS = 350;
 
 /** Один и тот же ШК повторно не принимаем (двойной скан / удержание в луче). */
-const DUPLICATE_COOLDOWN_MS = 1500;
+const DUPLICATE_COOLDOWN_MS = 2500;
 
 function CameraIcon({ active }) {
   const stroke = active ? colors.primaryText : colors.primary;
@@ -35,18 +36,23 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   const inputRef = useRef(null);
   const [value, setValue] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraMode, setCameraMode] = useState('continuous');
   const idleTimer = useRef(null);
   const onScanRef = useRef(onScan);
   const queue = useRef([]);
   const draining = useRef(false);
   const lastAccepted = useRef({ code: '', at: 0 });
-  const busyWas = useRef(busy);
+  const busyRef = useRef(busy);
   /** Экран в стеке может оставаться смонтированным — без фокуса сканы не принимаем. */
   const focusedRef = useRef(false);
 
   useEffect(() => {
     onScanRef.current = onScan;
   }, [onScan]);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   useEffect(
     () => () => {
@@ -80,6 +86,7 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   useFocusEffect(
     useCallback(() => {
       focusedRef.current = true;
+      loadCameraScanMode().then(setCameraMode);
       focus();
       return () => {
         focusedRef.current = false;
@@ -89,12 +96,12 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
   );
 
   useEffect(() => {
-    if (busyWas.current && !busy) focus();
-    busyWas.current = busy;
+    if (!busy) focus();
   }, [busy, focus]);
 
   const enqueue = useCallback(async (code) => {
     if (!focusedRef.current) return;
+    if (busyRef.current || draining.current) return;
     const now = Date.now();
     if (code === lastAccepted.current.code && now - lastAccepted.current.at < DUPLICATE_COOLDOWN_MS) {
       return;
@@ -103,7 +110,6 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
 
     lastAccepted.current = { code, at: now };
     queue.current.push(code);
-    if (draining.current) return;
     draining.current = true;
     try {
       while (queue.current.length) {
@@ -194,7 +200,13 @@ export const ScanBar = forwardRef(function ScanBar({ onScan, busy = false, place
         </Pressable>
       </View>
 
-      <CameraScanner active={cameraOpen} hint={cameraHint} onScan={enqueue} />
+      <CameraScanner
+        active={cameraOpen}
+        hint={cameraHint}
+        onScan={enqueue}
+        mode={cameraMode}
+        busy={busy}
+      />
     </View>
   );
 });

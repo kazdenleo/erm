@@ -3,6 +3,12 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-nat
 import Constants from 'expo-constants';
 import { useAuth } from '../../context/AuthContext';
 import PrinterSettingsCard from '../../features/printer/PrinterSettingsCard';
+import {
+  CAMERA_SCAN_MODE_LABELS,
+  CAMERA_SCAN_MODES,
+  loadCameraScanMode,
+  saveCameraScanMode,
+} from '../../lib/cameraScanMode';
 import { readItem, writeItem } from '../../lib/storage';
 import { Button, Card } from '../../ui/components';
 import { colors } from '../../ui/theme';
@@ -10,14 +16,21 @@ import { colors } from '../../ui/theme';
 export default function SettingsScreen() {
   const { user, organizations, organizationId, selectOrganization, serverUrl, signOut } = useAuth();
   const [autoPrint, setAutoPrint] = useState(false);
+  const [cameraScanMode, setCameraScanMode] = useState(CAMERA_SCAN_MODES.continuous);
 
   useEffect(() => {
     readItem('autoPrintLabel').then((v) => setAutoPrint(v === '1'));
+    loadCameraScanMode().then(setCameraScanMode);
   }, []);
 
   const toggleAutoPrint = (v) => {
     setAutoPrint(v);
     writeItem('autoPrintLabel', v ? '1' : null);
+  };
+
+  const setScanMode = (mode) => {
+    setCameraScanMode(mode);
+    saveCameraScanMode(mode);
   };
 
   return (
@@ -40,6 +53,30 @@ export default function SettingsScreen() {
             );
           })
         )}
+      </Card>
+
+      <Card style={styles.gap}>
+        <Text style={styles.section}>Сканер камеры</Text>
+        <Text style={styles.muted}>
+          Для печати ШК упаковки удобнее «По кнопке»: код находится в кадре, печать — только после нажатия
+          «Сканировать». «Постоянно» — как раньше, сразу принимает каждый новый штрихкод.
+        </Text>
+        <View style={styles.modeRow}>
+          {[CAMERA_SCAN_MODES.continuous, CAMERA_SCAN_MODES.button].map((mode) => {
+            const active = cameraScanMode === mode;
+            return (
+              <Pressable
+                key={mode}
+                onPress={() => setScanMode(mode)}
+                style={[styles.modeBtn, active && styles.modeBtnActive]}
+              >
+                <Text style={[styles.modeBtnText, active && styles.modeBtnTextActive]}>
+                  {CAMERA_SCAN_MODE_LABELS[mode]}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </Card>
 
       <Card style={styles.gap}>
@@ -79,4 +116,17 @@ const styles = StyleSheet.create({
   optionTextActive: { color: colors.primary, fontWeight: '600' },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   rowText: { flex: 1, fontSize: 16, color: colors.text },
+  modeRow: { flexDirection: 'row', gap: 10 },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+  },
+  modeBtnActive: { borderColor: colors.primary, backgroundColor: '#EFF4FF' },
+  modeBtnText: { fontSize: 16, color: colors.text, fontWeight: '600' },
+  modeBtnTextActive: { color: colors.primary },
 });

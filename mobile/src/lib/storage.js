@@ -9,6 +9,8 @@ const KEYS = {
   cargoBatch: 'erm.cargoBatch',
   autoPrintLabel: 'erm.autoPrintLabel',
   labelPrinter: 'erm.labelPrinter',
+  /** Камера: continuous | button */
+  cameraScanMode: 'erm.cameraScanMode',
 };
 
 export async function readItem(key) {

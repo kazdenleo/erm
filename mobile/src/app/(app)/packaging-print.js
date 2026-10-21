@@ -115,7 +115,8 @@ export default function PackagingPrintScreen() {
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.hint}>
         Отсканируйте товар — на принтер уйдёт этикетка с ШК упаковки. Если отсканировать сам ШК
-        коробки — напечатается он. Принтер: Настройки → Принтер этикеток.
+        коробки — напечатается он. Принтер: Настройки → Принтер этикеток. Чтобы камера не печатала
+        один код несколько раз — Настройки → Сканер камеры → «По кнопке».
       </Text>
 
       <View style={styles.copiesRow}>
