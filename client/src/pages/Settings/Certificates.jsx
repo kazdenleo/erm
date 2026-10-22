@@ -48,7 +48,10 @@ function StatusRefreshButton({ busy, onClick }) {
     <button
       type="button"
       className={`status-refresh-btn${busy ? ' is-busy' : ''}`}
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (typeof onClick === 'function') onClick(e);
+      }}
       disabled={busy}
       title="Обновить статус проверки (автоматически — раз в час)"
       aria-label="Обновить статус проверки"
@@ -135,6 +138,7 @@ function CertificateForm({
   error,
   onSubmit,
   onCancel,
+  onDelete,
   saving,
 }) {
   const selectedProductSet = useMemo(
@@ -313,6 +317,17 @@ function CertificateForm({
       </div>
 
       <div className="form-actions">
+        {editing?.id && typeof onDelete === 'function' ? (
+          <Button
+            type="button"
+            variant="danger"
+            className="form-actions-delete"
+            onClick={onDelete}
+            disabled={saving}
+          >
+            Удалить
+          </Button>
+        ) : null}
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Отмена</Button>
         <Button type="submit" variant="primary" disabled={saving}>
           {saving ? 'Сохранение…' : 'Сохранить'}
@@ -1045,7 +1060,7 @@ export function Certificates() {
                     <th>Срок</th>
                     <th>Ozon</th>
                     <th>Яндекс</th>
-                    <th style={{ width: 190 }}></th>
+                    <th style={{ width: 140 }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1059,7 +1074,13 @@ export function Certificates() {
                     return (
                       <tr
                         key={c.id}
-                        className={expired ? 'row-expired' : expSoon ? 'row-expiring' : undefined}
+                        className={[
+                          'certificates-row-clickable',
+                          expired ? 'row-expired' : '',
+                          expSoon ? 'row-expiring' : '',
+                        ].filter(Boolean).join(' ') || undefined}
+                        onClick={() => openEdit(c)}
+                        title="Открыть для редактирования"
                       >
                         <td className="cell-strong">{c.certificate_number}</td>
                         <td>
@@ -1122,7 +1143,10 @@ export function Certificates() {
                                   type="button"
                                   className="muted ozon-error-hint ozon-error-hint--link"
                                   title={c.ozon_last_error}
-                                  onClick={() => openBindingReport(c)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openBindingReport(c);
+                                  }}
                                 >
                                   есть ошибка
                                 </button>
@@ -1160,7 +1184,10 @@ export function Certificates() {
                                   type="button"
                                   className="muted ozon-error-hint ozon-error-hint--link"
                                   title={c.ym_last_error}
-                                  onClick={() => openBindingReport(c)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openBindingReport(c);
+                                  }}
                                 >
                                   есть ошибка
                                 </button>
@@ -1170,7 +1197,10 @@ export function Certificates() {
                             <span className="muted">не отправлен</span>
                           )}
                         </td>
-                        <td className="certificates-actions-cell">
+                        <td
+                          className="certificates-actions-cell"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <div className="certificates-actions">
                             <Button
                               variant="secondary"
@@ -1204,26 +1234,6 @@ export function Certificates() {
                                 🔗
                               </Button>
                             ) : null}
-                            <Button
-                              variant="secondary"
-                              size="small"
-                              onClick={() => openEdit(c)}
-                              title="Изменить"
-                              className="btn-icon btn-icon-only"
-                              aria-label="Изменить"
-                            >
-                              ✏️
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="small"
-                              className="btn-icon btn-icon-only btn-delete"
-                              onClick={() => handleDelete(c)}
-                              title="Удалить"
-                              aria-label="Удалить"
-                            >
-                              🗑️
-                            </Button>
                           </div>
                         </td>
                       </tr>
@@ -1375,6 +1385,7 @@ export function Certificates() {
           error={formError}
           onSubmit={handleSubmit}
           onCancel={closeModal}
+          onDelete={editing ? () => handleDelete(editing) : undefined}
           saving={saving}
         />
       </Modal>

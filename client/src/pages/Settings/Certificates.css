@@ -160,8 +160,16 @@
   margin-left: 0;
 }
 
+.certificates-row-clickable {
+  cursor: pointer;
+}
+
+.certificates-row-clickable:hover td {
+  background: var(--row-hover, rgba(0, 0, 0, 0.03));
+}
+
 .certificates-actions-cell {
-  width: 190px;
+  width: 140px;
   white-space: nowrap;
   vertical-align: middle;
 }
@@ -539,7 +547,13 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  align-items: center;
   margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.form-actions .form-actions-delete {
+  margin-right: auto;
 }
 
 .muted {
