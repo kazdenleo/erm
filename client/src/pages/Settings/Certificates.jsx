@@ -1254,6 +1254,7 @@ export function Certificates() {
                 ))}
               </select>
               <select
+                className="without-category-filter"
                 value={withoutCategoryId}
                 onChange={(e) => {
                   setWithoutCategoryId(e.target.value);

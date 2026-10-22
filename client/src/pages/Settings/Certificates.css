@@ -518,7 +518,7 @@
   max-width: 360px;
 }
 
-.certificates-toolbar .filters select[aria-label="Фильтр по категории"] {
+.certificates-toolbar .filters select.without-category-filter {
   min-width: 180px;
   max-width: 280px;
 }
