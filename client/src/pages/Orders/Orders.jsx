@@ -27,7 +27,13 @@ import {
   isOrderStatusEligibleForProcurement,
   isOrderStatusEligibleForSupplierOrder,
 } from '../../constants/orderStatuses';
-import { OrderCardActions, OrderDetailContent, OrderSummaryFromList, ManualOrderWarehouseReturnButton } from './OrderDetail';
+import {
+  OrderCardActions,
+  OrderDetailContent,
+  OrderSummaryFromList,
+  ManualOrderWarehouseReturnButton,
+  ProductTitleLink,
+} from './OrderDetail';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import { onNavigationClick } from '../../utils/navigationClick.js';
@@ -3681,6 +3687,7 @@ export function Orders() {
                       byKey.set(key, {
                         name,
                         article,
+                        productId: hasPid ? pid : null,
                         quantity: add,
                         reservedQty: reserved,
                         needQty: need,
@@ -3689,6 +3696,7 @@ export function Orders() {
                     } else {
                       byKey.set(key, {
                         ...cur,
+                        productId: cur.productId ?? (hasPid ? pid : null),
                         quantity: (cur.quantity || 0) + add,
                         reservedQty: (cur.reservedQty || 0) + reserved,
                         needQty: (cur.needQty || 0) + need,
@@ -3838,9 +3846,12 @@ export function Orders() {
                             : null;
                           return (
                           <div key={i} className="orders-stacked-line orders-stacked-line--product">
-                            <span className="orders-product-cell-text" title={o.name || '—'}>
-                              {o.name || '—'}
-                            </span>
+                            <ProductTitleLink
+                              productId={o.productId}
+                              className="orders-product-cell-text"
+                            >
+                              <span title={o.name || '—'}>{o.name || '—'}</span>
+                            </ProductTitleLink>
                             {supplierName ? (
                               <span
                                 className="orders-procurement-supplier"
@@ -3859,9 +3870,12 @@ export function Orders() {
                       </div>
                     ) : (
                       <div className="orders-product-single-cell">
-                        <span className="orders-product-cell-text" title={String(productsDisplay || '')}>
-                          {productsDisplay}
-                        </span>
+                        <ProductTitleLink
+                          productId={first.productId ?? first.product_id}
+                          className="orders-product-cell-text"
+                        >
+                          <span title={String(productsDisplay || '')}>{productsDisplay}</span>
+                        </ProductTitleLink>
                         {showProcurementSupplier && getOrderProcurementSupplierName(first) ? (
                           <span
                             className="orders-procurement-supplier"

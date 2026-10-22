@@ -121,10 +121,16 @@
 .order-detail-product-link {
   color: var(--primary, #0d6efd);
   text-decoration: none;
+  cursor: pointer;
 }
 
 .order-detail-product-link:hover {
   text-decoration: underline;
+}
+
+.order-detail-product-link strong {
+  color: inherit;
+  font-weight: 600;
 }
 
 .order-reserve-line {

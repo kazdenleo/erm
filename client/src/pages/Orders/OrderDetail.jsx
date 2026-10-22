@@ -673,7 +673,8 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 className="order-reserve-line"
               >
                 <span className="order-reserve-line__title">
-                  {title}:{' '}
+                  <ProductTitleLink productId={pid}>{title}</ProductTitleLink>
+                  {': '}
                   {badgeReserved > 0 ? (
                     <span
                       className={reserveBadgeClassName(lineCoverage, {
@@ -880,14 +881,47 @@ function formatAssemblyWho(assembly) {
 }
 
 /** Ссылка в каталог ERM по product_id из локальной строки заказа */
-function ProductTitleLink({ productId, children }) {
+export function ProductTitleLink({ productId, children, className = '' }) {
   const raw = productId != null && productId !== '' ? Number(productId) : NaN;
-  if (!Number.isInteger(raw) || raw < 1) return <>{children}</>;
+  if (!Number.isInteger(raw) || raw < 1) {
+    return className ? <span className={className}>{children}</span> : <>{children}</>;
+  }
+  const cls = ['order-detail-product-link', className].filter(Boolean).join(' ');
   return (
-    <Link to={productCardPath(raw)} className="order-detail-product-link" title="Открыть карточку товара">
+    <Link
+      to={productCardPath(raw)}
+      className={cls}
+      title="Открыть карточку товара"
+      data-no-nav-click
+      onClick={(e) => e.stopPropagation()}
+    >
       {children}
     </Link>
   );
+}
+
+function localLineProductIdByKeys(localLines, keys) {
+  if (!localLines?.length || !keys?.length) return null;
+  const norms = keys
+    .map((v) => String(v ?? '').trim().toLowerCase())
+    .filter(Boolean);
+  if (!norms.length) return null;
+  for (const key of norms) {
+    const row = localLines.find((l) => {
+      const candidates = [
+        l.offerId,
+        l.offer_id,
+        l.marketplaceSku,
+        l.marketplace_sku,
+        l.productSku,
+        l.product_sku,
+        l.sku,
+      ];
+      return candidates.some((c) => String(c ?? '').trim().toLowerCase() === key);
+    });
+    if (row?.productId != null && String(row.productId).trim() !== '') return row.productId;
+  }
+  return null;
 }
 
 /** Артикул строки заказа: SKU каталога, иначе offer_id / id на МП */
@@ -905,55 +939,26 @@ function orderArticleFromLine(o) {
 
 function erpProductIdForOzonLine(localLines, p) {
   if (!localLines?.length || !p) return null;
-  const offer = String(p.offer_id ?? '').trim();
-  const sku = String(p.sku ?? '').trim();
-  if (offer) {
-    const row = localLines.find((l) => String(l.offerId ?? '').trim() === offer);
-    if (row?.productId != null) return row.productId;
-  }
-  if (sku) {
-    const row = localLines.find((l) => String(l.offerId ?? '').trim() === sku);
-    if (row?.productId != null) return row.productId;
-    const rowMs = localLines.find((l) => String(l.marketplaceSku ?? '').trim() === sku);
-    if (rowMs?.productId != null) return rowMs.productId;
-  }
+  const matched = localLineProductIdByKeys(localLines, [p.offer_id, p.sku]);
+  if (matched != null) return matched;
   if (localLines.length === 1 && localLines[0].productId != null) return localLines[0].productId;
   return null;
 }
 
 function erpProductIdForWb(localLines, detail) {
   if (!localLines?.length || !detail) return null;
-  const candidates = [];
-  const push = (v) => {
-    const s = String(v ?? '').trim();
-    if (s) candidates.push(s);
-  };
-  push(detail.article);
-  push(detail.nmId);
-  if (Array.isArray(detail.skus)) detail.skus.forEach((s) => push(s));
-
-  for (const key of candidates) {
-    const row = localLines.find((l) => String(l.offerId ?? '').trim() === key);
-    if (row?.productId != null) return row.productId;
-    const rowMs = localLines.find((l) => String(l.marketplaceSku ?? '').trim() === key);
-    if (rowMs?.productId != null) return rowMs.productId;
-  }
+  const candidates = [detail.article, detail.nmId];
+  if (Array.isArray(detail.skus)) candidates.push(...detail.skus);
+  const matched = localLineProductIdByKeys(localLines, candidates);
+  if (matched != null) return matched;
   if (localLines.length === 1 && localLines[0].productId != null) return localLines[0].productId;
   return null;
 }
 
 function erpProductIdForYandexLine(localLines, it) {
   if (!localLines?.length || !it) return null;
-  const oid = String(it.offerId ?? '').trim();
-  if (oid) {
-    const row = localLines.find((l) => String(l.offerId ?? '').trim() === oid);
-    if (row?.productId != null) return row.productId;
-  }
-  const shop = String(it.shopSku ?? '').trim();
-  if (shop) {
-    const row = localLines.find((l) => String(l.offerId ?? '').trim() === shop);
-    if (row?.productId != null) return row.productId;
-  }
+  const matched = localLineProductIdByKeys(localLines, [it.offerId, it.shopSku]);
+  if (matched != null) return matched;
   if (localLines.length === 1 && localLines[0].productId != null) return localLines[0].productId;
   return null;
 }
