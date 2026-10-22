@@ -250,17 +250,17 @@ function CertificateForm({
         {selectedProducts.length > 0 && (
           <div className="selected-tags">
             {selectedProducts.map((p) => (
-              <span key={String(p.id)} className="tag">
+              <button
+                key={String(p.id)}
+                type="button"
+                className="tag tag--removable"
+                onClick={() => toggleProduct(p)}
+                title="Отвязать товар"
+                aria-label={`Отвязать ${productLabel(p)}`}
+              >
                 {productLabel(p)}
-                <button
-                  type="button"
-                  className="tag-remove"
-                  onClick={() => toggleProduct(p)}
-                  aria-label="Убрать товар"
-                >
-                  ×
-                </button>
-              </span>
+                <span className="tag-remove" aria-hidden="true">×</span>
+              </button>
             ))}
           </div>
         )}

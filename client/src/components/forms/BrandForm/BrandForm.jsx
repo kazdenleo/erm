@@ -796,9 +796,27 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               {selectedCertProducts.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
                   {selectedCertProducts.map((p) => (
-                    <span key={String(p.id)} style={{ border: '1px solid var(--border)', borderRadius: '999px', padding: '2px 8px', fontSize: '11px' }}>
+                    <button
+                      key={String(p.id)}
+                      type="button"
+                      onClick={() => toggleProduct(p)}
+                      title="Отвязать товар"
+                      aria-label={`Отвязать ${productLabel(p)}`}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: '999px',
+                        padding: '2px 8px',
+                        fontSize: '11px',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
                       {productLabel(p)}
-                    </span>
+                      <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: '14px', lineHeight: 1 }}>×</span>
+                    </button>
                   ))}
                 </div>
               )}

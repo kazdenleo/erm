@@ -478,6 +478,19 @@
   padding: 2px 8px;
   font-size: 11px;
   max-width: 240px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.tag--removable {
+  cursor: pointer;
+}
+
+.tag--removable:hover {
+  border-color: #fca5a5;
+  background: rgba(239, 68, 68, 0.06);
 }
 
 .tag-remove {
@@ -489,6 +502,10 @@
   line-height: 1;
   color: var(--muted, #6b7280);
   padding: 0;
+}
+
+.tag--removable:hover .tag-remove {
+  color: #dc2626;
 }
 
 .without-search {
