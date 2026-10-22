@@ -1978,11 +1978,12 @@ async function applyPurchaseReceiptStockByProductInTx(
     let newIncoming = incoming - moveFromIncoming;
     if (newIncoming < 0) newIncoming = 0;
 
-    // До записи движений: снимок «в пути» по складу в строке списания учитывает непринятый остаток закупки.
-    if (pi.rows?.[0] && moveFromIncoming > 0) {
+    // В «принято» по закупке пишем весь факт скана (в т.ч. перескан сверх плана).
+    // Incoming («в пути») уменьшаем только на moveFromIncoming — в пределах ожидания.
+    if (pi.rows?.[0] && stockQty > 0) {
       await client.query(
         'UPDATE purchase_items SET received_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = $2 AND product_id = $3',
-        [received + moveFromIncoming, purchaseId, productId]
+        [received + stockQty, purchaseId, productId]
       );
     }
 

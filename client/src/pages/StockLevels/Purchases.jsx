@@ -121,6 +121,26 @@ function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null 
  * В идущей приёмке received_quantity — уже принятое прошлыми приёмками, его вычитаем;
  * в завершённой оно включает и эту приёмку.
  */
+/** Принято в закупке: факт (с пересканом) и подпись, если сверх ожидания. */
+function formatPurchaseReceivedCell(expected, received) {
+  const exp = Math.max(0, Math.floor(Number(expected) || 0));
+  const rec = Math.max(0, Math.floor(Number(received) || 0));
+  const over = Math.max(0, rec - exp);
+  if (over <= 0) return rec;
+  return (
+    <>
+      {rec}{' '}
+      <span
+        className="muted"
+        title="На склад ушло сверх ожидания по закупке"
+        style={{ fontWeight: 600, color: 'var(--danger, #b00020)', whiteSpace: 'nowrap' }}
+      >
+        (+{over} перескан)
+      </span>
+    </>
+  );
+}
+
 function receiptItemExpectedQty(it, { scanning = false } = {}) {
   const draftExpRaw = it?.draft_expected_quantity;
   const draftExp = draftExpRaw != null && draftExpRaw !== '' ? Number(draftExpRaw) : null;
@@ -194,6 +214,34 @@ function qtyCell(raw) {
   if (raw == null || raw === '') return '—';
   const n = Number(raw);
   return Number.isFinite(n) ? n : '—';
+}
+
+/** В списке: оформленное «принято»; черновик скана отдельно, чтобы не путать с фактом. */
+function formatListReceivedCell(p) {
+  const posted = Number(p.received_total ?? p.receivedTotal);
+  const postedSafe = Number.isFinite(posted) ? posted : 0;
+  const draftScanned = Number(p.scanning_scanned_total ?? p.scanningScannedTotal);
+  const draftSafe = Number.isFinite(draftScanned) ? draftScanned : 0;
+  const hasDraft =
+    p.has_receipt_draft === true ||
+    p.hasReceiptDraft === true ||
+    (p.scanning_receipt_id != null && Number(p.scanning_receipt_id) > 0) ||
+    (p.scanningReceiptId != null && Number(p.scanningReceiptId) > 0);
+  if (hasDraft && draftSafe > 0) {
+    return (
+      <>
+        {postedSafe}
+        <span
+          className="muted"
+          title="Отсканировано в черновике приёмки — ещё не оформлено в «принято» по закупке"
+          style={{ marginLeft: 4, fontSize: 12, whiteSpace: 'nowrap' }}
+        >
+          (+{draftSafe} черн.)
+        </span>
+      </>
+    );
+  }
+  return qtyCell(postedSafe);
 }
 
 function normalizePurchasePrice(v) {
@@ -1892,7 +1940,7 @@ export function Purchases() {
                       <span
                         title={
                           p.scanning_scanned_total != null || p.scanningScannedTotal != null
-                            ? `Черновик приёмки №${draftRid}, принято ${p.scanning_scanned_total ?? p.scanningScannedTotal ?? 0} шт`
+                            ? `Черновик приёмки №${draftRid}, отсканировано ${p.scanning_scanned_total ?? p.scanningScannedTotal ?? 0} шт (ещё не в «принято»)`
                             : `Черновик приёмки №${draftRid}`
                         }
                         style={{
@@ -1921,7 +1969,7 @@ export function Purchases() {
                   <td>{p.organization_name || '—'}</td>
                   <td>{p.warehouse_name || warehouseDisplayLabel(null, p.warehouse_id) || '—'}</td>
                   <td>{qtyCell(p.expected_total ?? p.expectedTotal)}</td>
-                  <td>{qtyCell(p.received_total ?? p.receivedTotal)}</td>
+                  <td>{formatListReceivedCell(p)}</td>
                 </tr>
                 );
               })}
@@ -2400,7 +2448,7 @@ export function Purchases() {
                                   }}
                                 />
                               </td>
-                              <td>{received}</td>
+                              <td>{formatPurchaseReceivedCell(it.quantity, received)}</td>
                               <td>
                                 <Button
                                   variant="secondary"
@@ -2493,7 +2541,7 @@ export function Purchases() {
                           {it.purchase_price ?? it.product_cost ?? '—'}
                         </td>
                         <td>{it.expected_quantity}</td>
-                        <td>{it.received_quantity}</td>
+                        <td>{formatPurchaseReceivedCell(it.expected_quantity, it.received_quantity)}</td>
                         <td onClick={(e) => e.stopPropagation()}>
                           {(() => {
                             const exp = Number(it.expected_quantity);
@@ -2532,6 +2580,27 @@ export function Purchases() {
                     ))}
                   </tbody>
                 </table>
+                {(() => {
+                  const rows = Array.isArray(detail?.items) ? detail.items : [];
+                  const expSum = rows.reduce(
+                    (s, it) => s + Math.max(0, Math.floor(Number(it.expected_quantity) || 0)),
+                    0
+                  );
+                  const recSum = rows.reduce(
+                    (s, it) => s + Math.max(0, Math.floor(Number(it.received_quantity) || 0)),
+                    0
+                  );
+                  return (
+                    <p className="muted" style={{ marginTop: 8, fontSize: 13 }}>
+                      Итого по закупке: ожидалось <strong>{expSum}</strong> · принято{' '}
+                      <strong>{recSum}</strong>
+                      {detailItemSearchActive ? (
+                        <span> (сумма по всем строкам, не только по фильтру)</span>
+                      ) : null}
+                      . Это же число в колонке «Принято» списка закупок.
+                    </p>
+                  );
+                })()}
               </div>
               ) : (
                 <p className="muted">Ничего не найдено по запросу.</p>
@@ -2553,6 +2622,7 @@ export function Purchases() {
                       <th>Склад</th>
                       <th>Статус</th>
                       <th>Позиций</th>
+                      <th title="Сумма сканов в этой приёмке">Шт.</th>
                       <th>Действия</th>
                     </tr>
                   </thead>
@@ -2568,6 +2638,7 @@ export function Purchases() {
                           <td>{r.warehouse_name || warehouseDisplayLabel(null, r.warehouse_id) || '—'}</td>
                           <td>{receiptStatusLabel(r.status)}</td>
                           <td>{r.items_count ?? '—'}</td>
+                          <td>{qtyCell(r.scanned_total ?? r.scannedTotal)}</td>
                           <td>
                             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                               <Button
@@ -2879,6 +2950,9 @@ export function Purchases() {
                 showList={receiptBodyTab === 'cargo'}
                 onChanged={() => {
                   if (receipt?.receipt?.id) scheduleReceiptRefresh(receipt.receipt.id);
+                }}
+                onPlaceAccepted={() => {
+                  scanRef.current?.focus();
                 }}
               />
             ) : receiptBodyTab === 'cargo' ? (

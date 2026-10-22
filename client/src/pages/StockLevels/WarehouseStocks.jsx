@@ -2360,9 +2360,12 @@ export function WarehouseStocks() {
     [mpPushWarehouseId, warehouses]
   );
 
-  /** По умолчанию таблица — склад с привязками к МП (Электролитный и т.п.). */
+  /** Один раз при открытии: если склад не выбран — склад с привязками к МП. Не мешаем выбору «Все склады». */
+  const stockWarehouseDefaultAppliedRef = useRef(false);
   useEffect(() => {
-    if (!mpLinkedWarehouseId || stockWarehouseId) return;
+    if (!mpLinkedWarehouseId || stockWarehouseDefaultAppliedRef.current) return;
+    stockWarehouseDefaultAppliedRef.current = true;
+    if (stockWarehouseId) return;
     setStockWarehouseId(String(mpLinkedWarehouseId));
     try {
       localStorage.setItem(STOCK_WAREHOUSE_LS, String(mpLinkedWarehouseId));
