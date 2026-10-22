@@ -298,6 +298,14 @@ class OzonCertificatesPushService {
       profileId,
       organizationId,
     });
+    // Сбрасываем/обновляем залипший ozon_last_error по фактической сверке.
+    const lastError = bindingErrorText(report);
+    const prev = cert.ozon_last_error != null && String(cert.ozon_last_error).trim() !== ''
+      ? String(cert.ozon_last_error).trim()
+      : null;
+    if (prev !== lastError) {
+      await persistOzonFields(cert.id, { ozon_last_error: lastError }, profileId);
+    }
     return report;
   }
 

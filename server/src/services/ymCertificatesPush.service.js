@@ -277,7 +277,16 @@ class YmCertificatesPushService {
       ctx.apiKey,
       expected.map((it) => it.offerId)
     );
-    return summarizeYmBinding({ expected, certificatesByOffer, number });
+    const report = summarizeYmBinding({ expected, certificatesByOffer, number });
+    // Сбрасываем/обновляем залипший ym_last_error по фактической сверке (список «есть ошибка»).
+    const lastError = ymBindingErrorText(report);
+    const prev = cert.ym_last_error != null && String(cert.ym_last_error).trim() !== ''
+      ? String(cert.ym_last_error).trim()
+      : null;
+    if (prev !== lastError) {
+      await persistYmFields(cert.id, { ym_last_error: lastError }, profileId);
+    }
+    return report;
   }
 
   /** Подтягивает status из offers/documents для уже отправленных документов. */

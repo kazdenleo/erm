@@ -748,6 +748,8 @@ export function Certificates() {
     try {
       const res = await certificatesApi.bindingReport(c.id);
       setBindingData(res?.data || null);
+      // Сверка обновляет ozon/ym_last_error на сервере — подтянем список, чтобы «есть ошибка» исчезла.
+      await load({ silent: true });
     } catch (err) {
       setBindingError(err?.response?.data?.message || err?.message || 'Не удалось проверить привязку');
     } finally {
