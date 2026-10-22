@@ -123,6 +123,10 @@ function mapSupplyRow(row) {
     marketplaceContentSyncedAt: row.marketplace_content_synced_at ?? null,
     itemCount: row.items_quantity_total != null ? Number(row.items_quantity_total) : undefined,
     itemsLineCount: row.items_line_count != null ? Number(row.items_line_count) : undefined,
+    collectedTotal:
+      row.collected_quantity_total != null ? Number(row.collected_quantity_total) : undefined,
+    packedTotal:
+      row.packed_quantity_total != null ? Number(row.packed_quantity_total) : undefined,
     reservedFromStockTotal:
       row.reserved_from_stock_total != null
         ? Number(row.reserved_from_stock_total)
@@ -188,7 +192,13 @@ const SUPPLY_SELECT = `
          o.name AS organization_name,
          COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text) AS deduction_warehouse_name,
          (SELECT COALESCE(SUM(i.quantity), 0)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS items_quantity_total,
-         (SELECT COUNT(*)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS items_line_count
+         (SELECT COUNT(*)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS items_line_count,
+         (SELECT COALESCE(SUM(LEAST(COALESCE(i.collected_quantity, 0), GREATEST(i.quantity, 0))), 0)::int
+            FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS collected_quantity_total,
+         (SELECT COALESCE(SUM(cc.quantity), 0)::int
+            FROM fbo_supply_cargo_contents cc
+            INNER JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
+           WHERE i.fbo_supply_id = s.id) AS packed_quantity_total
   FROM fbo_supplies s
   LEFT JOIN organizations o ON o.id = s.organization_id
   LEFT JOIN warehouses w ON w.id = s.deduction_warehouse_id

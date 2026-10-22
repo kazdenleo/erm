@@ -427,6 +427,8 @@ export function Purchases() {
   const [receiptCompleteInfo, setReceiptCompleteInfo] = useState(null);
   const [deleteReceiptDraftBusy, setDeleteReceiptDraftBusy] = useState(false);
   const [receiptLoading, setReceiptLoading] = useState(false);
+  /** Вкладки тела приёмки: товары / состав грузомест */
+  const [receiptBodyTab, setReceiptBodyTab] = useState('items');
   const [deleteReceiptBusy, setDeleteReceiptBusy] = useState(null);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
   const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
@@ -1442,9 +1444,11 @@ export function Purchases() {
         setReceipt(null);
         setScanMsg(null);
         setReceiptCloseConfirm(false);
+        setReceiptBodyTab('items');
       }
       return undefined;
     }
+    setReceiptBodyTab('items');
     if (Number(receipt?.receipt?.id) === routeReceiptId) return undefined;
     let cancelled = false;
     (async () => {
@@ -2845,19 +2849,43 @@ export function Purchases() {
                 Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
               </p>
             ) : null}
+            <div className="purchase-receipt-tabs" role="tablist" aria-label="Разделы приёмки">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={receiptBodyTab === 'items'}
+                className={`purchase-receipt-tab${receiptBodyTab === 'items' ? ' active' : ''}`}
+                onClick={() => setReceiptBodyTab('items')}
+              >
+                Приёмка
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={receiptBodyTab === 'cargo'}
+                className={`purchase-receipt-tab${receiptBodyTab === 'cargo' ? ' active' : ''}`}
+                onClick={() => setReceiptBodyTab('cargo')}
+              >
+                Состав грузомест
+              </button>
+            </div>
             {receipt?.receipt?.purchase_id ? (
-              <div style={{ marginBottom: 16 }}>
-                <PurchaseCargoReceive
-                  purchaseId={receipt.receipt.purchase_id}
-                  editable={isReceiptScanning}
-                  currentUserId={currentUserId}
-                  embeddedInReceipt
-                  onChanged={() => {
-                    if (receipt?.receipt?.id) scheduleReceiptRefresh(receipt.receipt.id);
-                  }}
-                />
-              </div>
+              <PurchaseCargoReceive
+                purchaseId={receipt.receipt.purchase_id}
+                editable={isReceiptScanning}
+                currentUserId={currentUserId}
+                embeddedInReceipt
+                showScan={receiptBodyTab === 'items'}
+                showList={receiptBodyTab === 'cargo'}
+                onChanged={() => {
+                  if (receipt?.receipt?.id) scheduleReceiptRefresh(receipt.receipt.id);
+                }}
+              />
+            ) : receiptBodyTab === 'cargo' ? (
+              <p className="muted">Нет привязки к закупке — грузоместа недоступны.</p>
             ) : null}
+            {receiptBodyTab === 'items' ? (
+              <>
             {isReceiptScanning && isReceiptScannerMode ? (
             <div className="warehouse-ops-list-form" style={{ marginBottom: 8, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 220 }}>
@@ -3121,6 +3149,8 @@ export function Purchases() {
             ) : (
               <p className="muted">Пока ничего не отсканировано.</p>
             )}
+              </>
+            ) : null}
                 </>
               );
             })()}

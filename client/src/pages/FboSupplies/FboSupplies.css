@@ -69,6 +69,87 @@
   font-size: 10px;
 }
 
+.fbo-supply-progress {
+  min-width: 120px;
+  max-width: 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #475569;
+}
+
+.fbo-supply-progress__overall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.fbo-supply-progress__overall-pct {
+  flex: 0 0 auto;
+  min-width: 2.4em;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-supply-progress__overall-pct--done {
+  color: #15803d;
+}
+
+.fbo-supply-progress__stage-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 1px;
+}
+
+.fbo-supply-progress__stage-label {
+  font-weight: 500;
+  color: #64748b;
+}
+
+.fbo-supply-progress__stage-meta {
+  color: #94a3b8;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-supply-progress__bar {
+  height: 4px;
+  border-radius: 2px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.fbo-supply-progress__bar--lg {
+  flex: 1;
+  height: 6px;
+  min-width: 0;
+}
+
+.fbo-supply-progress__bar--sm {
+  height: 3px;
+}
+
+.fbo-supply-progress__bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #3b82f6;
+  transition: width 0.25s ease;
+}
+
+.fbo-supply-progress__bar-fill--done {
+  background: #16a34a;
+}
+
+.fbo-supply-progress--done .fbo-supply-progress__bar-fill {
+  background: #16a34a;
+}
+
 .fbo-supplies-page {
   padding: 0 4px 24px;
 }

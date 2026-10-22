@@ -155,6 +155,12 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Нормы сек/шт для прогресса поставки (приёмка FBO / сборка / упаковка). */
+  getProgressNorms: async () => {
+    const response = await api.get('/fbo-supplies/progress-norms');
+    return response.data?.data ?? response.data;
+  },
+
   getWbForecast: async (params = {}) => {
     const response = await api.get('/fbo-supplies/forecast/wb', { params });
     return response.data?.data ?? response.data;

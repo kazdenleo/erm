@@ -48,6 +48,10 @@ const ROLE_LABELS = {
   editor: 'Редактор',
 };
 
+const PROGRESS_NORMS_TTL_MS = 10 * 60 * 1000;
+/** @type {Map<number, { at: number, value: object }>} */
+const progressNormsCache = new Map();
+
 function userDisplayName(u) {
   const fio = [u.last_name, u.first_name].filter(Boolean).join(' ').trim();
   return fio || u.full_name || u.email || u.phone || `Пользователь #${u.id}`;
@@ -668,6 +672,35 @@ class EmployeeMetricsService {
       summary,
       employees,
     };
+  }
+
+  /**
+   * Нормы сек/шт для прогресса поставок FBO (кэш ~10 мин на профиль).
+   * Период — последние 28 дней, как в калькуляторе на странице показателей.
+   */
+  async getProgressNorms({ profileId } = {}) {
+    const pid = requireAnalyticsProfile(profileId);
+    const now = Date.now();
+    const cached = progressNormsCache.get(pid);
+    if (cached && now - cached.at < PROGRESS_NORMS_TTL_MS) {
+      return cached.value;
+    }
+    const to = new Date();
+    const from = new Date(to);
+    from.setDate(from.getDate() - 27);
+    const toYmd = `${to.getFullYear()}-${String(to.getMonth() + 1).padStart(2, '0')}-${String(to.getDate()).padStart(2, '0')}`;
+    const fromYmd = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}`;
+    const metrics = await this.getMetrics({ profileId: pid, dateFrom: fromYmd, dateTo: toYmd });
+    const summary = metrics?.summary || {};
+    const value = {
+      period: metrics?.period || { dateFrom: fromYmd, dateTo: toYmd },
+      receiptFboSecPerUnit: summary.receiptsByKind?.fbo?.secPerUnit ?? null,
+      fboCollectSecPerUnit: summary.fboCollectSecPerUnit ?? null,
+      packingSecPerUnit:
+        summary.packingSecPerUnit ?? summary.packingBoxSecPerUnit ?? null,
+    };
+    progressNormsCache.set(pid, { at: now, value });
+    return value;
   }
 }
 

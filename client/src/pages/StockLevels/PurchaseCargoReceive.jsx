@@ -59,6 +59,10 @@ export function PurchaseCargoReceive({
   currentUserId = null,
   /** В модалке приёмки: скрываем дубль «Оформить приёмку» (есть в шапке). */
   embeddedInReceipt = false,
+  /** Скан мест и ожидаемое число (вкладка «Приёмка»). */
+  showScan = true,
+  /** Список мест, разбор и состав (вкладка «Состав грузомест»). */
+  showList = true,
   onChanged = null,
 }) {
   const [cargoState, setCargoState] = useState(null);
@@ -94,6 +98,13 @@ export function PurchaseCargoReceive({
     }
     return data;
   }, []);
+
+  useEffect(() => {
+    if (!showList && activePlaceId) {
+      setActivePlaceId(null);
+      setPlaceData(null);
+    }
+  }, [showList, activePlaceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -444,9 +455,10 @@ export function PurchaseCargoReceive({
   );
 
   if (loading && !cargoState) {
+    if (!showScan && !showList) return null;
     return (
       <div className="purchase-cargo-receive">
-        <h4 style={{ marginTop: 8 }}>Грузоместа</h4>
+        {!embeddedInReceipt ? <h4 style={{ marginTop: 8 }}>Грузоместа</h4> : null}
         <p className="muted" style={{ fontSize: 13 }}>
           Загрузка грузомест…
         </p>
@@ -454,15 +466,29 @@ export function PurchaseCargoReceive({
     );
   }
 
+  if (!showScan && !showList) return null;
+
   return (
     <div className="purchase-cargo-receive">
-      <h4 style={{ marginTop: 8 }}>Грузоместа</h4>
-      <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
-        Отсканируйте штрихкод грузоместа, затем откройте место и отсканируйте товары внутри. В итоге
-        по каждому месту будет список позиций.
-      </p>
+      {!embeddedInReceipt ? <h4 style={{ marginTop: 8 }}>Грузоместа</h4> : null}
+      {showScan && showList && !embeddedInReceipt ? (
+        <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
+          Отсканируйте штрихкод грузоместа, затем откройте место и отсканируйте товары внутри. В итоге
+          по каждому месту будет список позиций.
+        </p>
+      ) : null}
+      {showScan && !showList ? (
+        <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
+          Отсканируйте штрихкоды пришедших грузомест. Разбор и состав — на вкладке «Состав грузомест».
+        </p>
+      ) : null}
+      {showList && !showScan ? (
+        <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
+          Откройте место и отсканируйте товары внутри. Состав по местам — ниже.
+        </p>
+      ) : null}
 
-      {message ? (
+      {message && (showScan || showList) ? (
         <p
           className={
             message.kind === 'success'
@@ -481,68 +507,76 @@ export function PurchaseCargoReceive({
         </p>
       ) : null}
 
-      {editable && !activePlaceId ? (
-        <div style={{ marginBottom: 12 }}>
-          <BarcodeScanField
-            id="purchase-cargo-place-scan"
-            label="Скан грузоместа"
-            placeholder="Отсканируйте штрихкод грузоместа"
-            loading={busy}
-            disabled={busy}
-            enableGlobalCapture={!activePlaceId}
-            onScan={handlePlaceScan}
-            hint="Сначала примите все пришедшие места, затем зайдите в каждое и разберите товар."
-          />
-        </div>
-      ) : null}
-
-      <div
-        style={{
-          display: 'flex',
-          gap: 10,
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          marginBottom: 10,
-        }}
-      >
-        <span className="muted" style={{ fontSize: 13 }}>
-          Ожидается мест
-        </span>
-        <input
-          className="warehouse-ops-input"
-          style={{ width: 88 }}
-          inputMode="numeric"
-          value={expectedDraft}
-          disabled={!editable || busy}
-          placeholder="—"
-          onChange={(e) => setExpectedDraft(e.target.value)}
-        />
-        <Button variant="secondary" disabled={!editable || busy} onClick={saveExpected}>
-          {busy ? 'Сохраняю…' : 'Сохранить'}
-        </Button>
-        <span style={{ fontSize: 14 }}>
-          Принято:{' '}
-          <strong>
-            {places.length}
-            {cargoState?.expectedCargoPlaces != null ? ` из ${cargoState.expectedCargoPlaces}` : ''}
-          </strong>
-          {' · '}
-          разобрано: <strong>{doneCount}</strong>
-          {cargoState?.report?.totalQuantity != null ? (
-            <span className="muted"> · товара в местах {cargoState.report.totalQuantity} шт</span>
+      {showScan ? (
+        <>
+          {editable && !activePlaceId ? (
+            <div style={{ marginBottom: 12 }}>
+              <BarcodeScanField
+                id="purchase-cargo-place-scan"
+                label="Скан грузоместа"
+                placeholder="Отсканируйте штрихкод грузоместа"
+                loading={busy}
+                disabled={busy}
+                enableGlobalCapture={showScan && !activePlaceId}
+                onScan={handlePlaceScan}
+                hint={
+                  showList
+                    ? 'Сначала примите все пришедшие места, затем зайдите в каждое и разберите товар.'
+                    : 'Принятые места появятся на вкладке «Состав грузомест».'
+                }
+              />
+            </div>
           ) : null}
-        </span>
-      </div>
 
-      {cargoState?.expectedCargoPlaces != null &&
-      places.length > Number(cargoState.expectedCargoPlaces) ? (
-        <p className="error" style={{ marginBottom: 10 }} role="alert">
-          Принято мест больше ожидаемого ({places.length} &gt; {cargoState.expectedCargoPlaces}).
-          Лишнее место можно удалить, если в нём ещё нет товара.
-        </p>
+          <div
+            style={{
+              display: 'flex',
+              gap: 10,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              marginBottom: 10,
+            }}
+          >
+            <span className="muted" style={{ fontSize: 13 }}>
+              Ожидается мест
+            </span>
+            <input
+              className="warehouse-ops-input"
+              style={{ width: 88 }}
+              inputMode="numeric"
+              value={expectedDraft}
+              disabled={!editable || busy}
+              placeholder="—"
+              onChange={(e) => setExpectedDraft(e.target.value)}
+            />
+            <Button variant="secondary" disabled={!editable || busy} onClick={saveExpected}>
+              {busy ? 'Сохраняю…' : 'Сохранить'}
+            </Button>
+            <span style={{ fontSize: 14 }}>
+              Принято:{' '}
+              <strong>
+                {places.length}
+                {cargoState?.expectedCargoPlaces != null ? ` из ${cargoState.expectedCargoPlaces}` : ''}
+              </strong>
+              {' · '}
+              разобрано: <strong>{doneCount}</strong>
+              {cargoState?.report?.totalQuantity != null ? (
+                <span className="muted"> · товара в местах {cargoState.report.totalQuantity} шт</span>
+              ) : null}
+            </span>
+          </div>
+
+          {cargoState?.expectedCargoPlaces != null &&
+          places.length > Number(cargoState.expectedCargoPlaces) ? (
+            <p className="error" style={{ marginBottom: 10 }} role="alert">
+              Принято мест больше ожидаемого ({places.length} &gt; {cargoState.expectedCargoPlaces}).
+              Лишнее место можно удалить на вкладке «Состав грузомест», если в нём ещё нет товара.
+            </p>
+          ) : null}
+        </>
       ) : null}
 
-      {activePlaceId ? (
+      {showList && activePlaceId ? (
         <div className="purchase-cargo-place-panel warehouse-ops-product-card" style={{ marginBottom: 16 }}>
           {placeLoading && !placeData ? (
             <p className="muted">Открываем грузоместо…</p>
@@ -719,11 +753,39 @@ export function PurchaseCargoReceive({
         </div>
       ) : null}
 
-      {!activePlaceId ? (
+      {showList && !activePlaceId ? (
         <>
+          {!showScan ? (
+            <div
+              style={{
+                display: 'flex',
+                gap: 10,
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                marginBottom: 10,
+                fontSize: 14,
+              }}
+            >
+              <span>
+                Принято:{' '}
+                <strong>
+                  {places.length}
+                  {cargoState?.expectedCargoPlaces != null
+                    ? ` из ${cargoState.expectedCargoPlaces}`
+                    : ''}
+                </strong>
+                {' · '}
+                разобрано: <strong>{doneCount}</strong>
+                {cargoState?.report?.totalQuantity != null ? (
+                  <span className="muted"> · товара в местах {cargoState.report.totalQuantity} шт</span>
+                ) : null}
+              </span>
+            </div>
+          ) : null}
           {places.length === 0 ? (
             <p className="muted" style={{ fontSize: 13 }}>
               Пока нет принятых грузомест.
+              {embeddedInReceipt ? ' Отсканируйте места на вкладке «Приёмка».' : ''}
             </p>
           ) : (
             <div className="warehouse-ops-table-wrap">

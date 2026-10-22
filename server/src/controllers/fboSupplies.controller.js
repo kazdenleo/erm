@@ -15,6 +15,7 @@ import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.se
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
 import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import fboSupplyForecastService from '../services/fboSupplyForecast.service.js';
+import employeeMetricsService from '../services/employeeMetrics.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
 import { EMPLOYEE_EVENT, logEmployeeEvent } from '../services/employeeActivity.service.js';
@@ -269,6 +270,27 @@ class FboSuppliesController {
         marketplace,
         skipReserveTotals,
       });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  /** Нормы сек/шт (приёмка FBO / сборка / упаковка) для прогресса в списке поставок. */
+  async getProgressNorms(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({
+          ok: true,
+          data: {
+            receiptFboSecPerUnit: null,
+            fboCollectSecPerUnit: null,
+            packingSecPerUnit: null,
+          },
+        });
+      }
+      const data = await employeeMetricsService.getProgressNorms({ profileId: tid });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);

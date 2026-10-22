@@ -15,6 +15,10 @@ router.use(requireAuth);
 
 router.get('/', wrapAsync(fboSuppliesController.list.bind(fboSuppliesController)));
 router.get(
+  '/progress-norms',
+  wrapAsync(fboSuppliesController.getProgressNorms.bind(fboSuppliesController))
+);
+router.get(
   '/deduction-warehouses',
   wrapAsync(fboSuppliesController.listDeductionWarehouses.bind(fboSuppliesController))
 );

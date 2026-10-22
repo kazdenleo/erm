@@ -368,6 +368,34 @@
   min-width: 0;
 }
 
+.purchase-receipt-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.purchase-receipt-tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.purchase-receipt-tab:hover {
+  color: #0f172a;
+}
+
+.purchase-receipt-tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  font-weight: 600;
+}
+
 /* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */
 .app-sidebar .vertical-nav-menu > li > ul {
   display: none;

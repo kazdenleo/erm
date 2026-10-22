@@ -14,6 +14,7 @@ import {
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
+import { FboSupplyProgress } from './FboSupplyProgress.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
 import { FboSupplyDeleteConfirmModal } from './FboSupplyDeleteConfirmModal.jsx';
@@ -53,6 +54,7 @@ export function FboSupplies() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState(() => new Set(FBO_LIST_DEFAULT_STATUSES));
+  const [progressNorms, setProgressNorms] = useState(null);
 
   const statusFilterList = useMemo(
     () => FBO_LIST_STATUS_FILTER_OPTIONS.filter((s) => statusFilter.has(s)),
@@ -90,6 +92,21 @@ export function FboSupplies() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fboSuppliesApi
+      .getProgressNorms()
+      .then((data) => {
+        if (!cancelled) setProgressNorms(data && typeof data === 'object' ? data : null);
+      })
+      .catch(() => {
+        if (!cancelled) setProgressNorms(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -284,6 +301,7 @@ export function FboSupplies() {
                 <th>Комментарий</th>
                 <th>Организация</th>
                 <th>Кол-во, шт.</th>
+                <th>Прогресс</th>
                 <th>Статус</th>
                 <th>Создана</th>
                 <th style={{ width: 90 }} />
@@ -292,7 +310,7 @@ export function FboSupplies() {
             <tbody>
               {!list.length && (
                 <tr>
-                  <td colSpan={13} className="text-center muted">
+                  <td colSpan={14} className="text-center muted">
                     Нет поставок. Загрузите из Excel или с маркетплейса.
                   </td>
                 </tr>
@@ -378,6 +396,13 @@ export function FboSupplies() {
                         </div>
                       );
                     })()}
+                  </td>
+                  <td>
+                    <FboSupplyProgress
+                      row={row}
+                      norms={progressNorms}
+                      reserveLoading={reserveLoading}
+                    />
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <FboSupplyStatusSelect
