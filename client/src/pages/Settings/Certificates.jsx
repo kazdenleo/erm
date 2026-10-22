@@ -220,8 +220,8 @@ function CertificateForm({
       </div>
 
       <div className="form-group">
-        <label>Товары <span className="req">*</span></label>
-        <p className="form-hint">Выберите конкретные товары, на которые действует документ.</p>
+        <label>Товары</label>
+        <p className="form-hint">Необязательно: можно сохранить документ без привязки и добавить товары позже.</p>
         {!form.brand_id ? (
           <div className="muted">Сначала выберите бренд</div>
         ) : (
@@ -381,6 +381,11 @@ export function Certificates() {
   const [withoutBrandId, setWithoutBrandId] = useState('');
   const [withoutOffset, setWithoutOffset] = useState(0);
   const WITHOUT_LIMIT = 50;
+  const [bindProduct, setBindProduct] = useState(null);
+  const [bindCertId, setBindCertId] = useState('');
+  const [bindCertSearch, setBindCertSearch] = useState('');
+  const [bindBusy, setBindBusy] = useState(false);
+  const [bindError, setBindError] = useState('');
 
   const brandNameById = useMemo(() => {
     const map = {};
@@ -578,7 +583,46 @@ export function Certificates() {
     setModalOpen(true);
   };
 
+  const openBindProduct = (product) => {
+    setBindProduct(product);
+    setBindCertId('');
+    setBindCertSearch('');
+    setBindError('');
+  };
+
+  const closeBindProduct = ({ force = false } = {}) => {
+    if (bindBusy && !force) return;
+    setBindProduct(null);
+    setBindCertId('');
+    setBindCertSearch('');
+    setBindError('');
+  };
+
+  const bindProductCandidates = useMemo(() => {
+    if (!bindProduct) return [];
+    const brandId = bindProduct.brand_id != null ? String(bindProduct.brand_id) : '';
+    const q = String(bindCertSearch || '').trim().toLowerCase();
+    let rows = Array.isArray(list) ? [...list] : [];
+    // Сначала сертификаты того же бренда
+    rows.sort((a, b) => {
+      const aSame = brandId && String(a.brand_id) === brandId ? 0 : 1;
+      const bSame = brandId && String(b.brand_id) === brandId ? 0 : 1;
+      if (aSame !== bSame) return aSame - bSame;
+      return String(a.certificate_number || '').localeCompare(String(b.certificate_number || ''), 'ru');
+    });
+    if (q) {
+      rows = rows.filter((c) => {
+        const num = String(c.certificate_number || '').toLowerCase();
+        const brand = String(c.brand_name || brandNameById[String(c.brand_id)] || '').toLowerCase();
+        const type = String(DOC_TYPE_LABELS[c.document_type] || '').toLowerCase();
+        return num.includes(q) || brand.includes(q) || type.includes(q);
+      });
+    }
+    return rows;
+  }, [bindProduct, list, bindCertSearch, brandNameById]);
+
   const openCreateForProduct = (product) => {
+    closeBindProduct();
     setEditing(null);
     setForm({
       ...emptyForm(),
@@ -590,6 +634,39 @@ export function Certificates() {
     setProductSearch('');
     setPhotoFile(null);
     setModalOpen(true);
+  };
+
+  const handleBindToExisting = async () => {
+    if (!bindProduct?.id || !bindCertId) {
+      setBindError('Выберите сертификат');
+      return;
+    }
+    const cert = list.find((c) => String(c.id) === String(bindCertId));
+    if (!cert) {
+      setBindError('Сертификат не найден в списке — обновите страницу');
+      return;
+    }
+    const existingIds = Array.isArray(cert.product_ids)
+      ? cert.product_ids.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const productId = Number(bindProduct.id);
+    if (!Number.isFinite(productId) || productId <= 0) {
+      setBindError('Некорректный товар');
+      return;
+    }
+    const nextIds = existingIds.includes(productId) ? existingIds : [...existingIds, productId];
+    setBindBusy(true);
+    setBindError('');
+    try {
+      await certificatesApi.update(cert.id, { product_ids: nextIds });
+      closeBindProduct({ force: true });
+      await load({ silent: true });
+      if (activeTab === 'without') await loadWithoutCerts();
+    } catch (err) {
+      setBindError(err?.response?.data?.message || err?.message || 'Не удалось привязать товар');
+    } finally {
+      setBindBusy(false);
+    }
   };
 
   const closeModal = () => {
@@ -615,10 +692,6 @@ export function Certificates() {
     const productIds = (form.product_ids || [])
       .map((x) => Number(x))
       .filter((n) => Number.isFinite(n) && n > 0);
-    if (productIds.length === 0) {
-      setFormError('Выберите хотя бы один товар');
-      return;
-    }
 
     setSaving(true);
     setFormError('');
@@ -1193,9 +1266,8 @@ export function Certificates() {
                         <Button
                           variant="primary"
                           size="small"
-                          onClick={() => openCreateForProduct(p)}
-                          disabled={!p.brand_id}
-                          title={!p.brand_id ? 'У товара нет бренда' : 'Создать сертификат для товара'}
+                          onClick={() => openBindProduct(p)}
+                          title="Привязать к существующему сертификату или создать новый"
                         >
                           Привязать
                         </Button>
@@ -1425,6 +1497,88 @@ export function Certificates() {
               </Button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!bindProduct}
+        onClose={closeBindProduct}
+        title="Привязать к сертификату"
+        size="medium"
+      >
+        {bindProduct && (
+          <div className="certificate-form">
+            <p className="form-hint">
+              Товар <strong>{productSku(bindProduct)}</strong>
+              {bindProduct.name ? ` — ${bindProduct.name}` : ''}
+              {bindProduct.brand_name || brandNameById[String(bindProduct.brand_id)]
+                ? ` (${bindProduct.brand_name || brandNameById[String(bindProduct.brand_id)]})`
+                : ''}
+            </p>
+            {bindError ? <div className="form-error">{bindError}</div> : null}
+            <div className="form-group">
+              <label>Существующий сертификат</label>
+              <input
+                type="text"
+                className="category-search"
+                placeholder="Поиск по номеру или бренду…"
+                value={bindCertSearch}
+                onChange={(e) => setBindCertSearch(e.target.value)}
+              />
+              <div className="category-checkboxes bind-cert-list">
+                {bindProductCandidates.length === 0 ? (
+                  <div className="muted">
+                    {list.length === 0
+                      ? 'В реестре пока нет сертификатов — создайте новый'
+                      : 'Ничего не найдено'}
+                  </div>
+                ) : (
+                  bindProductCandidates.map((c) => (
+                    <label key={c.id} className="checkbox-label">
+                      <input
+                        type="radio"
+                        name="bind-cert"
+                        checked={String(bindCertId) === String(c.id)}
+                        onChange={() => setBindCertId(String(c.id))}
+                      />
+                      <span>
+                        <strong>{c.certificate_number}</strong>
+                        {' · '}
+                        {DOC_TYPE_LABELS[c.document_type] || DOC_TYPE_LABELS.certificate}
+                        {' · '}
+                        {c.brand_name || brandNameById[String(c.brand_id)] || 'без бренда'}
+                        {Array.isArray(c.product_ids) && c.product_ids.length > 0
+                          ? ` · товаров: ${c.product_ids.length}`
+                          : ''}
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="form-actions">
+              <Button type="button" variant="secondary" onClick={closeBindProduct} disabled={bindBusy}>
+                Отмена
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => openCreateForProduct(bindProduct)}
+                disabled={bindBusy || !bindProduct.brand_id}
+                title={!bindProduct.brand_id ? 'У товара нет бренда — выберите существующий сертификат' : undefined}
+              >
+                Создать новый
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleBindToExisting}
+                disabled={bindBusy || !bindCertId}
+              >
+                {bindBusy ? 'Привязываем…' : 'Привязать'}
+              </Button>
+            </div>
+          </div>
         )}
       </Modal>
 

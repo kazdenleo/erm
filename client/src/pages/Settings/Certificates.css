@@ -516,6 +516,10 @@
   min-width: 220px;
 }
 
+.bind-cert-list {
+  max-height: 260px;
+}
+
 .without-pager {
   display: flex;
   align-items: center;

@@ -404,10 +404,6 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     e.preventDefault();
     if (!brand?.id) return;
     const productIds = (certForm.product_ids || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
-    if (productIds.length === 0) {
-      alert('Выберите хотя бы один товар');
-      return;
-    }
     setCertSaving(true);
     try {
       const payload = {
@@ -769,9 +765,9 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
               </select>
             </div>
             <div className="col-12">
-              <label className="form-label">Товары <span style={{ color: '#ef4444' }}>*</span></label>
+              <label className="form-label">Товары</label>
               <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>
-                Выберите конкретные товары этого бренда.
+                Необязательно: можно сохранить без привязки и добавить товары позже.
               </div>
               <input
                 className="form-control form-control-sm"

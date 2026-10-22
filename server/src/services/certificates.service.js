@@ -61,10 +61,8 @@ class CertificatesService {
       throw httpError('Бренд обязателен', 400);
     }
 
+    // Товары необязательны — сертификат можно сохранить без привязки.
     const product_ids = normalizeIdList(data.product_ids ?? data.productIds);
-    if (product_ids.length === 0) {
-      throw httpError('Выберите хотя бы один товар', 400);
-    }
 
     // Категории больше не обязательны; сохраняем если передали (совместимость).
     const user_category_ids = normalizeIdList(
@@ -218,9 +216,6 @@ class CertificatesService {
 
       if (nextBrandId == null || nextBrandId === '') {
         throw httpError('Бренд обязателен', 400);
-      }
-      if (!nextProductIds.length) {
-        throw httpError('Выберите хотя бы один товар', 400);
       }
     }
 
