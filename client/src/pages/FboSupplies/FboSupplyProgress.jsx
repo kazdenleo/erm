@@ -59,13 +59,13 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
   const model = useMemo(() => {
     const qty = Math.max(Number(row?.itemCount) || 0, 0);
     const reserveOn = row?.deductStock !== false;
+    // Приёмка = уже на складе (нал). «В пути» — ещё не принято, в % не входит.
     const stock = Number(row?.reservedFromStockTotal ?? row?.reserved_from_stock_total) || 0;
-    const path = Number(row?.reservedFromIncomingTotal ?? row?.reserved_from_incoming_total) || 0;
-    const covered = reserveOn ? Math.min(stock + path, qty) : qty;
+    const received = reserveOn ? Math.min(stock, qty) : qty;
     const collected = Math.min(Math.max(Number(row?.collectedTotal) || 0, 0), qty || Infinity);
     const packed = Math.min(Math.max(Number(row?.packedTotal) || 0, 0), qty || Infinity);
 
-    const receiptPct = qty > 0 ? stagePct(covered, qty) : 0;
+    const receiptPct = qty > 0 ? stagePct(received, qty) : 0;
     const collectPct = qty > 0 ? stagePct(collected, qty) : 0;
     const packPct = qty > 0 ? stagePct(packed, qty) : 0;
 
@@ -76,7 +76,7 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
     const stages = [];
     if (reserveOn) {
       stages.push({
-        done: covered,
+        done: received,
         weight:
           Number.isFinite(receiptSec) && receiptSec > 0
             ? receiptSec
@@ -115,11 +115,11 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
       }
     }
 
-    const coveredPending = reserveOn && reserveLoading;
+    const receiptPending = reserveOn && reserveLoading;
     return {
       qty,
-      covered: reserveOn ? covered : qty,
-      coveredPending,
+      received: reserveOn ? received : qty,
+      receiptPending,
       collected: qty > 0 ? Math.min(collected, qty) : collected,
       packed: qty > 0 ? Math.min(packed, qty) : packed,
       receiptPct: reserveOn ? receiptPct : 1,
@@ -146,9 +146,9 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
         .join(' ')}
       onClick={(e) => e.stopPropagation()}
       title={
-        model.coveredPending
-          ? 'Считаем покрытие наличием…'
-          : `Выполнено ${model.overallPct}% (приёмка / сборка / упаковка)`
+        model.receiptPending
+          ? 'Считаем наличие на складе…'
+          : `Выполнено ${model.overallPct}% (приёмка = нал. на складе / сборка / упаковка)`
       }
     >
       <div className="fbo-supply-progress__overall">
@@ -160,7 +160,7 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
             .filter(Boolean)
             .join(' ')}
         >
-          {model.coveredPending && model.overallPct === 0 ? '…' : `${model.overallPct}%`}
+          {model.receiptPending && model.overallPct === 0 ? '…' : `${model.overallPct}%`}
         </span>
         <div
           className="fbo-supply-progress__bar fbo-supply-progress__bar--lg"
@@ -184,9 +184,9 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
         <StageRow
           label="Приёмка"
           pct={model.receiptPct}
-          done={model.covered}
+          done={model.received}
           total={model.qty}
-          pending={model.coveredPending}
+          pending={model.receiptPending}
         />
       ) : null}
       <StageRow label="Сборка" pct={model.collectPct} done={model.collected} total={model.qty} />
