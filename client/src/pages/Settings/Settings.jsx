@@ -12,6 +12,8 @@ import {
   accountSettingsFromProfile,
   isProfileBoolFlag,
   parseClientEmployeeMetricsSettings,
+  FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK,
+  FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK,
 } from '../../utils/profileFlags.js';
 import {
   NOTIFICATION_CHANNEL_MODES,
@@ -877,6 +879,7 @@ export function Settings() {
                 </span>
               </label>
               {form.fbo_enabled && (
+                <>
                 <label className="settings-account-label" style={{ marginTop: 8, marginLeft: 28 }}>
                   Склад списания для FBO
                   <select
@@ -896,6 +899,37 @@ export function Settings() {
                     ))}
                   </select>
                 </label>
+                <label className="settings-account-label" style={{ marginTop: 12, marginLeft: 28 }}>
+                  Прогресс поставки FBO
+                  <select
+                    className="login-input"
+                    style={{ maxWidth: 420, marginTop: 8 }}
+                    value={
+                      form.employee_metrics_settings?.fboSupplyProgressMode ||
+                      FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK
+                    }
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        employee_metrics_settings: {
+                          ...f.employee_metrics_settings,
+                          fboSupplyProgressMode: e.target.value,
+                        },
+                      }))
+                    }
+                  >
+                    <option value={FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK}>
+                      Приёмка — сборка — упаковка
+                    </option>
+                    <option value={FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK}>
+                      Сборка — упаковка
+                    </option>
+                  </select>
+                  <span className="text-muted small" style={{ display: 'block', marginTop: 6 }}>
+                    Какие этапы учитывать в колонке «Прогресс» списка поставок FBO.
+                  </span>
+                </label>
+                </>
               )}
               <label className="settings-account-toggle">
                 <input
@@ -1055,6 +1089,7 @@ export function Settings() {
                           setForm((f) => ({
                             ...f,
                             employee_metrics_settings: {
+                              ...f.employee_metrics_settings,
                               idleSec: {
                                 ...(f.employee_metrics_settings?.idleSec || {}),
                                 [it.key]: Math.round(min * 60),

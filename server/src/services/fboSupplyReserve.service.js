@@ -1705,6 +1705,184 @@ class FboSupplyReserveService {
     });
   }
 
+  /**
+   * Свободное наличие и «в пути» для расчёта закупки по выбранным поставкам.
+   * Вычитаем резерв на складе и покрытие из закупок, уже занятые другими активными поставками FBO
+   * (не из excludeSupplyIds). Резерв/путь самих выбранных поставок остаётся доступным для них.
+   *
+   * @returns {Promise<Map<number, { onHand: number, incoming: number }>>}
+   */
+  async getAvailableStockAndIncomingForPurchaseCalc(
+    productIds,
+    { profileId = null, warehouseId = null, excludeSupplyIds = [] } = {}
+  ) {
+    const pids = [
+      ...new Set((productIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)),
+    ];
+    const result = new Map();
+    for (const pid of pids) result.set(pid, { onHand: 0, incoming: 0 });
+    if (!pids.length) return result;
+
+    const wid = normalizeWarehouseId(warehouseId);
+    const excludeSet = new Set(
+      (excludeSupplyIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+    );
+    const excludeList = [...excludeSet];
+
+    const parentKitsR = await query(
+      `SELECT DISTINCT kit_product_id
+       FROM kit_components
+       WHERE component_product_id = ANY($1::bigint[])`,
+      [pids]
+    );
+    const parentKitIds = (parentKitsR.rows || [])
+      .map((r) => Number(r.kit_product_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const queueProductIds = [...new Set([...pids, ...parentKitIds])];
+
+    const fboIncomingWhs =
+      wid != null
+        ? [...new Set([wid, ...(await getFboSourceWarehouseIds(profileId))])]
+        : await getFboSourceWarehouseIds(profileId);
+
+    const [onHandByWh, reservedByWh, incomingByProduct, queuesByProduct, kitFlags] =
+      await Promise.all([
+        wid != null ? batchGetWarehouseOnHand(pids, [wid]) : Promise.resolve(new Map()),
+        wid != null ? batchGetNetReservedOnWarehouses(pids, [wid]) : Promise.resolve(new Map()),
+        batchGetIncomingPoolForFboProducts(queueProductIds, { warehouseIds: fboIncomingWhs }),
+        findFboReserveQueuesByProducts(queueProductIds, profileId),
+        batchIsKitProductIds(queueProductIds),
+      ]);
+
+    /** Резерв выбранных поставок на складе (по product_id) — его не вычитаем из доступного. */
+    const reservedForExcludedByProduct = new Map();
+    if (wid != null && excludeList.length) {
+      const ownR = await query(
+        `SELECT sm.product_id,
+                GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+         FROM stock_movements sm
+         WHERE sm.product_id = ANY($1::bigint[])
+           AND sm.warehouse_id = $2
+           AND sm.type IN ('reserve', 'unreserve')
+           AND (
+             (sm.meta->>'fbo_supply_id' ~ '^[0-9]+$' AND (sm.meta->>'fbo_supply_id')::bigint = ANY($3::bigint[]))
+             OR (
+               sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'
+               AND EXISTS (
+                 SELECT 1 FROM fbo_supply_items si
+                 WHERE si.id = (sm.meta->>'fbo_supply_item_id')::bigint
+                   AND si.fbo_supply_id = ANY($3::bigint[])
+               )
+             )
+           )
+         GROUP BY sm.product_id`,
+        [pids, wid, excludeList]
+      );
+      for (const row of ownR.rows || []) {
+        reservedForExcludedByProduct.set(Number(row.product_id), Math.max(0, Number(row.net) || 0));
+      }
+    }
+
+    for (const pid of pids) {
+      const onHand = wid != null ? onHandByWh.get(pid)?.get(wid) || 0 : 0;
+      const totalReserved = wid != null ? reservedByWh.get(pid)?.get(wid) || 0 : 0;
+      const ownReserved = reservedForExcludedByProduct.get(pid) || 0;
+      const freeOnHand = Math.max(0, onHand - Math.max(0, totalReserved - ownReserved));
+      result.set(pid, { onHand: freeOnHand, incoming: 0 });
+    }
+
+    const kitIds = queueProductIds.filter((id) => kitFlags.get(id) === true);
+    const kitComponentsByKit = await batchGetKitComponentsMap(kitIds);
+    const componentIds = [];
+    for (const comps of kitComponentsByKit.values()) {
+      for (const c of comps) componentIds.push(Number(c.component_product_id));
+    }
+    const incomingLookupIds = [...new Set([...queueProductIds, ...componentIds.filter((id) => id > 0)])];
+    const incomingFull =
+      incomingLookupIds.length === queueProductIds.length
+        ? incomingByProduct
+        : await batchGetIncomingPoolForFboProducts(incomingLookupIds, { warehouseIds: fboIncomingWhs });
+
+    /** Один пул «в пути» на product_id — и для прямых строк, и для комплектующих комплектов. */
+    const incomingPools = new Map();
+    for (const id of incomingLookupIds) {
+      incomingPools.set(id, Math.max(0, Number(incomingFull.get(id)) || 0));
+    }
+
+    const kitQueueEntries = [];
+    for (const productId of kitIds) {
+      for (const row of queuesByProduct.get(productId) || []) {
+        if (excludeSet.has(Number(row.fbo_supply_id))) continue;
+        kitQueueEntries.push({
+          kitProductId: productId,
+          fboSupplyItemId: row.supply_item_id,
+          lineQty: row.quantity,
+        });
+      }
+    }
+    const kitReservedByItem = await batchGetReservedKitUnitsForFboItems(kitQueueEntries);
+    const netReservedByItem = await getNetReservedForFboItemsBatch(queueProductIds);
+
+    /** Очередь как в покрытии резерва: сначала packed/ready, затем new; внутри — ready_at. */
+    const flatQueue = [];
+    for (const productId of queueProductIds) {
+      for (const row of queuesByProduct.get(productId) || []) {
+        if (excludeSet.has(Number(row.fbo_supply_id))) continue;
+        flatQueue.push({ productId, row });
+      }
+    }
+    flatQueue.sort((a, b) => {
+      const ra = fboReserveStatusRank(a.row.status);
+      const rb = fboReserveStatusRank(b.row.status);
+      if (ra !== rb) return ra - rb;
+      const ta = a.row.ready_at ? new Date(a.row.ready_at).getTime() : Number.POSITIVE_INFINITY;
+      const tb = b.row.ready_at ? new Date(b.row.ready_at).getTime() : Number.POSITIVE_INFINITY;
+      if (ta !== tb) return ta - tb;
+      const sa = Number(a.row.fbo_supply_id) || 0;
+      const sb = Number(b.row.fbo_supply_id) || 0;
+      if (sa !== sb) return sa - sb;
+      return (Number(a.row.supply_item_id) || 0) - (Number(b.row.supply_item_id) || 0);
+    });
+
+    for (const { productId, row } of flatQueue) {
+      const isKit = kitFlags.get(productId) === true;
+      const components = isKit ? kitComponentsByKit.get(productId) || [] : [];
+      const itemId = String(row.supply_item_id);
+      const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
+      const reservedFromStock = isKit
+        ? kitReservedByItem.get(itemId) || 0
+        : netReservedByItem.get(itemId) || 0;
+      const gap = Math.max(0, qty - reservedFromStock);
+      if (gap <= 0) continue;
+
+      if (isKit && components.length) {
+        const directPool = incomingPools.get(productId) || 0;
+        const fromDirect = Math.min(gap, directPool);
+        if (fromDirect > 0) {
+          incomingPools.set(productId, Math.max(0, directPool - fromDirect));
+        }
+        const still = gap - fromDirect;
+        if (still > 0) {
+          takeKitsFromComponentIncomingPools(components, incomingPools, still);
+        }
+      } else {
+        const pool = incomingPools.get(productId) || 0;
+        const take = Math.min(gap, pool);
+        if (take > 0) incomingPools.set(productId, Math.max(0, pool - take));
+      }
+    }
+
+    for (const pid of pids) {
+      const prev = result.get(pid) || { onHand: 0, incoming: 0 };
+      result.set(pid, {
+        ...prev,
+        incoming: Math.max(0, Number(incomingPools.get(pid)) || 0),
+      });
+    }
+
+    return result;
+  }
+
   async onSupplyStockEvent(productId, warehouseId, { profileId } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;

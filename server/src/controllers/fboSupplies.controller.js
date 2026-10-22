@@ -287,6 +287,7 @@ class FboSuppliesController {
             receiptFboSecPerUnit: null,
             fboCollectSecPerUnit: null,
             packingSecPerUnit: null,
+            fboSupplyProgressMode: 'receipt_collect_pack',
           },
         });
       }

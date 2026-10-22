@@ -21,7 +21,10 @@
 
 import { query } from '../config/database.js';
 import { requireAnalyticsProfile, resolvePeriod, round2 } from '../utils/analyticsCommon.js';
-import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.js';
+import {
+  parseEmployeeMetricsSettings,
+  FBO_SUPPLY_PROGRESS_MODE_DEFAULT,
+} from '../utils/employeeMetricsSettings.js';
 
 /**
  * Для оценок по коробкам и строкам приёмки промежуточных сканов не видно, поэтому порог перерыва
@@ -681,9 +684,22 @@ class EmployeeMetricsService {
   async getProgressNorms({ profileId } = {}) {
     const pid = requireAnalyticsProfile(profileId);
     const now = Date.now();
+    let progressMode = FBO_SUPPLY_PROGRESS_MODE_DEFAULT;
+    try {
+      const settingsRes = await query(
+        'SELECT employee_metrics_settings FROM profiles WHERE id = $1 LIMIT 1',
+        [pid]
+      );
+      progressMode = parseEmployeeMetricsSettings(
+        settingsRes.rows?.[0]?.employee_metrics_settings
+      ).fboSupplyProgressMode;
+    } catch (e) {
+      if (!String(e?.message || '').includes('employee_metrics_settings')) throw e;
+    }
+
     const cached = progressNormsCache.get(pid);
     if (cached && now - cached.at < PROGRESS_NORMS_TTL_MS) {
-      return cached.value;
+      return { ...cached.value, fboSupplyProgressMode: progressMode };
     }
     const to = new Date();
     const from = new Date(to);
@@ -700,7 +716,7 @@ class EmployeeMetricsService {
         summary.packingSecPerUnit ?? summary.packingBoxSecPerUnit ?? null,
     };
     progressNormsCache.set(pid, { at: now, value });
-    return value;
+    return { ...value, fboSupplyProgressMode: progressMode };
   }
 }
 

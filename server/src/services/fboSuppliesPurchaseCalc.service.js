@@ -4,6 +4,7 @@
  */
 
 import { query } from '../config/database.js';
+import fboSupplyReserveService from './fboSupplyReserve.service.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -622,41 +623,26 @@ class FboSuppliesPurchaseCalcService {
       ...kitIdsWithComponents,
     ]);
 
+    // Наличие и «в пути» — свободные: без резерва/покрытия других активных поставок FBO.
     const onHandByProduct = new Map();
-    if (stockProductIds.length) {
-      const stockR = await query(
-        `SELECT product_id, COALESCE(quantity, 0)::int AS qty
-         FROM product_warehouse_stock
-         WHERE warehouse_id = $1 AND product_id = ANY($2::bigint[])`,
-        [fboWh.id, stockProductIds]
-      );
-      for (const row of stockR.rows || []) {
-        onHandByProduct.set(Number(row.product_id), Number(row.qty) || 0);
-      }
-    }
-
-    // «В пути» — только открытые закупки на склад FBO (не глобальный products.incoming_quantity).
     const incomingByProduct = new Map();
-    for (const stockPid of stockProductIds) incomingByProduct.set(stockPid, 0);
+    for (const stockPid of stockProductIds) {
+      onHandByProduct.set(stockPid, 0);
+      incomingByProduct.set(stockPid, 0);
+    }
     if (stockProductIds.length) {
-      const incR = await query(
-        `SELECT pi.product_id,
-                COALESCE(SUM(
-                  GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
-                ), 0)::int AS pending
-         FROM purchase_items pi
-         INNER JOIN purchases p ON p.id = pi.purchase_id
-         WHERE pi.product_id = ANY($1::bigint[])
-           AND p.status = 'open'
-           AND p.warehouse_id = $2
-         GROUP BY pi.product_id`,
-        [stockProductIds, fboWh.id]
+      const available = await fboSupplyReserveService.getAvailableStockAndIncomingForPurchaseCalc(
+        stockProductIds,
+        {
+          profileId: pid,
+          warehouseId: fboWh.id,
+          excludeSupplyIds: ids,
+        }
       );
-      for (const row of incR.rows || []) {
-        incomingByProduct.set(
-          Number(row.product_id),
-          Math.max(0, Number(row.pending) || 0)
-        );
+      for (const stockPid of stockProductIds) {
+        const cell = available.get(stockPid);
+        onHandByProduct.set(stockPid, Math.max(0, Number(cell?.onHand) || 0));
+        incomingByProduct.set(stockPid, Math.max(0, Number(cell?.incoming) || 0));
       }
     }
 

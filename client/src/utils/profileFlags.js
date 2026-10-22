@@ -78,6 +78,17 @@ export function accountSettingsFromProfile(profile) {
 
 export const EMPLOYEE_IDLE_DEFAULTS_SEC = { fbs: 180, fboCollect: 60, packing: 180, receipts: 180 };
 
+export const FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK = 'receipt_collect_pack';
+export const FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK = 'collect_pack';
+
+export function parseClientFboSupplyProgressMode(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (v === FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK || v === 'assembly_pack') {
+    return FBO_SUPPLY_PROGRESS_MODE_COLLECT_PACK;
+  }
+  return FBO_SUPPLY_PROGRESS_MODE_RECEIPT_COLLECT_PACK;
+}
+
 export function parseClientEmployeeMetricsSettings(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const idle = src.idleSec && typeof src.idleSec === 'object' ? src.idleSec : {};
@@ -87,6 +98,9 @@ export function parseClientEmployeeMetricsSettings(raw) {
         const n = Number(idle[k]);
         return [k, Number.isFinite(n) && n > 0 ? n : def];
       })
+    ),
+    fboSupplyProgressMode: parseClientFboSupplyProgressMode(
+      src.fboSupplyProgressMode ?? src.fbo_supply_progress_mode
     ),
   };
 }

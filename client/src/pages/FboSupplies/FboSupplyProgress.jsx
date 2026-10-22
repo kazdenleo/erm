@@ -59,6 +59,8 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
   const model = useMemo(() => {
     const qty = Math.max(Number(row?.itemCount) || 0, 0);
     const reserveOn = row?.deductStock !== false;
+    const mode = String(norms?.fboSupplyProgressMode || '').toLowerCase();
+    const includeReceipt = mode !== 'collect_pack' && reserveOn;
     // Приёмка = уже на складе (нал). «В пути» — ещё не принято, в % не входит.
     const stock = Number(row?.reservedFromStockTotal ?? row?.reserved_from_stock_total) || 0;
     const received = reserveOn ? Math.min(stock, qty) : qty;
@@ -74,7 +76,7 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
     const packSec = Number(norms?.packingSecPerUnit);
 
     const stages = [];
-    if (reserveOn) {
+    if (includeReceipt) {
       stages.push({
         done: received,
         weight:
@@ -115,19 +117,19 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
       }
     }
 
-    const receiptPending = reserveOn && reserveLoading;
+    const receiptPending = includeReceipt && reserveLoading;
     return {
       qty,
       received: reserveOn ? received : qty,
       receiptPending,
       collected: qty > 0 ? Math.min(collected, qty) : collected,
       packed: qty > 0 ? Math.min(packed, qty) : packed,
-      receiptPct: reserveOn ? receiptPct : 1,
+      receiptPct: includeReceipt ? receiptPct : 0,
       collectPct,
       packPct,
       overall,
       overallPct: Math.round(overall * 100),
-      showReceipt: reserveOn,
+      showReceipt: includeReceipt,
       allDone: qty > 0 && overall >= 1,
     };
   }, [row, norms, reserveLoading]);
@@ -148,7 +150,9 @@ export function FboSupplyProgress({ row, norms, reserveLoading = false }) {
       title={
         model.receiptPending
           ? 'Считаем наличие на складе…'
-          : `Выполнено ${model.overallPct}% (приёмка = нал. на складе / сборка / упаковка)`
+          : model.showReceipt
+            ? `Выполнено ${model.overallPct}% (приёмка = нал. / сборка / упаковка)`
+            : `Выполнено ${model.overallPct}% (сборка / упаковка)`
       }
     >
       <div className="fbo-supply-progress__overall">

@@ -1,6 +1,7 @@
 /**
  * Настройки показателей сотрудников (на уровне profile): пороги перерыва между сканами, сек.
  * Промежуток между соседними сканами длиннее порога — сотрудник отошёл, время не засчитывается.
+ * Также: режим этапов прогресса поставок FBO.
  */
 
 export const EMPLOYEE_IDLE_DEFAULTS_SEC = {
@@ -12,8 +13,24 @@ export const EMPLOYEE_IDLE_DEFAULTS_SEC = {
 
 export const EMPLOYEE_IDLE_KEYS = Object.keys(EMPLOYEE_IDLE_DEFAULTS_SEC);
 
+/** Этапы в колонке прогресса списка поставок FBO. */
+export const FBO_SUPPLY_PROGRESS_MODES = {
+  RECEIPT_COLLECT_PACK: 'receipt_collect_pack',
+  COLLECT_PACK: 'collect_pack',
+};
+
+export const FBO_SUPPLY_PROGRESS_MODE_DEFAULT = FBO_SUPPLY_PROGRESS_MODES.RECEIPT_COLLECT_PACK;
+
 const IDLE_MIN_SEC = 10;
 const IDLE_MAX_SEC = 60 * 60;
+
+function parseFboSupplyProgressMode(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (v === FBO_SUPPLY_PROGRESS_MODES.COLLECT_PACK || v === 'collect_pack' || v === 'assembly_pack') {
+    return FBO_SUPPLY_PROGRESS_MODES.COLLECT_PACK;
+  }
+  return FBO_SUPPLY_PROGRESS_MODE_DEFAULT;
+}
 
 function parseObject(raw) {
   if (raw == null) return {};
@@ -35,13 +52,21 @@ function clampIdle(value, fallback) {
   return Math.min(IDLE_MAX_SEC, Math.max(IDLE_MIN_SEC, Math.round(n)));
 }
 
-/** @returns {{ idleSec: { fbs: number, fboCollect: number, packing: number, receipts: number } }} */
+/**
+ * @returns {{
+ *   idleSec: { fbs: number, fboCollect: number, packing: number, receipts: number },
+ *   fboSupplyProgressMode: 'receipt_collect_pack' | 'collect_pack',
+ * }}
+ */
 export function parseEmployeeMetricsSettings(raw) {
   const src = parseObject(raw);
   const idle = parseObject(src.idleSec ?? src.idle_sec);
   return {
     idleSec: Object.fromEntries(
       EMPLOYEE_IDLE_KEYS.map((k) => [k, clampIdle(idle[k], EMPLOYEE_IDLE_DEFAULTS_SEC[k])])
+    ),
+    fboSupplyProgressMode: parseFboSupplyProgressMode(
+      src.fboSupplyProgressMode ?? src.fbo_supply_progress_mode
     ),
   };
 }
