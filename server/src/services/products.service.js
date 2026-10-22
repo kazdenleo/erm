@@ -1490,6 +1490,10 @@ class ProductsService {
             ? vendor
             : sanitizeWbVendorCode(toStr(existing?.mp_wb_vendor_code));
         updates.marketplace_skus.wb = vendorForSkus;
+        // Колонка products.mp_wb_vendor_code должна совпадать с product_skus.wb
+        if (vendorExplicit || vendorForSkus != null) {
+          updates.mp_wb_vendor_code = vendorForSkus;
+        }
         // Не затирать клиентский wb_draft (габариты и пр.): база = входящий draft, иначе из БД
         const baseDraft = Object.prototype.hasOwnProperty.call(updates, 'wb_draft')
           ? parseWbDraftColumn(updates.wb_draft)

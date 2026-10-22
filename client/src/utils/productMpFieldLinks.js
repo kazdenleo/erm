@@ -1197,12 +1197,9 @@ export function ozonTypePairFromFetchedProduct(product) {
   return { descId, typeId };
 }
 
-/** Артикул продавца на вкладке МП с учётом связи с «Основным». */
+/** Артикул продавца на вкладке МП (хранилище МП; связь Main→МП — через applyLinked). */
 export function readMpSellerSku(formData, mp) {
   const code = String(mp || '').toLowerCase();
-  if (isMpFieldLinked(formData?.mp_field_links, 'sku', code)) {
-    return String(formData?.sku ?? '');
-  }
   if (code === 'ozon') return String(formData?.sku_ozon ?? '');
   if (code === 'wb') return String(formData?.mp_wb_vendor_code ?? '');
   if (code === 'ym') return String(formData?.sku_ym ?? '');
@@ -1507,7 +1504,11 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
       next.ym_draft = { ...prevDraft, vendor: v };
     }
   }
-  if (want('sku')) {
+  // Артикул МП (vendorCode / offer_id) — ключ карточки. Не зеркалить Main→МП
+  // при массовом apply (загрузка / overlay категории): иначе после F5 снова старый
+  // Main и «Сохранить» кажется сломанным. Синк только при явном onlyFields: ['sku']
+  // (правка поля «Артикул» на вкладке Основное).
+  if (want('sku') && onlyFields && onlyFields.includes('sku')) {
     const v = String(prev.sku || '');
     if (isMpFieldLinked(normalized, 'sku', 'wb')) next.mp_wb_vendor_code = v;
     if (isMpFieldLinked(normalized, 'sku', 'ozon')) next.sku_ozon = v;

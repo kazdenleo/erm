@@ -770,10 +770,14 @@ export function resolveCardTextForPush(product, mp, fieldKey) {
     return linked ? trimOrNull(product.brand) : null;
   }
   if (fieldKey === 'sku') {
-    if (linked) return trimOrNull(product.sku);
-    if (mp === 'ozon') return trimOrNull(product.sku_ozon);
-    if (mp === 'wb') return trimOrNull(product.mp_wb_vendor_code);
-    if (mp === 'ym') return trimOrNull(product.sku_ym);
+    // WB/Ozon/YM offer id — ключ карточки: всегда приоритет поля МП, даже при связи
+    // с Main (иначе push/lookup подставляют products.sku и откатывают vendorCode).
+    if (mp === 'ozon') return trimOrNull(product.sku_ozon) || (linked ? trimOrNull(product.sku) : null);
+    if (mp === 'wb') {
+      return trimOrNull(product.mp_wb_vendor_code) || (linked ? trimOrNull(product.sku) : null);
+    }
+    if (mp === 'ym') return trimOrNull(product.sku_ym) || (linked ? trimOrNull(product.sku) : null);
+    return linked ? trimOrNull(product.sku) : null;
   }
   if (fieldKey === 'country') {
     if (linked) return trimOrNull(product.country_of_origin);

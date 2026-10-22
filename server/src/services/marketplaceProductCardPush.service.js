@@ -1813,11 +1813,15 @@ function wbCardNmId(card) {
 async function persistWbNmId(product, nmId, vendorCode, ctx) {
   if (!product?.id || !nmId) return null;
   const updates = { sku_wb: String(nmId) };
-  if (vendorCode) updates.mp_wb_vendor_code = vendorCode;
+  // Приоритет у vendorCode уже сохранённого в ERP — иначе push откатывал
+  // mp_wb_vendor_code на products.sku (связь Main) или старый код с WB.
+  const vendor =
+    sanitizeWbVendorCode(product?.mp_wb_vendor_code) || sanitizeWbVendorCode(vendorCode) || '';
+  if (vendor) updates.mp_wb_vendor_code = vendor;
   try {
     await productsService.update(product.id, updates, { profileId: ctx.profileId ?? null });
     product.sku_wb = String(nmId);
-    if (vendorCode) product.mp_wb_vendor_code = vendorCode;
+    if (vendor) product.mp_wb_vendor_code = vendor;
     logger.info('[MP Card Push] сохранён nmId WB в карточку ERP', {
       productId: product.id,
       nmId: String(nmId),

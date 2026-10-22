@@ -29,9 +29,9 @@ function isMarketplaceLinked(marketplace, formData) {
 }
 
 function sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps) {
-  if (isMpFieldLinked(formData?.mp_field_links, 'sku', marketplace)) {
-    return formData?.sku || '';
-  }
+  // Всегда показываем хранилище МП (mp_wb_vendor_code / sku_ozon / sku_ym), а не Main SKU.
+  // Связь с «Основным» копирует Main→МП через applyLinked; если читать sku здесь,
+  // после F5 снова виден старый артикул «Основного», даже когда МП в БД уже новый.
   const offerId =
     marketplace === 'ozon'
       ? '__ozon_offer_id__'
@@ -40,7 +40,11 @@ function sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps
         : marketplace === 'ym'
           ? '__ym_shop_sku__'
           : '';
-  if (offerId && categoryAttributes?.length) {
+  if (
+    offerId &&
+    categoryAttributes?.length &&
+    !isMpFieldLinked(formData?.mp_field_links, 'sku', marketplace)
+  ) {
     const mirror = resolveLinkedErpAttrMirror(
       formData,
       categoryAttributes,
@@ -164,8 +168,10 @@ export function ProductMarketplaceLinkSection({
         : '';
 
   const handleSellerSkuChange = (raw) => {
+    // WB: всегда чистим хвостовую «;» и т.п. (в т.ч. при отвязке от Main), иначе в поле остаётся мусор
+    // и после сохранения кажется, что артикул «не сохранился».
     const value =
-      marketplace === 'wb' && !skuLinked
+      marketplace === 'wb'
         ? sanitizeWbVendorCode(raw).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
         : marketplace === 'ozon'
           ? String(raw).slice(0, MP_LINK_MAX.OZON_OFFER_ID)
@@ -350,7 +356,7 @@ export function ProductMarketplaceLinkSection({
               value={sellerSkuValue(marketplace, formData, categoryAttributes, attrLabelMaps)}
               onChange={(e) => handleSellerSkuChange(e.target.value)}
               onBlur={
-                marketplace === 'wb' && !skuLinked
+                marketplace === 'wb'
                   ? (e) => handleSellerSkuChange(e.target.value)
                   : undefined
               }

@@ -5378,26 +5378,47 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   }, [ozonAttributes]);
 
-  /** Артикул продавца на вкладке Ozon/WB/YM: связь вкл. → зеркало Main; правка на МП отвязывает только этот МП. */
+  /**
+   * Артикул продавца на вкладке Ozon/WB/YM: связь вкл. → зеркало Main / атрибута категории.
+   * Правка на МП отвязывает sku→МП и зеркало ERP-атрибута на vendorCode, иначе поле «не сохраняется».
+   */
   const handleMpSkuMetaChange = useCallback((mp, value) => {
     const code = String(mp || '').toLowerCase();
+    const offerId =
+      code === 'ozon'
+        ? '__ozon_offer_id__'
+        : code === 'wb'
+          ? '__wb_vendor_code__'
+          : code === 'ym'
+            ? '__ym_shop_sku__'
+            : '';
+    const cleaned = code === 'wb' ? sanitizeWbVendorCode(value) : value;
     setFormData((prev) => {
-      if (isMpFieldLinked(prev.mp_field_links, 'sku', code)) {
-        const next = {
-          ...prev,
-          mp_field_links: setMpFieldLink(prev.mp_field_links, 'sku', code, false),
-        };
-        if (code === 'ozon') return { ...next, sku_ozon: value };
-        if (code === 'wb') return { ...next, mp_wb_vendor_code: value };
-        if (code === 'ym') return { ...next, sku_ym: value };
-        return next;
+      let links = prev.mp_field_links;
+      // Артикул продавца МП — ключ карточки: пишем только в поле МП.
+      // Main SKU не трогаем (иначе «Сохранить» меняет Основное, а после F5
+      // связь категории снова путает значения). Отвязываем зеркало ERP-атрибута.
+      if (offerId && Array.isArray(categoryAttributes) && categoryAttributes.length) {
+        const erp = findErpAttrLinkedToMpTarget(
+          categoryAttributes,
+          code,
+          { kind: 'offer', offerId },
+          mpAttrLabelMaps
+        );
+        if (erp?.id) {
+          const attrLinkKey = erpAttrLinkFieldKey(erp.id);
+          if (isMpFieldLinked(links, attrLinkKey, code)) {
+            links = setMpFieldLink(links, attrLinkKey, code, false);
+          }
+        }
       }
-      if (code === 'ozon') return { ...prev, sku_ozon: value };
-      if (code === 'wb') return { ...prev, mp_wb_vendor_code: value };
-      if (code === 'ym') return { ...prev, sku_ym: value };
-      return prev;
+      const next = links === prev.mp_field_links ? { ...prev } : { ...prev, mp_field_links: links };
+      if (code === 'ozon') return { ...next, sku_ozon: cleaned };
+      if (code === 'wb') return { ...next, mp_wb_vendor_code: cleaned };
+      if (code === 'ym') return { ...next, sku_ym: cleaned };
+      return next;
     });
-  }, []);
+  }, [categoryAttributes, mpAttrLabelMaps]);
 
   const handleMpCountryMetaChange = useCallback((mp, value) => {
     const code = String(mp || '').toLowerCase();
@@ -6810,12 +6831,14 @@ export const ProductForm = React.forwardRef(function ProductForm({
       const next = applyLinkedMpFieldsFromMain(prev, prev.mp_field_links);
       return next === prev ? prev : next;
     });
+    // onlyIfEmpty: иначе при связи атрибута категории с «Артикул продавца» МП
+    // старое значение атрибута затирает только что сохранённый/введённый vendorCode.
     for (const attr of categoryAttributes) {
       const lk = erpAttrLinkFieldKey(attr.id);
       for (const mp of mappedMpsFromAttrLinks(attr.mp_links)) {
         if (!isMpFieldLinked(formData.mp_field_links, lk, mp)) continue;
         const val = formData.attributeValues?.[String(attr.id)];
-        applyErpAttrValueToLinkedMp(attr, val, { onlyMp: mp });
+        applyErpAttrValueToLinkedMp(attr, val, { onlyMp: mp, onlyIfEmpty: true });
       }
     }
   }, [formData.mp_field_links, categoryAttributes, applyErpAttrValueToLinkedMp, formData.attributeValues]);
@@ -7218,6 +7241,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
+    // Берём артикул WB из DOM (что видит пользователь), не только из state:
+    // при связи с Main state иногда отстаёт / затирается эффектами до submit.
+    const wbVendorFromDom = (() => {
+      try {
+        const el = document.getElementById('mp-link-wb-seller-sku');
+        return el ? sanitizeWbVendorCode(el.value) : '';
+      } catch {
+        return '';
+      }
+    })();
+    const wbVendorForSave =
+      wbVendorFromDom || sanitizeWbVendorCode(formData.mp_wb_vendor_code || '');
     const payload = {
       name: formData.name.trim(),
       sku: formData.sku.trim(),
@@ -7324,7 +7359,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         };
       })(),
       mp_ozon_brand: trimOrNull(formData.mp_ozon_brand),
-      mp_wb_vendor_code: trimOrNull(sanitizeWbVendorCode(formData.mp_wb_vendor_code)),
+      mp_wb_vendor_code: trimOrNull(wbVendorForSave),
       mp_wb_name: trimOrNull(formData.mp_wb_name),
       mp_wb_description: trimOrNull(formData.mp_wb_description),
       mp_wb_brand: trimOrNull(formData.mp_wb_brand),
@@ -7606,21 +7641,49 @@ export const ProductForm = React.forwardRef(function ProductForm({
       wbAttributeValues,
       ymAttributeValues
     );
+    // Смена только «Артикул продавца» WB — не предлагать push: при связи с Main
+    // push подставлял products.sku и откатывал только что сохранённый vendorCode.
+    const dirtyMpsForPush = dirtyMps.filter((mp) => {
+      if (mp !== 'wb') return true;
+      const base = mpBaselineRef.current;
+      if (!base) return true;
+      const vendorDirty = isMpFieldDirty(base, 'mp_wb_vendor_code', payload.mp_wb_vendor_code);
+      const otherCardDirty = ['mp_wb_name', 'mp_wb_description', 'mp_wb_brand'].some((k) =>
+        isMpFieldDirty(base, k, formData?.[k])
+      );
+      if (!vendorDirty || otherCardDirty) return true;
+      const baseAttrs = base.wbAttrs || {};
+      const curAttrs = wbAttributeValues || {};
+      const keys = new Set([...Object.keys(baseAttrs), ...Object.keys(curAttrs)]);
+      for (const k of keys) {
+        if (String(baseAttrs[k] ?? '').trim() !== String(curAttrs[k] ?? '').trim()) return true;
+      }
+      return false;
+    });
     const saved = await onSubmit(payload, { close: false });
     const productId = saved?.id || currentProduct?.id;
     if (saved?.id) {
       setCurrentProduct(saved);
       onProductUpdate?.(saved);
+      const savedVendor = sanitizeWbVendorCode(
+        saved.mp_wb_vendor_code ?? payload.mp_wb_vendor_code ?? ''
+      );
+      if (savedVendor) {
+        setFormData((prev) => {
+          if (sanitizeWbVendorCode(prev.mp_wb_vendor_code) === savedVendor) return prev;
+          return { ...prev, mp_wb_vendor_code: savedVendor };
+        });
+      }
     }
-    if (dirtyMps.length > 0 && productId) {
-      const names = formatDirtyMpList(dirtyMps);
+    if (dirtyMpsForPush.length > 0 && productId) {
+      const names = formatDirtyMpList(dirtyMpsForPush);
       const shouldPush =
         forceAskPush ||
         window.confirm(
           `Изменены поля карточки: ${names}.\n\nОтправить эти изменения на маркетплейсы?`
         );
       if (shouldPush) {
-        const pushResult = await pushDirtyMarketplaces(productId, dirtyMps);
+        const pushResult = await pushDirtyMarketplaces(productId, dirtyMpsForPush);
         if (!pushResult.ok) {
           const detail = (pushResult.failed || [])
             .map((r) => `${MP_LABELS[r.marketplace] || r.marketplace}: ${r.error || 'ошибка'}`)

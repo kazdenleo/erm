@@ -641,8 +641,15 @@ function applyWbListingFields(product) {
   const draft = parseWbDraftColumn(product.wb_draft);
   const nmFromDraft = draft?.nmId ?? draft?.nmID ?? draft?.nm_id ?? null;
   const wbSkuRow = product.sku_wb != null ? String(product.sku_wb).trim() : '';
+  const vendorEmpty =
+    !product.mp_wb_vendor_code || String(product.mp_wb_vendor_code).trim() === '';
+  const rowLooksLikeVendor = wbSkuRow && !/^\d+$/.test(wbSkuRow);
 
   if (nmFromDraft != null && String(nmFromDraft).trim() !== '') {
+    // Не терять vendorCode из product_skus, если колонка products пустая.
+    if (vendorEmpty && rowLooksLikeVendor) {
+      product.mp_wb_vendor_code = wbSkuRow;
+    }
     product.sku_wb = String(nmFromDraft).trim();
     return;
   }
@@ -657,7 +664,7 @@ function applyWbListingFields(product) {
     return;
   }
 
-  if (!product.mp_wb_vendor_code || String(product.mp_wb_vendor_code).trim() === '') {
+  if (vendorEmpty) {
     product.mp_wb_vendor_code = wbSkuRow;
   }
   product.sku_wb = null;
