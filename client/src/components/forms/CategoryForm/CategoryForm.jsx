@@ -1460,56 +1460,6 @@ export const CategoryForm = forwardRef(function CategoryForm({ category, categor
 
       {settingsTab === 'main' ? (
       <>
-      <div className="field" style={{ marginTop: '16px' }}>
-        <label className="label">Rich-контент</label>
-        {category?.id ? (
-          <>
-            <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-              Шаблон собирается из модулей отдельно для каждой категории.
-            </p>
-            <div className="d-flex flex-wrap gap-2">
-              <Link
-                to={`/settings/content/rich-content?categoryId=${encodeURIComponent(category.id)}`}
-                className="btn btn-secondary btn-sm"
-              >
-                Шаблон этой категории
-              </Link>
-            </div>
-          </>
-        ) : (
-          <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 0 }}>
-            Сохраните категорию, чтобы настроить шаблон Rich-контента.
-          </p>
-        )}
-      </div>
-
-      <div className="field" style={{ marginTop: '16px' }}>
-        <label className="label">Видеообложка Ozon</label>
-        {category?.id ? (
-          <>
-            <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '8px' }}>
-              Слайды из фото карточки и эффект перехода. Можно задать общий шаблон на все товары
-              или отдельно для этой категории.
-            </p>
-            <div className="d-flex flex-wrap gap-2">
-              <Link to="/settings/content/video-cover" className="btn btn-secondary btn-sm">
-                Все товары
-              </Link>
-              <Link
-                to={`/settings/content/video-cover?categoryId=${encodeURIComponent(category.id)}`}
-                className="btn btn-secondary btn-sm"
-              >
-                Шаблон категории
-              </Link>
-            </div>
-          </>
-        ) : (
-          <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 0 }}>
-            Сохраните категорию, чтобы настроить шаблон видеообложки.
-          </p>
-        )}
-      </div>
-
       {/* Сопоставление с маркетплейсами */}
       <div style={{marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border)'}}>
         <h4 style={{fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)'}}>
