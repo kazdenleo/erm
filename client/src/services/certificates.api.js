@@ -18,6 +18,9 @@ export const certificatesApi = {
   getProductsWithoutCertificate: async (opts = {}) => {
     const params = {};
     if (opts.brandId != null && opts.brandId !== '') params.brandId = opts.brandId;
+    if (opts.userCategoryId != null && opts.userCategoryId !== '') {
+      params.userCategoryId = opts.userCategoryId;
+    }
     if (opts.search != null && String(opts.search).trim() !== '') params.search = String(opts.search).trim();
     if (opts.limit != null) params.limit = opts.limit;
     if (opts.offset != null) params.offset = opts.offset;

@@ -302,6 +302,8 @@ class CertificatesRepositoryPG {
   async findProductsWithoutCertificate(options = {}) {
     const profileId = this._profileId(options);
     const brandId = options.brandId ?? options.brand_id ?? null;
+    const userCategoryId =
+      options.userCategoryId ?? options.user_category_id ?? options.categoryId ?? null;
     const search = String(options.search || '').trim();
     const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
     const offset = Math.max(Number(options.offset) || 0, 0);
@@ -332,11 +334,16 @@ class CertificatesRepositoryPG {
       sql += ` AND p.brand_id = $${i++}::bigint`;
       params.push(brandId);
     }
+    if (userCategoryId != null && userCategoryId !== '') {
+      sql += ` AND p.user_category_id = $${i++}::bigint`;
+      params.push(userCategoryId);
+    }
     if (search) {
       sql += ` AND (
         p.sku ILIKE $${i}
         OR p.name ILIKE $${i}
         OR COALESCE(b.name, '') ILIKE $${i}
+        OR COALESCE(uc.name, '') ILIKE $${i}
       )`;
       params.push(`%${search}%`);
       i += 1;
@@ -349,6 +356,7 @@ class CertificatesRepositoryPG {
       SELECT COUNT(*)::int AS total
       FROM products p
       LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN user_categories uc ON uc.id = p.user_category_id
       WHERE NOT EXISTS (
         SELECT 1 FROM certificate_products cp WHERE cp.product_id = p.id
       )
@@ -360,11 +368,15 @@ class CertificatesRepositoryPG {
     if (brandId != null && brandId !== '') {
       countSql += ` AND p.brand_id = $${ci++}::bigint`;
     }
+    if (userCategoryId != null && userCategoryId !== '') {
+      countSql += ` AND p.user_category_id = $${ci++}::bigint`;
+    }
     if (search) {
       countSql += ` AND (
         p.sku ILIKE $${ci}
         OR p.name ILIKE $${ci}
         OR COALESCE(b.name, '') ILIKE $${ci}
+        OR COALESCE(uc.name, '') ILIKE $${ci}
       )`;
     }
 

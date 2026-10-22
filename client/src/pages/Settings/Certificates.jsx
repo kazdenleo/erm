@@ -8,6 +8,7 @@ import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { certificatesApi } from '../../services/certificates.api';
 import { productsApi } from '../../services/products.api';
 import { useBrands } from '../../hooks/useBrands';
+import { useCategories } from '../../hooks/useCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { CertificateBindingReport } from './CertificateBindingReport';
@@ -323,6 +324,7 @@ function CertificateForm({
 
 export function Certificates() {
   const { brands, loading: brandsLoading } = useBrands();
+  const { categories: userCategories } = useCategories();
   const [activeTab, setActiveTab] = useState('registry');
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -378,9 +380,17 @@ export function Certificates() {
   const [withoutLoading, setWithoutLoading] = useState(false);
   const [withoutError, setWithoutError] = useState('');
   const [withoutSearch, setWithoutSearch] = useState('');
+  const [withoutSearchApplied, setWithoutSearchApplied] = useState('');
   const [withoutBrandId, setWithoutBrandId] = useState('');
+  const [withoutCategoryId, setWithoutCategoryId] = useState('');
   const [withoutOffset, setWithoutOffset] = useState(0);
   const WITHOUT_LIMIT = 50;
+
+  const withoutCategoryOptions = useMemo(() => {
+    const rows = Array.isArray(userCategories) ? [...userCategories] : [];
+    rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'));
+    return rows;
+  }, [userCategories]);
   const [bindProduct, setBindProduct] = useState(null);
   const [bindCertId, setBindCertId] = useState('');
   const [bindCertSearch, setBindCertSearch] = useState('');
@@ -484,7 +494,8 @@ export function Certificates() {
     try {
       const res = await certificatesApi.getProductsWithoutCertificate({
         brandId: withoutBrandId || undefined,
-        search: withoutSearch || undefined,
+        userCategoryId: withoutCategoryId || undefined,
+        search: withoutSearchApplied || undefined,
         limit: WITHOUT_LIMIT,
         offset: withoutOffset,
       });
@@ -498,7 +509,7 @@ export function Certificates() {
     } finally {
       setWithoutLoading(false);
     }
-  }, [withoutBrandId, withoutSearch, withoutOffset]);
+  }, [withoutBrandId, withoutCategoryId, withoutSearchApplied, withoutOffset]);
 
   useEffect(() => {
     load();
@@ -517,6 +528,18 @@ export function Certificates() {
       .then((res) => setWithoutTotal(Number(res?.data?.total) || 0))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const next = String(withoutSearch || '').trim();
+      setWithoutSearchApplied((prev) => {
+        if (prev === next) return prev;
+        setWithoutOffset(0);
+        return next;
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [withoutSearch]);
 
   useEffect(() => {
     if (activeTab !== 'without') return;
@@ -1230,15 +1253,26 @@ export function Certificates() {
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
               </select>
-              <input
-                type="text"
-                className="without-search"
-                placeholder="Поиск SKU / названия…"
-                value={withoutSearch}
+              <select
+                value={withoutCategoryId}
                 onChange={(e) => {
-                  setWithoutSearch(e.target.value);
+                  setWithoutCategoryId(e.target.value);
                   setWithoutOffset(0);
                 }}
+                aria-label="Фильтр по категории"
+              >
+                <option value="">Все категории</option>
+                {withoutCategoryOptions.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <input
+                type="search"
+                className="without-search"
+                placeholder="Поиск по артикулу или названию…"
+                value={withoutSearch}
+                onChange={(e) => setWithoutSearch(e.target.value)}
+                aria-label="Поиск по товару"
               />
             </div>
             <Button variant="secondary" onClick={loadWithoutCerts} disabled={withoutLoading}>
@@ -1253,7 +1287,11 @@ export function Certificates() {
               <p className="loading">Загрузка...</p>
             ) : withoutCerts.length === 0 ? (
               <div className="empty-state">
-                <p>Все товары имеют привязку к сертификату</p>
+                <p>
+                  {withoutBrandId || withoutCategoryId || withoutSearchApplied
+                    ? 'По выбранным фильтрам товары без сертификата не найдены'
+                    : 'Все товары имеют привязку к сертификату'}
+                </p>
               </div>
             ) : (
               <table className="certificates-table">

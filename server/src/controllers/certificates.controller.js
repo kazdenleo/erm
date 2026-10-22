@@ -82,6 +82,11 @@ class CertificatesController {
       }
       const opts = {
         brandId: req.query.brandId ?? req.query.brand_id ?? null,
+        userCategoryId:
+          req.query.userCategoryId ??
+          req.query.user_category_id ??
+          req.query.categoryId ??
+          null,
         search: req.query.search ?? '',
         limit: req.query.limit,
         offset: req.query.offset,
