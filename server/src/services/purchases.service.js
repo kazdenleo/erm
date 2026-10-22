@@ -2692,7 +2692,9 @@ class PurchasesService {
               ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
               COALESCE(agg.cnt, 0)::int AS items_count,
               COALESCE(agg.exp_sum, 0)::int AS expected_total,
-              COALESCE(agg.rec_sum, 0)::int AS received_total
+              COALESCE(agg.rec_sum, 0)::int AS received_total,
+              draft.scanning_receipt_id,
+              draft.scanning_scanned_total
        FROM page
        INNER JOIN purchases p ON p.id = page.id
        LEFT JOIN (
@@ -2704,6 +2706,18 @@ class PurchasesService {
          WHERE purchase_id IN (SELECT id FROM page)
          GROUP BY purchase_id
        ) agg ON agg.purchase_id = p.id
+       LEFT JOIN LATERAL (
+         SELECT r.id AS scanning_receipt_id,
+                COALESCE((
+                  SELECT SUM(ri.scanned_quantity)::int
+                  FROM purchase_receipt_items ri
+                  WHERE ri.receipt_id = r.id
+                ), 0) AS scanning_scanned_total
+         FROM purchase_receipts r
+         WHERE r.purchase_id = p.id AND r.status = 'scanning'
+         ORDER BY r.started_at DESC NULLS LAST, r.id DESC
+         LIMIT 1
+       ) draft ON true
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN organizations o ON o.id = p.organization_id
        LEFT JOIN warehouses w ON w.id = p.warehouse_id
@@ -2716,6 +2730,11 @@ class PurchasesService {
       items_count: row.items_count != null ? Number(row.items_count) : 0,
       expected_total: row.expected_total != null ? Number(row.expected_total) : 0,
       received_total: row.received_total != null ? Number(row.received_total) : 0,
+      scanning_receipt_id:
+        row.scanning_receipt_id != null ? Number(row.scanning_receipt_id) : null,
+      scanning_scanned_total:
+        row.scanning_scanned_total != null ? Number(row.scanning_scanned_total) : 0,
+      has_receipt_draft: row.scanning_receipt_id != null,
     }));
   }
 

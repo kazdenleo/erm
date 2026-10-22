@@ -840,6 +840,8 @@ export function Purchases() {
   );
 
   const requestCloseReceipt = useCallback(() => {
+    // Сканы уже на сервере — «сохранить черновик» = уйти, статус scanning остаётся.
+    // Подтверждение при scanning — чтобы случайно не закрыть; данные не теряются.
     if (String(receipt?.receipt?.status) === 'scanning') {
       setReceiptCloseConfirm(true);
       return;
@@ -849,9 +851,16 @@ export function Purchases() {
         ? Number(receipt.receipt.purchase_id)
         : routePurchaseId;
     setReceipt(null);
+    void reload();
     if (Number.isFinite(pid) && pid > 0) navigate(purchaseDetailPath(pid));
     else navigate(purchasesListPath());
-  }, [receipt?.receipt?.status, receipt?.receipt?.purchase_id, routePurchaseId, navigate]);
+  }, [
+    receipt?.receipt?.status,
+    receipt?.receipt?.purchase_id,
+    routePurchaseId,
+    navigate,
+    reload,
+  ]);
 
   const createSupplierPrefixes = useMemo(() => {
     if (!createSupplierId) return [];
@@ -1053,25 +1062,25 @@ export function Purchases() {
   const saveEditPurchase = async () => {
     const purchaseId = detail?.purchase?.id;
     const orig = editOriginal;
-    if (!purchaseId || !orig) return;
+    if (!purchaseId || !orig) return false;
 
     const normalizedItems = normalizeDraftItems(editItems);
 
     if (normalizedItems.length === 0) {
       setErr('Добавьте хотя бы одну позицию');
-      return;
+      return false;
     }
     if (!String(editSupplierId || orig?.supplierId || '').trim()) {
       setErr('Выберите поставщика');
-      return;
+      return false;
     }
     if (!String(editOrganizationId || orig?.organizationId || '').trim()) {
       setErr('Выберите организацию');
-      return;
+      return false;
     }
     if (!String(editWarehouseId || orig?.warehouseId || '').trim()) {
       setErr('Выберите склад назначения');
-      return;
+      return false;
     }
     for (const it of normalizedItems) {
       if (it.quantity < it.receivedQuantity) {
@@ -1182,8 +1191,10 @@ export function Purchases() {
       const data = await purchasesApi.getById(purchaseId);
       setDetail(data);
       syncPurchaseDraftFromDetail(data);
+      return true;
     } catch (e) {
       setErr(formatPurchaseApiError(e, 'Не удалось сохранить изменения закупки'));
+      return false;
     } finally {
       setEditSaveBusy(false);
     }
@@ -1227,19 +1238,27 @@ export function Purchases() {
     [navigate]
   );
 
-  const requestCloseDetail = useCallback(() => {
-    if (
-      purchaseDraftDirty &&
-      !window.confirm('Есть несохранённые изменения. Закрыть карточку без сохранения?')
-    ) {
-      return;
+  const requestCloseDetail = useCallback(async () => {
+    // Уход из закупки: несохранённые правки позиций автоматически пишем на сервер.
+    if (purchaseDraftDirty && isDetailEditable) {
+      const ok = await saveEditPurchase();
+      if (!ok) {
+        if (
+          !window.confirm(
+            'Не удалось сохранить изменения. Выйти без сохранения?'
+          )
+        ) {
+          return;
+        }
+      }
     }
     setDetail(null);
     setEditOriginal(null);
     setEditItems([]);
     closeEditModal();
     navigate(purchasesListPath());
-  }, [purchaseDraftDirty, closeEditModal, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchaseDraftDirty, isDetailEditable, closeEditModal, navigate]);
 
   const applyReceiptPayload = useCallback(
     (data) => {
@@ -1666,8 +1685,9 @@ export function Purchases() {
         scannerId: effectiveScannerId,
         mode: removeMode ? 'remove' : 'add',
       };
+      // ШК обязателен для распознавания упаковки (units_per_box), даже если уже есть productId.
       if (hasProductId) payload.productId = pidNum;
-      else payload.barcode = v;
+      if (v) payload.barcode = v;
       const scanRes = await purchasesApi.scanReceipt(rid, payload);
       if (scanRes?.ignoredDuplicate) {
         setReceiptScanQuery('');
@@ -1719,6 +1739,8 @@ export function Purchases() {
             scanned: updatedScannedQty,
             over,
             cis: Boolean(scanRes?.cis),
+            isBox: Boolean(scanRes?.isBox),
+            quantityDelta: Number(scanRes?.quantityDelta) || null,
           });
         }
       }
@@ -1827,6 +1849,7 @@ export function Purchases() {
               <tr>
                 <th>Дата</th>
                 <th>№</th>
+                <th>Статус</th>
                 <th>Поставщик</th>
                 <th>Получатель</th>
                 <th>Склад</th>
@@ -1835,21 +1858,69 @@ export function Purchases() {
               </tr>
             </thead>
             <tbody>
-              {list.map((p) => (
+              {list.map((p) => {
+                const draftRid =
+                  p.scanning_receipt_id != null
+                    ? Number(p.scanning_receipt_id)
+                    : p.scanningReceiptId != null
+                      ? Number(p.scanningReceiptId)
+                      : null;
+                const hasDraft =
+                  Boolean(p.has_receipt_draft ?? p.hasReceiptDraft) ||
+                  (Number.isFinite(draftRid) && draftRid > 0);
+                const isArchived = String(p.status || '') === 'archived';
+                return (
                 <tr
                   key={p.id}
                   className="stock-levels-row-clickable"
-                  onClick={onNavigationClick(() => openDetail(p.id))}
+                  onClick={onNavigationClick(() => {
+                    if (hasDraft && Number.isFinite(draftRid) && draftRid > 0) {
+                      openReceipt(draftRid, p.id);
+                    } else {
+                      openDetail(p.id);
+                    }
+                  })}
                 >
                   <td>{fmtDt(p.created_at)}</td>
                   <td>№{p.id}</td>
+                  <td>
+                    {hasDraft ? (
+                      <span
+                        title={
+                          p.scanning_scanned_total != null || p.scanningScannedTotal != null
+                            ? `Черновик приёмки №${draftRid}, принято ${p.scanning_scanned_total ?? p.scanningScannedTotal ?? 0} шт`
+                            : `Черновик приёмки №${draftRid}`
+                        }
+                        style={{
+                          display: 'inline-block',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          background: 'var(--warning-bg, #fff3cd)',
+                          color: 'var(--warning-fg, #856404)',
+                        }}
+                      >
+                        Черновик
+                      </span>
+                    ) : isArchived ? (
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        Архив
+                      </span>
+                    ) : (
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        Открыта
+                      </span>
+                    )}
+                  </td>
                   <td>{p.supplier_name || '—'}</td>
                   <td>{p.organization_name || '—'}</td>
                   <td>{p.warehouse_name || warehouseDisplayLabel(null, p.warehouse_id) || '—'}</td>
                   <td>{qtyCell(p.expected_total ?? p.expectedTotal)}</td>
                   <td>{qtyCell(p.received_total ?? p.receivedTotal)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2642,7 +2713,7 @@ export function Purchases() {
                       ) : null}
                       {isReceiptScanning ? (
                         <Button variant="secondary" onClick={requestCloseReceipt}>
-                          Закрыть (сохранить черновик)
+                          Сохранить черновик
                         </Button>
                       ) : null}
                       {!isReceiptGuest ? (
@@ -2806,7 +2877,8 @@ export function Purchases() {
                         : 'Штрихкод / ШК коробки / артикул'
                   }
                   onSelect={(p) => {
-                    void scan('', { productId: p?.id });
+                    const code = normalizeScanInput(receiptScanQuery);
+                    void scan(code, { productId: p?.id });
                   }}
                   onNoMatch={(q) => {
                     const code = normalizeScanInput(q);
@@ -2876,6 +2948,9 @@ export function Purchases() {
                 </div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Принято {lastScanLine.scanned}/{lastScanLine.expected ?? '—'}
+                  {lastScanLine.isBox && lastScanLine.quantityDelta
+                    ? ` · упаковка +${Math.abs(Number(lastScanLine.quantityDelta))} шт`
+                    : ''}
                   {lastScanLine.over
                     ? ` · Перескан +${Math.max(
                         0,
@@ -3108,18 +3183,17 @@ export function Purchases() {
         size="md"
       >
         <p className="warehouse-ops-hint">
-          Черновик приёмки №{receipt?.receipt?.id} можно сохранить и продолжить позже, или удалить без завершения.
+          Черновик приёмки №{receipt?.receipt?.id} сохранится: в списке закупок у этой закупки будет пометка
+          «Черновик». Можно продолжить позже или удалить черновик без оприходования.
         </p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
           <Button
-            onClick={() => {
+            onClick={async () => {
               setReceiptCloseConfirm(false);
-              const pid =
-                detail?.purchase?.id ?? receipt?.receipt?.purchase_id ?? routePurchaseId;
               setReceipt(null);
               setScanMsg(null);
-              if (pid) openDetail(pid);
-              else navigate(purchasesListPath());
+              await reload();
+              navigate(purchasesListPath());
             }}
           >
             Сохранить черновик и закрыть
