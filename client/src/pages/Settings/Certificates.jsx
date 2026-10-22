@@ -1529,10 +1529,17 @@ export function Certificates() {
             {bindError ? <div className="form-error">{bindError}</div> : null}
             <div className="form-group">
               <label>Существующий сертификат</label>
+              <p className="form-hint">
+                {bindProduct.brand_id
+                  ? 'Показаны только сертификаты того же бренда, что и у товара.'
+                  : 'У товара нет бренда — показаны все сертификаты.'}
+              </p>
               <input
                 type="text"
                 className="category-search"
-                placeholder="Поиск по номеру или бренду…"
+                placeholder={
+                  bindProduct.brand_id ? 'Поиск по номеру…' : 'Поиск по номеру или бренду…'
+                }
                 value={bindCertSearch}
                 onChange={(e) => setBindCertSearch(e.target.value)}
               />
