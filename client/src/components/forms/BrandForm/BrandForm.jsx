@@ -314,12 +314,17 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
       .filter(Boolean);
   }, [certForm.product_ids, certForm.products, certProductOptions]);
 
-  const productLabel = (p) => {
+  const productSku = (p) => {
     if (!p) return '';
     const sku = p.sku ? String(p.sku).trim() : '';
+    return sku || `ID ${p.id}`;
+  };
+
+  const productTitle = (p) => {
+    if (!p) return '';
+    const sku = productSku(p);
     const name = p.name ? String(p.name).trim() : '';
-    if (sku && name) return `${sku} — ${name}`;
-    return sku || name || `ID ${p.id}`;
+    return name ? `${sku} — ${name}` : sku;
   };
 
   const toggleProduct = (product) => {
@@ -782,13 +787,17 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
                   <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Ничего не найдено</div>
                 ) : (
                   certProductOptions.map((p) => (
-                    <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', cursor: 'pointer' }}>
+                    <label
+                      key={p.id}
+                      title={productTitle(p)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', cursor: 'pointer' }}
+                    >
                       <input
                         type="checkbox"
                         checked={selectedProductSet.has(String(p.id))}
                         onChange={() => toggleProduct(p)}
                       />
-                      <span style={{ fontSize: '13px' }}>{productLabel(p)}</span>
+                      <span style={{ fontSize: '13px' }}>{productSku(p)}</span>
                     </label>
                   ))
                 )}
@@ -800,8 +809,8 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
                       key={String(p.id)}
                       type="button"
                       onClick={() => toggleProduct(p)}
-                      title="Отвязать товар"
-                      aria-label={`Отвязать ${productLabel(p)}`}
+                      title={`Отвязать: ${productTitle(p)}`}
+                      aria-label={`Отвязать ${productSku(p)}`}
                       style={{
                         border: '1px solid var(--border)',
                         borderRadius: '999px',
@@ -814,7 +823,7 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
                         gap: '4px',
                       }}
                     >
-                      {productLabel(p)}
+                      {productSku(p)}
                       <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: '14px', lineHeight: 1 }}>×</span>
                     </button>
                   ))}

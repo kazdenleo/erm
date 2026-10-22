@@ -94,12 +94,18 @@ function daysUntil(dateStr) {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
-function productLabel(p) {
+/** В UI привязки показываем только артикул; название — в title. */
+function productSku(p) {
   if (!p) return '';
   const sku = p.sku ? String(p.sku).trim() : '';
+  return sku || `ID ${p.id}`;
+}
+
+function productTitle(p) {
+  if (!p) return '';
+  const sku = productSku(p);
   const name = p.name ? String(p.name).trim() : '';
-  if (sku && name) return `${sku} — ${name}`;
-  return sku || name || `ID ${p.id}`;
+  return name ? `${sku} — ${name}` : sku;
 }
 
 function emptyForm() {
@@ -234,13 +240,13 @@ function CertificateForm({
                 <div className="muted">Ничего не найдено</div>
               ) : (
                 productOptions.map((p) => (
-                  <label key={p.id} className="checkbox-label">
+                  <label key={p.id} className="checkbox-label" title={productTitle(p)}>
                     <input
                       type="checkbox"
                       checked={selectedProductSet.has(String(p.id))}
                       onChange={() => toggleProduct(p)}
                     />
-                    <span>{productLabel(p)}</span>
+                    <span>{productSku(p)}</span>
                   </label>
                 ))
               )}
@@ -255,10 +261,10 @@ function CertificateForm({
                 type="button"
                 className="tag tag--removable"
                 onClick={() => toggleProduct(p)}
-                title="Отвязать товар"
-                aria-label={`Отвязать ${productLabel(p)}`}
+                title={`Отвязать: ${productTitle(p)}`}
+                aria-label={`Отвязать ${productSku(p)}`}
               >
-                {productLabel(p)}
+                {productSku(p)}
                 <span className="tag-remove" aria-hidden="true">×</span>
               </button>
             ))}
@@ -959,8 +965,8 @@ export function Certificates() {
                           {products.length > 0 ? (
                             <div className="selected-tags">
                               {products.slice(0, 4).map((p) => (
-                                <span key={p.id} className="tag" title={productLabel(p)}>
-                                  {p.sku || p.name || p.id}
+                                <span key={p.id} className="tag" title={productTitle(p)}>
+                                  {productSku(p)}
                                 </span>
                               ))}
                               {products.length > 4 && (
