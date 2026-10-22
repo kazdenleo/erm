@@ -600,16 +600,19 @@ export function Certificates() {
 
   const bindProductCandidates = useMemo(() => {
     if (!bindProduct) return [];
-    const brandId = bindProduct.brand_id != null ? String(bindProduct.brand_id) : '';
+    const brandId =
+      bindProduct.brand_id != null && bindProduct.brand_id !== ''
+        ? String(bindProduct.brand_id)
+        : '';
     const q = String(bindCertSearch || '').trim().toLowerCase();
     let rows = Array.isArray(list) ? [...list] : [];
-    // Сначала сертификаты того же бренда
-    rows.sort((a, b) => {
-      const aSame = brandId && String(a.brand_id) === brandId ? 0 : 1;
-      const bSame = brandId && String(b.brand_id) === brandId ? 0 : 1;
-      if (aSame !== bSame) return aSame - bSame;
-      return String(a.certificate_number || '').localeCompare(String(b.certificate_number || ''), 'ru');
-    });
+    // Только сертификаты того же бренда; без бренда у товара — весь реестр.
+    if (brandId) {
+      rows = rows.filter((c) => String(c.brand_id) === brandId);
+    }
+    rows.sort((a, b) =>
+      String(a.certificate_number || '').localeCompare(String(b.certificate_number || ''), 'ru')
+    );
     if (q) {
       rows = rows.filter((c) => {
         const num = String(c.certificate_number || '').toLowerCase();
@@ -644,6 +647,14 @@ export function Certificates() {
     const cert = list.find((c) => String(c.id) === String(bindCertId));
     if (!cert) {
       setBindError('Сертификат не найден в списке — обновите страницу');
+      return;
+    }
+    const productBrandId =
+      bindProduct.brand_id != null && bindProduct.brand_id !== ''
+        ? String(bindProduct.brand_id)
+        : '';
+    if (productBrandId && String(cert.brand_id) !== productBrandId) {
+      setBindError('Можно привязать только сертификат того же бренда, что и у товара');
       return;
     }
     const existingIds = Array.isArray(cert.product_ids)
@@ -1530,7 +1541,9 @@ export function Certificates() {
                   <div className="muted">
                     {list.length === 0
                       ? 'В реестре пока нет сертификатов — создайте новый'
-                      : 'Ничего не найдено'}
+                      : bindProduct.brand_id
+                        ? 'Нет сертификатов этого бренда — создайте новый'
+                        : 'Ничего не найдено'}
                   </div>
                 ) : (
                   bindProductCandidates.map((c) => (

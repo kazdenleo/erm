@@ -122,6 +122,29 @@ class CertificatesService {
       if (Number(r.rows[0]?.n || 0) !== pids.length) {
         throw httpError('Товар не найден в этом аккаунте', 403);
       }
+
+      // Товар с брендом можно привязать только к сертификату того же бренда.
+      // Без бренда у товара — ограничение не действует.
+      if (brandId != null && brandId !== '') {
+        const mismatch = await query(
+          `SELECT p.id, p.sku, p.brand_id
+           FROM products p
+           WHERE p.id = ANY($1::bigint[])
+             AND p.brand_id IS NOT NULL
+             AND p.brand_id <> $2::bigint
+           LIMIT 5`,
+          [pids, brandId]
+        );
+        if (mismatch.rows.length) {
+          const sample = mismatch.rows
+            .map((row) => row.sku || `#${row.id}`)
+            .join(', ');
+          throw httpError(
+            `Товар другого бренда нельзя привязать к этому сертификату: ${sample}`,
+            400
+          );
+        }
+      }
     }
 
     const cids = normalizeIdList(categoryIds);
