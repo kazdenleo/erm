@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
 import { packagingLabelTemplatesRepository } from '../repositories/packagingLabelTemplates.repository.pg.js';
+import { cellLabelTemplatesRepository } from '../repositories/cellLabelTemplates.repository.pg.js';
 import productsService from './products.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { pickBarcodeForMarketplace, shouldUseBarcodeDigitFallback } from '../utils/productBarcodes.js';
@@ -433,9 +434,65 @@ export function defaultPackagingTemplate() {
   };
 }
 
+/** Этикетка ячейки: адрес, расшифровка уровней, штрихкод. */
+export function defaultCellLabelElements() {
+  return [
+    { id: 'code', type: 'code', enabled: true, fontSize: 22, bold: true, align: 'center' },
+    { id: 'legend', type: 'legend', enabled: true, fontSize: 9, align: 'center' },
+    {
+      id: 'barcode',
+      type: 'barcode',
+      enabled: true,
+      widthMm: 54,
+      heightMm: 12,
+      showText: false,
+      textFontSize: 8,
+      align: 'center',
+    },
+  ];
+}
+
+export function defaultCellTemplate() {
+  return {
+    size_preset: '58x40',
+    margin_top_mm: 2,
+    margin_right_mm: 2,
+    margin_bottom_mm: 2,
+    margin_left_mm: 2,
+    line_gap_mm: 1,
+    elements: defaultCellLabelElements(),
+  };
+}
+
+export function sampleCellLabel() {
+  return {
+    code: 'A-01-3-2',
+    legend: 'Стеллаж A · Ряд 01 · Полка 3 · Ячейка 2',
+    barcode: 'A-01-3-2',
+    warehouseName: 'Основной склад',
+  };
+}
+
 function normalizeElements(elements) {
   const list = Array.isArray(elements) && elements.length ? elements : defaultLabelElements();
   return list.filter((el) => el && el.enabled !== false);
+}
+
+/**
+ * SKU и штрихкод рисуем раньше названия/состава — иначе длинное имя комплекта
+ * съедает высоту 58×40 и ШК пропадает (в т.ч. TG-5101 / комплекты).
+ */
+function orderElementsForLabelLayout(elements) {
+  const list = normalizeElements(elements);
+  const sku = [];
+  const barcode = [];
+  const rest = [];
+  for (const el of list) {
+    if (el.type === 'sku') sku.push(el);
+    else if (el.type === 'barcode') barcode.push(el);
+    else rest.push(el);
+  }
+  return [...sku, ...barcode, ...rest];
 }
 
 async function loadAttributeNames(attributeIds) {
@@ -680,6 +737,7 @@ async function buildLabelSvg({
   mmToPx = MM_TO_PX,
   marketplace = null,
   packaging = null,
+  cell = null,
 }) {
   const { widthMm, heightMm, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm } = parseSize(template);
   const widthPx = Math.round(widthMm * mmToPx);
@@ -694,15 +752,20 @@ async function buildLabelSvg({
       ? new Set(categoryAttributeIds.map(String))
       : null;
   const innerW = Math.max(10, widthPx - padL - padR);
-  const elements = normalizeElements(template.elements);
+  const elements = cell
+    ? (Array.isArray(template.elements) ? template.elements : []).filter((el) => el && el.enabled !== false)
+    : orderElementsForLabelLayout(template.elements);
   const attrValues = product.attribute_values || product.attributeValues || {};
   const packagingBarcode = packaging?.barcode != null ? String(packaging.barcode).trim() : '';
   const packagingUnits = Math.floor(Number(packaging?.unitsPerBox ?? packaging?.units_per_box ?? 0));
-  const barcodeValue = packaging
-    ? packagingBarcode
-    : pickBarcodeForMarketplace(product.barcodes, marketplace) ||
-      String(product.sku || '').trim() ||
-      '';
+  const barcodeValue = cell
+    ? String(cell.barcode || cell.code || '').trim()
+    : packaging
+      ? packagingBarcode
+      : pickBarcodeForMarketplace(product.barcodes, marketplace) ||
+        String(product.sku || '').trim() ||
+        '';
+  const largeText = Boolean(packaging || cell);
 
   const lineGapPx = resolveLineGapPx(template, mmToPx);
   const blockGap = lineGapPx;
@@ -731,8 +794,32 @@ async function buildLabelSvg({
     const reservedBelow = reserveHeightBelow(elements, elIndex, layoutCtx);
     const slotMaxY = maxContentY - reservedBelow;
 
-    if (el.type === 'name') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 24);
+    if (cell && (el.type === 'code' || el.type === 'legend' || el.type === 'warehouse')) {
+      const raw =
+        el.type === 'code'
+          ? cell.code
+          : el.type === 'legend'
+            ? cell.legend
+            : cell.warehouseName;
+      const text = String(raw || '').trim();
+      if (text && y < slotMaxY) {
+        const fs = resolveFontSizePx(el.fontSize, mmToPx, 48);
+        y = appendWrappedTextSvg(blocks, {
+          text,
+          x: padL,
+          y,
+          fontSize: fs,
+          fontWeight: el.bold || el.type === 'code' ? 'bold' : 'normal',
+          fill: '#000',
+          maxWidthPx: innerW,
+          maxY: Math.max(y + fs, slotMaxY),
+          lineGapPx,
+          textAnchor: resolveTextAlign(el, 'center'),
+        });
+        y += blockGap;
+      }
+    } else if (el.type === 'name') {
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 48 : 24);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -749,7 +836,7 @@ async function buildLabelSvg({
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 20);
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 48 : 20);
       const sku =
         String(product.sku || '').trim() ||
         (packaging ? String(product.name || '').trim() : '');
@@ -772,7 +859,7 @@ async function buildLabelSvg({
     } else if (el.type === 'units_per_box') {
       const units = layoutCtx.packagingUnits;
       if (units && y < slotMaxY) {
-        const fs = resolveFontSizePx(el.fontSize, mmToPx, packaging ? 48 : 20);
+        const fs = resolveFontSizePx(el.fontSize, mmToPx, largeText ? 48 : 20);
         const weight = el.bold ? 'bold' : 'normal';
         y = appendWrappedTextSvg(blocks, {
           text: `${units} шт.`,
@@ -789,18 +876,45 @@ async function buildLabelSvg({
         y += blockGap;
       }
     } else if (el.type === 'barcode' && barcodeValue) {
+      // Штрихкод обязателен: не отдаём место названию/составу ниже — они ужимаются сами.
+      const barcodeMaxY = maxContentY;
       const hMm = Number(el.heightMm) || 12;
       let hPx = Math.round(hMm * mmToPx);
       const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
       const barX = padL + barOffsetX;
-      const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, packaging ? 36 : 14);
+      const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, largeText ? 36 : 14);
       const textUnderH = el.showText !== false ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
       const minBarcodePx = Math.round(8 * mmToPx);
-      const available = slotMaxY - y - textGap - blockGap;
-      if (available < minBarcodePx) continue;
+      const absoluteMinPx = Math.round(4 * mmToPx);
+      const available = barcodeMaxY - y - textGap - blockGap;
 
-      hPx = Math.min(hPx, Math.max(minBarcodePx, Math.floor(available)));
+      if (available < absoluteMinPx) {
+        // Места нет даже на полоски — хотя бы крупный текст кода.
+        if (el.showText !== false && y < barcodeMaxY) {
+          y = appendWrappedTextSvg(blocks, {
+            text: barcodeValue,
+            x: barX,
+            y,
+            fontSize: digitFs,
+            fill: '#000',
+            maxWidthPx: barWidthPx,
+            maxY: barcodeMaxY,
+            lineGapPx,
+            textAnchor: resolveTextAlign(el, 'center'),
+          });
+          y += blockGap;
+        }
+        continue;
+      }
+
+      // Ужимаем высоту под доступное место, но не пропускаем ШК целиком.
+      const preferredPx = Math.round(hMm * mmToPx);
+      if (available >= minBarcodePx) {
+        hPx = Math.min(preferredPx, Math.max(minBarcodePx, Math.floor(available)));
+      } else {
+        hPx = Math.max(absoluteMinPx, Math.floor(available));
+      }
       const barHeightMm = hPx / mmToPx;
 
       const barcodePng = await generateBarcodePng(barcodeValue, {
@@ -812,7 +926,7 @@ async function buildLabelSvg({
         if (fitted) {
           const b64 = fitted.toString('base64');
           blocks.push(
-            `<image x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" href="data:image/png;base64,${b64}" />`
+            `<image x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" href="data:image/png;base64,${b64}" xlink:href="data:image/png;base64,${b64}" />`
           );
         }
       }
@@ -826,7 +940,7 @@ async function buildLabelSvg({
           fontSize: digitFs,
           fill: '#000',
           maxWidthPx: barWidthPx,
-          maxY: slotMaxY,
+          maxY: barcodeMaxY,
           lineGapPx,
           textAnchor: resolveTextAlign(el, 'center'),
         });
@@ -995,11 +1109,11 @@ async function renderWithTemplate(
   template,
   product,
   format = 'png',
-  { previewScale = null, marketplace = null, packaging = null } = {}
+  { previewScale = null, marketplace = null, packaging = null, cell = null } = {}
 ) {
   const categoryId = template.user_category_id ?? template.userCategoryId;
-  const categoryAttributeIds = packaging ? [] : await loadCategoryAttributeIds(categoryId);
-  const attrIds = packaging
+  const categoryAttributeIds = packaging || cell ? [] : await loadCategoryAttributeIds(categoryId);
+  const attrIds = packaging || cell
     ? []
     : (template.elements || [])
         .filter((el) => el.type === 'attribute' && el.attributeId != null)
@@ -1007,7 +1121,7 @@ async function renderWithTemplate(
         .filter((id) => Number.isFinite(id));
   const attributeNames = await loadAttributeNames(attrIds);
   const mmToPx = resolveMmToPx(previewScale);
-  const productForLabel = packaging ? product : await enrichProductForLabel(product, template);
+  const productForLabel = packaging || cell ? product : await enrichProductForLabel(product, template);
   const { svg, widthMm, heightMm } = await buildLabelSvg({
     template,
     product: productForLabel,
@@ -1016,6 +1130,7 @@ async function renderWithTemplate(
     mmToPx,
     marketplace,
     packaging,
+    cell,
   });
   const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
   if (format === 'pdf') {
@@ -1029,8 +1144,51 @@ export const productLabelsService = {
   SIZE_PRESETS,
   defaultElements: defaultLabelElements,
   defaultPackagingElements: defaultPackagingLabelElements,
+  defaultCellElements: defaultCellLabelElements,
+  defaultCellTemplate,
   templateFromPayload,
   buildSampleProduct,
+
+  async getCellTemplate(profileId = null) {
+    if (profileId != null && profileId !== '') {
+      const saved = await cellLabelTemplatesRepository.findByProfileId(profileId);
+      if (saved) return { ...saved, saved: true };
+    }
+    return { ...defaultCellTemplate(), saved: false };
+  },
+
+  async renderCellPreview(templatePayload, { previewScale = 4 } = {}) {
+    const template = {
+      ...defaultCellTemplate(),
+      size_preset: templatePayload.size_preset || templatePayload.sizePreset || '58x40',
+      width_mm: templatePayload.width_mm ?? templatePayload.widthMm ?? null,
+      height_mm: templatePayload.height_mm ?? templatePayload.heightMm ?? null,
+      margin_top_mm: Number(templatePayload.margin_top_mm ?? templatePayload.marginTopMm ?? 2),
+      margin_right_mm: Number(templatePayload.margin_right_mm ?? templatePayload.marginRightMm ?? 2),
+      margin_bottom_mm: Number(templatePayload.margin_bottom_mm ?? templatePayload.marginBottomMm ?? 2),
+      margin_left_mm: Number(templatePayload.margin_left_mm ?? templatePayload.marginLeftMm ?? 2),
+      line_gap_mm: Number(templatePayload.line_gap_mm ?? templatePayload.lineGapMm ?? 1),
+      elements:
+        Array.isArray(templatePayload.elements) && templatePayload.elements.length
+          ? templatePayload.elements
+          : defaultCellLabelElements(),
+    };
+    return renderWithTemplate(template, {}, 'png', { previewScale, cell: sampleCellLabel() });
+  },
+
+  async renderCellLabelsPdf(template, cells) {
+    const list = Array.isArray(cells) ? cells : [];
+    const doc = await PDFDocument.create();
+    for (const cell of list) {
+      const rendered = await renderWithTemplate(template, {}, 'png', { cell });
+      const widthPt = mmToPt(rendered.widthMm);
+      const heightPt = mmToPt(rendered.heightMm);
+      const image = await doc.embedPng(rendered.buffer);
+      const page = doc.addPage([widthPt, heightPt]);
+      page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
+    }
+    return Buffer.from(await doc.save());
+  },
 
   async getPackagingTemplate(profileId = null) {
     if (profileId != null && profileId !== '') {

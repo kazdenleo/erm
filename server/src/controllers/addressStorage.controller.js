@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import addressStorageService from '../services/addressStorage.service.js';
 import { buildLocationLabelsPdf } from '../services/addressStorageLabels.service.js';
+import productLabelsService from '../services/productLabels.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { getRequestAccessScope, isWarehouseAllowed } from '../utils/userAccessScope.js';
 
@@ -100,7 +101,7 @@ class AddressStorageController {
   }
 
   async labels(req, res) {
-    const { warehouseId } = await requireWarehouse(req);
+    const { warehouseId, profileId, warehouse } = await requireWarehouse(req);
     const ids = new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number));
     const settings = await addressStorageService.getSettings(warehouseId);
     const all = await addressStorageService.listLocations(warehouseId);
@@ -111,7 +112,11 @@ class AddressStorageController {
     if (list.length > 2000) {
       return res.status(400).json({ ok: false, message: 'За раз можно напечатать не больше 2000 этикеток' });
     }
-    const pdf = await buildLocationLabelsPdf(list, settings);
+    const template = await productLabelsService.getCellTemplate(profileId);
+    const pdf = await buildLocationLabelsPdf(list, settings, {
+      template,
+      warehouseName: warehouse?.name || '',
+    });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="locations-${warehouseId}.pdf"`);
     return res.status(200).send(pdf);

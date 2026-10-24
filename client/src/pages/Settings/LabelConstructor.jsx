@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { categoryLabelTemplatesApi } from '../../services/categoryLabelTemplates.api.js';
 import { packagingLabelTemplatesApi } from '../../services/packagingLabelTemplates.api.js';
+import { cellLabelTemplatesApi } from '../../services/cellLabelTemplates.api.js';
 import { userCategoriesApi } from '../../services/userCategories.api.js';
 import { productAttributesApi } from '../../services/productAttributes.api.js';
 import { productsApi } from '../../services/products.api.js';
@@ -27,6 +28,13 @@ const PACKAGING_ELEMENT_TYPES = [
   { type: 'sku', label: 'Артикул (SKU)' },
   { type: 'barcode', label: 'ШК упаковки' },
   { type: 'units_per_box', label: 'Шт. в упаковке' },
+];
+
+const CELL_ELEMENT_TYPES = [
+  { type: 'code', label: 'Адрес ячейки' },
+  { type: 'legend', label: 'Расшифровка уровней' },
+  { type: 'warehouse', label: 'Склад' },
+  { type: 'barcode', label: 'Штрихкод ячейки' },
 ];
 
 const LABEL_PRESET_MM = {
@@ -58,6 +66,24 @@ function defaultElements(form) {
   ];
 }
 
+function defaultCellElements(form) {
+  const innerW = innerLabelWidthMm(form);
+  return [
+    { id: 'code', type: 'code', enabled: true, fontSize: 22, bold: true, align: 'center' },
+    { id: 'legend', type: 'legend', enabled: true, fontSize: 9, align: 'center' },
+    {
+      id: 'barcode',
+      type: 'barcode',
+      enabled: true,
+      widthMm: innerW,
+      heightMm: 12,
+      showText: false,
+      textFontSize: 8,
+      align: 'center',
+    },
+  ];
+}
+
 function defaultPackagingElements(form) {
   const innerW = innerLabelWidthMm(form);
   return [
@@ -75,10 +101,14 @@ function defaultPackagingElements(form) {
   ];
 }
 
-function normalizeTemplate(data, { packaging = false } = {}) {
+function normalizeTemplate(data, { packaging = false, cell = false } = {}) {
   const d = data?.data ?? data ?? {};
   const hasElementsList = Array.isArray(d.elements);
-  const fallback = packaging ? defaultPackagingElements(d) : defaultElements(d);
+  const fallback = cell
+    ? defaultCellElements(d)
+    : packaging
+      ? defaultPackagingElements(d)
+      : defaultElements(d);
   return {
     size_preset: d.size_preset || d.sizePreset || '58x40',
     margin_top_mm: Number(d.margin_top_mm ?? d.marginTopMm ?? 2),
@@ -86,7 +116,7 @@ function normalizeTemplate(data, { packaging = false } = {}) {
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
-    elements: hasElementsList ? clampElementsForSave(d.elements, { packaging }) : fallback,
+    elements: hasElementsList ? clampElementsForSave(d.elements, { packaging, cell }) : fallback,
   };
 }
 
@@ -113,9 +143,9 @@ function normalizeAlign(v, fallback = 'left') {
   return fallback;
 }
 
-function clampElementsForSave(elements, { packaging = false } = {}) {
-  const textMax = packaging ? 48 : 24;
-  const barcodeTextMax = packaging ? 36 : 14;
+function clampElementsForSave(elements, { packaging = false, cell = false } = {}) {
+  const textMax = packaging || cell ? 48 : 24;
+  const barcodeTextMax = packaging || cell ? 36 : 14;
   return (elements || []).map((el) => {
     const next = { ...el };
     if (el.type === 'barcode') {
@@ -137,7 +167,10 @@ function clampElementsForSave(elements, { packaging = false } = {}) {
       el.type === 'attribute' ||
       el.type === 'product_field' ||
       el.type === 'kit_components' ||
-      el.type === 'units_per_box'
+      el.type === 'units_per_box' ||
+      el.type === 'code' ||
+      el.type === 'legend' ||
+      el.type === 'warehouse'
     ) {
       if (next.fontSize != null) {
         next.fontSize = clampFontSize(
@@ -147,11 +180,16 @@ function clampElementsForSave(elements, { packaging = false } = {}) {
         );
       }
       if (next.titleFontSize != null) {
-        next.titleFontSize = clampFontSize(next.titleFontSize, 8, packaging ? 36 : 20);
+        next.titleFontSize = clampFontSize(next.titleFontSize, 8, packaging || cell ? 36 : 20);
       }
       next.align = normalizeAlign(
         next.align,
-        el.type === 'units_per_box' ? 'center' : 'left'
+        el.type === 'units_per_box' ||
+          el.type === 'code' ||
+          el.type === 'legend' ||
+          el.type === 'warehouse'
+          ? 'center'
+          : 'left'
       );
     }
     return next;
@@ -159,7 +197,7 @@ function clampElementsForSave(elements, { packaging = false } = {}) {
 }
 
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
-function buildTemplatePayload(form, { packaging = false } = {}) {
+function buildTemplatePayload(form, { packaging = false, cell = false } = {}) {
   return {
     size_preset: form.size_preset,
     margin_top_mm: parseMmValue(form.margin_top_mm, 2),
@@ -167,16 +205,17 @@ function buildTemplatePayload(form, { packaging = false } = {}) {
     margin_bottom_mm: parseMmValue(form.margin_bottom_mm, 2),
     margin_left_mm: parseMmValue(form.margin_left_mm, 2),
     line_gap_mm: parseMmValue(form.line_gap_mm, 1),
-    elements: clampElementsForSave(form.elements, { packaging }),
+    elements: clampElementsForSave(form.elements, { packaging, cell }),
   };
 }
 
 export function LabelConstructor() {
-  const [editorMode, setEditorMode] = useState('product'); // 'product' | 'packaging'
+  const [editorMode, setEditorMode] = useState('product'); // 'product' | 'packaging' | 'cell'
   const [categories, setCategories] = useState([]);
   const [allAttributes, setAllAttributes] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [packagingSaved, setPackagingSaved] = useState(false);
+  const [cellSaved, setCellSaved] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [form, setForm] = useState(() => normalizeTemplate({}));
   const [loading, setLoading] = useState(true);
@@ -193,6 +232,7 @@ export function LabelConstructor() {
   const [dragElementIndex, setDragElementIndex] = useState(null);
   const [dragOverElementIndex, setDragOverElementIndex] = useState(null);
   const isPackaging = editorMode === 'packaging';
+  const isCell = editorMode === 'cell';
 
   const categoryById = useMemo(() => {
     const m = {};
@@ -308,6 +348,27 @@ export function LabelConstructor() {
   }, [isPackaging]);
 
   useEffect(() => {
+    if (!isCell) return;
+    let cancelled = false;
+    setPreviewProductId('');
+    setPreviewProductDetail(null);
+    setError('');
+    (async () => {
+      try {
+        const res = await cellLabelTemplatesApi.get();
+        if (cancelled) return;
+        setForm(normalizeTemplate(res, { cell: true }));
+        setCellSaved(Boolean(res?.saved));
+      } catch (e) {
+        if (!cancelled) setError(e?.response?.data?.message || e?.message || 'Ошибка загрузки шаблона ячейки');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCell]);
+
+  useEffect(() => {
     if (!previewProductId) {
       setPreviewProductDetail(null);
       return undefined;
@@ -328,7 +389,7 @@ export function LabelConstructor() {
   }, [previewProductId]);
 
   useEffect(() => {
-    if (!isPackaging && !selectedCategoryId) {
+    if (!isPackaging && !isCell && !selectedCategoryId) {
       setPreviewUrl('');
       return undefined;
     }
@@ -339,7 +400,9 @@ export function LabelConstructor() {
       setPreviewLoading(true);
       setPreviewError('');
       try {
-        const blob = isPackaging
+        const blob = isCell
+          ? await cellLabelTemplatesApi.preview(buildTemplatePayload(form, { cell: true }), { scale: 4 })
+          : isPackaging
           ? await packagingLabelTemplatesApi.preview(buildTemplatePayload(form, { packaging: true }), {
               productId: previewProductId || undefined,
               scale: 4,
@@ -378,6 +441,7 @@ export function LabelConstructor() {
     };
   }, [
     isPackaging,
+    isCell,
     selectedCategoryId,
     previewProductId,
     form.size_preset,
@@ -549,12 +613,16 @@ export function LabelConstructor() {
   };
 
   const handleSave = async () => {
-    if (!isPackaging && !selectedCategoryId) return;
+    if (!isPackaging && !isCell && !selectedCategoryId) return;
     setSaving(true);
     setMessage('');
     setError('');
     try {
-      if (isPackaging) {
+      if (isCell) {
+        await cellLabelTemplatesApi.save(buildTemplatePayload(form, { cell: true }));
+        setCellSaved(true);
+        setMessage('Шаблон ячейки сохранён');
+      } else if (isPackaging) {
         await packagingLabelTemplatesApi.save(buildTemplatePayload(form, { packaging: true }));
         setPackagingSaved(true);
         setMessage('Шаблон упаковки сохранён');
@@ -572,9 +640,13 @@ export function LabelConstructor() {
     }
   };
 
-  const elementTypeMeta = isPackaging ? PACKAGING_ELEMENT_TYPES : ELEMENT_TYPES;
+  const elementTypeMeta = isCell
+    ? CELL_ELEMENT_TYPES
+    : isPackaging
+      ? PACKAGING_ELEMENT_TYPES
+      : ELEMENT_TYPES;
   const previewProductList = isPackaging ? packagingProducts : categoryProducts;
-  const showEditor = isPackaging || Boolean(selectedCategoryId);
+  const showEditor = isPackaging || isCell || Boolean(selectedCategoryId);
 
   const previewSize = LABEL_SIZES.find((s) => s.value === form.size_preset)?.label || form.size_preset;
   const previewAspect = form.size_preset === '75x120' ? '75 / 120' : '58 / 40';
@@ -604,9 +676,20 @@ export function LabelConstructor() {
         >
           Упаковка (ШК коробки)
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={isCell}
+          className={`label-constructor-mode-tab${isCell ? ' is-active' : ''}`}
+          onClick={() => setEditorMode('cell')}
+        >
+          Ячейка
+        </button>
       </div>
       <p className="subtitle">
-        {isPackaging
+        {isCell
+          ? 'Шаблон этикетки ячейки адресного хранения. Один на профиль — печать со вкладки «Ячейки».'
+          : isPackaging
           ? 'Шаблон этикетки ШК упаковки для приёмки. Один на весь профиль — используется при печати из карточки товара.'
           : 'Настройте содержимое и отступы этикетки для каждой категории. При печати стикера товара используется шаблон его категории.'}
       </p>
@@ -616,7 +699,13 @@ export function LabelConstructor() {
 
       <div className="label-constructor-layout">
         <div className="label-constructor-sidebar">
-          {isPackaging ? (
+          {isCell ? (
+            <p className="label-constructor-hint" style={{ marginTop: 0 }}>
+              {cellSaved
+                ? 'Шаблон ячейки сохранён — печать этикеток ячеек идёт по нему.'
+                : 'Шаблон не сохранён — печать ячеек идёт в прежнем виде (размер из настроек склада).'}
+            </p>
+          ) : isPackaging ? (
             <p className="label-constructor-hint" style={{ marginTop: 0 }}>
               {packagingSaved
                 ? 'Шаблон упаковки сохранён.'
@@ -770,14 +859,17 @@ export function LabelConstructor() {
                       el.type === 'kit_components' ||
                       el.type === 'attribute' ||
                       el.type === 'product_field' ||
-                      el.type === 'units_per_box' ? (
+                      el.type === 'units_per_box' ||
+                      el.type === 'code' ||
+                      el.type === 'legend' ||
+                      el.type === 'warehouse' ? (
                         <>
                           <label className="label-constructor-mini">
                             Шрифт
                             <input
                               type="number"
                               min={6}
-                              max={isPackaging ? 48 : 24}
+                              max={isPackaging || isCell ? 48 : 24}
                               value={el.fontSize ?? 9}
                               onChange={(e) =>
                                 updateElement(idx, { fontSize: Number(e.target.value) || 9 })
@@ -982,12 +1074,64 @@ export function LabelConstructor() {
                     + {isPackaging ? 'ШК упаковки' : 'Штрихкод'}
                   </button>
                 ) : null}
+                {isCell && !hasElementType(form.elements, 'code') ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() =>
+                      appendElement({
+                        id: 'code',
+                        type: 'code',
+                        enabled: true,
+                        fontSize: 22,
+                        bold: true,
+                        align: 'center',
+                      })
+                    }
+                  >
+                    + Адрес ячейки
+                  </button>
+                ) : null}
+                {isCell && !hasElementType(form.elements, 'legend') ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() =>
+                      appendElement({
+                        id: 'legend',
+                        type: 'legend',
+                        enabled: true,
+                        fontSize: 9,
+                        align: 'center',
+                      })
+                    }
+                  >
+                    + Расшифровка
+                  </button>
+                ) : null}
+                {isCell && !hasElementType(form.elements, 'warehouse') ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() =>
+                      appendElement({
+                        id: 'warehouse',
+                        type: 'warehouse',
+                        enabled: true,
+                        fontSize: 9,
+                        align: 'center',
+                      })
+                    }
+                  >
+                    + Склад
+                  </button>
+                ) : null}
                 {isPackaging && !hasElementType(form.elements, 'units_per_box') ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addUnitsPerBoxElement}>
                     + Шт. в упаковке
                   </button>
                 ) : null}
-                {!isPackaging && !hasElementType(form.elements, 'kit_components') ? (
+                {!isPackaging && !isCell && !hasElementType(form.elements, 'kit_components') ? (
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
@@ -997,29 +1141,31 @@ export function LabelConstructor() {
                     + Комплектующие
                   </button>
                 ) : null}
-                {!isPackaging && availableAttributes.length > 0 ? (
+                {!isPackaging && !isCell && availableAttributes.length > 0 ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addAttributeElement}>
                     + Добавить атрибут
                   </button>
                 ) : null}
-                {!isPackaging && availableAttributes.length === 0 && categoryAttributeIds.length > 0 ? (
+                {!isPackaging && !isCell && availableAttributes.length === 0 && categoryAttributeIds.length > 0 ? (
                   <span className="text-muted small">
                     {previewProductId
                       ? 'У выбранного товара нет заполненных атрибутов категории.'
                       : 'Выберите товар для предпросмотра или заполните атрибуты в карточках.'}
                   </span>
                 ) : null}
-                {!isPackaging && availableAttributes.length === 0 && categoryAttributeIds.length === 0 ? (
+                {!isPackaging && !isCell && availableAttributes.length === 0 && categoryAttributeIds.length === 0 ? (
                   <span className="text-muted small">К категории не прикреплены атрибуты (Настройки → Категории).</span>
                 ) : null}
-                {!isPackaging ? (
+                {!isPackaging && !isCell ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addProductFieldElement}>
                     + Добавить поле карточки
                   </button>
                 ) : null}
               </div>
               <p className="text-muted small mt-2 mb-0">
-                {isPackaging
+                {isCell
+                  ? 'Адрес, расшифровка уровней шаблона склада и штрихкод. Предпросмотр — пример A-01-3-2.'
+                  : isPackaging
                   ? 'На этикетке упаковки печатаются поля шаблона: артикул/название товара, ШК коробки и количество штук в упаковке. На маркетплейс не отправляется.'
                   : 'Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин. чистая прибыль.'}
               </p>
@@ -1027,7 +1173,13 @@ export function LabelConstructor() {
 
             <div className="label-constructor-actions">
               <Button type="button" variant="primary" onClick={handleSave} disabled={saving}>
-                {saving ? 'Сохранение…' : isPackaging ? 'Сохранить шаблон упаковки' : 'Сохранить шаблон'}
+                {saving
+                  ? 'Сохранение…'
+                  : isCell
+                    ? 'Сохранить шаблон ячейки'
+                    : isPackaging
+                      ? 'Сохранить шаблон упаковки'
+                      : 'Сохранить шаблон'}
               </Button>
             </div>
 
@@ -1035,6 +1187,7 @@ export function LabelConstructor() {
 
           <aside className="label-constructor-preview-panel">
             <p className="label-constructor-preview-title">Предпросмотр ({previewSize})</p>
+            {!isCell ? (
             <div className="form-group">
               <label htmlFor="lc-preview-product" className="label-constructor-label">
                 Данные для предпросмотра
@@ -1058,6 +1211,9 @@ export function LabelConstructor() {
                 </p>
               )}
             </div>
+            ) : (
+              <p className="label-constructor-hint">Пример: A-01-3-2 — стеллаж, ряд, полка, ячейка.</p>
+            )}
             <div
               className="label-constructor-preview-frame"
               style={{ aspectRatio: previewAspect }}
@@ -1079,7 +1235,9 @@ export function LabelConstructor() {
               ) : null}
             </div>
             <p className="label-constructor-hint">
-              {isPackaging
+              {isCell
+                ? 'Предпросмотр увеличен. После сохранения печать ячеек использует этот шаблон.'
+                : isPackaging
                 ? 'Предпросмотр увеличен. Если у товара есть ШК коробки — он подставится; иначе используются тестовые данные.'
                 : 'Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих выберите комплект в списке или смотрите пример с тестовым составом.'}
             </p>

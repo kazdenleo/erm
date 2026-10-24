@@ -7,6 +7,7 @@ import bwipjs from 'bwip-js';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { effectiveBarcode } from './addressStorage.service.js';
+import productLabelsService from './productLabels.service.js';
 
 const PX_PER_MM = 12;
 const PT_PER_MM = 72 / 25.4;
@@ -78,12 +79,35 @@ export async function renderLabelPng(loc, settings) {
     .toBuffer();
 }
 
-export async function buildLocationLabelsPdf(locations, settings) {
+function locationLegend(loc, settings) {
+  const levels = Array.isArray(settings?.levels) ? settings.levels : [];
+  return (loc.parts || [])
+    .map((p, i) => `${levels[i]?.label || ''} ${p}`.trim())
+    .filter(Boolean)
+    .join(' · ');
+}
+
+export async function buildLocationLabelsPdf(locations, settings, { template = null, warehouseName = '' } = {}) {
+  const saved = template?.saved === true || template?.id != null;
+  if (saved) {
+    const cells = (locations || []).map((loc) => ({
+      code: loc.code,
+      legend: locationLegend(loc, settings),
+      barcode: effectiveBarcode(loc),
+      warehouseName: warehouseName || '',
+    }));
+    return productLabelsService.renderCellLabelsPdf(template, cells);
+  }
+
   const pdf = await PDFDocument.create();
-  const wPt = settings.labelWidthMm * PT_PER_MM;
-  const hPt = settings.labelHeightMm * PT_PER_MM;
-  for (const loc of locations) {
-    const png = await renderLabelPng(loc, settings);
+  const wPt = (Number(settings?.labelWidthMm) || 58) * PT_PER_MM;
+  const hPt = (Number(settings?.labelHeightMm) || 40) * PT_PER_MM;
+  for (const loc of locations || []) {
+    const png = await renderLabelPng(loc, {
+      ...settings,
+      labelWidthMm: Number(settings?.labelWidthMm) || 58,
+      labelHeightMm: Number(settings?.labelHeightMm) || 40,
+    });
     const img = await pdf.embedPng(png);
     const page = pdf.addPage([wPt, hPt]);
     page.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
