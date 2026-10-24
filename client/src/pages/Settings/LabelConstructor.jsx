@@ -661,8 +661,8 @@ export function LabelConstructor() {
         <button
           type="button"
           role="tab"
-          aria-selected={!isPackaging}
-          className={`label-constructor-mode-tab${!isPackaging ? ' is-active' : ''}`}
+          aria-selected={!isPackaging && !isCell}
+          className={`label-constructor-mode-tab${!isPackaging && !isCell ? ' is-active' : ''}`}
           onClick={() => setEditorMode('product')}
         >
           Товар
