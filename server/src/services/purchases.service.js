@@ -1055,7 +1055,7 @@ async function applyPurchaseLineItemsInTx(
     supplierHead.rows?.[0]?.supplier_id != null ? Number(supplierHead.rows[0].supplier_id) : null;
 
   for (const it of normalized) {
-    const incomingSources = normalizeSourceOrderList(it.sourceOrders);
+    let incomingSources = normalizeSourceOrderList(it.sourceOrders);
     let qtyToAdd = Math.max(0, Math.floor(Number(it.qty) || 0));
 
     // Уже есть все source_orders на этой строке — не раздуваем expected_quantity (антидубль).
