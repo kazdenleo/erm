@@ -3,11 +3,13 @@
  * Ozon, Яндекс — локальные поставки. WB — создание на маркетплейсе и добавление заказов.
  */
 
-import React, { useState, useEffect } from 'react';
-import { shipmentsApi, getQrStickerPrintUrl } from '../../services/shipments.api';
+import React, { useState, useEffect, useCallback } from 'react';
+import api from '../../services/api';
+import { shipmentsApi, getQrStickerPrintUrl, getQrStickerUrl } from '../../services/shipments.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
+import { canReachPrintHelper, printViaPrintHelper } from '../../utils/printHelperClient.js';
 import './Shipments.css';
 
 export function Shipments() {
@@ -28,6 +30,9 @@ export function Shipments() {
   const [closeNotAssembledAction, setCloseNotAssembledAction] = useState('');
   const [closeCancelledAction, setCloseCancelledAction] = useState('');
   const [reapplyStockLoading, setReapplyStockLoading] = useState(false);
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const [printingStickerId, setPrintingStickerId] = useState(null);
+  const [stickerPrintMessage, setStickerPrintMessage] = useState(null);
 
   const loadShipments = async () => {
     setLoading(true);
@@ -45,6 +50,64 @@ export function Shipments() {
   useEffect(() => {
     loadShipments();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/config');
+        const url = (res?.data?.data?.printHelperUrl ?? res?.data?.printHelperUrl ?? '').trim();
+        if (!cancelled) setPrintHelperUrl(url);
+      } catch {
+        if (!cancelled) setPrintHelperUrl('http://127.0.0.1:9100');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openStickerPrintPage = (shipmentId) => {
+    window.open(getQrStickerPrintUrl(shipmentId), '_blank', 'noopener,noreferrer');
+  };
+
+  const printShipmentSticker = useCallback(
+    async (shipment) => {
+      const id = shipment?.id;
+      if (!id) return;
+      const helperUrl = String(printHelperUrl || '').trim();
+      if (!canReachPrintHelper(helperUrl)) {
+        openStickerPrintPage(id);
+        return;
+      }
+      setPrintingStickerId(id);
+      setStickerPrintMessage(null);
+      let labelUrl = getQrStickerUrl(id);
+      try {
+        labelUrl = new URL(labelUrl, window.location.origin).toString();
+      } catch {
+        /* relative is enough for same-origin fallback */
+      }
+      const printed = await printViaPrintHelper({
+        printHelperUrl: helperUrl,
+        kind: 'shipment',
+        labelUrl,
+        orderId: id,
+        timeoutMs: 60000,
+      });
+      setPrintingStickerId(null);
+      if (printed.ok) {
+        setStickerPrintMessage({ kind: 'ok', text: 'Стикер отправлен на принтер' });
+        return;
+      }
+      setStickerPrintMessage({
+        kind: 'warn',
+        text: `${printed.message || 'Print Helper не ответил'}. Открыта страница печати.`,
+      });
+      openStickerPrintPage(id);
+    },
+    [printHelperUrl]
+  );
 
   const handleCreate = async () => {
     setCreateLoading(true);
@@ -148,7 +211,7 @@ export function Shipments() {
   const finishCloseShipment = async (shipment, options = {}) => {
     const updated = await shipmentsApi.close(shipment.id, options);
     if (updated?.qrStickerPath) {
-      window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
+      await printShipmentSticker(updated?.id ? updated : shipment);
     }
     const relocated = updated?.relocatedShipment;
     setCloseConfirm(null);
@@ -273,6 +336,11 @@ export function Shipments() {
           <p className="subtitle">
             Ozon, Яндекс и ручные заказы — локальные отгрузки. WB — при закрытии отгрузка передаётся на маркетплейс; этикетка — по кнопке «Печать этикетки».
           </p>
+          {stickerPrintMessage ? (
+            <p className={stickerPrintMessage.kind === 'ok' ? 'text-muted' : 'error'} style={{ marginTop: 8 }}>
+              {stickerPrintMessage.text}
+            </p>
+          ) : null}
         </div>
         <Button variant="primary" onClick={() => setCreateOpen(true)}>
           + Создать отгрузку
@@ -330,19 +398,19 @@ export function Shipments() {
                               </Button>
                             )}
                             {canPrintShipmentSticker(item) && (
-                              <a
-                                href={getQrStickerPrintUrl(item.id)}
-                                target="_blank"
-                                rel="noreferrer"
+                              <button
+                                type="button"
                                 className="shipments-qr-link"
+                                disabled={printingStickerId === item.id}
+                                onClick={() => printShipmentSticker(item)}
                                 title={
                                   item.wbLastSyncError
-                                    ? `${item.wbLastSyncError}. При открытии выполним передачу на WB и загрузку этикетки.`
-                                    : 'Печать этикетки отгрузки (передача на WB при необходимости)'
+                                    ? `${item.wbLastSyncError}. При печати запросим этикетку у WB.`
+                                    : 'Тихая печать через Print Helper. Принтер — «Стикер отгрузки» в настройках этикеток.'
                                 }
                               >
-                                🖨️ Печать этикетки
-                              </a>
+                                {printingStickerId === item.id ? 'Печать…' : '🖨️ Печать этикетки'}
+                              </button>
                             )}
                           </div>
                         </td>

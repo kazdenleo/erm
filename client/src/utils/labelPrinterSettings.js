@@ -6,7 +6,7 @@
 export const LABEL_PRINTER_STORAGE_KEY = 'erm_label_printers';
 
 /**
- * @typedef {'order'|'product'|'packaging'|'box_ozon'|'box_wb'|'box_ym'|'pallet'|'cargo'|'box'} LabelPrintKind
+ * @typedef {'order'|'product'|'packaging'|'shipment'|'box_ozon'|'box_wb'|'box_ym'|'pallet'|'cargo'|'box'} LabelPrintKind
  */
 
 export const LABEL_PRINT_KINDS = [
@@ -14,6 +14,11 @@ export const LABEL_PRINT_KINDS = [
     id: 'order',
     label: 'Стикеры заказов',
     hint: 'FBS: этикетка отправления после сборки',
+  },
+  {
+    id: 'shipment',
+    label: 'Стикер отгрузки',
+    hint: 'QR поставки WB при печати из раздела «Отгрузки». Пусто — принтер Windows по умолчанию',
   },
   {
     id: 'product',
@@ -55,6 +60,7 @@ export const LABEL_PRINT_KINDS = [
 function emptyMap() {
   return {
     order: '',
+    shipment: '',
     product: '',
     packaging: '',
     box_ozon: '',

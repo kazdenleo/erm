@@ -144,6 +144,15 @@
   color: var(--primary, #0d6efd);
   text-decoration: none;
   font-size: 14px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.shipments-qr-link:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .shipments-qr-link:hover {
   text-decoration: underline;
