@@ -38,6 +38,7 @@ import {
   transferIncomingBetweenWarehouses,
 } from '../utils/stockWarehouseReassign.js';
 import { looksLikeCis, productLookupCodesFromScan } from '../utils/chestnyZnak.js';
+import { capDemandLineToSupplierFreeStock } from '../utils/supplierStockReservation.js';
 import addressStorageService from './addressStorage.service.js';
 import chestnyZnakOps from './chestnyZnakOps.service.js';
 
@@ -47,6 +48,58 @@ const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function scheduleMarketplaceStockAfterSupplierReserve(productIds) {
+  const ids = [
+    ...new Set(
+      (Array.isArray(productIds) ? productIds : [])
+        .map((id) => Number(id))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (!ids.length) return;
+  import('./marketplaceWarehouseStockSync.service.js')
+    .then(({ scheduleWarehouseStockMarketplaceSync }) => {
+      for (const id of ids) {
+        scheduleWarehouseStockMarketplaceSync(id, { source: 'supplier_stock_reserve' });
+      }
+    })
+    .catch((e) => {
+      logger.warn('[Purchases] не удалось обновить остаток на маркетплейсе после резерва поставщика', {
+        message: e?.message || String(e),
+      });
+    });
+}
+
+function demandProductIds(items) {
+  return (Array.isArray(items) ? items : [])
+    .filter((it) => Array.isArray(it?.sourceOrders) && it.sourceOrders.length > 0)
+    .map((it) => Number(it.productId ?? it.product_id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function sourceOrderMatchKeys(marketplace, orderId) {
+  const id = String(orderId ?? '').trim().toLowerCase();
+  if (!id) return [];
+  const raw = String(marketplace ?? '').trim().toLowerCase();
+  const db = String(orderMarketplaceToDb(marketplace) || '').trim().toLowerCase();
+  return [...new Set([raw, db].filter(Boolean).map((mp) => `${mp}|${id}`))];
+}
+
+async function filterRefsLinkedOnPurchase(purchaseId, refs) {
+  const list = Array.isArray(refs) ? refs : [];
+  if (!list.length || !purchaseId) return [];
+  const r = await query(`SELECT source_orders FROM purchase_items WHERE purchase_id = $1`, [purchaseId]);
+  const linked = new Set();
+  for (const row of r.rows || []) {
+    for (const order of parseSourceOrdersJson(row.source_orders)) {
+      for (const key of sourceOrderMatchKeys(order?.marketplace, order?.orderId)) linked.add(key);
+    }
+  }
+  return list.filter((ref) =>
+    sourceOrderMatchKeys(ref?.marketplace, ref?.orderId).some((key) => linked.has(key))
+  );
 }
 
 function purchaseTransaction(callback) {
@@ -994,6 +1047,12 @@ async function applyPurchaseLineItemsInTx(
   }
 
   const incomingDeltas = new Map();
+  const supplierHead = await client.query(
+    `SELECT supplier_id FROM purchases WHERE id = $1`,
+    [purchaseId]
+  );
+  const lineSupplierId =
+    supplierHead.rows?.[0]?.supplier_id != null ? Number(supplierHead.rows[0].supplier_id) : null;
 
   for (const it of normalized) {
     const incomingSources = normalizeSourceOrderList(it.sourceOrders);
@@ -1029,12 +1088,33 @@ async function applyPurchaseLineItemsInTx(
       }
     }
 
+    if (qtyToAdd > 0 && incomingSources.length && Number.isFinite(lineSupplierId) && lineSupplierId > 0) {
+      const capped = await capDemandLineToSupplierFreeStock(client, {
+        supplierId: lineSupplierId,
+        productId: it.productId,
+        quantity: qtyToAdd,
+        sourceOrders: incomingSources,
+      });
+      if (capped.capped) {
+        logger.info('[Purchases] резерв остатка поставщика урезал позицию', {
+          purchaseId,
+          supplierId: lineSupplierId,
+          productId: it.productId,
+          requested: qtyToAdd,
+          accepted: capped.quantity,
+        });
+      }
+      qtyToAdd = capped.quantity;
+      incomingSources = capped.sourceOrders;
+    }
+
     if (qtyToAdd <= 0 && !insertOnly) {
       if (incomingSources.length) {
         await mergeSourceOrdersInTx(client, purchaseId, it.productId, incomingSources);
       }
       continue;
     }
+    if (qtyToAdd <= 0) continue;
 
     const sourceJson = JSON.stringify(incomingSources);
     const qty = qtyToAdd > 0 ? qtyToAdd : Math.max(1, Math.floor(Number(it.qty) || 1));
@@ -1065,7 +1145,7 @@ async function applyPurchaseLineItemsInTx(
            updated_at = CURRENT_TIMESTAMP`,
         [purchaseId, it.productId, qty, sourceJson, pp]
       );
-      await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+      await mergeSourceOrdersInTx(client, purchaseId, it.productId, incomingSources);
     } else {
       await client.query(
         `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
@@ -1076,7 +1156,7 @@ async function applyPurchaseLineItemsInTx(
            updated_at = CURRENT_TIMESTAMP`,
         [purchaseId, it.productId, qty, sourceJson]
       );
-      await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+      await mergeSourceOrdersInTx(client, purchaseId, it.productId, incomingSources);
     }
     if (lightIncoming) {
       incomingDeltas.set(it.productId, (incomingDeltas.get(it.productId) || 0) + qty);
@@ -3299,7 +3379,7 @@ class PurchasesService {
       }
 
       const refsFromItems = collectSourceOrdersFromPurchaseItems(itemsToProcess);
-      const refsForProcurement =
+      const refsRequested =
         refsFromItems.length > 0
           ? refsFromItems
           : (Array.isArray(procurementItems) ? procurementItems : [])
@@ -3309,6 +3389,9 @@ class PurchasesService {
                 orderId: String(it.orderId).trim(),
               }))
               .filter((it) => it.marketplace && it.orderId);
+      const refsForProcurement = refsFromItems.length
+        ? await filterRefsLinkedOnPurchase(purchaseId, refsRequested)
+        : refsRequested;
 
       let apiSubmitRequired = false;
       if (submitToSupplier && purchaseId) {
@@ -3412,6 +3495,10 @@ class PurchasesService {
           }
         }
 
+        scheduleMarketplaceStockAfterSupplierReserve(
+          rollbackItems.map((it) => it.productId ?? it.product_id)
+        );
+
         return {
           purchaseId: keptPurchase,
           procurement,
@@ -3458,6 +3545,8 @@ class PurchasesService {
           label: 'reapply reserve for linked orders after procure-from-orders',
         });
       }
+
+      scheduleMarketplaceStockAfterSupplierReserve(demandProductIds(itemsToProcess));
 
       return { purchaseId, procurement, supplierSubmit };
     });
@@ -3525,6 +3614,16 @@ class PurchasesService {
 
       return { id: purchaseId };
     });
+    const itemCount = await query(
+      `SELECT COUNT(*)::int AS c FROM purchase_items WHERE purchase_id = $1`,
+      [result.id]
+    );
+    if (demandProductIds(normalized).length && !Number(itemCount.rows?.[0]?.c)) {
+      await query(`DELETE FROM purchases WHERE id = $1`, [result.id]);
+      const err = new Error('У поставщика не осталось свободного остатка под эти заказы');
+      err.statusCode = 409;
+      throw err;
+    }
     if (lightIncoming && incomingDeltas?.size) {
       await applyIncomingDeltasAfterCommit(incomingDeltas, {
         purchaseId: result.id,
@@ -3542,6 +3641,7 @@ class PurchasesService {
         label: 'reapply reserve for linked orders after purchase create',
       });
     }
+    scheduleMarketplaceStockAfterSupplierReserve(demandProductIds(normalized));
     return result;
   }
 
@@ -3616,6 +3716,7 @@ class PurchasesService {
         label: 'reapply reserve for linked orders after purchase append',
       });
     }
+    scheduleMarketplaceStockAfterSupplierReserve(demandProductIds(normalized));
     return result;
   }
 

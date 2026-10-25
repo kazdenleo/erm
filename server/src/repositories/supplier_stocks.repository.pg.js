@@ -158,6 +158,22 @@ class SupplierStocksRepositoryPG {
     warehouseFilterSql += `
       )`;
 
+    const reservedRes = await query(
+      `SELECT pu.supplier_id, pi.product_id,
+              SUM(GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0)))::int AS reserved
+         FROM purchase_items pi
+         INNER JOIN purchases pu ON pu.id = pi.purchase_id
+        WHERE pi.product_id = ANY($1::int[])
+          AND pu.supplier_id IS NOT NULL
+          AND LOWER(TRIM(COALESCE(pu.status, ''))) = 'open'
+        GROUP BY pu.supplier_id, pi.product_id`,
+      [ids]
+    );
+    const reservedByKey = new Map();
+    for (const row of reservedRes.rows || []) {
+      reservedByKey.set(`${row.supplier_id}:${row.product_id}`, Number(row.reserved) || 0);
+    }
+
     const result = await query(
       `SELECT
          ss.product_id,
@@ -186,9 +202,10 @@ class SupplierStocksRepositoryPG {
         aggregatedStock: row.stock,
         now
       });
+      const reserved = reservedByKey.get(`${row.supplier_id}:${row.product_id}`) || 0;
       return {
         product_id: row.product_id,
-        stock: orderable,
+        stock: Math.max(0, orderable - reserved),
         price: row.price,
         delivery_days: row.delivery_days,
         stock_name: row.stock_name,

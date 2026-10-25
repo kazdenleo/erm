@@ -11,6 +11,7 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import { isProfileProductSupplierBindingEnabled } from '../utils/profileProductSupplierBinding.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
+import { sqlOpenSupplierReserved } from '../utils/supplierStockReservation.js';
 import {
   autoArrivalNoteText,
   computeProcurementDates,
@@ -311,7 +312,8 @@ async function rankSupplierCandidates(
   if (!ids.length) return [];
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
-    `SELECT ss.supplier_id, ss.price, ss.stock,
+    `SELECT ss.supplier_id, ss.price,
+            GREATEST(0, COALESCE(ss.stock, 0) - ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')})::int AS stock,
             COALESCE(ss.delivery_days, 0)::int AS delivery_days,
             COALESCE((s.api_config->>'isPriority')::boolean,
                      (s.api_config->>'is_priority')::boolean, false) AS is_priority,
