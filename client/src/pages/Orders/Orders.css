@@ -70,7 +70,7 @@
 .orders-page .orders-table.table {
   table-layout: fixed;
   width: 100%;
-  min-width: 78rem;
+  min-width: 104rem;
   margin: 8px 0 12px;
 }
 
@@ -94,15 +94,15 @@
 }
 
 .orders-page .orders-table col.orders-col-order-id {
-  width: 8.25rem;
+  width: 14.5rem;
 }
 
 .orders-page .orders-table col.orders-col-arrived {
-  width: 7.25rem;
+  width: 11rem;
 }
 
 .orders-page .orders-table col.orders-col-ship-mp {
-  width: 7rem;
+  width: 11rem;
 }
 
 .orders-page .orders-table col.orders-col-warehouse {
@@ -119,7 +119,7 @@
 }
 
 .orders-page .orders-table col.orders-col-qty {
-  width: 4.25rem;
+  width: 7rem;
 }
 
 .orders-page .orders-table col.orders-col-price {
@@ -219,9 +219,20 @@ th.orders-col-select .orders-col-select-num {
   width: auto;
 }
 
+.orders-col-order-id {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
 .orders-col-date {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
+  vertical-align: middle;
 }
 
 .orders-arrival-cell {
@@ -543,7 +554,7 @@ a.orders-product-cell-text.order-detail-product-link:hover {
 @media (max-width: 767.98px) {
   .orders-page .orders-table.table,
   .orders-page .orders-table {
-    min-width: 78rem;
+    min-width: 104rem;
   }
 }
 

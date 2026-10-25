@@ -3600,7 +3600,7 @@ export function Orders() {
                 <th className="orders-col-mp" title="Маркетплейс">
                   МП
                 </th>
-                <th>ID заказа</th>
+                <th className="orders-col-order-id">ID заказа</th>
                 <th>Появился</th>
                 <th title="Плановая дата отгрузки с маркетплейса">Отгрузка МП</th>
                 <th className="orders-col-warehouse" title="Наш склад, на который пришёл заказ">
@@ -3808,7 +3808,9 @@ export function Orders() {
                       );
                     })()}
                   </td>
-                  <td>{orderIdDisplay}</td>
+                  <td className="orders-col-order-id" title={orderIdDisplay || ''}>
+                    {orderIdDisplay}
+                  </td>
                   <td
                     className="orders-col-date"
                     title={first.createdAt ? new Date(first.createdAt).toLocaleString() : ''}
