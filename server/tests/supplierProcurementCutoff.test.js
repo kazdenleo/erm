@@ -10,6 +10,7 @@ import {
   isProcurementBucketOpenForNewOrders,
   isPurchaseCreatedInProcurementWindow,
   sumOrderableSupplierWarehouseStock,
+  sumPurchasableSupplierWarehouseStock,
 } from '../src/utils/supplierProcurementArrival.js';
 
 function moscowDate(y, mo, d, h = 12, min = 0) {
@@ -275,6 +276,20 @@ describe('sumOrderableSupplierWarehouseStock', () => {
         now: moscowDate(2026, 9, 10, 18, 0),
       })
     ).toBe(1);
+  });
+
+  test('после 21:00 витрина пустая, в закупку остаток всё ещё входит', () => {
+    const args = {
+      apiConfig: mikadoCfg,
+      stockWarehouses: [
+        { city: 'Москва', stock: 10 },
+        { city: 'СПб', stock: 5 },
+      ],
+      aggregatedStock: 15,
+      now: moscowDate(2026, 9, 10, 21, 30),
+    };
+    expect(sumOrderableSupplierWarehouseStock(args)).toBe(0);
+    expect(sumPurchasableSupplierWarehouseStock(args)).toBe(15);
   });
 
   test('без окон в api_config — как раньше, вся сумма', () => {

@@ -318,6 +318,41 @@ export function sumOrderableSupplierWarehouseStock({
   return sum;
 }
 
+/**
+ * Остаток, который можно положить в закупку под уже принятый заказ.
+ * Отсечка склада выбирает окно приезда, но не обнуляет остаток: после 21:00
+ * заказ всё равно уходит поставщику в следующую отсечку.
+ */
+export function sumPurchasableSupplierWarehouseStock({
+  apiConfig,
+  stockWarehouses,
+  aggregatedStock = 0,
+} = {}) {
+  const cfg = parseJsonValue(apiConfig);
+  const cfgRows = normalizeSupplierConfigWarehouses(
+    cfg && typeof cfg === 'object' ? cfg.warehouses : null
+  );
+  const warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
+  const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
+  if (!warehouses.length) return agg;
+
+  const rawWh = parseJsonValue(stockWarehouses);
+  const stockRows = Array.isArray(rawWh) ? rawWh : [];
+  if (!stockRows.length) return agg;
+
+  let sum = 0;
+  let matched = false;
+  for (const sw of stockRows) {
+    const qty = Math.max(0, Math.floor(Number(sw?.stock) || 0));
+    if (qty <= 0) continue;
+    const name = sw.city || sw.name || '';
+    if (!matchConfigWarehouseByStockName(warehouses, name)) continue;
+    matched = true;
+    sum += qty;
+  }
+  return matched ? sum : agg;
+}
+
 function addDaysToYmd(ymd, days) {
   const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
   const base = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));

@@ -3,7 +3,7 @@
  * Между синхронизациями два заказа не видят один и тот же свободный остаток.
  */
 
-import { sumOrderableSupplierWarehouseStock } from './supplierProcurementArrival.js';
+import { sumPurchasableSupplierWarehouseStock } from './supplierProcurementArrival.js';
 
 export function freeSupplierUnits(orderable, reserved) {
   const stock = Math.max(0, Math.floor(Number(orderable) || 0));
@@ -62,7 +62,7 @@ export function sourceOrdersFittingFreeStock(sources, free, lineQty = 0) {
 
 export async function capDemandLineToSupplierFreeStock(
   client,
-  { supplierId, productId, quantity, sourceOrders, now = new Date() } = {}
+  { supplierId, productId, quantity, sourceOrders } = {}
 ) {
   const sid = Number(supplierId);
   const pid = Number(productId);
@@ -90,11 +90,10 @@ export async function capDemandLineToSupplierFreeStock(
     `SELECT ${sqlOpenSupplierReserved('$1', '$2')}::int AS reserved`,
     [sid, pid]
   );
-  const orderable = sumOrderableSupplierWarehouseStock({
+  const orderable = sumPurchasableSupplierWarehouseStock({
     apiConfig: row.api_config,
     stockWarehouses: row.warehouses,
     aggregatedStock: row.stock,
-    now,
   });
   const free = freeSupplierUnits(orderable, reservedRes.rows?.[0]?.reserved);
   const fitted = sourceOrdersFittingFreeStock(sources, free, quantity);
