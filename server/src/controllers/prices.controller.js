@@ -4,6 +4,15 @@
  */
 
 import pricesService from '../services/prices.service.js';
+import {
+  joinOzonAction,
+  joinWbPromotion,
+  joinYmPromo,
+  leaveOzonAction,
+  leaveYmPromo,
+  listYmPromoOffers,
+  listYmPromos,
+} from '../services/marketplacePromotions.service.js';
 import logger from '../utils/logger.js';
 import {
   pushForProduct,
@@ -597,6 +606,90 @@ class PricesController {
       });
     } catch (error) {
       logger.error('[Prices Controller] pushAll error:', error);
+      next(error);
+    }
+  }
+
+  _promoScope(req) {
+    return { integrationScope: this._integrationScopeFromReq(req) };
+  }
+
+  async joinOzonAction(req, res, next) {
+    try {
+      const result = await joinOzonAction(
+        { actionId: req.params.actionId, products: req.body?.products || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async leaveOzonAction(req, res, next) {
+    try {
+      const result = await leaveOzonAction(
+        { actionId: req.params.actionId, ozonProductIds: req.body?.ozonProductIds || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async joinWbPromotion(req, res, next) {
+    try {
+      const result = await joinWbPromotion(
+        { promotionId: req.params.promotionId, items: req.body?.items || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getYmPromos(req, res, next) {
+    try {
+      const result = await listYmPromos(this._promoScope(req));
+      if (!result.ok) return res.status(400).json(result);
+      return res.status(200).json({ ok: true, data: result.promos || [] });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getYmPromoOffers(req, res, next) {
+    try {
+      const result = await listYmPromoOffers(req.params.promoId, this._promoScope(req));
+      if (!result.ok) return res.status(400).json(result);
+      return res.status(200).json({ ok: true, data: result.offers || [] });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async joinYmPromo(req, res, next) {
+    try {
+      const result = await joinYmPromo(
+        { promoId: req.params.promoId, offers: req.body?.offers || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async leaveYmPromo(req, res, next) {
+    try {
+      const result = await leaveYmPromo(
+        { promoId: req.params.promoId, offerIds: req.body?.offerIds || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
       next(error);
     }
   }

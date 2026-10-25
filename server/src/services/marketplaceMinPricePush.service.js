@@ -267,22 +267,30 @@ async function fetchWithRetry(url, options, { maxAttempts = 4, label = 'API' } =
 
 const _debounceTimers = new Map();
 
-export function schedulePushForProduct(productId, delayMs = 2500) {
+export function schedulePushForProduct(productId, delayMs = 2500, opts = {}) {
   if (!isMinPricePushEnabled()) return;
   const id = Number(productId);
   if (!Number.isFinite(id) || id < 1) return;
+  const incoming = Array.isArray(opts.marketplaces)
+    ? [...new Set(opts.marketplaces.map((mp) => String(mp || '').toLowerCase()).filter(Boolean))]
+    : null;
   const prev = _debounceTimers.get(id);
-  if (prev) clearTimeout(prev);
-  const t = setTimeout(() => {
+  if (prev?.timer) clearTimeout(prev.timer);
+  let marketplaces = incoming;
+  if (prev) {
+    if (prev.marketplaces == null || marketplaces == null) marketplaces = null;
+    else marketplaces = [...new Set([...prev.marketplaces, ...marketplaces])];
+  }
+  const timer = setTimeout(() => {
     _debounceTimers.delete(id);
-    pushForProduct(id).catch((e) => {
+    pushForProduct(id, marketplaces ? { marketplaces } : {}).catch((e) => {
       logger.warn('[MP MinPrice Push] schedulePushForProduct failed', {
         productId: id,
         message: e?.message || String(e),
       });
     });
   }, delayMs);
-  _debounceTimers.set(id, t);
+  _debounceTimers.set(id, { timer, marketplaces });
 }
 
 async function loadProfilePushSchemes(profileId) {
@@ -807,7 +815,7 @@ async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
  * Пуш мин. цен для одного товара ERP.
  * Только если у организации включено auto_push_marketplace_prices.
  */
-export async function pushForProduct(productId) {
+export async function pushForProduct(productId, opts = {}) {
   if (!isMinPricePushEnabled()) {
     return { skipped: true, reason: 'disabled' };
   }
@@ -879,9 +887,13 @@ export async function pushForProduct(productId) {
     });
   }
 
+  const allow = Array.isArray(opts.marketplaces)
+    ? new Set(opts.marketplaces.map((mp) => String(mp || '').toLowerCase()).filter(Boolean))
+    : null;
+  const allowed = (mp) => !allow || allow.has(mp);
   const results = [];
 
-  if (ctx.floors.ozon != null) {
+  if (ctx.floors.ozon != null && allowed('ozon')) {
     try {
       const selling = ctx.selling?.ozon ?? ctx.floors.ozon;
       results.push(await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId));
@@ -889,7 +901,7 @@ export async function pushForProduct(productId) {
       results.push({ marketplace: 'ozon', ok: false, error: e?.message || String(e) });
     }
   }
-  if (ctx.floors.wb != null) {
+  if (ctx.floors.wb != null && allowed('wb')) {
     try {
       const selling = ctx.selling?.wb ?? ctx.floors.wb;
       results.push(await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId));
@@ -897,7 +909,7 @@ export async function pushForProduct(productId) {
       results.push({ marketplace: 'wb', ok: false, error: e?.message || String(e) });
     }
   }
-  if (ctx.floors.ym != null) {
+  if (ctx.floors.ym != null && allowed('ym')) {
     try {
       const selling = ctx.selling?.ym ?? ctx.floors.ym;
       results.push(await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId));
@@ -1002,6 +1014,31 @@ export async function resolvePushProductIds(filters = {}) {
   return (r.rows || [])
     .map((row) => Number(row.product_id))
     .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** Пуш только тех маркетплейсов, по которым минимум только что посчитан. */
+export async function pushRecalculatedPrices(entries = []) {
+  const list = (Array.isArray(entries) ? entries : []).filter(
+    (row) => Number(row?.productId) > 0 && Array.isArray(row.marketplaces) && row.marketplaces.length
+  );
+  if (!list.length) {
+    return { products: 0, pushed: 0, failed: 0, skipped: 0, reason: 'nothing_recalculated' };
+  }
+  let pushed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
+    const out = await pushForProduct(row.productId, { marketplaces: row.marketplaces }).catch((e) => ({
+      failed: 1,
+      error: e?.message || String(e),
+    }));
+    pushed += out.pushed || 0;
+    failed += out.failed || 0;
+    skipped += out.skipped || (out.reason ? 1 : 0);
+    if (i > 0 && i % 20 === 0) await sleep(200);
+  }
+  return { products: list.length, pushed, failed, skipped };
 }
 
 async function pushProductIdList(ids, logMeta = {}) {
@@ -1194,6 +1231,7 @@ export default {
   buildYmOfferPrice,
   schedulePushForProduct,
   pushForProduct,
+  pushRecalculatedPrices,
   pushForProductIds,
   pushWithFilters,
   resolvePushProductIds,

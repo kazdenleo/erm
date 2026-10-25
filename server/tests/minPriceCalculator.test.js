@@ -1,4 +1,4 @@
-import { calculateMinPrice, resolveMinPriceTaxProfile } from '../src/services/min-price-calculator.service.js';
+import { calculateMinPrice, netProfitAtSalePrice, resolveMinPriceTaxProfile } from '../src/services/min-price-calculator.service.js';
 import { computeTaxesAndNetProfit } from '../src/utils/organizationTaxRates.js';
 
 const baseCalculator = {
@@ -49,6 +49,12 @@ describe('calculateMinPrice brand promotion', () => {
     const net = price - 653.25 - mp;
     expect(net).toBeGreaterThanOrEqual(49.5);
     expect(net).toBeLessThanOrEqual(52);
+  });
+
+  test('profit at the minimum price meets the target', () => {
+    const min = calculateMinPrice(653.25, baseCalculator, 'ozon', 50, product);
+    const profit = netProfitAtSalePrice(min, 653.25, baseCalculator, 'ozon', product);
+    expect(profit).toBeGreaterThanOrEqual(50);
   });
 });
 

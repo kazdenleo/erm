@@ -41,6 +41,31 @@ function ozonDisplayActionPrice(p) {
   return ozonSuggestedEntryPrice(p);
 }
 
+function joinTitle(row) {
+  if (row?.join_block_reason === 'below_floor') return 'Цена входа ниже минимальной — продажа в минус';
+  if (row?.join_block_reason === 'no_floor') return 'Минимальная цена не посчитана — вход закрыт';
+  if (row?.join_block_reason === 'no_entry_price') return 'Нет цены входа';
+  return 'Войти в акцию';
+}
+
+function profitCell(row) {
+  if (row?.profit_rub == null || row.profit_rub === '') return '—';
+  const n = Number(row.profit_rub);
+  if (!Number.isFinite(n)) return '—';
+  const color = n < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
+  return <span style={{ color, fontWeight: 600 }}>{n > 0 ? `+${n}` : n} ₽</span>;
+}
+
+const YM_STATUS = {
+  AUTO: 'автоматически',
+  PARTIALLY_AUTO: 'частично автоматически',
+  MANUAL: 'вручную',
+  NOT_PARTICIPATING: 'не участвует',
+  RENEWED: 'перенесён',
+  RENEW_FAILED: 'не перенесён',
+  MINIMUM_FOR_PROMOS: 'по минимуму акции',
+};
+
 export function PricePromotions() {
   const [activePromoMarketplace, setActivePromoMarketplace] = useState('ozon'); // 'ozon' | 'wb' | 'ym'
   const [ozonActions, setOzonActions] = useState([]);
@@ -70,6 +95,17 @@ export function PricePromotions() {
   const [wbNomenclaturesOutError, setWbNomenclaturesOutError] = useState(null);
   const [wbNomenclaturesInNotApplicable, setWbNomenclaturesInNotApplicable] = useState(false);
   const [wbNomenclaturesOutNotApplicable, setWbNomenclaturesOutNotApplicable] = useState(false);
+  const [promoReload, setPromoReload] = useState(0);
+  const [promoBusyKey, setPromoBusyKey] = useState('');
+  const [promoNotice, setPromoNotice] = useState(null);
+  const [ymPromos, setYmPromos] = useState([]);
+  const [ymPromosLoading, setYmPromosLoading] = useState(false);
+  const [ymPromosError, setYmPromosError] = useState(null);
+  const [ymModal, setYmModal] = useState({ isOpen: false, promo: null });
+  const [ymOffers, setYmOffers] = useState([]);
+  const [ymOffersLoading, setYmOffersLoading] = useState(false);
+  const [ymOffersError, setYmOffersError] = useState(null);
+  const [ymModalTab, setYmModalTab] = useState('participating');
 
   // При открытии модалки акции — загружаем участвующие и доступные товары
   useEffect(() => {
@@ -120,7 +156,7 @@ export function PricePromotions() {
     })();
 
     return () => { cancelled = true; };
-  }, [actionModal.isOpen, actionModal.action?.id]);
+  }, [actionModal.isOpen, actionModal.action?.id, promoReload]);
 
   // Загрузка акций Ozon при открытии вкладки Ozon
   useEffect(() => {
@@ -225,7 +261,7 @@ export function PricePromotions() {
     })();
 
     return () => { cancelled = true; };
-  }, [wbActionModal.isOpen, wbActionModal.promotion?.id]);
+  }, [wbActionModal.isOpen, wbActionModal.promotion?.id, promoReload]);
 
   // Загрузка акций WB при открытии вкладки Wildberries
   useEffect(() => {
@@ -253,11 +289,87 @@ export function PricePromotions() {
     return () => { cancelled = true; };
   }, [activePromoMarketplace]);
 
+  useEffect(() => {
+    if (activePromoMarketplace !== 'ym') return;
+    let cancelled = false;
+    (async () => {
+      setYmPromosLoading(true);
+      setYmPromosError(null);
+      try {
+        const res = await pricesApi.getYmPromos();
+        if (cancelled) return;
+        const data = res?.data ?? [];
+        setYmPromos(Array.isArray(data) ? data : []);
+        if (res?.ok === false) setYmPromosError(res.error || 'Ошибка загрузки акций');
+      } catch (err) {
+        if (!cancelled) {
+          setYmPromosError(err.response?.data?.error || err.message || 'Ошибка загрузки акций Яндекс Маркета');
+          setYmPromos([]);
+        }
+      } finally {
+        if (!cancelled) setYmPromosLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activePromoMarketplace]);
+
+  useEffect(() => {
+    if (!ymModal.isOpen || !ymModal.promo?.id) return;
+    let cancelled = false;
+    (async () => {
+      setYmOffersLoading(true);
+      setYmOffersError(null);
+      try {
+        const res = await pricesApi.getYmPromoOffers(ymModal.promo.id);
+        if (cancelled) return;
+        const data = res?.data ?? [];
+        setYmOffers(Array.isArray(data) ? data : []);
+        if (res?.ok === false) setYmOffersError(res.error || 'Ошибка загрузки товаров');
+      } catch (err) {
+        if (!cancelled) {
+          setYmOffersError(err.response?.data?.error || err.message || 'Ошибка загрузки товаров');
+          setYmOffers([]);
+        }
+      } finally {
+        if (!cancelled) setYmOffersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ymModal.isOpen, ymModal.promo?.id, promoReload]);
+
+  const runPromoAction = async (key, fn) => {
+    setPromoBusyKey(key);
+    setPromoNotice(null);
+    try {
+      const res = await fn();
+      if (res?.ok === false) {
+        setPromoNotice({ type: 'error', text: res.error || 'Не удалось выполнить действие' });
+      } else {
+        const skipped = Array.isArray(res?.blocked) && res.blocked.length ? ` Не вошли: ${res.blocked.length}.` : '';
+        setPromoNotice({ type: 'ok', text: `Готово.${skipped}` });
+        setPromoReload((n) => n + 1);
+      }
+    } catch (err) {
+      setPromoNotice({
+        type: 'error',
+        text: err.response?.data?.error || err.message || 'Не удалось выполнить действие',
+      });
+    } finally {
+      setPromoBusyKey('');
+    }
+  };
+
+  const noticeBox = promoNotice ? (
+    <p style={{ color: promoNotice.type === 'error' ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)', marginBottom: 12 }}>
+      {promoNotice.text}
+    </p>
+  ) : null;
+
   return (
     <div className="card">
       <h1 className="title">Акции</h1>
       <p className="subtitle">
-        Акции маркетплейсов ·{' '}
+        Акции маркетплейсов. Вход закрыт, если цена акции ниже минимальной или минимум не посчитан. ·{' '}
         <Link to="/prices" style={{ color: 'var(--primary)' }}>Минимальные цены</Link>
       </p>
 
@@ -386,7 +498,41 @@ export function PricePromotions() {
         </div>
       )}
       {activePromoMarketplace === 'ym' && (
-        <p style={{ color: 'var(--muted)', marginTop: '24px' }}>Раздел акций Яндекс.Маркета — в разработке</p>
+        <div className="prices-table-container" style={{ marginTop: '16px' }}>
+          {ymPromosLoading ? (
+            <p style={{ color: 'var(--muted)' }}>Загрузка акций Яндекс Маркета...</p>
+          ) : ymPromosError ? (
+            <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {ymPromosError}</p>
+          ) : ymPromos.length === 0 ? (
+            <p style={{ color: 'var(--muted)' }}>Акций Яндекс Маркета нет</p>
+          ) : (
+            <table className="prices-table table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Название</th>
+                  <th>Начало</th>
+                  <th>Окончание</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ymPromos.map((a) => (
+                  <tr
+                    key={a.id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => { setYmModalTab('participating'); setYmModal({ isOpen: true, promo: a }); }}
+                    title="Открыть товары акции"
+                  >
+                    <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
+                    <td>{a.name || '—'}</td>
+                    <td style={{ fontSize: '13px' }}>{a.period?.fromDate ? new Date(a.period.fromDate).toLocaleDateString('ru-RU') : (a.period?.dateTimeFrom ? new Date(a.period.dateTimeFrom).toLocaleDateString('ru-RU') : '—')}</td>
+                    <td style={{ fontSize: '13px' }}>{a.period?.toDate ? new Date(a.period.toDate).toLocaleDateString('ru-RU') : (a.period?.dateTimeTo ? new Date(a.period.dateTimeTo).toLocaleDateString('ru-RU') : '—')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
 
       {/* Модалка: товары акции Ozon — участвующие и доступные к акции */}
@@ -428,6 +574,7 @@ export function PricePromotions() {
             Доступные к акции
           </button>
         </div>
+        {noticeBox}
         {actionModalTab === 'participating' && (
           <div className="prices-table-container">
             {actionProductsLoading ? (
@@ -441,10 +588,12 @@ export function PricePromotions() {
                 <table className="prices-table table">
                   <thead>
                     <tr>
+                      <th></th>
                       <th>Наш товар</th>
                       <th>Артикул</th>
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
+                      <th title="Чистая прибыль при цене входа в акцию">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -466,7 +615,17 @@ export function PricePromotions() {
                   </thead>
                   <tbody>
                     {actionProducts.map((p) => (
-                      <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                      <tr key={p.id} style={p.below_floor || p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                        <td>
+                          <button
+                            type="button"
+                            disabled={promoBusyKey === `ozon-out-${p.id}`}
+                            onClick={() => runPromoAction(`ozon-out-${p.id}`, () => pricesApi.leaveOzonAction(actionModal.action.id, [p.id]))}
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                          >
+                            {promoBusyKey === `ozon-out-${p.id}` ? '...' : 'Выйти'}
+                          </button>
+                        </td>
                         <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>
                           {p.our_product_id != null ? (
                             <Link
@@ -494,9 +653,10 @@ export function PricePromotions() {
                           )}
                         </td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td>{formatRub(p.min_price_ozon)}</td>
+                        <td>{formatRub(p.floor ?? p.min_price_ozon)}</td>
+                        <td>{profitCell(p)}</td>
                         <td>{formatRub(p.price)}</td>
-                        <td>{formatRub(ozonDisplayActionPrice(p))}</td>
+                        <td>{formatRub(p.entry_price ?? ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой, товар может быть исключён' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
                         <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
                           {formatRub(ozonSuggestedEntryPrice(p))}
@@ -531,10 +691,12 @@ export function PricePromotions() {
                 <table className="prices-table table">
                   <thead>
                     <tr>
+                      <th></th>
                       <th>Наш товар</th>
                       <th>Артикул</th>
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
+                      <th title="Чистая прибыль при цене входа в акцию">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -556,13 +718,30 @@ export function PricePromotions() {
                   </thead>
                   <tbody>
                     {actionCandidates.map((p) => (
-                      <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                      <tr key={p.id} style={p.below_floor || p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                        <td>
+                          <button
+                            type="button"
+                            disabled={Boolean(p.join_block_reason) || promoBusyKey === `ozon-in-${p.id}`}
+                            title={joinTitle(p)}
+                            onClick={() => runPromoAction(`ozon-in-${p.id}`, () => pricesApi.joinOzonAction(actionModal.action.id, [{
+                              ozonProductId: p.id,
+                              actionPrice: p.entry_price ?? ozonDisplayActionPrice(p),
+                              ourProductId: p.our_product_id,
+                              stock: p.stock,
+                            }]))}
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                          >
+                            {promoBusyKey === `ozon-in-${p.id}` ? '...' : 'Войти'}
+                          </button>
+                        </td>
                         <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>{p.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{p.our_sku ?? p.offer_id ?? '—'}</td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{formatRub(p.min_price_ozon)}</td>
+                        <td style={{ color: 'var(--primary)' }}>{formatRub(p.floor ?? p.min_price_ozon)}</td>
+                        <td>{profitCell(p)}</td>
                         <td>{formatRub(p.price)}</td>
-                        <td>{formatRub(ozonDisplayActionPrice(p))}</td>
+                        <td>{formatRub(p.entry_price ?? ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
                         <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
                           {formatRub(ozonSuggestedEntryPrice(p))}
@@ -640,6 +819,10 @@ export function PricePromotions() {
             Доступные к акции
           </button>
         </div>
+        {noticeBox}
+        <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 0 }}>
+          Выйти из акции Wildberries через API нельзя: площадка принимает только добавление. Убрать товар можно в кабинете WB. Автоакции список товаров не отдают.
+        </p>
 
         {wbActionModalTab === 'details' && (
           <>
@@ -746,10 +929,11 @@ export function PricePromotions() {
                 <table className="prices-table table">
                   <thead>
                     <tr>
+                      <th>Товар</th>
                       <th>ID (nm)</th>
-                      <th>В акции</th>
+                      <th>Мин. цена, ₽</th>
+                      <th title="Чистая прибыль при плановой цене акции">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Валюта</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
                       <th>План. скидка, %</th>
@@ -757,11 +941,12 @@ export function PricePromotions() {
                   </thead>
                   <tbody>
                     {wbNomenclaturesIn.map((n) => (
-                      <tr key={n.id}>
+                      <tr key={n.id} style={n.below_floor ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                        <td>{n.our_sku || n.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{n.inAction ? 'Да' : 'Нет'}</td>
+                        <td>{formatRub(n.floor)}</td>
+                        <td>{profitCell(n)}</td>
                         <td>{n.price != null ? `${n.price}` : '—'}</td>
-                        <td>{n.currencyCode || '—'}</td>
                         <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
                         <td>{n.discount != null ? `${n.discount}%` : '—'}</td>
                         <td>{n.planDiscount != null ? `${n.planDiscount}%` : '—'}</td>
@@ -791,10 +976,12 @@ export function PricePromotions() {
                 <table className="prices-table table">
                   <thead>
                     <tr>
+                      <th></th>
+                      <th>Товар</th>
                       <th>ID (nm)</th>
-                      <th>В акции</th>
+                      <th>Мин. цена, ₽</th>
+                      <th title="Чистая прибыль при плановой цене акции">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Валюта</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
                       <th>План. скидка, %</th>
@@ -802,11 +989,27 @@ export function PricePromotions() {
                   </thead>
                   <tbody>
                     {wbNomenclaturesOut.map((n) => (
-                      <tr key={n.id}>
+                      <tr key={n.id} style={n.below_floor ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                        <td>
+                          <button
+                            type="button"
+                            disabled={Boolean(n.join_block_reason) || !n.our_product_id || promoBusyKey === `wb-in-${n.id}`}
+                            title={n.our_product_id ? joinTitle(n) : 'Товар не найден в каталоге'}
+                            onClick={() => runPromoAction(`wb-in-${n.id}`, () => pricesApi.joinWbPromotion(wbActionModal.promotion.id, [{
+                              nmId: n.id,
+                              planPrice: n.entry_price ?? n.planPrice,
+                              ourProductId: n.our_product_id,
+                            }]))}
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                          >
+                            {promoBusyKey === `wb-in-${n.id}` ? '...' : 'Войти'}
+                          </button>
+                        </td>
+                        <td>{n.our_sku || n.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{n.inAction ? 'Да' : 'Нет'}</td>
+                        <td>{formatRub(n.floor)}</td>
+                        <td>{profitCell(n)}</td>
                         <td>{n.price != null ? `${n.price}` : '—'}</td>
-                        <td>{n.currencyCode || '—'}</td>
                         <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
                         <td>{n.discount != null ? `${n.discount}%` : '—'}</td>
                         <td>{n.planDiscount != null ? `${n.planDiscount}%` : '—'}</td>
@@ -816,6 +1019,90 @@ export function PricePromotions() {
                 </table>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={ymModal.isOpen}
+        onClose={() => setYmModal({ isOpen: false, promo: null })}
+        title={ymModal.promo ? `Акция Яндекс Маркета: ${ymModal.promo.name || ymModal.promo.id}` : 'Акция Яндекс Маркета'}
+        size="xl"
+      >
+        <div style={{ marginBottom: '12px', display: 'flex', gap: '8px' }}>
+          <button type="button" onClick={() => setYmModalTab('participating')} style={{ padding: '6px 12px', fontSize: 13 }}>
+            Участвующие
+          </button>
+          <button type="button" onClick={() => setYmModalTab('candidates')} style={{ padding: '6px 12px', fontSize: 13 }}>
+            Можно добавить
+          </button>
+        </div>
+        {noticeBox}
+        <p style={{ color: 'var(--muted)', fontSize: 12 }}>
+          Изменения на Маркете применяются несколько часов.
+        </p>
+        {ymOffersLoading ? (
+          <p style={{ color: 'var(--muted)' }}>Загрузка товаров...</p>
+        ) : ymOffersError ? (
+          <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {ymOffersError}</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="prices-table table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Товар</th>
+                  <th>Артикул МП</th>
+                  <th>Статус</th>
+                  <th>Цена, ₽</th>
+                  <th>Цена акции, ₽</th>
+                  <th>Макс. цена акции, ₽</th>
+                  <th>Мин. цена, ₽</th>
+                  <th>Прибыль, ₽</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ymOffers
+                  .filter((row) => (ymModalTab === 'participating' ? row.participating : !row.participating))
+                  .map((row) => (
+                    <tr key={row.offer_id} style={row.below_floor ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
+                      <td>
+                        {row.participating ? (
+                          <button
+                            type="button"
+                            disabled={promoBusyKey === `ym-out-${row.offer_id}`}
+                            onClick={() => runPromoAction(`ym-out-${row.offer_id}`, () => pricesApi.leaveYmPromo(ymModal.promo.id, [row.offer_id]))}
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                          >
+                            {promoBusyKey === `ym-out-${row.offer_id}` ? '...' : 'Выйти'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={Boolean(row.join_block_reason) || promoBusyKey === `ym-in-${row.offer_id}`}
+                            title={joinTitle(row)}
+                            onClick={() => runPromoAction(`ym-in-${row.offer_id}`, () => pricesApi.joinYmPromo(ymModal.promo.id, [{
+                              offerId: row.offer_id,
+                              promoPrice: row.max_promo_price ?? row.entry_price,
+                            }]))}
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                          >
+                            {promoBusyKey === `ym-in-${row.offer_id}` ? '...' : 'Войти'}
+                          </button>
+                        )}
+                      </td>
+                      <td>{row.our_sku || row.our_product_name || '—'}</td>
+                      <td style={{ fontSize: 12, color: 'var(--muted)' }}>{row.offer_id}</td>
+                      <td>{YM_STATUS[row.status] || row.status || '—'}</td>
+                      <td>{formatRub(row.price)}</td>
+                      <td>{formatRub(row.promo_price)}</td>
+                      <td>{formatRub(row.max_promo_price)}</td>
+                      <td>{formatRub(row.floor)}</td>
+                      <td>{profitCell(row)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
           </div>
         )}
       </Modal>

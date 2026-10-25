@@ -179,7 +179,15 @@ export function formatPriceChangeReason({ source, reason, meta, strategyName, mo
   const name = strategyName || m.strategyName || null;
 
   if (src === 'manual' || m.reason === 'manual_selling_price' || md === 'manual') {
+    if (m.manualBelowFloor === true) {
+      return 'Ручная цена ниже пола — на маркетплейс уйдёт минимум';
+    }
     return 'Ручное изменение фактической цены';
+  }
+  if (m.ceilingBelowFloor === true) {
+    const floor = m.floor != null ? `${m.floor} ₽` : 'полу';
+    const ceiling = m.ceiling != null ? `${m.ceiling} ₽` : 'ниже пола';
+    return `Конфликт: максимальная цена ${ceiling} ниже пола ${floor}. Цену не опустили`;
   }
   if (m.reason === 'no_strategy') {
     return 'Нет активной стратегии — цена = пол (минимум)';
@@ -266,9 +274,17 @@ export function formatPriceChangeGrounds(meta) {
     } else if (step === 'max_change') {
       const p = rubLabel(s.price);
       lines.push(`Ограничение шага за пересчёт${p ? ` → ${p}` : ''}`);
-    } else if (step === 'clamp_floor') {
+    } else if (step === 'clamp_floor' || step === 'clamp_floor_final') {
       lines.push(
         `Подтянули до пола: ${rubLabel(s.from) || '—'} → ${rubLabel(s.to) || '—'}`
+      );
+    } else if (step === 'ceiling_below_floor') {
+      lines.push(
+        `Конфликт: потолок ${rubLabel(s.ceiling) || '—'} ниже пола ${rubLabel(s.floor) || '—'}. Цену не опустили`
+      );
+    } else if (step === 'clamp_ceiling' || step === 'clamp_ceiling_round') {
+      lines.push(
+        `Ограничили потолком: ${rubLabel(s.from) || '—'} → ${rubLabel(s.to) || '—'}`
       );
     } else if (step === 'band_hold') {
       continue;
@@ -276,7 +292,11 @@ export function formatPriceChangeGrounds(meta) {
   }
 
   if (m.reason === 'manual_selling_price' && lines.length === 0) {
-    lines.push('Фактическую цену задали вручную (стратегия не перезаписывает)');
+    lines.push(
+      m.manualBelowFloor === true
+        ? 'Ручная цена ниже пола — на маркетплейс уйдёт минимум'
+        : 'Фактическую цену задали вручную (стратегия не перезаписывает)'
+    );
   }
   if (m.reason === 'no_strategy' && lines.length === 0) {
     const floor = rubLabel(m.floor ?? m.sellingPrice);

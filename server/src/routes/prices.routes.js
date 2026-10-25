@@ -25,6 +25,8 @@ router.get('/actions/ozon', (req, res, next) => pricesController.getOzonActions(
 router.get('/actions/ozon/:actionId/products', (req, res, next) => pricesController.getOzonActionProducts(req, res, next));
 // Товары, доступные к добавлению в акцию Ozon (запрос к API)
 router.get('/actions/ozon/:actionId/candidates', (req, res, next) => pricesController.getOzonActionCandidates(req, res, next));
+router.post('/actions/ozon/:actionId/join', (req, res, next) => pricesController.joinOzonAction(req, res, next));
+router.post('/actions/ozon/:actionId/leave', (req, res, next) => pricesController.leaveOzonAction(req, res, next));
 
 // Список акций Wildberries (календарь акций + детали)
 router.get('/actions/wb', (req, res, next) => pricesController.getWBActions(req, res, next));
@@ -32,6 +34,12 @@ router.get('/actions/wb', (req, res, next) => pricesController.getWBActions(req,
 router.get('/actions/wb/:promotionId/details', (req, res, next) => pricesController.getWBPromotionDetails(req, res, next));
 // Товары по акции WB: участвующие (inAction=true) или доступные (inAction=false)
 router.get('/actions/wb/:promotionId/nomenclatures', (req, res, next) => pricesController.getWBPromotionNomenclatures(req, res, next));
+router.post('/actions/wb/:promotionId/join', (req, res, next) => pricesController.joinWbPromotion(req, res, next));
+
+router.get('/actions/ym', (req, res, next) => pricesController.getYmPromos(req, res, next));
+router.get('/actions/ym/:promoId/offers', (req, res, next) => pricesController.getYmPromoOffers(req, res, next));
+router.post('/actions/ym/:promoId/join', (req, res, next) => pricesController.joinYmPromo(req, res, next));
+router.post('/actions/ym/:promoId/leave', (req, res, next) => pricesController.leaveYmPromo(req, res, next));
 
 // Получить расчет цен для Wildberries
 router.get('/wb', (req, res, next) => pricesController.getWBPrices(req, res, next));

@@ -21,7 +21,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
-import { pushForAllProfiles as pushMinPricesForAllProfiles, reconcileBelowFloor as reconcileMinPricesBelowFloor } from './marketplaceMinPricePush.service.js';
+import { pushRecalculatedPrices, reconcileBelowFloor as reconcileMinPricesBelowFloor } from './marketplaceMinPricePush.service.js';
 import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
@@ -832,8 +832,10 @@ class SchedulerService {
         await runSchedulerDbJob('min-prices-nightly', async () => {
         if (isMinPricesLegacyLiveRecalc()) {
           logger.info('[Scheduler] Min prices: LEGACY recalculateAndSaveAll (live API per product)...');
+          let legacyUpdated = [];
           try {
-            await pricesService.recalculateAndSaveAll();
+            const recalcRes = await pricesService.recalculateAndSaveAll();
+            legacyUpdated = recalcRes?.updated || [];
             logger.info('[Scheduler] Legacy min prices recalculate completed');
           } catch (error) {
             logger.error('[Scheduler] Legacy min prices recalculate failed:', error);
@@ -846,7 +848,7 @@ class SchedulerService {
             });
           }
           try {
-            const pushRes = await pushMinPricesForAllProfiles();
+            const pushRes = await pushRecalculatedPrices(legacyUpdated);
             logger.info('[Scheduler] Legacy min price push completed', pushRes);
           } catch (error) {
             logger.error('[Scheduler] Legacy min price push failed:', error);
@@ -882,8 +884,10 @@ class SchedulerService {
           });
         }
         logger.info('[Scheduler] Nightly: recalculate min prices from DB cache...');
+        let nightlyUpdated = [];
         try {
-          const { totalProcessed } = await pricesService.recalculateAndSaveAllFromCache();
+          const { totalProcessed, updated } = await pricesService.recalculateAndSaveAllFromCache();
+          nightlyUpdated = updated || [];
           logger.info(`[Scheduler] Min prices from cache completed (${totalProcessed} products)`);
         } catch (error) {
           logger.error('[Scheduler] Min prices from cache failed:', error);
@@ -906,7 +910,7 @@ class SchedulerService {
         }
         logger.info('[Scheduler] Nightly: push min prices to marketplaces...');
         try {
-          const pushRes = await pushMinPricesForAllProfiles();
+          const pushRes = await pushRecalculatedPrices(nightlyUpdated);
           logger.info('[Scheduler] Min price push completed', pushRes);
         } catch (error) {
           logger.error('[Scheduler] Min price push failed:', error);
@@ -2075,13 +2079,18 @@ class SchedulerService {
         setTimeout(() => {
           void runSchedulerDbJob('min-prices-nightly', async () => {
             if (isMinPricesLegacyLiveRecalc()) {
-              await pricesService.recalculateAndSaveAll();
+              const recalcRes = await pricesService.recalculateAndSaveAll();
+              try {
+                await pushRecalculatedPrices(recalcRes?.updated || []);
+              } catch (error) {
+                logger.error('[Scheduler] Min price push (fallback) failed:', error);
+              }
               return;
             }
             await pricesService.syncCalculatorCacheFromApi({ delayMs: getCalculatorCacheSyncDelayMs() });
-            await pricesService.recalculateAndSaveAllFromCache();
+            const cacheRes = await pricesService.recalculateAndSaveAllFromCache();
             try {
-              await pushMinPricesForAllProfiles();
+              await pushRecalculatedPrices(cacheRes?.updated || []);
             } catch (error) {
               logger.error('[Scheduler] Min price push (fallback) failed:', error);
             }

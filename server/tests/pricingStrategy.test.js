@@ -84,7 +84,7 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
     expect(r.cappedByCeiling).toBe(true);
   });
 
-  test('ceiling wins even if below floor', () => {
+  test('ceiling below floor does not lower the price', () => {
     const r = computeSellingPriceFromInputs({
       mode: 'floor',
       config: {},
@@ -92,8 +92,10 @@ describe('pricingStrategy computeSellingPriceFromInputs', () => {
       cost: 300,
       ceiling: 1000,
     });
-    expect(r.sellingPrice).toBe(1000);
-    expect(r.cappedByCeiling).toBe(true);
+    expect(r.sellingPrice).toBe(1500);
+    expect(r.cappedByCeiling).toBe(false);
+    expect(r.ceilingBelowFloor).toBe(true);
+    expect(r.details.steps.some((s) => s.step === 'ceiling_below_floor')).toBe(true);
   });
 
   test('band hold does not keep previous above ceiling', () => {

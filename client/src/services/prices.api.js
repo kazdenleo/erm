@@ -118,6 +118,16 @@ export const pricesApi = {
     return response.data;
   },
 
+  async joinOzonAction(actionId, products) {
+    const response = await api.post(`/product/prices/actions/ozon/${actionId}/join`, { products });
+    return response.data;
+  },
+
+  async leaveOzonAction(actionId, ozonProductIds) {
+    const response = await api.post(`/product/prices/actions/ozon/${actionId}/leave`, { ozonProductIds });
+    return response.data;
+  },
+
   /** Список акций Wildberries (календарь + детали) */
   async getWBActions() {
     const response = await api.get('/product/prices/actions/wb');
@@ -134,6 +144,31 @@ export const pricesApi = {
   async getWBPromotionNomenclatures(promotionId, inAction, limit = 1000, offset = 0) {
     const params = new URLSearchParams({ inAction: inAction ? 'true' : 'false', limit: String(limit), offset: String(offset) });
     const response = await api.get(`/product/prices/actions/wb/${promotionId}/nomenclatures?${params.toString()}`);
+    return response.data;
+  },
+
+  async joinWbPromotion(promotionId, items) {
+    const response = await api.post(`/product/prices/actions/wb/${promotionId}/join`, { items });
+    return response.data;
+  },
+
+  async getYmPromos() {
+    const response = await api.get('/product/prices/actions/ym');
+    return response.data;
+  },
+
+  async getYmPromoOffers(promoId) {
+    const response = await api.get(`/product/prices/actions/ym/${encodeURIComponent(promoId)}/offers`);
+    return response.data;
+  },
+
+  async joinYmPromo(promoId, offers) {
+    const response = await api.post(`/product/prices/actions/ym/${encodeURIComponent(promoId)}/join`, { offers });
+    return response.data;
+  },
+
+  async leaveYmPromo(promoId, offerIds) {
+    const response = await api.post(`/product/prices/actions/ym/${encodeURIComponent(promoId)}/leave`, { offerIds });
     return response.data;
   },
 

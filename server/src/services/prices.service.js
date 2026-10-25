@@ -205,6 +205,33 @@ class PricesService {
     await writeData(cacheName, { byScope, lastUpdate: new Date().toISOString() });
   }
 
+  async forgetActionsListCache(cacheName, options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const key = this._actionsScopeKey(scope);
+    let raw = null;
+    try {
+      raw = await readData(cacheName);
+    } catch {
+      raw = null;
+    }
+    const byScope = raw?.byScope && typeof raw.byScope === 'object' ? { ...raw.byScope } : {};
+    delete byScope[key];
+    await writeData(cacheName, { byScope, lastUpdate: new Date().toISOString() });
+  }
+
+  async forgetOzonActionProductsCache(actionId, options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const entry = await this._readScopedActionsCache('ozonActionProductsCache', scope);
+    if (!entry?.actions) return;
+    const actions = { ...entry.actions };
+    delete actions[String(actionId)];
+    await this._writeScopedActionsCache('ozonActionProductsCache', scope, {
+      ...entry,
+      actions,
+      lastUpdate: new Date().toISOString(),
+    });
+  }
+
   async _getYandexApiCredentials(options = {}) {
     const scope = this._integrationScopeFromOptions(options);
     const cfg = await integrationsService.getMarketplaceConfig('yandex', scope);
@@ -975,7 +1002,9 @@ class PricesService {
       }
       logger.info(`[Prices Service] getOzonActionCandidates profile=${scope.profileId ?? 'none'}: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, candidates=${all.length}, filtered(our)=${filtered.length}`);
       const enriched = await this._enrichActionProductsWithMinPrice(filtered, 'ozon');
-      return { ok: true, products: enriched, total: enriched.length };
+      const { attachPromoEconomics } = await import('./marketplacePromotions.service.js');
+      const withProfit = await attachPromoEconomics(enriched, 'ozon', options);
+      return { ok: true, products: withProfit, total: withProfit.length };
     } catch (error) {
       logger.warn('[Prices Service] getOzonActionCandidates error:', error.message);
       return { ok: true, products: [], total: 0, error: error.message };
@@ -1351,7 +1380,9 @@ class PricesService {
       }
       logger.info(`[Prices Service] getOzonActionProducts profile=${scope.profileId ?? 'none'}: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, raw=${rawProducts.length}, filtered=${filtered.length}`);
       const enriched = await this._enrichActionProductsWithMinPrice(filtered, 'ozon');
-      return { ok: true, products: enriched, total: enriched.length };
+      const { attachPromoEconomics } = await import('./marketplacePromotions.service.js');
+      const withProfit = await attachPromoEconomics(enriched, 'ozon', options);
+      return { ok: true, products: withProfit, total: withProfit.length };
     } catch (error) {
       logger.warn('[Prices Service] getOzonActionProducts error:', error.message);
       return { ok: true, products: [], total: 0 };
@@ -1544,6 +1575,10 @@ class PricesService {
         return { ok: false, error: 'Некорректный ID акции' };
       }
       const result = await this._fetchWBPromotionNomenclaturesFromApi(api_key, id, Boolean(inAction), Math.min(1000, Math.max(1, Number(limit) || 1000)), Math.max(0, Number(offset) || 0));
+      if (result?.ok && Array.isArray(result.nomenclatures) && result.nomenclatures.length) {
+        const { attachWbNomenclatures } = await import('./marketplacePromotions.service.js');
+        result.nomenclatures = await attachWbNomenclatures(result.nomenclatures, options);
+      }
       return result;
     } catch (e) {
       logger.warn('[Prices Service] getWBPromotionNomenclatures error:', e.message);
@@ -4435,10 +4470,14 @@ class PricesService {
    */
   async recalculateAndSaveForProduct(productId, options = {}) {
     const errors = {};
+    const updatedMarketplaces = [];
+    const markPriced = (mp) => {
+      if (mp && !updatedMarketplaces.includes(mp)) updatedMarketplaces.push(mp);
+    };
     const productsRepo = repositoryFactory.getProductsRepository();
     const categoryMappingsRepo = repositoryFactory.getCategoryMappingsRepository();
     const product = await productsRepo.findById(productId);
-    if (!product) return { errors: {} };
+    if (!product) return { errors: {}, updatedMarketplaces: [] };
 
     // Налог/НДС: организация товара → scope (X-Organization-Id) → единственная org профиля
     const scopeOrgId = options.integrationScope?.organizationId;
@@ -4514,7 +4553,7 @@ class PricesService {
     const minProfitDefault = resolveMarketplaceMinProfit(productForProfit, null, 50);
     if (basePrice <= 0) {
       errors.wb = 'Нет себестоимости для расчёта минимальной цены WB.';
-      return { errors };
+      return { errors, updatedMarketplaces: [] };
     }
 
     let wbAcquiringPercent = null;
@@ -4620,9 +4659,11 @@ class PricesService {
             const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, taxProfile, 'FBO', ozonSppPercent);
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ozon', priceFbs, calculator, { scheme: 'FBS' });
+              markPriced('ozon');
             }
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(productId, 'ozon', priceFbo, { ...calculator, price_scheme: 'FBO' }, { scheme: 'FBO' });
+              markPriced('ozon');
             }
             if (priceFbs == null && priceFbo == null) {
               const fbsCtx = extractOzonCommissionTierContext(calculator, 'FBS');
@@ -4704,10 +4745,12 @@ class PricesService {
             console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs} return=${wbCalc?.commissions?.FBO?.return_amount}`);
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, wbCalc, { scheme: 'FBO' });
+              markPriced('wb');
               console.log(`[Prices Service] *** Saved WB FBO min price for product ${productId}: ${priceFbo} ₽ ***`);
             }
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
+              markPriced('wb');
             }
             if (priceFbo == null && priceFbs == null) {
               errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
@@ -4752,9 +4795,11 @@ class PricesService {
             );
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, wbCalc, { scheme: 'FBO' });
+              markPriced('wb');
             }
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...wbCalc, price_scheme: 'FBS' }, { scheme: 'FBS' });
+              markPriced('wb');
             }
             if (priceFbo != null || priceFbs != null) {
               errors.wb = `${data?.error || 'WB live tariffs'} — пересчёт из кэша с тарифом возврата`;
@@ -4807,6 +4852,7 @@ class PricesService {
             const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, taxProfile, 'FBS', ymSppPercent);
             if (priceFbs != null) {
               await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, dataFbs.calculator, { scheme: 'FBS' });
+              markPriced('ym');
             } else {
               errors.ym = 'Не удалось рассчитать минимальную цену YM FBS';
             }
@@ -4831,6 +4877,7 @@ class PricesService {
                 { ...dataFby.calculator, price_scheme: 'FBY' },
                 { scheme: 'FBO' }
               );
+              markPriced('ym');
             } else {
               errors.ym_fbo = 'Не удалось рассчитать мин. цену YM FBY';
             }
@@ -4857,9 +4904,9 @@ class PricesService {
         message: e?.message || String(e),
       });
     }
-    if (!options.skipMinPricePush) {
+    if (!options.skipMinPricePush && updatedMarketplaces.length) {
       try {
-        schedulePushForProduct(productId);
+        schedulePushForProduct(productId, 2500, { marketplaces: updatedMarketplaces });
       } catch (e) {
         logger.warn('[Prices Service] schedule min-price push failed', {
           productId,
@@ -4867,7 +4914,7 @@ class PricesService {
         });
       }
     }
-    return { errors };
+    return { errors, updatedMarketplaces };
   }
 
   /**
@@ -4880,13 +4927,17 @@ class PricesService {
     const delayMs = 800;
     let offset = 0;
     let totalProcessed = 0;
+    const updated = [];
 
     while (true) {
       const products = await productsRepo.findAll({ limit: batchSize, offset });
       if (!products.length) break;
 
       for (let i = 0; i < products.length; i++) {
-        await this.recalculateAndSaveForProduct(products[i].id, { skipMinPricePush: true });
+        const res = await this.recalculateAndSaveForProduct(products[i].id, { skipMinPricePush: true });
+        if (res?.updatedMarketplaces?.length) {
+          updated.push({ productId: products[i].id, marketplaces: res.updatedMarketplaces });
+        }
         totalProcessed++;
         if (i < products.length - 1) await new Promise(r => setTimeout(r, delayMs));
       }
@@ -4895,6 +4946,7 @@ class PricesService {
     }
 
     logger.info(`[Prices Service] Recalculated and saved min prices for ${totalProcessed} products total`);
+    return { totalProcessed, updated };
   }
 
   /**
@@ -4910,6 +4962,7 @@ class PricesService {
         : null;
     let offset = 0;
     let totalProcessed = 0;
+    const updated = [];
 
     while (true) {
       const findOpts = { limit: batchSize, offset };
@@ -4918,11 +4971,14 @@ class PricesService {
       if (!products.length) break;
 
       for (let i = 0; i < products.length; i++) {
-        await this.recalculateAndSaveForProduct(products[i].id, {
+        const res = await this.recalculateAndSaveForProduct(products[i].id, {
           useCalculatorCache: true,
           skipMinPricePush: true,
           skipBuyoutSync: opts.skipBuyoutSync !== false,
         });
+        if (res?.updatedMarketplaces?.length) {
+          updated.push({ productId: products[i].id, marketplaces: res.updatedMarketplaces });
+        }
         totalProcessed++;
       }
       logger.info(
@@ -4936,7 +4992,7 @@ class PricesService {
       `[Prices Service] Recalculated from cache for ${totalProcessed} products total` +
         (profileId ? ` (profile ${profileId})` : '')
     );
-    return { totalProcessed };
+    return { totalProcessed, updated };
   }
 }
 

@@ -292,37 +292,57 @@ export function computeSellingPriceFromInputs({
   price = lim.price;
   if (lim.limited) details.steps.push({ step: 'max_change', ...lim, price });
 
-  if (cfg.always_above_floor !== false && floorN != null) {
-    if (price < floorN) {
-      details.steps.push({ step: 'clamp_floor', from: price, to: floorN });
-      price = floorN;
-    }
+  if (floorN != null && (price == null || price < floorN)) {
+    details.steps.push({ step: 'clamp_floor', from: price, to: floorN });
+    price = floorN;
   }
 
-  if (ceilingN != null && price > ceilingN) {
+  const ceilingBelowFloor = ceilingN != null && floorN != null && ceilingN < floorN;
+  if (ceilingBelowFloor) {
+    details.steps.push({
+      step: 'ceiling_below_floor',
+      ceiling: ceilingN,
+      floor: floorN,
+    });
+    details.ceilingBelowFloor = true;
+  }
+
+  if (!ceilingBelowFloor && ceilingN != null && price > ceilingN) {
     const capped = capToCeiling(price, ceilingN);
     details.steps.push({
       step: 'clamp_ceiling',
       from: price,
       to: capped,
       ceiling: ceilingN,
-      floorBelowCeiling: floorN == null || floorN <= ceilingN,
+      floorBelowCeiling: false,
     });
     price = capped;
   }
 
   let rounded = roundRub(price);
-  if (ceilingN != null && rounded > ceilingN) {
+  if (!ceilingBelowFloor && ceilingN != null && rounded > ceilingN) {
     const capped = capToCeiling(rounded, ceilingN);
     details.steps.push({ step: 'clamp_ceiling_round', from: rounded, to: capped, ceiling: ceilingN });
     rounded = capped;
   }
+  if (floorN != null && (rounded == null || rounded < floorN)) {
+    details.steps.push({ step: 'clamp_floor_final', from: rounded, to: floorN });
+    rounded = floorN;
+  }
 
-  const previousCapped = capToCeiling(previousSelling, ceilingN);
+  const previousCapped = ceilingBelowFloor
+    ? roundRub(previousSelling)
+    : capToCeiling(previousSelling, ceilingN);
   const previousWouldExceedCeiling =
-    ceilingN != null && previousSelling != null && Number(previousSelling) > ceilingN;
+    !ceilingBelowFloor &&
+    ceilingN != null &&
+    previousSelling != null &&
+    Number(previousSelling) > ceilingN;
+  const heldPrevious = roundRub(previousCapped ?? previousSelling);
+  const heldRespectsFloor = floorN == null || (heldPrevious != null && heldPrevious >= floorN);
   if (
     !previousWouldExceedCeiling &&
+    heldRespectsFloor &&
     withinBand(rounded, previousCapped, cfg.band_percent) &&
     previousSelling != null
   ) {
@@ -333,12 +353,13 @@ export function computeSellingPriceFromInputs({
       band_percent: cfg.band_percent,
     });
     return {
-      sellingPrice: roundRub(previousCapped ?? previousSelling),
+      sellingPrice: heldPrevious,
       floor: floorN,
       ceiling: ceilingN,
       details,
       heldByBand: true,
       cappedByCeiling: false,
+      ceilingBelowFloor,
     };
   }
 
@@ -348,7 +369,9 @@ export function computeSellingPriceFromInputs({
     ceiling: ceilingN,
     details,
     heldByBand: false,
-    cappedByCeiling: details.steps.some((s) => String(s.step || '').startsWith('clamp_ceiling')),
+    cappedByCeiling:
+      !ceilingBelowFloor && details.steps.some((s) => String(s.step || '').startsWith('clamp_ceiling')),
+    ceilingBelowFloor,
   };
 }
 
@@ -524,10 +547,13 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
 
     if (!strategy) {
       // Нет стратегии: не затираем ручную цену; иначе подставляем пол.
-      const sellingPrice =
+      let sellingPrice =
         previousSelling != null && Number.isFinite(previousSelling) && previousSelling > 0
           ? floorRub(previousSelling)
           : floorRounded;
+      if (sellingPrice != null && floorRounded != null && sellingPrice < floorRounded) {
+        sellingPrice = floorRounded;
+      }
       await query(
         `UPDATE product_marketplace_prices
          SET selling_price = $1,
@@ -555,6 +581,11 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
         cur?.is_manual === true && cur.selling_price != null
           ? floorRub(cur.selling_price)
           : sellingPrice;
+      const manualBelowFloor =
+        cur?.is_manual === true &&
+        finalSelling != null &&
+        floorRounded != null &&
+        finalSelling < floorRounded;
       const details =
         cur?.is_manual === true
           ? {
@@ -562,6 +593,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
               reason: 'manual_selling_price',
               sellingPrice: finalSelling,
               floor: floorRounded,
+              manualBelowFloor,
             }
           : { mode: 'floor', reason: 'no_strategy', sellingPrice: finalSelling, floor: floorRounded };
       if (cur?.is_manual === true) {
@@ -637,6 +669,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       competitorSkip: comp.skipped ? comp.reason : null,
       heldByBand: computed.heldByBand === true,
       cappedByCeiling: computed.cappedByCeiling === true,
+      ceilingBelowFloor: computed.ceilingBelowFloor === true,
     };
 
     await query(
@@ -681,6 +714,7 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
       strategyName: strategy.name,
       heldByBand: computed.heldByBand,
       cappedByCeiling: computed.cappedByCeiling,
+      ceilingBelowFloor: computed.ceilingBelowFloor === true,
       reason,
       changed: !sameMoneyLocal(previousSelling, computed.sellingPrice),
     });
