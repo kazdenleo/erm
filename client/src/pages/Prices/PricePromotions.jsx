@@ -90,46 +90,58 @@ function formatLevelProfit(value) {
   return `${rounded > 0 ? '+' : ''}${rounded} ₽`;
 }
 
-function boostLevelsCell(row, promoBusyKey, onSet) {
+function BoostSlider({ row, promoBusyKey, onSet }) {
   const levels = Array.isArray(row?.boost_levels) ? row.boost_levels : [];
+  const currentIndex = levels.findIndex((level) => level.current);
+  const initial = currentIndex >= 0 ? currentIndex : 0;
+  const [index, setIndex] = useState(initial);
+  useEffect(() => {
+    setIndex(initial);
+  }, [row?.id, initial, levels.length]);
   if (!levels.length) return '—';
+  const safeIndex = Math.min(Math.max(index, 0), levels.length - 1);
+  const level = levels[safeIndex];
+  const busy = promoBusyKey === `ozon-boost-${row.id}-${level.boost}`;
+  const profitNum = Number(level.profit_rub);
+  const hasProfit = Number.isFinite(profitNum);
+  const color = hasProfit && profitNum < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
+  const sameAsNow = Boolean(level.current);
+  const blocked = Boolean(level.join_block_reason);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {levels.map((level) => {
-        const busy = promoBusyKey === `ozon-boost-${row.id}-${level.boost}`;
-        const profitNum = Number(level.profit_rub);
-        const hasProfit = Number.isFinite(profitNum);
-        const color = hasProfit && profitNum < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
-        return (
-          <div
-            key={level.boost}
-            title={level.current ? 'Ближайший уровень к текущей цене в акции' : undefined}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 12,
-              whiteSpace: 'nowrap',
-              background: level.current ? 'rgba(0,91,255,0.12)' : 'transparent',
-              borderRadius: 4,
-              padding: '1px 4px',
-            }}
-          >
-            <span style={{ width: 36, fontWeight: 600 }}>{level.boost}%</span>
-            <span style={{ width: 58 }}>{formatRub(level.price)}</span>
-            <span style={{ width: 64, color: hasProfit ? color : 'var(--muted)', fontWeight: 600 }}>{formatLevelProfit(level.profit_rub)}</span>
-            <button
-              type="button"
-              disabled={Boolean(level.join_block_reason) || busy}
-              title={level.join_block_reason ? joinTitle({ join_block_reason: level.join_block_reason }) : 'Поставить эту предельную цену. Она же станет ценой в разделе «Цены»'}
-              onClick={() => onSet(level)}
-              style={{ padding: '2px 6px', fontSize: 11 }}
-            >
-              {busy ? '...' : 'Поставить'}
-            </button>
-          </div>
-        );
-      })}
+    <div className="ozon-boost-slider" onMouseDown={(event) => event.stopPropagation()}>
+      <span className="ozon-boost-slider__edge">{levels[0].boost}%</span>
+      <input
+        type="range"
+        min={0}
+        max={levels.length - 1}
+        step={1}
+        value={safeIndex}
+        aria-label="Уровень бустинга"
+        title="Слева меньший бустинг и выше цена, справа больший бустинг и ниже цена. Промежуточные точки — прямая между краями Ozon"
+        onChange={(event) => setIndex(Number(event.target.value))}
+      />
+      <span className="ozon-boost-slider__edge">{levels[levels.length - 1].boost}%</span>
+      <span className="ozon-boost-slider__value">
+        <b>{level.boost}%</b>
+        {' · '}
+        {formatRub(level.price)}
+        {' · '}
+        <b style={{ color: hasProfit ? color : 'var(--muted)' }}>{formatLevelProfit(level.profit_rub)}</b>
+      </span>
+      <button
+        type="button"
+        disabled={blocked || sameAsNow || busy}
+        title={
+          blocked
+            ? joinTitle({ join_block_reason: level.join_block_reason })
+            : (sameAsNow
+              ? 'Уже эта цена в акции'
+              : 'Поставить эту предельную цену. Она же станет ценой в разделе «Цены»')
+        }
+        onClick={() => onSet(level)}
+      >
+        {busy ? '...' : (sameAsNow ? 'Сейчас' : 'Поставить')}
+      </button>
     </div>
   );
 }
@@ -751,8 +763,8 @@ export function PricePromotions() {
                       <th>Режим</th>
                       <th>Мин. остаток</th>
                       <th>Остаток</th>
-                      <th title="Чем ниже цена, тем выше бустинг. Края шкалы присылает Ozon, промежуточные цены — по прямой между ними. Справа прибыль при продаже по этой цене">
-                        Уровни бустинга
+                      <th title="Ползунок по прямой между краями Ozon. Слева меньший бустинг, справа больший. Рядом цена и прибыль при продаже по ней">
+                        Бустинг
                       </th>
                     </tr>
                   </thead>
@@ -814,12 +826,12 @@ export function PricePromotions() {
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{boostLevelsCell(p, promoBusyKey, (level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
+                        <td><BoostSlider row={p} promoBusyKey={promoBusyKey} onSet={(level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
                           ozonProductId: p.id,
                           actionPrice: level.price,
                           boost: level.boost,
                           ourProductId: p.our_product_id,
-                        }])))}</td>
+                        }]))} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -861,8 +873,8 @@ export function PricePromotions() {
                       <th>Режим</th>
                       <th>Мин. остаток</th>
                       <th>Остаток</th>
-                      <th title="Чем ниже цена, тем выше бустинг. Края шкалы присылает Ozon, промежуточные цены — по прямой между ними. Справа прибыль при продаже по этой цене">
-                        Уровни бустинга
+                      <th title="Ползунок по прямой между краями Ozon. Слева меньший бустинг, справа больший. Рядом цена и прибыль при продаже по ней">
+                        Бустинг
                       </th>
                     </tr>
                   </thead>
@@ -900,12 +912,12 @@ export function PricePromotions() {
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{boostLevelsCell(p, promoBusyKey, (level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
+                        <td><BoostSlider row={p} promoBusyKey={promoBusyKey} onSet={(level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
                           ozonProductId: p.id,
                           actionPrice: level.price,
                           boost: level.boost,
                           ourProductId: p.our_product_id,
-                        }])))}</td>
+                        }]))} /></td>
                       </tr>
                     ))}
                   </tbody>

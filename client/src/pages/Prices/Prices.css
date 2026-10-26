@@ -25,6 +25,37 @@
   cursor: pointer;
 }
 
+.ozon-boost-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  font-size: 12px;
+  min-width: 360px;
+}
+
+.ozon-boost-slider__edge {
+  color: var(--muted);
+  width: 34px;
+  flex: 0 0 auto;
+}
+
+.ozon-boost-slider input[type="range"] {
+  width: 140px;
+  margin: 0;
+  accent-color: #005bff;
+  cursor: pointer;
+}
+
+.ozon-boost-slider__value {
+  min-width: 132px;
+}
+
+.ozon-boost-slider button {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
 .prices-table .product-sku-cell {
   cursor: text;
   user-select: text;

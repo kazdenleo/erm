@@ -49,21 +49,14 @@ export function priceAtBoost(scale, boost) {
   return Math.round(price);
 }
 
-function boostStep(span) {
-  if (span <= 10) return 1;
-  if (span <= 20) return 2;
-  if (span <= 45) return 5;
-  return Math.max(1, Math.ceil(span / 8));
-}
-
 /**
- * Уровни от меньшего бустинга к большему.
+ * Уровни от меньшего бустинга к большему, шаг 1%.
  * Ozon отдаёт только края; промежуточные цены — по прямой между ними.
  */
 export function elasticBoostLevels(row) {
   const scale = elasticBoostScale(row);
   if (!scale) return [];
-  const step = boostStep(scale.maxBoost - scale.minBoost);
+  const step = 1;
   const boosts = [scale.minBoost];
   const start = Math.ceil((scale.minBoost + 1e-6) / step) * step;
   for (let boost = start; boost < scale.maxBoost - 1e-6; boost += step) {

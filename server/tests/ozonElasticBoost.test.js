@@ -13,7 +13,8 @@ describe('ozonElasticBoost', () => {
     const levels = elasticBoostLevels(an1217);
     expect(levels[0]).toMatchObject({ boost: 15, price: 927, current: true });
     expect(levels[levels.length - 1]).toMatchObject({ boost: 55, price: 725, current: false });
-    expect(levels.map((level) => level.boost)).toEqual([15, 20, 25, 30, 35, 40, 45, 50, 55]);
+    expect(levels).toHaveLength(41);
+    expect(levels.find((level) => level.boost === 35)).toMatchObject({ price: 826 });
   });
 
   test('текущая цена 926 ₽ даёт 15.2%, как в ответе Ozon', () => {
