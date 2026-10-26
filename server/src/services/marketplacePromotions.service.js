@@ -45,12 +45,24 @@ async function loadFloors(productIds, marketplace) {
     const fbs = num(row.min_price_fbs);
     const fbo = num(row.min_price_fbo);
     const plain = num(row.min_price);
-    const parts = [fbs, fbo, plain].filter((n) => n != null && n > 0);
+    const plainOk = plain != null && plain > 0 ? plain : null;
+    const fbsOk = fbs != null && fbs > 0 ? fbs : null;
+    const fboOk = fbo != null && fbo > 0 ? fbo : null;
+    const parts = [fbsOk, fboOk, plainOk].filter((n) => n != null);
     const floor = parts.length ? Math.max(...parts) : null;
     let scheme = marketplace === 'wb' ? 'FBO' : 'FBS';
-    if (fbo != null && fbo > 0 && (fbs == null || fbo >= fbs)) scheme = 'FBO';
-    else if (fbs != null && fbs > 0) scheme = 'FBS';
-    map.set(Number(row.product_id), { floor, scheme });
+    if (fboOk != null && (fbsOk == null || fboOk >= fbsOk)) scheme = 'FBO';
+    else if (fbsOk != null) scheme = 'FBS';
+    // Как в карточке: для Ozon/ЯМ пустой FBS подменяется общей мин. ценой, для WB — пустой FBO.
+    const cardFbs = marketplace === 'wb' ? fbsOk : (fbsOk ?? plainOk);
+    const cardFbo = marketplace === 'wb' ? (fboOk ?? plainOk) : fboOk;
+    map.set(Number(row.product_id), {
+      floor,
+      scheme,
+      card_min: plainOk,
+      card_min_fbs: cardFbs,
+      card_min_fbo: cardFbo,
+    });
   }
   return map;
 }
@@ -164,6 +176,9 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
       ...row,
       entry_price: entry,
       floor,
+      card_min: known?.card_min ?? null,
+      card_min_fbs: known?.card_min_fbs ?? null,
+      card_min_fbo: known?.card_min_fbo ?? null,
       profit_rub: profit,
       below_floor: decision.reason === 'below_floor',
       join_block_reason: decision.ok ? null : decision.reason,
@@ -198,6 +213,7 @@ export async function joinOzonAction({ actionId, products = [] }, options = {}) 
       blocked.push({ ozonProductId, ourProductId, reason: decision.reason, message: joinBlockMessage(decision.reason) });
       continue;
     }
+    // action_price — та же единая предельная цена, что и в «Ценах»: Ozon копирует её во все разделы.
     const item = { product_id: ozonProductId, action_price: actionPrice };
     const stock = num(row.stock);
     if (stock != null && stock > 0) item.stock = Math.round(stock);

@@ -17,12 +17,20 @@ const DEFAULT_HEADERS = {
   'Accept-Language': 'ru-RU,ru;q=0.9',
 };
 
-export const COMPETITOR_MARKETPLACES = ['wb', 'ym'];
+export const COMPETITOR_MARKETPLACES = ['wb', 'ym', 'ozon'];
 export const MAX_COMPETITORS_PER_MARKETPLACE = 5;
+
+function toCleanUrl(urlObj) {
+  const u = new URL(urlObj.href);
+  u.hash = '';
+  u.search = '';
+  if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, '');
+  return u.toString();
+}
 
 /**
  * @param {string} rawUrl
- * @returns {{ marketplace: 'wb'|'ym', externalId: string|null, url: string }}
+ * @returns {{ marketplace: 'wb'|'ym'|'ozon', externalId: string|null, url: string }}
  */
 export function parseCompetitorUrl(rawUrl) {
   const trimmed = String(rawUrl || '').trim();
@@ -48,15 +56,14 @@ export function parseCompetitorUrl(rawUrl) {
       href.match(/\/catalog\/(\d+)/i) ||
       href.match(/[?&]nm=(\d+)/i) ||
       href.match(/\/(\d{6,})(?:\/|$|\?)/);
-    return { marketplace: 'wb', externalId: m?.[1] || null, url: href };
+    return { marketplace: 'wb', externalId: m?.[1] || null, url: toCleanUrl(urlObj) };
   }
 
   if (host.includes('ozon.ru')) {
-    const err = new Error(
-      'Мониторинг Ozon временно отключён (антибот). Сейчас поддерживаются Wildberries и Яндекс.Маркет.'
-    );
-    err.statusCode = 400;
-    throw err;
+    const ids = [...urlObj.pathname.matchAll(/(\d{6,})/g)];
+    const fromPath = ids.length ? ids[ids.length - 1][1] : null;
+    const fromQuery = href.match(/[?&]product_id=(\d+)/i)?.[1] || null;
+    return { marketplace: 'ozon', externalId: fromPath || fromQuery, url: toCleanUrl(urlObj) };
   }
 
   if (host.includes('market.yandex.') || host.includes('pokupki.market.yandex.')) {
@@ -64,10 +71,10 @@ export function parseCompetitorUrl(rawUrl) {
       href.match(/\/card\/[^/]+\/(\d+)/i) ||
       href.match(/\/product--[^/]+\/(\d+)/i) ||
       href.match(/[?&](?:sku|productId|modelid)=(\d+)/i);
-    return { marketplace: 'ym', externalId: m?.[1] || null, url: href };
+    return { marketplace: 'ym', externalId: m?.[1] || null, url: toCleanUrl(urlObj) };
   }
 
-  const err = new Error('Поддерживаются ссылки Wildberries и Яндекс.Маркет');
+  const err = new Error('Поддерживаются ссылки Ozon, Wildberries и Яндекс.Маркет');
   err.statusCode = 400;
   throw err;
 }

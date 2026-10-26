@@ -240,7 +240,8 @@ class PricesController {
         ok: true,
         data: result.products || [],
         total: result.total ?? 0,
-        ...(result.error && { error: result.error })
+        ...(result.error && { error: result.error }),
+        ...(result.notApplicable && { notApplicable: true })
       });
     } catch (error) {
       console.error('[Prices Controller] Error getting Ozon action candidates:', error);

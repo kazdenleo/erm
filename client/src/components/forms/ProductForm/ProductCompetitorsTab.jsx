@@ -5,8 +5,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { productsApi } from '../../../services/products.api';
 import { Button } from '../../common/Button/Button';
 
-const MP_LABEL = { wb: 'Wildberries', ym: 'Яндекс.Маркет', ozon: 'Ozon (откл.)' };
-const MP_ORDER = ['wb', 'ym'];
+const MP_LABEL = { wb: 'Wildberries', ym: 'Яндекс.Маркет', ozon: 'Ozon' };
+const OZON_COLOR = {
+  GREEN: '#15803d',
+  YELLOW: '#a16207',
+  RED: '#b91c1c',
+};
+const MP_ORDER = ['ozon', 'wb', 'ym'];
 
 function formatMoney(v) {
   if (v == null || Number.isNaN(Number(v))) return '—';
@@ -24,6 +29,8 @@ function formatDt(v) {
 
 export function ProductCompetitorsTab({ productId, productCost }) {
   const [items, setItems] = useState([]);
+  const [ozonCompetitors, setOzonCompetitors] = useState([]);
+  const [hasOzonSku, setHasOzonSku] = useState(false);
   const [maxPerMp, setMaxPerMp] = useState(5);
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -38,6 +45,8 @@ export function ProductCompetitorsTab({ productId, productCost }) {
     try {
       const res = await productsApi.listCompetitors(productId);
       setItems(Array.isArray(res?.data) ? res.data : []);
+      setOzonCompetitors(Array.isArray(res?.ozon_competitors) ? res.ozon_competitors : []);
+      setHasOzonSku(Boolean(res?.meta?.has_ozon_sku));
       if (res?.meta?.max_per_marketplace) setMaxPerMp(Number(res.meta.max_per_marketplace));
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить конкурентов');
@@ -87,6 +96,29 @@ export function ProductCompetitorsTab({ productId, productCost }) {
     }
   };
 
+  const onRefreshOzon = async () => {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const res = await productsApi.refreshOzonCompetitorPrices(productId);
+      setOzonCompetitors(Array.isArray(res?.items) ? res.items : []);
+      setHasOzonSku(Boolean(res?.has_ozon_sku));
+      const withPrice = (res?.items || []).filter((row) => row.competitor_min_price != null);
+      if (!res?.has_ozon_sku) {
+        setMessage('У товара нет артикула Ozon');
+      } else if (!withPrice.length) {
+        setMessage('Ozon не вернул минимальную цену конкурентов по этому товару');
+      } else {
+        setMessage('Цены конкурентов на Ozon обновлены');
+      }
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Не удалось обновить цены Ozon');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onRefreshAll = async () => {
     setBusy(true);
     setError('');
@@ -126,10 +158,67 @@ export function ProductCompetitorsTab({ productId, productCost }) {
   return (
     <div className="product-competitors-tab">
       <div className="mb-3" style={{ fontSize: '13px', color: 'var(--muted)' }}>
-        До {maxPerMp} ссылок на каждый маркетплейс (Wildberries и Яндекс.Маркет). Ozon — позже.
-        Обновление раз в час (и вручную). Уведомление — если цена конкурента ниже вашей себестоимости
+        До {maxPerMp} ссылок на маркетплейс. Расширение берёт цены с карточки и со страницы выдачи.
+        Ozon обновляется, когда страница снова открыта в браузере.
+        Wildberries и Яндекс.Маркет после добавления обновляются с сервера раз в час.
+        Отдельно для Ozon — минимальная цена конкурентов из кабинета (индекс цен).
+        Уведомление по ссылкам — если цена конкурента ниже вашей себестоимости
         {productCost != null && productCost !== '' ? ` (${formatMoney(productCost)})` : ''}.
       </div>
+
+      {hasOzonSku ? (
+        <div className="mb-3 p-2 border rounded">
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <strong style={{ fontSize: 13 }}>Ozon — минимальная цена конкурентов</strong>
+            <Button type="button" variant="secondary" disabled={busy} onClick={onRefreshOzon}>
+              Обновить из кабинета
+            </Button>
+          </div>
+          {ozonCompetitors.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+              Цены ещё не загружены. Нажмите «Обновить из кабинета».
+            </div>
+          ) : (
+            <table className="table table-sm align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Артикул Ozon</th>
+                  <th>Мин. цена на Ozon</th>
+                  <th>Мин. цена на других площадках</th>
+                  <th>Индекс</th>
+                  <th>Проверка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ozonCompetitors.map((row) => (
+                  <tr
+                    key={row.id || row.offer_id}
+                    style={row.below_cost ? { background: 'rgba(239, 68, 68, 0.08)' } : undefined}
+                  >
+                    <td>{row.offer_id}</td>
+                    <td>
+                      {formatMoney(row.competitor_min_price)}
+                      {row.below_cost ? (
+                        <div style={{ fontSize: 11, color: '#b91c1c' }}>Ниже себестоимости</div>
+                      ) : null}
+                    </td>
+                    <td>{formatMoney(row.external_min_price)}</td>
+                    <td style={{ color: OZON_COLOR[row.color_index] || 'inherit' }}>
+                      {row.color_label || '—'}
+                    </td>
+                    <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                      {formatDt(row.last_checked_at)}
+                      {row.last_error ? (
+                        <div style={{ color: '#b45309' }}>{row.last_error}</div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : null}
 
       {/* Не <form>: вкладка внутри формы товара — вложенный form сабмитит карточку и уводит на список */}
       <div className="row g-2 align-items-end mb-3">
@@ -142,7 +231,7 @@ export function ProductCompetitorsTab({ productId, productCost }) {
             type="text"
             inputMode="url"
             className="form-control form-control-sm"
-            placeholder="https://www.wildberries.ru/catalog/… или market.yandex.ru/card/…"
+            placeholder="ozon.ru/product/…, wildberries.ru/catalog/… или market.yandex.ru/card/…"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => {
@@ -188,6 +277,7 @@ export function ProductCompetitorsTab({ productId, productCost }) {
                 <th>МП</th>
                 <th>Товар</th>
                 <th>Цена</th>
+                <th>Остаток</th>
                 <th>Рейтинг</th>
                 <th>Отзывы</th>
                 <th>Проверка</th>
@@ -220,6 +310,7 @@ export function ProductCompetitorsTab({ productId, productCost }) {
                     ) : null}
                   </td>
                   <td>{formatMoney(row.price)}</td>
+                  <td>{row.stock_qty != null ? row.stock_qty : '—'}</td>
                   <td>
                     {row.rating != null && Number.isFinite(Number(row.rating))
                       ? Number(row.rating).toFixed(1)

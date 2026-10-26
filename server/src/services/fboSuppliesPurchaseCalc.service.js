@@ -155,6 +155,7 @@ function ensureProductRow(rowMap, key, init) {
       cost: init.cost,
       onHand: init.onHand,
       incoming: init.incoming,
+      incomingTotal: init.incomingTotal ?? init.incoming,
       supplyQty: {},
       supplyCells: {},
       supplyQtyTotal: 0,
@@ -221,6 +222,7 @@ function addKitLine(
     productInfoById,
     onHandByProduct,
     incomingByProduct,
+    incomingTotalByProduct,
   }
 ) {
   if (!kitHeaderMap.has(kitProductId)) {
@@ -260,6 +262,8 @@ function addKitLine(
       cost: info.cost ?? 0,
       onHand: onHandByProduct.get(compId) ?? 0,
       incoming: incomingByProduct.get(compId) ?? 0,
+      incomingTotal:
+        incomingTotalByProduct?.get(compId) ?? incomingByProduct.get(compId) ?? 0,
     });
     agg.rowType = 'component';
     agg.kitProductId = kitProductId;
@@ -319,11 +323,15 @@ function finalizePurchaseRow(r) {
       : (Number(r.onHand) || 0) + (Number(r.incoming) || 0);
   const toPurchase = Math.max(0, r.supplyQtyTotal - available);
   const lineCostTotal = Math.round(toPurchase * r.cost * 100) / 100;
+  const incoming = Number(r.incoming) || 0;
+  const incomingTotal = Math.max(incoming, Number(r.incomingTotal) || 0);
   return {
     ...r,
     rowType: r.rowType || (isKitComponentRow ? 'component' : 'plain'),
     isKitComponentRow,
     perKit,
+    incoming,
+    incomingTotal,
     toPurchase,
     lineCostTotal,
   };
@@ -624,21 +632,42 @@ class FboSuppliesPurchaseCalcService {
     ]);
 
     // Наличие и «в пути» — свободные: без резерва/покрытия других активных поставок FBO.
+    // incomingTotal — весь незакрытый остаток открытых закупок (для подсказки, если свободно меньше).
     const onHandByProduct = new Map();
     const incomingByProduct = new Map();
+    const incomingTotalByProduct = new Map();
     for (const stockPid of stockProductIds) {
       onHandByProduct.set(stockPid, 0);
       incomingByProduct.set(stockPid, 0);
+      incomingTotalByProduct.set(stockPid, 0);
     }
     if (stockProductIds.length) {
-      const available = await fboSupplyReserveService.getAvailableStockAndIncomingForPurchaseCalc(
-        stockProductIds,
-        {
+      const [available, totalIncR] = await Promise.all([
+        fboSupplyReserveService.getAvailableStockAndIncomingForPurchaseCalc(stockProductIds, {
           profileId: pid,
           warehouseId: fboWh.id,
           excludeSupplyIds: ids,
-        }
-      );
+        }),
+        query(
+          `SELECT pi.product_id,
+                  COALESCE(SUM(
+                    GREATEST(0, COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0))
+                  ), 0)::int AS pending
+           FROM purchase_items pi
+           INNER JOIN purchases p ON p.id = pi.purchase_id
+           WHERE pi.product_id = ANY($1::bigint[])
+             AND p.status = 'open'
+             AND p.warehouse_id = $2
+           GROUP BY pi.product_id`,
+          [stockProductIds, fboWh.id]
+        ),
+      ]);
+      for (const row of totalIncR.rows || []) {
+        incomingTotalByProduct.set(
+          Number(row.product_id),
+          Math.max(0, Number(row.pending) || 0)
+        );
+      }
       for (const stockPid of stockProductIds) {
         const cell = available.get(stockPid);
         onHandByProduct.set(stockPid, Math.max(0, Number(cell?.onHand) || 0));
@@ -668,6 +697,7 @@ class FboSuppliesPurchaseCalcService {
           productInfoById,
           onHandByProduct,
           incomingByProduct,
+          incomingTotalByProduct,
         });
         continue;
       }
@@ -685,6 +715,8 @@ class FboSuppliesPurchaseCalcService {
             : Number(row.cost) || 0,
         onHand: productId != null ? onHandByProduct.get(productId) ?? 0 : 0,
         incoming: productId != null ? incomingByProduct.get(productId) ?? 0 : 0,
+        incomingTotal:
+          productId != null ? incomingTotalByProduct.get(productId) ?? 0 : 0,
       });
       if (!agg.rowType) agg.rowType = 'plain';
       addPlainSupplyLine(agg, supplyId, row.supply_item_id, qty);

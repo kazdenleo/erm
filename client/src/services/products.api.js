@@ -385,6 +385,13 @@ export const productsApi = {
     return response.data;
   },
 
+  refreshOzonCompetitorPrices: async (productId) => {
+    const response = await api.post(`/products/${productId}/competitors/ozon/refresh`, null, {
+      timeout: 90000,
+    });
+    return response.data;
+  },
+
   refreshCompetitors: async (productId) => {
     const response = await api.post(`/products/${productId}/competitors/refresh`, null, {
       timeout: 120000,

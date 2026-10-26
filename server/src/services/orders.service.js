@@ -1955,8 +1955,22 @@ class OrdersService {
         // Наличие под заказ уже списано отгрузкой (сборка) — повторный резерв занижал бы «Доступно».
         const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
         const covered = alreadyForOrder + alreadyShipped;
-        if (covered >= qtyWanted) return;
-        qty = Math.min(qty, qtyWanted - covered);
+        // _applyReserveForOrderIfAbsent часто передаёт дельту (reserveNow), а не qty заказа.
+        // Цель покрытия — order_qty (единицы позиции заказа). Для комплектующих order_qty —
+        // число комплектов, его нельзя использовать как target по штукам детали.
+        const reserveAsKitComponent =
+          meta?.kit_product_id != null && Number(meta.kit_product_id) > 0;
+        const orderQtyMeta = reserveAsKitComponent
+          ? 0
+          : Math.max(0, parseInt(meta?.order_qty, 10) || 0);
+        const targetQty =
+          orderQtyMeta > 0
+            ? orderQtyMeta
+            : meta?.partial === true
+              ? alreadyForOrder + qtyWanted
+              : qtyWanted;
+        if (covered >= targetQty) return;
+        qty = Math.min(qty, targetQty - covered);
       }
       if (qty <= 0) return;
     }
@@ -3053,10 +3067,11 @@ class OrdersService {
       await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
         order_id: id,
         orderId: orderIdStr,
+        order_qty: qty,
         order_row: orderRow,
         warehouse_id: warehouseId,
         strict_warehouse: strictWh,
-        partial: reserveNow < need,
+        partial: reserveNow < need || alreadyReservedForOrder > 0,
         ...(allowIncoming
           ? { allow_incoming_reserve: true, allowIncomingReserve: true }
           : {})

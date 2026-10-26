@@ -2,9 +2,10 @@
  * Разбор ответа WB GET /api/v1/tariffs/box и /api/v1/tariffs/return (разные обёртки response/data).
  *
  * Логистика мин. цены (док. WB):
- *   (база_1л + литр × доп.литры) × коэф_склада × индекс_локализации
- * В /tariffs/box поля boxDelivery* уже приходят с учётом коэф. склада — повторно не умножаем.
- * Индекс локализации в этом API нет → по умолчанию 1.
+ *   (база_1л + литр × доп.литры) × индекс_локализации
+ * В /tariffs/box база и литр уже включают коэффициент склада
+ * (у «Склад WB РФ» 78,2 ₽ при CoefExpr 170 — это 46×1,7). Повторно не умножаем.
+ * Индекса локализации в API нет.
  */
 
 export function extractWbWarehouseList(boxTariffsData) {
@@ -76,7 +77,7 @@ export function parseWbTariffAmount(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** Коэффициент склада WB из CoefExpr (%). «-» и пусто → 100%. Справочно (в мин. цене не умножаем). */
+/** Коэффициент склада WB из CoefExpr (%). «-» и пусто → 100%. */
 export function parseWbWarehouseCoefPercent(coefExpr) {
   const n = parseWbTariffAmount(coefExpr, NaN);
   if (Number.isFinite(n) && n > 0) return n;
@@ -90,7 +91,7 @@ export function resolveWbLocalizationIndex(value) {
   return 1;
 }
 
-/** @deprecated Тарифы box уже с коэфом; не использовать в расчёте мин. цены. */
+/** Сумма тарифа × коэффициент склада (CoefExpr в процентах). */
 export function applyWbWarehouseCoef(amount, coefPercent = 100) {
   const a = Number(amount) || 0;
   if (!(a > 0)) return 0;
@@ -100,7 +101,7 @@ export function applyWbWarehouseCoef(amount, coefPercent = 100) {
 
 /**
  * Тарифы логистики WB по схеме из /tariffs/box.
- * base/liter — как в API (уже с коэф. склада).
+ * rawBase/rawLiter — как в API, без коэффициента склада.
  * @returns {{ rawBase: number, rawLiter: number, coef: number, source: string }|null}
  */
 export function pickWbSchemeTariff(boxTariffRow, scheme = 'fbo') {
@@ -157,7 +158,7 @@ export function computeWbVolumeBaseTariff(base, liter, volumeLiters = 0) {
 /**
  * Прямая логистика WB для мин. цены:
  * (база + литр × доп.) × индекс_локализации.
- * Коэф. склада не умножаем — уже заложен в boxDelivery* из API.
+ * Коэффициент склада уже входит в boxDelivery* выбранного склада. ИЛ — из настроек.
  * @param {number} [localizationIndex=1] — ИЛ; в /tariffs/box нет, по умолчанию 1
  */
 export function computeWbLogisticsCost(
@@ -185,12 +186,10 @@ export function computeWbLogisticsCost(
   }
   const il = Number(localizationIndex);
   const loc = Number.isFinite(il) && il > 0 ? il : 1;
-  const base = picked.rawBase;
-  const liter = picked.rawLiter;
-  const volumeCost = computeWbVolumeBaseTariff(base, liter, volumeLiters);
+  const volumeCost = computeWbVolumeBaseTariff(picked.rawBase, picked.rawLiter, volumeLiters);
   return {
-    base,
-    liter,
+    base: picked.rawBase,
+    liter: picked.rawLiter,
     coef: picked.coef,
     rawBase: picked.rawBase,
     rawLiter: picked.rawLiter,
@@ -198,6 +197,34 @@ export function computeWbLogisticsCost(
     source: picked.source,
     cost: Math.round(volumeCost * loc * 100) / 100,
   };
+}
+
+/** СГТ и зарубежные «Маркетплейс: …» не подставлять вместо обычного склада РФ. */
+export function isWbOversizedOrForeignWarehouse(name) {
+  const label = String(name || '');
+  return /сгт/i.test(label) || /маркетплейс\s*:/i.test(label);
+}
+
+/**
+ * Склад по умолчанию из /tariffs/box, если маппинг не совпал со списком.
+ * «Свой склад РФ» / «Склад WB РФ», не первая строка с базой (часто это СГТ, 46 ₽).
+ */
+export function pickWbDefaultBoxWarehouse(warehouseList) {
+  const list = Array.isArray(warehouseList) ? warehouseList : [];
+  const byName = (wanted) =>
+    list.find((w) => wbTariffWarehouseLabel(w).toLowerCase() === wanted.toLowerCase()) || null;
+  const named = byName('Свой склад РФ') || byName('Склад WB РФ');
+  if (named) return named;
+  return (
+    list.find((w) => {
+      const label = wbTariffWarehouseLabel(w);
+      if (!label || isWbOversizedOrForeignWarehouse(label)) return false;
+      return (
+        parseWbTariffAmount(w?.boxDeliveryMarketplaceBase) > 0 ||
+        parseWbTariffAmount(w?.boxDeliveryBase) > 0
+      );
+    }) || null
+  );
 }
 
 /**

@@ -34,6 +34,24 @@ function itemStillNeedsCollect(row) {
   return collected < planned;
 }
 
+/** Сколько единиц строки уже закреплено с наличия (не «в пути» и не чужой резерв). */
+async function stockCoverForSupplyItem(supply, item) {
+  const enriched = await fboSupplyReserveService.enrichItemsWithReserved(
+    [
+      {
+        id: item.id,
+        productId: item.productId,
+        quantity: item.quantity,
+      },
+    ],
+    {
+      profileId: supply.profile_id ?? null,
+      reserveEnabled: true,
+    }
+  );
+  return Math.max(0, Number(enriched?.[0]?.reservedFromStock) || 0);
+}
+
 /** Незавершённые строки поставки раньше завершённых. */
 const COLLECT_ITEM_PRIORITY_ORDER = `
   CASE WHEN COALESCE(i.collected_quantity, 0) >= GREATEST(i.quantity, 0) THEN 1 ELSE 0 END ASC,
@@ -695,12 +713,17 @@ class FboSuppliesCollectService {
       items = (enriched || items).map((it) => {
         const onHand = Number(it.sourceOnHand ?? it.source_on_hand) || 0;
         const incoming = Number(it.sourceIncoming ?? it.source_incoming) || 0;
+        const stockCover = Math.max(0, Number(it.reservedFromStock) || 0);
+        const collectedQty = Math.max(0, Number(it.collected) || 0);
+        // Собирать можно только то, что закреплено за этой строкой с наличия.
+        // «В пути» и чужой резерв не считаются свободным остатком.
+        const inStock =
+          supply.deduct_stock === true ? stockCover > collectedQty : onHand > 0;
         return {
           ...it,
           sourceOnHand: onHand,
           sourceIncoming: incoming,
-          // На складе есть физический остаток (для комплекта — сколько единиц можно собрать).
-          inStock: onHand > 0,
+          inStock,
         };
       });
     } catch (e) {
@@ -991,6 +1014,15 @@ class FboSuppliesCollectService {
         throw err;
       }
 
+      const stockCover =
+        supply.deduct_stock === true
+          ? await stockCoverForSupplyItem(supply, {
+              id: itemId,
+              productId: kitProductId,
+              quantity: plannedLocked,
+            })
+          : null;
+
       if (isComponentScan) {
         const compId = Number(resolved.scannedProductId);
         const perKit =
@@ -1063,6 +1095,28 @@ class FboSuppliesCollectService {
         collectedLocked += 1;
         action = 'collected';
         message = `Собрано ${collectedLocked} из ${plannedLocked}`;
+      }
+
+      if (stockCover != null) {
+        const projectedCollected = collectedLocked;
+        const startsKitBeyondCover =
+          unitsCompleted === 0 && isComponentScan && collectedLocked >= stockCover;
+        if (projectedCollected > stockCover || startsKitBeyondCover) {
+          const err = new Error(
+            stockCover <= 0
+              ? 'На складе нет свободного остатка для этой поставки: товар в пути или уже зарезервирован под другую поставку.'
+              : `Для этой поставки с наличия можно собрать только ${stockCover} шт. Остальное в пути или зарезервировано под другие поставки.`
+          );
+          err.statusCode = 409;
+          err.code = 'COLLECT_NO_STOCK';
+          err.details = {
+            supplyItemId: itemId,
+            productId: kitProductId,
+            stockCover,
+            collected: collectedLocked - unitsCompleted,
+          };
+          throw err;
+        }
       }
 
       const upd = await client.query(

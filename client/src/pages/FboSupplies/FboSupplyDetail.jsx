@@ -1107,6 +1107,7 @@ export function FboSupplyDetail() {
           itemSearchQuery={itemSearchQuery}
           onItemSearchQueryChange={setItemSearchQuery}
           printHelperUrl={printHelperUrl}
+          deductionWarehouseId={supply?.deductionWarehouseId}
         />
       ) : null}
 

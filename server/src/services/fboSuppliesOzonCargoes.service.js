@@ -432,18 +432,15 @@ async function cacheSplitCargoPdfPages(supplyId, cargoEntries, buffer) {
   }
 }
 
-/** Скачать PDF по signed URL (ir.ozone.ru) или старому Seller API path. */
-async function ozonApiGetBinary(pathOrUrl, { clientId, apiKey } = {}) {
-  const isAbsolute = /^https?:\/\//i.test(String(pathOrUrl || ''));
-  const url = isAbsolute
-    ? String(pathOrUrl)
-    : `https://api-seller.ozon.ru${String(pathOrUrl).startsWith('/') ? pathOrUrl : `/${pathOrUrl}`}`;
-  const headers = {};
-  if (!isAbsolute && clientId && apiKey) {
-    headers['Client-Id'] = String(clientId);
-    headers['Api-Key'] = String(apiKey);
+/** Скачать PDF по file_url из /v1/cargoes-label/get (signed URL). */
+async function ozonApiGetBinary(fileUrl) {
+  const url = String(fileUrl || '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    const err = new Error('Ozon не вернул ссылку на PDF этикеток');
+    err.statusCode = 400;
+    throw err;
   }
-  const response = await fetch(url, { method: 'GET', headers, timeout: 60000 });
+  const response = await fetch(url, { method: 'GET', timeout: 60000 });
   if (!response.ok) {
     const text = await response.text();
     const err = new Error(`Ozon API ${response.status}: ${text.slice(0, 200)}`);
@@ -454,8 +451,8 @@ async function ozonApiGetBinary(pathOrUrl, { clientId, apiKey } = {}) {
 }
 
 /**
- * Дождаться генерации этикеток.
- * С ~04.2026 GET /v1/cargoes-label/file/{guid} отключён — PDF берём из result.file_url.
+ * Дождаться генерации этикеток через POST /v1/cargoes-label/get.
+ * GET /v1/cargoes-label/file/{file_guid} удалён из документации — качаем только result.file_url.
  */
 function cargoLabelPollDelayMs(attemptIndex) {
   // Быстрее в начале (Ozon часто готов за 1–3 с), потом реже.
@@ -479,34 +476,18 @@ async function pollOzonCargoLabels(operationId, ozonApiOpts, { maxAttempts = 40 
     // status на верхнем уровне; file_* — в result
     const status = String(data?.status ?? data?.state ?? data?.result?.status ?? '').toUpperCase();
     const result = data?.result && typeof data.result === 'object' ? data.result : data ?? {};
-    const fileGuid =
-      result.file_guid ??
-      result.fileGuid ??
-      data?.file_guid ??
-      data?.fileGuid ??
-      null;
     const fileUrl =
       result.file_url ??
       result.fileUrl ??
       data?.file_url ??
       data?.fileUrl ??
       null;
-    if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'DONE') {
-      if (!fileUrl && !fileGuid) {
-        const err = new Error('Ozon не вернул ссылку на файл этикеток');
-        err.statusCode = 400;
-        throw err;
-      }
-      return {
-        fileGuid: fileGuid != null ? String(fileGuid).trim() : null,
-        fileUrl: fileUrl != null ? String(fileUrl).trim() : null,
-      };
+    const ready = status === 'SUCCESS' || status === 'COMPLETED' || status === 'DONE';
+    if (fileUrl && status !== 'FAILED' && status !== 'ERROR') {
+      return { fileUrl: String(fileUrl).trim() };
     }
-    if ((fileUrl || fileGuid) && status !== 'FAILED' && status !== 'ERROR') {
-      return {
-        fileGuid: fileGuid != null ? String(fileGuid).trim() : null,
-        fileUrl: fileUrl != null ? String(fileUrl).trim() : null,
-      };
+    if (ready && !fileUrl) {
+      continue;
     }
     if (status === 'FAILED' || status === 'ERROR') {
       const err = new Error(
@@ -872,7 +853,7 @@ class FboSuppliesOzonCargoesService {
       return { buffer: fs.readFileSync(cachePath), cached: true, cargoIds: ids };
     }
 
-    const { ozonSupplyId, ozonApiOpts, ozonCfg } = await resolveOzonApiContext(supplyId, {
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, {
       profileId,
     });
     const createRes = await ozonApiPostWithRetry(
@@ -900,7 +881,6 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
     let fileUrl = null;
-    let fileGuid = null;
     for (let i = 0; i < 40; i++) {
       const delay = cargoLabelPollDelayMs(i);
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
@@ -915,11 +895,6 @@ class FboSuppliesOzonCargoesService {
         st?.result?.file_url ??
         st?.result?.result?.file_url ??
         null;
-      fileGuid =
-        st?.file_guid ??
-        st?.result?.file_guid ??
-        st?.result?.result?.file_guid ??
-        null;
       if (status === 'FAILED' || status === 'ERROR') {
         const err = new Error(
           formatOzonCargoErrorReasons(st?.errors || st?.error_reasons) ||
@@ -928,29 +903,15 @@ class FboSuppliesOzonCargoesService {
         err.statusCode = 400;
         throw err;
       }
-      if (fileUrl || fileGuid || status === 'SUCCESS' || status === 'COMPLETED') break;
+      if (fileUrl) break;
+      if (status === 'SUCCESS' || status === 'COMPLETED') continue;
     }
-    let buffer = null;
-    if (fileUrl) {
-      const r = await fetch(String(fileUrl));
-      if (!r.ok) throw new Error(`Не удалось скачать этикетки ТГМ (${r.status})`);
-      buffer = Buffer.from(await r.arrayBuffer());
-    } else if (fileGuid) {
-      const base = config.ozon?.apiUrl || 'https://api-seller.ozon.ru';
-      const r = await fetch(`${base}/v1/cargoes-label/file/${fileGuid}`, {
-        headers: {
-          'Client-Id': String(ozonCfg.clientId),
-          'Api-Key': String(ozonCfg.apiKey),
-        },
-      });
-      if (!r.ok) throw new Error(`Не удалось скачать этикетки ТГМ (${r.status})`);
-      buffer = Buffer.from(await r.arrayBuffer());
-    }
-    if (!buffer) {
-      const err = new Error('Ozon не вернул файл этикеток ТГМ');
+    if (!fileUrl) {
+      const err = new Error('Ozon не вернул ссылку на файл этикеток ТГМ');
       err.statusCode = 400;
       throw err;
     }
+    const buffer = await ozonApiGetBinary(fileUrl);
     try {
       fs.writeFileSync(cachePath, buffer);
     } catch (_) {
@@ -1069,7 +1030,7 @@ class FboSuppliesOzonCargoesService {
       }
     }
 
-    const { ozonSupplyId, ozonApiOpts, ozonCfg } = await resolveOzonApiContext(supplyId, {
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, {
       profileId,
     });
     const labelBody = buildOzonCargoLabelsCreateBody(ozonSupplyId, cargoEntries);
@@ -1099,23 +1060,15 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
 
-    const { fileGuid, fileUrl } = await pollOzonCargoLabels(operationId, ozonApiOpts);
-    let buffer;
-    if (fileUrl) {
-      buffer = await ozonApiGetBinary(fileUrl);
-    } else {
-      buffer = await ozonApiGetBinary(
-        `/v1/cargoes-label/file/${encodeURIComponent(fileGuid)}`,
-        ozonCfg
-      );
-    }
+    const { fileUrl } = await pollOzonCargoLabels(operationId, ozonApiOpts);
+    const buffer = await ozonApiGetBinary(fileUrl);
     try {
       fs.writeFileSync(cachePath, buffer);
     } catch (_) {
       /* ignore */
     }
     await cacheSplitCargoPdfPages(supplyId, cargoEntries, buffer);
-    return { buffer, cached: false, cargoIds: ids, fileGuid, fileUrl };
+    return { buffer, cached: false, cargoIds: ids, fileUrl };
   }
 
   buildCargoLabelsPrintHtml(pdfUrl) {

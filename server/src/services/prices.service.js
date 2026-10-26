@@ -19,6 +19,12 @@ import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice, resolveMinPriceTaxProfile } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
+import {
+  listOzonCompetitorPrices,
+  markOzonCompetitorPriceError,
+  productHasOzonOffer,
+  saveOzonCompetitorPricesForOffer,
+} from './ozonCompetitorPrices.service.js';
 import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
 import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
@@ -29,6 +35,7 @@ import {
   wbTariffWarehouseLabel,
   computeWbReturnAmount,
   computeWbLogisticsCost,
+  pickWbDefaultBoxWarehouse,
   parseWbTariffAmount,
   resolveWbLocalizationIndex,
 } from '../utils/wbTariffs.js';
@@ -137,6 +144,31 @@ function getWBWarehousesCache() {
     console.error('[Prices Service] Error loading WB warehouses cache:', error);
     return [];
   }
+}
+
+function ozonErrorNotFound(errorText) {
+  const raw = String(errorText || '');
+  if (/resource not found/i.test(raw)) return true;
+  try {
+    const parsed = JSON.parse(raw);
+    return Number(parsed?.code) === 5;
+  } catch {
+    return false;
+  }
+}
+
+function ozonCandidatesErrorMessage(errorText) {
+  if (ozonErrorNotFound(errorText)) {
+    return 'Ozon не отдаёт список доступных товаров для этой акции';
+  }
+  const raw = String(errorText || '').trim();
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.message) return `Ошибка API Ozon: ${parsed.message}`;
+  } catch {
+    /* текст как есть */
+  }
+  return `Ошибка API Ozon: ${raw.slice(0, 180)}`;
 }
 
 class PricesService {
@@ -953,20 +985,41 @@ class PricesService {
         return { ok: true, products: [], total: 0, error: 'Настройте интеграцию Ozon для этого аккаунта' };
       }
       const all = [];
-      let lastId = '';
+      let cursor = '';
+      let mode = 'last_id';
       const limit = 100;
-      for (;;) {
-        const page = await this._fetchOzonActionCandidatesFromApi(actionId, limit, lastId, {
+      for (let pageNo = 0; pageNo < 200; pageNo += 1) {
+        let page = await this._fetchOzonActionCandidatesFromApi(actionId, limit, cursor, {
           client_id,
           api_key,
-        });
+        }, mode);
+        // Часть акций (складские распродажи) не принимает last_id и отвечает code 5.
+        if (!page.ok && page.notFound && mode === 'last_id' && !cursor) {
+          mode = 'offset';
+          cursor = 0;
+          page = await this._fetchOzonActionCandidatesFromApi(actionId, limit, 0, {
+            client_id,
+            api_key,
+          }, 'offset');
+        }
         if (!page.ok) {
           logger.warn('[Prices Service] getOzonActionCandidates API error:', page.error);
-          return { ok: true, products: [], total: 0, error: page.error };
+          return {
+            ok: true,
+            products: [],
+            total: 0,
+            error: page.error,
+            notApplicable: page.notFound === true,
+          };
         }
         if (page.products && page.products.length > 0) all.push(...page.products);
+        if (mode === 'offset') {
+          if (!page.products?.length || page.products.length < limit) break;
+          cursor = Number(cursor) + page.products.length;
+          continue;
+        }
         if (!page.last_id || page.products.length === 0) break;
-        lastId = page.last_id;
+        cursor = page.last_id;
       }
       if (all.length === 0) {
         return { ok: true, products: [], total: 0 };
@@ -1011,7 +1064,7 @@ class PricesService {
     }
   }
 
-  async _fetchOzonActionCandidatesFromApi(actionId, limit = 100, lastId = '', creds = {}) {
+  async _fetchOzonActionCandidatesFromApi(actionId, limit = 100, cursor = '', creds = {}, mode = 'last_id') {
     let client_id = creds.client_id;
     let api_key = creds.api_key;
     if (!client_id || !api_key) {
@@ -1022,18 +1075,23 @@ class PricesService {
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
     }
+    const lim = Math.min(Number(limit) || 100, 100);
+    const body = mode === 'offset'
+      ? { action_id: Number(actionId), limit: lim, offset: Number(cursor) || 0 }
+      : { action_id: Number(actionId), limit: lim, last_id: cursor || '' };
     const response = await fetch('https://api-seller.ozon.ru/v2/actions/candidates', {
       method: 'POST',
       headers: this._ozonApiHeaders(client_id, api_key),
-      body: JSON.stringify({
-        action_id: Number(actionId),
-        limit: Math.min(Number(limit) || 100, 100),
-        last_id: lastId || '',
-      }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       const errorText = await response.text();
-      return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
+      const notFound = ozonErrorNotFound(errorText);
+      return {
+        ok: false,
+        notFound,
+        error: ozonCandidatesErrorMessage(errorText),
+      };
     }
     const data = await response.json();
     const parsed = this._parseOzonActionsProductsResponse(data);
@@ -1884,8 +1942,7 @@ class PricesService {
       }
 
       return (
-        list.find((w) => parseWbTariffAmount(w?.boxDeliveryMarketplaceBase) > 0) ||
-        list.find((w) => parseWbTariffAmount(w?.boxDeliveryBase) > 0) ||
+        pickWbDefaultBoxWarehouse(list) ||
         list[0] ||
         calculator?.boxTariffs ||
         null
@@ -2461,6 +2518,7 @@ class PricesService {
             for (const item of items) {
               const oid = item.offer_id != null ? String(item.offer_id).trim() : null;
               if (!oid) continue;
+              await saveOzonCompetitorPricesForOffer(oid, item);
               const built = await applyOzonV5ItemToCalculator(item, oid, client_id, api_key);
               if (built.found && built.calculator) {
                 const pidsRes = await query(
@@ -2709,6 +2767,7 @@ class PricesService {
           error: `Товар «${normalizedOfferId}» не найден в кабинете Ozon. Проверьте артикул Ozon в карточке и что товар есть в этом кабинете.`,
         };
       }
+      await saveOzonCompetitorPricesForOffer(normalizedOfferId, item);
       const built = await applyOzonV5ItemToCalculator(item, normalizedOfferId, client_id, api_key);
       if (built.found && built.calculator) {
         const pid = await this._getProductIdByMarketplaceSku('ozon', normalizedOfferId);
@@ -2729,6 +2788,54 @@ class PricesService {
         error: error.message
       };
     }
+  }
+
+  /**
+   * Забрать из кабинета Ozon минимальную цену конкурентов по артикулам товара.
+   */
+  async refreshOzonCompetitorPricesForProduct(productId) {
+    const pid = Number(productId);
+    const prod = await query(`SELECT id, profile_id FROM products WHERE id = $1`, [pid]);
+    if (!prod.rows?.length) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    const hasOffer = await productHasOzonOffer(pid);
+    if (!hasOffer) {
+      return { ok: true, has_ozon_sku: false, items: [] };
+    }
+    const skus = await query(
+      `SELECT DISTINCT TRIM(sku) AS offer_id
+       FROM product_skus
+       WHERE product_id = $1 AND marketplace = 'ozon'
+         AND sku IS NOT NULL AND TRIM(sku) <> ''
+       ORDER BY 1`,
+      [pid]
+    );
+    const { client_id, api_key } = await this._getOzonApiCredentials({
+      integrationScope: { profileId: prod.rows[0].profile_id },
+    });
+    if (!client_id || !api_key) {
+      const err = new Error('Не настроены Client ID и API Key Ozon для этого профиля');
+      err.statusCode = 400;
+      throw err;
+    }
+    for (const row of skus.rows || []) {
+      const offerId = row.offer_id;
+      try {
+        const item = await this._resolveOzonV5PriceItem(offerId, client_id, api_key);
+        if (!item) {
+          await markOzonCompetitorPriceError(pid, offerId, 'Товар не найден в кабинете Ozon');
+          continue;
+        }
+        await saveOzonCompetitorPricesForOffer(offerId, item);
+      } catch (e) {
+        await markOzonCompetitorPriceError(pid, offerId, e?.message || String(e));
+      }
+    }
+    const items = await listOzonCompetitorPrices(pid);
+    return { ok: true, has_ozon_sku: true, items };
   }
 
   async getWBPrices(offer_id, category_id, wbWarehouseName = null, userCategoryId = null, options = {}) {
@@ -3049,15 +3156,9 @@ class PricesService {
       }
 
       if (!selectedBoxTariffs) {
-        // Маппинг часто хранит warehouseId, которого нет в /tariffs/box — берём склад с FBO-логистикой
-        selectedBoxTariffs =
-          warehouseList.find((w) => {
-            const mp = parseWbTariffAmount(w?.boxDeliveryMarketplaceBase);
-            return mp > 0;
-          }) ||
-          warehouseList.find((w) => /свой склад/i.test(wbTariffWarehouseLabel(w))) ||
-          warehouseList[0] ||
-          null;
+        // Маппинг часто хранит warehouseId, которого нет в /tariffs/box.
+        // Нельзя брать первую строку с базой: это «Свой склад СГТ» (46 ₽), а не «Свой склад РФ» (78,2 ₽).
+        selectedBoxTariffs = pickWbDefaultBoxWarehouse(warehouseList) || warehouseList[0] || null;
         if (selectedBoxTariffs) {
           logger.warn(
             `[Prices Service] WB warehouse "${finalWbWarehouseName}" not in box tariffs; fallback → "${wbTariffWarehouseLabel(selectedBoxTariffs)}"`
@@ -3175,7 +3276,7 @@ class PricesService {
         console.error(`[Prices Service] Error stack:`, dbError.stack);
       }
       
-      // FBO/FBS: (база + литр × доп.) × ИЛ. База/литр из API уже с коэф. склада; ИЛ — из настроек интеграции.
+      // FBO/FBS: (база + литр × доп.) × ИЛ. База склада из API уже с коэффициентом.
       const localizationIndex = resolveWbLocalizationIndex(wbConfig?.localization_index);
       const box = selectedBoxTariffs || {};
       const fboLog = computeWbLogisticsCost(box, productVolume, 'fbo', localizationIndex);

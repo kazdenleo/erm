@@ -78,6 +78,7 @@ export function FboSupplyCollect({
   itemSearchQuery = '',
   onItemSearchQueryChange,
   printHelperUrl = '',
+  deductionWarehouseId = null,
 }) {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -161,7 +162,8 @@ export function FboSupplyCollect({
     }
     return ids;
   }, [items]);
-  const addresses = useProductAddresses(addressProductIds);
+  // Только ячейки склада списания этой поставки. Закрепления с FBS и других складов не показываем.
+  const addresses = useProductAddresses(addressProductIds, { warehouseId: deductionWarehouseId });
   const { routeFor } = addresses;
 
   const filteredItems = useMemo(() => {

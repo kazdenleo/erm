@@ -884,9 +884,11 @@ export function FboPurchaseCalculation() {
                 <th>Артикул</th>
                 <th title="Сумма количеств по всем поставкам">В поставках</th>
                 <th>К закупке</th>
-                <th>Закуплено</th>
-                <th>Наличие</th>
-                <th>В пути</th>
+                <th title="Сколько уже оформили закупками в этой сессии расчёта">Закуплено</th>
+                <th title="Свободное наличие на складе FBO (без резерва других поставок)">Наличие</th>
+                <th title="Свободно в открытых закупках на склад FBO. Часть «в пути» может быть уже занята другими поставками — тогда свободно меньше, чем закуплено">
+                  В пути
+                </th>
                 {calc.supplies.map((s) => (
                   <th key={s.id} className="fbo-pc-supply-col" title={s.columnTitle || s.label}>
                     {s.label}
@@ -1000,9 +1002,31 @@ export function FboPurchaseCalculation() {
                       </>
                     )}
                   </td>
-                  <td>{isKitHeader ? '—' : row.purchasedQty > 0 ? row.purchasedQty : '—'}</td>
+                  <td
+                    title={
+                      isKitHeader
+                        ? undefined
+                        : 'Оформлено закупками в этой сессии (не уменьшается, пока не пересчитаете сессию)'
+                    }
+                  >
+                    {isKitHeader ? '—' : row.purchasedQty > 0 ? row.purchasedQty : '—'}
+                  </td>
                   <td>{isKitHeader ? '—' : row.onHand}</td>
-                  <td>{isKitHeader ? '—' : row.incoming}</td>
+                  <td
+                    title={
+                      isKitHeader
+                        ? undefined
+                        : Number(row.incomingTotal) > Number(row.incoming)
+                          ? `Свободно ${row.incoming} из ${row.incomingTotal} в открытых закупках (остальное занято другими поставками FBO)`
+                          : 'Свободный остаток открытых закупок на склад FBO'
+                    }
+                  >
+                    {isKitHeader
+                      ? '—'
+                      : Number(row.incomingTotal) > Number(row.incoming)
+                        ? `${row.incoming} из ${row.incomingTotal}`
+                        : row.incoming}
+                  </td>
                   {calc.supplies.map((s) => {
                     const cell = row.supplyCells?.[s.id];
                     const cellKey = cell?.supplyItemId

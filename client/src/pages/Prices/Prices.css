@@ -40,6 +40,51 @@
 
 /* Бейджи МП — src/styles/mp-badges.css */
 
+/* Вкладки маркетплейсов на странице акций: плашка как у фильтров, цвет — бренда МП */
+.promo-mp-tabs {
+  margin-bottom: 16px;
+}
+
+.promo-mp-tab--active.promo-mp-tab--ozon,
+.promo-mp-tab--active.promo-mp-tab--ozon:hover:not(:disabled) {
+  background: #005bff;
+  border-color: #005bff;
+  color: #fff;
+}
+
+.promo-mp-tab--active.promo-mp-tab--wb,
+.promo-mp-tab--active.promo-mp-tab--wb:hover:not(:disabled) {
+  background: #cb11ab;
+  border-color: #cb11ab;
+  color: #fff;
+}
+
+.promo-mp-tab--active.promo-mp-tab--ym,
+.promo-mp-tab--active.promo-mp-tab--ym:hover:not(:disabled) {
+  background: #fc0;
+  border-color: #e6b800;
+  color: #111;
+}
+
+.promo-mp-tab--active.promo-mp-tab--ozon .mp-badge,
+.promo-mp-tab--active.promo-mp-tab--wb .mp-badge,
+.promo-mp-tab--active.promo-mp-tab--ym .mp-badge {
+  background: #fff;
+  box-shadow: none;
+}
+
+.promo-mp-tab--active.promo-mp-tab--ozon .mp-badge {
+  color: #005bff;
+}
+
+.promo-mp-tab--active.promo-mp-tab--wb .mp-badge {
+  color: #cb11ab;
+}
+
+.promo-mp-tab--active.promo-mp-tab--ym .mp-badge {
+  color: #111;
+}
+
 .prices-row-action-btn {
   min-width: 28px;
   padding: 2px 4px !important;

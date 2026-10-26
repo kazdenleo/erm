@@ -2,6 +2,7 @@ import {
   computeWbReturnAmount,
   computeWbVolumeBaseTariff,
   computeWbLogisticsCost,
+  pickWbDefaultBoxWarehouse,
   pickWbReverseDeliveryBaseLiter,
   applyWbWarehouseCoef,
   parseWbWarehouseCoefPercent,
@@ -47,12 +48,12 @@ describe('WB reverse delivery (return_amount)', () => {
     const fbo = computeWbLogisticsCost(row, 1, 'fbo');
     const fbs = computeWbLogisticsCost(row, 1, 'fbs');
     expect(fbo.cost).toBe(fbs.cost);
-    expect(fbo.coef).toBe(170); // справочно из API
-    expect(fbo.base).toBe(78.2); // без повторного × коэф
+    expect(fbo.coef).toBe(170);
+    expect(fbo.base).toBe(78.2);
     expect(fbo.source).toBe('boxDeliveryMarketplace');
   });
 
-  test('forward logistics does not re-apply warehouse coef; IL defaults to 1', () => {
+  test('forward logistics uses API base that already includes warehouse coef', () => {
     const row = {
       boxDeliveryBase: '-',
       boxDeliveryLiter: '-',
@@ -60,16 +61,21 @@ describe('WB reverse delivery (return_amount)', () => {
       boxDeliveryMarketplaceLiter: '23,8',
       boxDeliveryMarketplaceCoefExpr: '170',
     };
-    const log = computeWbLogisticsCost(row, 2.1, 'fbs');
+    const log = computeWbLogisticsCost(row, 15, 'fbs');
     expect(log.coef).toBe(170);
-    expect(log.rawBase).toBe(78.2);
     expect(log.base).toBe(78.2);
     expect(log.liter).toBe(23.8);
-    expect(log.localizationIndex).toBe(1);
-    // ceil(2.1−1)=2 → 78.2 + 23.8×2 = 125.8
-    expect(log.cost).toBe(125.8);
-    expect(log.cost).toBe(computeWbVolumeBaseTariff(78.2, 23.8, 2.1));
-    expect(computeWbReturnAmount(row, 2.1, null, 'fbs')).toBe(125.8);
+    // 78.2 + 23.8×14 = 411.4, без повторного ×170%
+    expect(log.cost).toBe(411.4);
+    expect(computeWbReturnAmount(row, 15, null, 'fbs')).toBe(411.4);
+  });
+
+  test('default warehouse is РФ, not the first СГТ row', () => {
+    const picked = pickWbDefaultBoxWarehouse([
+      { warehouseName: 'Свой склад СГТ РФ', boxDeliveryMarketplaceBase: '46', boxDeliveryMarketplaceLiter: '14' },
+      { warehouseName: 'Свой склад РФ', boxDeliveryMarketplaceBase: '78,2', boxDeliveryMarketplaceLiter: '23,8' },
+    ]);
+    expect(picked.warehouseName).toBe('Свой склад РФ');
   });
 
   test('localization index multiplies volume tariff when set', () => {

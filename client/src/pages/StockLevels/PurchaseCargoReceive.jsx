@@ -64,6 +64,8 @@ export function PurchaseCargoReceive({
   /** Список мест, разбор и состав (вкладка «Состав грузомест»). */
   showList = true,
   onChanged = null,
+  /** После успешного скана грузоместа — фокус на поле ШК товара (приёмка). */
+  onPlaceAccepted = null,
 }) {
   const [cargoState, setCargoState] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -80,6 +82,19 @@ export function PurchaseCargoReceive({
   purchaseIdRef.current = purchaseId;
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
+  const onPlaceAcceptedRef = useRef(onPlaceAccepted);
+  onPlaceAcceptedRef.current = onPlaceAccepted;
+
+  const focusProductScanAfterPlace = useCallback(() => {
+    // Дать отработать clear поля скана места, затем перевести курсор на ШК товара.
+    window.setTimeout(() => {
+      try {
+        onPlaceAcceptedRef.current?.();
+      } catch {
+        /* ignore */
+      }
+    }, 80);
+  }, []);
 
   const refreshPurchase = useCallback(async ({ notify = true } = {}) => {
     const pid = Number(purchaseIdRef.current);
@@ -188,9 +203,12 @@ export function PurchaseCargoReceive({
         ) {
           if (window.confirm(`Грузоместо «${code}» уже принято.\n\nПерейти к приёмке товара из него?`)) {
             await openPlacePanel(res.placeId);
+          } else {
+            focusProductScanAfterPlace();
           }
         } else {
           setMessage({ kind: 'warning', text: `${code}: товар из этого места уже оприходован` });
+          focusProductScanAfterPlace();
         }
         return;
       }
@@ -201,8 +219,9 @@ export function PurchaseCargoReceive({
         text: `Принято грузоместо ${code} · ${expected != null ? `${total} из ${expected}` : `всего ${total}`}`,
       });
       playEventSound(SOUND_EVENTS.scan_ok);
+      focusProductScanAfterPlace();
     },
-    [purchaseId, openPlacePanel]
+    [purchaseId, openPlacePanel, focusProductScanAfterPlace]
   );
 
   const handlePlaceScan = useCallback(

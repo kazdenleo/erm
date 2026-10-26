@@ -309,6 +309,23 @@ router.post(
   wrapAsync(productCompetitorsController.refresh.bind(productCompetitorsController))
 );
 router.post(
+  '/:id/competitors/ingest-batch',
+  validateProductId,
+  requireAuth,
+  wrapAsync(productCompetitorsController.ingestMany.bind(productCompetitorsController))
+);
+router.post(
+  '/:id/competitors/ingest',
+  validateProductId,
+  requireAuth,
+  wrapAsync(productCompetitorsController.ingest.bind(productCompetitorsController))
+);
+router.post(
+  '/:id/competitors/ozon/refresh',
+  validateProductId,
+  wrapAsync(productCompetitorsController.refreshOzon.bind(productCompetitorsController))
+);
+router.post(
   '/:id/competitors/:competitorId/refresh',
   validateProductId,
   wrapAsync(productCompetitorsController.refresh.bind(productCompetitorsController))

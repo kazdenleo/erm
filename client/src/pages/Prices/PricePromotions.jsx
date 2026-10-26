@@ -48,13 +48,90 @@ function joinTitle(row) {
   return 'Войти в акцию';
 }
 
-function profitCell(row) {
-  if (row?.profit_rub == null || row.profit_rub === '') return '—';
-  const n = Number(row.profit_rub);
-  if (!Number.isFinite(n)) return '—';
-  const color = n < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
-  return <span style={{ color, fontWeight: 600 }}>{n > 0 ? `+${n}` : n} ₽</span>;
+function positivePrice(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
+
+/** Мин. цены из карточки (product_marketplace_prices), как на странице «Минимальные цены». */
+function cardMinLines(row) {
+  const fbs = positivePrice(row?.card_min_fbs);
+  const fbo = positivePrice(row?.card_min_fbo);
+  const plain = positivePrice(row?.card_min);
+  if (fbs != null && fbo != null && fbs === fbo) return [`мин. ${formatRub(fbs)}`];
+  const lines = [];
+  if (fbs != null) lines.push(`мин. FBS ${formatRub(fbs)}`);
+  if (fbo != null) lines.push(`мин. FBO ${formatRub(fbo)}`);
+  if (!lines.length && plain != null) lines.push(`мин. ${formatRub(plain)}`);
+  return lines;
+}
+
+function profitCell(row) {
+  const lines = cardMinLines(row);
+  const raw = row?.profit_rub;
+  const n = raw == null || raw === '' ? null : Number(raw);
+  const hasProfit = Number.isFinite(n);
+  if (!hasProfit && !lines.length) return '—';
+  const color = hasProfit && n < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
+  return (
+    <div title="Чистая прибыль при продаже по цене входа в акцию. Ниже — минимальная цена из карточки товара.">
+      <div style={{ color: hasProfit ? color : 'var(--muted)', fontWeight: hasProfit ? 600 : 400 }}>
+        {hasProfit ? `${n > 0 ? `+${n}` : n} ₽` : '—'}
+      </div>
+      {lines.map((line) => (
+        <div key={line} style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 500, marginTop: 2, whiteSpace: 'nowrap' }}>
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Коды типов акций Ozon (GET /v1/actions → action_type) в формулировках кабинета. */
+const OZON_ACTION_TYPE = {
+  UNSPECIFIED: 'Не указан',
+  ACTION_TYPE_UNSPECIFIED: 'Не указан',
+  DISCOUNT: 'Скидка',
+  STOCK_DISCOUNT: 'Скидка на сток',
+  ADDITIONAL_DISCOUNT: 'Дополнительная скидка',
+  MARKETPLACE_MULTI_LEVEL_DISCOUNT_ON_AMOUNT: 'Многоуровневая скидка от суммы',
+  ELASTIC_BOOSTING: 'Эластичный бустинг',
+  VOUCHER: 'Промокод',
+  INSTALLMENT: 'Рассрочка',
+};
+
+const OZON_DISCOUNT_TYPE = {
+  UNKNOWN: 'Не указан',
+  PERCENT: 'Процент',
+  CURRENCY: 'Сумма',
+  FIXED: 'Фиксированная сумма',
+  RUB: 'Сумма',
+  FINAL_PRICE: 'Итоговая цена',
+};
+
+const WB_PROMO_TYPE = {
+  regular: 'Обычная',
+  auto: 'Автоакция',
+};
+
+function promoTypeLabel(code, dict) {
+  if (code == null || String(code).trim() === '') return '—';
+  const key = String(code).trim();
+  if (/[а-яё]/i.test(key)) return key;
+  return dict[key] || dict[key.toUpperCase()] || dict[key.toLowerCase()] || key;
+}
+
+function ozonActionTypeLabel(action) {
+  if (action?.action_type) return promoTypeLabel(action.action_type, OZON_ACTION_TYPE);
+  if (action?.discount_type) return promoTypeLabel(action.discount_type, OZON_DISCOUNT_TYPE);
+  return '—';
+}
+
+const PROMO_MARKETPLACES = [
+  { key: 'ozon', label: 'Ozon', shortLabel: 'OZ' },
+  { key: 'wb', label: 'Wildberries', shortLabel: 'WB' },
+  { key: 'ym', label: 'Яндекс.Маркет', shortLabel: 'YM' },
+];
 
 const YM_STATUS = {
   AUTO: 'автоматически',
@@ -144,7 +221,9 @@ export function PricePromotions() {
         if (cancelled) return;
         const data = res?.data ?? res;
         setActionCandidates(Array.isArray(data) ? data : []);
-        if (res?.error) setActionCandidatesError(res.error);
+        if (res?.notApplicable) {
+          setActionCandidatesError(res.error || 'Ozon не отдаёт список доступных товаров для этой акции');
+        } else if (res?.error) setActionCandidatesError(res.error);
       } catch (err) {
         if (!cancelled) {
           setActionCandidatesError(err.response?.data?.error || err.message || 'Ошибка загрузки');
@@ -373,30 +452,23 @@ export function PricePromotions() {
         <Link to="/prices" style={{ color: 'var(--primary)' }}>Минимальные цены</Link>
       </p>
 
-      {/* Вкладки маркетплейсов */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '16px' }}>
-        {[
-          { key: 'ozon', label: 'Ozon' },
-          { key: 'wb', label: 'Wildberries' },
-          { key: 'ym', label: 'Яндекс.Маркет' }
-        ].map(({ key, label }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setActivePromoMarketplace(key)}
-            style={{
-              padding: '8px 14px',
-              background: activePromoMarketplace === key ? 'rgba(255,255,255,0.1)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: activePromoMarketplace === key ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="erp-filter-row promo-mp-tabs" role="tablist" aria-label="Маркетплейс">
+        {PROMO_MARKETPLACES.map(({ key, label, shortLabel }) => {
+          const active = activePromoMarketplace === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className={`erp-filter-btn promo-mp-tab promo-mp-tab--${key}${active ? ' promo-mp-tab--active' : ''}`}
+              onClick={() => setActivePromoMarketplace(key)}
+            >
+              <span className={`mp-badge ${key}`}>{shortLabel}</span>
+              <span className="erp-filter-btn__label">{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Контент вкладки Ozon */}
@@ -431,7 +503,7 @@ export function PricePromotions() {
                   >
                     <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
                     <td>{a.title || '—'}</td>
-                    <td>{a.action_type || a.discount_type || '—'}</td>
+                    <td title={a.action_type || a.discount_type || undefined}>{ozonActionTypeLabel(a)}</td>
                     <td style={{ fontSize: '13px' }}>
                       {a.date_start ? new Date(a.date_start).toLocaleDateString('ru-RU') : '—'}
                     </td>
@@ -480,7 +552,7 @@ export function PricePromotions() {
                   >
                     <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
                     <td>{a.name || '—'}</td>
-                    <td>{a.type || '—'}</td>
+                    <td title={a.type || undefined}>{promoTypeLabel(a.type, WB_PROMO_TYPE)}</td>
                     <td style={{ fontSize: '13px' }}>
                       {a.startDateTime ? new Date(a.startDateTime).toLocaleDateString('ru-RU') : '—'}
                     </td>
@@ -574,6 +646,9 @@ export function PricePromotions() {
             Доступные к акции
           </button>
         </div>
+        <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '0 0 10px' }}>
+          У товара одна предельная цена: вход по цене акции обновляет её и в разделе «Цены». Если она не выше требуемой цены акции, товар участвует; чтобы выйти — поднимите предельную цену выше этого порога или снимите товар с акции.
+        </p>
         {noticeBox}
         {actionModalTab === 'participating' && (
           <div className="prices-table-container">
@@ -593,7 +668,7 @@ export function PricePromotions() {
                       <th>Артикул</th>
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th title="Чистая прибыль при цене входа в акцию">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -683,7 +758,9 @@ export function PricePromotions() {
             {actionCandidatesLoading ? (
               <p style={{ color: 'var(--muted)' }}>Загрузка...</p>
             ) : actionCandidatesError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {actionCandidatesError}</p>
+              <p style={{ color: actionCandidatesError.startsWith('Ozon не отдаёт') ? 'var(--muted)' : 'var(--danger, #ef4444)' }}>
+                {actionCandidatesError.startsWith('Ozon не отдаёт') ? actionCandidatesError : `⚠️ ${actionCandidatesError}`}
+              </p>
             ) : actionCandidates.length === 0 ? (
               <p style={{ color: 'var(--muted)' }}>Нет товаров из нашей системы, доступных к добавлению в эту акцию</p>
             ) : (
@@ -696,7 +773,7 @@ export function PricePromotions() {
                       <th>Артикул</th>
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th title="Чистая прибыль при цене входа в акцию">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -851,7 +928,7 @@ export function PricePromotions() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px 24px' }}>
                   <div>
                     <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Тип</span>
-                    <div>{wbActionDetails.type || '—'}</div>
+                    <div title={wbActionDetails.type || undefined}>{promoTypeLabel(wbActionDetails.type, WB_PROMO_TYPE)}</div>
                   </div>
                   <div>
                     <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Начало</span>
@@ -932,7 +1009,7 @@ export function PricePromotions() {
                       <th>Товар</th>
                       <th>ID (nm)</th>
                       <th>Мин. цена, ₽</th>
-                      <th title="Чистая прибыль при плановой цене акции">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
@@ -980,7 +1057,7 @@ export function PricePromotions() {
                       <th>Товар</th>
                       <th>ID (nm)</th>
                       <th>Мин. цена, ₽</th>
-                      <th title="Чистая прибыль при плановой цене акции">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
@@ -1058,7 +1135,7 @@ export function PricePromotions() {
                   <th>Цена акции, ₽</th>
                   <th>Макс. цена акции, ₽</th>
                   <th>Мин. цена, ₽</th>
-                  <th>Прибыль, ₽</th>
+                  <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
                 </tr>
               </thead>
               <tbody>

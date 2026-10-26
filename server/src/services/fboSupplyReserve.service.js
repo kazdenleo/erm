@@ -324,20 +324,109 @@ async function batchGetIncomingPoolForFboProducts(productIds, { warehouseIds = [
   return result;
 }
 
-/** Списать комплектующие из пула «в пути» на N полных комплектов. */
-function takeKitsFromComponentIncomingPools(components, componentPools, kitsWanted) {
+/**
+ * Свободный остаток на складах FBO (нал − резерв по складу).
+ * Нужен, чтобы «путь» комплекта учитывал пару «одна нога на складе + вторая в закупке».
+ */
+async function batchGetFreeOnHandForFboProducts(productIds, warehouseIds) {
+  const pids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const whs = normalizeWarehouseIdList(warehouseIds);
+  const result = new Map();
+  for (const pid of pids) result.set(pid, 0);
+  if (!pids.length || !whs.length) return result;
+
+  const [onHandByProductWh, reservedByProductWh] = await Promise.all([
+    batchGetWarehouseOnHand(pids, whs),
+    batchGetNetReservedOnWarehouses(pids, whs),
+  ]);
+  for (const pid of pids) {
+    const onHandByWh = onHandByProductWh.get(pid) || new Map();
+    const reservedByWh = reservedByProductWh.get(pid) || new Map();
+    let free = 0;
+    for (const wh of whs) {
+      free += Math.max(0, (onHandByWh.get(wh) || 0) - (reservedByWh.get(wh) || 0));
+    }
+    result.set(pid, free);
+  }
+  return result;
+}
+
+/**
+ * Сколько комплектов закрывается закупкой при уже лежащих на FBO комплектующих.
+ * Чистый нал (без пути) не засчитываем в «путь» — его закрывает hard-резерв / нал.
+ * Пример: SN-2134 нал 38 + SN-2135 в пути 38 → 38 комплектов «с пути».
+ */
+function takeKitsCoveredByIncomingWithStock(components, freePools, incomingPools, kitsWanted) {
   const wanted = Math.max(0, Math.floor(Number(kitsWanted) || 0));
   if (wanted <= 0 || !components?.length) return 0;
-  const can = computeAssemblableFromComponentPoolMap(components, componentPools);
-  const take = Math.min(wanted, can);
+
+  const freeOnly = new Map();
+  const mixed = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const free = Math.max(0, Number(freePools.get(pid)) || 0);
+    const inc = Math.max(0, Number(incomingPools.get(pid)) || 0);
+    freeOnly.set(pid, free);
+    mixed.set(pid, free + inc);
+  }
+  const canMixed = computeAssemblableFromComponentPoolMap(components, mixed);
+  const canFree = computeAssemblableFromComponentPoolMap(components, freeOnly);
+  const pathCap = Math.max(0, canMixed - canFree);
+  const take = Math.min(wanted, pathCap);
   if (take <= 0) return 0;
+
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    let need = take * Math.max(1, parseInt(c.quantity, 10) || 1);
+    const inc = Math.max(0, Number(incomingPools.get(pid)) || 0);
+    const fromInc = Math.min(need, inc);
+    if (fromInc > 0) incomingPools.set(pid, inc - fromInc);
+    need -= fromInc;
+    if (need > 0) {
+      const free = Math.max(0, Number(freePools.get(pid)) || 0);
+      freePools.set(pid, Math.max(0, free - need));
+    }
+  }
+  return take;
+}
+
+/** Сколько комплектов даёт «путь» при учёте нала комплектующих на FBO (без мутации пулов). */
+function assemblableKitsFromIncomingWithStock(components, freeByProduct, incomingByProduct) {
+  if (!components?.length) return 0;
+  const freeOnly = new Map();
+  const mixed = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const free = Math.max(0, Number(freeByProduct.get(pid)) || 0);
+    const inc = Math.max(0, Number(incomingByProduct.get(pid)) || 0);
+    freeOnly.set(pid, free);
+    mixed.set(pid, free + inc);
+  }
+  const canMixed = computeAssemblableFromComponentPoolMap(components, mixed);
+  const canFree = computeAssemblableFromComponentPoolMap(components, freeOnly);
+  return Math.max(0, canMixed - canFree);
+}
+
+/**
+ * Для расчёта закупки: забрать из пула «в пути» потребность других поставок по каждому
+ * комплектующему отдельно (gap × шт./компл.), даже если полного комплекта из «пути» не собрать.
+ * Иначе остаются «сироты» (например 1 шт. при 2 ед./компл. или лишний SN-2170 без пары SN-2171).
+ */
+function claimComponentIncomingForKitGap(components, componentPools, kitsWanted) {
+  const wanted = Math.max(0, Math.floor(Number(kitsWanted) || 0));
+  if (wanted <= 0 || !components?.length) return;
   for (const c of components) {
     const pid = Number(c.component_product_id);
     if (!Number.isFinite(pid) || pid < 1) continue;
     const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-    componentPools.set(pid, Math.max(0, (Number(componentPools.get(pid)) || 0) - take * perKit));
+    const need = wanted * perKit;
+    const pool = Math.max(0, Number(componentPools.get(pid)) || 0);
+    const take = Math.min(need, pool);
+    if (take > 0) componentPools.set(pid, Math.max(0, pool - take));
   }
-  return take;
 }
 
 /** Склады FBO для пула «путь»: профиль + склады списания из очереди поставок. */
@@ -913,15 +1002,22 @@ class FboSupplyReserveService {
 
     const fboIncomingWhs = await resolveFboIncomingWarehouseIds(profileId, queuesByProduct);
     const incomingLookupIds = [...new Set([...uniquePids, ...componentIds.filter((id) => id > 0)])];
-    const incomingByProduct = await batchGetIncomingPoolForFboProducts(incomingLookupIds, {
-      warehouseIds: fboIncomingWhs,
-    });
+    const [incomingByProduct, freeOnHandByProduct] = await Promise.all([
+      batchGetIncomingPoolForFboProducts(incomingLookupIds, {
+        warehouseIds: fboIncomingWhs,
+      }),
+      batchGetFreeOnHandForFboProducts(incomingLookupIds, fboIncomingWhs),
+    ]);
 
-    /** Общий пул закупок комплектующих — делится между комплектами FIFO. */
+    /** Пул закупок комплектующих + свободный нал на FBO — делится между комплектами FIFO. */
     const componentIncomingPools = new Map();
+    const componentFreePools = new Map();
     for (const cid of componentIds) {
       if (!componentIncomingPools.has(cid)) {
         componentIncomingPools.set(cid, Math.max(0, Number(incomingByProduct.get(cid)) || 0));
+      }
+      if (!componentFreePools.has(cid)) {
+        componentFreePools.set(cid, Math.max(0, Number(freeOnHandByProduct.get(cid)) || 0));
       }
     }
 
@@ -967,8 +1063,9 @@ class FboSupplyReserveService {
           }
           const still = gap - fromDirect;
           if (still > 0 && isKit && components.length) {
-            reservedFromIncoming += takeKitsFromComponentIncomingPools(
+            reservedFromIncoming += takeKitsCoveredByIncomingWithStock(
               components,
+              componentFreePools,
               componentIncomingPools,
               still
             );
@@ -1006,9 +1103,10 @@ class FboSupplyReserveService {
     for (const comps of kitComponentsByKit.values()) {
       for (const c of comps) incomingLookupIds.push(Number(c.component_product_id));
     }
-    const [onHandByProductWh, incomingByProduct] = await Promise.all([
+    const [onHandByProductWh, incomingByProduct, freeOnHandByProduct] = await Promise.all([
       batchGetWarehouseOnHand(productIds, sourceWarehouseIds),
       batchGetIncomingPoolForFboProducts(incomingLookupIds, { warehouseIds: sourceWarehouseIds }),
+      batchGetFreeOnHandForFboProducts(incomingLookupIds, sourceWarehouseIds),
     ]);
     const sourceOnHandByProduct = new Map();
     const sourceIncomingByProduct = new Map();
@@ -1016,12 +1114,11 @@ class FboSupplyReserveService {
       const direct = Math.max(0, Number(incomingByProduct.get(productId)) || 0);
       if (kitFlags.get(productId) === true) {
         const comps = kitComponentsByKit.get(productId) || [];
-        const pools = new Map();
-        for (const c of comps) {
-          const cid = Number(c.component_product_id);
-          pools.set(cid, Math.max(0, Number(incomingByProduct.get(cid)) || 0));
-        }
-        const fromComponents = computeAssemblableFromComponentPoolMap(comps, pools);
+        const fromComponents = assemblableKitsFromIncomingWithStock(
+          comps,
+          freeOnHandByProduct,
+          incomingByProduct
+        );
         sourceIncomingByProduct.set(productId, direct + fromComponents);
       } else {
         sourceIncomingByProduct.set(productId, direct);
@@ -1863,7 +1960,8 @@ class FboSupplyReserveService {
         }
         const still = gap - fromDirect;
         if (still > 0) {
-          takeKitsFromComponentIncomingPools(components, incomingPools, still);
+          // Не assemblable: в расчёте закупки считаем штучную потребность комплектующих.
+          claimComponentIncomingForKitGap(components, incomingPools, still);
         }
       } else {
         const pool = incomingPools.get(productId) || 0;
