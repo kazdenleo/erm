@@ -444,7 +444,7 @@ export function PricePromotions() {
         setPromoNotice({ type: 'error', text: res.error || 'Не удалось выполнить действие' });
       } else {
         const skipped = Array.isArray(res?.blocked) && res.blocked.length ? ` Не вошли: ${res.blocked.length}.` : '';
-        setPromoNotice({ type: 'ok', text: `Готово.${skipped}` });
+        setPromoNotice({ type: 'ok', text: res?.notice || `Готово.${skipped}` });
         setPromoReload((n) => n + 1);
       }
     } catch (err) {
@@ -714,7 +714,13 @@ export function PricePromotions() {
                           <button
                             type="button"
                             disabled={promoBusyKey === `ozon-out-${p.id}`}
-                            onClick={() => runPromoAction(`ozon-out-${p.id}`, () => pricesApi.leaveOzonAction(actionModal.action.id, [p.id]))}
+                            onClick={() => runPromoAction(`ozon-out-${p.id}`, () => pricesApi.leaveOzonAction(actionModal.action.id, [{
+                              ozonProductId: p.id,
+                              price: p.price,
+                              maxActionPrice: p.max_action_price,
+                              floor: p.floor ?? p.card_min,
+                            }]))}
+                            title="Снять с акции. Для бустинга Ozon не даёт исключить товар: предельная цена поднимается до обычной цены"
                             style={{ padding: '4px 8px', fontSize: 12 }}
                           >
                             {promoBusyKey === `ozon-out-${p.id}` ? '...' : 'Выйти'}

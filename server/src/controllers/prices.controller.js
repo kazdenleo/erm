@@ -630,7 +630,11 @@ class PricesController {
   async leaveOzonAction(req, res, next) {
     try {
       const result = await leaveOzonAction(
-        { actionId: req.params.actionId, ozonProductIds: req.body?.ozonProductIds || [] },
+        {
+          actionId: req.params.actionId,
+          ozonProductIds: req.body?.ozonProductIds || [],
+          products: req.body?.products || [],
+        },
         this._promoScope(req)
       );
       return res.status(result?.ok ? 200 : 400).json(result);

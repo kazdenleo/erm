@@ -758,7 +758,8 @@ class PricesService {
   }
 
   /**
-   * Исключение из акции: POST /v2/actions/products/deactivate (не /v1 — отключён ~19.10.2026).
+   * Исключение из акции «Промокоды»: POST /v2/actions/products/deactivate.
+   * Эластичный бустинг этот метод блокирует — выход через /v1/actions/products/update.
    * Считает только реально снятые id; rejected / is_updated=false — в errors.
    */
   async _deactivateOzonActionProducts(client_id, api_key, actionId, productIds) {

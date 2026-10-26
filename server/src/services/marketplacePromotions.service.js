@@ -11,6 +11,7 @@ import { netProfitAtSalePrice } from './min-price-calculator.service.js';
 import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { joinBlockMessage, ozonEntryPrice, promoJoinDecision } from '../utils/promoParticipation.js';
+import { exitActionPrice, isUnifiedPriceBlock } from '../utils/ozonPromoExit.js';
 
 const YM_API = 'https://api.partner.market.yandex.ru';
 
@@ -275,13 +276,72 @@ export async function joinOzonAction({ actionId, products = [] }, options = {}) 
   };
 }
 
-export async function leaveOzonAction({ actionId, ozonProductIds = [] }, options = {}) {
+async function leaveOzonByRaisingPrice(client_id, api_key, actionId, products) {
+  const items = [];
+  const blocked = [];
+  for (const row of products) {
+    const ozonProductId = Number(row.ozonProductId ?? row.product_id ?? row.id);
+    const actionPrice = exitActionPrice(row);
+    if (!Number.isFinite(ozonProductId) || ozonProductId < 1 || actionPrice == null) {
+      blocked.push({ ozonProductId, message: 'Нет цены, которую можно поставить выше порога акции' });
+      continue;
+    }
+    items.push({ product_id: ozonProductId, action_price: actionPrice });
+  }
+  if (!items.length) {
+    return { ok: false, error: blocked[0]?.message || 'Не удалось поднять предельную цену', blocked };
+  }
+  const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/update', {
+    method: 'POST',
+    headers: pricesService._ozonApiHeaders(client_id, api_key),
+    body: JSON.stringify({ action_id: Number(actionId), products: items }),
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+  if (!response.ok) {
+    return { ok: false, error: `Ozon ${response.status}: ${text.slice(0, 240)}`, blocked };
+  }
+  const result = data?.result && typeof data.result === 'object' ? data.result : data || {};
+  const rejected = Array.isArray(result.rejected) ? result.rejected : [];
+  const reason = rejected.map((row) => row?.reason || row?.message).find(Boolean);
+  const price = items.length === 1 ? items[0].action_price : null;
+  return {
+    ok: rejected.length === 0 && blocked.length === 0,
+    deactivated: items.length - rejected.length,
+    rejected,
+    blocked,
+    raisedTo: price,
+    error: rejected.length
+      ? `Ozon не принял новую предельную цену${reason ? `: ${reason}` : ''}`
+      : (blocked[0]?.message || undefined),
+    notice: rejected.length
+      ? undefined
+      : (price != null
+        ? `Предельную цену подняли до ${price} ₽ — выше порога акции, товар выходит из неё`
+        : 'Предельную цену подняли выше порога акции, товары выходят из неё'),
+  };
+}
+
+export async function leaveOzonAction({ actionId, ozonProductIds = [], products = [] }, options = {}) {
   const id = Number(actionId);
   if (!Number.isFinite(id) || id < 1) return { ok: false, error: 'Некорректный ID акции' };
   const { client_id, api_key } = await pricesService._getOzonApiCredentials(options);
   if (!client_id || !api_key) return { ok: false, error: 'Настройте интеграцию Ozon' };
-  const result = await pricesService._deactivateOzonActionProducts(client_id, api_key, id, ozonProductIds);
+  const rows = (Array.isArray(products) && products.length
+    ? products
+    : ozonProductIds.map((ozonProductId) => ({ ozonProductId }))
+  );
+  const ids = rows
+    .map((row) => Number(row.ozonProductId ?? row.product_id ?? row.id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const result = await pricesService._deactivateOzonActionProducts(client_id, api_key, id, ids);
   await pricesService.forgetOzonActionProductsCache(id, options).catch(() => {});
+  if (!result.ok && isUnifiedPriceBlock(result.error)) {
+    const raised = await leaveOzonByRaisingPrice(client_id, api_key, id, rows);
+    await pricesService.forgetOzonActionProductsCache(id, options).catch(() => {});
+    return raised;
+  }
   if (!result.ok) return { ok: false, error: result.error || 'Не удалось выйти из акции', ...result };
   return { ok: true, deactivated: result.deactivated, rejected: result.rejected || [] };
 }

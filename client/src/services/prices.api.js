@@ -123,8 +123,11 @@ export const pricesApi = {
     return response.data;
   },
 
-  async leaveOzonAction(actionId, ozonProductIds) {
-    const response = await api.post(`/product/prices/actions/ozon/${actionId}/leave`, { ozonProductIds });
+  async leaveOzonAction(actionId, payload) {
+    const body = Array.isArray(payload)
+      ? { products: payload }
+      : { ozonProductIds: payload };
+    const response = await api.post(`/product/prices/actions/ozon/${actionId}/leave`, body);
     return response.data;
   },
 
