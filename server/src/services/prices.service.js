@@ -635,12 +635,18 @@ class PricesService {
     const price = this._ozonMoneyAmount(p.price);
     const actionPrice = this._ozonMoneyAmount(p.action_price);
     const maxActionPrice = this._ozonMoneyAmount(p.max_action_price);
+    const alertMax = this._ozonMoneyAmount(p.alert_max_action_price);
+    const priceMinElastic = this._ozonMoneyAmount(p.price_min_elastic);
+    const priceMaxElastic = this._ozonMoneyAmount(p.price_max_elastic);
     return {
       ...p,
       id: p.id != null && p.id !== '' ? Number(p.id) : p.id,
       price: price != null ? price : p.price,
       action_price: actionPrice != null ? actionPrice : p.action_price,
       max_action_price: maxActionPrice != null ? maxActionPrice : p.max_action_price,
+      alert_max_action_price: alertMax != null ? alertMax : p.alert_max_action_price,
+      price_min_elastic: priceMinElastic != null ? priceMinElastic : p.price_min_elastic,
+      price_max_elastic: priceMaxElastic != null ? priceMaxElastic : p.price_max_elastic,
     };
   }
 
@@ -1385,7 +1391,7 @@ class PricesService {
       const cacheEntry = await this._readScopedActionsCache('ozonActionProductsCache', scope);
       const actions = cacheEntry?.actions || {};
       const key = String(actionId);
-      let rawProducts = actions[key]?.products || [];
+      let rawProducts = (actions[key]?.products || []).map((p) => this._normalizeOzonActionProduct(p));
       // Если в кэше нет товаров по акции — подгружаем из API (кэш мог быть пуст или ещё не обновлён)
       if (rawProducts.length === 0) {
         if (!client_id || !api_key) {

@@ -12,6 +12,7 @@ import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { joinBlockMessage, ozonEntryPrice, promoJoinDecision } from '../utils/promoParticipation.js';
 import { exitActionPrice, isUnifiedPriceBlock } from '../utils/ozonPromoExit.js';
+import { elasticBoostLevels } from '../utils/ozonElasticBoost.js';
 
 const YM_API = 'https://api.partner.market.yandex.ru';
 
@@ -179,11 +180,11 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
     const decision = promoJoinDecision({ entryPrice: entry, floor });
     const product = products.get(pid);
     const calculator = calculators.get(pid);
-    let profit = null;
-    if (product && calculator && entry != null) {
+    const profitAt = (price) => {
+      if (!product || !calculator || price == null) return null;
       const base = (num(product.cost) || 0) + (num(product.additional_expenses) || 0);
-      profit = netProfitAtSalePrice(
-        entry,
+      return netProfitAtSalePrice(
+        price,
         base,
         calculator,
         marketplace,
@@ -194,9 +195,22 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
         known?.scheme || null,
         fees.spp
       );
-    }
+    };
+    const profit = profitAt(entry);
+    const boostLevels = marketplace === 'ozon'
+      ? elasticBoostLevels(row).map((level) => {
+          const decision = promoJoinDecision({ entryPrice: level.price, floor });
+          return {
+            ...level,
+            profit_rub: profitAt(level.price),
+            below_floor: decision.reason === 'below_floor',
+            join_block_reason: decision.ok ? null : decision.reason,
+          };
+        })
+      : [];
     return {
       ...row,
+      boost_levels: boostLevels,
       entry_price: entry,
       floor,
       card_min: known?.card_min ?? null,
@@ -344,6 +358,77 @@ export async function leaveOzonAction({ actionId, ozonProductIds = [], products 
   }
   if (!result.ok) return { ok: false, error: result.error || 'Не удалось выйти из акции', ...result };
   return { ok: true, deactivated: result.deactivated, rejected: result.rejected || [] };
+}
+
+async function postOzonActionPrices(client_id, api_key, actionId, items) {
+  const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/update', {
+    method: 'POST',
+    headers: pricesService._ozonApiHeaders(client_id, api_key),
+    body: JSON.stringify({ action_id: Number(actionId), products: items }),
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+  if (!response.ok) {
+    return { ok: false, error: `Ozon ${response.status}: ${text.slice(0, 240)}`, rejected: [] };
+  }
+  const result = data?.result && typeof data.result === 'object' ? data.result : data || {};
+  const rejected = Array.isArray(result.rejected) ? result.rejected : [];
+  const reason = rejected.map((row) => row?.reason || row?.message).find(Boolean);
+  return {
+    ok: rejected.length === 0,
+    rejected,
+    error: rejected.length ? `Ozon не принял новую предельную цену${reason ? `: ${reason}` : ''}` : undefined,
+  };
+}
+
+/** Поставить предельную цену уровня бустинга. Ozon копирует её в раздел «Цены». */
+export async function setOzonActionPrice({ actionId, products = [] }, options = {}) {
+  const id = Number(actionId);
+  if (!Number.isFinite(id) || id < 1) return { ok: false, error: 'Некорректный ID акции' };
+  const { client_id, api_key } = await pricesService._getOzonApiCredentials(options);
+  if (!client_id || !api_key) return { ok: false, error: 'Настройте интеграцию Ozon' };
+
+  const allowed = [];
+  const blocked = [];
+  for (const row of products) {
+    const ozonProductId = Number(row.ozonProductId ?? row.product_id ?? row.id);
+    const actionPrice = num(row.actionPrice ?? row.action_price);
+    const ourProductId = Number(row.ourProductId ?? row.our_product_id);
+    const boost = num(row.boost);
+    if (!Number.isFinite(ozonProductId) || ozonProductId < 1 || actionPrice == null || actionPrice <= 0) {
+      blocked.push({ ozonProductId, reason: 'no_entry_price', message: joinBlockMessage('no_entry_price') });
+      continue;
+    }
+    const floor = Number.isFinite(ourProductId) ? await floorForProduct(ourProductId, 'ozon') : null;
+    const decision = promoJoinDecision({ entryPrice: actionPrice, floor });
+    if (!decision.ok) {
+      blocked.push({ ozonProductId, ourProductId, reason: decision.reason, message: joinBlockMessage(decision.reason) });
+      continue;
+    }
+    allowed.push({ product_id: ozonProductId, action_price: Math.round(actionPrice), boost });
+  }
+  if (!allowed.length) {
+    return { ok: false, error: blocked[0]?.message || 'Нет цены, которую можно поставить', blocked };
+  }
+  const updated = await postOzonActionPrices(
+    client_id,
+    api_key,
+    id,
+    allowed.map(({ product_id, action_price }) => ({ product_id, action_price }))
+  );
+  await pricesService.forgetOzonActionProductsCache(id, options).catch(() => {});
+  if (!updated.ok) return { ok: false, error: updated.error || 'Не удалось поставить цену', blocked, rejected: updated.rejected };
+  const price = allowed[0].action_price;
+  const boost = allowed.length === 1 ? allowed[0].boost : null;
+  return {
+    ok: true,
+    blocked,
+    rejected: updated.rejected || [],
+    notice: boost != null
+      ? `Предельную цену поставили ${price} ₽, бустинг около ${boost}%. В разделе «Цены» будет та же цена`
+      : `Предельную цену поставили ${price} ₽. В разделе «Цены» будет та же цена`,
+  };
 }
 
 export async function joinWbPromotion({ promotionId, items = [] }, options = {}) {

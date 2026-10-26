@@ -9,6 +9,7 @@ import {
   joinWbPromotion,
   joinYmPromo,
   leaveOzonAction,
+  setOzonActionPrice,
   leaveYmPromo,
   listYmPromoOffers,
   listYmPromos,
@@ -618,6 +619,18 @@ class PricesController {
   async joinOzonAction(req, res, next) {
     try {
       const result = await joinOzonAction(
+        { actionId: req.params.actionId, products: req.body?.products || [] },
+        this._promoScope(req)
+      );
+      return res.status(result?.ok ? 200 : 400).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async setOzonActionPrice(req, res, next) {
+    try {
+      const result = await setOzonActionPrice(
         { actionId: req.params.actionId, products: req.body?.products || [] },
         this._promoScope(req)
       );

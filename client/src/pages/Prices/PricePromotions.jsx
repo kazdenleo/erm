@@ -83,6 +83,57 @@ function minPriceCell(row) {
   );
 }
 
+function formatLevelProfit(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const rounded = Math.round(n);
+  return `${rounded > 0 ? '+' : ''}${rounded} ₽`;
+}
+
+function boostLevelsCell(row, promoBusyKey, onSet) {
+  const levels = Array.isArray(row?.boost_levels) ? row.boost_levels : [];
+  if (!levels.length) return '—';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {levels.map((level) => {
+        const busy = promoBusyKey === `ozon-boost-${row.id}-${level.boost}`;
+        const profitNum = Number(level.profit_rub);
+        const hasProfit = Number.isFinite(profitNum);
+        const color = hasProfit && profitNum < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
+        return (
+          <div
+            key={level.boost}
+            title={level.current ? 'Ближайший уровень к текущей цене в акции' : undefined}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 12,
+              whiteSpace: 'nowrap',
+              background: level.current ? 'rgba(0,91,255,0.12)' : 'transparent',
+              borderRadius: 4,
+              padding: '1px 4px',
+            }}
+          >
+            <span style={{ width: 36, fontWeight: 600 }}>{level.boost}%</span>
+            <span style={{ width: 58 }}>{formatRub(level.price)}</span>
+            <span style={{ width: 64, color: hasProfit ? color : 'var(--muted)', fontWeight: 600 }}>{formatLevelProfit(level.profit_rub)}</span>
+            <button
+              type="button"
+              disabled={Boolean(level.join_block_reason) || busy}
+              title={level.join_block_reason ? joinTitle({ join_block_reason: level.join_block_reason }) : 'Поставить эту предельную цену. Она же станет ценой в разделе «Цены»'}
+              onClick={() => onSet(level)}
+              style={{ padding: '2px 6px', fontSize: 11 }}
+            >
+              {busy ? '...' : 'Поставить'}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function profitCell(row) {
   const raw = row?.profit_rub;
   const n = raw == null || raw === '' ? null : Number(raw);
@@ -666,7 +717,7 @@ export function PricePromotions() {
           </button>
         </div>
         <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '0 0 10px' }}>
-          У товара одна предельная цена: вход по цене акции обновляет её и в разделе «Цены». Если она не выше требуемой цены акции, товар участвует; чтобы выйти — поднимите предельную цену выше этого порога или снимите товар с акции.
+          У товара одна предельная цена: вход по цене акции обновляет её и в разделе «Цены». Если она не выше требуемой цены акции, товар участвует; чтобы выйти — поднимите предельную цену выше этого порога или снимите товар с акции. У эластичного бустинга шкала: чем ниже цена, тем выше процент. Края присылает Ozon, промежуточные цены считаются по прямой между ними.
         </p>
         {noticeBox}
         {actionModalTab === 'participating' && (
@@ -700,11 +751,9 @@ export function PricePromotions() {
                       <th>Режим</th>
                       <th>Мин. остаток</th>
                       <th>Остаток</th>
-                      <th>Бустинг, %</th>
-                      <th>Цена мин. бустинга, ₽</th>
-                      <th>Цена макс. бустинга, ₽</th>
-                      <th>Мин. бустинг, %</th>
-                      <th>Макс. бустинг, %</th>
+                      <th title="Чем ниже цена, тем выше бустинг. Края шкалы присылает Ozon, промежуточные цены — по прямой между ними. Справа прибыль при продаже по этой цене">
+                        Уровни бустинга
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -765,11 +814,12 @@ export function PricePromotions() {
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{formatRub(p.price_min_elastic)}</td>
-                        <td>{formatRub(p.price_max_elastic)}</td>
-                        <td>{p.min_boost != null ? p.min_boost : '—'}</td>
-                        <td>{p.max_boost != null ? p.max_boost : '—'}</td>
+                        <td>{boostLevelsCell(p, promoBusyKey, (level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
+                          ozonProductId: p.id,
+                          actionPrice: level.price,
+                          boost: level.boost,
+                          ourProductId: p.our_product_id,
+                        }])))}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -811,11 +861,9 @@ export function PricePromotions() {
                       <th>Режим</th>
                       <th>Мин. остаток</th>
                       <th>Остаток</th>
-                      <th>Бустинг, %</th>
-                      <th>Цена мин. бустинга, ₽</th>
-                      <th>Цена макс. бустинга, ₽</th>
-                      <th>Мин. бустинг, %</th>
-                      <th>Макс. бустинг, %</th>
+                      <th title="Чем ниже цена, тем выше бустинг. Края шкалы присылает Ozon, промежуточные цены — по прямой между ними. Справа прибыль при продаже по этой цене">
+                        Уровни бустинга
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -852,11 +900,12 @@ export function PricePromotions() {
                         <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
                         <td>{p.min_stock != null ? p.min_stock : '—'}</td>
                         <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{formatRub(p.price_min_elastic)}</td>
-                        <td>{formatRub(p.price_max_elastic)}</td>
-                        <td>{p.min_boost != null ? p.min_boost : '—'}</td>
-                        <td>{p.max_boost != null ? p.max_boost : '—'}</td>
+                        <td>{boostLevelsCell(p, promoBusyKey, (level) => runPromoAction(`ozon-boost-${p.id}-${level.boost}`, () => pricesApi.setOzonActionPrice(actionModal.action.id, [{
+                          ozonProductId: p.id,
+                          actionPrice: level.price,
+                          boost: level.boost,
+                          ourProductId: p.our_product_id,
+                        }])))}</td>
                       </tr>
                     ))}
                   </tbody>

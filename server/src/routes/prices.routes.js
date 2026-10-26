@@ -26,6 +26,7 @@ router.get('/actions/ozon/:actionId/products', (req, res, next) => pricesControl
 // Товары, доступные к добавлению в акцию Ozon (запрос к API)
 router.get('/actions/ozon/:actionId/candidates', (req, res, next) => pricesController.getOzonActionCandidates(req, res, next));
 router.post('/actions/ozon/:actionId/join', (req, res, next) => pricesController.joinOzonAction(req, res, next));
+router.post('/actions/ozon/:actionId/price', (req, res, next) => pricesController.setOzonActionPrice(req, res, next));
 router.post('/actions/ozon/:actionId/leave', (req, res, next) => pricesController.leaveOzonAction(req, res, next));
 
 // Список акций Wildberries (календарь акций + детали)
