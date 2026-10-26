@@ -4,9 +4,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pricesApi } from '../../services/prices.api.js';
-import { Modal } from '../../components/common/Modal/Modal';
 import { productCardPath } from '../../utils/productCardPath.js';
 import './Prices.css';
 
@@ -39,6 +38,19 @@ function ozonDisplayActionPrice(p) {
   const ap = Number(p?.action_price);
   if (Number.isFinite(ap) && ap > 0) return ap;
   return ozonSuggestedEntryPrice(p);
+}
+
+function promoTabStyle(active, color) {
+  const darkText = color === '#fc0';
+  return {
+    padding: '8px 14px',
+    background: active ? color : 'transparent',
+    border: `1px solid ${active ? color : 'var(--border, #e5e7eb)'}`,
+    borderRadius: 6,
+    color: active ? (darkText ? '#111' : '#fff') : 'var(--text, #222)',
+    cursor: 'pointer',
+    fontSize: 13,
+  };
 }
 
 function joinTitle(row) {
@@ -226,14 +238,19 @@ const YM_STATUS = {
 };
 
 export function PricePromotions() {
-  const [activePromoMarketplace, setActivePromoMarketplace] = useState('ozon'); // 'ozon' | 'wb' | 'ym'
+  const navigate = useNavigate();
+  const splat = useParams()['*'] || '';
+  const [routeMp, routePromoId] = splat.split('/').filter(Boolean);
+  const detailMp = routeMp === 'ozon' || routeMp === 'wb' || routeMp === 'ym' ? routeMp : null;
+  const detailId = detailMp && routePromoId ? routePromoId : null;
+
+  const [activePromoMarketplace, setActivePromoMarketplace] = useState(detailMp || 'ozon'); // 'ozon' | 'wb' | 'ym'
   const [ozonActions, setOzonActions] = useState([]);
   const [ozonActionsLoading, setOzonActionsLoading] = useState(false);
   const [ozonActionsError, setOzonActionsError] = useState(null);
   const [wbActions, setWbActions] = useState([]);
   const [wbActionsLoading, setWbActionsLoading] = useState(false);
   const [wbActionsError, setWbActionsError] = useState(null);
-  const [actionModal, setActionModal] = useState({ isOpen: false, action: null });
   const [actionModalTab, setActionModalTab] = useState('participating');
   const [actionProducts, setActionProducts] = useState([]);
   const [actionCandidates, setActionCandidates] = useState([]);
@@ -241,7 +258,6 @@ export function PricePromotions() {
   const [actionCandidatesLoading, setActionCandidatesLoading] = useState(false);
   const [actionProductsError, setActionProductsError] = useState(null);
   const [actionCandidatesError, setActionCandidatesError] = useState(null);
-  const [wbActionModal, setWbActionModal] = useState({ isOpen: false, promotion: null });
   const [wbActionDetails, setWbActionDetails] = useState(null);
   const [wbActionDetailsLoading, setWbActionDetailsLoading] = useState(false);
   const [wbActionDetailsError, setWbActionDetailsError] = useState(null);
@@ -260,13 +276,29 @@ export function PricePromotions() {
   const [ymPromos, setYmPromos] = useState([]);
   const [ymPromosLoading, setYmPromosLoading] = useState(false);
   const [ymPromosError, setYmPromosError] = useState(null);
-  const [ymModal, setYmModal] = useState({ isOpen: false, promo: null });
   const [ymOffers, setYmOffers] = useState([]);
   const [ymOffersLoading, setYmOffersLoading] = useState(false);
   const [ymOffersError, setYmOffersError] = useState(null);
   const [ymModalTab, setYmModalTab] = useState('participating');
 
-  // При открытии модалки акции — загружаем участвующие и доступные товары
+  const ozonAction = detailMp === 'ozon'
+    ? (ozonActions.find((a) => String(a.id) === String(detailId)) || { id: detailId, title: '' })
+    : null;
+  const actionModal = { isOpen: Boolean(ozonAction), action: ozonAction };
+  const wbPromotion = detailMp === 'wb'
+    ? (wbActions.find((a) => String(a.id) === String(detailId)) || { id: detailId, name: '' })
+    : null;
+  const wbActionModal = { isOpen: Boolean(wbPromotion), promotion: wbPromotion };
+  const ymPromoItem = detailMp === 'ym'
+    ? (ymPromos.find((a) => String(a.id) === String(detailId)) || { id: detailId, name: '' })
+    : null;
+  const ymModal = { isOpen: Boolean(ymPromoItem), promo: ymPromoItem };
+
+  const openPromo = (marketplace, id) => {
+    navigate(`/prices/promotions/${marketplace}/${id}`);
+  };
+
+  // При открытии страницы акции — загружаем участвующие и доступные товары
   useEffect(() => {
     if (!actionModal.isOpen || !actionModal.action?.id) {
       return;
@@ -498,6 +530,17 @@ export function PricePromotions() {
     return () => { cancelled = true; };
   }, [ymModal.isOpen, ymModal.promo?.id, promoReload]);
 
+  useEffect(() => {
+    if (detailMp && detailMp !== activePromoMarketplace) setActivePromoMarketplace(detailMp);
+  }, [detailMp, activePromoMarketplace]);
+
+  useEffect(() => {
+    setActionModalTab('participating');
+    setWbActionModalTab('details');
+    setYmModalTab('participating');
+    setPromoNotice(null);
+  }, [detailMp, detailId]);
+
   const runPromoAction = async (key, fn) => {
     setPromoBusyKey(key);
     setPromoNotice(null);
@@ -528,6 +571,7 @@ export function PricePromotions() {
 
   return (
     <div className="card">
+      {!detailId && (<>
       <h1 className="title">Акции</h1>
       <p className="subtitle">
         Акции маркетплейсов. Вход закрыт, если цена акции ниже минимальной или минимум не посчитан. ·{' '}
@@ -579,7 +623,7 @@ export function PricePromotions() {
                 {ozonActions.map((a) => (
                   <tr
                     key={a.id}
-                    onClick={() => setActionModal({ isOpen: true, action: a })}
+                    onClick={() => openPromo('ozon', a.id)}
                     style={{ cursor: 'pointer' }}
                     title="Нажмите, чтобы открыть товары акции"
                   >
@@ -629,7 +673,7 @@ export function PricePromotions() {
                   <tr
                     key={a.id}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => setWbActionModal({ isOpen: true, promotion: a })}
+                    onClick={() => openPromo('wb', a.id)}
                     title="Нажмите, чтобы открыть детали акции"
                   >
                     <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
@@ -674,7 +718,7 @@ export function PricePromotions() {
                   <tr
                     key={a.id}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => { setYmModalTab('participating'); setYmModal({ isOpen: true, promo: a }); }}
+                    onClick={() => openPromo('ym', a.id)}
                     title="Открыть товары акции"
                   >
                     <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
@@ -688,43 +732,19 @@ export function PricePromotions() {
           )}
         </div>
       )}
+      </>)}
 
-      {/* Модалка: товары акции Ozon — участвующие и доступные к акции */}
-      <Modal
-        isOpen={actionModal.isOpen}
-        onClose={() => setActionModal({ isOpen: false, action: null })}
-        title={actionModal.action ? `Акция: ${actionModal.action.title || actionModal.action.id}` : 'Акция'}
-        size="xl"
-      >
+      {actionModal.isOpen && (
+      <>
+        <p style={{ margin: '0 0 8px' }}>
+          <Link to="/prices/promotions" style={{ color: 'var(--primary)', fontSize: 14 }}>← Все акции</Link>
+        </p>
+        <h1 className="title">Акция: {actionModal.action.title || actionModal.action.id}</h1>
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-          <button
-            type="button"
-            onClick={() => setActionModalTab('participating')}
-            style={{
-              padding: '8px 14px',
-              background: actionModalTab === 'participating' ? 'rgba(0,91,255,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: actionModalTab === 'participating' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
+          <button type="button" onClick={() => setActionModalTab('participating')} style={promoTabStyle(actionModalTab === 'participating', '#005bff')}>
             Участвующие в акции
           </button>
-          <button
-            type="button"
-            onClick={() => setActionModalTab('candidates')}
-            style={{
-              padding: '8px 14px',
-              background: actionModalTab === 'candidates' ? 'rgba(0,91,255,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: actionModalTab === 'candidates' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
+          <button type="button" onClick={() => setActionModalTab('candidates')} style={promoTabStyle(actionModalTab === 'candidates', '#005bff')}>
             Доступные к акции
           </button>
         </div>
@@ -926,59 +946,22 @@ export function PricePromotions() {
             )}
           </div>
         )}
-      </Modal>
+      </>)}
 
-      {/* Модалка: детали акции WB + номенклатуры (участвующие / доступные) */}
-      <Modal
-        isOpen={wbActionModal.isOpen}
-        onClose={() => setWbActionModal({ isOpen: false, promotion: null })}
-        title={wbActionModal.promotion ? `Акция WB: ${wbActionModal.promotion.name || wbActionModal.promotion.id}` : 'Акция WB'}
-        size="xl"
-      >
+      {wbActionModal.isOpen && (
+      <>
+        <p style={{ margin: '0 0 8px' }}>
+          <Link to="/prices/promotions" style={{ color: 'var(--primary)', fontSize: 14 }}>← Все акции</Link>
+        </p>
+        <h1 className="title">Акция WB: {wbActionModal.promotion.name || wbActionModal.promotion.id}</h1>
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('details')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'details' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'details' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
+          <button type="button" onClick={() => setWbActionModalTab('details')} style={promoTabStyle(wbActionModalTab === 'details', '#cb11ab')}>
             Детали
           </button>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('participating')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'participating' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'participating' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
+          <button type="button" onClick={() => setWbActionModalTab('participating')} style={promoTabStyle(wbActionModalTab === 'participating', '#cb11ab')}>
             Участвующие в акции
           </button>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('candidates')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'candidates' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'candidates' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
+          <button type="button" onClick={() => setWbActionModalTab('candidates')} style={promoTabStyle(wbActionModalTab === 'candidates', '#cb11ab')}>
             Доступные к акции
           </button>
         </div>
@@ -1184,19 +1167,19 @@ export function PricePromotions() {
             )}
           </div>
         )}
-      </Modal>
+      </>)}
 
-      <Modal
-        isOpen={ymModal.isOpen}
-        onClose={() => setYmModal({ isOpen: false, promo: null })}
-        title={ymModal.promo ? `Акция Яндекс Маркета: ${ymModal.promo.name || ymModal.promo.id}` : 'Акция Яндекс Маркета'}
-        size="xl"
-      >
+      {ymModal.isOpen && (
+      <>
+        <p style={{ margin: '0 0 8px' }}>
+          <Link to="/prices/promotions" style={{ color: 'var(--primary)', fontSize: 14 }}>← Все акции</Link>
+        </p>
+        <h1 className="title">Акция Яндекс Маркета: {ymModal.promo.name || ymModal.promo.id}</h1>
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px' }}>
-          <button type="button" onClick={() => setYmModalTab('participating')} style={{ padding: '6px 12px', fontSize: 13 }}>
+          <button type="button" onClick={() => setYmModalTab('participating')} style={promoTabStyle(ymModalTab === 'participating', '#fc0')}>
             Участвующие
           </button>
-          <button type="button" onClick={() => setYmModalTab('candidates')} style={{ padding: '6px 12px', fontSize: 13 }}>
+          <button type="button" onClick={() => setYmModalTab('candidates')} style={promoTabStyle(ymModalTab === 'candidates', '#fc0')}>
             Можно добавить
           </button>
         </div>
@@ -1268,7 +1251,7 @@ export function PricePromotions() {
             </table>
           </div>
         )}
-      </Modal>
+      </>)}
     </div>
   );
 }

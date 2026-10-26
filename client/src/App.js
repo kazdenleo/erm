@@ -259,7 +259,7 @@ function App() {
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
           <Route path="/prices/settings" element={<ProtectedRoute><Layout><PricesSettings /></Layout></ProtectedRoute>} />
           <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
-          <Route path="/prices/promotions" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
+          <Route path="/prices/promotions/*" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
           <Route path="/prices/history" element={<ProtectedRoute><Layout><PriceHistory /></Layout></ProtectedRoute>} />
           <Route path="/integrations" element={<ProtectedRoute><Layout><Integrations /></Layout></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
