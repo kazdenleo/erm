@@ -25,6 +25,7 @@ import {
   ozonApiPostWithRetry,
 } from '../utils/ozonSellerApi.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
+import { notifyOrderChanges } from './telegramNotify.service.js';
 
 /** Ключи Ozon из конфига синка — в общую очередь Seller API (пауза + retry 429). */
 function ozonApiOptsFromConfig(config) {
@@ -723,6 +724,16 @@ class OrdersSyncService {
     await attachResolvedProductIds(toInsert);
     await attachResolvedWarehouseIds(toInsert);
     await ordersRepo.upsertFromSyncBatch(toInsert);
+    try {
+      await notifyOrderChanges({
+        profileId,
+        rows: toInsert,
+        previousRows: [],
+        assumeFresh: true,
+      });
+    } catch (e) {
+      logger.warn('[Telegram] WB new-poll:', e?.message || e);
+    }
 
     const rowsToAutoReserve = [];
     for (const o of toInsert) {
@@ -1396,6 +1407,15 @@ class OrdersSyncService {
         await attachResolvedWarehouseIds(toUpsert);
         await ordersRepo.upsertFromSyncBatch(toUpsert);
         await persistOzonAssemblyStickersFromSyncRows(toUpsert, profileId);
+        try {
+          await notifyOrderChanges({
+            profileId,
+            rows: toUpsert,
+            previousRows: existingOrders,
+          });
+        } catch (e) {
+          logger.warn('[Telegram] уведомление о заказах:', e?.message || e);
+        }
       } catch (err) {
         console.error('[Orders Sync] Batch upsert failed:', err.message);
         throw err;

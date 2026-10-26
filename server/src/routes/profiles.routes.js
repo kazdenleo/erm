@@ -23,6 +23,12 @@ router.post(
   requireProfileAdmin,
   wrapAsync(profilesController.resetAllStockHistory)
 );
+router.post(
+  '/me/telegram/test',
+  requireProfile,
+  requireProfileAdmin,
+  wrapAsync(profilesController.testTelegram)
+);
 
 router.use(requireAdmin);
 

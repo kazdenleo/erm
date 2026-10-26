@@ -16,6 +16,11 @@ export const profilesApi = {
     return response.data;
   },
 
+  async testTelegram(data) {
+    const response = await api.post('/profiles/me/telegram/test', data || {});
+    return response.data;
+  },
+
   /** Массовый сброс истории остатков по всем товарам аккаунта. */
   async resetAllStockHistory() {
     const response = await api.post('/profiles/me/stock-history-reset-all');

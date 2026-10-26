@@ -85,6 +85,7 @@ export async function addRuntimeNotification(input) {
     const current = (await readData(STORAGE_KEY)) || [];
     const arr = Array.isArray(current) ? current : [];
     let rest = arr;
+    let isNew = true;
     if (dedupeKey) {
       const prev = arr.find(
         (x) =>
@@ -92,6 +93,7 @@ export async function addRuntimeNotification(input) {
           notificationProfileId(x) === notificationProfileId(n)
       );
       if (prev) {
+        isNew = false;
         n.id = prev.id;
         n.first_created_at = prev.first_created_at || prev.created_at;
         n.repeat_count = (Number(prev.repeat_count) || 1) + 1;
@@ -100,6 +102,13 @@ export async function addRuntimeNotification(input) {
     }
     const next = [n, ...rest].slice(0, MAX_ITEMS);
     await writeData(STORAGE_KEY, next);
+    if (isNew && !process.env.JEST_WORKER_ID) {
+      import('../services/telegramNotify.service.js')
+        .then((mod) => mod.forwardRuntimeNotification(n))
+        .catch((err) => {
+          logger?.warn?.('[Telegram] runtime forward failed:', err?.message || err);
+        });
+    }
     return n;
   } catch (e) {
     logger?.warn?.('[Runtime Notifications] Failed to store notification:', e?.message || e);

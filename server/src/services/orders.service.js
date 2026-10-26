@@ -4340,6 +4340,17 @@ class OrdersService {
         profileId: created?.profileId ?? created?.profile_id ?? orderData.profile_id
       });
     }
+    try {
+      const { notifyOrderChanges } = await import('./telegramNotify.service.js');
+      await notifyOrderChanges({
+        profileId: created?.profileId ?? created?.profile_id ?? orderData.profile_id,
+        rows: [created],
+        previousRows: [],
+        assumeFresh: true,
+      });
+    } catch (e) {
+      console.warn('[Telegram] ручной заказ:', e?.message || e);
+    }
     return created;
   }
 
@@ -4435,6 +4446,17 @@ class OrdersService {
       const error = new Error('Не удалось создать заказ: проверьте товары и цены.');
       error.statusCode = 400;
       throw error;
+    }
+    try {
+      const { notifyOrderChanges } = await import('./telegramNotify.service.js');
+      await notifyOrderChanges({
+        profileId,
+        rows: created,
+        previousRows: [],
+        assumeFresh: true,
+      });
+    } catch (e) {
+      console.warn('[Telegram] ручной заказ:', e?.message || e);
     }
     return { orderGroupId, orders: created };
   }

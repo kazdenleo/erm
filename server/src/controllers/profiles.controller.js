@@ -12,7 +12,12 @@ import { normalizeProfileTimezone } from '../utils/profileTimezone.js';
 import { normalizePartsApiKeys } from '../config/partsapi.config.js';
 import { normalizePartsIndexKeys } from '../config/partsindex.config.js';
 import { parseCardQualitySettings } from '../utils/cardQualitySettings.js';
-import { parseNotificationSettings } from '../utils/notificationSettings.js';
+import {
+  mergeNotificationSettings,
+  notificationSettingsForClient,
+  parseNotificationSettings,
+  resolveTelegramSendTarget,
+} from '../utils/notificationSettings.js';
 import { parseEmployeeMetricsSettings } from '../utils/employeeMetricsSettings.js';
 import {
   CONFIGURABLE_ACCOUNT_ROLES,
@@ -25,6 +30,21 @@ import {
 
 const repo = repositoryFactory.getProfilesRepository();
 const inquiriesRepo = repositoryFactory.getInquiriesRepository();
+
+function withoutTelegramToken(row) {
+  if (!row || typeof row !== 'object') return row;
+  const raw = row.notification_settings ?? row.notificationSettings;
+  if (raw == null) return row;
+  const pub = notificationSettingsForClient(raw);
+  const next = { ...row };
+  if (row.notification_settings !== undefined) next.notification_settings = pub;
+  if (row.notificationSettings !== undefined) next.notificationSettings = pub;
+  return next;
+}
+
+function presentProfile(row) {
+  return withoutTelegramToken(jsonSafeRow(row));
+}
 
 /** Поля профиля, которые может менять администратор аккаунта (не тариф и не id) */
 function pickAccountOwnerProfilePayload(body) {
@@ -273,7 +293,43 @@ export const profilesController = {
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
-      res.json({ ok: true, data: jsonSafeRow(item) });
+      res.json({ ok: true, data: presentProfile(item) });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /** Проверочное сообщение в Telegram по сохранённым или переданным токену и chat id. */
+  async testTelegram(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const { token, chatIds } = resolveTelegramSendTarget(
+        current.notification_settings,
+        req.body || {}
+      );
+      if (!token) {
+        return res.status(400).json({ ok: false, message: 'Укажите токен бота' });
+      }
+      if (!chatIds.length) {
+        return res.status(400).json({ ok: false, message: 'Укажите chat id' });
+      }
+      const { sendTelegramMessage } = await import('../services/telegramNotify.service.js');
+      const result = await sendTelegramMessage(
+        token,
+        chatIds[0],
+        '<b>ERM</b>\nПроверка уведомлений: связь с Telegram работает.'
+      );
+      if (!result.ok) {
+        return res.status(400).json({ ok: false, message: `Telegram: ${result.error}` });
+      }
+      res.json({ ok: true, message: 'Сообщение отправлено' });
     } catch (error) {
       next(error);
     }
@@ -376,8 +432,14 @@ export const profilesController = {
       if (!current) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
+      if (payload.notification_settings) {
+        payload.notification_settings = mergeNotificationSettings(
+          current.notification_settings,
+          payload.notification_settings
+        );
+      }
       if (Object.keys(payload).length === 0) {
-        return res.json({ ok: true, data: jsonSafeRow(current) });
+        return res.json({ ok: true, data: presentProfile(current) });
       }
       const manualWhError = await validateManualOrdersWarehouse(id, payload, current);
       if (manualWhError) {
@@ -400,7 +462,7 @@ export const profilesController = {
             .catch((e) => console.warn('[CardQuality] refresh after settings save failed', e?.message || e));
         }, 0);
       }
-      res.json({ ok: true, data: jsonSafeRow(item) });
+      res.json({ ok: true, data: presentProfile(item) });
     } catch (error) {
       next(error);
     }
@@ -425,7 +487,7 @@ export const profilesController = {
       const list = await repo.findAllWithStats();
       res.json({
         ok: true,
-        data: list.map((row) => normalizeProfileStatsRow(jsonSafeRow(row))),
+        data: list.map((row) => normalizeProfileStatsRow(presentProfile(row))),
       });
     } catch (error) {
       next(error);
@@ -446,7 +508,7 @@ export const profilesController = {
       res.json({
         ok: true,
         data: {
-          profile: jsonSafeRow(profile),
+          profile: presentProfile(profile),
           usersCount: normalized.usersCount,
           organizationsCount: normalized.organizationsCount,
           productsCount: normalized.productsCount,
@@ -489,7 +551,7 @@ export const profilesController = {
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Профиль не найден' });
       }
-      res.json({ ok: true, data: item });
+      res.json({ ok: true, data: withoutTelegramToken(item) });
     } catch (error) {
       next(error);
     }
@@ -511,7 +573,7 @@ export const profilesController = {
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Профиль не найден' });
       }
-      res.json({ ok: true, data: item });
+      res.json({ ok: true, data: withoutTelegramToken(item) });
     } catch (error) {
       next(error);
     }

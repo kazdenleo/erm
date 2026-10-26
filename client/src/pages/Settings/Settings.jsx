@@ -18,6 +18,8 @@ import {
 import {
   NOTIFICATION_CHANNEL_MODES,
   NOTIFICATION_CHANNELS,
+  TELEGRAM_EVENTS,
+  emptyTelegramSettings,
   notificationSettingsPayload,
 } from '../../utils/notificationSettings.js';
 import { PROFILE_TIMEZONE_OPTIONS } from '../../constants/profileTimezones.js';
@@ -85,6 +87,8 @@ export function Settings() {
   });
   const [accountUsers, setAccountUsers] = useState([]);
   const [accountUsersLoading, setAccountUsersLoading] = useState(false);
+  const [telegramTesting, setTelegramTesting] = useState(false);
+  const [telegramTestMessage, setTelegramTestMessage] = useState('');
   const [productAttributes, setProductAttributes] = useState([]);
 
   const loadAccount = useCallback(async () => {
@@ -158,13 +162,15 @@ export function Settings() {
 
   const setNotificationChannel = (channelKey, patch) => {
     setForm((f) => {
-      const prevChannels = f.notification_settings?.channels || {};
+      const prevSettings = f.notification_settings || {};
+      const prevChannels = prevSettings.channels || {};
       const prev = prevChannels[channelKey] || { mode: 'all', userIds: [] };
       const nextCfg = { ...prev, ...patch };
       if (nextCfg.mode !== 'users') nextCfg.userIds = [];
       return {
         ...f,
         notification_settings: {
+          ...prevSettings,
           channels: {
             ...prevChannels,
             [channelKey]: nextCfg,
@@ -172,6 +178,39 @@ export function Settings() {
         },
       };
     });
+  };
+
+  const setTelegram = (patch) => {
+    setForm((f) => {
+      const prevSettings = f.notification_settings || {};
+      const prev = prevSettings.telegram || emptyTelegramSettings();
+      return {
+        ...f,
+        notification_settings: {
+          ...prevSettings,
+          telegram: { ...prev, ...patch },
+        },
+      };
+    });
+  };
+
+  const testTelegram = async () => {
+    const tg = form.notification_settings?.telegram || emptyTelegramSettings();
+    setTelegramTesting(true);
+    setTelegramTestMessage('');
+    setError('');
+    try {
+      const res = await profilesApi.testTelegram({
+        botToken: tg.botToken || '',
+        chatId: tg.chatId || '',
+      });
+      if (!res?.ok) throw new Error(res?.message || 'Не удалось отправить');
+      setTelegramTestMessage('Сообщение отправлено в Telegram.');
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Ошибка отправки в Telegram');
+    } finally {
+      setTelegramTesting(false);
+    }
   };
 
   const saveAccount = async () => {
@@ -298,7 +337,7 @@ export function Settings() {
       <h1 className="title">{showNotificationsTab ? 'Уведомления' : 'Настройки'}</h1>
       <p className="subtitle">
         {showNotificationsTab
-          ? 'Кому показывать системные уведомления в колокольчике.'
+          ? 'Колокольчик и Telegram: кому и о каких событиях сообщать.'
           : 'Общие настройки системы.'}
       </p>
 
@@ -374,6 +413,113 @@ export function Settings() {
                   </div>
                 );
               })}
+              <div style={{ marginTop: 8, marginBottom: 16 }}>
+                <h2 className="h5" style={{ marginBottom: 8 }}>Telegram</h2>
+                <p className="text-muted small mb-3">
+                  Сообщения уходят в чат, который вы укажете. Заказы и продажи можно включить отдельно
+                  от служебных уведомлений колокольчика. Приглашения в инвентаризацию и приёмку остаются
+                  только в приложении.
+                </p>
+                {(() => {
+                  const tg = form.notification_settings?.telegram || emptyTelegramSettings();
+                  const orderEvents = TELEGRAM_EVENTS.filter((ev) => ev.group === 'orders');
+                  const systemEvents = TELEGRAM_EVENTS.filter((ev) => ev.group === 'system');
+                  const renderEvent = (ev) => (
+                    <label key={ev.key} className="settings-account-toggle" style={{ marginBottom: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={tg.events?.[ev.key] === true}
+                        onChange={(e) =>
+                          setTelegram({
+                            events: { ...(tg.events || {}), [ev.key]: e.target.checked },
+                          })
+                        }
+                      />
+                      <span>
+                        <strong>{ev.title}</strong>
+                        <span
+                          className="text-muted small"
+                          style={{ display: 'block', fontWeight: 'normal', marginTop: 2 }}
+                        >
+                          {ev.hint}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                  return (
+                    <>
+                      <label className="settings-account-toggle" style={{ marginBottom: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={tg.enabled === true}
+                          onChange={(e) => setTelegram({ enabled: e.target.checked })}
+                        />
+                        <span>
+                          <strong>Отправлять уведомления в Telegram</strong>
+                        </span>
+                      </label>
+                      <label className="settings-account-label">
+                        Токен бота
+                        <span className="text-muted small" style={{ fontWeight: 'normal' }}>
+                          Создайте бота в @BotFather и вставьте токен. После сохранения поле очищается,
+                          токен остаётся на сервере.
+                        </span>
+                        <input
+                          className="login-input"
+                          type="password"
+                          autoComplete="new-password"
+                          value={tg.botToken || ''}
+                          placeholder={
+                            tg.hasBotToken
+                              ? `Сохранён ${tg.botTokenHint || ''}`.trim()
+                              : '123456789:AA...'
+                          }
+                          onChange={(e) => setTelegram({ botToken: e.target.value })}
+                        />
+                      </label>
+                      <label className="settings-account-label">
+                        Chat id
+                        <span className="text-muted small" style={{ fontWeight: 'normal' }}>
+                          Напишите боту /start или добавьте его в группу. Id можно узнать у @userinfobot
+                          (в группе id обычно начинается с -100). Несколько чатов — через запятую.
+                        </span>
+                        <input
+                          className="login-input"
+                          value={tg.chatId || ''}
+                          placeholder="123456789 или -1001234567890"
+                          onChange={(e) => setTelegram({ chatId: e.target.value })}
+                        />
+                      </label>
+                      <div style={{ marginTop: 4 }}>
+                        <div className="text-muted small" style={{ marginBottom: 8 }}>
+                          Заказы и продажи. Уже лежащие в базе старые заказы не дублируются: сообщение
+                          уходит о новых за последние 7 дней и о смене статуса.
+                        </div>
+                        {orderEvents.map(renderEvent)}
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <div className="text-muted small" style={{ marginBottom: 8 }}>
+                          Служебные события — те же, что могут появляться в колокольчике.
+                        </div>
+                        {systemEvents.map(renderEvent)}
+                      </div>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <Button
+                          type="button"
+                          variant="outline-secondary"
+                          onClick={testTelegram}
+                          disabled={telegramTesting}
+                        >
+                          {telegramTesting ? 'Отправка…' : 'Проверить отправку'}
+                        </Button>
+                        {telegramTestMessage ? (
+                          <span className="text-muted small">{telegramTestMessage}</span>
+                        ) : null}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
               <div className="settings-account-actions" style={{ marginTop: 8 }}>
                 <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>
                   {saving ? 'Сохранение…' : 'Сохранить'}
