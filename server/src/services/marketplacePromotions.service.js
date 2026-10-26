@@ -8,6 +8,7 @@ import logger from '../utils/logger.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
 import { netProfitAtSalePrice } from './min-price-calculator.service.js';
+import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { joinBlockMessage, ozonEntryPrice, promoJoinDecision } from '../utils/promoParticipation.js';
 
@@ -72,7 +73,7 @@ async function loadProducts(productIds) {
   const map = new Map();
   if (!ids.length) return map;
   const result = await query(
-    `SELECT p.id, p.cost, p.additional_expenses, p.min_price,
+    `SELECT p.id, p.profile_id, p.user_category_id, p.cost, p.additional_expenses, p.min_price,
             p.min_profit_ozon, p.min_profit_wb, p.min_profit_ym,
             p.buyout_rate, p.buyout_rate_ozon, p.buyout_rate_wb, p.buyout_rate_ym,
             p.length, p.width, p.height,
@@ -83,6 +84,26 @@ async function loadProducts(productIds) {
     [ids]
   );
   for (const row of result.rows || []) map.set(Number(row.id), row);
+  return map;
+}
+
+async function loadMarkupRules(profileIds) {
+  const ids = [...new Set(profileIds.map((id) => Number(id)).filter((n) => n > 0))];
+  const map = new Map();
+  if (!ids.length) return map;
+  try {
+    const { parsePricePushSettings } = await import('../utils/pricePushSettings.js');
+    const result = await query(
+      `SELECT id, price_push_settings FROM profiles WHERE id = ANY($1::bigint[])`,
+      [ids]
+    );
+    for (const row of result.rows || []) {
+      const rules = parsePricePushSettings(row.price_push_settings)?.minMarkupRules;
+      map.set(Number(row.id), Array.isArray(rules) ? rules : []);
+    }
+  } catch (e) {
+    logger.warn('[Promotions] markup rules read failed', e?.message || e);
+  }
   return map;
 }
 
@@ -148,6 +169,7 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
     loadCalculators(ids, marketplace),
     loadSpp(marketplace, options),
   ]);
+  const rulesByProfile = await loadMarkupRules([...products.values()].map((p) => p.profile_id));
   return list.map((row) => {
     const pid = Number(row.our_product_id);
     const known = floors.get(pid);
@@ -179,6 +201,12 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
       card_min: known?.card_min ?? null,
       card_min_fbs: known?.card_min_fbs ?? null,
       card_min_fbo: known?.card_min_fbo ?? null,
+      markup_rub: product
+        ? resolveMarketplaceMinProfit(
+            { ...product, profileMinMarkupRules: rulesByProfile.get(Number(product.profile_id)) || [] },
+            marketplace
+          )
+        : null,
       profit_rub: profit,
       below_floor: decision.reason === 'below_floor',
       join_block_reason: decision.ok ? null : decision.reason,

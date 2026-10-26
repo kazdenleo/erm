@@ -53,36 +53,55 @@ function positivePrice(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Мин. цены из карточки (product_marketplace_prices), как на странице «Минимальные цены». */
-function cardMinLines(row) {
+/** Мин. цена из карточки: FBS и FBO, если они различаются. */
+function cardMinParts(row) {
   const fbs = positivePrice(row?.card_min_fbs);
   const fbo = positivePrice(row?.card_min_fbo);
-  const plain = positivePrice(row?.card_min);
-  if (fbs != null && fbo != null && fbs === fbo) return [`мин. ${formatRub(fbs)}`];
-  const lines = [];
-  if (fbs != null) lines.push(`мин. FBS ${formatRub(fbs)}`);
-  if (fbo != null) lines.push(`мин. FBO ${formatRub(fbo)}`);
-  if (!lines.length && plain != null) lines.push(`мин. ${formatRub(plain)}`);
-  return lines;
+  const plain = positivePrice(row?.card_min ?? row?.floor ?? row?.min_price_ozon);
+  if (fbs != null && fbo != null && fbs !== fbo) {
+    return [
+      { key: 'fbs', label: 'FBS', value: fbs },
+      { key: 'fbo', label: 'FBO', value: fbo },
+    ];
+  }
+  const one = fbs ?? fbo ?? plain;
+  return one != null ? [{ key: 'min', label: '', value: one }] : [];
+}
+
+function minPriceCell(row) {
+  const parts = cardMinParts(row);
+  if (!parts.length) return '—';
+  if (parts.length === 1 && !parts[0].label) return formatRub(parts[0].value);
+  return (
+    <div>
+      {parts.map((part) => (
+        <div key={part.key} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+          {part.label} {formatRub(part.value)}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function profitCell(row) {
-  const lines = cardMinLines(row);
   const raw = row?.profit_rub;
   const n = raw == null || raw === '' ? null : Number(raw);
   const hasProfit = Number.isFinite(n);
-  if (!hasProfit && !lines.length) return '—';
+  const markup = Number(row?.markup_rub);
+  const hasMarkup = Number.isFinite(markup) && markup >= 0;
+  if (!hasProfit && !hasMarkup) return '—';
   const color = hasProfit && n < 0 ? 'var(--danger, #ef4444)' : 'var(--success, #22c55e)';
+  const markupText = hasMarkup ? `${Number.isInteger(markup) ? markup : Math.round(markup * 100) / 100} ₽` : null;
   return (
-    <div title="Чистая прибыль при продаже по цене входа в акцию. Ниже — минимальная цена из карточки товара.">
+    <div title="Чистая прибыль при продаже по цене входа в акцию. Ниже — мин. наценка из карточки товара.">
       <div style={{ color: hasProfit ? color : 'var(--muted)', fontWeight: hasProfit ? 600 : 400 }}>
         {hasProfit ? `${n > 0 ? `+${n}` : n} ₽` : '—'}
       </div>
-      {lines.map((line) => (
-        <div key={line} style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 500, marginTop: 2, whiteSpace: 'nowrap' }}>
-          {line}
+      {markupText ? (
+        <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 500, marginTop: 2, whiteSpace: 'nowrap' }}>
+          наценка {markupText}
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
@@ -667,8 +686,8 @@ export function PricePromotions() {
                       <th>Наш товар</th>
                       <th>Артикул</th>
                       <th>ID Ozon</th>
-                      <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
+                      <th title="Минимальная цена из карточки товара">Мин. цена, ₽</th>
+                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — мин. наценка из карточки">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -728,7 +747,7 @@ export function PricePromotions() {
                           )}
                         </td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td>{formatRub(p.floor ?? p.min_price_ozon)}</td>
+                        <td>{minPriceCell(p)}</td>
                         <td>{profitCell(p)}</td>
                         <td>{formatRub(p.price)}</td>
                         <td>{formatRub(p.entry_price ?? ozonDisplayActionPrice(p))}</td>
@@ -772,8 +791,8 @@ export function PricePromotions() {
                       <th>Наш товар</th>
                       <th>Артикул</th>
                       <th>ID Ozon</th>
-                      <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
+                      <th title="Минимальная цена из карточки товара">Мин. цена, ₽</th>
+                      <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — мин. наценка из карточки">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th title="У участвующих — текущая цена в акции. У доступных Ozon отдаёт 0 — показываем предлагаемую цену входа">
                         Цена по акции, ₽
@@ -815,7 +834,7 @@ export function PricePromotions() {
                         <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>{p.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{p.our_sku ?? p.offer_id ?? '—'}</td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{formatRub(p.floor ?? p.min_price_ozon)}</td>
+                        <td>{minPriceCell(p)}</td>
                         <td>{profitCell(p)}</td>
                         <td>{formatRub(p.price)}</td>
                         <td>{formatRub(p.entry_price ?? ozonDisplayActionPrice(p))}</td>
@@ -1009,7 +1028,7 @@ export function PricePromotions() {
                       <th>Товар</th>
                       <th>ID (nm)</th>
                       <th>Мин. цена, ₽</th>
-                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — мин. наценка из карточки">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
@@ -1021,7 +1040,7 @@ export function PricePromotions() {
                       <tr key={n.id} style={n.below_floor ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
                         <td>{n.our_sku || n.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{formatRub(n.floor)}</td>
+                        <td>{minPriceCell(n)}</td>
                         <td>{profitCell(n)}</td>
                         <td>{n.price != null ? `${n.price}` : '—'}</td>
                         <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
@@ -1057,7 +1076,7 @@ export function PricePromotions() {
                       <th>Товар</th>
                       <th>ID (nm)</th>
                       <th>Мин. цена, ₽</th>
-                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
+                      <th title="Чистая прибыль при продаже по плановой цене акции. Под цифрой — мин. наценка из карточки">Прибыль, ₽</th>
                       <th>Цена, ₽</th>
                       <th>План. цена, ₽</th>
                       <th>Скидка, %</th>
@@ -1084,7 +1103,7 @@ export function PricePromotions() {
                         </td>
                         <td>{n.our_sku || n.our_product_name || '—'}</td>
                         <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{formatRub(n.floor)}</td>
+                        <td>{minPriceCell(n)}</td>
                         <td>{profitCell(n)}</td>
                         <td>{n.price != null ? `${n.price}` : '—'}</td>
                         <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
@@ -1135,7 +1154,7 @@ export function PricePromotions() {
                   <th>Цена акции, ₽</th>
                   <th>Макс. цена акции, ₽</th>
                   <th>Мин. цена, ₽</th>
-                  <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — минимальная цена из карточки товара">Прибыль, ₽</th>
+                  <th title="Чистая прибыль при продаже по цене входа в акцию. Под цифрой — мин. наценка из карточки">Прибыль, ₽</th>
                 </tr>
               </thead>
               <tbody>
@@ -1174,7 +1193,7 @@ export function PricePromotions() {
                       <td>{formatRub(row.price)}</td>
                       <td>{formatRub(row.promo_price)}</td>
                       <td>{formatRub(row.max_promo_price)}</td>
-                      <td>{formatRub(row.floor)}</td>
+                      <td>{minPriceCell(row)}</td>
                       <td>{profitCell(row)}</td>
                     </tr>
                   ))}
