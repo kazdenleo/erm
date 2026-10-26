@@ -59,7 +59,7 @@ export function Prices() {
   const showFboPrices = isProfileFboEnabled(profile);
   const privateOrdersEnabled = isProfilePrivateOrdersEnabled(profile);
   const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
-  const mpColSpan = minColsPerMp + 1; // мин. FBS/FBO + макс.
+  const mpColSpan = minColsPerMp + 3; // мин. FBS/FBO + макс. + после скидки + до скидки
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -654,8 +654,20 @@ export function Prices() {
     return () => { cancelled = true; };
   }, [mpSettingsReady, liveMinsByProduct, visibleProducts, recalcAllLoading, recalcOneProductId]);
 
-  const handleSaveMarketplaceMax = async ({ productId, marketplace, maxPrice }) => {
-    await pricesApi.saveCommercial([{ productId, marketplace, maxPrice }]);
+  const handleSaveMarketplacePrice = async ({
+    productId,
+    marketplace,
+    maxPrice,
+    sellingPrice,
+    priceBeforeDiscount,
+    discountPercent,
+  }) => {
+    const item = { productId, marketplace };
+    if (maxPrice !== undefined) item.maxPrice = maxPrice;
+    if (sellingPrice !== undefined) item.sellingPrice = sellingPrice;
+    if (priceBeforeDiscount !== undefined) item.priceBeforeDiscount = priceBeforeDiscount;
+    if (discountPercent !== undefined) item.discountPercent = discountPercent;
+    await pricesApi.saveCommercial([item]);
   };
 
   /** Пересчитать минимальные цены для одного товара на сервере (Ozon, WB, YM с учётом профиля). */
@@ -1068,6 +1080,8 @@ export function Prices() {
                   <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>макс.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }} title="Цена после скидки">после</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }} title="Цена до скидки и процент скидки">до / %</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1082,6 +1096,8 @@ export function Prices() {
                   <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>макс.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }} title="Цена после скидки">после</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }} title="Цена до скидки и процент скидки">до / %</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1096,6 +1112,8 @@ export function Prices() {
                   <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
                   )}
                   <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>макс.</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }} title="Цена после скидки">после</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }} title="Цена до скидки и процент скидки">до / %</th>
                 </tr>
               </thead>
               <tbody>
@@ -1289,14 +1307,13 @@ export function Prices() {
                         minPriceFbo={prices.ozonFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
-                        minOnly
                         showMax
                         isLoading={isLoading}
                         hasSku={!!skuOzon}
                         skuBadge="OZ"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveMarketplaceMax}
+                        onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
                         onOpenMinDetailsFbs={() => openMinModal('ozon', 'FBS', prices.ozonFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ozon', 'FBO', prices.ozonFbo)}
@@ -1309,14 +1326,13 @@ export function Prices() {
                         minPriceFbo={prices.wbFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
-                        minOnly
                         showMax
                         isLoading={isLoading}
                         hasSku={!!skuWb}
                         skuBadge="WB"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveMarketplaceMax}
+                        onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
                         onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs ?? prices.wb)}
                         onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo ?? prices.wb)}
@@ -1329,14 +1345,13 @@ export function Prices() {
                         minPriceFbo={prices.ymFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
-                        minOnly
                         showMax
                         isLoading={isLoading}
                         hasSku={!!skuYm}
                         skuBadge="YM"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveMarketplaceMax}
+                        onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}

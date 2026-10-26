@@ -903,15 +903,24 @@ async function loadErpCardPrices(productId, marketplace) {
   if (marketplace) {
     try {
       const r = await query(
-        `SELECT min_price, selling_price, price_before_discount
+        `SELECT min_price, selling_price, price_before_discount,
+                COALESCE(selling_price_manual, false) AS selling_price_manual,
+                pricing_strategy_id
          FROM product_marketplace_prices
          WHERE product_id = $1 AND marketplace = $2`,
         [productId, marketplace]
       );
       const row = r.rows?.[0];
       out.min = toPosPrice(row?.min_price);
-      if (out.after == null) out.after = toPosPrice(row?.selling_price);
-      if (out.before == null) out.before = toPosPrice(row?.price_before_discount);
+      const mpAfter = toPosPrice(row?.selling_price);
+      const mpBefore = toPosPrice(row?.price_before_discount);
+      const ownSelling =
+        row?.selling_price_manual === true ||
+        (row?.pricing_strategy_id != null && row.pricing_strategy_id !== '');
+      if (ownSelling && mpAfter != null) out.after = mpAfter;
+      else if (out.after == null) out.after = mpAfter;
+      if (mpBefore != null) out.before = mpBefore;
+      else if (out.before == null) out.before = mpBefore;
     } catch (e) {
       if (!String(e?.message || '').includes('min_price') && !String(e?.message || '').includes('selling_price')) {
         logger.warn('[CardPush] load stored marketplace prices failed', e?.message || e);

@@ -63,8 +63,7 @@ export function MarketplacePriceCells({
   const min = primaryMin ?? fbsMin ?? fboMin;
   const initialMax = pack.maxPrice != null && Number.isFinite(Number(pack.maxPrice)) ? Number(pack.maxPrice) : null;
   const [maxStr, setMaxStr] = useState(() => formatMoneyInput(initialMax));
-  const initialActual = pack.sellingPrice != null ? pack.sellingPrice : min;
-  const [actualStr, setActualStr] = useState(() => formatMoneyInput(initialActual));
+  const [actualStr, setActualStr] = useState(() => formatMoneyInput(pack.sellingPrice));
   const [beforeStr, setBeforeStr] = useState(() => formatMoneyInput(pack.priceBeforeDiscount));
   const [pctStr, setPctStr] = useState(() => formatMoneyInput(pack.discountPercent));
   const [saving, setSaving] = useState(false);
@@ -77,11 +76,10 @@ export function MarketplacePriceCells({
 
   useEffect(() => {
     const next = getMarketplacePricePack(product, marketplace);
-    const nextActual = next.sellingPrice != null ? next.sellingPrice : min;
-    setActualStr(formatMoneyInput(nextActual));
+    setActualStr(formatMoneyInput(next.sellingPrice));
     setBeforeStr(formatMoneyInput(next.priceBeforeDiscount));
     setPctStr(formatMoneyInput(next.discountPercent));
-  }, [productId, marketplace, pack.sellingPrice, pack.priceBeforeDiscount, pack.discountPercent, min]);
+  }, [productId, marketplace, pack.sellingPrice, pack.priceBeforeDiscount, pack.discountPercent]);
 
   useEffect(() => {
     setMaxStr(formatMoneyInput(pack.maxPrice));
@@ -104,8 +102,7 @@ export function MarketplacePriceCells({
 
   const currentActual = () => {
     const n = parseMoneyInput(actualStr);
-    if (n != null && n > 0) return n;
-    return min != null && min > 0 ? min : null;
+    return n != null && n > 0 ? n : null;
   };
 
   const onActualChange = (raw) => {
@@ -207,7 +204,6 @@ export function MarketplacePriceCells({
   };
 
   const empty = renderEmpty();
-  const showInputs = !isLoading && (min != null || hasSku);
 
   return (
     <>
@@ -257,8 +253,8 @@ export function MarketplacePriceCells({
 
       {!minOnly && (
         <td className="mp-col mp-col-actual" style={{ background: bg }}>
-          {!showInputs ? (
-            renderEmpty()
+          {isLoading ? (
+            <span className="mp-price-muted">...</span>
           ) : (
             <div className="mp-price-stack">
               <input
@@ -271,10 +267,10 @@ export function MarketplacePriceCells({
                 readOnly={strategyLocked}
                 title={
                   strategyLocked
-                    ? 'Стратегия ценообразования активна — цена задаётся стратегией'
-                    : 'Фактическая цена'
+                    ? 'Стратегия ценообразования активна — цена после скидки задаётся стратегией'
+                    : 'Цена после скидки'
                 }
-                placeholder="факт"
+                placeholder="после"
                 onChange={(e) => onActualChange(e.target.value)}
               />
               {(saving || savedFlash) && (
@@ -287,8 +283,8 @@ export function MarketplacePriceCells({
 
       {!minOnly && (
         <td className="mp-col mp-col-discount" style={{ background: bg }}>
-          {!showInputs ? (
-            renderEmpty()
+          {isLoading ? (
+            <span className="mp-price-muted">...</span>
           ) : (
             <div className="mp-price-discount-pair">
               <input
@@ -298,7 +294,7 @@ export function MarketplacePriceCells({
                 className="mp-price-input"
                 value={beforeStr}
                 disabled={disabled || saving}
-                placeholder="до ск."
+                placeholder="до"
                 title="Цена до скидки"
                 onChange={(e) => onBeforeChange(e.target.value)}
               />

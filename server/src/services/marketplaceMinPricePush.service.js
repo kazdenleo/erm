@@ -353,7 +353,9 @@ async function loadProductPushContext(productId, pushSchemes = null) {
 
   const pricesRes = await query(
     `SELECT marketplace, min_price, min_price_fbs, min_price_fbo, selling_price,
-            price_before_discount, discount_percent
+            price_before_discount, discount_percent,
+            COALESCE(selling_price_manual, false) AS selling_price_manual,
+            pricing_strategy_id
      FROM product_marketplace_prices
      WHERE product_id = $1
        AND (
@@ -365,6 +367,7 @@ async function loadProductPushContext(productId, pushSchemes = null) {
   );
   const floors = {};
   const selling = {};
+  const floorSelling = {};
   const priceBeforeDiscount = {};
   const discountPercent = {};
   for (const row of pricesRes.rows || []) {
@@ -372,7 +375,10 @@ async function loadProductPushContext(productId, pushSchemes = null) {
     const floor = resolvePushFloorForMarketplace(row, mp, schemes);
     if (floor != null) floors[mp] = floor;
     const s = row.selling_price != null ? floorRub(row.selling_price) : null;
-    if (s != null) selling[mp] = s;
+    const manual = row.selling_price_manual === true;
+    const fromStrategy = row.pricing_strategy_id != null && row.pricing_strategy_id !== '';
+    if (s != null && (manual || fromStrategy)) selling[mp] = s;
+    else if (s != null) floorSelling[mp] = s;
     const before = row.price_before_discount != null ? floorRub(row.price_before_discount) : null;
     if (before != null) priceBeforeDiscount[mp] = before;
     if (row.discount_percent != null && Number.isFinite(Number(row.discount_percent))) {
@@ -380,28 +386,21 @@ async function loadProductPushContext(productId, pushSchemes = null) {
     }
   }
 
-  // Источник цен «до/после скидки» — атрибуты карточки (источник истины при пуше).
+  // Ручная цена МП и цена стратегии важнее общей пары карточки.
+  // Атрибуты карточки заполняют только те МП, где своей цены ещё нет.
   const cardPrices = await loadCardPriceAttributes(pid);
   if (cardPrices.before != null) {
     for (const mp of Object.keys(floors)) {
-      priceBeforeDiscount[mp] = cardPrices.before;
+      if (priceBeforeDiscount[mp] == null) priceBeforeDiscount[mp] = cardPrices.before;
     }
   }
   if (cardPrices.after != null) {
     for (const mp of Object.keys(floors)) {
-      selling[mp] = cardPrices.after;
+      if (selling[mp] == null) selling[mp] = cardPrices.after;
     }
   }
-  // Часто price_before_discount заполнен только у Ozon в product_marketplace_prices —
-  // раздаём общий «до скидки» на WB/YM, иначе на них уходит только цена после скидки.
-  const beforeCandidates = Object.values(priceBeforeDiscount).filter(
-    (v) => v != null && Number.isFinite(Number(v)) && Number(v) > 0
-  );
-  if (beforeCandidates.length) {
-    const sharedBefore = Math.max(...beforeCandidates.map((v) => Number(v)));
-    for (const mp of Object.keys(floors)) {
-      if (priceBeforeDiscount[mp] == null) priceBeforeDiscount[mp] = sharedBefore;
-    }
+  for (const mp of Object.keys(floors)) {
+    if (selling[mp] == null && floorSelling[mp] != null) selling[mp] = floorSelling[mp];
   }
 
   const skusRes = await query(
