@@ -3885,20 +3885,6 @@ export function WarehouseOperations({
     [leaveInventoryLiveSession, warehouseQtyForProduct, reloadProductsWithWarehouse]
   );
 
-  const openInventoryEditFromSession = async (sessionId) => {
-    const sid = sessionId != null ? Number(sessionId) : null;
-    if (!sid || Number.isNaN(sid)) return;
-    setOpLoading(true);
-    try {
-      const data = await inventorySessionsApi.getById(sid);
-      await beginInventoryEditFromData(data);
-    } catch (e) {
-      setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось открыть'));
-    } finally {
-      setOpLoading(false);
-    }
-  };
-
   const resumeInventoryLiveDraft = async () => {
     const draft = inventoryLiveDraft || readInventoryLiveDraft();
     const sid = String(draft?.liveSessionId || '').trim();
@@ -4668,7 +4654,6 @@ export function WarehouseOperations({
                         <th>Позиций</th>
                         <th>Итог, ₽</th>
                         <th>Кем создано</th>
-                        <th style={{ width: 120 }} />
                       </tr>
                     </thead>
                     <tbody>
@@ -4685,8 +4670,16 @@ export function WarehouseOperations({
                             onClick={onNavigationClick(() => {
                               inventorySessionsApi
                                 .getById(s.id)
-                                .then((data) => setInventoryDetailView(data))
-                                .catch(() => setOpMessage('Не удалось загрузить документ'));
+                                .then((data) => {
+                                  setInventoryDetailView(data);
+                                  setOpMessage(null);
+                                })
+                                .catch((e) =>
+                                  setOpMessage(
+                                    'Не удалось загрузить документ: ' +
+                                      (e.response?.data?.message || e.message || 'ошибка')
+                                  )
+                                );
                             })}
                           >
                             <td>
@@ -4705,16 +4698,6 @@ export function WarehouseOperations({
                             <td>{s.lines_count ?? '—'}</td>
                             <td>{formatInventorySessionNetRubList(s.net_amount_rub)}</td>
                             <td>{who}</td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                disabled={opLoading}
-                                onClick={() => openInventoryEditFromSession(s.id)}
-                              >
-                                Редактировать
-                              </Button>
-                            </td>
                           </tr>
                         );
                       })}

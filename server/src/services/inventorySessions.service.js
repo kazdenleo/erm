@@ -679,7 +679,7 @@ class InventorySessionsService {
          FROM stock_movements sm
          WHERE sm.product_id = l.product_id
            AND (
-             (sm.meta->>'inventory_session_id') = $1::text
+             (sm.meta->>'inventory_session_id') = ($1::bigint)::text
              OR NULLIF(sm.meta->>'inventory_session_id', '')::bigint = $1::bigint
            )
            AND (
@@ -688,7 +688,7 @@ class InventorySessionsService {
            )
          LIMIT 1
        ) z ON true
-       WHERE l.session_id = $1
+       WHERE l.session_id = $1::bigint
        ORDER BY COALESCE(z.is_unlisted_zero, false) DESC, l.id ASC`,
       [sid]
     );
