@@ -604,6 +604,9 @@ class InventorySessionsService {
                 s.category_ids, s.created_by_user_id,
                 u.email AS created_by_email,
                 u.full_name AS created_by_full_name,
+                u.last_name AS created_by_last_name,
+                u.first_name AS created_by_first_name,
+                u.middle_name AS created_by_middle_name,
                 ${whLabel} AS warehouse_label,
                 ${netRub}
          FROM inventory_sessions s
@@ -621,6 +624,9 @@ class InventorySessionsService {
               s.category_ids, s.created_by_user_id,
               u.email AS created_by_email,
               u.full_name AS created_by_full_name,
+              u.last_name AS created_by_last_name,
+              u.first_name AS created_by_first_name,
+              u.middle_name AS created_by_middle_name,
               ${whLabel} AS warehouse_label,
               ${netRub}
        FROM inventory_sessions s

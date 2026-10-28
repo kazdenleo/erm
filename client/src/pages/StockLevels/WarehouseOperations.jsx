@@ -24,6 +24,7 @@ import { FastScanInput } from '../../components/common/FastScanInput/FastScanInp
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { shortUserName } from '../../utils/userName.js';
 import {
   applySingleOrgWarehouseDefaults,
   useStockDestinationDefaults,
@@ -4659,7 +4660,12 @@ export function WarehouseOperations({
                     <tbody>
                       {inventorySessionsList.map((s) => {
                         const who =
-                          [s.created_by_full_name, s.created_by_email].filter(Boolean).join(' · ') || '—';
+                          shortUserName({
+                            last_name: s.created_by_last_name,
+                            first_name: s.created_by_first_name,
+                            middle_name: s.created_by_middle_name,
+                            full_name: s.created_by_full_name,
+                          }) || '—';
                         const wh =
                           s.warehouse_label ||
                           (s.warehouse_id != null ? `Склад №${s.warehouse_id}` : '—');
