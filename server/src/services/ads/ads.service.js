@@ -122,9 +122,12 @@ export async function getDashboard(options = {}) {
   const days = Math.max(1, Math.min(Number(options.days) || 14, 90));
   const params = [scope.profileId, scope.scopeKey];
   let mpSql = '';
+  let mpSqlS = '';
   if (mpFilter) {
     params.push(mpFilter);
     mpSql = ` AND marketplace = $${params.length}`;
+    // В JOIN с product_skus колонка marketplace неоднозначна — только alias s.
+    mpSqlS = ` AND s.marketplace = $${params.length}`;
   }
 
   const kpi = await query(
@@ -144,7 +147,6 @@ export async function getDashboard(options = {}) {
     params
   );
 
-  const skuParams = [...params, days];
   const skus = await query(
     `SELECT s.marketplace, s.sku_key, s.spend, s.revenue, s.drr_percent,
             s.views, s.clicks, s.orders, s.in_active_campaign, s.updated_at,
@@ -170,10 +172,10 @@ export async function getDashboard(options = {}) {
      LEFT JOIN products p ON p.id = ps.product_id
        AND (p.profile_id IS NULL OR p.profile_id = $1)
      WHERE (s.profile_id = $1 OR s.scope_key = $2 OR s.scope_key LIKE ($1::text || ':%'))
-       ${mpSql}
+       ${mpSqlS}
      ORDER BY s.spend DESC NULLS LAST, s.drr_percent DESC NULLS LAST
      LIMIT 500`,
-    skuParams.slice(0, params.length)
+    params
   );
 
   const syncRuns = await query(
