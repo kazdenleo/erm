@@ -18,8 +18,10 @@
 
 .login-title {
   margin: 0 0 0.25rem 0;
+  font-family: var(--font-display, inherit);
   font-size: 1.5rem;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: -0.03em;
   color: var(--text);
 }
 
@@ -47,10 +49,11 @@
 .login-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.8rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 1rem;
+  font-family: inherit;
 }
 
 .login-input:focus {
@@ -80,5 +83,6 @@
 }
 
 .login-footer-text a {
-  color: var(--primary, #3f6ad8);
+  color: var(--primary-600, #1faa6e);
+  font-weight: 600;
 }

@@ -72,7 +72,9 @@ export function PublicRegister() {
     <div className="login-page">
       <div className="login-card card" style={{ maxWidth: 440 }}>
         <h1 className="login-title">Регистрация</h1>
-        <p className="login-subtitle">Создание личного кабинета аккаунта</p>
+        <p className="login-subtitle">
+          <Link to="/">Программа Ирина</Link> — создание личного кабинета
+        </p>
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="login-error">{error}</div>}
           {success && (
@@ -158,6 +160,9 @@ export function PublicRegister() {
           </Button>
           <p className="login-footer-text">
             Уже есть аккаунт? <Link to="/login">Вход</Link>
+          </p>
+          <p className="login-footer-text">
+            <Link to="/">← На главную</Link>
           </p>
         </form>
       </div>

@@ -17,6 +17,7 @@ import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';
 import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
+import { Landing } from './pages/Landing/Landing.jsx';
 import { Home } from './pages/Home/Home';
 import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
 import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
@@ -129,6 +130,31 @@ function ProductEnrichmentRoute() {
   );
 }
 
+/** Корень сайта: гости видят лендинг, авторизованные — главную ERP */
+function HomeOrLanding() {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div
+        className="loading-screen"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}
+      >
+        Загрузка...
+      </div>
+    );
+  }
+  if (!user) {
+    return <Landing />;
+  }
+  return (
+    <ProtectedRoute>
+      <Layout>
+        <Home />
+      </Layout>
+    </ProtectedRoute>
+  );
+}
+
 /** Редирект со старых URL /fbo-supplies → /stock-levels/fbo-supplies */
 function RedirectFboLegacy() {
   const { pathname, search, hash } = useLocation();
@@ -165,7 +191,7 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="/" element={<ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>} />
+          <Route path="/" element={<HomeOrLanding />} />
           <Route
             path="/card-work"
             element={

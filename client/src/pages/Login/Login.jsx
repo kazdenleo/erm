@@ -68,7 +68,15 @@ export function Login({ mode = 'user' }) {
     <div className="login-page">
       <div className="login-card card">
         <h1 className="login-title">{mode === 'platform' ? 'Вход администратора продукта' : 'Вход в систему'}</h1>
-        <p className="login-subtitle">ERP Demo</p>
+        <p className="login-subtitle">
+          {mode === 'platform' ? (
+            'Админка продукта'
+          ) : (
+            <>
+              <Link to="/">Программа Ирина</Link> — личный кабинет
+            </>
+          )}
+        </p>
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="login-error">{error}</div>}
           <label className="login-label">
@@ -98,9 +106,14 @@ export function Login({ mode = 'user' }) {
             {submitting ? 'Вход...' : 'Войти'}
           </Button>
           {mode !== 'platform' && (
-            <p className="login-footer-text">
-              Нет аккаунта? <Link to="/register">Регистрация</Link>
-            </p>
+            <>
+              <p className="login-footer-text">
+                Нет аккаунта? <Link to="/register">Регистрация</Link>
+              </p>
+              <p className="login-footer-text">
+                <Link to="/">← На главную</Link>
+              </p>
+            </>
           )}
         </form>
       </div>
