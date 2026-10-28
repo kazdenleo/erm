@@ -67,6 +67,10 @@ import {
   learnAndPersistOzonLowTierRatesFromCalculators,
   loadLearnedOzonLowTierRates,
 } from '../utils/ozonCommissionTiersLearning.js';
+import {
+  enrichOzonCalculatorWithLearnedLogistics,
+  loadOzonFbsLogisticsLearned,
+} from '../utils/ozonLogisticsLearning.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -1919,6 +1923,121 @@ class PricesService {
     return applyOzonAdsPromotion(calculator, drr, source);
   }
 
+  /**
+   * ДРР из единого ads_sku_stats для WB / YM (и доп. lookup для любого МП).
+   */
+  async _enrichMarketplaceCalculatorAdsPromotion(
+    marketplace,
+    calculator,
+    { skuKey = null, productId = null, integrationScope = null, configFallbackKeys = [] } = {}
+  ) {
+    if (!calculator || typeof calculator !== 'object') return calculator;
+    const mp =
+      marketplace === 'wb' || marketplace === 'wildberries'
+        ? 'wildberries'
+        : marketplace === 'ym' || marketplace === 'yandex'
+          ? 'yandex'
+          : marketplace === 'ozon'
+            ? 'ozon'
+            : null;
+    if (!mp) return calculator;
+
+    const candidates = [];
+    const push = (v) => {
+      const s = v != null ? String(v).trim() : '';
+      if (s && !candidates.includes(s)) candidates.push(s);
+    };
+    push(skuKey);
+    push(calculator.offer_id);
+    push(calculator.sku);
+    push(calculator.nm_id);
+    push(calculator.nmId);
+    push(calculator.marketplace_product_id);
+    if (productId != null && mp === 'wildberries') {
+      try {
+        const r = await query(
+          `SELECT marketplace_product_id, mp_extra
+           FROM product_skus
+           WHERE product_id = $1 AND marketplace IN ('wb','wildberries')
+           LIMIT 5`,
+          [productId]
+        );
+        for (const row of r.rows || []) {
+          push(row.marketplace_product_id);
+          push(row.mp_extra?.nm_id);
+          push(row.mp_extra?.nmId);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (productId != null && mp === 'yandex') {
+      try {
+        const r = await query(
+          `SELECT marketplace_product_id, mp_extra
+           FROM product_skus
+           WHERE product_id = $1 AND marketplace IN ('ym','yandex')
+           LIMIT 5`,
+          [productId]
+        );
+        for (const row of r.rows || []) {
+          push(row.marketplace_product_id);
+          push(row.mp_extra?.offer_id);
+          push(row.mp_extra?.shop_sku);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!candidates.length) return calculator;
+
+    let drr = null;
+    let source = 'ads';
+    let foundStats = false;
+    try {
+      for (const key of candidates) {
+        const stats = await adsService.getStatsForSku(mp, key, integrationScope || {});
+        if (!stats) continue;
+        foundStats = true;
+        if (stats.inActiveCampaign === false) {
+          drr = 0;
+          source = 'not_in_campaign';
+          break;
+        }
+        if (stats.drrPercent != null) {
+          drr = stats.drrPercent;
+          source = 'ads';
+          break;
+        }
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] ads DRR lookup failed:', e?.message || e);
+    }
+
+    if (drr == null && !foundStats && configFallbackKeys.length) {
+      try {
+        const cfgType = mp === 'wildberries' ? 'wildberries' : mp === 'yandex' ? 'yandex' : 'ozon';
+        const cfg = await integrationsService.getMarketplaceConfig(cfgType, integrationScope || {});
+        for (const k of configFallbackKeys) {
+          const fallback = cfg?.[k];
+          if (fallback != null && fallback !== '' && !Number.isNaN(Number(fallback))) {
+            drr = Number(fallback);
+            source = 'config';
+            break;
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (source === 'not_in_campaign') {
+      return applyOzonAdsPromotion(calculator, 0, 'not_in_campaign');
+    }
+    if (drr == null || Number.isNaN(Number(drr))) return calculator;
+    return applyOzonAdsPromotion(calculator, drr, source);
+  }
+
   async _resolveWbBoxTariffRow(integrationScope = {}, calculator = null) {
     try {
       const boxData = await integrationsService.ensureWildberriesTariffs(integrationScope || {});
@@ -2282,6 +2401,14 @@ class PricesService {
         });
       } catch (e) {
         logger.warn('[Prices Service] attach learned Ozon tier rates failed', {
+          error: e?.message || e,
+        });
+      }
+      try {
+        const learnedLog = await loadOzonFbsLogisticsLearned();
+        calc = enrichOzonCalculatorWithLearnedLogistics(calc, learnedLog, { productId });
+      } catch (e) {
+        logger.warn('[Prices Service] attach learned Ozon FBS logistics failed', {
           error: e?.message || e,
         });
       }
@@ -4077,6 +4204,12 @@ class PricesService {
     if (calc.logistics_cost_fbo_max != null && Number.isFinite(Number(calc.logistics_cost_fbo_max))) {
       out.logistics_cost_fbo_max = Number(calc.logistics_cost_fbo_max);
     }
+    if (calc.logistics_cost_api != null && Number.isFinite(Number(calc.logistics_cost_api))) {
+      out.logistics_cost_api = Number(calc.logistics_cost_api);
+    }
+    if (calc.logistics_learned && typeof calc.logistics_learned === 'object') {
+      out.logistics_learned = cloneObj(calc.logistics_learned);
+    }
     if (calc.brand_promotion_percent != null && !isNaN(Number(calc.brand_promotion_percent))) {
       out.brand_promotion_percent = Number(calc.brand_promotion_percent);
     }
@@ -4837,11 +4970,17 @@ class PricesService {
               Number(data.calculator.volume_weight) ||
               Number(product.volume) ||
               0;
-            const wbCalc = await this._enrichWbCalculatorReturnAmount(
+            let wbCalc = await this._enrichWbCalculatorReturnAmount(
               data.calculator,
               volume,
               integrationScope
             );
+            wbCalc = await this._enrichMarketplaceCalculatorAdsPromotion('wb', wbCalc, {
+              skuKey: skuWb,
+              productId,
+              integrationScope,
+              configFallbackKeys: ['wb_ads_percent', 'wbAdsPercent', 'ads_promotion_percent'],
+            });
             const profit = resolveMarketplaceMinProfit(productForProfit, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
@@ -4892,7 +5031,13 @@ class PricesService {
           }
           if (fallbackCalc && hasUsableCommissionPercent(fallbackCalc, 'wb')) {
             const volume = Number(fallbackCalc.volume_weight) || Number(product.volume) || 0;
-            const wbCalc = await this._enrichWbCalculatorReturnAmount(fallbackCalc, volume, integrationScope);
+            let wbCalc = await this._enrichWbCalculatorReturnAmount(fallbackCalc, volume, integrationScope);
+            wbCalc = await this._enrichMarketplaceCalculatorAdsPromotion('wb', wbCalc, {
+              skuKey: skuWb,
+              productId,
+              integrationScope,
+              configFallbackKeys: ['wb_ads_percent', 'wbAdsPercent', 'ads_promotion_percent'],
+            });
             const profit = resolveMarketplaceMinProfit(productForProfit, 'wb', minProfitDefault);
             const taxProfile = resolveMinPriceTaxProfile(product);
             const priceFbo = calculateMinPrice(
@@ -4957,9 +5102,19 @@ class PricesService {
               meta: { productId, offerId: skuYm },
             });
           } else {
-            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, taxProfile, 'FBS', ymSppPercent);
+            const ymCalcFbs = await this._enrichMarketplaceCalculatorAdsPromotion(
+              'ym',
+              dataFbs.calculator,
+              {
+                skuKey: skuYm,
+                productId,
+                integrationScope,
+                configFallbackKeys: ['ym_ads_percent', 'ymAdsPercent', 'ads_promotion_percent'],
+              }
+            );
+            const priceFbs = calculateMinPrice(basePrice, ymCalcFbs, 'ym', profit, product, null, null, taxProfile, 'FBS', ymSppPercent);
             if (priceFbs != null) {
-              await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, dataFbs.calculator, { scheme: 'FBS' });
+              await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, ymCalcFbs, { scheme: 'FBS' });
               markPriced('ym');
             } else {
               errors.ym = 'Не удалось рассчитать минимальную цену YM FBS';
@@ -4976,13 +5131,23 @@ class PricesService {
           const ymFbyResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, ymFbyOpts);
           const dataFby = ymFbyResult?.data ?? ymFbyResult;
           if (dataFby?.found && dataFby?.calculator) {
-            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, taxProfile, 'FBO', ymSppPercent);
+            const ymCalcFby = await this._enrichMarketplaceCalculatorAdsPromotion(
+              'ym',
+              dataFby.calculator,
+              {
+                skuKey: skuYm,
+                productId,
+                integrationScope,
+                configFallbackKeys: ['ym_ads_percent', 'ymAdsPercent', 'ads_promotion_percent'],
+              }
+            );
+            const priceFbo = calculateMinPrice(basePrice, ymCalcFby, 'ym', profit, product, null, null, taxProfile, 'FBO', ymSppPercent);
             if (priceFbo != null) {
               await this.saveProductMarketplacePrice(
                 productId,
                 'ym',
                 priceFbo,
-                { ...dataFby.calculator, price_scheme: 'FBY' },
+                { ...ymCalcFby, price_scheme: 'FBY' },
                 { scheme: 'FBO' }
               );
               markPriced('ym');

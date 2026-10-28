@@ -891,6 +891,32 @@ function MarketplacesTab({
             />
           </div>
           <div className="field">
+            <label className="label">Advert API Key (реклама, опционально)</label>
+            <input
+              type="password"
+              className="input"
+              value={formData.advert_api_key || ''}
+              onChange={(e) => handleChange('advert_api_key', e.target.value)}
+              placeholder="Токен с правом «Продвижение»"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Если пусто — для рекламы используется основной API Key (нужна категория «Продвижение»).
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">ДРР по умолчанию, % (если нет статистики)</label>
+            <input
+              type="number"
+              className="input"
+              min="0"
+              max="100"
+              step="0.1"
+              value={formData.wb_ads_percent ?? ''}
+              onChange={(e) => handleChange('wb_ads_percent', e.target.value)}
+              placeholder="например 8"
+            />
+          </div>
+          <div className="field">
             <label className="label">Дата окончания токена (опционально)</label>
             <input
               type="date"
@@ -1446,6 +1472,42 @@ function MarketplacesTab({
               value={formData.business_id || ''}
               onChange={(e) => handleChange('business_id', e.target.value)}
               placeholder="Нужен для заказов. Настройки → API в ЛК Маркета"
+            />
+          </div>
+          <div className="field">
+            <label className="label">Ads Token (реклама, опционально)</label>
+            <input
+              type="password"
+              className="input"
+              value={formData.ads_token || ''}
+              onChange={(e) => handleChange('ads_token', e.target.value)}
+              placeholder="Отдельный токен рекламного кабинета"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Если пусто — для попытки синка рекламы используется основной API Key.
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">Ads Campaign IDs (через запятую)</label>
+            <input
+              type="text"
+              className="input"
+              value={formData.ads_campaign_ids || ''}
+              onChange={(e) => handleChange('ads_campaign_ids', e.target.value)}
+              placeholder="Доп. ID кампаний для статистики рекламы"
+            />
+          </div>
+          <div className="field">
+            <label className="label">ДРР по умолчанию, % (если нет статистики)</label>
+            <input
+              type="number"
+              className="input"
+              min="0"
+              max="100"
+              step="0.1"
+              value={formData.ym_ads_percent ?? ''}
+              onChange={(e) => handleChange('ym_ads_percent', e.target.value)}
+              placeholder="например 8"
             />
           </div>
           <div className="field">

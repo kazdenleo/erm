@@ -7,6 +7,7 @@
 import marketplaceTurnoverAnalyticsService from './marketplaceTurnoverAnalytics.service.js';
 import marketplaceCardQualityService from './marketplaceCardQuality.service.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
+import adsService from './ads/ads.service.js';
 import returnsAnalyticsService from './returnsAnalytics.service.js';
 import { query } from '../config/database.js';
 import { describePackDimensionMismatch } from '../utils/packDimensionsDiff.js';
@@ -864,19 +865,50 @@ class MarketplaceCardWorkService {
     }
 
     const mpFilter = String(marketplace || 'all').toLowerCase();
-    if (
-      highDrrThreshold != null &&
-      Number(highDrrThreshold) > 0 &&
-      (mpFilter === 'all' || mpFilter === 'ozon')
-    ) {
-      const highDrrRows = await ozonPerformanceAdsService.listHighDrrProducts({
-        profileId,
-        highDrrPercent: highDrrThreshold,
-      });
+    if (highDrrThreshold != null && Number(highDrrThreshold) > 0) {
+      const adsMp =
+        mpFilter === 'ozon'
+          ? 'ozon'
+          : mpFilter === 'wb' || mpFilter === 'wildberries'
+            ? 'wildberries'
+            : mpFilter === 'ym' || mpFilter === 'yandex'
+              ? 'yandex'
+              : null;
+      let highDrrRows = [];
+      try {
+        highDrrRows = await adsService.listHighDrrProducts({
+          profileId,
+          highDrrPercent: highDrrThreshold,
+          marketplace: adsMp,
+        });
+      } catch {
+        highDrrRows = [];
+      }
+      // Fallback на legacy Ozon-таблицу, если unified ещё пустая
+      if (
+        !highDrrRows.length &&
+        (mpFilter === 'all' || mpFilter === 'ozon')
+      ) {
+        try {
+          highDrrRows = await ozonPerformanceAdsService.listHighDrrProducts({
+            profileId,
+            highDrrPercent: highDrrThreshold,
+          });
+        } catch {
+          highDrrRows = [];
+        }
+      }
       for (const h of highDrrRows) {
         if (!isHighDrr(h.drrPercent, highDrrThreshold)) continue;
         const pid = Number(h.productId) || 0;
-        const mp = 'ozon';
+        const rawMp = String(h.marketplace || 'ozon').toLowerCase();
+        const mp =
+          rawMp === 'wildberries' || rawMp === 'wb'
+            ? 'wb'
+            : rawMp === 'yandex' || rawMp === 'ym'
+              ? 'ym'
+              : 'ozon';
+        if (mpFilter !== 'all' && mpFilter !== mp && mpFilter !== rawMp) continue;
         const key = rowKey(pid, h.sku, h.erpSku, mp);
         const drrLabel =
           h.drrPercent != null && Number.isFinite(Number(h.drrPercent))
@@ -885,7 +917,7 @@ class MarketplaceCardWorkService {
         const reasonItem = {
           code: 'high_drr',
           label: 'Высокий ДРР',
-          hint: `ДРР ${drrLabel} при пороге ${Number(highDrrThreshold).toFixed(0)}%. Товар в активной рекламе Ozon — снизьте ставки или отключите кампанию.`,
+          hint: `ДРР ${drrLabel} при пороге ${Number(highDrrThreshold).toFixed(0)}%. Товар в активной рекламе ${mpLabel(mp)} — снизьте ставки или отключите кампанию.`,
           severity: Number(h.drrPercent) >= Number(highDrrThreshold) * 1.5 ? 'high' : 'medium',
           marketplace: mp,
           drrPercent: h.drrPercent,

@@ -138,6 +138,17 @@ const menuItems = [
     { path: '/prices/promotions', label: 'Акции', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
   ]},
   {
+    path: '/ads',
+    label: 'Реклама',
+    iconClass: 'pe-7s-graph1',
+    sectionKey: 'ads',
+    children: [
+      { path: '/ads', label: 'Дашборд', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
+      { path: '/ads/campaigns', label: 'Кампании', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
+      { path: '/ads/automation', label: 'Автоматизация', iconClass: 'pe-7s-angle-right', sectionKey: 'ads' },
+    ],
+  },
+  {
     path: '/settings',
     label: 'Настройки',
     iconClass: 'pe-7s-config',

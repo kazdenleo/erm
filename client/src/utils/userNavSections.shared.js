@@ -26,6 +26,7 @@ export const NAV_SECTION_KEYS = [
   'warehouse_inventory',
   'warehouse_writeoff',
   'prices',
+  'ads',
   'settings_general',
   'settings_attributes',
   'settings_certificates',
@@ -66,6 +67,7 @@ export const NAV_SECTION_LABELS = {
   warehouse_inventory: 'Склад — инвентаризация',
   warehouse_writeoff: 'Склад — списание',
   prices: 'Цены',
+  ads: 'Реклама',
   settings_general: 'Настройки — общие',
   settings_attributes: 'Настройки — атрибуты',
   settings_certificates: 'Настройки — сертификаты',
@@ -96,6 +98,7 @@ export const NAV_SECTION_GROUPS = [
       'assembly',
       'shipments',
       'prices',
+      'ads',
       'tasks',
     ],
   },
@@ -147,6 +150,7 @@ export const ROLE_NAV_PRESETS = {
     card_work: false,
     products: false,
     prices: false,
+    ads: false,
     fbo: false,
     questions: false,
     reviews: false,
@@ -178,6 +182,7 @@ export const ROLE_NAV_PRESETS = {
     card_work: false,
     products: false,
     prices: false,
+    ads: false,
     fbo: false,
     questions: false,
     reviews: false,
@@ -336,6 +341,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/reviews')) return 'reviews';
   if (path.startsWith('/returns') || path.startsWith('/wb-returns')) return 'warehouse_return_customer';
   if (path.startsWith('/prices')) return 'prices';
+  if (path.startsWith('/ads')) return 'ads';
   if (path.startsWith('/production')) return 'warehouse_production';
   if (path.startsWith('/stock-levels/purchases')) return 'warehouse_purchases';
   if (path.startsWith('/stock-levels/marking')) return 'warehouse_stock';

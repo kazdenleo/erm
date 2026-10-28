@@ -69,6 +69,10 @@ import { Categories } from './pages/Categories/Categories';
 import { Brands } from './pages/Brands/Brands';
 import { Tasks } from './pages/Tasks/Tasks';
 import { Prices } from './pages/Prices/Prices';
+import { AdsLayout } from './pages/Ads/AdsLayout';
+import { AdsDashboard } from './pages/Ads/AdsDashboard';
+import { AdsCampaigns } from './pages/Ads/AdsCampaigns';
+import { AdsAutomation } from './pages/Ads/AdsAutomation';
 import { PricingStrategies } from './pages/Prices/PricingStrategies';
 import { PricePromotions } from './pages/Prices/PricePromotions';
 import { PriceHistory } from './pages/Prices/PriceHistory';
@@ -257,6 +261,20 @@ function App() {
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/tasks" element={<ProtectedRoute><Layout><Tasks /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
+          <Route
+            path="/ads"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <AdsLayout />
+                </Layout>
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<AdsDashboard />} />
+            <Route path="campaigns" element={<AdsCampaigns />} />
+            <Route path="automation" element={<AdsAutomation />} />
+          </Route>
           <Route path="/prices/settings" element={<ProtectedRoute><Layout><PricesSettings /></Layout></ProtectedRoute>} />
           <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
           <Route path="/prices/promotions/*" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />

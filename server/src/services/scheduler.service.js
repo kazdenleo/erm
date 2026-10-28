@@ -902,13 +902,22 @@ class SchedulerService {
           }
           return;
         }
-        logger.info('[Scheduler] Nightly: sync Ozon Performance ads (ДРР)...');
+        logger.info('[Scheduler] Nightly: sync marketplace ads (Ozon/WB/YM ДРР)...');
         try {
-          const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js')).default;
-          const adsRes = await ozonPerformanceAdsService.syncAllConfiguredScopes({ days: 14 });
-          logger.info('[Scheduler] Ozon ads sync finished', adsRes);
+          const adsService = (await import('./ads/ads.service.js')).default;
+          const adsRes = await adsService.syncAllConfiguredProfiles({ days: 14, kind: 'stats' });
+          logger.info('[Scheduler] Ads sync finished', {
+            processed: adsRes?.processed,
+          });
         } catch (error) {
-          logger.warn('[Scheduler] Ozon ads sync failed (продолжаем пересчёт):', error?.message || error);
+          logger.warn('[Scheduler] Ads sync failed (продолжаем пересчёт):', error?.message || error);
+          try {
+            const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js')).default;
+            const adsRes = await ozonPerformanceAdsService.syncAllConfiguredScopes({ days: 14 });
+            logger.info('[Scheduler] Ozon ads fallback sync finished', adsRes);
+          } catch (e2) {
+            logger.warn('[Scheduler] Ozon ads fallback failed:', e2?.message || e2);
+          }
         }
         logger.info('[Scheduler] Nightly: sync MP calculator cache from APIs...');
         try {
@@ -975,21 +984,46 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Днём: членство SKU в активных кампаниях Ozon (без полной статистики).
+      // Днём: членство SKU в активных кампаниях (Ozon/WB/YM).
       // Чтобы после отключения рекламы товар быстро ушёл из «Высокий ДРР» / 0% в мин. цене.
       const ozonAdsMembershipJob = cron.schedule(
         process.env.OZON_ADS_MEMBERSHIP_CRON && String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
           ? String(process.env.OZON_ADS_MEMBERSHIP_CRON).trim()
           : '20 */2 * * *',
         async () => {
-          logger.info('[Scheduler] Ozon ads campaign membership sync...');
+          logger.info('[Scheduler] Ads campaign membership sync...');
           try {
-            const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js'))
-              .default;
-            const res = await ozonPerformanceAdsService.syncMembershipAllConfiguredScopes();
-            logger.info('[Scheduler] Ozon ads membership done', res);
+            const adsService = (await import('./ads/ads.service.js')).default;
+            const res = await adsService.syncAllConfiguredProfiles({ kind: 'membership' });
+            logger.info('[Scheduler] Ads membership done', { processed: res?.processed });
           } catch (error) {
-            logger.warn('[Scheduler] Ozon ads membership failed:', error?.message || error);
+            logger.warn('[Scheduler] Ads membership failed:', error?.message || error);
+            try {
+              const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js'))
+                .default;
+              const res = await ozonPerformanceAdsService.syncMembershipAllConfiguredScopes();
+              logger.info('[Scheduler] Ozon ads membership fallback done', res);
+            } catch (e2) {
+              logger.warn('[Scheduler] Ozon ads membership fallback failed:', e2?.message || e2);
+            }
+          }
+        },
+        { scheduled: false, timezone: 'Europe/Moscow' }
+      );
+
+      // Автоматизация рекламы: автопауза / биддер
+      const adsAutomationJob = cron.schedule(
+        process.env.ADS_AUTOMATION_CRON && String(process.env.ADS_AUTOMATION_CRON).trim()
+          ? String(process.env.ADS_AUTOMATION_CRON).trim()
+          : '5,35 * * * *',
+        async () => {
+          logger.info('[Scheduler] Ads automation tick...');
+          try {
+            const adsAutomationService = (await import('./ads/adsAutomation.service.js')).default;
+            const res = await adsAutomationService.runAllEnabled();
+            logger.info('[Scheduler] Ads automation done', res);
+          } catch (error) {
+            logger.warn('[Scheduler] Ads automation failed:', error?.message || error);
           }
         },
         { scheduled: false, timezone: 'Europe/Moscow' }
@@ -1871,6 +1905,7 @@ class SchedulerService {
       minPricesRecalcJob.start();
       if (minPriceReconcileJob) minPriceReconcileJob.start();
       ozonAdsMembershipJob.start();
+      adsAutomationJob.start();
       if (questionsSyncJob) {
         questionsSyncJob.start();
       }

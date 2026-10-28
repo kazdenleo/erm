@@ -926,6 +926,21 @@ class IntegrationsService {
           config.api_key = config.apiKey;
         }
       }
+      if (config.advert_api_key == null && config.advertApiKey != null) {
+        config.advert_api_key = config.advertApiKey;
+      }
+      if (config.advert_api_key != null) {
+        config.advert_api_key = String(config.advert_api_key).trim() || null;
+      }
+      if (config.wb_ads_percent == null && config.wbAdsPercent != null) {
+        config.wb_ads_percent = config.wbAdsPercent;
+      }
+      if (config.wb_ads_percent != null && config.wb_ads_percent !== '') {
+        const n = Number(config.wb_ads_percent);
+        config.wb_ads_percent = Number.isFinite(n) ? n : null;
+      } else if (config.wb_ads_percent === '') {
+        config.wb_ads_percent = null;
+      }
       if (config.acquiring_percent != null && config.acquiring_percent !== '') {
         const n = Number(config.acquiring_percent);
         config.acquiring_percent = Number.isFinite(n) ? n : null;
@@ -970,6 +985,27 @@ class IntegrationsService {
         if (config.campaignId != null && String(config.campaignId).trim() !== '') {
           config.campaign_id = config.campaignId;
         }
+      }
+      if (config.ads_token == null && config.adsToken != null) {
+        config.ads_token = config.adsToken;
+      }
+      if (config.ads_token != null) {
+        config.ads_token = String(config.ads_token).trim() || null;
+      }
+      if (config.ads_campaign_ids == null && config.adsCampaignIds != null) {
+        config.ads_campaign_ids = config.adsCampaignIds;
+      }
+      if (config.ads_campaign_ids != null) {
+        config.ads_campaign_ids = String(config.ads_campaign_ids).trim() || null;
+      }
+      if (config.ym_ads_percent == null && config.ymAdsPercent != null) {
+        config.ym_ads_percent = config.ymAdsPercent;
+      }
+      if (config.ym_ads_percent != null && config.ym_ads_percent !== '') {
+        const n = Number(config.ym_ads_percent);
+        config.ym_ads_percent = Number.isFinite(n) ? n : null;
+      } else if (config.ym_ads_percent === '') {
+        config.ym_ads_percent = null;
       }
       if (config.payment_transfer_percent == null && config.paymentTransferPercent != null) {
         config.payment_transfer_percent = config.paymentTransferPercent;

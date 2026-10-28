@@ -1,0 +1,133 @@
+.ads-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ads-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  padding-bottom: 8px;
+}
+
+.ads-tabs__link {
+  padding: 8px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+}
+
+.ads-tabs__link--active {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--text, #111);
+  font-weight: 600;
+}
+
+.ads-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.ads-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.ads-kpi {
+  padding: 12px 14px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  background: var(--card, #fff);
+}
+
+.ads-kpi__label {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.ads-kpi__value {
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.ads-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+}
+
+.ads-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ads-table th,
+.ads-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ads-table th {
+  background: rgba(0, 0, 0, 0.03);
+  font-weight: 600;
+}
+
+.ads-muted {
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+}
+
+.ads-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ads-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.ads-badge--ok {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.ads-badge--warn {
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.ads-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.ads-form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.ads-form-row input,
+.ads-form-row select {
+  min-width: 160px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+}
