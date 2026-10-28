@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pricesApi } from '../../services/prices.api.js';
 import { productCardPath } from '../../utils/productCardPath.js';
+import { PromoPulse } from './PromoPulse';
 import './Prices.css';
 
 function formatRub(value) {
@@ -240,7 +241,9 @@ const YM_STATUS = {
 export function PricePromotions() {
   const navigate = useNavigate();
   const splat = useParams()['*'] || '';
-  const [routeMp, routePromoId] = splat.split('/').filter(Boolean);
+  const pathParts = splat.split('/').filter(Boolean);
+  const sectionTab = pathParts[0] === 'pulse' ? 'pulse' : 'list';
+  const [routeMp, routePromoId] = pathParts;
   const detailMp = routeMp === 'ozon' || routeMp === 'wb' || routeMp === 'ym' ? routeMp : null;
   const detailId = detailMp && routePromoId ? routePromoId : null;
 
@@ -574,10 +577,37 @@ export function PricePromotions() {
       {!detailId && (<>
       <h1 className="title">Акции</h1>
       <p className="subtitle">
-        Акции маркетплейсов. Вход закрыт, если цена акции ниже минимальной или минимум не посчитан. ·{' '}
+        {sectionTab === 'pulse'
+          ? 'Автоматический цикл участия в акциях (набор цены → удар → выход).'
+          : 'Акции маркетплейсов. Вход закрыт, если цена акции ниже минимальной или минимум не посчитан.'}
+        {' · '}
         <Link to="/prices" style={{ color: 'var(--primary)' }}>Минимальные цены</Link>
       </p>
 
+      <div className="erp-filter-row" role="tablist" aria-label="Раздел акций" style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sectionTab === 'list'}
+          className={`erp-filter-btn${sectionTab === 'list' ? ' erp-filter-btn--active' : ''}`}
+          onClick={() => navigate('/prices/promotions')}
+        >
+          Список акций
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sectionTab === 'pulse'}
+          className={`erp-filter-btn${sectionTab === 'pulse' ? ' erp-filter-btn--active' : ''}`}
+          onClick={() => navigate('/prices/promotions/pulse')}
+        >
+          Пульс
+        </button>
+      </div>
+
+      {sectionTab === 'pulse' && <PromoPulse embedded />}
+
+      {sectionTab === 'list' && (<>
       <div className="erp-filter-row promo-mp-tabs" role="tablist" aria-label="Маркетплейс">
         {PROMO_MARKETPLACES.map(({ key, label, shortLabel }) => {
           const active = activePromoMarketplace === key;
@@ -732,6 +762,7 @@ export function PricePromotions() {
           )}
         </div>
       )}
+      </>)}
       </>)}
 
       {actionModal.isOpen && (

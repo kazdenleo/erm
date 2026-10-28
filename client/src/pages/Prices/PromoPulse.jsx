@@ -39,7 +39,7 @@ const boxStyle = {
   maxWidth: 820,
 };
 
-export function PromoPulse() {
+export function PromoPulse({ embedded = false } = {}) {
   const [ports, setPorts] = useState([]);
   const [policies, setPolicies] = useState([]);
   const [policy, setPolicy] = useState(null);
@@ -255,21 +255,34 @@ export function PromoPulse() {
 
   const maxBSharePct = Math.round((Number(policy?.max_b_share_30d) || 0.33) * 100);
 
-  if (loading) return <div className="card"><p className="text-muted">Загрузка…</p></div>;
+  if (loading) {
+    return embedded
+      ? <p className="text-muted">Загрузка…</p>
+      : <div className="card"><p className="text-muted">Загрузка…</p></div>;
+  }
 
   const actionable = (preview?.all || []).filter((r) => r.decision && r.decision !== 'skip');
 
   return (
-    <div className="card">
+    <div className={embedded ? undefined : 'card'} style={embedded ? { marginTop: 4 } : undefined}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <h1 className="title">Пульс акций</h1>
-          <p className="subtitle" style={{ maxWidth: 720 }}>
+          {embedded ? (
+            <h2 style={{ fontSize: 18, margin: '0 0 4px' }}>Пульс акций</h2>
+          ) : (
+            <h1 className="title">Пульс акций</h1>
+          )}
+          <p className={embedded ? undefined : 'subtitle'} style={{ maxWidth: 720, ...(embedded ? hintStyle : {}) }}>
             Автоматически решает, какие товары в каких акциях держать, чтобы и в акциях участвовать,
-            и среднюю цену (медиану) не ронять слишком сильно.{' '}
-            <Link to="/prices/promotions">Ручные акции</Link>
-            {' · '}
-            <Link to="/prices/strategies">Стратегии цен</Link>
+            и среднюю цену (медиану) не ронять слишком сильно.
+            {!embedded && (
+              <>
+                {' '}
+                <Link to="/prices/promotions">Ручные акции</Link>
+                {' · '}
+                <Link to="/prices/strategies">Стратегии цен</Link>
+              </>
+            )}
           </p>
         </div>
         <Button type="button" variant="secondary" onClick={() => setShowHelp((v) => !v)}>
