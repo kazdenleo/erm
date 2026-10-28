@@ -2,12 +2,14 @@
  * Пульс акций — автоматическое участие в акциях по фазам A/B/C.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { promoPulseApi } from '../../services/promoPulse.api.js';
 import { categoriesApi } from '../../services/categories.api.js';
+import { searchProductsCombined } from '../../utils/productSearch.js';
 import './Prices.css';
+import './PriceHistory.css';
 
 const SEGMENTS = [
   { id: 'normal', label: 'Обычный' },
@@ -53,7 +55,12 @@ export function PromoPulse({ embedded = false } = {}) {
   const [states, setStates] = useState([]);
   const [saving, setSaving] = useState(false);
   const [assignMode, setAssignMode] = useState('product');
-  const [assignProductId, setAssignProductId] = useState('');
+  const [productQuery, setProductQuery] = useState('');
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [productSuggest, setProductSuggest] = useState([]);
+  const [productSuggestOpen, setProductSuggestOpen] = useState(false);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+  const productSuggestRef = useRef(null);
   const [assignCategoryId, setAssignCategoryId] = useState('');
   const [assignSegment, setAssignSegment] = useState('stock');
   const [categories, setCategories] = useState([]);
@@ -90,6 +97,54 @@ export function PromoPulse({ embedded = false } = {}) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const q = productQuery.trim();
+    if (assignMode !== 'product') return undefined;
+    if (!q || (selectedProduct && (q === selectedProduct.sku || q === selectedProduct.name))) {
+      setProductSuggest([]);
+      setProductSearchLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setProductSearchLoading(true);
+    const t = setTimeout(async () => {
+      const list = await searchProductsCombined(q, { limit: 12 });
+      if (!cancelled) {
+        setProductSuggest(list);
+        setProductSuggestOpen(true);
+        setProductSearchLoading(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [productQuery, selectedProduct, assignMode]);
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (productSuggestRef.current && !productSuggestRef.current.contains(e.target)) {
+        setProductSuggestOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const pickProduct = (product) => {
+    if (!product?.id) return;
+    setSelectedProduct(product);
+    setProductQuery(product.sku || product.name || String(product.id));
+    setProductSuggest([]);
+    setProductSuggestOpen(false);
+  };
+
+  const clearPickedProduct = () => {
+    setSelectedProduct(null);
+    setProductQuery('');
+    setProductSuggest([]);
+  };
 
   const savePolicy = async () => {
     if (!policy?.id) return;
@@ -203,9 +258,20 @@ export function PromoPulse({ embedded = false } = {}) {
       }
       payload.user_category_id = categoryId;
     } else {
-      const productId = Number(assignProductId);
+      let product = selectedProduct;
+      if (!product?.id && productQuery.trim()) {
+        const list = await searchProductsCombined(productQuery.trim(), { limit: 5 });
+        if (list.length === 1) product = list[0];
+        else if (list.length > 1) {
+          setProductSuggest(list);
+          setProductSuggestOpen(true);
+          setMessage('Ошибка: выберите товар из списка — найдено несколько');
+          return;
+        }
+      }
+      const productId = Number(product?.id);
       if (!Number.isFinite(productId) || productId < 1) {
-        setMessage('Ошибка: укажите ID товара');
+        setMessage('Ошибка: найдите и выберите товар по названию, артикулу или штрихкоду');
         return;
       }
       payload.product_id = productId;
@@ -213,7 +279,7 @@ export function PromoPulse({ embedded = false } = {}) {
     setBusy(true);
     try {
       await promoPulseApi.createAssignment(payload);
-      setAssignProductId('');
+      clearPickedProduct();
       setAssignCategoryId('');
       setMessage('Правило сегмента сохранено');
       await load();
@@ -589,24 +655,68 @@ export function PromoPulse({ embedded = false } = {}) {
           <li><strong>Сток</strong> — в ударе можно уйти ниже мин. цены (если галка выше включена).</li>
           <li><strong>Новинка</strong> — пока держим режим набора цены (A), без глубокого бустинга.</li>
         </ul>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <select value={assignMode} onChange={(e) => setAssignMode(e.target.value)}>
-            <option value="product">Товар по ID</option>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
+          <select
+            value={assignMode}
+            onChange={(e) => {
+              setAssignMode(e.target.value);
+              clearPickedProduct();
+            }}
+            style={{ marginTop: 2 }}
+          >
+            <option value="product">Товар</option>
             <option value="category">Категория</option>
           </select>
           {assignMode === 'product' ? (
-            <input
-              type="number"
-              placeholder="ID товара"
-              value={assignProductId}
-              onChange={(e) => setAssignProductId(e.target.value)}
-              style={{ width: 120 }}
-            />
+            <div className="price-history-search" ref={productSuggestRef} style={{ position: 'relative', minWidth: 260, flex: '1 1 260px' }}>
+              <input
+                value={productQuery}
+                onChange={(e) => {
+                  setProductQuery(e.target.value);
+                  setSelectedProduct(null);
+                }}
+                onFocus={() => productSuggest.length && setProductSuggestOpen(true)}
+                placeholder="Название, артикул или штрихкод…"
+                autoComplete="off"
+                style={{ width: '100%' }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  if (productSuggest.length === 1) pickProduct(productSuggest[0]);
+                  else if (selectedProduct) addAssignment();
+                }}
+              />
+              {productSearchLoading && (
+                <p className="text-muted small" style={{ margin: '4px 0 0' }}>Поиск…</p>
+              )}
+              {selectedProduct && !productSuggestOpen && (
+                <p className="text-muted small" style={{ margin: '4px 0 0' }}>
+                  Выбран: {selectedProduct.sku || `#${selectedProduct.id}`}
+                  {selectedProduct.name ? ` — ${selectedProduct.name}` : ''}
+                  {' '}
+                  <button type="button" onClick={clearPickedProduct} style={{ fontSize: 12 }}>
+                    сбросить
+                  </button>
+                </p>
+              )}
+              {productSuggestOpen && productSuggest.length > 0 && (
+                <ul className="price-history-suggest" style={{ zIndex: 20 }}>
+                  {productSuggest.map((p) => (
+                    <li key={p.id}>
+                      <button type="button" onClick={() => pickProduct(p)}>
+                        <div className="sku">{p.sku || `#${p.id}`}</div>
+                        <div className="name">{p.name || '—'}</div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : (
             <select
               value={assignCategoryId}
               onChange={(e) => setAssignCategoryId(e.target.value)}
-              style={{ maxWidth: 280 }}
+              style={{ maxWidth: 280, marginTop: 2 }}
             >
               <option value="">Выберите категорию…</option>
               {categories.map((c) => (
@@ -614,12 +724,12 @@ export function PromoPulse({ embedded = false } = {}) {
               ))}
             </select>
           )}
-          <select value={assignSegment} onChange={(e) => setAssignSegment(e.target.value)}>
+          <select value={assignSegment} onChange={(e) => setAssignSegment(e.target.value)} style={{ marginTop: 2 }}>
             {SEGMENTS.map((s) => (
               <option key={s.id} value={s.id}>{s.label}</option>
             ))}
           </select>
-          <Button type="button" variant="secondary" onClick={addAssignment} disabled={busy}>
+          <Button type="button" variant="secondary" onClick={addAssignment} disabled={busy} style={{ marginTop: 2 }}>
             Добавить правило
           </Button>
         </div>
