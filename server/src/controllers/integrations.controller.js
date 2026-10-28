@@ -696,6 +696,39 @@ class IntegrationsController {
   }
 
   /**
+   * POST /api/integrations/marketplaces/ozon/auto-join-products/run
+   * Прогон автообъединения (Join SKU) для текущей организации.
+   */
+  async runOzonAutoJoinProducts(req, res, next) {
+    try {
+      const { runOzonAutoJoinProductsForOrgScope } = await import(
+        '../services/ozonAutoJoinProducts.service.js'
+      );
+      const organizationId =
+        req.headers['x-organization-id'] ??
+        req.query.organizationId ??
+        req.body?.organizationId ??
+        null;
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
+      const result = await runOzonAutoJoinProductsForOrgScope({
+        profileId,
+        organizationId:
+          organizationId != null && String(organizationId).trim() !== ''
+            ? String(organizationId).trim()
+            : null,
+      });
+      if (!result?.ok && result?.error) {
+        return res.status(400).json({ ok: false, error: result.error, ...result });
+      }
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      logger.error('[Integrations] runOzonAutoJoinProducts error:', error);
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/integrations/marketplaces/ozon/product-info
    * Данные товара из Ozon. Query: product_id (Ozon) или offer_id (артикул продавца).
    */

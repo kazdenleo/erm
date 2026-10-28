@@ -37,6 +37,10 @@ router.get('/marketplaces/yandex/warehouses', wrapAsync(integrationsController.g
 router.get('/marketplaces/yandex/product-info', wrapAsync(integrationsController.getYandexProductInfo));
 // Атрибуты категории Ozon (характеристики и справочники)
 router.get('/marketplaces/ozon/product-info', wrapAsync(integrationsController.getOzonProductInfo));
+router.post(
+  '/marketplaces/ozon/auto-join-products/run',
+  wrapAsync(integrationsController.runOzonAutoJoinProducts)
+);
 router.get('/marketplaces/ozon/category-attributes', wrapAsync(integrationsController.getOzonCategoryAttributes));
 router.get('/marketplaces/ozon/attribute-values', wrapAsync(integrationsController.getOzonAttributeValues));
 router.get('/marketplaces/ozon/attribute-values/search', wrapAsync(integrationsController.searchOzonAttributeValues));

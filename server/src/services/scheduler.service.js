@@ -1029,6 +1029,50 @@ class SchedulerService {
         { scheduled: false, timezone: 'Europe/Moscow' }
       );
 
+      // Автообъединение карточек Ozon (Join SKU / attr 9048) — кабинеты с ozon_auto_join_products.
+      const ozonAutoJoinCron =
+        process.env.OZON_AUTO_JOIN_PRODUCTS_CRON && String(process.env.OZON_AUTO_JOIN_PRODUCTS_CRON).trim()
+          ? String(process.env.OZON_AUTO_JOIN_PRODUCTS_CRON).trim()
+          : '0 */12 * * *';
+      const ozonAutoJoinEnabled = !['0', 'false', 'off', 'no'].includes(
+        String(process.env.OZON_AUTO_JOIN_PRODUCTS_ENABLED || '1').trim().toLowerCase()
+      );
+      let ozonAutoJoinProductsJob = null;
+      if (ozonAutoJoinEnabled) {
+        ozonAutoJoinProductsJob = cron.schedule(
+          ozonAutoJoinCron,
+          async () => {
+            await runSchedulerDbJob('ozon-auto-join-products', async () => {
+              logger.info('[Scheduler] Ozon auto-join products...');
+              try {
+                const { runOzonAutoJoinProductsForAllEnabled } = await import(
+                  './ozonAutoJoinProducts.service.js'
+                );
+                const res = await runOzonAutoJoinProductsForAllEnabled();
+                logger.info('[Scheduler] Ozon auto-join products done', {
+                  processed: res?.processed,
+                  ok: res?.ok,
+                });
+              } catch (error) {
+                logger.error('[Scheduler] Ozon auto-join products failed:', error);
+                await addRuntimeNotification({
+                  type: 'job_failed',
+                  severity: 'error',
+                  source: 'scheduler',
+                  title: 'Сбой автообъединения товаров Ozon',
+                  message: `Ozon auto-join products failed: ${error?.message || String(error)}`,
+                  marketplace: 'ozon',
+                });
+                throw error;
+              }
+            });
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+      } else {
+        logger.info('[Scheduler] Ozon auto-join products disabled (OZON_AUTO_JOIN_PRODUCTS_ENABLED)');
+      }
+
       // Дневная сверка: если цена на МП ≠ ERP (стратегия/selling/мин.) — пушим.
       let minPriceReconcileJob = null;
       const minPriceReconcileCron = getMinPriceReconcileCron();
@@ -1544,6 +1588,16 @@ class SchedulerService {
         description: 'Обновление списка акций Ozon каждый день в 1:00'
       });
 
+      if (ozonAutoJoinProductsJob) {
+        this.jobs.push({
+          name: 'ozon-auto-join-products',
+          job: ozonAutoJoinProductsJob,
+          schedule: ozonAutoJoinCron,
+          description:
+            'Автообъединение карточек Ozon (type+бренд → Join SKU 9048). OZON_AUTO_JOIN_PRODUCTS_CRON, по умолчанию каждые 12 ч МСК. Только кабинеты с флагом.',
+        });
+      }
+
       if (promoPulseJob) {
         this.jobs.push({
           name: 'promo-pulse',
@@ -1898,6 +1952,7 @@ class SchedulerService {
       wbUpdateJob.start();
       wbTariffsJob.start();
       ozonActionsJob.start();
+      if (ozonAutoJoinProductsJob) ozonAutoJoinProductsJob.start();
       if (promoPulseJob) promoPulseJob.start();
       ozonCategoriesJob.start();
       ymCategoriesJob.start();

@@ -14,6 +14,12 @@ export const integrationsApi = {
     return response.data;
   },
 
+  /** Прогон автообъединения карточек Ozon (Join SKU) для текущей организации */
+  runOzonAutoJoinProducts: async () => {
+    const response = await api.post('/integrations/marketplaces/ozon/auto-join-products/run');
+    return response.data;
+  },
+
   /**
    * Сохранить настройки маркетплейса
    */
