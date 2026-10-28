@@ -9,8 +9,11 @@ import {
   leaveOzonAction,
   setOzonActionPrice,
 } from '../../marketplacePromotions.service.js';
+import { buildOzonPriceImportEntry } from '../../marketplaceMinPricePush.service.js';
 import { elasticBoostLevels } from '../../../utils/ozonElasticBoost.js';
-import { exitActionPrice } from '../../../utils/ozonPromoExit.js';
+import { restoreExitPrice } from '../../../utils/ozonPromoExit.js';
+import { ozonApiPostWithRetry } from '../../../utils/ozonSellerApi.js';
+import logger from '../../../utils/logger.js';
 
 function actionKind(action) {
   const t = String(action?.action_type || action?.discount_type || '').toUpperCase();
@@ -42,6 +45,7 @@ function mapOffer(row, actionId, { participating }) {
     promo_price: row.action_price != null ? Number(row.action_price) : null,
     entry_price: row.entry_price != null ? Number(row.entry_price) : null,
     floor: row.floor != null ? Number(row.floor) : null,
+    selling_price: row.selling_price != null ? Number(row.selling_price) : null,
     markup_rub: row.markup_rub != null ? Number(row.markup_rub) : null,
     profit_rub: row.profit_rub != null ? Number(row.profit_rub) : null,
     max_action_price: Number.isFinite(maxActionPrice) ? maxActionPrice : null,
@@ -80,20 +84,76 @@ function leaveProductPayload(c) {
   const price =
     c.price != null
       ? Number(c.price)
-      : exitActionPrice({
+      : restoreExitPrice({
+          selling_price: c.selling_price,
           price: c.list_price,
+          list_price: c.list_price,
           floor: c.floor,
           max_action_price: c.max_action_price,
         });
   return {
     ozonProductId,
     ourProductId: c.our_product_id != null ? Number(c.our_product_id) : null,
-    price: c.list_price != null ? Number(c.list_price) : price,
+    price: price != null ? price : (c.list_price != null ? Number(c.list_price) : null),
     floor: c.floor != null ? Number(c.floor) : null,
+    selling_price: c.selling_price != null ? Number(c.selling_price) : null,
     max_action_price: c.max_action_price != null ? Number(c.max_action_price) : null,
     actionPrice: price,
     action_price: price,
   };
+}
+
+/**
+ * После leave — зафиксировать витринную цену через import/prices
+ * (selling ERP или пол), даже если deactivate сработал без raise.
+ */
+async function pushRestoredCatalogPrices(scope, leaveCommands) {
+  if (!leaveCommands?.length) return { pushed: 0, errors: [] };
+  const { client_id, api_key } = await pricesService._getOzonApiCredentials(scope);
+  if (!client_id || !api_key) return { pushed: 0, errors: ['no_credentials'] };
+
+  const ozonApiOpts = { ozonOverride: { client_id, api_key } };
+  const prices = [];
+  for (const c of leaveCommands) {
+    const ozonProductId = Number(c.external_product_id);
+    if (!Number.isFinite(ozonProductId) || ozonProductId < 1) continue;
+    const floorRaw = c.floor != null ? Number(c.floor) : null;
+    const sellingRaw =
+      c.selling_price != null
+        ? Number(c.selling_price)
+        : c.price != null
+          ? Number(c.price)
+          : null;
+    const floor =
+      floorRaw != null && floorRaw > 0
+        ? floorRaw
+        : sellingRaw != null && sellingRaw > 0
+          ? sellingRaw
+          : null;
+    const entry = buildOzonPriceImportEntry({
+      floor,
+      sellingTarget: sellingRaw,
+      ozonProductId,
+    });
+    if (entry) prices.push(entry);
+  }
+  if (!prices.length) return { pushed: 0, errors: [] };
+
+  const errors = [];
+  let pushed = 0;
+  const batchSize = 100;
+  for (let i = 0; i < prices.length; i += batchSize) {
+    const chunk = prices.slice(i, i + batchSize);
+    try {
+      await ozonApiPostWithRetry('/v1/product/import/prices', { prices: chunk }, ozonApiOpts);
+      pushed += chunk.length;
+    } catch (e) {
+      const msg = `import/prices: ${e?.message || String(e)}`.substring(0, 220);
+      errors.push(msg);
+      logger.warn('[PromoPulse Ozon] restore import/prices failed', { message: msg });
+    }
+  }
+  return { pushed, errors };
 }
 
 export const ozonPromoPort = {
@@ -166,15 +226,38 @@ export const ozonPromoPort = {
           },
           scope
         );
+        let restore = { pushed: 0, errors: [] };
+        if (res.ok === true) {
+          restore = await pushRestoredCatalogPrices(scope, groups.leave);
+        }
         for (const c of groups.leave) {
+          const target =
+            c.price != null
+              ? Number(c.price)
+              : c.selling_price != null
+                ? Number(c.selling_price)
+                : null;
+          const restoreNote =
+            res.ok && target != null
+              ? `вышли, цена → ${Math.round(target)} ₽`
+              : null;
           results.push({
             ...c,
             applied: res.ok === true,
             dryRun: false,
             ok: res.ok !== false,
             error: res.ok ? null : res.error || null,
-            message: res.notice || (res.ok ? 'leave ok' : res.error),
-            api: { deactivated: res.deactivated, rejected: res.rejected, raisedTo: res.raisedTo },
+            message:
+              restoreNote ||
+              res.notice ||
+              (res.ok ? 'leave ok' : res.error),
+            api: {
+              deactivated: res.deactivated,
+              rejected: res.rejected,
+              raisedTo: res.raisedTo,
+              restorePushed: restore.pushed,
+              restoreErrors: restore.errors,
+            },
           });
         }
       }

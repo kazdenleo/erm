@@ -1,4 +1,4 @@
-import { exitActionPrice, isUnifiedPriceBlock } from '../src/utils/ozonPromoExit.js';
+import { exitActionPrice, isUnifiedPriceBlock, restoreExitPrice } from '../src/utils/ozonPromoExit.js';
 
 describe('ozonPromoExit', () => {
   test('обычная цена выше порога акции — её и ставим, пол не опускаем', () => {
@@ -30,5 +30,30 @@ describe('ozonPromoExit', () => {
   test('код 9 unified price logic', () => {
     expect(isUnifiedPriceBlock('deactivate 400: {"code":9,"message":"the method is blocked due to unified price logic"}')).toBe(true);
     expect(isUnifiedPriceBlock('deactivate 400: not found')).toBe(false);
+  });
+
+  test('restoreExitPrice предпочитает selling ERP', () => {
+    expect(restoreExitPrice({
+      selling_price: 1500,
+      floor: 1000,
+      list_price: 1100,
+      max_action_price: 1200,
+    })).toBe(1500);
+  });
+
+  test('restoreExitPrice без selling берёт пол', () => {
+    expect(restoreExitPrice({
+      floor: 1300,
+      list_price: 900,
+      max_action_price: 1200,
+    })).toBe(1300);
+  });
+
+  test('restoreExitPrice поднимает до порога+1, если selling ниже', () => {
+    expect(restoreExitPrice({
+      selling_price: 1000,
+      floor: 900,
+      max_action_price: 1200,
+    })).toBe(1201);
   });
 });

@@ -2,7 +2,7 @@
  * Пульс акций — автоматическое участие в акциях по фазам A/B/C.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { promoPulseApi } from '../../services/promoPulse.api.js';
@@ -13,16 +13,35 @@ import './PriceHistory.css';
 
 const SEGMENTS = [
   { id: 'normal', label: 'Обычный' },
-  { id: 'hero', label: 'Хит — можно дольше в ударе' },
-  { id: 'stock', label: 'Сток — можно ниже мин. цены' },
-  { id: 'new', label: 'Новинка — сначала только набор цены' },
+  { id: 'hero', label: 'Хит' },
+  { id: 'stock', label: 'Сток' },
+  { id: 'new', label: 'Новинка' },
 ];
 
+const SEGMENT_HINT = {
+  hero: 'можно дольше в ударе',
+  stock: 'можно ниже мин. цены',
+  new: 'сначала только набор цены',
+};
+
 const DECISION_RU = {
-  join: 'Войти в акцию',
-  leave: 'Выйти из акции',
-  set_level: 'Поставить уровень бустинга',
-  skip: 'Ничего не делать',
+  join: 'Войти',
+  leave: 'Выйти',
+  set_level: 'Бустинг',
+  skip: 'Без изменений',
+};
+
+const DECISION_COLOR = {
+  join: '#16a34a',
+  leave: '#dc2626',
+  set_level: '#2563eb',
+  skip: 'var(--muted)',
+};
+
+const PHASE_RU = {
+  A: 'A · набор цены',
+  B: 'B · удар',
+  C: 'C · выход',
 };
 
 const hintStyle = {
@@ -33,13 +52,56 @@ const hintStyle = {
 };
 
 const boxStyle = {
-  marginTop: 16,
-  padding: '14px 16px',
+  marginTop: 12,
+  padding: '12px 14px',
   border: '1px solid var(--border, #e5e7eb)',
   borderRadius: 8,
   background: 'rgba(148,163,184,0.08)',
-  maxWidth: 820,
+  maxWidth: 920,
 };
+
+const sectionHeadStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+  width: '100%',
+  padding: '10px 0',
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontSize: 15,
+  fontWeight: 600,
+  color: 'inherit',
+};
+
+function Collapsible({ title, open, onToggle, badge, children }) {
+  return (
+    <section style={{ marginTop: 8, borderTop: '1px solid var(--border, #e5e7eb)' }}>
+      <button type="button" onClick={onToggle} style={sectionHeadStyle} aria-expanded={open}>
+        <span>
+          {open ? '▼' : '▶'} {title}
+          {badge != null && badge !== '' ? (
+            <span style={{ marginLeft: 8, fontWeight: 500, color: 'var(--muted)', fontSize: 13 }}>
+              {badge}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {open ? <div style={{ paddingBottom: 16 }}>{children}</div> : null}
+    </section>
+  );
+}
+
+function productLabel(row) {
+  const sku = row.sku || row.product_sku;
+  const name = row.offer_name || row.product_name;
+  if (sku && name) return `${sku} — ${name}`;
+  if (sku) return sku;
+  if (name) return name;
+  return row.our_product_id != null ? `#${row.our_product_id}` : '—';
+}
 
 export function PromoPulse({ embedded = false } = {}) {
   const [ports, setPorts] = useState([]);
@@ -64,7 +126,12 @@ export function PromoPulse({ embedded = false } = {}) {
   const [assignCategoryId, setAssignCategoryId] = useState('');
   const [assignSegment, setAssignSegment] = useState('stock');
   const [categories, setCategories] = useState([]);
-  const [showHelp, setShowHelp] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const [openSettings, setOpenSettings] = useState(false);
+  const [openSegments, setOpenSegments] = useState(false);
+  const [openStates, setOpenStates] = useState(false);
+  const [openRuns, setOpenRuns] = useState(false);
+  const [showSkip, setShowSkip] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -175,9 +242,7 @@ export function PromoPulse({ embedded = false } = {}) {
         setPreview(null);
       } else {
         setPreview(res);
-        setMessage(
-          `Предпросмотр (ничего не меняли на МП): войти ${res.counts?.join || 0}, бустинг ${res.counts?.set_level || 0}, выйти ${res.counts?.leave || 0}, без действия ${res.counts?.skip || 0}`
-        );
+        setMessage(null);
       }
     } catch (e) {
       setMessage('Ошибка: ' + (e.response?.data?.error || e.message));
@@ -201,7 +266,7 @@ export function PromoPulse({ embedded = false } = {}) {
         setPreview(res);
         setMessage(
           res.notice ||
-            `Прогон #${res.runId} сохранён в журнал. На маркетплейс ничего не отправляли.`
+            `Прогон #${res.runId} записан в журнал. На маркетплейс ничего не ушло.`
         );
         await load();
       }
@@ -214,14 +279,13 @@ export function PromoPulse({ embedded = false } = {}) {
 
   const runLive = async () => {
     if (policy?.dry_run !== false) {
-      setMessage(
-        'Сначала снимите галку «Только проверка, без записи на МП», сохраните настройки — и тогда можно отправлять.'
-      );
+      setMessage('Снимите режим «Только проверка», сохраните настройки — и снова нажмите «Отправить».');
+      setOpenSettings(true);
       return;
     }
     if (
       !window.confirm(
-        'Отправить решения на маркетплейс?\n\nТовары могут войти в акции, выйти из них или сменить цену бустинга. Это уже реальное изменение.'
+        'Отправить на маркетплейс?\n\nТовары реально войдут в акции, выйдут или сменят цену бустинга.'
       )
     ) {
       return;
@@ -238,7 +302,7 @@ export function PromoPulse({ embedded = false } = {}) {
         setMessage('Ошибка: ' + (res?.error || 'прогон'));
       } else {
         setPreview(res);
-        setMessage(res.notice || `Прогон #${res.runId}: команды отправлены на МП`);
+        setMessage(res.notice || `Прогон #${res.runId}: отправлено на МП`);
         await load();
       }
     } catch (e) {
@@ -281,7 +345,7 @@ export function PromoPulse({ embedded = false } = {}) {
       await promoPulseApi.createAssignment(payload);
       clearPickedProduct();
       setAssignCategoryId('');
-      setMessage('Правило сегмента сохранено');
+      setMessage('Правило сохранено');
       await load();
     } catch (e) {
       setMessage('Ошибка: ' + (e.response?.data?.error || e.message));
@@ -320,6 +384,16 @@ export function PromoPulse({ embedded = false } = {}) {
   };
 
   const maxBSharePct = Math.round((Number(policy?.max_b_share_30d) || 0.33) * 100);
+  const safeMode = policy?.dry_run !== false;
+
+  const previewRows = useMemo(() => {
+    const all = Array.isArray(preview?.all) ? preview.all : [];
+    if (showSkip) return all;
+    return all.filter((r) => r.decision && r.decision !== 'skip');
+  }, [preview, showSkip]);
+
+  const counts = preview?.counts || {};
+  const lastRun = runs[0] || null;
 
   if (loading) {
     return embedded
@@ -327,112 +401,268 @@ export function PromoPulse({ embedded = false } = {}) {
       : <div className="card"><p className="text-muted">Загрузка…</p></div>;
   }
 
-  const actionable = (preview?.all || []).filter((r) => r.decision && r.decision !== 'skip');
-
   return (
     <div className={embedded ? undefined : 'card'} style={embedded ? { marginTop: 4 } : undefined}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ maxWidth: 640 }}>
           {embedded ? (
-            <h2 style={{ fontSize: 18, margin: '0 0 4px' }}>Пульс акций</h2>
+            <h2 style={{ fontSize: 18, margin: '0 0 4px' }}>Пульс</h2>
           ) : (
             <h1 className="title">Пульс акций</h1>
           )}
-          <p className={embedded ? undefined : 'subtitle'} style={{ maxWidth: 720, ...(embedded ? hintStyle : {}) }}>
-            Автоматически решает, какие товары в каких акциях держать, чтобы и в акциях участвовать,
-            и среднюю цену (медиану) не ронять слишком сильно.
+          <p style={{ ...hintStyle, marginBottom: 0 }}>
+            Сам чередует вход и выход из акций, чтобы и продажи шли, и медиана цены не падала.
             {!embedded && (
               <>
                 {' '}
-                <Link to="/prices/promotions">Ручные акции</Link>
-                {' · '}
-                <Link to="/prices/strategies">Стратегии цен</Link>
+                <Link to="/prices/promotions">К списку акций</Link>
               </>
             )}
           </p>
         </div>
-        <Button type="button" variant="secondary" onClick={() => setShowHelp((v) => !v)}>
-          {showHelp ? 'Скрыть справку' : 'Как это работает'}
-        </Button>
+        <button
+          type="button"
+          onClick={() => setShowHelp((v) => !v)}
+          style={{ fontSize: 13, color: 'var(--primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+        >
+          {showHelp ? 'Скрыть справку' : 'Как это работает?'}
+        </button>
       </div>
 
       {showHelp && (
         <div style={boxStyle}>
-          <p style={{ ...hintStyle, marginBottom: 10, color: 'inherit' }}>
-            <strong>Зачем.</strong> Если всегда сидеть на максимальном бустинге — медиана цены падает,
-            и потом в акции сложнее попасть выгодно. Пульс чередует три режима для каждого товара в акции:
-          </p>
-          <ol style={{ ...hintStyle, margin: '0 0 12px', paddingLeft: 20, color: 'inherit' }}>
-            <li>
-              <strong>A — набор цены</strong> ({policy?.phase_a_days || 14} дн.): из эластичных акций
-              выходим или не заходим глубоко, чтобы «обычная» цена подросла.
-            </li>
-            <li>
-              <strong>B — удар</strong> ({policy?.phase_b_days || 7} дн.): входим на лучший допустимый
-              бустинг / цену акции (не ниже пола и не ниже мин. наценки, если так настроено).
-            </li>
-            <li>
-              <strong>C — выход</strong> ({phaseCDays} дн.): выходим из акции, затем снова A.
-            </li>
-          </ol>
-          <p style={{ ...hintStyle, marginBottom: 10, color: 'inherit' }}>
-            <strong>Безопасность.</strong> По умолчанию включена только проверка: решения считаются,
-            на Ozon / WB / YM ничего не пишется. Ночной cron (~1:20 МСК) тоже уважает эту галку.
-            Реальная отправка — только после снятия «Только проверка» и кнопки «Отправить на МП».
+          <p style={{ ...hintStyle, marginBottom: 8, color: 'inherit' }}>
+            Цикл для каждого товара: <strong>набор цены</strong> → <strong>удар в акции</strong> →{' '}
+            <strong>выход</strong> → снова набор. После выхода на Ozon цена ставится к продажной из
+            «Цен» (если нет — к минимальной).
           </p>
           <p style={{ ...hintStyle, marginBottom: 0, color: 'inherit' }}>
-            <strong>Отличия МП.</strong> Ozon — вход, выход и уровни бустинга. Яндекс — вход и выход.
-            Wildberries — только вход (их API не умеет вывести из акции этим способом).
+            Обычно: 1) посмотреть план → 2) при необходимости записать фазы без МП → 3) снять
+            «Только проверка» и отправить. Ночной cron (~1:20 МСК) тоже уважает режим проверки.
+            WB умеет только вход.
           </p>
         </div>
       )}
 
+      <div
+        style={{
+          marginTop: 14,
+          display: 'flex',
+          gap: 8,
+          flexWrap: 'wrap',
+          alignItems: 'center',
+        }}
+      >
+        <span
+          style={{
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 13,
+            fontWeight: 600,
+            background: safeMode ? 'rgba(234,179,8,0.18)' : 'rgba(239,68,68,0.15)',
+            border: `1px solid ${safeMode ? 'rgba(202,138,4,0.45)' : 'rgba(220,38,38,0.4)'}`,
+          }}
+        >
+          {safeMode ? 'Режим проверки — на МП не пишем' : 'Боевой режим — пишет на МП'}
+        </span>
+        {ports.map((p) => (
+          <span
+            key={p.id}
+            title={p.id === 'wb' ? 'Только вход' : p.id === 'ozon' ? 'Вход, выход, бустинг' : 'Вход и выход'}
+            style={{
+              padding: '4px 8px',
+              borderRadius: 6,
+              border: '1px solid var(--border,#e5e7eb)',
+              fontSize: 12,
+              background: p.ready && (policy?.marketplaces || []).includes(p.id)
+                ? 'rgba(34,197,94,0.12)'
+                : 'transparent',
+              color: p.ready ? 'inherit' : 'var(--muted)',
+              opacity: p.ready ? 1 : 0.55,
+            }}
+          >
+            {p.label}
+            {!p.ready ? ' · нет ключей' : p.id === 'wb' ? ' · вход' : ''}
+          </span>
+        ))}
+        {lastRun && (
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 'auto' }}>
+            Последний прогон: {lastRun.dry_run ? 'без МП' : 'на МП'} ·{' '}
+            {new Date(lastRun.started_at).toLocaleString('ru-RU', {
+              day: '2-digit',
+              month: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </span>
+        )}
+      </div>
+
       {message && (
-        <p style={{ marginTop: 12, color: message.startsWith('Ошибка') ? 'var(--danger,#ef4444)' : 'var(--primary)' }}>
+        <p
+          style={{
+            marginTop: 12,
+            marginBottom: 0,
+            color: message.startsWith('Ошибка') ? 'var(--danger, #ef4444)' : 'var(--primary)',
+            fontSize: 14,
+          }}
+        >
           {message}
         </p>
       )}
 
-      <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }}>Подключено:</span>
-        {ports.map((p) => (
-          <span
-            key={p.id}
-            title={
-              p.id === 'ozon'
-                ? 'Вход, выход, бустинг'
-                : p.id === 'wb'
-                  ? 'Только вход в акцию'
-                  : 'Вход и выход'
-            }
+      {/* Главный блок действий */}
+      <section style={{ ...boxStyle, marginTop: 16, background: 'transparent' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <h2 style={{ fontSize: 16, margin: 0 }}>Что сделать сейчас</h2>
+          <label style={{ fontSize: 12, color: 'var(--muted)', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            Симуляция фазы
+            <select
+              value={forcePhase}
+              onChange={(e) => setForcePhase(e.target.value)}
+              style={{ fontSize: 12 }}
+              title="Только для проверки «что было бы», если у всех сейчас эта фаза"
+            >
+              <option value="">Как по календарю</option>
+              <option value="A">Все в A</option>
+              <option value="B">Все в B</option>
+              <option value="C">Все в C</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+          <Button type="button" variant="primary" onClick={runPreview} disabled={busy || !policy}>
+            {busy ? '…' : '1. Посмотреть план'}
+          </Button>
+          <Button type="button" variant="secondary" onClick={runDry} disabled={busy || !policy}>
+            2. Записать фазы (без МП)
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={runLive}
+            disabled={busy || !policy || safeMode}
+            title={safeMode ? 'Сначала снимите «Только проверка» в настройках' : 'Отправить на маркетплейс'}
+          >
+            3. Отправить на МП
+          </Button>
+        </div>
+        <p style={{ ...hintStyle, marginTop: 8, marginBottom: 0 }}>
+          Шаг 1 ничего не меняет. Шаг 2 двигает календарь фаз в ERP. Шаг 3 — реальные изменения на
+          площадке (нужен боевой режим).
+        </p>
+
+        {preview && (
+          <div
             style={{
-              padding: '4px 10px',
-              borderRadius: 6,
-              border: '1px solid var(--border,#e5e7eb)',
-              fontSize: 13,
-              background: p.ready ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.15)',
-              color: p.ready ? 'inherit' : 'var(--muted)',
+              marginTop: 14,
+              display: 'flex',
+              gap: 8,
+              flexWrap: 'wrap',
+              alignItems: 'center',
             }}
           >
-            {p.label}
-            {p.id === 'wb' ? ' · только вход' : ''}
-          </span>
-        ))}
-      </div>
+            <CountChip label="выйти" value={counts.leave || 0} color={DECISION_COLOR.leave} />
+            <CountChip label="войти" value={counts.join || 0} color={DECISION_COLOR.join} />
+            <CountChip label="бустинг" value={counts.set_level || 0} color={DECISION_COLOR.set_level} />
+            <CountChip label="без изменений" value={counts.skip || 0} color="var(--muted)" />
+            <label style={{ marginLeft: 'auto', fontSize: 12, display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={showSkip} onChange={(e) => setShowSkip(e.target.checked)} />
+              Показать «без изменений»
+            </label>
+          </div>
+        )}
+
+        {preview?.errors?.length > 0 && (
+          <ul style={{ fontSize: 13, color: 'var(--danger, #ef4444)', marginTop: 8 }}>
+            {preview.errors.map((err, i) => (
+              <li key={i}>{err.marketplace}: {err.error}</li>
+            ))}
+          </ul>
+        )}
+
+        {previewRows.length > 0 ? (
+          <div className="prices-table-container" style={{ overflowX: 'auto', marginTop: 12 }}>
+            <table className="prices-table table">
+              <thead>
+                <tr>
+                  <th>Товар</th>
+                  <th>Действие</th>
+                  <th>Цена</th>
+                  <th>МП / акция</th>
+                  <th>Почему</th>
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.slice(0, 200).map((row, idx) => (
+                  <tr key={`${row.marketplace}-${row.action_id}-${row.our_product_id}-${idx}`}>
+                    <td style={{ maxWidth: 260 }} title={productLabel(row)}>
+                      <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {productLabel(row)}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {PHASE_RU[row.phase] || row.phase}
+                        {row.segment && row.segment !== 'normal' ? ` · ${SEGMENTS.find((s) => s.id === row.segment)?.label || row.segment}` : ''}
+                      </div>
+                    </td>
+                    <td>
+                      <span style={{ color: DECISION_COLOR[row.decision] || 'inherit', fontWeight: 600 }}>
+                        {DECISION_RU[row.decision] || row.decision}
+                      </span>
+                      {row.target_level != null ? (
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}> {row.target_level}%</span>
+                      ) : null}
+                    </td>
+                    <td>{row.target_price != null ? `${row.target_price} ₽` : '—'}</td>
+                    <td style={{ fontSize: 12, maxWidth: 200 }}>
+                      <div>{row.marketplace}</div>
+                      <div
+                        style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={row.action_title || row.action_id}
+                      >
+                        {row.action_title || row.action_id}
+                      </div>
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--muted)', maxWidth: 280 }} title={row.reason}>
+                      {row.reason}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {previewRows.length > 200 && (
+              <p className="text-muted small">Показаны первые 200 из {previewRows.length}</p>
+            )}
+          </div>
+        ) : preview ? (
+          <p className="text-muted" style={{ marginTop: 12, marginBottom: 0 }}>
+            Сейчас менять нечего. Попробуйте симуляцию фазы B или проверьте список акций.
+          </p>
+        ) : (
+          <p className="text-muted" style={{ marginTop: 12, marginBottom: 0 }}>
+            Нажмите «Посмотреть план», чтобы увидеть, что пульс сделает.
+          </p>
+        )}
+      </section>
 
       {policy && (
-        <section style={{ marginTop: 24, maxWidth: 820 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 4 }}>Настройки цикла</h2>
-          <p style={hintStyle}>
-            Сколько дней товар живёт в каждой фазе и какие ограничения на цену. После правок нажмите
-            «Сохранить».
-          </p>
-          <div style={{ display: 'grid', gap: 12 }}>
+        <Collapsible
+          title="Настройки"
+          open={openSettings}
+          onToggle={() => setOpenSettings((v) => !v)}
+          badge={safeMode ? 'проверка' : 'боевой'}
+        >
+          <p style={hintStyle}>После правок нажмите «Сохранить».</p>
+          <div style={{ display: 'grid', gap: 12, maxWidth: 820 }}>
             <div>
-              <div style={{ fontSize: 13, marginBottom: 6 }}>Маркетплейсы в этом пульсе</div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>Маркетплейсы</div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 {ports.map((p) => (
-                  <label key={p.id} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 13, opacity: p.ready ? 1 : 0.5 }}>
+                  <label
+                    key={p.id}
+                    style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 13, opacity: p.ready ? 1 : 0.5 }}
+                  >
                     <input
                       type="checkbox"
                       checked={(policy.marketplaces || []).includes(p.id)}
@@ -447,7 +677,7 @@ export function PromoPulse({ embedded = false } = {}) {
 
             <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
               <label style={{ fontSize: 13 }}>
-                Дней в фазе A (набор)
+                Дней набор (A)
                 <br />
                 <input
                   type="number"
@@ -459,7 +689,7 @@ export function PromoPulse({ embedded = false } = {}) {
                 />
               </label>
               <label style={{ fontSize: 13 }}>
-                Дней в фазе B (удар)
+                Дней удар (B)
                 <br />
                 <input
                   type="number"
@@ -471,7 +701,7 @@ export function PromoPulse({ embedded = false } = {}) {
                 />
               </label>
               <label style={{ fontSize: 13 }}>
-                Дней в фазе C (выход)
+                Дней выход (C)
                 <br />
                 <input
                   type="number"
@@ -482,8 +712,8 @@ export function PromoPulse({ embedded = false } = {}) {
                   style={{ width: 72, marginTop: 4 }}
                 />
               </label>
-              <label style={{ fontSize: 13 }} title="Если за 30 дней товар уже слишком долго был в ударе — принудительно выводим">
-                Макс. доля удара за 30 дней
+              <label style={{ fontSize: 13 }} title="Если за 30 дней товар слишком долго в ударе — выводим">
+                Макс. удар за 30 дн.
                 <br />
                 <input
                   type="number"
@@ -497,10 +727,6 @@ export function PromoPulse({ embedded = false } = {}) {
                 <span style={{ marginLeft: 6, color: 'var(--muted)' }}>≈ {maxBSharePct}%</span>
               </label>
             </div>
-            <p style={hintStyle}>
-              Пример: доля 0,33 ≈ не больше трети месяца в фазе B. Хиты (сегмент «Хит») этот лимит не
-              режет.
-            </p>
 
             <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <input
@@ -509,11 +735,7 @@ export function PromoPulse({ embedded = false } = {}) {
                 onChange={(e) => setPolicy({ ...policy, require_profit_ge_markup: e.target.checked })}
                 style={{ marginTop: 3 }}
               />
-              <span>
-                Не заходить в акцию, если прибыль меньше мин. наценки из карточки
-                <br />
-                <span style={hintStyle}>Защита от убыточных уровней бустинга.</span>
-              </span>
+              <span>Не заходить, если прибыль меньше мин. наценки</span>
             </label>
             <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <input
@@ -522,11 +744,7 @@ export function PromoPulse({ embedded = false } = {}) {
                 onChange={(e) => setPolicy({ ...policy, allow_below_floor_stock: e.target.checked })}
                 style={{ marginTop: 3 }}
               />
-              <span>
-                Для сегмента «Сток» в фазе B разрешить цену ниже минимальной
-                <br />
-                <span style={hintStyle}>Только если товару явно назначен сегмент «Сток».</span>
-              </span>
+              <span>Сток в ударе: можно ниже мин. цены</span>
             </label>
             <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <input
@@ -536,12 +754,7 @@ export function PromoPulse({ embedded = false } = {}) {
                 style={{ marginTop: 3 }}
               />
               <span>
-                Только проверка, без записи на маркетплейс
-                <br />
-                <span style={hintStyle}>
-                  Рекомендуем держать включённой, пока не убедитесь по предпросмотру. Снимите и
-                  сохраните — тогда появится кнопка реальной отправки.
-                </span>
+                <strong>Только проверка</strong> — cron и кнопки не пишут на МП
               </span>
             </label>
             <div>
@@ -550,111 +763,18 @@ export function PromoPulse({ embedded = false } = {}) {
               </Button>
             </div>
           </div>
-        </section>
+        </Collapsible>
       )}
 
-      <section style={{ marginTop: 28 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Что сделает пульс сейчас</h2>
+      <Collapsible
+        title="Особые товары"
+        open={openSegments}
+        onToggle={() => setOpenSegments((v) => !v)}
+        badge={assignments.length ? `${assignments.length}` : 'все обычные'}
+      >
         <p style={hintStyle}>
-          Сначала смотрите предпросмотр. «Сохранить прогон» запишет решения в журнал и сдвинет фазы,
-          но на МП не отправит. «Отправить на МП» — уже реальные изменения (нужно снять галку проверки).
+          По умолчанию все «Обычные». Исключения: хит, сток, новинка — для товара или категории.
         </p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <label style={{ fontSize: 13 }}>
-            Показать, как будто сейчас фаза{' '}
-            <select value={forcePhase} onChange={(e) => setForcePhase(e.target.value)}>
-              <option value="">Как по календарю у товара</option>
-              <option value="A">A — набор цены</option>
-              <option value="B">B — удар</option>
-              <option value="C">C — выход</option>
-            </select>
-          </label>
-          <Button type="button" variant="primary" onClick={runPreview} disabled={busy || !policy}>
-            {busy ? '…' : 'Предпросмотр'}
-          </Button>
-          <Button type="button" variant="secondary" onClick={runDry} disabled={busy || !policy}>
-            Сохранить прогон (без МП)
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            onClick={runLive}
-            disabled={busy || !policy || policy.dry_run !== false}
-            title={
-              policy?.dry_run !== false
-                ? 'Снимите «Только проверка» и сохраните'
-                : 'Отправить решения на маркетплейс'
-            }
-          >
-            Отправить на МП
-          </Button>
-        </div>
-        {preview?.errors?.length > 0 && (
-          <ul style={{ fontSize: 13, color: 'var(--muted)' }}>
-            {preview.errors.map((err, i) => (
-              <li key={i}>{err.marketplace}: {err.error}</li>
-            ))}
-          </ul>
-        )}
-        {actionable.length > 0 ? (
-          <div className="prices-table-container" style={{ overflowX: 'auto' }}>
-            <table className="prices-table table">
-              <thead>
-                <tr>
-                  <th>МП</th>
-                  <th>Акция</th>
-                  <th>Товар</th>
-                  <th>Сегмент</th>
-                  <th>Фаза</th>
-                  <th title="Сколько дней за 30 суток товар уже был в ударе (B)">Дней удара / 30</th>
-                  <th>Действие</th>
-                  <th>Цена</th>
-                  <th>Бустинг</th>
-                  <th>Почему</th>
-                </tr>
-              </thead>
-              <tbody>
-                {actionable.slice(0, 200).map((row, idx) => (
-                  <tr key={`${row.marketplace}-${row.action_id}-${row.our_product_id}-${idx}`}>
-                    <td>{row.marketplace}</td>
-                    <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.action_title}>
-                      {row.action_title || row.action_id}
-                    </td>
-                    <td>{row.our_product_id}</td>
-                    <td>{row.segment || '—'}</td>
-                    <td>{row.phase}</td>
-                    <td>{row.days_in_b_30d != null ? row.days_in_b_30d : '—'}</td>
-                    <td>{DECISION_RU[row.decision] || row.decision}</td>
-                    <td>{row.target_price != null ? `${row.target_price} ₽` : '—'}</td>
-                    <td>{row.target_level != null ? `${row.target_level}%` : '—'}</td>
-                    <td style={{ fontSize: 12, color: 'var(--muted)' }}>{row.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {actionable.length > 200 && (
-              <p className="text-muted small">Показаны первые 200 из {actionable.length}</p>
-            )}
-          </div>
-        ) : preview ? (
-          <p className="text-muted">
-            Сейчас нечего менять (все решения «ничего не делать»). Попробуйте симуляцию фазы B или
-            проверьте, что товары есть в акциях на вкладке «Акции».
-          </p>
-        ) : null}
-      </section>
-
-      <section style={{ marginTop: 28, maxWidth: 820 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Особые товары (сегменты)</h2>
-        <p style={hintStyle}>
-          По умолчанию все товары «Обычные». Можно назначить исключение товару или целой категории
-          (сначала смотрим товар, потом категорию).
-        </p>
-        <ul style={{ ...hintStyle, paddingLeft: 18, marginBottom: 12 }}>
-          <li><strong>Хит</strong> — можно дольше держать удар, лимит доли B не срабатывает.</li>
-          <li><strong>Сток</strong> — в ударе можно уйти ниже мин. цены (если галка выше включена).</li>
-          <li><strong>Новинка</strong> — пока держим режим набора цены (A), без глубокого бустинга.</li>
-        </ul>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 12 }}>
           <select
             value={assignMode}
@@ -668,7 +788,11 @@ export function PromoPulse({ embedded = false } = {}) {
             <option value="category">Категория</option>
           </select>
           {assignMode === 'product' ? (
-            <div className="price-history-search" ref={productSuggestRef} style={{ position: 'relative', minWidth: 260, flex: '1 1 260px' }}>
+            <div
+              className="price-history-search"
+              ref={productSuggestRef}
+              style={{ position: 'relative', minWidth: 260, flex: '1 1 260px' }}
+            >
               <input
                 value={productQuery}
                 onChange={(e) => {
@@ -692,8 +816,7 @@ export function PromoPulse({ embedded = false } = {}) {
               {selectedProduct && !productSuggestOpen && (
                 <p className="text-muted small" style={{ margin: '4px 0 0' }}>
                   Выбран: {selectedProduct.sku || `#${selectedProduct.id}`}
-                  {selectedProduct.name ? ` — ${selectedProduct.name}` : ''}
-                  {' '}
+                  {selectedProduct.name ? ` — ${selectedProduct.name}` : ''}{' '}
                   <button type="button" onClick={clearPickedProduct} style={{ fontSize: 12 }}>
                     сбросить
                   </button>
@@ -725,26 +848,26 @@ export function PromoPulse({ embedded = false } = {}) {
             </select>
           )}
           <select value={assignSegment} onChange={(e) => setAssignSegment(e.target.value)} style={{ marginTop: 2 }}>
-            {SEGMENTS.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
+            {SEGMENTS.filter((s) => s.id !== 'normal').map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}{SEGMENT_HINT[s.id] ? ` — ${SEGMENT_HINT[s.id]}` : ''}
+              </option>
             ))}
           </select>
           <Button type="button" variant="secondary" onClick={addAssignment} disabled={busy} style={{ marginTop: 2 }}>
-            Добавить правило
+            Добавить
           </Button>
         </div>
         {assignments.length === 0 ? (
-          <p className="text-muted">Правил нет — все товары в сегменте «Обычный».</p>
+          <p className="text-muted" style={{ margin: 0 }}>Правил нет.</p>
         ) : (
-          <ul style={{ fontSize: 13 }}>
+          <ul style={{ fontSize: 13, margin: 0, paddingLeft: 18 }}>
             {assignments.map((a) => (
-              <li key={a.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                <span>
-                  {SEGMENTS.find((s) => s.id === a.segment)?.label || a.segment}
-                  {a.product_id ? ` · товар ${a.product_sku || a.product_id}` : ''}
-                  {a.user_category_id ? ` · категория ${a.category_name || a.user_category_id}` : ''}
-                  {a.organization_id ? ` · орг. ${a.organization_name || a.organization_id}` : ''}
-                </span>
+              <li key={a.id} style={{ marginBottom: 4 }}>
+                {SEGMENTS.find((s) => s.id === a.segment)?.label || a.segment}
+                {a.product_id ? ` · ${a.product_sku || a.product_id}` : ''}
+                {a.user_category_id ? ` · ${a.category_name || a.user_category_id}` : ''}
+                {' '}
                 <button type="button" onClick={() => removeAssignment(a.id)} style={{ fontSize: 12 }}>
                   удалить
                 </button>
@@ -752,39 +875,38 @@ export function PromoPulse({ embedded = false } = {}) {
             ))}
           </ul>
         )}
-      </section>
+      </Collapsible>
 
-      <section style={{ marginTop: 28 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Где сейчас каждый товар</h2>
-        <p style={hintStyle}>
-          После сохранённого прогона здесь видно текущую фазу по связке «товар + акция». От неё
-          считается календарь A → B → C.
-        </p>
+      <Collapsible
+        title="Фазы товаров"
+        open={openStates}
+        onToggle={() => setOpenStates((v) => !v)}
+        badge={states.length ? `${Math.min(states.length, 50)}${states.length > 50 ? '+' : ''}` : 'пусто'}
+      >
+        <p style={hintStyle}>После записанного прогона — где каждый товар в цикле A→B→C.</p>
         {states.length === 0 ? (
-          <p className="text-muted">Пока пусто — сделайте «Сохранить прогон (без МП)».</p>
+          <p className="text-muted" style={{ margin: 0 }}>Пока пусто — сделайте шаг 2 «Записать фазы».</p>
         ) : (
           <div className="prices-table-container" style={{ overflowX: 'auto' }}>
             <table className="prices-table table">
               <thead>
                 <tr>
-                  <th>МП</th>
-                  <th>Акция</th>
                   <th>Товар</th>
                   <th>Фаза</th>
-                  <th>С какой даты</th>
-                  <th>Последнее решение</th>
+                  <th>С</th>
+                  <th>МП</th>
+                  <th>Последнее</th>
                 </tr>
               </thead>
               <tbody>
                 {states.slice(0, 50).map((s) => (
                   <tr key={s.id}>
-                    <td>{s.marketplace}</td>
-                    <td>{s.action_external_id}</td>
                     <td>{s.product_sku || s.our_product_id || '—'}</td>
-                    <td>{s.phase}</td>
+                    <td>{PHASE_RU[s.phase] || s.phase}</td>
                     <td style={{ fontSize: 12 }}>
                       {s.phase_started_at ? new Date(s.phase_started_at).toLocaleDateString('ru-RU') : '—'}
                     </td>
+                    <td style={{ fontSize: 12 }}>{s.marketplace} · {s.action_external_id}</td>
                     <td style={{ fontSize: 12, color: 'var(--muted)' }}>
                       {DECISION_RU[s.last_decision?.type] || s.last_decision?.type || '—'}
                     </td>
@@ -794,30 +916,33 @@ export function PromoPulse({ embedded = false } = {}) {
             </table>
           </div>
         )}
-      </section>
+      </Collapsible>
 
-      <section style={{ marginTop: 28 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Журнал прогонов</h2>
-        <p style={hintStyle}>История ручных и ночных прогонов. «без МП» = только расчёт и фазы.</p>
+      <Collapsible
+        title="Журнал"
+        open={openRuns}
+        onToggle={() => setOpenRuns((v) => !v)}
+        badge={runs.length ? `${Math.min(runs.length, 10)}` : null}
+      >
         {runs.length === 0 ? (
-          <p className="text-muted">Прогонов ещё не было.</p>
+          <p className="text-muted" style={{ margin: 0 }}>Прогонов ещё не было.</p>
         ) : (
-          <ul style={{ fontSize: 13 }}>
+          <ul style={{ fontSize: 13, margin: 0, paddingLeft: 18 }}>
             {runs.slice(0, 10).map((r) => (
-              <li key={r.id}>
+              <li key={r.id} style={{ marginBottom: 4 }}>
                 #{r.id} · {r.dry_run ? 'без МП' : 'на МП'} · {r.status} ·{' '}
                 {new Date(r.started_at).toLocaleString('ru-RU')}
                 {r.counts ? (
                   <>
                     {' · '}
-                    войти {r.counts.join || 0}, бустинг {r.counts.set_level || 0}, выйти {r.counts.leave || 0}
+                    ↓{r.counts.leave || 0} ↑{r.counts.join || 0} ⚡{r.counts.set_level || 0}
                   </>
                 ) : null}
               </li>
             ))}
           </ul>
         )}
-      </section>
+      </Collapsible>
 
       {!policies.length && (
         <p className="text-muted" style={{ marginTop: 16 }}>
@@ -825,5 +950,21 @@ export function PromoPulse({ embedded = false } = {}) {
         </p>
       )}
     </div>
+  );
+}
+
+function CountChip({ label, value, color }) {
+  return (
+    <span
+      style={{
+        padding: '4px 10px',
+        borderRadius: 6,
+        border: '1px solid var(--border,#e5e7eb)',
+        fontSize: 13,
+      }}
+    >
+      <strong style={{ color }}>{value}</strong>
+      <span style={{ color: 'var(--muted)', marginLeft: 6 }}>{label}</span>
+    </span>
   );
 }

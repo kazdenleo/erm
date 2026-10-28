@@ -30,11 +30,11 @@ async function loadFloors(productIds, marketplace) {
   const map = new Map();
   if (!ids.length) return map;
   const sqlWithSchemes = `
-    SELECT product_id, min_price, min_price_fbs, min_price_fbo
+    SELECT product_id, min_price, min_price_fbs, min_price_fbo, selling_price
     FROM product_marketplace_prices
     WHERE product_id = ANY($1::bigint[]) AND marketplace = $2`;
   const sqlPlain = `
-    SELECT product_id, min_price
+    SELECT product_id, min_price, selling_price
     FROM product_marketplace_prices
     WHERE product_id = ANY($1::bigint[]) AND marketplace = $2`;
   let rows = [];
@@ -53,6 +53,8 @@ async function loadFloors(productIds, marketplace) {
     const fboOk = fbo != null && fbo > 0 ? fbo : null;
     const parts = [fbsOk, fboOk, plainOk].filter((n) => n != null);
     const floor = parts.length ? Math.max(...parts) : null;
+    const sellingRaw = num(row.selling_price);
+    const selling_price = sellingRaw != null && sellingRaw > 0 ? sellingRaw : null;
     let scheme = marketplace === 'wb' ? 'FBO' : 'FBS';
     if (fboOk != null && (fbsOk == null || fboOk >= fbsOk)) scheme = 'FBO';
     else if (fbsOk != null) scheme = 'FBS';
@@ -61,6 +63,7 @@ async function loadFloors(productIds, marketplace) {
     const cardFbo = marketplace === 'wb' ? (fboOk ?? plainOk) : fboOk;
     map.set(Number(row.product_id), {
       floor,
+      selling_price,
       scheme,
       card_min: plainOk,
       card_min_fbs: cardFbs,
@@ -213,6 +216,7 @@ export async function attachPromoEconomics(rows, marketplace, options = {}) {
       boost_levels: boostLevels,
       entry_price: entry,
       floor,
+      selling_price: known?.selling_price ?? null,
       card_min: known?.card_min ?? null,
       card_min_fbs: known?.card_min_fbs ?? null,
       card_min_fbo: known?.card_min_fbo ?? null,

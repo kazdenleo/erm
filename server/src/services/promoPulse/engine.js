@@ -1,8 +1,21 @@
 import { PHASES } from './types.js';
+import { restoreExitPrice } from '../../utils/ozonPromoExit.js';
 
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Цена leave: selling ERP → пол → list, не ниже порога акции. */
+function leaveRestorePrice(offer, fallback = null) {
+  const restored = restoreExitPrice({
+    selling_price: offer?.selling_price,
+    floor: offer?.floor,
+    list_price: offer?.list_price,
+    price: offer?.list_price,
+    max_action_price: offer?.max_action_price ?? offer?.meta?.max_action_price,
+  });
+  return restored != null ? restored : fallback;
 }
 
 function levelAllowed(level, policy, segment) {
@@ -146,8 +159,14 @@ export function evaluateOffer({
   // Фаза C или принудительный выход: снять с акции
   if (effectivePhase === 'C') {
     if (offer.participating && capabilities.leave && offer.can_leave) {
-      const exitPrice = listPrice != null && listPrice > 0 ? listPrice : (best ? Math.max(best.price, entry || 0) + 1 : null);
-      return cmd(base, 'leave', 'фаза C: выход для восстановления базы', {
+      const fallback =
+        listPrice != null && listPrice > 0
+          ? listPrice
+          : best
+            ? Math.max(best.price, entry || 0) + 1
+            : null;
+      const exitPrice = leaveRestorePrice(offer, fallback);
+      return cmd(base, 'leave', 'фаза C: выход, цена → продажная ERP (или пол)', {
         phase: 'C',
         price: exitPrice,
       });
@@ -161,12 +180,12 @@ export function evaluateOffer({
       if (offer.kind === 'elastic' || (Array.isArray(offer.levels) && offer.levels.length)) {
         // Уже в эластичном: выйти или оставить только если текущий уровень = мин. допустимый
         if (capabilities.leave && offer.can_leave) {
-          const current = (offer.levels || []).find((l) => l.current);
-          const minOk = best && current && Number(current.boost) <= Number(best.boost)
-            && Number(current.boost) === Number((offer.levels || []).filter((l) => levelAllowed({ ...l, markup_rub: offer.markup_rub }, policy, segment))[0]?.boost);
-          // Проще: в A всегда выходим из эластичного, чтобы не кормить медиану низкой ценой
-          const exitPrice = listPrice != null && listPrice > 0 ? Math.round(listPrice) : null;
-          return cmd(base, 'leave', 'фаза A: выход из эластичного для набора медианы', {
+          // В A всегда выходим из эластичного; цену ставим к selling ERP (или пол)
+          const exitPrice = leaveRestorePrice(
+            offer,
+            listPrice != null && listPrice > 0 ? Math.round(listPrice) : null
+          );
+          return cmd(base, 'leave', 'фаза A: выход из эластичного, цена → продажная ERP (или пол)', {
             phase: 'A',
             price: exitPrice,
           });
@@ -178,7 +197,10 @@ export function evaluateOffer({
         return cmd(base, 'skip', 'фаза A: уже в акции с допустимой ценой', { phase: 'A' });
       }
       if (capabilities.leave && offer.can_leave) {
-        return cmd(base, 'leave', 'фаза A: цена акции не проходит фильтры', { phase: 'A', price: listPrice });
+        return cmd(base, 'leave', 'фаза A: цена акции не проходит фильтры', {
+          phase: 'A',
+          price: leaveRestorePrice(offer, listPrice),
+        });
       }
     }
     // Кандидат в A: %-акции можно завести; эластичный — нет

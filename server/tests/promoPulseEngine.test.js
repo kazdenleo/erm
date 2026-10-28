@@ -39,7 +39,7 @@ describe('promoPulse engine', () => {
     expect(best.boost).toBe(40);
   });
 
-  test('фаза A: выход из эластичного', () => {
+  test('фаза A: выход из эластичного — к list без selling', () => {
     const decision = evaluateOffer({
       offer: {
         marketplace: 'ozon',
@@ -60,6 +60,57 @@ describe('promoPulse engine', () => {
     });
     expect(decision.type).toBe('leave');
     expect(decision.price).toBe(1300);
+  });
+
+  test('фаза A: выход — цена к selling ERP', () => {
+    const decision = evaluateOffer({
+      offer: {
+        marketplace: 'ozon',
+        action_id: '1',
+        external_product_id: 10,
+        our_product_id: 5,
+        list_price: 1100,
+        selling_price: 1490,
+        floor: 1000,
+        max_action_price: 1200,
+        participating: true,
+        can_leave: true,
+        can_join: false,
+        kind: 'elastic',
+        levels,
+        markup_rub: 50,
+      },
+      policy,
+      phase: 'A',
+      capabilities: capsFull,
+    });
+    expect(decision.type).toBe('leave');
+    expect(decision.price).toBe(1490);
+  });
+
+  test('фаза A: выход — без selling к полу, если пол ≥ порога', () => {
+    const decision = evaluateOffer({
+      offer: {
+        marketplace: 'ozon',
+        action_id: '1',
+        external_product_id: 10,
+        our_product_id: 5,
+        list_price: 900,
+        floor: 1250,
+        max_action_price: 1200,
+        participating: true,
+        can_leave: true,
+        can_join: false,
+        kind: 'elastic',
+        levels,
+        markup_rub: 50,
+      },
+      policy,
+      phase: 'A',
+      capabilities: capsFull,
+    });
+    expect(decision.type).toBe('leave');
+    expect(decision.price).toBe(1250);
   });
 
   test('фаза B: set_level на лучший допустимый', () => {
@@ -129,7 +180,7 @@ describe('promoPulse engine', () => {
     expect(afterC.phase).toBe('A');
   });
 
-  test('фаза C: leave', () => {
+  test('фаза C: leave к selling ERP', () => {
     const decision = evaluateOffer({
       offer: {
         marketplace: 'ozon',
@@ -137,6 +188,8 @@ describe('promoPulse engine', () => {
         external_product_id: 10,
         our_product_id: 5,
         list_price: 1300,
+        selling_price: 1600,
+        floor: 1100,
         participating: true,
         can_leave: true,
         kind: 'elastic',
@@ -148,6 +201,7 @@ describe('promoPulse engine', () => {
       capabilities: capsFull,
     });
     expect(decision.type).toBe('leave');
+    expect(decision.price).toBe(1600);
   });
 
   test('WB без leave: фаза C → skip', () => {

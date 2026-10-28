@@ -54,6 +54,22 @@ function promoTabStyle(active, color) {
   };
 }
 
+/** Счётчик с МП: 0 показываем, null/undefined — «—». */
+function promoCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : '—';
+}
+
+function tabCountLabel(erpCount, mpCount) {
+  const erp = Number.isFinite(Number(erpCount)) ? Number(erpCount) : null;
+  const mp = Number.isFinite(Number(mpCount)) ? Number(mpCount) : null;
+  if (erp == null && mp == null) return '';
+  if (mp == null) return ` (${erp})`;
+  if (erp == null) return ` (${mp} на МП)`;
+  if (erp === mp) return ` (${erp})`;
+  return ` (${erp} в ERP · ${mp} на МП)`;
+}
+
 function joinTitle(row) {
   if (row?.join_block_reason === 'below_floor') return 'Цена входа ниже минимальной — продажа в минус';
   if (row?.join_block_reason === 'no_floor') return 'Минимальная цена не посчитана — вход закрыт';
@@ -579,7 +595,7 @@ export function PricePromotions() {
       <p className="subtitle">
         {sectionTab === 'pulse'
           ? 'Автоматический цикл участия в акциях (набор цены → удар → выход).'
-          : 'Акции маркетплейсов. Вход закрыт, если цена акции ниже минимальной или минимум не посчитан.'}
+          : 'Акции маркетплейсов. В списке счётчики — как отдаёт МП; внутри акции — только товары, связанные с каталогом ERP. Вход закрыт, если цена ниже минимума.'}
         {' · '}
         <Link to="/prices" style={{ color: 'var(--primary)' }}>Минимальные цены</Link>
       </p>
@@ -645,8 +661,8 @@ export function PricePromotions() {
                   <th>Тип</th>
                   <th>Начало</th>
                   <th>Окончание</th>
-                  <th>Участвует товаров</th>
-                  <th title="Количество товаров, которые могут участвовать в акции">Могут участвовать</th>
+                  <th title="Товары уже в акции (данные Ozon)">В акции</th>
+                  <th title="Товары, которые можно добавить (данные Ozon)">Доступно</th>
                 </tr>
               </thead>
               <tbody>
@@ -666,8 +682,8 @@ export function PricePromotions() {
                     <td style={{ fontSize: '13px' }}>
                       {a.date_end ? new Date(a.date_end).toLocaleDateString('ru-RU') : '—'}
                     </td>
-                    <td style={{ textAlign: 'center' }}>{a.participating_products_count ?? a.potential_products_count ?? 0}</td>
-                    <td style={{ textAlign: 'center' }}>{a.potential_products_count ?? 0}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.participating_products_count)}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.potential_products_count)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -715,9 +731,13 @@ export function PricePromotions() {
                     <td style={{ fontSize: '13px' }}>
                       {a.endDateTime ? new Date(a.endDateTime).toLocaleDateString('ru-RU') : '—'}
                     </td>
-                    <td style={{ textAlign: 'center' }}>{a.inPromoActionTotal ?? a.inPromoActionLeftovers ?? '—'}</td>
-                    <td style={{ textAlign: 'center' }}>{a.notInPromoActionTotal ?? a.notInPromoActionLeftovers ?? '—'}</td>
-                    <td style={{ textAlign: 'center' }}>{a.participationPercentage != null ? `${a.participationPercentage}%` : '—'}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.inPromoActionTotal ?? a.inPromoActionLeftovers)}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.notInPromoActionTotal ?? a.notInPromoActionLeftovers)}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      {Number.isFinite(Number(a.participationPercentage))
+                        ? `${Number(a.participationPercentage)}%`
+                        : '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -741,6 +761,8 @@ export function PricePromotions() {
                   <th>Название</th>
                   <th>Начало</th>
                   <th>Окончание</th>
+                  <th title="Товары уже в акции (данные Яндекс Маркета)">В акции</th>
+                  <th title="Товары, которые можно добавить (данные Яндекс Маркета)">Доступно</th>
                 </tr>
               </thead>
               <tbody>
@@ -755,6 +777,8 @@ export function PricePromotions() {
                     <td>{a.name || '—'}</td>
                     <td style={{ fontSize: '13px' }}>{a.period?.fromDate ? new Date(a.period.fromDate).toLocaleDateString('ru-RU') : (a.period?.dateTimeFrom ? new Date(a.period.dateTimeFrom).toLocaleDateString('ru-RU') : '—')}</td>
                     <td style={{ fontSize: '13px' }}>{a.period?.toDate ? new Date(a.period.toDate).toLocaleDateString('ru-RU') : (a.period?.dateTimeTo ? new Date(a.period.dateTimeTo).toLocaleDateString('ru-RU') : '—')}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.assortmentInfo?.activeOffers ?? a.activeOffers)}</td>
+                    <td style={{ textAlign: 'center' }}>{promoCount(a.assortmentInfo?.potentialOffers ?? a.potentialOffers)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -773,13 +797,16 @@ export function PricePromotions() {
         <h1 className="title">Акция: {actionModal.action.title || actionModal.action.id}</h1>
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
           <button type="button" onClick={() => setActionModalTab('participating')} style={promoTabStyle(actionModalTab === 'participating', '#005bff')}>
-            Участвующие в акции
+            Участвующие
+            {tabCountLabel(actionProducts.length, actionModal.action?.participating_products_count)}
           </button>
           <button type="button" onClick={() => setActionModalTab('candidates')} style={promoTabStyle(actionModalTab === 'candidates', '#005bff')}>
-            Доступные к акции
+            Доступные
+            {tabCountLabel(actionCandidates.length, actionModal.action?.potential_products_count)}
           </button>
         </div>
         <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '0 0 10px' }}>
+          В таблице только товары, привязанные к каталогу ERP; цифры «на МП» — полный счётчик Ozon.
           У товара одна предельная цена: вход по цене акции обновляет её и в разделе «Цены». Если она не выше требуемой цены акции, товар участвует; чтобы выйти — поднимите предельную цену выше этого порога или снимите товар с акции. У эластичного бустинга шкала: чем ниже цена, тем выше процент. Края присылает Ozon, промежуточные цены считаются по прямой между ними.
         </p>
         {noticeBox}
@@ -990,10 +1017,18 @@ export function PricePromotions() {
             Детали
           </button>
           <button type="button" onClick={() => setWbActionModalTab('participating')} style={promoTabStyle(wbActionModalTab === 'participating', '#cb11ab')}>
-            Участвующие в акции
+            Участвующие
+            {tabCountLabel(
+              wbNomenclaturesIn.length,
+              wbActionDetails?.inPromoActionTotal ?? wbActionModal.promotion?.inPromoActionTotal
+            )}
           </button>
           <button type="button" onClick={() => setWbActionModalTab('candidates')} style={promoTabStyle(wbActionModalTab === 'candidates', '#cb11ab')}>
-            Доступные к акции
+            Доступные
+            {tabCountLabel(
+              wbNomenclaturesOut.length,
+              wbActionDetails?.notInPromoActionTotal ?? wbActionModal.promotion?.notInPromoActionTotal
+            )}
           </button>
         </div>
         {noticeBox}
@@ -1209,14 +1244,22 @@ export function PricePromotions() {
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px' }}>
           <button type="button" onClick={() => setYmModalTab('participating')} style={promoTabStyle(ymModalTab === 'participating', '#fc0')}>
             Участвующие
+            {tabCountLabel(
+              ymOffers.filter((r) => r.participating).length,
+              ymModal.promo?.assortmentInfo?.activeOffers
+            )}
           </button>
           <button type="button" onClick={() => setYmModalTab('candidates')} style={promoTabStyle(ymModalTab === 'candidates', '#fc0')}>
             Можно добавить
+            {tabCountLabel(
+              ymOffers.filter((r) => !r.participating).length,
+              ymModal.promo?.assortmentInfo?.potentialOffers
+            )}
           </button>
         </div>
         {noticeBox}
         <p style={{ color: 'var(--muted)', fontSize: 12 }}>
-          Изменения на Маркете применяются несколько часов.
+          В таблице — офферы, связанные с ERP; «на МП» — счётчик Яндекс Маркета. Изменения на Маркете применяются несколько часов.
         </p>
         {ymOffersLoading ? (
           <p style={{ color: 'var(--muted)' }}>Загрузка товаров...</p>

@@ -583,6 +583,7 @@ export async function previewPulse(options = {}) {
           sku: offer.meta?.offer_id || null,
           floor: offer.floor ?? null,
           list_price: offer.list_price ?? null,
+          selling_price: offer.selling_price ?? null,
           max_action_price: offer.max_action_price ?? offer.meta?.max_action_price ?? null,
           phase_started_at: phaseStarted,
         });
@@ -593,6 +594,8 @@ export async function previewPulse(options = {}) {
           action_kind: action.kind,
           our_product_id: offer.our_product_id,
           external_product_id: offer.external_product_id,
+          sku: offer.meta?.offer_id || null,
+          offer_name: offer.meta?.name || null,
           participating: offer.participating,
           phase,
           phase_started_at: phaseStarted,

@@ -22,3 +22,26 @@ export function exitActionPrice(row) {
   if (floor != null && floor > 0 && (limit == null || floor >= limit)) return Math.round(floor);
   return limit != null ? Math.floor(limit) + 1 : null;
 }
+
+/**
+ * Цена восстановления после выхода: продажная ERP → пол → текущая/list.
+ * Затем guard порога акции (exitActionPrice), чтобы товар реально снялся.
+ */
+export function restoreExitPrice(row) {
+  const selling = num(row?.selling_price ?? row?.sellingPrice);
+  const floor = num(row?.floor);
+  const list = num(row?.list_price ?? row?.price);
+  const preferred =
+    selling != null && selling > 0
+      ? selling
+      : floor != null && floor > 0
+        ? floor
+        : list != null && list > 0
+          ? list
+          : null;
+  return exitActionPrice({
+    price: preferred,
+    floor,
+    max_action_price: row?.max_action_price ?? row?.maxActionPrice,
+  });
+}

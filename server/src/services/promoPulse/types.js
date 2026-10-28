@@ -37,6 +37,7 @@
  * @property {number|null} [promo_price]
  * @property {number|null} [entry_price]
  * @property {number|null} [floor]
+ * @property {number|null} [selling_price]
  * @property {number|null} [markup_rub]
  * @property {number|null} [profit_rub]
  * @property {PromoLevel[]} [levels]
