@@ -71,6 +71,7 @@ import { Tasks } from './pages/Tasks/Tasks';
 import { Prices } from './pages/Prices/Prices';
 import { PricingStrategies } from './pages/Prices/PricingStrategies';
 import { PricePromotions } from './pages/Prices/PricePromotions';
+import { PromoPulse } from './pages/Prices/PromoPulse';
 import { PriceHistory } from './pages/Prices/PriceHistory';
 import { PricesSettings } from './pages/Prices/PricesSettings';
 import { Settings } from './pages/Settings/Settings';
@@ -260,6 +261,7 @@ function App() {
           <Route path="/prices/settings" element={<ProtectedRoute><Layout><PricesSettings /></Layout></ProtectedRoute>} />
           <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
           <Route path="/prices/promotions/*" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
+          <Route path="/prices/promo-pulse" element={<ProtectedRoute><Layout><PromoPulse /></Layout></ProtectedRoute>} />
           <Route path="/prices/history" element={<ProtectedRoute><Layout><PriceHistory /></Layout></ProtectedRoute>} />
           <Route path="/integrations" element={<ProtectedRoute><Layout><Integrations /></Layout></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />

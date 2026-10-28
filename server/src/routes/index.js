@@ -32,6 +32,7 @@ import { brandsRoutes } from './brands.routes.js';
 import { employeeTasksRoutes } from './employeeTasks.routes.js';
 import pricesRoutes from './prices.routes.js';
 import pricingStrategiesRoutes from './pricingStrategies.routes.js';
+import promoPulseRoutes from './promoPulse.routes.js';
 import userCategoriesRoutes from './user_categories.routes.js';
 import categoryMappingsRoutes from './category_mappings.routes.js';
 import buyoutRateRoutes from './buyout-rate.routes.js';
@@ -331,6 +332,9 @@ router.use('/product/prices', pricesRoutes);
 
 // Стратегии ценообразования
 router.use('/pricing-strategies', pricingStrategiesRoutes);
+
+// Пульс акций (универсальный: Ozon / WB / YM через адаптеры)
+router.use('/promo-pulse', promoPulseRoutes);
 
 // User Categories API (пользовательские категории)
 router.use('/user-categories', userCategoriesRoutes);

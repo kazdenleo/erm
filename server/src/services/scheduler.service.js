@@ -704,6 +704,53 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
+      // Пульс акций: после кэша акций (1:20 МСК). dry_run политики соблюдается.
+      const promoPulseCron = process.env.PROMO_PULSE_CRON || '20 1 * * *';
+      const promoPulseEnabled = !['0', 'false', 'off', 'no'].includes(
+        String(process.env.PROMO_PULSE_CRON_ENABLED || '1').trim().toLowerCase()
+      );
+      let promoPulseJob = null;
+      if (promoPulseEnabled) {
+        promoPulseJob = cron.schedule(promoPulseCron, async () => {
+          await runSchedulerDbJob('promo-pulse', async () => {
+            logger.info('[Scheduler] Starting promo pulse run...');
+            try {
+              const { runPulseForAllProfiles } = await import('./promoPulse/service.js');
+              const results = await runPulseForAllProfiles();
+              const failed = (results || []).filter((r) => !r.ok);
+              logger.info('[Scheduler] Promo pulse completed', {
+                profiles: results?.length || 0,
+                failed: failed.length,
+              });
+              if (failed.length) {
+                await addRuntimeNotification({
+                  type: 'job_failed',
+                  severity: 'warning',
+                  source: 'scheduler',
+                  title: 'Пульс акций: ошибки прогона',
+                  message: failed
+                    .slice(0, 5)
+                    .map((r) => `profile=${r.profileId}: ${r.error || 'fail'}`)
+                    .join('; '),
+                });
+              }
+            } catch (error) {
+              logger.error('[Scheduler] Promo pulse failed:', error);
+              await addRuntimeNotification({
+                type: 'job_failed',
+                severity: 'error',
+                source: 'scheduler',
+                title: 'Сбой пульса акций',
+                message: `Promo pulse failed: ${error?.message || String(error)}`,
+              });
+            }
+          });
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow',
+        });
+      }
+
       // Обновление категорий Ozon каждый день в 1:30 ночи (после WB, чтобы не перегружать API)
       const ozonCategoriesJob = cron.schedule('30 1 * * *', async () => {
         await runSchedulerDbJob('ozon-categories', async () => {
@@ -1463,6 +1510,16 @@ class SchedulerService {
         description: 'Обновление списка акций Ozon каждый день в 1:00'
       });
 
+      if (promoPulseJob) {
+        this.jobs.push({
+          name: 'promo-pulse',
+          job: promoPulseJob,
+          schedule: promoPulseCron,
+          description:
+            'Пульс акций (A/B/C): preview+apply по политикам. PROMO_PULSE_CRON (по умолчанию 1:20 МСК). Live только если dry_run=false',
+        });
+      }
+
       this.jobs.push({
         name: 'ozon-categories-update',
         job: ozonCategoriesJob,
@@ -1807,6 +1864,7 @@ class SchedulerService {
       wbUpdateJob.start();
       wbTariffsJob.start();
       ozonActionsJob.start();
+      if (promoPulseJob) promoPulseJob.start();
       ozonCategoriesJob.start();
       ymCategoriesJob.start();
       mpBrandDirectoryJob.start();

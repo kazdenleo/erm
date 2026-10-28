@@ -136,6 +136,7 @@ const menuItems = [
     { path: '/prices/strategies', label: 'Стратегии', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/history', label: 'История изменения цен', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
     { path: '/prices/promotions', label: 'Акции', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+    { path: '/prices/promo-pulse', label: 'Пульс акций', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
   ]},
   {
     path: '/settings',
