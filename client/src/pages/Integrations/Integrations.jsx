@@ -13,7 +13,6 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { FboPackingLimitFields } from '../../components/integrations/FboPackingLimitFields.jsx';
 import { OzonAutoPromotionsFields } from '../../components/integrations/OzonAutoPromotionsFields.jsx';
-import { OzonAutoJoinProductsFields } from '../../components/integrations/OzonAutoJoinProductsFields.jsx';
 import { MarketplaceFieldLimitsPanel } from '../../components/integrations/MarketplaceFieldLimitsPanel.jsx';
 import { pricesApi } from '../../services/prices.api';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
@@ -440,31 +439,6 @@ function MarketplacesTab({
             );
           }
         }
-
-        const autoJoinProducts =
-          type === 'ozon' &&
-          (formData.ozon_auto_join_products === true ||
-            formData.ozon_auto_join_products === 'true' ||
-            formData.ozon_auto_join_products === '1');
-        if (autoJoinProducts) {
-          try {
-            const result = await integrationsApi.runOzonAutoJoinProducts();
-            if (result?.ok) {
-              alert(
-                `Настройка сохранена. Объединение: обновлено ${result.productsUpdated ?? 0} товаров, групп ${result.groupsWithMerge ?? 0}, ошибок ${result.errors ?? 0}.`
-              );
-            } else {
-              alert(result?.error || 'Настройка сохранена, но прогон объединения не удался.');
-            }
-          } catch (joinErr) {
-            console.error('runOzonAutoJoinProducts:', joinErr);
-            alert(
-              joinErr?.response?.data?.error ||
-                joinErr?.message ||
-                'Настройка сохранена, но прогон объединения не удался.'
-            );
-          }
-        }
       } finally {
         setSaving(false);
       }
@@ -751,7 +725,6 @@ function MarketplacesTab({
           )}
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <OzonAutoPromotionsFields formData={formData} onChange={handleChange} />
-          <OzonAutoJoinProductsFields formData={formData} onChange={handleChange} />
           <div className="field">
             <label className="label">СПП по умолчанию, %</label>
             <input
