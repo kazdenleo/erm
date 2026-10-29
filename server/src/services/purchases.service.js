@@ -3265,6 +3265,8 @@ class PurchasesService {
       items = [],
       note = null,
       supplierWarehouseName = null,
+      shipDate = null,
+      plannedDeliveryDate = null,
     } = {},
     { userId, profileId, submitToSupplier = false, syncReserveReapply = true } = {}
   ) {
@@ -3272,6 +3274,8 @@ class PurchasesService {
       let resolvedSupplierId =
         supplierId != null && supplierId !== '' ? Number(supplierId) : null;
     let warehouseNameForSubmit = supplierWarehouseName || null;
+    const shipDateForPurchase = shipDate || null;
+    const plannedDeliveryForPurchase = plannedDeliveryDate || null;
     const createdNew =
       existingPurchaseId == null || String(existingPurchaseId).trim() === '';
 
@@ -3356,6 +3360,22 @@ class PurchasesService {
               });
             }
           }
+          if (warehouseNameForSubmit || shipDateForPurchase || plannedDeliveryForPurchase) {
+            await query(
+              `UPDATE purchases SET
+                 ship_date = COALESCE($2::date, ship_date),
+                 planned_delivery_date = COALESCE($3::date, planned_delivery_date),
+                 supplier_warehouse_name = COALESCE($4, supplier_warehouse_name),
+                 updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [
+                purchaseId,
+                shipDateForPurchase || null,
+                plannedDeliveryForPurchase || null,
+                warehouseNameForSubmit || null,
+              ]
+            );
+          }
         } else {
           const prof = normalizeProfileId(profileId);
           const sidForNote =
@@ -3376,6 +3396,9 @@ class PurchasesService {
               warehouseId,
               items: itemsToProcess,
               note: enrichedNote,
+              supplierWarehouseName: warehouseNameForSubmit,
+              shipDate: shipDateForPurchase,
+              plannedDeliveryDate: plannedDeliveryForPurchase,
             },
             { userId, profileId, lightIncoming: true }
           );
@@ -3561,7 +3584,16 @@ class PurchasesService {
   }
 
   async create(
-    { supplierId = null, organizationId = null, warehouseId = null, items = [], note = null } = {},
+    {
+      supplierId = null,
+      organizationId = null,
+      warehouseId = null,
+      items = [],
+      note = null,
+      supplierWarehouseName = null,
+      shipDate = null,
+      plannedDeliveryDate = null,
+    } = {},
     { userId, profileId, lightIncoming = false } = {}
   ) {
     const pid = normalizeProfileId(profileId);
@@ -3604,13 +3636,31 @@ class PurchasesService {
       throw err;
     }
 
+    const whName =
+      supplierWarehouseName != null && String(supplierWarehouseName).trim() !== ''
+        ? String(supplierWarehouseName).trim()
+        : null;
+
     let incomingDeltas = null;
     const result = await purchaseTransaction(async (client) => {
       const ins = await client.query(
-        `INSERT INTO purchases (supplier_id, organization_id, warehouse_id, profile_id, created_by_user_id, status, ordered_at, note)
-         VALUES ($1, $2, $3, $4, $5, 'open', CURRENT_TIMESTAMP, $6)
+        `INSERT INTO purchases (
+           supplier_id, organization_id, warehouse_id, profile_id, created_by_user_id,
+           status, ordered_at, note, ship_date, planned_delivery_date, supplier_warehouse_name
+         )
+         VALUES ($1, $2, $3, $4, $5, 'open', CURRENT_TIMESTAMP, $6, $7::date, $8::date, $9)
          RETURNING id`,
-        [supplier, org, wid, pid, uid && !Number.isNaN(uid) ? uid : null, note || null]
+        [
+          supplier,
+          org,
+          wid,
+          pid,
+          uid && !Number.isNaN(uid) ? uid : null,
+          note || null,
+          shipDate || null,
+          plannedDeliveryDate || null,
+          whName,
+        ]
       );
       const purchaseId = ins.rows[0].id;
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));

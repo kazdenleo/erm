@@ -13,6 +13,7 @@ import { sqlOpenSupplierReserved } from '../utils/supplierStockReservation.js';
 import {
   autoArrivalNoteText,
   computeProcurementDates,
+  freePurchasableSupplierStock,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
 import { shouldBypassMinOrderAmount } from '../utils/minOrderShipmentGuard.js';
@@ -226,7 +227,13 @@ async function pickSupplierForProduct(
   productId,
   autoSuppliers,
   qty = 1,
-  { warehouseWeekendDays = null, now = new Date(), excludeSupplierIds = null } = {}
+  {
+    warehouseWeekendDays = null,
+    now = new Date(),
+    excludeSupplierIds = null,
+    warehouseId = null,
+    profileId = null,
+  } = {}
 ) {
   const exclude = new Set(
     (Array.isArray(excludeSupplierIds) ? excludeSupplierIds : [])
@@ -239,35 +246,67 @@ async function pickSupplierForProduct(
   if (!ids.length) return null;
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
-    `SELECT ss.supplier_id, ss.price,
-            GREATEST(0, COALESCE(ss.stock, 0) - ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')})::int AS stock,
+    `SELECT ss.supplier_id, ss.price, ss.stock, ss.warehouses,
+            GREATEST(0, ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')})::int AS reserved_qty,
             COALESCE(ss.delivery_days, 0)::int AS delivery_days,
-            COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false) AS is_priority
+            COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false) AS is_priority,
+            s.api_config
      FROM supplier_stocks ss
      INNER JOIN suppliers s ON s.id = ss.supplier_id
      WHERE ss.product_id = $1
        AND ss.supplier_id = ANY($2::bigint[])
        AND ss.stock IS NOT NULL
-       AND GREATEST(0, COALESCE(ss.stock, 0) - ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')}) >= $3`,
-    [productId, ids, need]
+       AND COALESCE(ss.stock, 0) > 0`,
+    [productId, ids]
   );
 
   const supplierById = new Map(autoSuppliers.map((s) => [Number(s.id), s]));
   const reliabilityById = await loadSupplierReliabilityScores(
     (r.rows || []).map((row) => row.supplier_id)
   );
+
+  const mainWid = Number(warehouseId);
+  const cityHintBySupplier = new Map();
+  if (Number.isFinite(mainWid) && mainWid > 0) {
+    const supplierIds = [
+      ...new Set(
+        (r.rows || [])
+          .map((row) => Number(row.supplier_id))
+          .filter((id) => Number.isFinite(id) && id > 0 && !exclude.has(id))
+      ),
+    ];
+    await Promise.all(
+      supplierIds.map(async (sid) => {
+        const hint = await resolveSupplierWarehouseNameForMainWarehouse(mainWid, sid, {
+          profileId,
+        });
+        if (hint) cityHintBySupplier.set(sid, hint);
+      })
+    );
+  }
+
   const candidates = [];
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
     const base = supplierById.get(sid);
     if (!base || exclude.has(sid)) continue;
+    const hint = cityHintBySupplier.get(sid) || null;
+    const free = freePurchasableSupplierStock({
+      apiConfig: row.api_config ?? base.apiConfig,
+      stockWarehouses: row.warehouses,
+      aggregatedStock: row.stock,
+      reservedQty: row.reserved_qty,
+      warehouseNameHint: hint,
+    });
+    if (free < need) continue;
     candidates.push({
       ...base,
       price: row.price != null ? Number(row.price) : null,
-      stock: row.stock != null ? Number(row.stock) : null,
+      stock: free,
       deliveryDays: Number(row.delivery_days) || 0,
       isPriority: Boolean(row.is_priority),
       reliability: reliabilityById.get(sid),
+      warehouseNameHint: hint,
     });
   }
   if (!candidates.length) return null;
@@ -692,6 +731,8 @@ async function tryAlternateSupplierForMinOrder({
   const pickOpts = {
     warehouseWeekendDays,
     now,
+    warehouseId,
+    profileId,
     excludeSupplierIds: Number.isFinite(exclude) && exclude > 0 ? [exclude] : [],
   };
   const groups = new Map();
@@ -850,6 +891,25 @@ async function procureGroupForSupplierOrder(
     }
   }
 
+  const supplierRow = g.supplierRow || null;
+  const deliveryDays = await maxDeliveryDaysForGroup(g.supplierId, g.items);
+  let shipDate = null;
+  let plannedDeliveryDate = null;
+  try {
+    const dates = computeProcurementDates(
+      supplierRow?.apiConfig || g.apiConfig || {},
+      now,
+      deliveryDays,
+      warehouseWeekendDays,
+      supplierRow?.code || g.supplierCode || null,
+      g.supplierWarehouseName || null
+    );
+    shipDate = dates?.shipDate || null;
+    plannedDeliveryDate = dates?.plannedDeliveryDate || null;
+  } catch {
+    /* даты опциональны */
+  }
+
   const note = manualTest
     ? `${autoArrivalNoteText(g.arrivalBucket)} · тест «Заказать»`
     : autoArrivalNoteText(g.arrivalBucket);
@@ -861,6 +921,9 @@ async function procureGroupForSupplierOrder(
       sourceOrders: it.sourceOrders,
     })),
     note,
+    supplierWarehouseName: g.supplierWarehouseName || null,
+    shipDate,
+    plannedDeliveryDate,
   };
 
   if (purchaseId) {
@@ -937,7 +1000,13 @@ async function failoverRejectedDemand({
     return { purchased: 0, submitted: 0, cancelled, unresolved: demand.length };
   }
 
-  const pickOpts = { warehouseWeekendDays, now, excludeSupplierIds: [...tried] };
+  const pickOpts = {
+    warehouseWeekendDays,
+    now,
+    warehouseId,
+    profileId,
+    excludeSupplierIds: [...tried],
+  };
   const groups = new Map();
   const noNext = [];
 
@@ -1309,7 +1378,12 @@ class AutoProcurementService {
 
       const orderWarehouseId = await resolveOrderWarehouseId([resolvedRow], defaultWarehouseId);
       const whCtx = await loadWarehouseCtx(orderWarehouseId);
-      const pickOpts = { warehouseWeekendDays: whCtx.warehouseWeekendDays, now };
+      const pickOpts = {
+        warehouseWeekendDays: whCtx.warehouseWeekendDays,
+        now,
+        warehouseId: whCtx.warehouseId,
+        profileId: pid,
+      };
 
       const demandLines = await expandDemandForOrderRow(resolvedRow, autoSuppliers, pickOpts);
       if (!demandLines.length) {
@@ -1627,7 +1701,7 @@ class AutoProcurementService {
     const warehouseId = await resolveOrderWarehouseId(orderRows, defaultWarehouseId);
     const organizationId = await resolveWarehouseOrganizationId(warehouseId, defaultOrganizationId);
     const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
-    const pickOpts = { warehouseWeekendDays, now };
+    const pickOpts = { warehouseWeekendDays, now, warehouseId, profileId: pid };
 
     const ineligible = orderRows.filter((row) => {
       const st = String(row.status ?? '').trim().toLowerCase();

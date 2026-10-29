@@ -11,6 +11,7 @@ import {
   isPurchaseCreatedInProcurementWindow,
   sumOrderableSupplierWarehouseStock,
   sumPurchasableSupplierWarehouseStock,
+  freePurchasableSupplierStock,
   computeCityFbsShipLeadDays,
   warehouseNamesSameCity,
 } from '../src/utils/supplierProcurementArrival.js';
@@ -303,6 +304,21 @@ describe('sumOrderableSupplierWarehouseStock', () => {
         now: moscowDate(2026, 9, 10, 18, 0),
       })
     ).toBe(5);
+  });
+
+  test('freePurchasable: город минус резерв', () => {
+    expect(
+      freePurchasableSupplierStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 10 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 15,
+        reservedQty: 3,
+        warehouseNameHint: 'Москва',
+      })
+    ).toBe(7);
   });
 
   test('подсказка города: Москва не берёт остаток СПб', () => {

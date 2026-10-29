@@ -403,6 +403,33 @@ export function sumPurchasableSupplierWarehouseStock({
 }
 
 /**
+ * Свободный purchasable-остаток под закупку: городской hint минус уже занятое в открытых закупках.
+ * @param {{
+ *   apiConfig?: object|null,
+ *   stockWarehouses?: unknown,
+ *   aggregatedStock?: number|null,
+ *   reservedQty?: number|null,
+ *   warehouseNameHint?: string|null,
+ * }} opts
+ */
+export function freePurchasableSupplierStock({
+  apiConfig,
+  stockWarehouses,
+  aggregatedStock = 0,
+  reservedQty = 0,
+  warehouseNameHint = null,
+} = {}) {
+  const purchasable = sumPurchasableSupplierWarehouseStock({
+    apiConfig,
+    stockWarehouses,
+    aggregatedStock,
+    warehouseNameHint,
+  });
+  const reserved = Math.max(0, Math.floor(Number(reservedQty) || 0));
+  return Math.max(0, purchasable - reserved);
+}
+
+/**
  * Сколько календарных дней до готовности товара на нашем складе в этом городе
  * (отсечка склада поставщика + delivery_days).
  */

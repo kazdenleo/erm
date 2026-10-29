@@ -15,6 +15,7 @@ import { sqlOpenSupplierReserved } from '../utils/supplierStockReservation.js';
 import {
   autoArrivalNoteText,
   computeProcurementDates,
+  freePurchasableSupplierStock,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
 import { sortSupplierCandidatesByProcurementRules } from '../utils/supplierCandidateSort.js';
@@ -38,6 +39,7 @@ import {
   trySubmitPurchaseToSupplier,
 } from './supplierOrderPlacement.service.js';
 import { loadSupplierReliabilityScores } from './supplierReliability.service.js';
+import { resolveSupplierWarehouseNameForMainWarehouse } from '../utils/citySupplierWarehouse.js';
 
 function supplierSupportsApiOrder(supplier) {
   const code = canonicalSupplierApiCode(supplier?.code);
@@ -306,15 +308,21 @@ async function rankSupplierCandidates(
   productId,
   suppliers,
   qty,
-  { profileRow, warehouseWeekendDays = null, now = new Date() } = {}
+  {
+    profileRow,
+    warehouseWeekendDays = null,
+    now = new Date(),
+    warehouseId = null,
+    profileId = null,
+  } = {}
 ) {
   const scoped = await suppliersForProductBinding(productId, suppliers, profileRow);
   const ids = scoped.map((s) => s.id);
   if (!ids.length) return [];
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
-    `SELECT ss.supplier_id, ss.price,
-            GREATEST(0, COALESCE(ss.stock, 0) - ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')})::int AS stock,
+    `SELECT ss.supplier_id, ss.price, ss.stock, ss.warehouses,
+            GREATEST(0, ${sqlOpenSupplierReserved('ss.supplier_id', 'ss.product_id')})::int AS reserved_qty,
             COALESCE(ss.delivery_days, 0)::int AS delivery_days,
             COALESCE((s.api_config->>'isPriority')::boolean,
                      (s.api_config->>'is_priority')::boolean, false) AS is_priority,
@@ -322,12 +330,7 @@ async function rankSupplierCandidates(
      FROM supplier_stocks ss
      INNER JOIN suppliers s ON s.id = ss.supplier_id
      WHERE ss.product_id = $1 AND ss.supplier_id = ANY($2::bigint[])
-     ORDER BY ss.price ASC NULLS LAST,
-              COALESCE(ss.delivery_days, 999) ASC,
-              CASE WHEN COALESCE((s.api_config->>'isPriority')::boolean,
-                                 (s.api_config->>'is_priority')::boolean, false)
-                THEN 0 ELSE 1 END,
-              ss.stock DESC NULLS LAST`,
+       AND COALESCE(ss.stock, 0) > 0`,
     [productId, ids]
   );
 
@@ -335,33 +338,75 @@ async function rankSupplierCandidates(
   const reliabilityById = await loadSupplierReliabilityScores(
     (r.rows || []).map((row) => row.supplier_id)
   );
+
+  const mainWid = Number(warehouseId);
+  const cityHintBySupplier = new Map();
+  if (Number.isFinite(mainWid) && mainWid > 0) {
+    const supplierIds = [
+      ...new Set(
+        (r.rows || [])
+          .map((row) => Number(row.supplier_id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    await Promise.all(
+      supplierIds.map(async (sid) => {
+        const hint = await resolveSupplierWarehouseNameForMainWarehouse(mainWid, sid, {
+          profileId: profileId ?? profileRow?.id ?? null,
+        });
+        if (hint) cityHintBySupplier.set(sid, hint);
+      })
+    );
+  }
+
   const out = [];
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
-    const stock = row.stock != null ? Number(row.stock) : null;
     const base = supplierById.get(sid);
     if (!base) continue;
-    if (stock == null || !Number.isFinite(stock) || stock < need) {
-      continue;
-    }
+    const hint = cityHintBySupplier.get(sid) || null;
+    const free = freePurchasableSupplierStock({
+      apiConfig: row.api_config ?? base.apiConfig,
+      stockWarehouses: row.warehouses,
+      aggregatedStock: row.stock,
+      reservedQty: row.reserved_qty,
+      warehouseNameHint: hint,
+    });
+    if (!Number.isFinite(free) || free < need) continue;
     out.push({
       ...base,
       price: row.price != null ? Number(row.price) : null,
-      stock,
+      stock: free,
       deliveryDays: Number(row.delivery_days) || 0,
       isPriority: Boolean(row.is_priority),
       reliability: reliabilityById.get(sid),
+      warehouseNameHint: hint,
     });
   }
   return sortSupplierCandidatesByProcurementRules(out, { now, warehouseWeekendDays });
 }
 
-async function supplierHasKitStock(suppliers, kitProductId, qty, { profileRow } = {}) {
-  const candidates = await rankSupplierCandidates(kitProductId, suppliers, qty, { profileRow });
+async function supplierHasKitStock(
+  suppliers,
+  kitProductId,
+  qty,
+  { profileRow, warehouseId = null, profileId = null, warehouseWeekendDays = null, now = new Date() } = {}
+) {
+  const candidates = await rankSupplierCandidates(kitProductId, suppliers, qty, {
+    profileRow,
+    warehouseId,
+    profileId,
+    warehouseWeekendDays,
+    now,
+  });
   return candidates.length > 0 ? candidates[0] : null;
 }
 
-async function expandOrderRowToDemandLines(row, suppliers, { profileRow } = {}) {
+async function expandOrderRowToDemandLines(
+  row,
+  suppliers,
+  { profileRow, warehouseId = null, profileId = null, warehouseWeekendDays = null, now = new Date() } = {}
+) {
   const productId = Number(row.product_id);
   const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
   const orderDbId = Number(row.id);
@@ -372,7 +417,13 @@ async function expandOrderRowToDemandLines(row, suppliers, { profileRow } = {}) 
   const base = { orderDbId, marketplace, orderId, orderRow: row };
 
   if (await isKitProductId(productId)) {
-    const kitSupplier = await supplierHasKitStock(suppliers, productId, qty, { profileRow });
+    const kitSupplier = await supplierHasKitStock(suppliers, productId, qty, {
+      profileRow,
+      warehouseId,
+      profileId,
+      warehouseWeekendDays,
+      now,
+    });
     if (kitSupplier) {
       return [
         {
@@ -796,6 +847,8 @@ async function pickSupplierForDeficit(
     profileRow,
     warehouseWeekendDays,
     now,
+    warehouseId,
+    profileId,
   });
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
@@ -809,7 +862,8 @@ async function pickSupplierForDeficit(
         cand.apiConfig,
         now,
         warehouseWeekendDays,
-        cand.code
+        cand.code,
+        cand.warehouseNameHint || null
       );
       openPurchaseId = await findOpenAutoPurchaseId(client, {
         profileId,
@@ -950,7 +1004,13 @@ class OrderProcurementPlannerService {
         unresolvedOrders.push(String(row.order_id || '').trim() || row.id);
         continue;
       }
-      const expanded = await expandOrderRowToDemandLines(resolvedRow, suppliers, { profileRow });
+      const expanded = await expandOrderRowToDemandLines(resolvedRow, suppliers, {
+        profileRow,
+        warehouseId: orderWarehouseId,
+        profileId: pid,
+        warehouseWeekendDays,
+        now,
+      });
       demandLines.push(...expanded);
       const procKey = `${row.marketplace}|${row.order_id}`;
       if (!seenProc.has(procKey)) {
@@ -1069,7 +1129,8 @@ class OrderProcurementPlannerService {
           now,
           supplier.deliveryDays,
           warehouseWeekendDays,
-          supplier.code
+          supplier.code,
+          supplier.warehouseNameHint || null
         );
         const gKey = groupKey(supplier.id, dates.arrivalBucket);
         if (!purchaseGroups.has(gKey)) {
@@ -1143,6 +1204,8 @@ class OrderProcurementPlannerService {
         })),
         note,
         supplierWarehouseName: g.supplierWarehouseName,
+        shipDate: g.shipDate || null,
+        plannedDeliveryDate: g.plannedDeliveryDate || null,
       };
       if (g.existingPurchaseId) {
         payload.existingPurchaseId = g.existingPurchaseId;
@@ -1466,7 +1529,13 @@ class OrderProcurementPlannerService {
         productId,
         suppliers,
         coverage.deficit || 1,
-        { profileRow, warehouseWeekendDays, now: new Date() }
+        {
+          profileRow,
+          warehouseWeekendDays,
+          now: new Date(),
+          warehouseId: orderWarehouseId,
+          profileId: pid,
+        }
       );
 
       const boundSupplierId =
@@ -1633,12 +1702,16 @@ class OrderProcurementPlannerService {
     }
 
     const warehouseWeekendDays = await loadWarehouseWeekendDays(whId, pid);
+    const supplierWarehouseName = await resolveSupplierWarehouseNameForMainWarehouse(whId, sid, {
+      profileId: pid,
+    });
     const dates = computeProcurementDates(
       supplierApiConfig,
       now,
       maxDeliveryDays,
       warehouseWeekendDays,
-      supplierRow.code
+      supplierRow.code,
+      supplierWarehouseName
     );
     const processedLines = [];
 
@@ -1652,7 +1725,9 @@ class OrderProcurementPlannerService {
         purchasePrice: it.purchasePrice,
       })),
       note,
-      supplierWarehouseName: dates.supplierWarehouseName,
+      supplierWarehouseName: supplierWarehouseName || dates.supplierWarehouseName || null,
+      shipDate: dates.shipDate || null,
+      plannedDeliveryDate: dates.plannedDeliveryDate || null,
     };
 
     const openId =
