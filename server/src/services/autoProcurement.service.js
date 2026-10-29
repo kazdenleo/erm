@@ -12,8 +12,10 @@ import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettin
 import { sqlOpenSupplierReserved } from '../utils/supplierStockReservation.js';
 import {
   autoArrivalNoteText,
+  computeProcurementDates,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { shouldBypassMinOrderAmount } from '../utils/minOrderShipmentGuard.js';
 import { sortSupplierCandidatesByProcurementRules } from '../utils/supplierCandidateSort.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
@@ -540,6 +542,250 @@ async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
   return [row];
 }
 
+async function estimateGroupTotal(client, supplierId, items) {
+  let sum = 0;
+  for (const it of items || []) {
+    const pr = await client.query(
+      `SELECT price, delivery_days FROM supplier_stocks WHERE supplier_id = $1 AND product_id = $2`,
+      [supplierId, it.productId]
+    );
+    const price = pr.rows?.[0]?.price != null ? Number(pr.rows[0].price) : 0;
+    if (price > 0) sum += price * it.quantity;
+  }
+  return sum;
+}
+
+async function maxDeliveryDaysForGroup(supplierId, items) {
+  let maxDays = 0;
+  for (const it of items || []) {
+    const pr = await query(
+      `SELECT COALESCE(delivery_days, 0)::int AS delivery_days
+         FROM supplier_stocks WHERE supplier_id = $1 AND product_id = $2`,
+      [supplierId, it.productId]
+    );
+    const d = Number(pr.rows?.[0]?.delivery_days) || 0;
+    if (d > maxDays) maxDays = d;
+  }
+  return maxDays;
+}
+
+async function loadEarliestShipmentAtFromItems(profileId, items) {
+  const pairs = [];
+  const seen = new Set();
+  for (const it of items || []) {
+    for (const o of it.sourceOrders || []) {
+      const mp = orderMarketplaceToDb(o?.marketplace);
+      const oid = String(o?.orderId ?? o?.order_id ?? '').trim();
+      if (!mp || !oid) continue;
+      const key = `${mp}|${oid}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ marketplace: mp, orderId: oid });
+    }
+  }
+  if (!pairs.length || profileId == null) return null;
+  const marketplaces = pairs.map((p) => p.marketplace);
+  const orderIds = pairs.map((p) => p.orderId);
+  const r = await query(
+    `SELECT MIN(o.shipment_date) AS earliest
+       FROM orders o
+      WHERE o.profile_id = $1
+        AND o.shipment_date IS NOT NULL
+        AND o.marketplace = ANY($2::text[])
+        AND o.order_id = ANY($3::text[])`,
+    [profileId, marketplaces, orderIds]
+  );
+  const raw = r.rows?.[0]?.earliest;
+  if (!raw) return null;
+  const d = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Ниже мин. суммы: копить или отправить сразу из‑за срока отгрузки на МП.
+ * @returns {Promise<'ok'|'wait'|'bypass'>}
+ */
+async function resolveMinOrderGate(
+  g,
+  { now, warehouseWeekendDays, ignoreMinOrderAmount = false, profileId = null } = {}
+) {
+  if (ignoreMinOrderAmount || g?.minOrderAmount == null) return 'ok';
+  const est = await transaction(async (client) =>
+    estimateGroupTotal(client, g.supplierId, g.items)
+  );
+  if (est >= g.minOrderAmount) return 'ok';
+
+  let earliest = g.earliestShipmentAt || null;
+  if (!earliest && profileId != null) {
+    earliest = await loadEarliestShipmentAtFromItems(profileId, g.items);
+    if (earliest) g.earliestShipmentAt = earliest;
+  }
+
+  const supplierRow = g.supplierRow || null;
+  const apiConfig = supplierRow?.apiConfig || g.apiConfig || {};
+  const deliveryDays = await maxDeliveryDaysForGroup(g.supplierId, g.items);
+  let plannedDeliveryYmd = null;
+  try {
+    const dates = computeProcurementDates(
+      apiConfig,
+      now,
+      deliveryDays,
+      warehouseWeekendDays,
+      supplierRow?.code || g.supplierCode || null
+    );
+    plannedDeliveryYmd = dates?.plannedDeliveryDate || null;
+  } catch {
+    plannedDeliveryYmd = null;
+  }
+
+  const bypass = shouldBypassMinOrderAmount({
+    shipmentDeadline: earliest,
+    plannedDeliveryYmd,
+    minSlackDays: 1,
+  });
+  if (bypass) {
+    logger.info('[AutoProcurement] мин. сумма: срок отгрузки горит — отправляем без накопления', {
+      supplierId: g.supplierId,
+      est,
+      min: g.minOrderAmount,
+      plannedDeliveryYmd,
+      shipmentAt: earliest || null,
+    });
+    return 'bypass';
+  }
+  return 'wait';
+}
+
+/**
+ * Ниже мин. суммы, но срок ещё позволяет копить: тихо пробуем другого поставщика.
+ * Отмену на МП не делаем.
+ */
+async function tryAlternateSupplierForMinOrder({
+  items,
+  excludeSupplierId,
+  earliestShipmentAt,
+  autoSuppliers,
+  profileId,
+  userId,
+  organizationId,
+  warehouseId,
+  warehouseWeekendDays,
+  now,
+}) {
+  const exclude = Number(excludeSupplierId);
+  const demand = (Array.isArray(items) ? items : [])
+    .map((it) => ({
+      productId: Number(it.productId ?? it.product_id),
+      quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+      sourceOrders: Array.isArray(it.sourceOrders) ? it.sourceOrders : [],
+    }))
+    .filter((it) => Number.isFinite(it.productId) && it.productId > 0 && it.sourceOrders.length);
+  if (!demand.length) return { purchased: 0, submitted: 0 };
+
+  const pickOpts = {
+    warehouseWeekendDays,
+    now,
+    excludeSupplierIds: Number.isFinite(exclude) && exclude > 0 ? [exclude] : [],
+  };
+  const groups = new Map();
+  for (const it of demand) {
+    const supplier = await pickSupplierForProduct(
+      it.productId,
+      autoSuppliers,
+      it.quantity,
+      pickOpts
+    );
+    if (!supplier) continue;
+    const supplierRow = autoSuppliers.find((s) => Number(s.id) === Number(supplier.id)) || supplier;
+    const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
+      supplierRow.apiConfig,
+      now,
+      warehouseWeekendDays,
+      supplierRow.code
+    );
+    const key = groupKey(supplier.id, arrivalBucket, warehouseId);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        supplierId: supplier.id,
+        arrivalBucket,
+        minOrderAmount: supplierRow.minOrderAmount,
+        supplierRow,
+        apiConfig: supplierRow.apiConfig,
+        supplierCode: supplierRow.code,
+        earliestShipmentAt: earliestShipmentAt || null,
+        items: [],
+        procurementItems: [],
+        seenProc: new Set(),
+      });
+    }
+    const g = groups.get(key);
+    for (const o of it.sourceOrders) {
+      const mp = o?.marketplace;
+      const oid = o?.orderId ?? o?.order_id;
+      const procKey = `${mp}|${oid}`;
+      if (mp != null && oid != null && !g.seenProc.has(procKey)) {
+        g.seenProc.add(procKey);
+        g.procurementItems.push({ marketplace: mp, orderId: oid });
+      }
+    }
+    const existing = g.items.find((x) => x.productId === it.productId);
+    if (existing) {
+      existing.quantity += it.quantity;
+      existing.sourceOrders.push(...it.sourceOrders);
+    } else {
+      g.items.push({
+        productId: it.productId,
+        quantity: it.quantity,
+        sourceOrders: [...it.sourceOrders],
+      });
+    }
+  }
+
+  let purchased = 0;
+  let submitted = 0;
+  for (const g of groups.values()) {
+    if (!g.items.length) continue;
+    const openId = await transaction(async (client) =>
+      findOpenAutoPurchaseId(client, {
+        profileId,
+        supplierId: g.supplierId,
+        arrivalBucket: g.arrivalBucket,
+        warehouseId,
+        now,
+        warehouseWeekendDays,
+      })
+    );
+    // Новый поставщик тоже ниже мин. и без открытой закупки — не трогаем (копим).
+    if (!openId && g.minOrderAmount != null) {
+      const gate = await resolveMinOrderGate(g, {
+        now,
+        warehouseWeekendDays,
+        profileId,
+      });
+      if (gate === 'wait') continue;
+    }
+    try {
+      const result = await procureGroupForSupplierOrder(g, {
+        profileId,
+        userId,
+        organizationId,
+        warehouseId,
+        now,
+        warehouseWeekendDays,
+        submitToSupplier: true,
+      });
+      if (result?.ok && result?.purchaseId) purchased += 1;
+      if (result?.supplierSubmit?.submitted) submitted += 1;
+    } catch (e) {
+      logger.warn('[AutoProcurement] alternate supplier after min-order skip failed', {
+        supplierId: g.supplierId,
+        message: e?.message || String(e),
+      });
+    }
+  }
+  return { purchased, submitted };
+}
+
 async function procureGroupForSupplierOrder(
   g,
   {
@@ -551,6 +797,7 @@ async function procureGroupForSupplierOrder(
     now = new Date(),
     warehouseWeekendDays = null,
     submitToSupplier = false,
+    ignoreMinOrderAmount = false,
   }
 ) {
   if (!g?.items?.length) {
@@ -569,19 +816,16 @@ async function procureGroupForSupplierOrder(
   );
 
   if (!manualTest && !purchaseId && g.minOrderAmount != null) {
-    const est = await transaction(async (client) => {
-      let sum = 0;
-      for (const it of g.items) {
-        const pr = await client.query(
-          `SELECT price FROM supplier_stocks WHERE supplier_id = $1 AND product_id = $2`,
-          [g.supplierId, it.productId]
-        );
-        const price = pr.rows?.[0]?.price != null ? Number(pr.rows[0].price) : 0;
-        if (price > 0) sum += price * it.quantity;
-      }
-      return sum;
+    const gate = await resolveMinOrderGate(g, {
+      now,
+      warehouseWeekendDays,
+      ignoreMinOrderAmount,
+      profileId,
     });
-    if (est < g.minOrderAmount) {
+    if (gate === 'wait') {
+      const est = await transaction(async (client) =>
+        estimateGroupTotal(client, g.supplierId, g.items)
+      );
       return {
         ok: false,
         error: 'below_min_order_amount',
@@ -707,6 +951,10 @@ async function failoverRejectedDemand({
         supplierId: supplier.id,
         arrivalBucket,
         minOrderAmount: supplierRow.minOrderAmount,
+        supplierRow,
+        apiConfig: supplierRow.apiConfig,
+        supplierCode: supplierRow.code,
+        earliestShipmentAt: null,
         items: [],
         procurementItems: [],
         seenProc: new Set(),
@@ -720,6 +968,15 @@ async function failoverRejectedDemand({
       if (mp != null && oid != null && !g.seenProc.has(procKey)) {
         g.seenProc.add(procKey);
         g.procurementItems.push({ marketplace: mp, orderId: oid });
+      }
+      const shipRaw = o?.shipmentDate ?? o?.shipment_date;
+      if (shipRaw) {
+        const shipAt = shipRaw instanceof Date ? shipRaw : new Date(shipRaw);
+        if (!Number.isNaN(shipAt.getTime())) {
+          if (!g.earliestShipmentAt || shipAt < g.earliestShipmentAt) {
+            g.earliestShipmentAt = shipAt;
+          }
+        }
       }
     }
     const existing = g.items.find((x) => x.productId === it.productId);
@@ -754,13 +1011,13 @@ async function failoverRejectedDemand({
         submitToSupplier: true,
       });
       if (!result?.ok) {
-        // Ниже мин. суммы — оставляем на следующий прогон, не отменяем.
         if (result?.error === 'below_min_order_amount') {
           logger.info('[AutoProcurement] failover: ниже мин. суммы, ждём накопления', {
             profileId,
             supplierId: g.supplierId,
             min: result.minOrderAmount,
           });
+          // Не отменяем — накопление или другой поставщик на следующем прогоне.
         } else {
           cancelCandidates.push(...g.items);
         }
@@ -981,7 +1238,7 @@ class AutoProcurementService {
     const ordersRes = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
               o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id,
-              o.delivery_address
+              o.delivery_address, o.shipment_date
        FROM orders o
        WHERE o.profile_id = $1
          AND (
@@ -1070,12 +1327,25 @@ class AutoProcurementService {
             organizationId: whCtx.organizationId,
             warehouseWeekendDays: whCtx.warehouseWeekendDays,
             minOrderAmount: supplier.minOrderAmount,
+            supplierRow: supplier,
+            apiConfig: supplier.apiConfig,
+            supplierCode: supplier.code,
+            earliestShipmentAt: null,
             items: [],
             procurementItems: [],
             seenProc: new Set(),
           });
         }
         const g = groups.get(key);
+        const shipRaw = resolvedRow.shipment_date ?? resolvedRow.shipmentDate;
+        if (shipRaw) {
+          const shipAt = shipRaw instanceof Date ? shipRaw : new Date(shipRaw);
+          if (!Number.isNaN(shipAt.getTime())) {
+            if (!g.earliestShipmentAt || shipAt < g.earliestShipmentAt) {
+              g.earliestShipmentAt = shipAt;
+            }
+          }
+        }
         const procKey = `${mp}|${orderId}`;
         if (!g.seenProc.has(procKey)) {
           g.seenProc.add(procKey);
@@ -1116,28 +1386,44 @@ class AutoProcurementService {
       );
 
       if (!purchaseId && g.minOrderAmount != null) {
-        const est = await transaction(async (client) => {
-          let sum = 0;
-          for (const it of g.items) {
-            const pr = await client.query(
-              `SELECT price FROM supplier_stocks WHERE supplier_id = $1 AND product_id = $2`,
-              [g.supplierId, it.productId]
-            );
-            const price = pr.rows?.[0]?.price != null ? Number(pr.rows[0].price) : 0;
-            if (price > 0) sum += price * it.quantity;
-          }
-          return sum;
+        const gate = await resolveMinOrderGate(g, {
+          now,
+          warehouseWeekendDays: g.warehouseWeekendDays,
+          profileId: pid,
         });
-        if (est < g.minOrderAmount) {
+        if (gate === 'wait') {
+          const est = await transaction(async (client) =>
+            estimateGroupTotal(client, g.supplierId, g.items)
+          );
           logger.info('[AutoProcurement] skip new purchase: below minOrderAmount', {
             supplierId: g.supplierId,
             bucket: g.arrivalBucket,
             est,
             min: g.minOrderAmount,
           });
-          skipped += g.items.length;
+          // Срок ещё позволяет копить — без отмены на МП пробуем другого поставщика
+          // (без мин. суммы или с уже открытой закупкой).
+          const alt = await tryAlternateSupplierForMinOrder({
+            items: g.items,
+            excludeSupplierId: g.supplierId,
+            earliestShipmentAt: g.earliestShipmentAt,
+            autoSuppliers,
+            profileId: pid,
+            userId,
+            organizationId: g.organizationId,
+            warehouseId: g.warehouseId,
+            warehouseWeekendDays: g.warehouseWeekendDays,
+            now,
+          });
+          if (alt.purchased || alt.submitted) {
+            purchasesTouched += alt.purchased || 0;
+            submitted += alt.submitted || 0;
+          } else {
+            skipped += g.items.length;
+          }
           continue;
         }
+        // gate === 'bypass' | 'ok' — создаём закупку даже ниже мин. суммы
       }
 
       const note = autoArrivalNoteText(g.arrivalBucket);
