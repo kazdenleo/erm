@@ -145,6 +145,7 @@ class StockRunwayService {
       )
       SELECT e.product_id,
              p.name, p.sku, p.supplier_id, s.name AS supplier_name,
+             p.user_category_id, p.product_type,
              COALESCE(SUM(e.q) FILTER (WHERE e.src = 'orders'), 0)::numeric AS orders_qty,
              COALESCE(SUM(e.q) FILTER (WHERE e.src = 'fbo'), 0)::numeric AS fbo_qty,
              COALESCE((
@@ -155,7 +156,7 @@ class StockRunwayService {
         FROM exploded e
         JOIN products p ON p.id = e.product_id AND p.profile_id = $1
         LEFT JOIN suppliers s ON s.id = p.supplier_id
-       GROUP BY e.product_id, p.name, p.sku, p.supplier_id, s.name
+       GROUP BY e.product_id, p.name, p.sku, p.supplier_id, s.name, p.user_category_id, p.product_type
       `,
       [pid, from, to, countOrders, countSupplies, singleFboWh, CANCELLED_STATUSES, scopeIds]
     );
@@ -209,12 +210,15 @@ class StockRunwayService {
       });
 
       const runOut = new Date(today.getTime() + Math.floor(daysLeft) * DAY_MS);
+      const productType = String(r.product_type || '').toLowerCase() === 'kit' ? 'kit' : 'product';
       items.push({
         productId,
         productName: r.name || '',
         productSku: r.sku || '',
         supplierId: r.supplier_id != null ? Number(r.supplier_id) : null,
         supplierName: r.supplier_name || '',
+        categoryId: r.user_category_id != null ? Number(r.user_category_id) : null,
+        productType,
         ordersQty: Math.round(ordersQty),
         fboQty: Math.round(fboQty),
         dailyRate: Math.round(dailyRate * 100) / 100,

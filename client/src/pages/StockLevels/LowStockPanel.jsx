@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { procurementForecastApi } from '../../services/procurementForecast.api';
 import { warehouseDisplayLabel } from '../../utils/stockDestinationDefaults.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { useCategories } from '../../hooks/useCategories';
+import { useSuppliers } from '../../hooks/useSuppliers';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 
 export const LOW_STOCK_URGENCY = {
   out: { label: 'Закончился', className: 'low-stock-badge--out' },
@@ -63,17 +67,33 @@ function downloadCsv(rows) {
 }
 
 export function LowStockPanel({ ownWarehouses = [] }) {
+  const { profile } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const { categories } = useCategories();
+  const { suppliers } = useSuppliers();
+
   const [warehouseId, setWarehouseId] = useState('');
   const [periodDays, setPeriodDays] = useState(10);
   const [alertDays, setAlertDays] = useState(2);
   const [coverDays, setCoverDays] = useState(5);
   const [urgency, setUrgency] = useState('all');
-  const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [productType, setProductType] = useState('');
   const [search, setSearch] = useState('');
   const [hideCovered, setHideCovered] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!kitsEnabled && productType) setProductType('');
+  }, [kitsEnabled, productType]);
+
+  useEffect(() => {
+    if (!supplierBindingEnabled && supplierId) setSupplierId('');
+  }, [supplierBindingEnabled, supplierId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,28 +114,51 @@ export function LowStockPanel({ ownWarehouses = [] }) {
 
   const items = useMemo(() => data?.items || [], [data]);
 
-  const suppliers = useMemo(() => {
-    const m = new Map();
-    for (const it of items) {
-      const key = it.supplierId != null ? String(it.supplierId) : 'none';
-      if (!m.has(key)) m.set(key, it.supplierName || 'Без поставщика');
-    }
-    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
-  }, [items]);
+  const supplierOptions = useMemo(
+    () =>
+      [...(suppliers || [])]
+        .filter((s) => s && s.name)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru')),
+    [suppliers]
+  );
+
+  const categoryOptions = useMemo(
+    () =>
+      [...(categories || [])]
+        .filter((c) => c && (c.name || c.id))
+        .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'ru')),
+    [categories]
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((it) => {
       if (urgency !== 'all' && it.urgency !== urgency) return false;
       if (hideCovered && it.coveredByIncoming) return false;
-      if (supplier) {
-        const key = it.supplierId != null ? String(it.supplierId) : 'none';
-        if (key !== supplier) return false;
+      if (supplierBindingEnabled && supplierId) {
+        if (String(it.supplierId ?? '') !== String(supplierId)) return false;
+      }
+      if (categoryId) {
+        if (String(it.categoryId ?? '') !== String(categoryId)) return false;
+      }
+      if (kitsEnabled && productType) {
+        const pt = it.productType === 'kit' ? 'kit' : 'product';
+        if (pt !== productType) return false;
       }
       if (q && !`${it.productSku} ${it.productName}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [items, urgency, hideCovered, supplier, search]);
+  }, [
+    items,
+    urgency,
+    hideCovered,
+    supplierBindingEnabled,
+    supplierId,
+    categoryId,
+    kitsEnabled,
+    productType,
+    search,
+  ]);
 
   const summary = data?.summary || {};
   const sources = data?.sources || {};
@@ -178,17 +221,52 @@ export function LowStockPanel({ ownWarehouses = [] }) {
             ))}
           </select>
         </label>
+        {supplierBindingEnabled ? (
+          <label className="stock-levels-filter-label">
+            <span>Поставщик:</span>
+            <select
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+              className="stock-levels-filter-select"
+            >
+              <option value="">Все</option>
+              {supplierOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label className="stock-levels-filter-label">
-          <span>Поставщик:</span>
-          <select value={supplier} onChange={(e) => setSupplier(e.target.value)} className="stock-levels-filter-select">
+          <span>Категория:</span>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className="stock-levels-filter-select"
+          >
             <option value="">Все</option>
-            {suppliers.map(([key, name]) => (
-              <option key={key} value={key}>
-                {name}
+            {categoryOptions.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name || c.id}
               </option>
             ))}
           </select>
         </label>
+        {kitsEnabled ? (
+          <label className="stock-levels-filter-label">
+            <span>Тип:</span>
+            <select
+              value={productType}
+              onChange={(e) => setProductType(e.target.value)}
+              className="stock-levels-filter-select"
+            >
+              <option value="">Все</option>
+              <option value="product">Товар</option>
+              <option value="kit">Комплект</option>
+            </select>
+          </label>
+        ) : null}
         <label className="stock-levels-filter-label">
           <span>Поиск:</span>
           <input
