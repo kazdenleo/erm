@@ -3504,6 +3504,7 @@ class PurchasesService {
           procurement,
           supplierSubmit,
           rolledBack: true,
+          rollbackItems,
         };
       }
 

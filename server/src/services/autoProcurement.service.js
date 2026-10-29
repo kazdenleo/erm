@@ -26,6 +26,13 @@ import {
   trySubmitPurchaseToSupplier,
 } from './supplierOrderPlacement.service.js';
 import { runSchedulerDbJob } from '../utils/schedulerDbMutex.js';
+import {
+  shouldFailoverAfterSupplierSubmit,
+  rollbackDemandItemsForFailover,
+  unfulfillableOrderRefs,
+  orderRefKey,
+} from '../utils/supplierProcurementFailover.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -215,9 +222,16 @@ async function pickSupplierForProduct(
   productId,
   autoSuppliers,
   qty = 1,
-  { warehouseWeekendDays = null, now = new Date() } = {}
+  { warehouseWeekendDays = null, now = new Date(), excludeSupplierIds = null } = {}
 ) {
-  const ids = autoSuppliers.map((s) => s.id);
+  const exclude = new Set(
+    (Array.isArray(excludeSupplierIds) ? excludeSupplierIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+  const ids = autoSuppliers
+    .map((s) => Number(s.id))
+    .filter((id) => Number.isFinite(id) && id > 0 && !exclude.has(id));
   if (!ids.length) return null;
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
@@ -239,7 +253,7 @@ async function pickSupplierForProduct(
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
     const base = supplierById.get(sid);
-    if (!base) continue;
+    if (!base || exclude.has(sid)) continue;
     candidates.push({
       ...base,
       price: row.price != null ? Number(row.price) : null,
@@ -610,9 +624,304 @@ async function procureGroupForSupplierOrder(
     purchaseId: result?.purchaseId ?? purchaseId ?? null,
     procurement: result?.procurement ?? null,
     supplierSubmit: result?.supplierSubmit ?? null,
+    rolledBack: Boolean(result?.rolledBack),
+    rollbackItems: Array.isArray(result?.rollbackItems) ? result.rollbackItems : null,
     appendedToExisting: Boolean(purchaseId),
     arrivalBucket: g.arrivalBucket,
   };
+}
+
+const MAX_SUPPLIER_FAILOVER_DEPTH = 5;
+
+/**
+ * После отказа поставщика: те же позиции у следующего по правилам выбора.
+ * Если закрыть некем и заказ ещё «Новый» — отмена на МП и пуш остатка.
+ */
+async function failoverRejectedDemand({
+  items,
+  failedSupplierId,
+  triedSupplierIds,
+  autoSuppliers,
+  profileId,
+  userId,
+  organizationId,
+  warehouseId,
+  warehouseWeekendDays,
+  now,
+  depth = 0,
+}) {
+  const demand = (Array.isArray(items) ? items : [])
+    .map((it) => ({
+      productId: Number(it.productId ?? it.product_id),
+      quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+      sourceOrders: Array.isArray(it.sourceOrders) ? it.sourceOrders : [],
+    }))
+    .filter((it) => Number.isFinite(it.productId) && it.productId > 0 && it.sourceOrders.length);
+
+  if (!demand.length) {
+    return { purchased: 0, submitted: 0, cancelled: 0, unresolved: 0 };
+  }
+
+  const tried = new Set(
+    [...(triedSupplierIds || [])]
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+  const failedId = Number(failedSupplierId);
+  if (Number.isFinite(failedId) && failedId > 0) tried.add(failedId);
+
+  if (depth >= MAX_SUPPLIER_FAILOVER_DEPTH) {
+    const cancelled = await cancelUnfulfillableMarketplaceOrders({
+      items: demand,
+      profileId,
+      reason: 'Исчерпаны попытки смены поставщика после отказа',
+    });
+    return { purchased: 0, submitted: 0, cancelled, unresolved: demand.length };
+  }
+
+  const pickOpts = { warehouseWeekendDays, now, excludeSupplierIds: [...tried] };
+  const groups = new Map();
+  const noNext = [];
+
+  for (const it of demand) {
+    const supplier = await pickSupplierForProduct(
+      it.productId,
+      autoSuppliers,
+      it.quantity,
+      pickOpts
+    );
+    if (!supplier) {
+      noNext.push(it);
+      continue;
+    }
+    const supplierRow = autoSuppliers.find((s) => Number(s.id) === Number(supplier.id)) || supplier;
+    const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
+      supplierRow.apiConfig,
+      now,
+      warehouseWeekendDays,
+      supplierRow.code
+    );
+    const key = groupKey(supplier.id, arrivalBucket, warehouseId);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        supplierId: supplier.id,
+        arrivalBucket,
+        minOrderAmount: supplierRow.minOrderAmount,
+        items: [],
+        procurementItems: [],
+        seenProc: new Set(),
+      });
+    }
+    const g = groups.get(key);
+    for (const o of it.sourceOrders) {
+      const mp = o?.marketplace;
+      const oid = o?.orderId ?? o?.order_id;
+      const procKey = `${mp}|${oid}`;
+      if (mp != null && oid != null && !g.seenProc.has(procKey)) {
+        g.seenProc.add(procKey);
+        g.procurementItems.push({ marketplace: mp, orderId: oid });
+      }
+    }
+    const existing = g.items.find((x) => x.productId === it.productId);
+    if (existing) {
+      existing.quantity += it.quantity;
+      existing.sourceOrders.push(...it.sourceOrders);
+    } else {
+      g.items.push({
+        productId: it.productId,
+        quantity: it.quantity,
+        sourceOrders: [...it.sourceOrders],
+      });
+    }
+  }
+
+  let purchased = 0;
+  let submitted = 0;
+  let cancelled = 0;
+  /** Только позиции, которые закрыть некем — их можно отменять на МП. */
+  const cancelCandidates = [...noNext];
+
+  for (const g of groups.values()) {
+    if (!g.items.length) continue;
+    try {
+      const result = await procureGroupForSupplierOrder(g, {
+        profileId,
+        userId,
+        organizationId,
+        warehouseId,
+        now,
+        warehouseWeekendDays,
+        submitToSupplier: true,
+      });
+      if (!result?.ok) {
+        // Ниже мин. суммы — оставляем на следующий прогон, не отменяем.
+        if (result?.error === 'below_min_order_amount') {
+          logger.info('[AutoProcurement] failover: ниже мин. суммы, ждём накопления', {
+            profileId,
+            supplierId: g.supplierId,
+            min: result.minOrderAmount,
+          });
+        } else {
+          cancelCandidates.push(...g.items);
+        }
+        continue;
+      }
+      if (result?.purchaseId) purchased += 1;
+      if (result?.supplierSubmit?.submitted) submitted += 1;
+
+      const submit = result?.supplierSubmit;
+      if (
+        result?.rolledBack ||
+        shouldFailoverAfterSupplierSubmit(submit, { apiSubmitRequired: true })
+      ) {
+        const retryItems =
+          Array.isArray(result?.rollbackItems) && result.rollbackItems.length
+            ? result.rollbackItems
+            : rollbackDemandItemsForFailover(g.items, submit);
+        if (retryItems.length) {
+          logger.info('[AutoProcurement] failover → следующий поставщик', {
+            profileId,
+            failedSupplierId: g.supplierId,
+            items: retryItems.length,
+            depth,
+          });
+          const nested = await failoverRejectedDemand({
+            items: retryItems,
+            failedSupplierId: g.supplierId,
+            triedSupplierIds: tried,
+            autoSuppliers,
+            profileId,
+            userId,
+            organizationId,
+            warehouseId,
+            warehouseWeekendDays,
+            now,
+            depth: depth + 1,
+          });
+          purchased += nested.purchased || 0;
+          submitted += nested.submitted || 0;
+          cancelled += nested.cancelled || 0;
+        }
+      }
+    } catch (e) {
+      logger.warn('[AutoProcurement] failover procure failed', {
+        profileId,
+        supplierId: g.supplierId,
+        message: e?.message || String(e),
+      });
+      cancelCandidates.push(...g.items);
+    }
+  }
+
+  if (cancelCandidates.length) {
+    cancelled += await cancelUnfulfillableMarketplaceOrders({
+      items: cancelCandidates,
+      profileId,
+      reason: 'Нет другого поставщика со свободным остатком после отказа',
+    });
+  }
+
+  return {
+    purchased,
+    submitted,
+    cancelled,
+    unresolved: cancelCandidates.length,
+  };
+}
+
+async function cancelUnfulfillableMarketplaceOrders({ items, profileId, reason }) {
+  const refs = unfulfillableOrderRefs(items);
+  if (!refs.length) return 0;
+
+  const productIds = [
+    ...new Set(
+      (items || [])
+        .map((it) => Number(it.productId ?? it.product_id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+
+  let cancelled = 0;
+  const cancelledRefs = [];
+
+  for (const ref of refs) {
+    try {
+      const rows = await query(
+        `SELECT id, status, marketplace, order_id
+           FROM orders
+          WHERE profile_id = $1
+            AND marketplace = $2
+            AND order_id = $3
+          LIMIT 1`,
+        [profileId, ref.marketplace, ref.orderId]
+      );
+      const row = rows.rows?.[0];
+      if (!row) continue;
+      const st = String(row.status || '').toLowerCase();
+      if (['cancelled', 'canceled', 'delivered', 'shipped', 'in_transit'].includes(st)) {
+        continue;
+      }
+      // Уже в закупке / на сборке — часть позиций могла уйти другому поставщику; не трогаем.
+      if (['in_procurement', 'in_assembly', 'wb_assembly', 'assembled'].includes(st)) {
+        continue;
+      }
+
+      await ordersService.cancelOrderOnMarketplace(ref.marketplace, ref.orderId);
+      cancelled += 1;
+      cancelledRefs.push(ref);
+      logger.info('[AutoProcurement] заказ отменён: закрыть поставщиком некем', {
+        profileId,
+        marketplace: ref.marketplace,
+        orderId: ref.orderId,
+        reason,
+      });
+    } catch (e) {
+      logger.warn('[AutoProcurement] не удалось отменить заказ на МП', {
+        profileId,
+        marketplace: ref.marketplace,
+        orderId: ref.orderId,
+        message: e?.message || String(e),
+      });
+    }
+  }
+
+  if (productIds.length) {
+    import('./marketplaceWarehouseStockSync.service.js')
+      .then(({ scheduleWarehouseStockMarketplaceSync }) => {
+        for (const id of productIds) {
+          scheduleWarehouseStockMarketplaceSync(id, { source: 'supplier_failover_unfulfillable' });
+        }
+      })
+      .catch(() => {});
+  }
+
+  if (cancelledRefs.length) {
+    const label = cancelledRefs.map((r) => r.orderId).join(', ');
+    try {
+      await addRuntimeNotification({
+        type: 'supplier_order_unfulfillable_cancelled',
+        severity: 'error',
+        source: 'auto_procurement',
+        profileId,
+        dedupeKey: `supplier_unfulfillable|${profileId}|${cancelledRefs
+          .map((r) => orderRefKey(r.marketplace, r.orderId))
+          .sort()
+          .join(',')}`,
+        title: 'Заказы отменены: поставщик не принял, замены нет',
+        message: `${reason}. Отменены на маркетплейсе: ${label}. Остаток на витрине обновлён.`,
+        meta: {
+          url: '/orders?status=cancelled',
+          order_ids: cancelledRefs.map((r) => r.orderId),
+          product_ids: productIds,
+          reason,
+        },
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  return cancelled;
 }
 
 class AutoProcurementService {
@@ -872,18 +1181,73 @@ class AutoProcurementService {
             message: result.supplierSubmit.message,
             rolledBack: Boolean(result?.rolledBack),
           });
-          if (result?.rolledBack) {
-            // Уведомление уже создано в procureFromOrders
+        }
+
+        const submit = result?.supplierSubmit;
+        if (
+          result?.rolledBack ||
+          shouldFailoverAfterSupplierSubmit(submit, { apiSubmitRequired: true })
+        ) {
+          const retryItems =
+            Array.isArray(result?.rollbackItems) && result.rollbackItems.length
+              ? result.rollbackItems
+              : rollbackDemandItemsForFailover(g.items, submit);
+          if (retryItems.length) {
+            const failover = await failoverRejectedDemand({
+              items: retryItems,
+              failedSupplierId: g.supplierId,
+              triedSupplierIds: [g.supplierId],
+              autoSuppliers,
+              profileId: pid,
+              userId,
+              organizationId: g.organizationId,
+              warehouseId: g.warehouseId,
+              warehouseWeekendDays: g.warehouseWeekendDays,
+              now,
+            });
+            purchasesTouched += failover.purchased || 0;
+            submitted += failover.submitted || 0;
+            if (failover.cancelled) {
+              logger.info('[AutoProcurement] failover: отменены заказы без поставщика', {
+                profileId: pid,
+                cancelled: failover.cancelled,
+              });
+            }
           }
         }
       } catch (e) {
+        const msg = e?.message || String(e);
         logger.warn('[AutoProcurement] procure failed', {
           profileId: pid,
           supplierId: g.supplierId,
           bucket: g.arrivalBucket,
-          message: e?.message || String(e),
+          message: msg,
         });
-        skipped += g.items.length;
+        // Нет свободного остатка / ошибка создания — сразу другой поставщик, не ждём следующий cron.
+        const noStock =
+          e?.statusCode === 409 ||
+          /не осталось свободного остатка/i.test(msg);
+        if (noStock && g.items.length) {
+          const failover = await failoverRejectedDemand({
+            items: g.items,
+            failedSupplierId: g.supplierId,
+            triedSupplierIds: [g.supplierId],
+            autoSuppliers,
+            profileId: pid,
+            userId,
+            organizationId: g.organizationId,
+            warehouseId: g.warehouseId,
+            warehouseWeekendDays: g.warehouseWeekendDays,
+            now,
+          });
+          purchasesTouched += failover.purchased || 0;
+          submitted += failover.submitted || 0;
+          if (!(failover.purchased || failover.submitted || failover.cancelled)) {
+            skipped += g.items.length;
+          }
+        } else {
+          skipped += g.items.length;
+        }
       }
     }
 
