@@ -49,6 +49,15 @@ export const pricingStrategiesApi = {
     return response.data;
   },
 
+  /** Привязать стратегию к товару (strategyId=null — снять). */
+  async assignProduct(productId, strategyId = null) {
+    const response = await api.put('/pricing-strategies/assign-product', {
+      productId,
+      strategyId,
+    });
+    return response.data;
+  },
+
   async preview(payload) {
     const response = await api.post('/pricing-strategies/preview', payload);
     return response.data;

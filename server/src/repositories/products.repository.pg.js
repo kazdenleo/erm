@@ -94,24 +94,10 @@ async function attachPricingStrategyFlags(products) {
       `SELECT p.id,
               CASE
                 WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                ELSE COALESCE(
-                  (
-                    SELECT ps.id FROM pricing_strategies ps
-                    WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
-                    LIMIT 1
-                  ),
-                  (
-                    SELECT ps.id FROM pricing_strategies ps
-                    WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
-                    LIMIT 1
-                  ),
-                  (
-                    SELECT ps.id FROM pricing_strategies ps
-                    WHERE ps.profile_id = p.profile_id
-                      AND ps.is_default = true
-                      AND ps.is_active = true
-                    LIMIT 1
-                  )
+                ELSE (
+                  SELECT ps.id FROM pricing_strategies ps
+                  WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                  LIMIT 1
                 )
               END AS effective_strategy_id,
               CASE
@@ -120,41 +106,14 @@ async function attachPricingStrategyFlags(products) {
                   SELECT 1 FROM pricing_strategies ps
                   WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
                 ) THEN 'product'
-                WHEN EXISTS (
-                  SELECT 1 FROM pricing_strategies ps
-                  WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
-                ) THEN 'organization'
-                WHEN EXISTS (
-                  SELECT 1 FROM pricing_strategies ps
-                  WHERE ps.profile_id = p.profile_id
-                    AND ps.is_default = true
-                    AND ps.is_active = true
-                ) THEN 'default'
                 ELSE NULL
               END AS effective_strategy_source,
               (
                 SELECT ps.name FROM pricing_strategies ps
-                WHERE ps.id = CASE
-                  WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
-                  ELSE COALESCE(
-                    (
-                      SELECT x.id FROM pricing_strategies x
-                      WHERE x.id = p.pricing_strategy_id AND x.is_active = true LIMIT 1
-                    ),
-                    (
-                      SELECT x.id FROM pricing_strategies x
-                      WHERE x.id = o.pricing_strategy_id AND x.is_active = true LIMIT 1
-                    ),
-                    (
-                      SELECT x.id FROM pricing_strategies x
-                      WHERE x.profile_id = p.profile_id
-                        AND x.is_default = true AND x.is_active = true LIMIT 1
-                    )
-                  )
-                END
+                WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                LIMIT 1
               ) AS effective_strategy_name
        FROM products p
-       LEFT JOIN organizations o ON o.id = p.organization_id
        LEFT JOIN profiles pr ON pr.id = p.profile_id
        WHERE p.id = ANY($1::bigint[])`,
       [productIds]

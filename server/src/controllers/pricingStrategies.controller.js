@@ -144,6 +144,27 @@ export const pricingStrategiesController = {
     }
   },
 
+  async assignProduct(req, res, next) {
+    try {
+      const profileId = profileIdFromReq(req);
+      const productId = Number(req.body?.productId ?? req.body?.product_id);
+      if (!Number.isFinite(productId) || productId < 1) {
+        return res.status(400).json({ ok: false, message: 'Некорректный productId' });
+      }
+      const rawSid = req.body?.strategyId ?? req.body?.strategy_id;
+      const strategyId =
+        rawSid === null || rawSid === undefined || rawSid === '' || rawSid === 'null'
+          ? null
+          : Number(rawSid);
+      const data = await pricingStrategyService.assignProductPricingStrategy(productId, strategyId, {
+        profileId,
+      });
+      res.json({ ok: true, data });
+    } catch (e) {
+      res.status(400).json({ ok: false, message: e.message || String(e) });
+    }
+  },
+
   async preview(req, res, next) {
     try {
       const body = req.body || {};

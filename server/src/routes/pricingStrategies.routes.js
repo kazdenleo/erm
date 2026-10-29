@@ -12,6 +12,9 @@ router.get('/price-changes', (req, res, next) =>
 router.post('/recalculate-product', (req, res, next) =>
   pricingStrategiesController.recalculateProduct(req, res, next)
 );
+router.put('/assign-product', (req, res, next) =>
+  pricingStrategiesController.assignProduct(req, res, next)
+);
 router.post('/preview', (req, res, next) => pricingStrategiesController.preview(req, res, next));
 router.get('/', (req, res, next) => pricingStrategiesController.list(req, res, next));
 router.post('/', (req, res, next) => pricingStrategiesController.create(req, res, next));

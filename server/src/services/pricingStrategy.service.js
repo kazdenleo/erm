@@ -391,40 +391,106 @@ async function isProfilePricingStrategiesEnabled(profileId) {
   }
 }
 
-async function resolveStrategyRow({ productId, organizationId, profileId, strategyId }) {
+/**
+ * Стратегия только с явной привязки к товару (products.pricing_strategy_id).
+ * Организации и «по умолчанию для кабинета» больше не применяются.
+ */
+async function resolveStrategyRow({ productId, profileId, strategyId }) {
   const enabled = await isProfilePricingStrategiesEnabled(profileId);
   if (!enabled) return null;
 
   if (strategyId) {
-    const r = await query(`SELECT * FROM pricing_strategies WHERE id = $1 LIMIT 1`, [strategyId]);
+    const r = await query(
+      `SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true LIMIT 1`,
+      [strategyId]
+    );
     if (r.rows?.[0]) return r.rows[0];
   }
   if (productId) {
     const p = await query(`SELECT pricing_strategy_id FROM products WHERE id = $1`, [productId]);
     const sid = p.rows?.[0]?.pricing_strategy_id;
     if (sid) {
-      const r = await query(`SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true`, [sid]);
+      const r = await query(
+        `SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true`,
+        [sid]
+      );
       if (r.rows?.[0]) return r.rows[0];
     }
-  }
-  if (organizationId) {
-    const o = await query(`SELECT pricing_strategy_id FROM organizations WHERE id = $1`, [organizationId]);
-    const sid = o.rows?.[0]?.pricing_strategy_id;
-    if (sid) {
-      const r = await query(`SELECT * FROM pricing_strategies WHERE id = $1 AND is_active = true`, [sid]);
-      if (r.rows?.[0]) return r.rows[0];
-    }
-  }
-  if (profileId != null) {
-    const r = await query(
-      `SELECT * FROM pricing_strategies
-       WHERE profile_id = $1 AND is_default = true AND is_active = true
-       LIMIT 1`,
-      [profileId]
-    );
-    if (r.rows?.[0]) return r.rows[0];
   }
   return null;
+}
+
+/** Снять стратегию с товара (ручное изменение цен). */
+export async function clearProductPricingStrategy(productId) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный productId');
+  await query(
+    `UPDATE products
+     SET pricing_strategy_id = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND pricing_strategy_id IS NOT NULL`,
+    [pid]
+  );
+  return { productId: pid, strategyId: null };
+}
+
+/**
+ * Привязать стратегию к товару или снять (strategyId = null).
+ * При назначении сбрасывает selling_price_manual и пересчитывает цены.
+ */
+export async function assignProductPricingStrategy(productId, strategyId, { profileId = null } = {}) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) throw new Error('Некорректный productId');
+
+  const prod = await query(`SELECT id, profile_id FROM products WHERE id = $1`, [pid]);
+  if (!prod.rows?.[0]) throw new Error('Товар не найден');
+  const productProfileId = prod.rows[0].profile_id != null ? Number(prod.rows[0].profile_id) : null;
+  if (
+    profileId != null &&
+    productProfileId != null &&
+    Number(profileId) !== productProfileId
+  ) {
+    throw new Error('Товар принадлежит другому кабинету');
+  }
+
+  let sid = null;
+  if (strategyId != null && strategyId !== '' && strategyId !== 'null') {
+    sid = Number(strategyId);
+    if (!Number.isFinite(sid) || sid < 1) throw new Error('Некорректный strategyId');
+    const st = await query(
+      `SELECT id, profile_id, is_active FROM pricing_strategies WHERE id = $1`,
+      [sid]
+    );
+    const row = st.rows?.[0];
+    if (!row) throw new Error('Стратегия не найдена');
+    if (row.is_active === false) throw new Error('Стратегия неактивна');
+    if (
+      row.profile_id != null &&
+      productProfileId != null &&
+      Number(row.profile_id) !== productProfileId
+    ) {
+      throw new Error('Стратегия другого кабинета');
+    }
+  }
+
+  await query(
+    `UPDATE products
+     SET pricing_strategy_id = $2, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [pid, sid]
+  );
+
+  if (sid != null) {
+    await query(
+      `UPDATE product_marketplace_prices
+       SET selling_price_manual = false, updated_at = CURRENT_TIMESTAMP
+       WHERE product_id = $1`,
+      [pid]
+    );
+    const recalc = await recalculateSellingPricesForProduct(pid);
+    return { productId: pid, strategyId: sid, recalculated: recalc };
+  }
+
+  return { productId: pid, strategyId: null, recalculated: null };
 }
 
 export async function getProfilePricingSettings(profileId) {
@@ -478,7 +544,6 @@ export async function recalculateSellingPricesForProduct(productId, { marketplac
 
   const strategy = await resolveStrategyRow({
     productId: pid,
-    organizationId: product.organization_id,
     profileId: product.profile_id,
     strategyId: null,
   });
@@ -751,14 +816,25 @@ function pickToolSyncPrices(results) {
 export async function listStrategies({ profileId = null } = {}) {
   if (profileId != null) {
     const r = await query(
-      `SELECT * FROM pricing_strategies
-       WHERE profile_id = $1 OR profile_id IS NULL
-       ORDER BY is_default DESC, name ASC`,
+      `SELECT ps.*,
+              (
+                SELECT count(*)::int FROM products p
+                WHERE p.pricing_strategy_id = ps.id
+                  AND (p.profile_id = $1 OR p.profile_id IS NULL)
+              ) AS products_count
+       FROM pricing_strategies ps
+       WHERE ps.profile_id = $1 OR ps.profile_id IS NULL
+       ORDER BY ps.name ASC`,
       [profileId]
     );
     return r.rows || [];
   }
-  const r = await query(`SELECT * FROM pricing_strategies ORDER BY profile_id NULLS FIRST, name ASC`);
+  const r = await query(
+    `SELECT ps.*,
+            (SELECT count(*)::int FROM products p WHERE p.pricing_strategy_id = ps.id) AS products_count
+     FROM pricing_strategies ps
+     ORDER BY ps.profile_id NULLS FIRST, ps.name ASC`
+  );
   return r.rows || [];
 }
 
@@ -772,23 +848,17 @@ export async function createStrategy(data, { profileId = null } = {}) {
   if (!name) throw new Error('Укажите название стратегии');
   const mode = PRICING_STRATEGY_MODES.includes(data.mode) ? data.mode : 'hybrid';
   const config = mergeConfig(mode, data.config);
-  const isDefault = data.is_default === true || data.isDefault === true;
   const pid = data.profile_id ?? data.profileId ?? profileId;
-
-  if (isDefault && pid != null) {
-    await query(`UPDATE pricing_strategies SET is_default = false WHERE profile_id = $1`, [pid]);
-  }
 
   const r = await query(
     `INSERT INTO pricing_strategies (profile_id, name, description, is_active, is_default, mode, config)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+     VALUES ($1, $2, $3, $4, false, $5, $6::jsonb)
      RETURNING *`,
     [
       pid,
       name,
       data.description || null,
       data.is_active !== false && data.isActive !== false,
-      isDefault,
       mode,
       JSON.stringify(config),
     ]
@@ -803,26 +873,14 @@ export async function updateStrategy(id, data) {
   const mode = data.mode != null && PRICING_STRATEGY_MODES.includes(data.mode) ? data.mode : existing.mode;
   const config =
     data.config !== undefined ? mergeConfig(mode, data.config) : mergeConfig(mode, existing.config);
-  const isDefault =
-    data.is_default !== undefined || data.isDefault !== undefined
-      ? data.is_default === true || data.isDefault === true
-      : existing.is_default;
-
-  if (isDefault && existing.profile_id != null) {
-    await query(
-      `UPDATE pricing_strategies SET is_default = false WHERE profile_id = $1 AND id <> $2`,
-      [existing.profile_id, id]
-    );
-  }
-
   const r = await query(
     `UPDATE pricing_strategies SET
        name = COALESCE($2, name),
        description = COALESCE($3, description),
        is_active = COALESCE($4, is_active),
-       is_default = $5,
-       mode = $6,
-       config = $7::jsonb,
+       is_default = false,
+       mode = $5,
+       config = $6::jsonb,
        updated_at = CURRENT_TIMESTAMP
      WHERE id = $1
      RETURNING *`,
@@ -833,7 +891,6 @@ export async function updateStrategy(id, data) {
       data.is_active !== undefined || data.isActive !== undefined
         ? data.is_active === true || data.isActive === true
         : null,
-      isDefault,
       mode,
       JSON.stringify(config),
     ]
@@ -848,6 +905,21 @@ export async function deleteStrategy(id) {
 
 export async function ensureDefaultStrategies(profileId) {
   if (profileId == null) return [];
+  // Стратегии только на товары: снимаем кабинетный default и привязки организаций.
+  try {
+    await query(
+      `UPDATE pricing_strategies SET is_default = false
+       WHERE profile_id = $1 AND is_default = true`,
+      [profileId]
+    );
+    await query(
+      `UPDATE organizations SET pricing_strategy_id = NULL
+       WHERE profile_id = $1 AND pricing_strategy_id IS NOT NULL`,
+      [profileId]
+    );
+  } catch {
+    /* колонки могут отсутствовать на старых схемах */
+  }
   const existing = await query(
     `SELECT id FROM pricing_strategies WHERE profile_id = $1 LIMIT 1`,
     [profileId]
@@ -859,7 +931,7 @@ export async function ensureDefaultStrategies(profileId) {
       name: 'Минимум (пол)',
       mode: 'floor',
       description: 'Цена продажи = рассчитанный минимум. Безопасный режим.',
-      is_default: true,
+      is_default: false,
     },
     {
       name: 'Целевая маржа',

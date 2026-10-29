@@ -24,7 +24,6 @@ function emptyForm(defaultsHybrid) {
     description: '',
     mode: 'hybrid',
     is_active: true,
-    is_default: false,
     config: defaultsHybrid || {
       target_margin_percent: 25,
       competitor: { enabled: true, agg: 'min', offset_rub: 0, offset_percent: -1, if_missing: 'keep_base' },
@@ -116,7 +115,6 @@ export function PricingStrategies() {
       description: row.description || '',
       mode: row.mode || 'hybrid',
       is_active: row.is_active !== false,
-      is_default: row.is_default === true,
       config: {
         ...emptyForm(defaults?.defaultConfig?.[row.mode || 'hybrid']).config,
         ...(row.config || {}),
@@ -177,7 +175,6 @@ export function PricingStrategies() {
         description: form.description || null,
         mode: form.mode,
         is_active: form.is_active === true,
-        is_default: form.is_default === true,
         config: form.config,
       };
       if (editing) await pricingStrategiesApi.update(editing.id, payload);
@@ -210,10 +207,6 @@ export function PricingStrategies() {
   const showSales = form.mode === 'sales' || form.mode === 'hybrid';
   const showMargin = form.mode === 'target_margin' || form.mode === 'hybrid';
   const strategiesOn = settings.enabled !== false;
-  const defaultRow =
-    settings.defaultStrategy ||
-    list.find((r) => r.is_default === true) ||
-    null;
 
   return (
     <div className="card pricing-strategies-page">
@@ -221,7 +214,7 @@ export function PricingStrategies() {
         <div>
           <h1 className="title">Стратегии цен</h1>
           <p className="subtitle">
-            Правила расчёта фактической цены. Минимум (пол) всегда нижняя граница.{' '}
+            Правила расчёта фактической цены для выбранных товаров. Минимум (пол) всегда нижняя граница.{' '}
             <Link to="/prices">← к ценам</Link>
           </p>
         </div>
@@ -249,13 +242,9 @@ export function PricingStrategies() {
           <div className="pricing-strategies-master-desc">
             {strategiesOn ? (
               <>
-                Сейчас для товаров без отдельной настройки действует:{' '}
-                <strong>
-                  {defaultRow
-                    ? `«${defaultRow.name}» (${MODE_LABELS[defaultRow.mode] || defaultRow.mode})`
-                    : 'нет стратегии по умолчанию — цена вручную'}
-                </strong>
-                . Порядок: товар → организация → стратегия «по умолчанию».
+                Стратегия действует только у товаров, к которым она привязана на странице «Цены».
+                Категории и «все товары» больше не покрываются автоматически. Ручное изменение цены
+                снимает стратегию с этого товара.
               </>
             ) : (
               <>
@@ -286,8 +275,9 @@ export function PricingStrategies() {
           <li><strong>Гибрид</strong> — маржа/пол → конкуренты → продажи</li>
         </ul>
         <p style={{ marginTop: 8, marginBottom: 0 }}>
-          Чтобы стратегия реально применялась: она должна быть <strong>активна</strong>, и либо стоять
-          «по умолчанию», либо быть привязана к товару/организации. Выключенные в списке не работают.
+          Чтобы стратегия работала: она должна быть <strong>активна</strong> и привязана к конкретным
+          товарам на странице «Цены» (выпадающий список под названием). Выключенные в списке не
+          применяются.
         </p>
       </div>
 
@@ -307,12 +297,13 @@ export function PricingStrategies() {
                     <span className="pricing-strategy-badge muted">глобально выкл.</span>
                   ) : (
                     <>
-                      {row.is_default && <span className="pricing-strategy-badge">сейчас по умолчанию</span>}
                       {row.is_active === false && (
                         <span className="pricing-strategy-badge muted">не применяется</span>
                       )}
-                      {row.is_active !== false && !row.is_default && (
-                        <span className="pricing-strategy-badge muted">только по привязке</span>
+                      {row.is_active !== false && (
+                        <span className="pricing-strategy-badge muted">
+                          товаров: {Number(row.products_count ?? row.productsCount ?? 0)}
+                        </span>
                       )}
                     </>
                   )}
@@ -525,16 +516,6 @@ export function PricingStrategies() {
                 onChange={(e) => setForm((p) => ({ ...p, is_active: e.target.checked }))}
               />
               <label className="form-check-label" htmlFor="stratActive">Активна</label>
-            </div>
-            <div className="form-check form-switch">
-              <input
-                className="form-check-input"
-                type="checkbox"
-                id="stratDefault"
-                checked={form.is_default === true}
-                onChange={(e) => setForm((p) => ({ ...p, is_default: e.target.checked }))}
-              />
-              <label className="form-check-label" htmlFor="stratDefault">По умолчанию для кабинета</label>
             </div>
           </div>
         </div>

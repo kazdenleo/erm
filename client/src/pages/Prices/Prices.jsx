@@ -14,7 +14,9 @@ import { pricesApi } from '../../services/prices.api.js';
 import { productsApi } from '../../services/products.api.js';
 import { categoryMappingsApi } from '../../services/categoryMappings.api.js';
 import { integrationsApi } from '../../services/integrations.api.js';
+import { pricingStrategiesApi } from '../../services/pricingStrategies.api.js';
 import { Button } from '../../components/common/Button/Button';
+import { Modal } from '../../components/common/Modal/Modal';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
@@ -112,12 +114,37 @@ export function Prices() {
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
   const [pushSettingsSummary, setPushSettingsSummary] = useState(null);
+  const [pricingStrategies, setPricingStrategies] = useState([]);
+  const [pricingStrategiesEnabled, setPricingStrategiesEnabled] = useState(true);
+  const [strategyOverrides, setStrategyOverrides] = useState(() => ({}));
+  const [disableStrategyPrompt, setDisableStrategyPrompt] = useState(null);
+  const disableStrategyResolversRef = useRef(new Map());
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
   const wbWarehouseName = mainWarehouse?.wbWarehouseName || null;
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
+
+  useEffect(() => {
+    let cancelled = false;
+    pricingStrategiesApi
+      .list()
+      .then((res) => {
+        if (cancelled) return;
+        setPricingStrategies(Array.isArray(res?.data) ? res.data : []);
+        setPricingStrategiesEnabled(res?.settings?.enabled !== false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPricingStrategies([]);
+          setPricingStrategiesEnabled(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -654,6 +681,102 @@ export function Prices() {
     return () => { cancelled = true; };
   }, [mpSettingsReady, liveMinsByProduct, visibleProducts, recalcAllLoading, recalcOneProductId]);
 
+  const patchProductStrategyLocal = (productId, strategyId, strategyName = null) => {
+    const key = String(productId);
+    setStrategyOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        strategyId: strategyId != null ? Number(strategyId) : null,
+        strategyName: strategyId != null ? strategyName : null,
+      },
+    }));
+  };
+
+  const resolveProductStrategy = (product) => {
+    const key = String(product?.id ?? '');
+    const override = strategyOverrides[key];
+    if (override) {
+      const sid = override.strategyId != null ? Number(override.strategyId) : null;
+      return {
+        hasPricingStrategy: pricingStrategiesEnabled && sid != null,
+        effectivePricingStrategyId: sid,
+        effectivePricingStrategyName: override.strategyName || null,
+        pricingStrategyId: sid,
+      };
+    }
+    const sid =
+      product?.effectivePricingStrategyId != null
+        ? Number(product.effectivePricingStrategyId)
+        : product?.pricingStrategyId != null
+          ? Number(product.pricingStrategyId)
+          : product?.pricing_strategy_id != null
+            ? Number(product.pricing_strategy_id)
+            : null;
+    return {
+      hasPricingStrategy: product?.hasPricingStrategy === true && pricingStrategiesEnabled,
+      effectivePricingStrategyId: Number.isFinite(sid) ? sid : null,
+      effectivePricingStrategyName: product?.effectivePricingStrategyName || null,
+      pricingStrategyId: Number.isFinite(sid) ? sid : null,
+    };
+  };
+
+  const requestDisableStrategy = (productId) => {
+    const key = String(productId);
+    const existing = disableStrategyResolversRef.current.get(key);
+    if (existing?.promise) return existing.promise;
+    let resolveFn = null;
+    const promise = new Promise((resolve) => {
+      resolveFn = resolve;
+    }).finally(() => {
+      disableStrategyResolversRef.current.delete(key);
+    });
+    disableStrategyResolversRef.current.set(key, { promise, resolve: resolveFn });
+    setDisableStrategyPrompt({ productId, resolve: resolveFn });
+    return promise;
+  };
+
+  const closeDisableStrategyPrompt = (ok) => {
+    const prompt = disableStrategyPrompt;
+    setDisableStrategyPrompt(null);
+    if (prompt?.resolve) prompt.resolve(Boolean(ok));
+  };
+
+  const confirmDisableStrategy = async () => {
+    const prompt = disableStrategyPrompt;
+    if (!prompt?.productId) {
+      closeDisableStrategyPrompt(false);
+      return;
+    }
+    try {
+      await pricingStrategiesApi.assignProduct(prompt.productId, null);
+      patchProductStrategyLocal(prompt.productId, null);
+      closeDisableStrategyPrompt(true);
+    } catch (e) {
+      console.error('[Prices] disable strategy failed:', e);
+      closeDisableStrategyPrompt(false);
+      setRecalcAllMessage(
+        'Не удалось отключить стратегию: ' + (e.response?.data?.message || e.message)
+      );
+      setTimeout(() => setRecalcAllMessage(null), 4000);
+    }
+  };
+
+  const handleAssignStrategy = async (productId, strategyIdRaw) => {
+    const strategyId =
+      strategyIdRaw === '' || strategyIdRaw == null ? null : Number(strategyIdRaw);
+    const selected = pricingStrategies.find((s) => Number(s.id) === strategyId) || null;
+    try {
+      await pricingStrategiesApi.assignProduct(productId, strategyId);
+      patchProductStrategyLocal(productId, strategyId, selected?.name || null);
+      loadListRef.current?.();
+    } catch (e) {
+      setRecalcAllMessage(
+        'Не удалось привязать стратегию: ' + (e.response?.data?.message || e.message)
+      );
+      setTimeout(() => setRecalcAllMessage(null), 4000);
+    }
+  };
+
   const handleSaveMarketplacePrice = async ({
     productId,
     marketplace,
@@ -661,13 +784,18 @@ export function Prices() {
     sellingPrice,
     priceBeforeDiscount,
     discountPercent,
+    clearProductStrategy,
   }) => {
     const item = { productId, marketplace };
     if (maxPrice !== undefined) item.maxPrice = maxPrice;
     if (sellingPrice !== undefined) item.sellingPrice = sellingPrice;
     if (priceBeforeDiscount !== undefined) item.priceBeforeDiscount = priceBeforeDiscount;
     if (discountPercent !== undefined) item.discountPercent = discountPercent;
+    if (clearProductStrategy) item.clearProductStrategy = true;
     await pricesApi.saveCommercial([item]);
+    if (clearProductStrategy) {
+      patchProductStrategyLocal(productId, null);
+    }
   };
 
   /** Пересчитать минимальные цены для одного товара на сервере (Ozon, WB, YM с учётом профиля). */
@@ -1168,7 +1296,8 @@ export function Prices() {
                     });
                   };
                   const isLoading = loadingPrices[productKey];
-                  const strategyLocked = product.hasPricingStrategy === true;
+                  const strategyInfo = resolveProductStrategy(product);
+                  const strategyLocked = strategyInfo.hasPricingStrategy === true;
                   const skuOzon =
                     product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
                   const skuWb =
@@ -1211,20 +1340,33 @@ export function Prices() {
                             product.name || 'Без названия'
                           )}
                         </div>
-                        {strategyLocked ? (
-                          <div
-                            style={{ fontSize: '10px', color: '#d97706', marginTop: '2px', textAlign: 'center' }}
-                            title={
-                              product.effectivePricingStrategySource === 'product'
-                                ? 'Стратегия товара'
-                                : product.effectivePricingStrategySource === 'organization'
-                                  ? 'Стратегия организации'
-                                  : 'Стратегия по умолчанию кабинета'
-                            }
-                          >
-                            {product.effectivePricingStrategyName
-                              ? product.effectivePricingStrategyName
-                              : 'стратегия'}
+                        {pricingStrategiesEnabled ? (
+                          <div style={{ marginTop: 4 }}>
+                            <select
+                              className="form-select form-select-sm"
+                              style={{
+                                fontSize: 11,
+                                padding: '2px 6px',
+                                maxWidth: '100%',
+                                color: strategyLocked ? '#d97706' : 'var(--muted)',
+                              }}
+                              value={
+                                strategyInfo.pricingStrategyId != null
+                                  ? String(strategyInfo.pricingStrategyId)
+                                  : ''
+                              }
+                              title="Стратегия ценообразования для этого товара"
+                              onChange={(e) => handleAssignStrategy(product.id, e.target.value)}
+                            >
+                              <option value="">Без стратегии</option>
+                              {pricingStrategies
+                                .filter((s) => s.is_active !== false)
+                                .map((s) => (
+                                  <option key={s.id} value={String(s.id)}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                            </select>
                           </div>
                         ) : null}
                       </td>
@@ -1312,6 +1454,7 @@ export function Prices() {
                         hasSku={!!skuOzon}
                         skuBadge="OZ"
                         strategyLocked={strategyLocked}
+                        onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
@@ -1331,6 +1474,7 @@ export function Prices() {
                         hasSku={!!skuWb}
                         skuBadge="WB"
                         strategyLocked={strategyLocked}
+                        onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
@@ -1350,6 +1494,7 @@ export function Prices() {
                         hasSku={!!skuYm}
                         skuBadge="YM"
                         strategyLocked={strategyLocked}
+                        onRequestDisableStrategy={requestDisableStrategy}
                         disabled={recalcAllLoading || pushAllLoading}
                         onSave={handleSaveMarketplacePrice}
                         onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
@@ -1490,6 +1635,26 @@ export function Prices() {
           filterOrganizationId || getApiSessionContext().organizationId || null
         )}
       />
+
+      <Modal
+        isOpen={Boolean(disableStrategyPrompt)}
+        onClose={() => closeDisableStrategyPrompt(false)}
+        title="Отключить стратегию?"
+        size="small"
+      >
+        <p style={{ marginTop: 0, lineHeight: 1.45 }}>
+          При изменении цен стратегия ценообразования для этого товара будет отключена.
+          Дальше фактическую цену задаёте вручную.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <Button type="button" variant="secondary" onClick={() => closeDisableStrategyPrompt(false)}>
+            Отмена
+          </Button>
+          <Button type="button" variant="primary" onClick={confirmDisableStrategy}>
+            Изменить цены
+          </Button>
+        </div>
+      </Modal>
 
     </div>
   );

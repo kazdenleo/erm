@@ -1132,16 +1132,31 @@ function PriceDetailsModalInner({
                         return `= (${base.toFixed(2)} + ${liter.toFixed(2)} × ${additionalLiters} л) × ${ilSuffix} = ${withIl.toFixed(2)} ₽`;
                       })()
                     : marketplace === 'ozon'
-                      ? logisticsCostMax != null
-                        ? `В расчёт: ${logisticsCost.toFixed(2)} ₽ (min). Макс. из API: ${logisticsCostMax.toFixed(2)} ₽`
-                        : `= ${logisticsCost.toFixed(2)} ₽ (${wantFbo ? 'fbo' : 'fbs'}_direct_flow_trans_min_amount из API Ozon)`
+                      ? (() => {
+                          const learned = resolvedCalculatorData.logistics_learned;
+                          if (!wantFbo && learned?.total != null) {
+                            const apiMin = Number(resolvedCalculatorData.logistics_cost_api);
+                            const apiHint = Number.isFinite(apiMin) && apiMin > 0
+                              ? `; API min был ${apiMin.toFixed(2)} ₽`
+                              : '';
+                            return `В расчёт: ${logisticsCost.toFixed(2)} ₽ (медиана факта FBS ${Number(learned.total).toFixed(2)} ₽, n=${learned.n || 0}${apiHint})`;
+                          }
+                          if (logisticsCostMax != null) {
+                            return `В расчёт: ${logisticsCost.toFixed(2)} ₽ (min). Макс. из API: ${logisticsCostMax.toFixed(2)} ₽`;
+                          }
+                          return `= ${logisticsCost.toFixed(2)} ₽ (${wantFbo ? 'fbo' : 'fbs'}_direct_flow_trans_min_amount из API Ozon)`;
+                        })()
                       : `= ${logisticsCost.toFixed(2)} ₽ (из API YM)`
                 }
                 extra={
                   marketplace === 'ozon' && logisticsCostMax != null ? (
                     <PriceRangeMax
                       amount={logisticsCostMax}
-                      title="Максимальный тариф логистики API; в расчёт берётся минимум"
+                      title={
+                        resolvedCalculatorData.logistics_learned?.total != null && !wantFbo
+                          ? 'Максимальный тариф логистики API; в расчёт — медиана факта FBS'
+                          : 'Максимальный тариф логистики API; в расчёт берётся минимум'
+                      }
                     />
                   ) : null
                 }

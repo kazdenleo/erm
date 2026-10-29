@@ -35,6 +35,7 @@ export function MarketplacePriceCells({
   hasSku,
   skuBadge,
   strategyLocked,
+  onRequestDisableStrategy = null,
   onOpenMinDetails,
   onOpenMinDetailsFbs,
   onOpenMinDetailsFbo,
@@ -43,6 +44,7 @@ export function MarketplacePriceCells({
   showMax = false,
 }) {
   const pack = getMarketplacePricePack(product, marketplace);
+  const [strategyUnlocked, setStrategyUnlocked] = useState(false);
   const primaryMin = minPrice != null && !isNaN(Number(minPrice)) ? Number(minPrice) : null;
   const fbsMin =
     minPriceFbs != null && !isNaN(Number(minPriceFbs))
@@ -85,13 +87,32 @@ export function MarketplacePriceCells({
     setMaxStr(formatMoneyInput(pack.maxPrice));
   }, [productId, marketplace, pack.maxPrice]);
 
+  useEffect(() => {
+    setStrategyUnlocked(false);
+  }, [productId, strategyLocked]);
+
+  const commercialLocked = strategyLocked && !strategyUnlocked;
+
+  const ensureStrategyUnlocked = async () => {
+    if (!commercialLocked) return true;
+    if (typeof onRequestDisableStrategy !== 'function') return false;
+    const ok = await onRequestDisableStrategy(productId);
+    if (ok) setStrategyUnlocked(true);
+    return Boolean(ok);
+  };
+
   const scheduleSave = (payload) => {
     if (typeof onSave !== 'function') return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       setSaving(true);
       try {
-        await onSave({ productId, marketplace, ...payload });
+        await onSave({
+          productId,
+          marketplace,
+          ...payload,
+          clearProductStrategy: strategyLocked || strategyUnlocked,
+        });
         setSavedFlash(true);
         setTimeout(() => setSavedFlash(false), 1200);
       } finally {
@@ -105,8 +126,11 @@ export function MarketplacePriceCells({
     return n != null && n > 0 ? n : null;
   };
 
-  const onActualChange = (raw) => {
-    if (strategyLocked) return;
+  const onActualChange = async (raw) => {
+    if (commercialLocked) {
+      const ok = await ensureStrategyUnlocked();
+      if (!ok) return;
+    }
     setActualStr(raw);
     const actual = parseMoneyInput(raw);
     const pct = parseMoneyInput(pctStr);
@@ -129,7 +153,11 @@ export function MarketplacePriceCells({
     });
   };
 
-  const onBeforeChange = (raw) => {
+  const onBeforeChange = async (raw) => {
+    if (commercialLocked) {
+      const ok = await ensureStrategyUnlocked();
+      if (!ok) return;
+    }
     setBeforeStr(raw);
     const before = parseMoneyInput(raw);
     const actual = currentActual();
@@ -144,7 +172,11 @@ export function MarketplacePriceCells({
     scheduleSave({ priceBeforeDiscount: before, discountPercent: nextPct });
   };
 
-  const onPctChange = (raw) => {
+  const onPctChange = async (raw) => {
+    if (commercialLocked) {
+      const ok = await ensureStrategyUnlocked();
+      if (!ok) return;
+    }
     setPctStr(raw);
     const pct = parseMoneyInput(raw);
     const actual = currentActual();
@@ -263,11 +295,10 @@ export function MarketplacePriceCells({
                 autoComplete="off"
                 className="mp-price-input"
                 value={actualStr}
-                disabled={disabled || strategyLocked || saving}
-                readOnly={strategyLocked}
+                disabled={disabled || saving}
                 title={
-                  strategyLocked
-                    ? 'Стратегия ценообразования активна — цена после скидки задаётся стратегией'
+                  commercialLocked
+                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
                     : 'Цена после скидки'
                 }
                 placeholder="после"
@@ -295,7 +326,11 @@ export function MarketplacePriceCells({
                 value={beforeStr}
                 disabled={disabled || saving}
                 placeholder="до"
-                title="Цена до скидки"
+                title={
+                  commercialLocked
+                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
+                    : 'Цена до скидки'
+                }
                 onChange={(e) => onBeforeChange(e.target.value)}
               />
               <input
@@ -306,7 +341,11 @@ export function MarketplacePriceCells({
                 value={pctStr}
                 disabled={disabled || saving}
                 placeholder="%"
-                title="Скидка %"
+                title={
+                  commercialLocked
+                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
+                    : 'Скидка %'
+                }
                 onChange={(e) => onPctChange(e.target.value)}
               />
             </div>

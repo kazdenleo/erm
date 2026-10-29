@@ -29,6 +29,7 @@ import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
 import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
+import adsService from './ads/ads.service.js';
 import {
   extractWbWarehouseList,
   findWbTariffWarehouse,
@@ -4342,6 +4343,22 @@ class PricesService {
       const sets = [];
       const params = [];
       let i = 1;
+
+      const clearProductStrategy =
+        item.clearProductStrategy === true ||
+        item.clear_product_strategy === true ||
+        item.disableStrategy === true;
+      if (clearProductStrategy || (hasSelling && sellingRaw != null)) {
+        try {
+          const { clearProductPricingStrategy } = await import('./pricingStrategy.service.js');
+          await clearProductPricingStrategy(productId);
+        } catch (e) {
+          logger.warn('[Prices Service] clear product strategy on manual save failed', {
+            productId,
+            error: e?.message || e,
+          });
+        }
+      }
 
       if (hasSelling && sellingRaw !== undefined) {
         sets.push(`selling_price = $${i++}`);
