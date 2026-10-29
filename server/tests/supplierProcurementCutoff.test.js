@@ -11,6 +11,8 @@ import {
   isPurchaseCreatedInProcurementWindow,
   sumOrderableSupplierWarehouseStock,
   sumPurchasableSupplierWarehouseStock,
+  computeCityFbsShipLeadDays,
+  warehouseNamesSameCity,
 } from '../src/utils/supplierProcurementArrival.js';
 
 function moscowDate(y, mo, d, h = 12, min = 0) {
@@ -301,5 +303,87 @@ describe('sumOrderableSupplierWarehouseStock', () => {
         now: moscowDate(2026, 9, 10, 18, 0),
       })
     ).toBe(5);
+  });
+
+  test('подсказка города: Москва не берёт остаток СПб', () => {
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 1 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 6,
+        now: moscowDate(2026, 9, 10, 16, 0),
+        warehouseNameHint: 'Москва',
+      })
+    ).toBe(1);
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 1 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 6,
+        now: moscowDate(2026, 9, 10, 16, 0),
+        warehouseNameHint: 'СПБ',
+      })
+    ).toBe(5);
+  });
+
+  test('после 17:00 подсказка СПб → 0, Москва ещё открыта', () => {
+    const stocksBoth = [
+      { city: 'Москва', stock: 2 },
+      { city: 'СПб', stock: 5 },
+    ];
+    const now = moscowDate(2026, 9, 10, 18, 0);
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: stocksBoth,
+        aggregatedStock: 7,
+        now,
+        warehouseNameHint: 'СПБ',
+      })
+    ).toBe(0);
+    expect(
+      sumOrderableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: stocksBoth,
+        aggregatedStock: 7,
+        now,
+        warehouseNameHint: 'Москва',
+      })
+    ).toBe(2);
+  });
+});
+
+describe('warehouseNamesSameCity / computeCityFbsShipLeadDays', () => {
+  test('Москва и Москва2 — один город', () => {
+    expect(warehouseNamesSameCity('Москва', 'Москва2')).toBe(true);
+    expect(warehouseNamesSameCity('Москва', 'СПБ')).toBe(false);
+  });
+
+  test('срок по городу: отсечка + arrival tomorrow', () => {
+    const cfg = {
+      warehouses: [
+        { name: 'Москва', time: '21:00', timeAfter: '09:00', arrivalDay: 'tomorrow' },
+        { name: 'СПБ', time: '17:00', timeAfter: '09:00', arrivalDay: 'tomorrow' },
+      ],
+    };
+    // 16:00 — оба окна открыты; tomorrow → lead ≥ 1
+    const leadMsk = computeCityFbsShipLeadDays(cfg, {
+      now: moscowDate(2026, 9, 10, 16, 0),
+      deliveryDays: 0,
+      supplierWarehouseName: 'Москва',
+    });
+    const leadSpb = computeCityFbsShipLeadDays(cfg, {
+      now: moscowDate(2026, 9, 10, 16, 0),
+      deliveryDays: 0,
+      supplierWarehouseName: 'СПБ',
+    });
+    expect(leadMsk).toBeGreaterThanOrEqual(1);
+    expect(leadSpb).toBeGreaterThanOrEqual(1);
   });
 });

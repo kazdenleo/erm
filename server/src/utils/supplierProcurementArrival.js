@@ -198,7 +198,7 @@ export function isPurchaseCreatedInProcurementWindow(
   return false;
 }
 
-function normalizeWarehouseNameKey(name) {
+export function normalizeWarehouseNameKey(name) {
   return String(name || '')
     .trim()
     .toLowerCase()
@@ -275,25 +275,64 @@ function matchConfigWarehouseByStockName(cfgRows, stockName) {
   return findWarehouseByNameKey(cfgRows, stockName);
 }
 
+/** Москва и Москва2 — один город; СПб — отдельно. */
+export function warehouseNamesSameCity(a, b) {
+  const na = normalizeWarehouseNameKey(a);
+  const nb = normalizeWarehouseNameKey(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const aMos = na.includes('моск') || na.includes('moscow');
+  const bMos = nb.includes('моск') || nb.includes('moscow');
+  if (aMos && bMos) return true;
+  const aSpb =
+    na.includes('спб') || na.includes('петербург') || na.includes('spb') || na.includes('petersburg');
+  const bSpb =
+    nb.includes('спб') || nb.includes('петербург') || nb.includes('spb') || nb.includes('petersburg');
+  if (aSpb && bSpb) return true;
+  return false;
+}
+
+export function filterWarehousesByCityHint(warehouses, warehouseNameHint) {
+  const rows = Array.isArray(warehouses) ? warehouses.filter((w) => w && w.name) : [];
+  const hint = String(warehouseNameHint || '').trim();
+  if (!hint || !rows.length) return rows;
+  return rows.filter((w) => warehouseNamesSameCity(w.name, hint));
+}
+
+export function stockRowMatchesCityHint(stockRow, warehouseNameHint) {
+  const hint = String(warehouseNameHint || '').trim();
+  if (!hint) return true;
+  return warehouseNamesSameCity(stockRow?.city || stockRow?.name || '', hint);
+}
+
 /**
  * Остаток поставщика, который ещё можно заказать в текущем окне.
  * После отсечки склада (СПб 17:00, Москва 21:00) его qty не идёт в «доступно» / пуш на МП.
+ * warehouseNameHint — только склады этого города (Москва / СПб), не сумма по всем.
  */
 export function sumOrderableSupplierWarehouseStock({
   apiConfig,
   stockWarehouses,
   aggregatedStock = 0,
-  now = new Date()
+  now = new Date(),
+  warehouseNameHint = null,
 } = {}) {
   const cfg = parseJsonValue(apiConfig);
   const cfgRows = normalizeSupplierConfigWarehouses(
     cfg && typeof cfg === 'object' ? cfg.warehouses : null
   );
-  const warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
+  let warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
   const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
+  const hint = String(warehouseNameHint || '').trim() || null;
 
   if (!warehouses.length) {
     return agg;
+  }
+
+  if (hint) {
+    warehouses = filterWarehousesByCityHint(warehouses, hint);
+    if (!warehouses.length) return 0;
   }
 
   const anyOpen = warehouses.some((w) => isSupplierWarehouseAcceptingOrdersNow(w, now));
@@ -307,6 +346,7 @@ export function sumOrderableSupplierWarehouseStock({
 
   let sum = 0;
   for (const sw of stockRows) {
+    if (hint && !stockRowMatchesCityHint(sw, hint)) continue;
     const qty = Math.max(0, Math.floor(Number(sw?.stock) || 0));
     if (qty <= 0) continue;
     const name = sw.city || sw.name || '';
@@ -322,19 +362,27 @@ export function sumOrderableSupplierWarehouseStock({
  * Остаток, который можно положить в закупку под уже принятый заказ.
  * Отсечка склада выбирает окно приезда, но не обнуляет остаток: после 21:00
  * заказ всё равно уходит поставщику в следующую отсечку.
+ * warehouseNameHint — остаток только этого города.
  */
 export function sumPurchasableSupplierWarehouseStock({
   apiConfig,
   stockWarehouses,
   aggregatedStock = 0,
+  warehouseNameHint = null,
 } = {}) {
   const cfg = parseJsonValue(apiConfig);
   const cfgRows = normalizeSupplierConfigWarehouses(
     cfg && typeof cfg === 'object' ? cfg.warehouses : null
   );
-  const warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
+  let warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
   const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
+  const hint = String(warehouseNameHint || '').trim() || null;
   if (!warehouses.length) return agg;
+
+  if (hint) {
+    warehouses = filterWarehousesByCityHint(warehouses, hint);
+    if (!warehouses.length) return 0;
+  }
 
   const rawWh = parseJsonValue(stockWarehouses);
   const stockRows = Array.isArray(rawWh) ? rawWh : [];
@@ -343,6 +391,7 @@ export function sumPurchasableSupplierWarehouseStock({
   let sum = 0;
   let matched = false;
   for (const sw of stockRows) {
+    if (hint && !stockRowMatchesCityHint(sw, hint)) continue;
     const qty = Math.max(0, Math.floor(Number(sw?.stock) || 0));
     if (qty <= 0) continue;
     const name = sw.city || sw.name || '';
@@ -350,7 +399,40 @@ export function sumPurchasableSupplierWarehouseStock({
     matched = true;
     sum += qty;
   }
-  return matched ? sum : agg;
+  return matched ? sum : hint ? 0 : agg;
+}
+
+/**
+ * Сколько календарных дней до готовности товара на нашем складе в этом городе
+ * (отсечка склада поставщика + delivery_days).
+ */
+export function computeCityFbsShipLeadDays(
+  apiConfig,
+  {
+    now = new Date(),
+    deliveryDays = 0,
+    warehouseWeekendDays = null,
+    supplierCode = null,
+    supplierWarehouseName = null,
+  } = {}
+) {
+  const dates = computeProcurementDates(
+    apiConfig,
+    now,
+    deliveryDays,
+    warehouseWeekendDays,
+    supplierCode,
+    supplierWarehouseName
+  );
+  const ready = String(dates?.plannedDeliveryDate || '').trim();
+  const today = formatMoscowDate(now, 0);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ready)) return null;
+  const [y1, m1, d1] = today.split('-').map((x) => parseInt(x, 10));
+  const [y2, m2, d2] = ready.split('-').map((x) => parseInt(x, 10));
+  const diff = Math.round(
+    (Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000
+  );
+  return Math.max(0, diff);
 }
 
 function addDaysToYmd(ymd, days) {

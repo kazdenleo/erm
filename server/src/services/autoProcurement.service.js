@@ -16,6 +16,7 @@ import {
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
 import { shouldBypassMinOrderAmount } from '../utils/minOrderShipmentGuard.js';
+import { resolveSupplierWarehouseNameForMainWarehouse } from '../utils/citySupplierWarehouse.js';
 import { sortSupplierCandidatesByProcurementRules } from '../utils/supplierCandidateSort.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
@@ -631,7 +632,8 @@ async function resolveMinOrderGate(
       now,
       deliveryDays,
       warehouseWeekendDays,
-      supplierRow?.code || g.supplierCode || null
+      supplierRow?.code || g.supplierCode || null,
+      g.supplierWarehouseName || null
     );
     plannedDeliveryYmd = dates?.plannedDeliveryDate || null;
   } catch {
@@ -697,11 +699,17 @@ async function tryAlternateSupplierForMinOrder({
     );
     if (!supplier) continue;
     const supplierRow = autoSuppliers.find((s) => Number(s.id) === Number(supplier.id)) || supplier;
+    const supplierWarehouseName = await resolveSupplierWarehouseNameForMainWarehouse(
+      warehouseId,
+      supplier.id,
+      { profileId }
+    );
     const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
       supplierRow.apiConfig,
       now,
       warehouseWeekendDays,
-      supplierRow.code
+      supplierRow.code,
+      supplierWarehouseName
     );
     const key = groupKey(supplier.id, arrivalBucket, warehouseId);
     if (!groups.has(key)) {
@@ -712,6 +720,7 @@ async function tryAlternateSupplierForMinOrder({
         supplierRow,
         apiConfig: supplierRow.apiConfig,
         supplierCode: supplierRow.code,
+        supplierWarehouseName,
         earliestShipmentAt: earliestShipmentAt || null,
         items: [],
         procurementItems: [],
@@ -939,11 +948,17 @@ async function failoverRejectedDemand({
       continue;
     }
     const supplierRow = autoSuppliers.find((s) => Number(s.id) === Number(supplier.id)) || supplier;
+    const supplierWarehouseName = await resolveSupplierWarehouseNameForMainWarehouse(
+      warehouseId,
+      supplier.id,
+      { profileId }
+    );
     const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
       supplierRow.apiConfig,
       now,
       warehouseWeekendDays,
-      supplierRow.code
+      supplierRow.code,
+      supplierWarehouseName
     );
     const key = groupKey(supplier.id, arrivalBucket, warehouseId);
     if (!groups.has(key)) {
@@ -954,6 +969,7 @@ async function failoverRejectedDemand({
         supplierRow,
         apiConfig: supplierRow.apiConfig,
         supplierCode: supplierRow.code,
+        supplierWarehouseName,
         earliestShipmentAt: null,
         items: [],
         procurementItems: [],
@@ -1312,11 +1328,17 @@ class AutoProcurementService {
           continue;
         }
 
+        const supplierWarehouseName = await resolveSupplierWarehouseNameForMainWarehouse(
+          whCtx.warehouseId,
+          supplier.id,
+          { profileId: pid }
+        );
         const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
           supplier.apiConfig,
           now,
           whCtx.warehouseWeekendDays,
-          supplier.code
+          supplier.code,
+          supplierWarehouseName
         );
         const key = groupKey(supplier.id, arrivalBucket, whCtx.warehouseId);
         if (!groups.has(key)) {
@@ -1330,6 +1352,7 @@ class AutoProcurementService {
             supplierRow: supplier,
             apiConfig: supplier.apiConfig,
             supplierCode: supplier.code,
+            supplierWarehouseName,
             earliestShipmentAt: null,
             items: [],
             procurementItems: [],

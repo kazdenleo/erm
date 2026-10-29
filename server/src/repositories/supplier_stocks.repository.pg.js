@@ -5,6 +5,7 @@
 
 import { query, transaction } from '../config/database.js';
 import { sumOrderableSupplierWarehouseStock } from '../utils/supplierProcurementArrival.js';
+import { resolveSupplierWarehouseNameForMainWarehouse } from '../utils/citySupplierWarehouse.js';
 
 class SupplierStocksRepositoryPG {
   /**
@@ -195,25 +196,50 @@ class SupplierStocksRepositoryPG {
       params
     );
     const now = new Date();
-    return (result.rows || []).map((row) => {
-      const orderable = sumOrderableSupplierWarehouseStock({
-        apiConfig: row.api_config,
-        stockWarehouses: row.warehouses,
-        aggregatedStock: row.stock,
-        now
-      });
-      const reserved = reservedByKey.get(`${row.supplier_id}:${row.product_id}`) || 0;
-      return {
-        product_id: row.product_id,
-        stock: Math.max(0, orderable - reserved),
-        price: row.price,
-        delivery_days: row.delivery_days,
-        stock_name: row.stock_name,
-        supplier_id: row.supplier_id,
-        supplier_name: row.supplier_name,
-        supplier_code: row.supplier_code
-      };
-    }).filter((row) => (Number(row.stock) || 0) > 0);
+    const cityHintBySupplier = new Map();
+    if (mainWarehouseId) {
+      const supplierIds = [
+        ...new Set(
+          (result.rows || [])
+            .map((row) => Number(row.supplier_id))
+            .filter((id) => Number.isFinite(id) && id > 0)
+        ),
+      ];
+      await Promise.all(
+        supplierIds.map(async (sid) => {
+          const hint = await resolveSupplierWarehouseNameForMainWarehouse(mainWarehouseId, sid, {
+            profileId,
+          });
+          if (hint) cityHintBySupplier.set(sid, hint);
+        })
+      );
+    }
+
+    return (result.rows || [])
+      .map((row) => {
+        const sid = Number(row.supplier_id);
+        const warehouseNameHint = cityHintBySupplier.get(sid) || null;
+        const orderable = sumOrderableSupplierWarehouseStock({
+          apiConfig: row.api_config,
+          stockWarehouses: row.warehouses,
+          aggregatedStock: row.stock,
+          now,
+          warehouseNameHint,
+        });
+        const reserved = reservedByKey.get(`${row.supplier_id}:${row.product_id}`) || 0;
+        return {
+          product_id: row.product_id,
+          stock: Math.max(0, orderable - reserved),
+          price: row.price,
+          delivery_days: row.delivery_days,
+          stock_name: row.stock_name,
+          supplier_id: row.supplier_id,
+          supplier_name: row.supplier_name,
+          supplier_code: row.supplier_code,
+          warehouse_name_hint: warehouseNameHint,
+        };
+      })
+      .filter((row) => (Number(row.stock) || 0) > 0);
   }
 
   /**
