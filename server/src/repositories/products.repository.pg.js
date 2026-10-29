@@ -2308,10 +2308,24 @@ class ProductsRepositoryPG {
 
     if (stocksResult.rows.length > 0) {
       const stockData = stocksResult.rows[0];
-      const costFromSuppliers =
+      let costFromSuppliers =
         stockData.min_cost != null && !isNaN(parseFloat(stockData.min_cost))
           ? parseFloat(stockData.min_cost)
           : null;
+      // Цена только у поставщиков со свободным остатком (не мин. по нулевым).
+      if (allowSupplierCostFn(product) && !isKit) {
+        try {
+          const { getEffectiveSupplierCost } = await import(
+            '../services/effectiveSupplierCost.service.js'
+          );
+          const effective = await getEffectiveSupplierCost(numericId);
+          if (effective != null && Number.isFinite(effective) && effective > 0) {
+            costFromSuppliers = effective;
+          }
+        } catch {
+          /* оставляем min_cost из SQL */
+        }
+      }
       product.supplier_min_cost = costFromSuppliers;
       product.avg_cost = stockData.avg_cost != null ? parseFloat(stockData.avg_cost) : null;
       product.max_cost = stockData.max_cost != null ? parseFloat(stockData.max_cost) : null;

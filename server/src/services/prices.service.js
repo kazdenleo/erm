@@ -4776,7 +4776,45 @@ class PricesService {
       logger.warn('[Prices Service] org tax profile for recalc:', e.message);
     }
 
-    const costPart = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
+    let costPart = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
+    // Dropship: мин. цена от фактического поставщика со свободным остатком.
+    try {
+      const { isProfileSupplierSyncEnabled } = await import('../utils/profileSupplierSync.js');
+      const profId = Number(
+        options.integrationScope?.profileId ?? product.profile_id ?? product.profileId
+      );
+      let allowSupplier = true;
+      if (Number.isFinite(profId) && profId > 0) {
+        const pref = await query(
+          'SELECT supplier_sync_enabled FROM profiles WHERE id = $1 LIMIT 1',
+          [profId]
+        );
+        allowSupplier = isProfileSupplierSyncEnabled(pref.rows?.[0] || {});
+      }
+      if (allowSupplier && product.product_type !== 'kit') {
+        const { getEffectiveSupplierCost } = await import('./effectiveSupplierCost.service.js');
+        const effective = await getEffectiveSupplierCost(productId);
+        if (effective != null && Number.isFinite(effective) && effective > 0) {
+          const cardCost = Number(product.cost);
+          if (!Number.isFinite(cardCost) || cardCost <= 0) {
+            costPart = effective;
+          } else {
+            const mirror = await query(
+              `SELECT 1 FROM supplier_stocks
+                WHERE product_id = $1 AND price IS NOT NULL
+                  AND ABS(CAST(price AS NUMERIC) - $2::numeric) < 0.02
+                LIMIT 1`,
+              [productId, cardCost]
+            );
+            // Карточка совпадает с прайсом поставщика — ведём от фактического свободного.
+            // Уникальная ручная себестоимость не трогаем.
+            if (mirror.rows?.length) costPart = effective;
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] effective supplier cost:', e?.message || e);
+    }
     const addExp = Number(product.additional_expenses ?? product.additionalExpenses ?? 0) || 0;
     const basePrice = costPart + addExp;
     const integrationScope = {

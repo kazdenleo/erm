@@ -750,7 +750,8 @@ export async function runBulkWarehouseStockSync(productIds, organizationId, opts
   return summary;
 }
 
-const mpSyncDebounceTimers = new Map();
+/** @type {Map<string, { timer: NodeJS.Timeout, warehouseIds: Set<string>, includeUnscoped: boolean, organizationId: unknown, source: string, generation: number }>} */
+const mpSyncPending = new Map();
 
 export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
   const key = String(productId);
@@ -758,24 +759,61 @@ export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
     0,
     Math.min(30_000, parseInt(process.env.MP_STOCK_PUSH_DEBOUNCE_MS || '1500', 10) || 1500)
   );
-  const syncGeneration = bumpMarketplaceSyncGeneration(productId);
-  const syncOpts = {
-    ...opts,
-    _syncGeneration: syncGeneration,
-    strictWarehouse:
-      opts.strictWarehouse === true ||
-      (opts.warehouseId != null && String(opts.warehouseId).trim() !== '')
-  };
-  if (mpSyncDebounceTimers.has(key)) {
-    clearTimeout(mpSyncDebounceTimers.get(key));
+  let pending = mpSyncPending.get(key);
+  if (!pending) {
+    pending = {
+      timer: null,
+      warehouseIds: new Set(),
+      includeUnscoped: false,
+      organizationId: null,
+      source: 'unknown',
+      generation: 0
+    };
+    mpSyncPending.set(key, pending);
   }
-  const timer = setTimeout(() => {
-    mpSyncDebounceTimers.delete(key);
-    syncWarehouseStockToMarketplaces(productId, syncOpts).catch((e) => {
+  if (pending.timer) clearTimeout(pending.timer);
+
+  // Поколение одно на пачку: перемещение трогает два склада, оба должны уйти,
+  // а не отмениться debounce по productId.
+  pending.generation = bumpMarketplaceSyncGeneration(productId);
+  if (opts.organizationId != null && opts.organizationId !== '') {
+    pending.organizationId = opts.organizationId;
+  }
+  if (opts.source) pending.source = opts.source;
+
+  const whRaw = opts.warehouseId;
+  const hasWarehouse = whRaw != null && String(whRaw).trim() !== '';
+  if (hasWarehouse) {
+    pending.warehouseIds.add(String(whRaw).trim());
+  } else {
+    pending.includeUnscoped = true;
+  }
+
+  const generation = pending.generation;
+  pending.timer = setTimeout(() => {
+    const snap = mpSyncPending.get(key);
+    mpSyncPending.delete(key);
+    const warehouseIds = [...(snap?.warehouseIds || [])];
+    const includeUnscoped = snap?.includeUnscoped === true && warehouseIds.length === 0;
+    const targets = includeUnscoped || warehouseIds.length === 0 ? [null] : warehouseIds;
+    const source = snap?.source || opts.source || 'unknown';
+    const organizationId = snap?.organizationId ?? opts.organizationId ?? null;
+    (async () => {
+      for (const wh of targets) {
+        if (currentMarketplaceSyncGeneration(productId) !== generation) return;
+        const scoped = wh != null && String(wh).trim() !== '';
+        await syncWarehouseStockToMarketplaces(productId, {
+          source,
+          organizationId,
+          warehouseId: wh,
+          _syncGeneration: generation,
+          strictWarehouse: opts.strictWarehouse === true || scoped
+        });
+      }
+    })().catch((e) => {
       logger.warn('[MP Stock Push] async sync failed:', e?.message || e);
     });
   }, delayMs);
-  mpSyncDebounceTimers.set(key, timer);
 }
 
 /**
@@ -846,6 +884,15 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
     failed,
     source: opts.source
   });
+
+  // Дешёвый остаток мог кончиться — пересчитать мин./продажные от фактического поставщика.
+  import('./effectiveSupplierCost.service.js')
+    .then(({ scheduleEffectiveCostPriceRecalc }) => {
+      for (const id of ids) {
+        scheduleEffectiveCostPriceRecalc(id, 5000);
+      }
+    })
+    .catch(() => {});
 
   return { total: ids.length, products: productsProcessed, pushed, failed, skipped };
 }

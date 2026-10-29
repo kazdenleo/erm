@@ -70,6 +70,13 @@ function scheduleMarketplaceStockAfterSupplierReserve(productIds) {
         message: e?.message || String(e),
       });
     });
+  import('./effectiveSupplierCost.service.js')
+    .then(({ scheduleEffectiveCostPriceRecalc }) => {
+      for (const id of ids) {
+        scheduleEffectiveCostPriceRecalc(id, 3500);
+      }
+    })
+    .catch(() => {});
 }
 
 function demandProductIds(items) {

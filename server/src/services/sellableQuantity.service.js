@@ -418,7 +418,15 @@ export async function computeAvailableQuantity(productId, opts = {}) {
         mainWarehouseId,
         profileId: opts.profileId ?? null
       });
-      suppliers = (rows || []).reduce((s, row) => s + (Number(row.stock) || 0), 0);
+      // На МП — только остаток по цене дешёвого со свободным qty (не сумма всех поставщиков).
+      if (opts.forMarketplace === true) {
+        const { marketplaceSupplierQtyFromBreakdown } = await import(
+          './effectiveSupplierCost.service.js'
+        );
+        suppliers = marketplaceSupplierQtyFromBreakdown(rows || []);
+      } else {
+        suppliers = (rows || []).reduce((s, row) => s + (Number(row.stock) || 0), 0);
+      }
     }
   }
 
