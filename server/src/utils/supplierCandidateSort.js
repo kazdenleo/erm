@@ -1,9 +1,10 @@
 /**
  * Общее ранжирование поставщиков для закупки (ручная «В закупку» и автозаказ).
- * Порядок: цена → delivery_days → плановая дата прихода по таймслотам → isPriority → остаток.
+ * Порядок: цена с учётом надёжности → delivery_days → плановая дата прихода → isPriority → остаток.
  */
 
 import { plannedDeliveryYmdForSupplier } from './supplierProcurementArrival.js';
+import { effectiveProcurementPrice } from './supplierReliability.js';
 
 /**
  * @param {Array<{
@@ -11,6 +12,7 @@ import { plannedDeliveryYmdForSupplier } from './supplierProcurementArrival.js';
  *   deliveryDays?: number,
  *   stock?: number|null,
  *   isPriority?: boolean,
+ *   reliability?: number|null,
  *   apiConfig?: object,
  *   code?: string|null,
  * }>} candidates
@@ -22,8 +24,8 @@ export function sortSupplierCandidatesByProcurementRules(
 ) {
   const list = Array.isArray(candidates) ? [...candidates] : [];
   list.sort((a, b) => {
-    const pa = a.price != null && Number.isFinite(Number(a.price)) ? Number(a.price) : Infinity;
-    const pb = b.price != null && Number.isFinite(Number(b.price)) ? Number(b.price) : Infinity;
+    const pa = effectiveProcurementPrice(a.price, a.reliability);
+    const pb = effectiveProcurementPrice(b.price, b.reliability);
     if (pa !== pb) return pa - pb;
 
     const da = Number(a.deliveryDays) || 0;

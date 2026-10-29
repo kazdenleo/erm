@@ -28,6 +28,7 @@ import {
   supplierPreSubmitRequired,
   trySubmitPurchaseToSupplier,
 } from './supplierOrderPlacement.service.js';
+import { loadSupplierReliabilityScores } from './supplierReliability.service.js';
 import { runSchedulerDbJob } from '../utils/schedulerDbMutex.js';
 import {
   shouldFailoverAfterSupplierSubmit,
@@ -252,6 +253,9 @@ async function pickSupplierForProduct(
   );
 
   const supplierById = new Map(autoSuppliers.map((s) => [Number(s.id), s]));
+  const reliabilityById = await loadSupplierReliabilityScores(
+    (r.rows || []).map((row) => row.supplier_id)
+  );
   const candidates = [];
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
@@ -263,6 +267,7 @@ async function pickSupplierForProduct(
       stock: row.stock != null ? Number(row.stock) : null,
       deliveryDays: Number(row.delivery_days) || 0,
       isPriority: Boolean(row.is_priority),
+      reliability: reliabilityById.get(sid),
     });
   }
   if (!candidates.length) return null;

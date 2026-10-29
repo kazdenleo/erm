@@ -37,6 +37,7 @@ import {
   supplierPreSubmitRequired,
   trySubmitPurchaseToSupplier,
 } from './supplierOrderPlacement.service.js';
+import { loadSupplierReliabilityScores } from './supplierReliability.service.js';
 
 function supplierSupportsApiOrder(supplier) {
   const code = canonicalSupplierApiCode(supplier?.code);
@@ -331,6 +332,9 @@ async function rankSupplierCandidates(
   );
 
   const supplierById = new Map(scoped.map((s) => [s.id, s]));
+  const reliabilityById = await loadSupplierReliabilityScores(
+    (r.rows || []).map((row) => row.supplier_id)
+  );
   const out = [];
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
@@ -346,6 +350,7 @@ async function rankSupplierCandidates(
       stock,
       deliveryDays: Number(row.delivery_days) || 0,
       isPriority: Boolean(row.is_priority),
+      reliability: reliabilityById.get(sid),
     });
   }
   return sortSupplierCandidatesByProcurementRules(out, { now, warehouseWeekendDays });

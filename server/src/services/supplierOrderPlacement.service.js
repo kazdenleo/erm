@@ -25,6 +25,31 @@ import { resolveRuntimeNotificationsForOrders } from '../utils/runtime-notificat
 import { rememberSupplierAccept } from '../utils/recentSupplierAccept.js';
 import { orderMarketplaceToDb } from '../utils/orderPurchaseLookup.js';
 import { trySessionAdvisoryLock } from '../utils/sessionAdvisoryLock.js';
+import { reliabilityEventTypeFromSubmit } from '../utils/supplierReliability.js';
+import { recordSupplierReliabilityEvent } from './supplierReliability.service.js';
+
+function noteSupplierSubmitReliability({
+  supplierId,
+  profileId,
+  purchaseId,
+  supplierSubmit,
+}) {
+  const eventType = reliabilityEventTypeFromSubmit(supplierSubmit);
+  if (!eventType) return;
+  recordSupplierReliabilityEvent({
+    supplierId,
+    profileId,
+    purchaseId,
+    eventType,
+    meta: {
+      reason: supplierSubmit?.reason ?? null,
+      partial: Boolean(supplierSubmit?.partial),
+      message: supplierSubmit?.message
+        ? String(supplierSubmit.message).slice(0, 400)
+        : null,
+    },
+  }).catch(() => {});
+}
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -1032,7 +1057,7 @@ export async function trySubmitPurchaseToSupplier({
       msg = `Дополнительно отправлено поставщику: ${linesToSubmit.length} поз. (закупка №${pid})`;
     }
     if (adapterResult?.ambiguousSuccess && ambiguousMarked) {
-      return {
+      const ambiguousOut = {
         ...adapterResult,
         submitted: false,
         skipped: true,
@@ -1048,8 +1073,15 @@ export async function trySubmitPurchaseToSupplier({
         lineCount: linesToSubmit.length,
         purchaseId: pid,
       };
+      noteSupplierSubmitReliability({
+        supplierId: sid,
+        profileId: ctx.purchase.profile_id ?? profileId,
+        purchaseId: pid,
+        supplierSubmit: ambiguousOut,
+      });
+      return ambiguousOut;
     }
-    return {
+    const submitOut = {
       ...adapterResult,
       message: msg,
       submitted: shouldMarkPurchaseSupplierSubmitted(adapterResult),
@@ -1061,6 +1093,13 @@ export async function trySubmitPurchaseToSupplier({
       lineCount: linesToSubmit.length,
       purchaseId: pid,
     };
+    noteSupplierSubmitReliability({
+      supplierId: sid,
+      profileId: ctx.purchase.profile_id ?? profileId,
+      purchaseId: pid,
+      supplierSubmit: submitOut,
+    });
+    return submitOut;
   } catch (e) {
     if (claimedWithoutForce) {
       await releasePurchaseSupplierSubmitClaim(pid).catch(() => {});
@@ -1072,7 +1111,7 @@ export async function trySubmitPurchaseToSupplier({
         supplierCode: apiCode,
         message: e?.message || String(e),
       });
-      return {
+      const acceptOut = {
         ...adapterResult,
         submitted: true,
         markError: e?.message || String(e),
@@ -1081,19 +1120,33 @@ export async function trySubmitPurchaseToSupplier({
         lineCount: linesToSubmit.length,
         purchaseId: pid,
       };
+      noteSupplierSubmitReliability({
+        supplierId: sid,
+        profileId: ctx.purchase.profile_id ?? profileId,
+        purchaseId: pid,
+        supplierSubmit: acceptOut,
+      });
+      return acceptOut;
     }
     logger.error('[SupplierOrderPlacement] adapter error', {
       purchaseId: pid,
       supplierCode: apiCode,
       message: e?.message || String(e),
     });
-    return {
+    const errOut = {
       submitted: false,
       reason: 'submit_error',
       message: e?.message || 'Ошибка отправки заказа поставщику',
       supplierName: ctx.supplier.name,
       supplierCode: apiCode,
     };
+    noteSupplierSubmitReliability({
+      supplierId: sid,
+      profileId: ctx.purchase.profile_id ?? profileId,
+      purchaseId: pid,
+      supplierSubmit: errOut,
+    });
+    return errOut;
   }
   } finally {
     await releaseSubmitSessionLocks();

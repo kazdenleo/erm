@@ -5122,6 +5122,17 @@ class PurchasesService {
       };
     });
     await reapplyInProcurementReservesForPurchase(result.purchaseId, pid).catch(() => {});
+    if (String(result.purchaseStatus || '') === 'completed') {
+      import('./supplierReliability.service.js')
+        .then(({ recordDeliveryTimingForPurchase }) =>
+          recordDeliveryTimingForPurchase({
+            purchaseId: result.purchaseId,
+            profileId: pid,
+            completedAt: result.completedAt || new Date(),
+          })
+        )
+        .catch(() => {});
+    }
     // Приёмка пишет остатки напрямую в транзакции (мимо stockMovements.applyChange),
     // поэтому поставки FBO (и комплекты из принятых комплектующих) дозарезервируем здесь.
     try {
