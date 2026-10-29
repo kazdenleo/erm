@@ -12,6 +12,7 @@ import {
   sumOrderableSupplierWarehouseStock,
   sumPurchasableSupplierWarehouseStock,
   freePurchasableSupplierStock,
+  resolveEffectiveCityStockHint,
   computeCityFbsShipLeadDays,
   warehouseNamesSameCity,
 } from '../src/utils/supplierProcurementArrival.js';
@@ -319,6 +320,22 @@ describe('sumOrderableSupplierWarehouseStock', () => {
         warehouseNameHint: 'Москва',
       })
     ).toBe(7);
+  });
+
+  test('ERP-имя склада «Микадо» не обнуляет остаток (это не город)', () => {
+    expect(resolveEffectiveCityStockHint(mikadoCfg, 'Микадо')).toBeNull();
+    expect(resolveEffectiveCityStockHint(mikadoCfg, 'Москва')).toBe('Москва');
+    expect(
+      sumPurchasableSupplierWarehouseStock({
+        apiConfig: mikadoCfg,
+        stockWarehouses: [
+          { city: 'Москва', stock: 10 },
+          { city: 'СПб', stock: 5 },
+        ],
+        aggregatedStock: 15,
+        warehouseNameHint: 'Микадо',
+      })
+    ).toBe(15);
   });
 
   test('подсказка города: Москва не берёт остаток СПб', () => {

@@ -307,6 +307,25 @@ export function stockRowMatchesCityHint(stockRow, warehouseNameHint) {
 }
 
 /**
+ * Подсказка города для остатков: только если совпадает с api_config.warehouses
+ * (Москва / СПб). Имя ERP-склада поставщика «Микадо» / «Москворечье» — не город,
+ * иначе purchasable обнулялся и автозакупка не брала товар.
+ * @returns {string|null}
+ */
+export function resolveEffectiveCityStockHint(apiConfig, warehouseNameHint) {
+  const hint = String(warehouseNameHint || '').trim() || null;
+  if (!hint) return null;
+  const cfg = parseJsonValue(apiConfig);
+  const cfgRows = normalizeSupplierConfigWarehouses(
+    cfg && typeof cfg === 'object' ? cfg.warehouses : null
+  );
+  const warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
+  if (!warehouses.length) return null;
+  if (filterWarehousesByCityHint(warehouses, hint).length) return hint;
+  return null;
+}
+
+/**
  * Остаток поставщика, который ещё можно заказать в текущем окне.
  * После отсечки склада (СПб 17:00, Москва 21:00) его qty не идёт в «доступно» / пуш на МП.
  * warehouseNameHint — только склады этого города (Москва / СПб), не сумма по всем.
@@ -324,7 +343,7 @@ export function sumOrderableSupplierWarehouseStock({
   );
   let warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
   const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
-  const hint = String(warehouseNameHint || '').trim() || null;
+  const hint = resolveEffectiveCityStockHint(apiConfig, warehouseNameHint);
 
   if (!warehouses.length) {
     return agg;
@@ -376,7 +395,7 @@ export function sumPurchasableSupplierWarehouseStock({
   );
   let warehouses = Array.isArray(cfgRows) ? cfgRows.filter((w) => w && w.name) : [];
   const agg = Math.max(0, Math.floor(Number(aggregatedStock) || 0));
-  const hint = String(warehouseNameHint || '').trim() || null;
+  const hint = resolveEffectiveCityStockHint(apiConfig, warehouseNameHint);
   if (!warehouses.length) return agg;
 
   if (hint) {
