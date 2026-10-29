@@ -5,7 +5,25 @@ import {
   percentFromActualAndBefore,
   priceBeforeFromActualAndPercent,
   getMarketplacePricePack,
+  productCostBase,
+  marginPercentFromPrice,
+  formatMarginPercent,
 } from './marketplacePriceMath.js';
+
+function MarginHint({ price, costBase, titlePrefix = 'Маржинальность' }) {
+  const pct = marginPercentFromPrice(price, costBase);
+  const label = formatMarginPercent(pct);
+  if (!label) return null;
+  const tone = pct >= 0 ? 'positive' : 'negative';
+  return (
+    <span
+      className={`mp-margin-hint mp-margin-hint--${tone}`}
+      title={`${titlePrefix}: (цена − себестоимость − доп.) / цена`}
+    >
+      {label}
+    </span>
+  );
+}
 
 const MP_COLORS = {
   ozon: '#0b91ff',
@@ -44,6 +62,7 @@ export function MarketplacePriceCells({
   showMax = false,
 }) {
   const pack = getMarketplacePricePack(product, marketplace);
+  const costBase = productCostBase(product);
   const [strategyUnlocked, setStrategyUnlocked] = useState(false);
   const primaryMin = minPrice != null && !isNaN(Number(minPrice)) ? Number(minPrice) : null;
   const fbsMin =
@@ -231,6 +250,7 @@ export function MarketplacePriceCells({
         ) : (
           <span className={value != null ? '' : 'mp-price-muted'}>{inner}</span>
         )}
+        <MarginHint price={value} costBase={costBase} titlePrefix={`Маржа мин.${label ? ` ${label}` : ''}`} />
       </div>
     );
   };
@@ -268,17 +288,20 @@ export function MarketplacePriceCells({
           {isLoading ? (
             <span className="mp-price-muted">...</span>
           ) : (
-            <input
-              type="text"
-              inputMode="decimal"
-              autoComplete="off"
-              className="mp-price-input mp-price-input-max"
-              value={maxStr}
-              disabled={disabled || saving}
-              placeholder=""
-              title="Максимальная цена продажи"
-              onChange={(e) => onMaxChange(e.target.value)}
-            />
+            <div className="mp-price-field">
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                className="mp-price-input mp-price-input-max"
+                value={maxStr}
+                disabled={disabled || saving}
+                placeholder=""
+                title="Максимальная цена продажи"
+                onChange={(e) => onMaxChange(e.target.value)}
+              />
+              <MarginHint price={parseMoneyInput(maxStr)} costBase={costBase} titlePrefix="Маржа макс." />
+            </div>
           )}
         </td>
       )}
@@ -288,25 +311,32 @@ export function MarketplacePriceCells({
           {isLoading ? (
             <span className="mp-price-muted">...</span>
           ) : (
-            <div className="mp-price-stack">
-              <input
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                className="mp-price-input"
-                value={actualStr}
-                disabled={disabled || saving}
-                title={
-                  commercialLocked
-                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
-                    : 'Цена после скидки'
-                }
-                placeholder="после"
-                onChange={(e) => onActualChange(e.target.value)}
+            <div className="mp-price-field">
+              <div className="mp-price-stack">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  className="mp-price-input"
+                  value={actualStr}
+                  disabled={disabled || saving}
+                  title={
+                    commercialLocked
+                      ? 'Стратегия активна — при изменении цен она будет отключена для товара'
+                      : 'Цена после скидки'
+                  }
+                  placeholder="после"
+                  onChange={(e) => onActualChange(e.target.value)}
+                />
+                {(saving || savedFlash) && (
+                  <span className="mp-price-cell-status">{saving ? '…' : '✓'}</span>
+                )}
+              </div>
+              <MarginHint
+                price={parseMoneyInput(actualStr)}
+                costBase={costBase}
+                titlePrefix="Маржа после скидки"
               />
-              {(saving || savedFlash) && (
-                <span className="mp-price-cell-status">{saving ? '…' : '✓'}</span>
-              )}
             </div>
           )}
         </td>
@@ -317,36 +347,43 @@ export function MarketplacePriceCells({
           {isLoading ? (
             <span className="mp-price-muted">...</span>
           ) : (
-            <div className="mp-price-discount-pair">
-              <input
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                className="mp-price-input"
-                value={beforeStr}
-                disabled={disabled || saving}
-                placeholder="до"
-                title={
-                  commercialLocked
-                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
-                    : 'Цена до скидки'
-                }
-                onChange={(e) => onBeforeChange(e.target.value)}
-              />
-              <input
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                className="mp-price-input mp-price-input-pct"
-                value={pctStr}
-                disabled={disabled || saving}
-                placeholder="%"
-                title={
-                  commercialLocked
-                    ? 'Стратегия активна — при изменении цен она будет отключена для товара'
-                    : 'Скидка %'
-                }
-                onChange={(e) => onPctChange(e.target.value)}
+            <div className="mp-price-field">
+              <div className="mp-price-discount-pair">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  className="mp-price-input"
+                  value={beforeStr}
+                  disabled={disabled || saving}
+                  placeholder="до"
+                  title={
+                    commercialLocked
+                      ? 'Стратегия активна — при изменении цен она будет отключена для товара'
+                      : 'Цена до скидки'
+                  }
+                  onChange={(e) => onBeforeChange(e.target.value)}
+                />
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  className="mp-price-input mp-price-input-pct"
+                  value={pctStr}
+                  disabled={disabled || saving}
+                  placeholder="%"
+                  title={
+                    commercialLocked
+                      ? 'Стратегия активна — при изменении цен она будет отключена для товара'
+                      : 'Скидка %'
+                  }
+                  onChange={(e) => onPctChange(e.target.value)}
+                />
+              </div>
+              <MarginHint
+                price={parseMoneyInput(beforeStr)}
+                costBase={costBase}
+                titlePrefix="Маржа до скидки"
               />
             </div>
           )}

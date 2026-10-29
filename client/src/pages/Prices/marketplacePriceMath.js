@@ -47,3 +47,30 @@ export function getMarketplacePricePack(product, marketplace) {
     maxPrice: mp.maxPrice ?? mp.max_price ?? null,
   };
 }
+
+/** База для маржи: себестоимость + доп. расходы (как в расчёте мин. цены). */
+export function productCostBase(product) {
+  const cost = Number(product?.cost ?? product?.price ?? product?.base_price ?? 0);
+  const add = Number(product?.additionalExpenses ?? product?.additional_expenses ?? 0) || 0;
+  if (!Number.isFinite(cost) || cost <= 0) return null;
+  return cost + (Number.isFinite(add) ? add : 0);
+}
+
+/**
+ * Маржинальность, % от цены: (цена − себестоимость) / цена × 100.
+ * @returns {number|null}
+ */
+export function marginPercentFromPrice(price, costBase) {
+  const p = Number(price);
+  const c = Number(costBase);
+  if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(c) || c < 0) return null;
+  return roundMoney(((p - c) / p) * 100);
+}
+
+export function formatMarginPercent(marginPct) {
+  if (marginPct == null || !Number.isFinite(Number(marginPct))) return null;
+  const n = Number(marginPct);
+  const abs = Math.abs(n);
+  const body = abs >= 10 ? abs.toFixed(0) : abs.toFixed(1);
+  return `${n < 0 ? '−' : ''}${body}%`;
+}

@@ -20,6 +20,11 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
+import {
+  productCostBase,
+  marginPercentFromPrice,
+  formatMarginPercent,
+} from './marketplacePriceMath.js';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -1420,24 +1425,41 @@ export function Prices() {
                           if (privatePrice == null) {
                             return <span className="mp-price-muted">—</span>;
                           }
+                          const marginPct = marginPercentFromPrice(
+                            privatePrice,
+                            productCostBase(productMerged)
+                          );
+                          const marginLabel = formatMarginPercent(marginPct);
                           return (
-                            <button
-                              type="button"
-                              className="mp-price-cell-min-btn"
-                              style={{ color: '#047857' }}
-                              onClick={() =>
-                                setPriceModal({
-                                  isOpen: true,
-                                  product: productMerged,
-                                  marketplace: 'private',
-                                  priceScheme: null,
-                                  price: privatePrice,
-                                  calculatorData: null,
-                                })
-                              }
-                            >
-                              {privatePrice} ₽
-                            </button>
+                            <div className="mp-price-min-wrap">
+                              <button
+                                type="button"
+                                className="mp-price-cell-min-btn"
+                                style={{ color: '#047857' }}
+                                onClick={() =>
+                                  setPriceModal({
+                                    isOpen: true,
+                                    product: productMerged,
+                                    marketplace: 'private',
+                                    priceScheme: null,
+                                    price: privatePrice,
+                                    calculatorData: null,
+                                  })
+                                }
+                              >
+                                {privatePrice} ₽
+                              </button>
+                              {marginLabel ? (
+                                <span
+                                  className={`mp-margin-hint ${
+                                    marginPct >= 0 ? 'mp-margin-hint--positive' : 'mp-margin-hint--negative'
+                                  }`}
+                                  title="Маржинальность: (цена − себестоимость − доп.) / цена"
+                                >
+                                  {marginLabel}
+                                </span>
+                              ) : null}
+                            </div>
                           );
                         })()}
                       </td>

@@ -238,6 +238,33 @@
   width: 100%;
 }
 
+.mp-price-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+}
+
+.mp-margin-hint {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.mp-margin-hint--positive {
+  color: #059669;
+}
+
+.mp-margin-hint--negative {
+  color: #dc2626;
+}
+
 .mp-price-cell-min-btn {
   border: 0;
   background: transparent;
