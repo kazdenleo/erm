@@ -18,6 +18,12 @@ router.put('/me/role-nav-sections/:role', requireProfile, requireProfileAdmin, w
 router.get('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getMyProfile));
 router.put('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateMyProfile));
 router.post(
+  '/me/onboarding/complete',
+  requireProfile,
+  requireProfileAdmin,
+  wrapAsync(profilesController.completeOnboarding)
+);
+router.post(
   '/me/stock-history-reset-all',
   requireProfile,
   requireProfileAdmin,

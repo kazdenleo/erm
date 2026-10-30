@@ -15,6 +15,23 @@ import {
   parseOzonSellerApiHttpStatus
 } from '../utils/ozon-api-error.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { maskConfigSecrets, presentCabinetRows } from '../utils/secretsCrypto.js';
+
+function maskAllConfigsPayload(configs) {
+  if (!configs || typeof configs !== 'object') return configs;
+  const out = { ...configs };
+  if (out.marketplaces && typeof out.marketplaces === 'object') {
+    out.marketplaces = Object.fromEntries(
+      Object.entries(out.marketplaces).map(([k, v]) => [k, maskConfigSecrets(v)])
+    );
+  }
+  if (out.suppliers && typeof out.suppliers === 'object') {
+    out.suppliers = Object.fromEntries(
+      Object.entries(out.suppliers).map(([k, v]) => [k, maskConfigSecrets(v)])
+    );
+  }
+  return out;
+}
 
 /** Вынесено из класса: при wrapAsync(method) теряется this. */
 function integrationScopeFromQuery(req) {
@@ -69,7 +86,7 @@ class IntegrationsController {
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const config = await integrationsService.getMarketplaceConfig(type, { profileId: tid, organizationId });
-      return res.status(200).json({ ok: true, data: config });
+      return res.status(200).json({ ok: true, data: maskConfigSecrets(config) });
     } catch (error) {
       next(error);
     }
@@ -89,7 +106,10 @@ class IntegrationsController {
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const result = await integrationsService.saveMarketplaceConfig(type, req.body, { profileId: tid, organizationId });
-      return res.status(200).json({ ok: true, data: result });
+      return res.status(200).json({
+        ok: true,
+        data: result?.config != null ? { ...result, config: maskConfigSecrets(result.config) } : result,
+      });
     } catch (error) {
       next(error);
     }
@@ -107,7 +127,7 @@ class IntegrationsController {
       }
       const { type } = req.params;
       const config = await integrationsService.getSupplierConfig(type, { profileId: tid });
-      return res.status(200).json({ ok: true, data: config });
+      return res.status(200).json({ ok: true, data: maskConfigSecrets(config) });
     } catch (error) {
       next(error);
     }
@@ -162,7 +182,7 @@ class IntegrationsController {
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const configs = await integrationsService.getAllConfigs({ profileId: tid, organizationId });
-      return res.status(200).json({ ok: true, data: configs });
+      return res.status(200).json({ ok: true, data: maskAllConfigsPayload(configs) });
     } catch (error) {
       next(error);
     }
@@ -185,7 +205,7 @@ class IntegrationsController {
       if (!isProfileSupplierSyncEnabled(prof)) {
         integrations = (integrations || []).filter((i) => i.type !== 'supplier');
       }
-      return res.status(200).json({ ok: true, data: integrations });
+      return res.status(200).json({ ok: true, data: presentCabinetRows(integrations) });
     } catch (error) {
       next(error);
     }

@@ -4,6 +4,24 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import { decryptConfigSecrets, encryptConfigSecrets } from '../utils/secretsCrypto.js';
+
+function hydrateRow(row) {
+  if (!row) return row;
+  let cfg = row.config;
+  if (typeof cfg === 'string') {
+    try {
+      cfg = JSON.parse(cfg);
+    } catch {
+      cfg = {};
+    }
+  }
+  return { ...row, config: decryptConfigSecrets(cfg || {}) };
+}
+
+function hydrateRows(rows) {
+  return Array.isArray(rows) ? rows.map(hydrateRow) : rows;
+}
 
 class IntegrationsRepositoryPG {
   /**
@@ -40,7 +58,7 @@ class IntegrationsRepositoryPG {
     sql += ' ORDER BY type, name, id';
     
     const result = await query(sql, params);
-    return result.rows;
+    return hydrateRows(result.rows);
   }
   
   /**
@@ -48,7 +66,7 @@ class IntegrationsRepositoryPG {
    */
   async findById(id) {
     const result = await query('SELECT * FROM integrations WHERE id = $1', [id]);
-    return result.rows[0] || null;
+    return hydrateRow(result.rows[0] || null);
   }
   
   /**
@@ -63,7 +81,7 @@ class IntegrationsRepositoryPG {
         'SELECT * FROM integrations WHERE profile_id = $1 AND organization_id = $2 AND code = $3',
         [profileId, organizationId, code]
       );
-      return result.rows[0] || null;
+      return hydrateRow(result.rows[0] || null);
     }
     return null;
   }
@@ -80,16 +98,7 @@ class IntegrationsRepositoryPG {
        LIMIT 1`,
       [profileId, code]
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    if (row.config && typeof row.config === 'string') {
-      try {
-        row.config = JSON.parse(row.config);
-      } catch {
-        row.config = {};
-      }
-    }
-    return row;
+    return hydrateRow(result.rows[0] || null);
   }
 
   /**
@@ -104,16 +113,7 @@ class IntegrationsRepositoryPG {
        LIMIT 1`,
       [profileId, code]
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    if (row.config && typeof row.config === 'string') {
-      try {
-        row.config = JSON.parse(row.config);
-      } catch {
-        row.config = {};
-      }
-    }
-    return row;
+    return hydrateRow(result.rows[0] || null);
   }
 
   /**
@@ -127,7 +127,7 @@ class IntegrationsRepositoryPG {
        LIMIT 1`,
       [code]
     );
-    return result.rows[0] || null;
+    return hydrateRow(result.rows[0] || null);
   }
   
   /**
@@ -140,13 +140,14 @@ class IntegrationsRepositoryPG {
       ORDER BY name
     `, [type]);
     
-    return result.rows;
+    return hydrateRows(result.rows);
   }
   
   /**
    * Создать интеграцию
    */
   async create(integrationData) {
+    const encrypted = encryptConfigSecrets(integrationData.config || {});
     const result = await query(`
       INSERT INTO integrations (profile_id, organization_id, type, name, code, config, is_active)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -157,11 +158,11 @@ class IntegrationsRepositoryPG {
       integrationData.type,
       integrationData.name,
       integrationData.code,
-      JSON.stringify(integrationData.config || {}),
+      JSON.stringify(encrypted),
       integrationData.is_active !== undefined ? integrationData.is_active : true
     ]);
     
-    return result.rows[0];
+    return hydrateRow(result.rows[0]);
   }
   
   /**
@@ -178,7 +179,7 @@ class IntegrationsRepositoryPG {
       if (updates.hasOwnProperty(field)) {
         if (field === 'config') {
           updateFields.push(`${field} = $${paramIndex++}`);
-          params.push(JSON.stringify(updates[field]));
+          params.push(JSON.stringify(encryptConfigSecrets(updates[field])));
         } else {
           updateFields.push(`${field} = $${paramIndex++}`);
           params.push(updates[field]);
@@ -198,7 +199,7 @@ class IntegrationsRepositoryPG {
       RETURNING *
     `, params);
     
-    return result.rows[0] || null;
+    return hydrateRow(result.rows[0] || null);
   }
   
   /**
@@ -210,9 +211,9 @@ class IntegrationsRepositoryPG {
       SET config = $1, updated_at = CURRENT_TIMESTAMP
       WHERE id = $2
       RETURNING *
-    `, [JSON.stringify(config), id]);
+    `, [JSON.stringify(encryptConfigSecrets(config)), id]);
     
-    return result.rows[0] || null;
+    return hydrateRow(result.rows[0] || null);
   }
   
   /**

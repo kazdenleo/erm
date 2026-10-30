@@ -40,8 +40,8 @@ function useReveal() {
 }
 
 function planCtaTo(planId) {
-  if (planId === 'pro') return '#contacts';
-  return '/register';
+  const code = String(planId || '').trim();
+  return code ? `/pricing?plan=${encodeURIComponent(code)}` : '/pricing';
 }
 
 export function Landing() {

@@ -15,9 +15,14 @@ import { ProtectedRoute } from './components/ProtectedRoute.jsx';
 import { ErrorBoundary } from './components/common/ErrorBoundary/ErrorBoundary.jsx';
 import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';
+import { ForgotPassword } from './pages/Login/ForgotPassword.jsx';
+import { ResetPassword } from './pages/Login/ResetPassword.jsx';
 import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
 import { Landing } from './pages/Landing/Landing.jsx';
+import { OfferPage, PrivacyPage } from './pages/Legal/LegalDocument.jsx';
+import { Pricing } from './pages/Billing/Pricing.jsx';
+import { Onboarding } from './pages/Onboarding/Onboarding.jsx';
 import { Home } from './pages/Home/Home';
 import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
 import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
@@ -155,6 +160,28 @@ function HomeOrLanding() {
   );
 }
 
+/** Тарифы: гостям — без Layout; авторизованным — в кабинете. */
+function PricingRoute() {
+  const { isAuthenticated, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="login-page">
+        <div className="login-card card">Загрузка…</div>
+      </div>
+    );
+  }
+  if (isAuthenticated) {
+    return (
+      <ProtectedRoute>
+        <Layout>
+          <Pricing />
+        </Layout>
+      </ProtectedRoute>
+    );
+  }
+  return <Pricing />;
+}
+
 /** Редирект со старых URL /fbo-supplies → /stock-levels/fbo-supplies */
 function RedirectFboLegacy() {
   const { pathname, search, hash } = useLocation();
@@ -182,7 +209,25 @@ function App() {
           <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/platform-login" element={<Login mode="platform" />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/register" element={<PublicRegister />} />
+          <Route path="/offer" element={<OfferPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route
+            path="/pricing"
+            element={
+              <PricingRoute />
+            }
+          />
+          <Route
+            path="/onboarding"
+            element={
+              <ProtectedRoute>
+                <Onboarding />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/first-login-change-password"
             element={

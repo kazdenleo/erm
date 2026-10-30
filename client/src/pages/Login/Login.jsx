@@ -44,6 +44,10 @@ export function Login({ mode = 'user' }) {
         setError('Для администратора продукта используйте отдельный вход: /platform-login');
         return;
       }
+      if (result?.user?.profile?.onboarding?.completed === false) {
+        navigate('/onboarding', { replace: true });
+        return;
+      }
       navigate(from && from.startsWith('/platform') ? '/' : from, { replace: true });
     } catch (err) {
       const status = err?.response?.status;
@@ -107,6 +111,9 @@ export function Login({ mode = 'user' }) {
           </Button>
           {mode !== 'platform' && (
             <>
+              <p className="login-footer-text">
+                <Link to="/forgot-password">Забыли пароль?</Link>
+              </p>
               <p className="login-footer-text">
                 Нет аккаунта? <Link to="/register">Регистрация</Link>
               </p>

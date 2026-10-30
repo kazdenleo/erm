@@ -280,6 +280,10 @@ export const usersController = {
           message: 'Администратор системы не привязывается к аккаунту',
         });
       }
+      if (effectiveProfileId != null) {
+        const { assertPlanAllowsCreate } = await import('../utils/planLimits.js');
+        await assertPlanAllowsCreate(effectiveProfileId, 'users');
+      }
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
       const phoneFields =
         effectiveRole === 'admin' ? preparePhoneFields(phone) : requirePhoneFields(phone);

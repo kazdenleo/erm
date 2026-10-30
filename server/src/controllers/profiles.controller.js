@@ -408,6 +408,51 @@ export const profilesController = {
     }
   },
 
+  /** Завершить первичный онбординг (организация / склад / МП). */
+  async completeOnboarding(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      if (current.onboarding_completed_at) {
+        return res.json({
+          ok: true,
+          data: {
+            completed: true,
+            completedAt: new Date(current.onboarding_completed_at).toISOString(),
+          },
+        });
+      }
+      const orgs = repositoryFactory.getOrganizationsRepository();
+      const orgList = orgs ? await orgs.findAll({ profileId: id }) : [];
+      if (!Array.isArray(orgList) || orgList.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Сначала создайте организацию в мастере настройки',
+        });
+      }
+      const item = await repo.update(id, {
+        onboarding_completed_at: new Date().toISOString(),
+      });
+      return res.json({
+        ok: true,
+        data: {
+          completed: true,
+          completedAt: item?.onboarding_completed_at
+            ? new Date(item.onboarding_completed_at).toISOString()
+            : new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async updateMyProfile(req, res, next) {
     try {
       const id = req.user.profileId;
@@ -441,15 +486,29 @@ export const profilesController = {
       if (Object.keys(payload).length === 0) {
         return res.json({ ok: true, data: presentProfile(current) });
       }
-      const manualWhError = await validateManualOrdersWarehouse(id, payload, current);
+      const { getEffectivePlanForProfile, clampFeatureFlagsToPlan } = await import(
+        '../utils/planLimits.js'
+      );
+      const plan = await getEffectivePlanForProfile(id);
+      const clamped = clampFeatureFlagsToPlan(payload, plan);
+      if (clamped.rejected.length) {
+        return res.status(403).json({
+          ok: false,
+          code: 'PLAN_FEATURE',
+          message: `Модуль недоступен на тарифе «${plan?.name || ''}». Выберите тариф выше на странице «Тарифы».`,
+          rejected: clamped.rejected,
+        });
+      }
+      const safePayload = clamped.payload;
+      const manualWhError = await validateManualOrdersWarehouse(id, safePayload, current);
       if (manualWhError) {
         return res.status(400).json({ ok: false, message: manualWhError });
       }
-      const fboWhError = await validateFboDeductionWarehouse(id, payload, current);
+      const fboWhError = await validateFboDeductionWarehouse(id, safePayload, current);
       if (fboWhError) {
         return res.status(400).json({ ok: false, message: fboWhError });
       }
-      const item = await repo.update(id, payload);
+      const item = await repo.update(id, safePayload);
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
@@ -569,12 +628,62 @@ export const profilesController = {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const item = await repo.update(id, req.body);
+      const body = req.body && typeof req.body === 'object' ? { ...req.body } : {};
+      const hasSub =
+        body.subscription_status !== undefined ||
+        body.subscriptionStatus !== undefined ||
+        body.plan_code !== undefined ||
+        body.planCode !== undefined ||
+        body.trial_ends_at !== undefined ||
+        body.trialEndsAt !== undefined ||
+        body.subscription_ends_at !== undefined ||
+        body.subscriptionEndsAt !== undefined;
+      let beforeSub = null;
+      if (hasSub) {
+        const { buildSubscriptionUpdatePayload } = await import(
+          '../utils/profileSubscription.js'
+        );
+        const { clearSubscriptionAccessCache } = await import(
+          '../middleware/subscriptionAccess.js'
+        );
+        beforeSub = await repo.findById(id);
+        Object.assign(
+          body,
+          buildSubscriptionUpdatePayload({
+            status: body.subscription_status ?? body.subscriptionStatus,
+            planCode: body.plan_code ?? body.planCode,
+            trialEndsAt: body.trial_ends_at ?? body.trialEndsAt,
+            subscriptionEndsAt: body.subscription_ends_at ?? body.subscriptionEndsAt,
+            applyFeatureFlags: body.applyFeatureFlags !== false,
+          })
+        );
+        clearSubscriptionAccessCache(id);
+      }
+      const item = await repo.update(id, body);
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Профиль не найден' });
       }
+      if (hasSub && beforeSub) {
+        try {
+          const { recordManualSubscriptionChange } = await import(
+            '../services/subscriptionBilling.service.js'
+          );
+          await recordManualSubscriptionChange({
+            profileId: id,
+            actorUserId: req.user?.id ?? null,
+            before: beforeSub,
+            after: item,
+          });
+        } catch (e) {
+          console.warn('[profiles] subscription audit failed:', e?.message || e);
+        }
+      }
+      clearProfileFeatureFlagsCache(id);
       res.json({ ok: true, data: withoutTelegramToken(item) });
     } catch (error) {
+      if (error?.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: error.message });
+      }
       next(error);
     }
   },

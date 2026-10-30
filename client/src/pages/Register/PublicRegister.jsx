@@ -16,6 +16,7 @@ export function PublicRegister() {
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
+  const [acceptOffer, setAcceptOffer] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -34,6 +35,10 @@ export function PublicRegister() {
     }
     if (password !== password2) {
       setError('Пароль и подтверждение не совпадают');
+      return;
+    }
+    if (!acceptOffer) {
+      setError('Нужно принять оферту и политику конфиденциальности');
       return;
     }
     setSubmitting(true);
@@ -73,7 +78,11 @@ export function PublicRegister() {
       <div className="login-card card" style={{ maxWidth: 440 }}>
         <h1 className="login-title">Регистрация</h1>
         <p className="login-subtitle">
-          <Link to="/">Программа Ирина</Link> — создание личного кабинета
+          <Link to="/">Программа Ирина</Link> — создание личного кабинета.
+          7 дней бесплатно (тариф «Бизнес»).{' '}
+          <Link to="/offer">Оферта</Link>
+          {' · '}
+          <Link to="/privacy">Конфиденциальность</Link>
         </p>
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="login-error">{error}</div>}
@@ -155,6 +164,21 @@ export function PublicRegister() {
           <p className="login-footer-text" style={{ textAlign: 'left', marginTop: 0 }}>
             Вход в систему — по телефону или email и паролю. Телефон обязателен, почта необязательна.
           </p>
+          <label
+            className="login-label"
+            style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontWeight: 400 }}
+          >
+            <input
+              type="checkbox"
+              checked={acceptOffer}
+              onChange={(e) => setAcceptOffer(e.target.checked)}
+              style={{ marginTop: 4 }}
+            />
+            <span>
+              Принимаю <Link to="/offer">оферту</Link> и{' '}
+              <Link to="/privacy">политику конфиденциальности</Link>
+            </span>
+          </label>
           <Button type="submit" disabled={submitting} className="login-submit">
             {submitting ? 'Отправка…' : 'Зарегистрироваться'}
           </Button>

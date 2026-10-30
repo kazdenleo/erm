@@ -34,6 +34,10 @@ import {
 import { toPublicChestnyZnakConfig } from '../utils/chestnyZnak.js';
 import { toPublicAiSettings } from '../utils/aiSettings.js';
 import {
+  decryptConfigSecrets,
+  prepareConfigForStorage,
+} from '../utils/secretsCrypto.js';
+import {
   isNotificationVisibleToUser,
   parseNotificationSettings,
 } from '../utils/notificationSettings.js';
@@ -162,6 +166,8 @@ class IntegrationsService {
       throw err;
     }
 
+    const unlock = (cfg) => decryptConfigSecrets(cfg || {});
+
     if (repositoryFactory.isUsingPostgreSQL()) {
       if (organizationId != null && organizationId !== '') {
         try {
@@ -172,32 +178,34 @@ class IntegrationsService {
             const raw = row?.config;
             const parsed =
               this._safeParseJsonMaybe(raw) ?? (raw && typeof raw === 'object' ? raw : null);
-            if (parsed && this._hasCredentialsForBalance(type, parsed)) return parsed;
+            if (parsed && this._hasCredentialsForBalance(type, unlock(parsed))) {
+              return unlock(parsed);
+            }
           }
         } catch (e) {
           logger.warn('[Integrations Service] marketplace_cabinets config lookup:', e?.message || e);
         }
       }
       const integration = await this.repository.findByCode(type, profileId, organizationId);
-      if (integration?.config && this._hasCredentialsForBalance(type, integration.config)) {
-        return integration.config;
+      if (integration?.config && this._hasCredentialsForBalance(type, unlock(integration.config))) {
+        return unlock(integration.config);
       }
       if (profileId != null && profileId !== '') {
         const cabinetRow = await this._getFirstCabinetBalanceRow(type, profileId);
-        if (cabinetRow?.config && this._hasCredentialsForBalance(type, cabinetRow.config)) {
-          return cabinetRow.config;
+        if (cabinetRow?.config && this._hasCredentialsForBalance(type, unlock(cabinetRow.config))) {
+          return unlock(cabinetRow.config);
         }
         const anyForProfile = await this.repository.findFirstMarketplaceByCode(type, profileId);
-        if (anyForProfile?.config && this._hasCredentialsForBalance(type, anyForProfile.config)) {
-          return anyForProfile.config;
+        if (anyForProfile?.config && this._hasCredentialsForBalance(type, unlock(anyForProfile.config))) {
+          return unlock(anyForProfile.config);
         }
       }
       const anyConfig = await this._findAnyMarketplaceConfig(type, { profileId });
-      if (anyConfig) return anyConfig;
+      if (anyConfig) return unlock(anyConfig);
       return {};
     } else {
       // Старое хранилище
-      return await readData(type) || {};
+      return unlock((await readData(type)) || {});
     }
   }
 
@@ -1029,17 +1037,24 @@ class IntegrationsService {
     }
 
     let prevEarlyShipmentPp = undefined;
-    if (type === 'yandex' && repositoryFactory.isUsingPostgreSQL()) {
+    let prevCfg = {};
+    let integration = null;
+    if (repositoryFactory.isUsingPostgreSQL()) {
       try {
-        const existing = await this.repository.findByCode(type, profileId, organizationId);
-        const prevCfg = this._parseIntegrationConfig(existing?.config);
-        const prevRaw = prevCfg?.early_shipment_discount_pp ?? prevCfg?.earlyShipmentDiscountPp;
-        prevEarlyShipmentPp = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : null;
-        if (!Number.isFinite(prevEarlyShipmentPp) || prevEarlyShipmentPp <= 0) prevEarlyShipmentPp = null;
+        integration = await this.repository.findByCode(type, profileId, organizationId);
+        prevCfg = this._parseIntegrationConfig(integration?.config);
+        if (type === 'yandex') {
+          const prevRaw = prevCfg?.early_shipment_discount_pp ?? prevCfg?.earlyShipmentDiscountPp;
+          prevEarlyShipmentPp = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : null;
+          if (!Number.isFinite(prevEarlyShipmentPp) || prevEarlyShipmentPp <= 0) prevEarlyShipmentPp = null;
+        }
       } catch (e) {
-        logger.warn('[Integrations] Could not read previous YM early_shipment_discount_pp:', e.message);
+        logger.warn('[Integrations] Could not read previous marketplace config:', e.message);
       }
     }
+
+    // Merge masked secrets → plaintext; репозиторий шифрует at rest при записи.
+    config = prepareConfigForStorage(config, prevCfg).plain;
 
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;
@@ -1077,9 +1092,7 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let integration = await this.repository.findByCode(type, profileId, organizationId);
       if (integration) {
-        const prevCfg = this._parseIntegrationConfig(integration.config);
         if (config.field_limits === undefined && prevCfg?.field_limits !== undefined) {
           config.field_limits = prevCfg.field_limits;
         }
@@ -1091,7 +1104,7 @@ class IntegrationsService {
           type: 'marketplace',
           name: type === 'ozon' ? 'Ozon' : type === 'wildberries' ? 'Wildberries' : 'Yandex Market',
           code: type,
-          config: config,
+          config,
           is_active: true
         });
       }
@@ -1114,7 +1127,8 @@ class IntegrationsService {
 
       return { success: true, type, config };
     } else {
-      await writeData(type, config);
+      const { encryptConfigSecrets } = await import('../utils/secretsCrypto.js');
+      await writeData(type, encryptConfigSecrets(config));
       return { success: true, type, config };
     }
   }
@@ -1373,36 +1387,24 @@ class IntegrationsService {
       }
 
       const existing = integration ? this._parseIntegrationConfig(integration.config) : {};
+      payload = prepareConfigForStorage(payload, existing).plain;
 
       if (type === 'mikado') {
-        const pwd = String(payload.password ?? '').trim();
-        if (!pwd && existing.password) {
-          payload = { ...existing, ...payload, password: existing.password };
-        }
         if (!String(payload.user_id ?? '').trim() && existing.user_id) {
           payload.user_id = existing.user_id;
         }
       } else if (type === 'moskvorechie') {
-        const v1Key = String(payload.apiKey || payload.v1ApiKey || '').trim();
-        const portalKey = String(payload.portalApiKey || payload.portal_api_key || '').trim();
-        if (!v1Key && (existing.apiKey || existing.v1ApiKey)) {
-          const ek = String(existing.apiKey || existing.v1ApiKey || '').trim();
-          payload = { ...existing, ...payload, apiKey: ek, v1ApiKey: ek };
-        }
-        if (!portalKey && (existing.portalApiKey || existing.portal_api_key || existing.password)) {
-          const pk = String(
-            existing.portalApiKey || existing.portal_api_key || existing.password || ''
-          ).trim();
-          payload = {
-            ...existing,
-            ...payload,
-            portalApiKey: pk,
-            password: pk,
-          };
-        }
         if (!String(payload.user_id ?? '').trim() && existing.user_id) {
           payload.user_id = existing.user_id;
         }
+        // portal key historically mirrored into password
+        if (payload.portalApiKey && !payload.password) {
+          payload.password = payload.portalApiKey;
+        } else if (payload.password && !payload.portalApiKey) {
+          payload.portalApiKey = payload.password;
+        }
+        if (payload.apiKey && !payload.v1ApiKey) payload.v1ApiKey = payload.apiKey;
+        if (payload.v1ApiKey && !payload.apiKey) payload.apiKey = payload.v1ApiKey;
       }
     }
 

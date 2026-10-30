@@ -13,6 +13,8 @@ const router = express.Router();
 
 router.post('/register-account', strictRateLimiter, wrapAsync(authController.registerAccount));
 router.post('/login', loginRateLimiter, wrapAsync(authController.login));
+router.post('/forgot-password', strictRateLimiter, wrapAsync(authController.forgotPassword));
+router.post('/reset-password', strictRateLimiter, wrapAsync(authController.resetPassword));
 // optionalAuth уже в главном router/index.js для всех /api/*
 router.post('/change-password', requireAuth, wrapAsync(authController.changePassword));
 router.get('/me', requireAuth, wrapAsync(authController.me));

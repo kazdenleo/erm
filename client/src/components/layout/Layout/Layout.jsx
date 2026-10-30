@@ -11,6 +11,7 @@ import { useAuth } from '../../../context/AuthContext.jsx';
 import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
+import { SubscriptionBanner } from '../../SubscriptionBanner/SubscriptionBanner.jsx';
 
 const MOBILE_LAYOUT_MQ = '(max-width: 991.98px)';
 
@@ -111,6 +112,11 @@ export function Layout({ children }) {
                   организацию в разделе «Настройки → Организации».
                 </div>
               )}
+              {!authLoading && user ? (
+                <div className="mx-3 mt-3 mb-0">
+                  <SubscriptionBanner />
+                </div>
+              ) : null}
               {children && <NavSectionGuard>{children}</NavSectionGuard>}
             </div>
           </div>

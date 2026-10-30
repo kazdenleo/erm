@@ -858,6 +858,10 @@ class OzonPerformanceAdsService {
         organizationId: row.organization_id ?? null,
       };
       let config = row.config;
+      if (config) {
+        const { decryptConfigSecrets } = await import('../utils/secretsCrypto.js');
+        config = decryptConfigSecrets(config);
+      }
       if (!config || typeof config !== 'object') {
         try {
           config = await integrationsService.getMarketplaceConfig('ozon', scope);
@@ -913,6 +917,10 @@ class OzonPerformanceAdsService {
         organizationId: row.organization_id ?? null,
       };
       let config = row.config;
+      if (config) {
+        const { decryptConfigSecrets } = await import('../utils/secretsCrypto.js');
+        config = decryptConfigSecrets(config);
+      }
       if (!config || typeof config !== 'object') {
         try {
           config = await integrationsService.getMarketplaceConfig('ozon', scope);

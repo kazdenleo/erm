@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
+import api from '../../services/api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import './Admin.css';
@@ -16,15 +17,42 @@ function emptyProfileForm() {
     contact_email: '',
     contact_phone: '',
     tariff: '',
+    subscription_status: 'trial',
+    plan_code: 'business',
+    trial_ends_at: '',
+    subscription_ends_at: '',
     supplier_sync_enabled: true,
     product_enrichment_enabled: false,
   };
+}
+
+function subscriptionStatusRu(s) {
+  if (s === 'trial') return 'Пробный';
+  if (s === 'active') return 'Активен';
+  if (s === 'past_due') return 'Нужна оплата';
+  if (s === 'suspended') return 'Приостановлен';
+  return s || '—';
+}
+
+function planCodeRu(c) {
+  if (c === 'start') return 'Старт';
+  if (c === 'business') return 'Бизнес';
+  if (c === 'pro') return 'Про';
+  return c || '—';
 }
 
 function inquiryStatusRu(s) {
   if (s === 'in_progress') return 'В работе';
   if (s === 'completed') return 'Завершён';
   return 'Новый';
+}
+
+function billingRequestStatusRu(s) {
+  if (s === 'pending') return 'Ожидает';
+  if (s === 'approved') return 'Одобрена';
+  if (s === 'rejected') return 'Отклонена';
+  if (s === 'cancelled') return 'Отменена';
+  return s || '—';
 }
 
 function formatDt(iso) {
@@ -75,6 +103,19 @@ export function Admin() {
   const [storageError, setStorageError] = useState('');
   const [storageBreakdown, setStorageBreakdown] = useState(null);
 
+  const [billingRequests, setBillingRequests] = useState([]);
+  const [billingBusyId, setBillingBusyId] = useState(null);
+
+  const loadBillingRequests = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await api.get('/billing/admin/requests', { params: { status: 'pending' } });
+      setBillingRequests(res.data?.data || []);
+    } catch {
+      setBillingRequests([]);
+    }
+  }, [isAdmin]);
+
   const loadData = useCallback(async () => {
     if (!isAdmin) return;
     setLoading(true);
@@ -82,12 +123,41 @@ export function Admin() {
     try {
       const pRes = await profilesApi.getAll();
       setProfiles(pRes?.data ?? []);
+      await loadBillingRequests();
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка загрузки');
     } finally {
       setLoading(false);
     }
-  }, [isAdmin]);
+  }, [isAdmin, loadBillingRequests]);
+
+  const approveBillingRequest = async (id) => {
+    if (!window.confirm('Активировать тариф по заявке? Срок подписки продлится на месяц или год.')) {
+      return;
+    }
+    setBillingBusyId(id);
+    try {
+      await api.post(`/billing/admin/requests/${id}/approve`);
+      await loadData();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Ошибка активации');
+    } finally {
+      setBillingBusyId(null);
+    }
+  };
+
+  const rejectBillingRequest = async (id) => {
+    const note = window.prompt('Причина отклонения (необязательно):') ?? '';
+    setBillingBusyId(id);
+    try {
+      await api.post(`/billing/admin/requests/${id}/reject`, { adminNote: note });
+      await loadBillingRequests();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Ошибка отклонения');
+    } finally {
+      setBillingBusyId(null);
+    }
+  };
 
   useEffect(() => {
     loadData();
@@ -125,6 +195,12 @@ export function Admin() {
       contact_email: p.contact_email || '',
       contact_phone: p.contact_phone || '',
       tariff: p.tariff || '',
+      subscription_status: p.subscription_status || 'active',
+      plan_code: p.plan_code || '',
+      trial_ends_at: p.trial_ends_at ? String(p.trial_ends_at).slice(0, 16) : '',
+      subscription_ends_at: p.subscription_ends_at
+        ? String(p.subscription_ends_at).slice(0, 16)
+        : '',
       supplier_sync_enabled: p.supplier_sync_enabled !== false,
       product_enrichment_enabled: p.product_enrichment_enabled === true,
     });
@@ -176,6 +252,14 @@ export function Admin() {
         contact_email: profile.contact_email ?? '',
         contact_phone: profile.contact_phone ?? '',
         tariff: profile.tariff ?? '',
+        subscription_status: profile.subscription_status || 'active',
+        plan_code: profile.plan_code || '',
+        trial_ends_at: profile.trial_ends_at
+          ? String(profile.trial_ends_at).slice(0, 16)
+          : '',
+        subscription_ends_at: profile.subscription_ends_at
+          ? String(profile.subscription_ends_at).slice(0, 16)
+          : '',
         supplier_sync_enabled: profile.supplier_sync_enabled !== false,
         product_enrichment_enabled: profile.product_enrichment_enabled === true,
       });
@@ -185,6 +269,17 @@ export function Admin() {
     setProfileModal(true);
   };
 
+  const buildSubscriptionPayload = (form) => ({
+    subscription_status: form.subscription_status || 'active',
+    plan_code: form.plan_code || null,
+    trial_ends_at: form.trial_ends_at
+      ? new Date(form.trial_ends_at).toISOString()
+      : null,
+    subscription_ends_at: form.subscription_ends_at
+      ? new Date(form.subscription_ends_at).toISOString()
+      : null,
+  });
+
   const saveProfile = async () => {
     try {
       const payload = {
@@ -193,6 +288,7 @@ export function Admin() {
         contact_email: profileForm.contact_email.trim() || null,
         contact_phone: profileForm.contact_phone.trim() || null,
         tariff: profileForm.tariff.trim() || null,
+        ...buildSubscriptionPayload(profileForm),
         supplier_sync_enabled: profileForm.supplier_sync_enabled === true,
         product_enrichment_enabled: profileForm.product_enrichment_enabled === true,
       };
@@ -220,6 +316,7 @@ export function Admin() {
         contact_email: cabinetForm.contact_email.trim() || null,
         contact_phone: cabinetForm.contact_phone.trim() || null,
         tariff: cabinetForm.tariff.trim() || null,
+        ...buildSubscriptionPayload(cabinetForm),
         supplier_sync_enabled: cabinetForm.supplier_sync_enabled === true,
         product_enrichment_enabled: cabinetForm.product_enrichment_enabled === true,
       };
@@ -279,6 +376,80 @@ export function Admin() {
       <h1 className="title">Аккаунты</h1>
       <p className="subtitle">Все зарегистрированные аккаунты (профили клиентов)</p>
 
+      {billingRequests.length > 0 ? (
+        <div className="admin-section mb-4">
+          <div className="admin-section-header">
+            <h2 className="h5 mb-0">Заявки на тариф ({billingRequests.length})</h2>
+            <Button type="button" variant="secondary" onClick={loadBillingRequests}>
+              Обновить
+            </Button>
+          </div>
+          <div className="table-responsive">
+            <table className="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Аккаунт</th>
+                  <th>Тариф</th>
+                  <th>Сумма</th>
+                  <th>Кто запросил</th>
+                  <th>Сейчас</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {billingRequests.map((r) => (
+                  <tr key={r.id}>
+                    <td className="small text-nowrap">{formatDt(r.createdAt)}</td>
+                    <td>
+                      <strong>{r.profileName || r.profileId}</strong>
+                      <div className="text-muted small">
+                        {[r.profileContactEmail, r.profileContactPhone].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td>
+                      {r.planName} / {r.period === 'year' ? 'год' : 'мес'}
+                      <div className="text-muted small">{billingRequestStatusRu(r.status)}</div>
+                    </td>
+                    <td>
+                      {r.amountRub != null
+                        ? `${Number(r.amountRub).toLocaleString('ru-RU')} ₽`
+                        : '—'}
+                    </td>
+                    <td className="small">
+                      {r.requesterName || r.requesterEmail || r.requesterPhone || '—'}
+                    </td>
+                    <td className="small">
+                      {subscriptionStatusRu(r.profileSubscriptionStatus)}
+                      {' · '}
+                      {planCodeRu(r.profilePlanCode)}
+                    </td>
+                    <td className="text-nowrap">
+                      <Button
+                        type="button"
+                        variant="primary"
+                        disabled={billingBusyId === r.id}
+                        onClick={() => approveBillingRequest(r.id)}
+                      >
+                        Активировать
+                      </Button>{' '}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={billingBusyId === r.id}
+                        onClick={() => rejectBillingRequest(r.id)}
+                      >
+                        Отклонить
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
       <div className="admin-section">
         <div className="admin-section-header">
           <h2 className="h5 mb-0">Список</h2>
@@ -313,7 +484,11 @@ export function Admin() {
                   <tr key={p.id}>
                     <td>
                       <strong>{p.name}</strong>
-                      {p.tariff && <div className="admin-muted small">Тариф: {p.tariff}</div>}
+                      <div className="admin-muted small">
+                        {subscriptionStatusRu(p.subscription_status)}
+                        {' · '}
+                        {planCodeRu(p.plan_code) || p.tariff || '—'}
+                      </div>
                     </td>
                     <td className="small">
                       {p.contact_full_name || '—'}
@@ -409,14 +584,53 @@ export function Admin() {
             />
           </label>
           <label>
-            Тариф
+            Статус подписки
+            <select
+              className="form-select form-select-sm mt-1"
+              value={profileForm.subscription_status}
+              onChange={(e) =>
+                setProfileForm((f) => ({ ...f, subscription_status: e.target.value }))
+              }
+            >
+              <option value="trial">Пробный</option>
+              <option value="active">Активен</option>
+              <option value="past_due">Нужна оплата</option>
+              <option value="suspended">Приостановлен</option>
+            </select>
+          </label>
+          <label>
+            Тариф (план)
+            <select
+              className="form-select form-select-sm mt-1"
+              value={profileForm.plan_code || ''}
+              onChange={(e) => setProfileForm((f) => ({ ...f, plan_code: e.target.value }))}
+            >
+              <option value="">— не выбран —</option>
+              <option value="start">Старт</option>
+              <option value="business">Бизнес</option>
+              <option value="pro">Про</option>
+            </select>
+          </label>
+          <label>
+            Конец trial
             <input
-              type="text"
-              value={profileForm.tariff}
-              onChange={(e) => setProfileForm((f) => ({ ...f, tariff: e.target.value }))}
+              type="datetime-local"
+              value={profileForm.trial_ends_at}
+              onChange={(e) => setProfileForm((f) => ({ ...f, trial_ends_at: e.target.value }))}
               className="login-input"
               style={{ width: '100%', marginTop: '4px' }}
-              placeholder="Например: Базовый"
+            />
+          </label>
+          <label>
+            Конец оплаченного периода
+            <input
+              type="datetime-local"
+              value={profileForm.subscription_ends_at}
+              onChange={(e) =>
+                setProfileForm((f) => ({ ...f, subscription_ends_at: e.target.value }))
+              }
+              className="login-input"
+              style={{ width: '100%', marginTop: '4px' }}
             />
           </label>
           <label>
@@ -510,11 +724,53 @@ export function Admin() {
                 />
               </label>
               <label>
-                Тариф
+                Статус подписки
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={cabinetForm.subscription_status}
+                  onChange={(e) =>
+                    setCabinetForm((f) => ({ ...f, subscription_status: e.target.value }))
+                  }
+                >
+                  <option value="trial">Пробный</option>
+                  <option value="active">Активен</option>
+                  <option value="past_due">Нужна оплата</option>
+                  <option value="suspended">Приостановлен</option>
+                </select>
+              </label>
+              <label>
+                Тариф (план)
+                <select
+                  className="form-select form-select-sm mt-1"
+                  value={cabinetForm.plan_code || ''}
+                  onChange={(e) => setCabinetForm((f) => ({ ...f, plan_code: e.target.value }))}
+                >
+                  <option value="">— не выбран —</option>
+                  <option value="start">Старт</option>
+                  <option value="business">Бизнес</option>
+                  <option value="pro">Про</option>
+                </select>
+              </label>
+              <label>
+                Конец trial
                 <input
-                  type="text"
-                  value={cabinetForm.tariff}
-                  onChange={(e) => setCabinetForm((f) => ({ ...f, tariff: e.target.value }))}
+                  type="datetime-local"
+                  value={cabinetForm.trial_ends_at}
+                  onChange={(e) =>
+                    setCabinetForm((f) => ({ ...f, trial_ends_at: e.target.value }))
+                  }
+                  className="login-input"
+                  style={{ width: '100%', marginTop: '4px' }}
+                />
+              </label>
+              <label>
+                Конец оплаченного периода
+                <input
+                  type="datetime-local"
+                  value={cabinetForm.subscription_ends_at}
+                  onChange={(e) =>
+                    setCabinetForm((f) => ({ ...f, subscription_ends_at: e.target.value }))
+                  }
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
                 />

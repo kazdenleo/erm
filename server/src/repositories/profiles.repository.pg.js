@@ -435,16 +435,32 @@ class ProfilesRepositoryPG {
   async create(data) {
     const d = typeof data === 'object' ? data : { name: data };
     const name = d.name ?? d;
+    const { newAccountTrialFields } = await import('../utils/profileSubscription.js');
+    const trial = newAccountTrialFields();
     const result = await query(
-      `INSERT INTO profiles (name, contact_full_name, contact_email, contact_phone, tariff)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO profiles (
+         name, contact_full_name, contact_email, contact_phone, tariff,
+         subscription_status, plan_code, trial_ends_at, subscription_ends_at,
+         kits_enabled, production_enabled, fbo_enabled, pricing_strategies_enabled
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [
         name,
         d.contact_full_name ?? d.contactFullName ?? null,
         d.contact_email ?? d.contactEmail ?? null,
         d.contact_phone ?? d.contactPhone ?? null,
-        d.tariff ?? null,
+        d.tariff ?? trial.tariff ?? null,
+        d.subscription_status ?? d.subscriptionStatus ?? trial.subscription_status,
+        d.plan_code ?? d.planCode ?? trial.plan_code,
+        d.trial_ends_at ?? d.trialEndsAt ?? trial.trial_ends_at,
+        d.subscription_ends_at ?? d.subscriptionEndsAt ?? trial.subscription_ends_at,
+        d.kits_enabled ?? d.kitsEnabled ?? trial.kits_enabled,
+        d.production_enabled ?? d.productionEnabled ?? trial.production_enabled,
+        d.fbo_enabled ?? d.fboEnabled ?? trial.fbo_enabled,
+        d.pricing_strategies_enabled ??
+          d.pricingStrategiesEnabled ??
+          trial.pricing_strategies_enabled,
       ]
     );
     return result.rows[0];
@@ -476,6 +492,34 @@ class ProfilesRepositoryPG {
     }
     if (updates.tariff !== undefined) {
       set('tariff', updates.tariff === '' ? null : updates.tariff);
+    }
+    if (updates.subscription_status !== undefined || updates.subscriptionStatus !== undefined) {
+      set(
+        'subscription_status',
+        updates.subscription_status ?? updates.subscriptionStatus
+      );
+    }
+    if (updates.plan_code !== undefined || updates.planCode !== undefined) {
+      const v = updates.plan_code ?? updates.planCode;
+      set('plan_code', v === '' || v == null ? null : v);
+    }
+    if (updates.trial_ends_at !== undefined || updates.trialEndsAt !== undefined) {
+      const v = updates.trial_ends_at ?? updates.trialEndsAt;
+      set('trial_ends_at', v === '' || v == null ? null : v);
+    }
+    if (
+      updates.subscription_ends_at !== undefined ||
+      updates.subscriptionEndsAt !== undefined
+    ) {
+      const v = updates.subscription_ends_at ?? updates.subscriptionEndsAt;
+      set('subscription_ends_at', v === '' || v == null ? null : v);
+    }
+    if (
+      updates.onboarding_completed_at !== undefined ||
+      updates.onboardingCompletedAt !== undefined
+    ) {
+      const v = updates.onboarding_completed_at ?? updates.onboardingCompletedAt;
+      set('onboarding_completed_at', v === '' || v == null ? null : v);
     }
     if (updates.allow_private_orders !== undefined || updates.allowPrivateOrders !== undefined) {
       const v = updates.allow_private_orders ?? updates.allowPrivateOrders;

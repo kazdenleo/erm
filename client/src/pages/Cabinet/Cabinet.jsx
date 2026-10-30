@@ -223,8 +223,11 @@ export function Cabinet() {
 
           <h3 className="cabinet-subtitle">Пароль входа</h3>
           <p className="cabinet-hint small">
-            Пароль от вашей учётной записи ({personal.phone || personal.email || 'телефон'}). Забыли пароль — напишите в{' '}
-            <Link to="/support">техподдержку</Link>, восстановление по почте пока не подключено.
+            Пароль от вашей учётной записи ({personal.phone || personal.email || 'телефон'}). Забыли пароль вне
+            сессии —{' '}
+            <Link to="/forgot-password">восстановление по email</Link>
+            {personal.email ? '' : ' (нужен email в профиле)'} или{' '}
+            <Link to="/support">техподдержка</Link>.
           </p>
           <div className="cabinet-form-grid">
             <label className="cabinet-input-label">

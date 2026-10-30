@@ -214,10 +214,12 @@ export function AuthProvider({ children }) {
       organizationId: null,
     });
     let mustChangePassword = false;
+    let sessionUser = res.data.user;
     try {
       const me = await authApi.me();
       if (me?.ok && me?.data) {
         setUser(me.data);
+        sessionUser = me.data;
         mustChangePassword = !!me.data.mustChangePassword;
         await syncOrganizationForUser(me.data, null);
       } else {
@@ -236,9 +238,10 @@ export function AuthProvider({ children }) {
             const me = await authApi.me();
             if (me?.ok && me?.data) {
               setUser(me.data);
+              sessionUser = me.data;
               mustChangePassword = !!me.data.mustChangePassword;
               await syncOrganizationForUser(me.data, null);
-              return { ...res.data, mustChangePassword };
+              return { ...res.data, user: sessionUser, mustChangePassword };
             }
           } catch {
             /* fall through */
@@ -252,7 +255,7 @@ export function AuthProvider({ children }) {
       mustChangePassword = !!res.data.user?.mustChangePassword;
       await syncOrganizationForUser(res.data.user, null);
     }
-    return { ...res.data, mustChangePassword };
+    return { ...res.data, user: sessionUser, mustChangePassword };
   }, [applyOrganizationId, syncOrganizationForUser]);
 
   const logout = useCallback(() => {
@@ -346,6 +349,7 @@ export function AuthProvider({ children }) {
       loading,
       login,
       logout,
+      isAuthenticated: !!user,
       /** Администратор продукта (системы): role === 'admin', без привязки к аккаунту клиента */
       isAdmin: user?.role === 'admin',
       /** Администратор аккаунта: is_profile_admin, обычно role === 'user' и задан profileId */

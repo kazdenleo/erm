@@ -4,6 +4,20 @@
  */
 
 import { query } from '../config/database.js';
+import { decryptConfigSecrets, encryptConfigSecrets } from '../utils/secretsCrypto.js';
+
+function hydrateRow(row) {
+  if (!row) return row;
+  let cfg = row.config;
+  if (typeof cfg === 'string') {
+    try {
+      cfg = JSON.parse(cfg);
+    } catch {
+      cfg = {};
+    }
+  }
+  return { ...row, config: decryptConfigSecrets(cfg || {}) };
+}
 
 export async function findAll(organizationId, options = {}) {
   const { marketplaceType } = options;
@@ -15,12 +29,12 @@ export async function findAll(organizationId, options = {}) {
   }
   sql += ' ORDER BY marketplace_type, sort_order, id';
   const result = await query(sql, params);
-  return result.rows;
+  return result.rows.map(hydrateRow);
 }
 
 export async function findById(id) {
   const result = await query('SELECT * FROM marketplace_cabinets WHERE id = $1', [id]);
-  return result.rows[0] || null;
+  return hydrateRow(result.rows[0] || null);
 }
 
 export async function countByOrganizationAndType(organizationId, marketplaceType) {
@@ -32,6 +46,7 @@ export async function countByOrganizationAndType(organizationId, marketplaceType
 }
 
 export async function create(data) {
+  const encrypted = encryptConfigSecrets(data.config || {});
   const result = await query(`
     INSERT INTO marketplace_cabinets (organization_id, marketplace_type, name, config, is_active, sort_order)
     VALUES ($1, $2, $3, $4::jsonb, $5, $6)
@@ -40,11 +55,11 @@ export async function create(data) {
     data.organization_id,
     data.marketplace_type,
     data.name || data.marketplace_type,
-    JSON.stringify(data.config || {}),
+    JSON.stringify(encrypted),
     data.is_active !== undefined ? data.is_active : true,
     data.sort_order ?? 0
   ]);
-  return result.rows[0];
+  return hydrateRow(result.rows[0]);
 }
 
 export async function update(id, data) {
@@ -52,7 +67,10 @@ export async function update(id, data) {
   const params = [];
   let idx = 1;
   if (data.name !== undefined) { updates.push(`name = $${idx++}`); params.push(data.name); }
-  if (data.config !== undefined) { updates.push(`config = $${idx++}::jsonb`); params.push(JSON.stringify(data.config)); }
+  if (data.config !== undefined) {
+    updates.push(`config = $${idx++}::jsonb`);
+    params.push(JSON.stringify(encryptConfigSecrets(data.config)));
+  }
   if (data.is_active !== undefined) { updates.push(`is_active = $${idx++}`); params.push(data.is_active); }
   if (data.sort_order !== undefined) { updates.push(`sort_order = $${idx++}`); params.push(data.sort_order); }
   if (updates.length === 0) return await findById(id);
@@ -62,7 +80,7 @@ export async function update(id, data) {
     `UPDATE marketplace_cabinets SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
     params
   );
-  return result.rows[0] || null;
+  return hydrateRow(result.rows[0] || null);
 }
 
 export async function deleteById(id) {

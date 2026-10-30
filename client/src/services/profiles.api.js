@@ -16,6 +16,12 @@ export const profilesApi = {
     return response.data;
   },
 
+  /** Завершить первичный онбординг */
+  async completeOnboarding() {
+    const response = await api.post('/profiles/me/onboarding/complete');
+    return response.data;
+  },
+
   async testTelegram(data) {
     const response = await api.post('/profiles/me/telegram/test', data || {});
     return response.data;

@@ -478,6 +478,18 @@ function isBirthdayNotificationsEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+/** Напоминание об окончании trial (за 1–2 дня). По умолчанию 10:00 МСК. */
+function getTrialEndingNotifyCron() {
+  const c = process.env.TRIAL_ENDING_NOTIFY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '0 10 * * *';
+}
+
+function isTrialEndingNotifyEnabled() {
+  const v = process.env.TRIAL_ENDING_NOTIFY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
 /** Автосбор новостей МП (API / крупные изменения) для супер-админа. Выкл: PLATFORM_MP_NEWS_SYNC_ENABLED=0 */
 function isPlatformMpNewsSyncEnabled() {
   const v = process.env.PLATFORM_MP_NEWS_SYNC_ENABLED;
@@ -1434,6 +1446,38 @@ class SchedulerService {
         logger.info('[Scheduler] Birthday notifications disabled (BIRTHDAY_NOTIFICATIONS_ENABLED)');
       }
 
+      let trialEndingNotifyJob = null;
+      const trialEndingNotifyCron = getTrialEndingNotifyCron();
+      if (isTrialEndingNotifyEnabled()) {
+        trialEndingNotifyJob = cron.schedule(
+          trialEndingNotifyCron,
+          async () => {
+            await runSchedulerDbJob('trial-ending-notify', async () => {
+              logger.info('[Scheduler] Trial ending notifications...');
+              try {
+                const { runTrialEndingNotifications } = await import(
+                  './trialEndingNotify.service.js'
+                );
+                const out = await runTrialEndingNotifications();
+                logger.info('[Scheduler] Trial ending notifications done', out);
+              } catch (error) {
+                logger.error('[Scheduler] Trial ending notifications failed:', error);
+                await addRuntimeNotification({
+                  type: 'job_failed',
+                  severity: 'error',
+                  source: 'scheduler',
+                  title: 'Сбой напоминаний о trial',
+                  message: `trialEndingNotify failed: ${error?.message || String(error)}`,
+                });
+              }
+            });
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+      } else {
+        logger.info('[Scheduler] Trial ending notify disabled (TRIAL_ENDING_NOTIFY_ENABLED)');
+      }
+
       let platformMpNewsSyncJob = null;
       const platformMpNewsSyncCron = getPlatformMpNewsSyncCron();
       if (isPlatformMpNewsSyncEnabled()) {
@@ -1884,6 +1928,16 @@ class SchedulerService {
         });
       }
 
+      if (trialEndingNotifyJob) {
+        this.jobs.push({
+          name: 'trial-ending-notify',
+          job: trialEndingNotifyJob,
+          schedule: trialEndingNotifyCron,
+          description:
+            'Email: trial заканчивается через 1–2 дня. TRIAL_ENDING_NOTIFY_CRON, по умолчанию 0 10 * * * (МСК)',
+        });
+      }
+
       if (platformMpNewsSyncJob) {
         this.jobs.push({
           name: 'platform-marketplace-news',
@@ -1942,6 +1996,9 @@ class SchedulerService {
       }
       if (birthdayNotificationsJob) {
         birthdayNotificationsJob.start();
+      }
+      if (trialEndingNotifyJob) {
+        trialEndingNotifyJob.start();
       }
       if (platformMpNewsSyncJob) {
         platformMpNewsSyncJob.start();

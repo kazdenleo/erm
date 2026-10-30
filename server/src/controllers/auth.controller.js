@@ -3,20 +3,35 @@
  * Вход, регистрация аккаунта, текущий пользователь, смена пароля
  */
 
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import config from '../config/index.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
-import { transaction } from '../config/database.js';
+import { query, transaction } from '../config/database.js';
 import { buildFullName, splitFullName } from '../utils/userName.js';
 import { buildUserNavFeatures, resolveDailyLogoutForUser, resolveNavSectionsForUser } from '../utils/userNavSections.js';
 import { ensurePhoneAvailable, requirePhoneFields } from '../utils/userPhone.js';
 import { parseBirthDate } from '../utils/userBirthDate.js';
 import { ensureEmailAvailable, parseOptionalEmail } from '../utils/userEmail.js';
+import { sendPasswordResetEmail } from '../services/mail.service.js';
+import logger from '../utils/logger.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const FORGOT_GENERIC_OK =
+  'Если аккаунт найден и у него указан email — мы отправили ссылку для сброса пароля. Проверьте почту.';
+
+function hashResetToken(raw) {
+  return crypto.createHash('sha256').update(String(raw), 'utf8').digest('hex');
+}
+
+function clientBaseUrl() {
+  return String(config.clientUrl || process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/+$/, '');
+}
 
 function userMustChangePassword(row) {
   return !!(row && (row.must_change_password === true || row.must_change_password === 1));
@@ -92,13 +107,34 @@ export const authController = {
       }
 
       const passwordHash = await bcrypt.hash(plainPassword, 10);
+      const { newAccountTrialFields } = await import('../utils/profileSubscription.js');
+      const trial = newAccountTrialFields();
 
       try {
         await transaction(async (client) => {
           const pr = await client.query(
-            `INSERT INTO profiles (name, contact_full_name, contact_email, contact_phone, tariff)
-             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [name, fn, emailParsed.value, phoneFields.phone, null]
+            `INSERT INTO profiles (
+               name, contact_full_name, contact_email, contact_phone, tariff,
+               subscription_status, plan_code, trial_ends_at, subscription_ends_at,
+               kits_enabled, production_enabled, fbo_enabled, pricing_strategies_enabled
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             RETURNING id`,
+            [
+              name,
+              fn,
+              emailParsed.value,
+              phoneFields.phone,
+              trial.tariff,
+              trial.subscription_status,
+              trial.plan_code,
+              trial.trial_ends_at,
+              trial.subscription_ends_at,
+              trial.kits_enabled,
+              trial.production_enabled,
+              trial.fbo_enabled,
+              trial.pricing_strategies_enabled,
+            ]
           );
           const pid = pr.rows[0].id;
           await client.query(
@@ -136,7 +172,9 @@ export const authController = {
 
       res.status(201).json({
         ok: true,
-        message: 'Аккаунт создан. Войдите по телефону или email и паролю.',
+        message:
+          'Аккаунт создан. Вам доступен пробный период 7 дней. Войдите по телефону или email и паролю.',
+        trialDays: 7,
       });
     } catch (error) {
       next(error);
@@ -209,6 +247,115 @@ export const authController = {
       const password_hash = await bcrypt.hash(np, 10);
       await usersRepo.update(row.id, { password_hash, must_change_password: false });
       res.json({ ok: true, message: 'Пароль изменён' });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * Публичный запрос ссылки сброса пароля (email или телефон).
+   * Ответ всегда одинаковый — без enumeration.
+   */
+  async forgotPassword(req, res, next) {
+    try {
+      if (!config.database.usePostgreSQL) {
+        return res.status(503).json({ ok: false, message: 'Восстановление пароля недоступно' });
+      }
+      const login = String(req.body?.login || req.body?.email || '').trim();
+      if (!login) {
+        return res.status(400).json({ ok: false, message: 'Укажите email или телефон' });
+      }
+
+      const user = await usersRepo.findByLogin(login);
+      if (user?.id && user.email) {
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        const tokenHash = hashResetToken(rawToken);
+        const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+        await query(
+          `UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP
+           WHERE user_id = $1 AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP`,
+          [user.id]
+        );
+        await query(
+          `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+           VALUES ($1, $2, $3)`,
+          [user.id, tokenHash, expiresAt.toISOString()]
+        );
+        const resetUrl = `${clientBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
+        const mailResult = await sendPasswordResetEmail({
+          to: user.email,
+          fullName: user.full_name || user.fullName || '',
+          resetUrl,
+        });
+        if (!mailResult.sent) {
+          logger.warn('[auth] forgot-password: письмо не отправлено', {
+            userId: user.id,
+            reason: mailResult.reason,
+          });
+        }
+      } else if (user?.id && !user.email) {
+        logger.info('[auth] forgot-password: у пользователя нет email', { userId: user.id });
+      }
+
+      return res.status(200).json({ ok: true, message: FORGOT_GENERIC_OK });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * Установка нового пароля по одноразовому токену из письма.
+   */
+  async resetPassword(req, res, next) {
+    try {
+      if (!config.database.usePostgreSQL) {
+        return res.status(503).json({ ok: false, message: 'Восстановление пароля недоступно' });
+      }
+      const rawToken = String(req.body?.token || '').trim();
+      const newPassword = String(req.body?.newPassword || req.body?.password || '');
+      if (!rawToken || rawToken.length < 32) {
+        return res.status(400).json({ ok: false, message: 'Некорректная или устаревшая ссылка' });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ ok: false, message: 'Новый пароль: не менее 8 символов' });
+      }
+
+      const tokenHash = hashResetToken(rawToken);
+      const found = await query(
+        `SELECT id, user_id FROM password_reset_tokens
+         WHERE token_hash = $1
+           AND used_at IS NULL
+           AND expires_at > CURRENT_TIMESTAMP
+         LIMIT 1`,
+        [tokenHash]
+      );
+      const row = found.rows[0];
+      if (!row) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Ссылка недействительна или истекла. Запросите восстановление снова.',
+        });
+      }
+
+      const password_hash = await bcrypt.hash(newPassword, 10);
+      await transaction(async (client) => {
+        await client.query(
+          `UPDATE users SET password_hash = $1, must_change_password = false, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2`,
+          [password_hash, row.user_id]
+        );
+        await client.query(
+          `UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [row.id]
+        );
+        await client.query(
+          `UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP
+           WHERE user_id = $1 AND used_at IS NULL AND id <> $2`,
+          [row.user_id, row.id]
+        );
+      });
+
+      return res.status(200).json({ ok: true, message: 'Пароль обновлён. Можно войти с новым паролем.' });
     } catch (error) {
       next(error);
     }
@@ -305,6 +452,15 @@ export const authController = {
                   profile.packing_display_attribute_id != null
                     ? Number(profile.packing_display_attribute_id)
                     : null,
+                subscription: (
+                  await import('../utils/profileSubscription.js')
+                ).subscriptionPayloadForClient(profile),
+                onboarding: {
+                  completed: profile.onboarding_completed_at != null,
+                  completedAt: profile.onboarding_completed_at
+                    ? new Date(profile.onboarding_completed_at).toISOString()
+                    : null,
+                },
               }
             : null,
           features: buildUserNavFeatures(resolveNavSectionsForUser(user, profile)),

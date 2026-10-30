@@ -73,6 +73,9 @@ const configSchema = z.object({
   JWT_SECRET: z.string().min(32).optional(),
   JWT_EXPIRES_IN: z.string().default('24h'),
 
+  /** AES-256 ключ для секретов интеграций (64 hex или base64 на 32 байта). Без него — scrypt(JWT_SECRET). */
+  SECRETS_ENCRYPTION_KEY: z.string().optional(),
+
   // Auth
   DISABLE_AUTH: z.string().optional(),
   /**
@@ -109,6 +112,11 @@ const configSchema = z.object({
   SMTP_PASS: z.string().optional().default(''),
   /** From: "Имя <email@domain.com>" или просто email */
   MAIL_FROM: z.string().optional().default(''),
+
+  /** ЮKassa (онлайн-оплата тарифов) */
+  YOOKASSA_SHOP_ID: z.string().optional().default(''),
+  YOOKASSA_SECRET_KEY: z.string().optional().default(''),
+  YOOKASSA_RETURN_URL: z.string().optional().default(''),
 });
 
 // Валидация и парсинг конфигурации
@@ -246,6 +254,12 @@ try {
       user: String(parsed.SMTP_USER || '').trim(),
       pass: String(parsed.SMTP_PASS || '').trim(),
       from: String(parsed.MAIL_FROM || '').trim(),
+    },
+
+    yookassa: {
+      shopId: String(parsed.YOOKASSA_SHOP_ID || '').trim(),
+      secretKey: String(parsed.YOOKASSA_SECRET_KEY || '').trim(),
+      returnUrl: String(parsed.YOOKASSA_RETURN_URL || '').trim(),
     },
   };
 } catch (error) {

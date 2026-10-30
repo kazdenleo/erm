@@ -7,7 +7,9 @@ import express from 'express';
 import config from '../config/index.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { optionalAuth } from '../middleware/auth.js';
+import { enforceSubscriptionAccess } from '../middleware/subscriptionAccess.js';
 import authRoutes from './auth.routes.js';
+import billingRoutes from './billing.routes.js';
 import profilesRoutes from './profiles.routes.js';
 import usersRoutes from './users.routes.js';
 import productsRoutes from './products.routes.js';
@@ -226,8 +228,15 @@ router.use(async (req, res, next) => {
   }
 });
 
+// Публичный биллинг / юр. документы (до ограничения подписки)
+router.use('/billing', billingRoutes);
+
 // Auth (логин публичный, /me — с авторизацией внутри роута)
 router.use('/auth', authRoutes);
+
+// Пробный период / тариф: мутации при past_due и доступ при suspended
+router.use(enforceSubscriptionAccess);
+
 router.get('/search', requireAuth, wrapAsync(globalSearchController.search.bind(globalSearchController)));
 // Профили и пользователи (защищены в своих роутах)
 router.use('/profiles', profilesRoutes);

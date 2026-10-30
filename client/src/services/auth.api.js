@@ -25,5 +25,18 @@ export const authApi = {
   async changePassword(currentPassword, newPassword) {
     const response = await api.post('/auth/change-password', { currentPassword, newPassword });
     return response.data;
-  }
+  },
+
+  async forgotPassword(login) {
+    const response = await api.post('/auth/forgot-password', { login: String(login || '').trim() });
+    return response.data;
+  },
+
+  async resetPassword(token, newPassword) {
+    const response = await api.post('/auth/reset-password', {
+      token: String(token || '').trim(),
+      newPassword: String(newPassword || ''),
+    });
+    return response.data;
+  },
 };

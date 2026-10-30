@@ -12,6 +12,8 @@ export function isAuthBootstrapRequest(req) {
   const url = normalizeAuthPath(req);
   if (req.method === 'POST' && /\/auth\/login$/i.test(url)) return true;
   if (req.method === 'POST' && /\/auth\/register-account$/i.test(url)) return true;
+  if (req.method === 'POST' && /\/auth\/forgot-password$/i.test(url)) return true;
+  if (req.method === 'POST' && /\/auth\/reset-password$/i.test(url)) return true;
   if (req.method === 'GET' && /\/auth\/me$/i.test(url)) return true;
   return false;
 }

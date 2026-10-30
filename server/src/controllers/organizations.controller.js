@@ -88,6 +88,11 @@ export const organizationsController = {
       if (req.user && req.user.role !== 'admin') {
         body.profile_id = req.user.profileId;
       }
+      const limitPid = body.profile_id ?? req.user?.profileId;
+      if (limitPid != null && req.user?.role !== 'admin') {
+        const { assertPlanAllowsCreate } = await import('../utils/planLimits.js');
+        await assertPlanAllowsCreate(limitPid, 'organizations');
+      }
       const item = await repo.create(body);
       res.status(201).json({ ok: true, data: item });
     } catch (error) {

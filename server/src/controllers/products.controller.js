@@ -606,9 +606,16 @@ class ProductsController {
   async create(req, res, next) {
     try {
       const profileId = req.user?.profileId ?? null;
+      if (profileId != null) {
+        const { assertPlanAllowsCreate } = await import('../utils/planLimits.js');
+        await assertPlanAllowsCreate(profileId, 'products');
+      }
       const product = await productsService.create({ ...req.body, profileId });
       return res.status(200).json({ ok: true, data: product });
     } catch (error) {
+      if (error?.statusCode === 403 && error?.code === 'PLAN_LIMIT') {
+        return res.status(403).json({ ok: false, code: error.code, message: error.message });
+      }
       console.error('[Products Controller] Create error:', error?.message, error?.code, error?.stack);
       next(error);
     }

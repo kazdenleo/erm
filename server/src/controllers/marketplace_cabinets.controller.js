@@ -7,6 +7,11 @@
 import * as repo from '../repositories/marketplace_cabinets.repository.pg.js';
 import organizationsRepository from '../repositories/organizations.repository.pg.js';
 import integrationsService from '../services/integrations.service.js';
+import {
+  prepareConfigForStorage,
+  presentCabinetRow,
+  presentCabinetRows,
+} from '../utils/secretsCrypto.js';
 
 const VALID_TYPES = ['ozon', 'wildberries', 'yandex'];
 
@@ -44,8 +49,9 @@ function inheritFieldLimits(incomingConfig, siblingCabinets) {
 /**
  * Сохраняет кабинет в integrations с теми же profile_id + organization_id, что и у организации.
  * Без этих полей saveMarketplaceConfig в PostgreSQL не находит запись (findByCode) и дубли в integrations не сходят с UI.
+ * Передаём plaintext — saveMarketplaceConfig сам зашифрует.
  */
-async function syncCabinetToIntegrations(organizationId, marketplaceType, cabinetConfig) {
+async function syncCabinetToIntegrations(organizationId, marketplaceType, cabinetConfigPlain) {
   const oid = organizationId != null && String(organizationId).trim() !== '' ? Number(organizationId) : null;
   if (oid == null || Number.isNaN(oid)) return null;
   const org = await organizationsRepository.findById(oid);
@@ -57,7 +63,7 @@ async function syncCabinetToIntegrations(organizationId, marketplaceType, cabine
     );
     return null;
   }
-  return integrationsService.saveMarketplaceConfig(marketplaceType, cabinetConfig, {
+  return integrationsService.saveMarketplaceConfig(marketplaceType, cabinetConfigPlain, {
     profileId,
     organizationId: oid
   });
@@ -69,7 +75,7 @@ export const marketplaceCabinetsController = {
       const organizationId = req.params.organizationId;
       const type = req.query.type || null;
       const list = await repo.findAll(organizationId, type ? { marketplaceType: type } : {});
-      res.json({ ok: true, data: list });
+      res.json({ ok: true, data: presentCabinetRows(list) });
     } catch (error) {
       next(error);
     }
@@ -82,7 +88,7 @@ export const marketplaceCabinetsController = {
       if (!cabinet) {
         return res.status(404).json({ ok: false, message: 'Кабинет не найден' });
       }
-      res.json({ ok: true, data: cabinet });
+      res.json({ ok: true, data: presentCabinetRow(cabinet) });
     } catch (error) {
       next(error);
     }
@@ -95,6 +101,12 @@ export const marketplaceCabinetsController = {
       if (!marketplace_type || !VALID_TYPES.includes(marketplace_type)) {
         return res.status(400).json({ ok: false, message: 'Укажите тип маркетплейса: ozon, wildberries или yandex' });
       }
+      const org = await organizationsRepository.findById(organizationId);
+      const profileIdForLimit = org?.profile_id;
+      if (profileIdForLimit != null) {
+        const { assertPlanAllowsCreate } = await import('../utils/planLimits.js');
+        await assertPlanAllowsCreate(profileIdForLimit, 'cabinets');
+      }
       if (marketplace_type === 'wildberries') {
         const count = await repo.countByOrganizationAndType(organizationId, 'wildberries');
         if (count >= 1) {
@@ -103,16 +115,17 @@ export const marketplaceCabinetsController = {
       }
       const siblings = await repo.findAll(organizationId, { marketplaceType: marketplace_type });
       const cabinetConfig = inheritFieldLimits(config || {}, siblings);
+      const { plain } = prepareConfigForStorage(cabinetConfig, null);
       let cabinet = await repo.create({
         organization_id: organizationId,
         marketplace_type,
         name: name || (marketplace_type === 'ozon' ? 'Ozon' : marketplace_type === 'yandex' ? 'Яндекс.Маркет' : 'Wildberries'),
-        config: cabinetConfig,
+        config: plain,
         is_active: is_active !== false,
         sort_order: sort_order ?? 0
       });
       try {
-        const syncResult = await syncCabinetToIntegrations(organizationId, marketplace_type, cabinetConfig);
+        const syncResult = await syncCabinetToIntegrations(organizationId, marketplace_type, plain);
         if (syncResult?.config && cabinet?.id) {
           await repo.update(cabinet.id, { config: syncResult.config });
           cabinet = await repo.findById(cabinet.id);
@@ -120,7 +133,7 @@ export const marketplaceCabinetsController = {
       } catch (syncErr) {
         console.warn('[Marketplace Cabinets] Sync to integrations failed:', syncErr?.message);
       }
-      res.status(201).json({ ok: true, data: cabinet });
+      res.status(201).json({ ok: true, data: presentCabinetRow(cabinet) });
     } catch (error) {
       next(error);
     }
@@ -134,17 +147,20 @@ export const marketplaceCabinetsController = {
         return res.status(404).json({ ok: false, message: 'Кабинет не найден' });
       }
       const body = { ...req.body };
+      let plainForSync = null;
       if (body.config !== undefined) {
-        body.config = withPreservedFieldLimits(body.config, cabinet.config);
+        const withLimits = withPreservedFieldLimits(body.config, cabinet.config);
+        const prepared = prepareConfigForStorage(withLimits, cabinet.config);
+        body.config = prepared.plain;
+        plainForSync = prepared.plain;
       }
       let updated = await repo.update(id, body);
-      const configToSync = updated?.config ?? cabinet?.config;
-      if (configToSync && updated?.marketplace_type) {
+      if (plainForSync && updated?.marketplace_type) {
         try {
           const syncResult = await syncCabinetToIntegrations(
             cabinet.organization_id,
             updated.marketplace_type,
-            configToSync
+            plainForSync
           );
           if (syncResult?.config && updated?.id) {
             updated = await repo.update(id, { config: syncResult.config });
@@ -153,7 +169,7 @@ export const marketplaceCabinetsController = {
           console.warn('[Marketplace Cabinets] Sync to integrations failed:', syncErr?.message);
         }
       }
-      res.json({ ok: true, data: updated });
+      res.json({ ok: true, data: presentCabinetRow(updated) });
     } catch (error) {
       next(error);
     }
