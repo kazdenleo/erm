@@ -18,6 +18,32 @@
   user-select: none;
 }
 
+/*
+  ArchitectUI рассчитывал на Perfect Scrollbar (.ps), у нас JS не подключён.
+  Без overflow длинное развёрнутое меню обрезается родителем (overflow: hidden).
+*/
+.app-sidebar {
+  flex-direction: column;
+}
+
+.app-sidebar .scrollbar-sidebar {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* closed-sidebar:hover в теме ставит overflow: hidden !important — иначе при наведении тоже обрезает */
+.closed-sidebar:not(.sidebar-mobile-open) .app-sidebar:hover .scrollbar-sidebar {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 /* Prevent modals from covering the fixed left sidebar */
 .fixed-sidebar .modal.modal-erm {
   left: var(--erm-sidebar-width);
