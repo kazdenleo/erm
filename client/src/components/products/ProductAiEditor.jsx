@@ -153,9 +153,25 @@ export function ProductAiEditor({
     try {
       const buildContext = (draft) => {
         const src = draft && typeof draft === 'object' ? draft : {};
-        const context = pickContextByKeys(src, contextKeys, contextDefs);
-        for (const f of selectedOutputs) {
-          context[f.key] = stringifyAiContextValue(src[f.key]);
+        const keys = [
+          ...new Set([
+            ...(contextKeys || []),
+            ...selectedOutputs.map((f) => f.key),
+          ]),
+        ];
+        // И подпись (для модели), и машинный ключ (для сервера / подстановки с карточки)
+        const context = pickContextByKeys(src, keys, contextDefs);
+        for (const key of keys) {
+          const def =
+            contextDefs.find((d) => d.key === key) ||
+            selectedOutputs.find((d) => d.key === key);
+          const label = def?.label || key;
+          const val = stringifyAiContextValue(src[key]);
+          context[key] = val;
+          if (label && context[label] == null) context[label] = val;
+          else if (label && !String(context[label] || '').trim() && val) {
+            context[label] = val;
+          }
         }
         return context;
       };
@@ -203,11 +219,20 @@ export function ProductAiEditor({
           outputFields: selectedOutputs,
           fillEmptyOnly: fillEmpty,
         });
+        const warn = Array.isArray(data?.warnings) && data.warnings.length
+          ? `\n${data.warnings.join('\n')}`
+          : '';
+        const ctxPrev =
+          data?.contextPreview && typeof data.contextPreview === 'object'
+            ? `\nВ запрос: ${Object.entries(data.contextPreview)
+                .map(([k, v]) => `${k}=${v}`)
+                .join('; ')}`
+            : '';
         const reply = data?.changes?.length
-          ? data.comment || 'Готово. Проверьте результат ниже и нажмите «Подставить».'
+          ? `${data.comment || 'Готово. Проверьте результат ниже и нажмите «Подставить».'}${warn}${ctxPrev}`
           : data?.fillEmptyOnlyApplied || fillEmpty
-            ? 'Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.'
-            : 'Модель не предложила изменений. Уточните промпт или проверьте «Учитывать при генерации».';
+            ? `Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.${warn}${ctxPrev}`
+            : `Модель не предложила изменений. Уточните промпт или проверьте «Учитывать при генерации».${warn}${ctxPrev}`;
         setLastResult({ bulk: false, data });
         setStatusText(reply);
       }

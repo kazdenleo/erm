@@ -17,6 +17,20 @@ function str(v) {
   return v == null ? '' : String(v).trim();
 }
 
+/** GigaChat иногда отдаёт переносы как буквальные «\n» вместо реальных. */
+function normalizeMultilineText(v) {
+  let t = str(v);
+  if (!t) return '';
+  if (/\\[nrt]/.test(t)) {
+    t = t
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\n')
+      .replace(/\\t/g, '\t');
+  }
+  return t.trim();
+}
+
 function parseToolArgs(raw) {
   if (raw == null) return {};
   if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
@@ -74,7 +88,7 @@ function buildProperties(outputFields) {
     }
     properties[f.key] = {
       type: 'string',
-      description: `${f.label}. Многострочный текст через перенос строки, если нужно несколько значений.`,
+      description: `${f.label}. Многострочный текст: реальные переносы строк (не символы \\n). Список — по одному значению на строку. Без заглушек вроде «Авто 1».`,
     };
   }
   return properties;
@@ -93,6 +107,18 @@ function stringifyDraftValue(value) {
     }
   }
   return String(value);
+}
+
+function bestFieldValue(cardDraft, clientContext, field) {
+  for (const c of [
+    clientContext?.[field.key],
+    clientContext?.[field.label],
+    cardDraft?.[field.key],
+  ]) {
+    const s = str(c);
+    if (s) return s;
+  }
+  return '';
 }
 
 /** Полный снимок карточки: массовый ИИ не должен опираться только на видимые ячейки таблицы. */
@@ -139,13 +165,13 @@ function sanitizeProposal(raw, current, outputFields, { fillEmptyOnly }) {
 
   for (const f of outputFields) {
     if (f.type === 'vehicles') continue;
-    let next = str(src[f.key]);
+    let next = normalizeMultilineText(src[f.key]);
     if (!next) continue;
     if (next.length > MAX_FIELD) {
       next = next.slice(0, MAX_FIELD);
       warnings.push(`${f.label}: обрезано`);
     }
-    const prev = str(current[f.key]);
+    const prev = normalizeMultilineText(current[f.key]);
     if (next === prev) continue;
     if (fillEmptyOnly && prev.length >= 8) continue;
     proposed[f.key] = next;
@@ -186,7 +212,11 @@ class AiAttributeEditorService {
 
     let cardDraft = {};
     if (body.productId) {
-      const product = await productsService.getById(body.productId);
+      // Нужен WithDetails — обычный getById не подгружает attribute_values
+      const product =
+        (await productsService.getByIdWithDetails(body.productId)) ||
+        (await productsService.getById(body.productId));
+      if (!product) throw aiHttpError('Товар не найден', 404);
       const pid = product.profile_id ?? product.profileId;
       if (pid != null && String(pid) !== String(profileId)) {
         throw aiHttpError('Товар не найден', 404);
@@ -194,8 +224,8 @@ class AiAttributeEditorService {
       cardDraft = buildCardDraft(product);
     }
 
-    // Контекст для модели — то, что выбрал пользователь («Учитывать при генерации»).
-    // Раньше подмешивался весь cardDraft (erp_attr_*), и выбор атрибутов почти не влиял.
+    // Контекст: выбранные поля пользователя + подстановка значений с карточки,
+    // если клиент прислал пустые (частый баг: в UI выбрано, а в draft пусто).
     const context = {};
     const clientEntries = Object.entries(clientContext);
     if (clientEntries.length) {
@@ -214,22 +244,41 @@ class AiAttributeEditorService {
     const current = {};
     for (const f of outputFields) {
       if (f.type === 'vehicles') continue;
-      current[f.key] = str(
-        cardDraft[f.key] || clientContext[f.key] || clientContext[f.label] || ''
-      );
+      const best = bestFieldValue(cardDraft, clientContext, f);
+      current[f.key] = best;
+      // В промпт — и подпись, и ключ, с реальным значением с карточки при необходимости
+      context[f.label] = best;
+      context[f.key] = best;
+    }
+
+    // Любые erp_attr_* из карточки, которые клиент уже указал ключом, но пустыми
+    for (const [key, value] of Object.entries(cardDraft)) {
+      if (!String(key).startsWith('erp_attr_')) continue;
+      if (Object.prototype.hasOwnProperty.call(clientContext, key) && !str(context[key])) {
+        context[key] = str(value);
+      }
     }
 
     const fieldLabels = outputFields.map((f) => f.label).join(', ');
+    const emptyOutputs = outputFields
+      .filter((f) => f.type !== 'vehicles' && !str(current[f.key]))
+      .map((f) => f.label);
     const rules = [
       'Ты редактор карточки товара (ERP + маркетплейсы).',
       'Верни результат ТОЛЬКО через функцию propose_attribute_editor.',
       `Можно менять поля: ${fieldLabels}.`,
-      'Опирайся только на поля из блока «Контекст» ниже (их выбрал пользователь). Пустые значения — данных нет.',
-      'Не выдумывай совместимость и характеристики, которых нет во входных данных.',
+      'Опирайся только на поля из блока «Контекст» ниже (их выбрал пользователь).',
+      'Если в контексте поле пустое — данных нет: не выдумывай марки/модели и не пиши плейсхолдеры («Авто 1», «пример»).',
+      'Многострочный текст — настоящие переносы строк, не символы \\n.',
       fillEmptyOnly
         ? 'Заполняй пустые поля; заполненные не переписывай без явной просьбы.'
         : 'Перепиши поля по запросу пользователя, даже если они уже заполнены.',
     ];
+    if (emptyOutputs.length) {
+      rules.push(
+        `Внимание: сейчас пустые поля в контексте: ${emptyOutputs.join(', ')}. Не заполняй их выдуманным текстом.`
+      );
+    }
     if (instruction) rules.push(`Запрос: ${instruction}`);
     rules.push(`Контекст:\n${JSON.stringify(context)}`);
 
@@ -257,7 +306,27 @@ class AiAttributeEditorService {
       fillEmptyOnly,
     });
 
-    logger.info('[AI] attribute editor', { productId: body.productId, changed: changes.length });
+    for (const f of outputFields) {
+      if (f.type === 'vehicles') continue;
+      if (!str(current[f.key])) {
+        warnings.push(
+          `«${f.label}» на карточке пустое — в запрос ушло без данных. Заполните атрибут или выберите другие поля в «Учитывать».`
+        );
+      }
+    }
+
+    const contextPreview = {};
+    for (const f of outputFields) {
+      if (f.type === 'vehicles') continue;
+      const v = str(context[f.label] || context[f.key] || current[f.key]);
+      contextPreview[f.label] = v ? `${v.slice(0, 120)}${v.length > 120 ? '…' : ''}` : '(пусто)';
+    }
+
+    logger.info('[AI] attribute editor', {
+      productId: body.productId,
+      changed: changes.length,
+      contextPreview,
+    });
 
     return {
       productId: body.productId ?? null,
@@ -265,6 +334,7 @@ class AiAttributeEditorService {
       changes,
       warnings,
       comment,
+      contextPreview,
       fillEmptyOnlyApplied: fillEmptyOnly,
       model: settings.model,
     };
