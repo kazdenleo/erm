@@ -83,6 +83,23 @@
   color: var(--muted, #64748b);
 }
 
+.product-ai-editor__status {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: rgba(15, 23, 42, 0.03);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text, #0f172a);
+  white-space: pre-wrap;
+}
+
+.product-ai-editor__status.is-ok {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.06);
+}
+
 .product-ai-editor__results {
   display: flex;
   flex-direction: column;

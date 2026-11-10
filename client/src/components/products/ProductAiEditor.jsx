@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../common/Button/Button';
 import { Modal } from '../common/Modal/Modal';
@@ -12,7 +12,6 @@ import {
   pickContextByKeys,
   stringifyAiContextValue,
 } from '../../utils/aiContextAttributes.js';
-import { formatAttrEditorChangesPreview } from '../../utils/aiAttributeEditorFields.js';
 import { AiContextFieldsSelect } from './AiContextFieldsSelect.jsx';
 import './ProductDescriptionAiChat.css';
 import './ProductAiEditor.css';
@@ -47,13 +46,12 @@ export function ProductAiEditor({
   const [fillEmptyOnly, setFillEmptyOnly] = useState(true);
   const [savingTpl, setSavingTpl] = useState(false);
   const [tplMessage, setTplMessage] = useState('');
-  const [messages, setMessages] = useState([]);
+  const [statusText, setStatusText] = useState('');
   const [sending, setSending] = useState(false);
   const [progressText, setProgressText] = useState('');
   const [error, setError] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const [skipIds, setSkipIds] = useState(() => new Set());
-  const listRef = useRef(null);
 
   const contextDefs = useMemo(() => buildAiContextFieldDefs(attributes), [attributes]);
   const outputDefs = useMemo(() => buildAiOutputFieldDefs(attributes), [attributes]);
@@ -74,11 +72,6 @@ export function ProductAiEditor({
       cancelled = true;
     };
   }, [open]);
-
-  useEffect(() => {
-    if (!listRef.current) return;
-    listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [messages, sending]);
 
   const applyTemplate = (tpl) => {
     if (!tpl) {
@@ -153,9 +146,9 @@ export function ProductAiEditor({
       return;
     }
     const fillEmpty = fillEmptyOnly && !instructionAllowsOverwrite(instruction);
-    setMessages((prev) => [...prev, { role: 'user', content: instruction }]);
     setSending(true);
     setError(null);
+    setStatusText('');
     setLastResult(null);
     try {
       const buildContext = (draft) => {
@@ -175,7 +168,9 @@ export function ProductAiEditor({
         if (!items.length) throw new Error('Нет сохранённых товаров для генерации');
         const allItems = [];
         for (let i = 0; i < items.length; i += MAX_BULK_AI_CARDS) {
-          setProgressText(`Карточка ${Math.min(i + MAX_BULK_AI_CARDS, items.length)} из ${items.length}…`);
+          setProgressText(
+            `Карточка ${Math.min(i + MAX_BULK_AI_CARDS, items.length)} из ${items.length}…`
+          );
           const chunk = items.slice(i, i + MAX_BULK_AI_CARDS).map((it) => ({
             productId: it.productId,
             sku: it.sku || '',
@@ -192,13 +187,13 @@ export function ProductAiEditor({
         const changed = allItems.filter((it) => it?.changes?.length);
         const fillBlocked = fillEmpty || allItems.some((it) => it?.fillEmptyOnlyApplied);
         const reply = changed.length
-          ? `Готово: изменения по ${changed.length} из ${items.length} товаров. Ниже превью по каждому — снимите галочку, если товар не подставлять.`
+          ? `Готово: изменения по ${changed.length} из ${items.length} товаров. Ниже превью — снимите галочку, если товар не подставлять.`
           : fillBlocked
             ? 'Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.'
-            : 'Модель не предложила изменений. Уточните запрос или проверьте, что в «Учитывать при генерации» есть нужные данные.';
+            : 'Модель не предложила изменений. Уточните промпт или проверьте «Учитывать при генерации».';
         setSkipIds(new Set());
         setLastResult({ bulk: true, items: allItems, total: items.length });
-        setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
+        setStatusText(reply);
       } else {
         const ctx = typeof getDraft === 'function' ? getDraft() : {};
         const data = await aiApi.proposeAttributeEditor({
@@ -209,12 +204,12 @@ export function ProductAiEditor({
           fillEmptyOnly: fillEmpty,
         });
         const reply = data?.changes?.length
-          ? `${data.comment ? `${data.comment}\n\n` : ''}${formatAttrEditorChangesPreview(data.changes)}`
+          ? data.comment || 'Готово. Проверьте результат ниже и нажмите «Подставить».'
           : data?.fillEmptyOnlyApplied || fillEmpty
             ? 'Изменения не приняты: выбранные поля уже заполнены, а включено «Только пустые». Снимите галочку или явно попросите переписать/удалить/заменить.'
-            : 'Модель не предложила изменений. Уточните запрос или проверьте, что в «Учитывать при генерации» есть нужные данные.';
+            : 'Модель не предложила изменений. Уточните промпт или проверьте «Учитывать при генерации».';
         setLastResult({ bulk: false, data });
-        setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
+        setStatusText(reply);
       }
     } catch (err) {
       setError(getApiErrorMessage(err, 'Не удалось получить ответ GigaChat'));
@@ -240,14 +235,17 @@ export function ProductAiEditor({
   const bulkChangedItems = lastResult?.bulk
     ? (lastResult.items || []).filter((it) => it?.changes?.length)
     : [];
+  const singleChanges = !lastResult?.bulk && lastResult?.data?.changes?.length
+    ? lastResult.data.changes
+    : [];
   const bulkApplyCount = bulkChangedItems.filter((it) => !skipIds.has(String(it.productId))).length;
 
   const canApply = lastResult?.bulk
     ? bulkApplyCount > 0
     : !!(lastResult?.data?.changes?.length);
 
-  const toggleSkip = (productId) => {
-    const id = String(productId);
+  const toggleSkip = (pid) => {
+    const id = String(pid);
     setSkipIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -340,39 +338,72 @@ export function ProductAiEditor({
               placeholder="Выберите поля-источники"
             />
           </div>
-            <label className="product-desc-ai-chat__check">
-              <input
-                type="checkbox"
-                checked={fillEmptyOnly}
-                onChange={(e) => setFillEmptyOnly(e.target.checked)}
-                disabled={sending}
-              />
-              Только пустые — не переписывать уже заполненное
-            </label>
-            {fillEmptyOnly ? (
-              <p className="product-ai-editor__hint">
-                Чтобы менять уже заполненные поля (OEM, описание и т.п.), снимите галочку
-                или напишите «перепиши / удали / замени…».
-              </p>
-            ) : null}
+          <label className="product-desc-ai-chat__check">
+            <input
+              type="checkbox"
+              checked={fillEmptyOnly}
+              onChange={(e) => setFillEmptyOnly(e.target.checked)}
+              disabled={sending}
+            />
+            Только пустые — не переписывать уже заполненное
+          </label>
+          {fillEmptyOnly ? (
+            <p className="product-ai-editor__hint">
+              Чтобы менять уже заполненные поля (OEM, описание и т.п.), снимите галочку
+              или напишите «перепиши / удали / замени…».
+            </p>
+          ) : null}
 
-          <div className="product-desc-ai-chat__messages" ref={listRef}>
-            {messages.length === 0 ? (
-              <p className="product-ai-editor__hint">
-                Настройте поля или выберите шаблон, напишите промпт и нажмите «Сгенерировать».
-              </p>
-            ) : null}
-            {messages.map((msg, idx) => (
-              <div key={`${msg.role}-${idx}`} className={`product-desc-ai-chat__msg product-desc-ai-chat__msg--${msg.role}`}>
-                {msg.content}
-              </div>
-            ))}
-            {sending ? (
-              <div className="product-desc-ai-chat__msg product-desc-ai-chat__msg--assistant">
-                {progressText || 'Готовлю текст…'}
-              </div>
+          <div className="product-ai-editor__section">
+            <p className="product-ai-editor__label">Промпт</p>
+            <textarea
+              className="product-desc-ai-chat__input"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Как заполнить выбранные поля…"
+              disabled={sending}
+              rows={4}
+            />
+          </div>
+
+          <div className="product-desc-ai-chat__actions">
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              disabled={sending || !prompt.trim()}
+              onClick={() => send()}
+            >
+              {sending ? progressText || 'Генерация…' : 'Сгенерировать'}
+            </Button>
+            {canApply ? (
+              <Button type="button" variant="secondary" size="small" onClick={applyLast} disabled={sending}>
+                {lastResult?.bulk
+                  ? `Подставить в таблицу (${bulkApplyCount})`
+                  : 'Подставить результат'}
+              </Button>
             ) : null}
           </div>
+
+          {error ? <div className="product-desc-ai-chat__error">{error}</div> : null}
+          {statusText && !error ? (
+            <p className={`product-ai-editor__status${canApply ? ' is-ok' : ''}`}>{statusText}</p>
+          ) : null}
+
+          {singleChanges.length ? (
+            <div className="product-ai-editor__results">
+              <p className="product-ai-editor__label">Результат</p>
+              <div className="product-ai-editor__results-list">
+                {singleChanges.map((c) => (
+                  <div key={c.field} className="product-ai-editor__result-field">
+                    <span>{c.label || c.field}</span>
+                    <pre>{String(c.to || '')}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {bulkChangedItems.length ? (
             <div className="product-ai-editor__results">
               <p className="product-ai-editor__label">
@@ -408,28 +439,7 @@ export function ProductAiEditor({
               </div>
             </div>
           ) : null}
-          {error ? <div className="product-desc-ai-chat__error">{error}</div> : null}
 
-          <textarea
-            className="product-desc-ai-chat__input"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Промпт: как заполнить выбранные поля…"
-            disabled={sending}
-            rows={4}
-          />
-          <div className="product-desc-ai-chat__actions">
-            <Button type="button" variant="primary" size="small" disabled={sending || !prompt.trim()} onClick={() => send()}>
-              Сгенерировать
-            </Button>
-            {canApply ? (
-              <Button type="button" variant="secondary" size="small" onClick={applyLast} disabled={sending}>
-                {lastResult?.bulk
-                  ? `Подставить в таблицу (${bulkApplyCount})`
-                  : 'Подставить результат'}
-              </Button>
-            ) : null}
-          </div>
           <p className="product-desc-ai-chat__apply-hint">
             {isBulk
               ? 'Превью по каждому товару — в списке выше. «Подставить» пишет в ячейки таблицы. В ERP и на МП — только после «Сохранить».'
