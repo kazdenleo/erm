@@ -7,6 +7,7 @@ import { Button } from '../../components/common/Button/Button';
 import { useBrands } from '../../hooks/useBrands';
 import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
+import { productAttributesApi } from '../../services/productAttributes.api.js';
 import { productsApi } from '../../services/products.api.js';
 import { pickSingleEntityId } from '../../utils/stockDestinationDefaults.js';
 
@@ -23,6 +24,13 @@ const EMPTY_MAPPING = {
   applicability: '',
   analogs: '',
 };
+
+function normCol(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
 
 function ColumnSelect({ label, value, columns, onChange, emptyLabel = '—' }) {
   return (
@@ -42,6 +50,19 @@ function ColumnSelect({ label, value, columns, onChange, emptyLabel = '—' }) {
       </select>
     </label>
   );
+}
+
+function suggestAttributeMappings(columns, attrs) {
+  const out = {};
+  const cols = Array.isArray(columns) ? columns : [];
+  for (const attr of attrs || []) {
+    if (!attr?.id || !attr?.name) continue;
+    const want = normCol(attr.name);
+    if (!want) continue;
+    const hit = cols.find((c) => normCol(c) === want);
+    if (hit) out[String(attr.id)] = hit;
+  }
+  return out;
 }
 
 export function CatalogBundleImportPanel() {
@@ -68,7 +89,7 @@ export function CatalogBundleImportPanel() {
   const [columns, setColumns] = useState([]);
   const [mapping, setMapping] = useState(() => ({ ...EMPTY_MAPPING }));
   const [attributeMappings, setAttributeMappings] = useState({});
-  const [attributes, setAttributes] = useState([]);
+  const [allAttributes, setAllAttributes] = useState([]);
   const [rows, setRows] = useState([]);
   const [defaults, setDefaults] = useState({
     categoryId: '',
@@ -80,18 +101,59 @@ export function CatalogBundleImportPanel() {
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
 
-  const mappableAttributes = useMemo(
-    () =>
-      (attributes || []).filter((a) => {
-        if (!a?.id || !a?.name) return false;
-        if (a.systemKey) return false;
-        const n = String(a.name).trim().toLowerCase();
-        // Эти уже есть отдельными полями маппинга
-        if (n === 'применимость' || n === 'аналоги') return false;
-        return true;
-      }),
-    [attributes]
+  useEffect(() => {
+    let cancelled = false;
+    productAttributesApi
+      .getAll()
+      .then((res) => {
+        if (cancelled) return;
+        const list = res?.data ?? (Array.isArray(res) ? res : []);
+        setAllAttributes(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllAttributes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedCategory = useMemo(() => {
+    const cid = String(defaults.categoryId || '');
+    if (!cid) return null;
+    return (categories || []).find((c) => String(c.id) === cid) || null;
+  }, [categories, defaults.categoryId]);
+
+  const mappableAttributes = useMemo(() => {
+    const ids = new Set((selectedCategory?.attribute_ids || []).map((x) => String(x)));
+    if (!ids.size) return [];
+    return (allAttributes || []).filter((a) => {
+      if (!a?.id || !a?.name) return false;
+      if (!ids.has(String(a.id))) return false;
+      const systemKey = a.system_key ?? a.systemKey;
+      if (systemKey) return false;
+      const n = normCol(a.name);
+      // Эти уже есть отдельными полями маппинга
+      if (n === 'применимость' || n === 'аналоги') return false;
+      return true;
+    });
+  }, [allAttributes, selectedCategory]);
+
+  const mappableAttrKey = useMemo(
+    () => mappableAttributes.map((a) => String(a.id)).join(','),
+    [mappableAttributes]
   );
+
+  // При смене категории / набора атрибутов — подставить совпадения по имени столбцов
+  useEffect(() => {
+    if (!defaults.categoryId) {
+      setAttributeMappings({});
+      return;
+    }
+    setAttributeMappings(suggestAttributeMappings(columns, mappableAttributes));
+    // mappableAttributes намеренно через mappableAttrKey — не сбрасывать ручной выбор на каждый рендер
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaults.categoryId, columns, mappableAttrKey]);
 
   const selectedCount = useMemo(
     () => rows.filter((r) => r.selected && !r.productId && !r.skipped).length,
@@ -105,7 +167,6 @@ export function CatalogBundleImportPanel() {
     const suggested = data?.suggestedMapping || {};
     setSessionId(String(data?.sessionId || ''));
     setColumns(Array.isArray(data?.columns) ? data.columns : []);
-    setAttributes(Array.isArray(data?.attributes) ? data.attributes : []);
     setMapping({
       ...EMPTY_MAPPING,
       sku: suggested.sku || '',
@@ -116,11 +177,8 @@ export function CatalogBundleImportPanel() {
       applicability: suggested.applicability || '',
       analogs: suggested.analogs || '',
     });
-    setAttributeMappings(
-      data?.suggestedAttributeMappings && typeof data.suggestedAttributeMappings === 'object'
-        ? { ...data.suggestedAttributeMappings }
-        : {}
-    );
+    // Атрибуты появятся после выбора категории
+    setAttributeMappings({});
     const nextRows = (data?.rows || []).map((r) => ({
       ...r,
       key: rowKey(r),
@@ -381,33 +439,6 @@ export function CatalogBundleImportPanel() {
                 onChange={(v) => setMapping((m) => ({ ...m, country: v }))}
               />
             </div>
-            {mappableAttributes.length > 0 ? (
-              <>
-                <h3 className="h6 mt-3 mb-2">Атрибуты ERP</h3>
-                <p className="text-muted small mb-2">
-                  Сопоставьте столбцы Excel с атрибутами карточки. Совпадение по имени
-                  подставляется автоматически.
-                </p>
-                <div className="catalog-bundle-mapping-grid">
-                  {mappableAttributes.map((attr) => (
-                    <ColumnSelect
-                      key={attr.id}
-                      label={attr.name}
-                      value={attributeMappings[String(attr.id)] || ''}
-                      columns={columns}
-                      onChange={(v) =>
-                        setAttributeMappings((prev) => {
-                          const next = { ...prev };
-                          if (!v) delete next[String(attr.id)];
-                          else next[String(attr.id)] = v;
-                          return next;
-                        })
-                      }
-                    />
-                  ))}
-                </div>
-              </>
-            ) : null}
           </section>
 
           <section className="catalog-bundle-defaults mb-3">
@@ -479,6 +510,45 @@ export function CatalogBundleImportPanel() {
                 </span>
               </label>
             </div>
+          </section>
+
+          <section className="catalog-bundle-mapping mb-3">
+            <h2 className="h6 mb-2">Атрибуты категории</h2>
+            {!defaults.categoryId ? (
+              <p className="text-muted small mb-0">
+                Сначала выберите категорию — появятся её атрибуты для сопоставления со
+                столбцами Excel.
+              </p>
+            ) : mappableAttributes.length === 0 ? (
+              <p className="text-muted small mb-0">
+                У выбранной категории нет дополнительных атрибутов для сопоставления.
+              </p>
+            ) : (
+              <>
+                <p className="text-muted small mb-2">
+                  Сопоставьте столбцы Excel с атрибутами категории. Совпадение по имени
+                  подставляется автоматически.
+                </p>
+                <div className="catalog-bundle-mapping-grid">
+                  {mappableAttributes.map((attr) => (
+                    <ColumnSelect
+                      key={attr.id}
+                      label={attr.name}
+                      value={attributeMappings[String(attr.id)] || ''}
+                      columns={columns}
+                      onChange={(v) =>
+                        setAttributeMappings((prev) => {
+                          const next = { ...prev };
+                          if (!v) delete next[String(attr.id)];
+                          else next[String(attr.id)] = v;
+                          return next;
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </>
+            )}
           </section>
 
           <div className="product-enrichment-bulk-bar">
