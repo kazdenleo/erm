@@ -244,6 +244,14 @@ export function ProductAiEditor({
     }
   };
 
+  const clearResult = () => {
+    setLastResult(null);
+    setStatusText('');
+    setError(null);
+    setSkipIds(new Set());
+    setProgressText('');
+  };
+
   const applyLast = () => {
     if (!lastResult) return;
     if (lastResult.bulk) {
@@ -254,7 +262,8 @@ export function ProductAiEditor({
     } else if (lastResult.data?.proposed && Object.keys(lastResult.data.proposed).length) {
       onApply?.(lastResult.data.proposed);
     }
-    setOpen(false);
+    // После подстановки ответ ИИ в окне больше не нужен
+    clearResult();
   };
 
   const bulkChangedItems = lastResult?.bulk
@@ -406,6 +415,11 @@ export function ProductAiEditor({
                 {lastResult?.bulk
                   ? `Подставить в таблицу (${bulkApplyCount})`
                   : 'Подставить результат'}
+              </Button>
+            ) : null}
+            {lastResult || statusText || error ? (
+              <Button type="button" variant="secondary" size="small" onClick={clearResult} disabled={sending}>
+                Очистить результат
               </Button>
             ) : null}
           </div>
