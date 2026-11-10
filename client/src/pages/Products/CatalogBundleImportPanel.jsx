@@ -15,6 +15,36 @@ function rowKey(row) {
   return `${row.index}-${row.sku || ''}`;
 }
 
+const EMPTY_MAPPING = {
+  sku: '',
+  name: '',
+  brand: '',
+  description: '',
+  country: '',
+  applicability: '',
+  analogs: '',
+};
+
+function ColumnSelect({ label, value, columns, onChange, emptyLabel = '—' }) {
+  return (
+    <label className="small">
+      {label}
+      <select
+        className="form-control form-control-sm"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{emptyLabel}</option>
+        {(columns || []).map((c) => (
+          <option key={`${label}-${c}`} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 /**
  * Собрать ZIP из FileList выбора папки (webkitdirectory).
  * @param {FileList|File[]} fileList
@@ -77,16 +107,32 @@ export function CatalogBundleImportPanel() {
   const [uploadError, setUploadError] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [columns, setColumns] = useState([]);
-  const [mapping, setMapping] = useState({ sku: '', name: '', brand: '' });
+  const [mapping, setMapping] = useState(() => ({ ...EMPTY_MAPPING }));
+  const [attributeMappings, setAttributeMappings] = useState({});
+  const [attributes, setAttributes] = useState([]);
   const [rows, setRows] = useState([]);
   const [defaults, setDefaults] = useState({
     categoryId: '',
     organizationId: '',
     brandId: '',
+    countryOfOrigin: '',
   });
   const [creating, setCreating] = useState(false);
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
+
+  const mappableAttributes = useMemo(
+    () =>
+      (attributes || []).filter((a) => {
+        if (!a?.id || !a?.name) return false;
+        if (a.systemKey) return false;
+        const n = String(a.name).trim().toLowerCase();
+        // Эти уже есть отдельными полями маппинга
+        if (n === 'применимость' || n === 'аналоги') return false;
+        return true;
+      }),
+    [attributes]
+  );
 
   const selectedCount = useMemo(
     () => rows.filter((r) => r.selected && !r.productId && !r.skipped).length,
@@ -109,11 +155,22 @@ export function CatalogBundleImportPanel() {
       const suggested = data?.suggestedMapping || {};
       setSessionId(String(data?.sessionId || ''));
       setColumns(Array.isArray(data?.columns) ? data.columns : []);
+      setAttributes(Array.isArray(data?.attributes) ? data.attributes : []);
       setMapping({
+        ...EMPTY_MAPPING,
         sku: suggested.sku || '',
         name: suggested.name || '',
         brand: suggested.brand || '',
+        description: suggested.description || '',
+        country: suggested.country || '',
+        applicability: suggested.applicability || '',
+        analogs: suggested.analogs || '',
       });
+      setAttributeMappings(
+        data?.suggestedAttributeMappings && typeof data.suggestedAttributeMappings === 'object'
+          ? { ...data.suggestedAttributeMappings }
+          : {}
+      );
       const nextRows = (data?.rows || []).map((r) => ({
         ...r,
         key: rowKey(r),
@@ -204,11 +261,13 @@ export function CatalogBundleImportPanel() {
       const res = await productsApi.catalogBundleCreate({
         sessionId,
         mapping,
+        attributeMappings,
         defaults: {
           categoryId: defaults.categoryId,
           organizationId: defaults.organizationId,
           brandId: defaults.brandId || undefined,
           brand: brandName || undefined,
+          countryOfOrigin: defaults.countryOfOrigin || undefined,
         },
         selectedIndexes: selected.map((r) => r.index),
       });
@@ -313,52 +372,77 @@ export function CatalogBundleImportPanel() {
           <section className="catalog-bundle-mapping mb-3">
             <h2 className="h6 mb-2">Сопоставление колонок</h2>
             <div className="catalog-bundle-mapping-grid">
-              <label className="small">
-                Артикул
-                <select
-                  className="form-control form-control-sm"
-                  value={mapping.sku}
-                  onChange={(e) => setMapping((m) => ({ ...m, sku: e.target.value }))}
-                >
-                  <option value="">—</option>
-                  {columns.map((c) => (
-                    <option key={`sku-${c}`} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="small">
-                Название
-                <select
-                  className="form-control form-control-sm"
-                  value={mapping.name}
-                  onChange={(e) => setMapping((m) => ({ ...m, name: e.target.value }))}
-                >
-                  <option value="">— (или артикул)</option>
-                  {columns.map((c) => (
-                    <option key={`name-${c}`} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="small">
-                Бренд (колонка)
-                <select
-                  className="form-control form-control-sm"
-                  value={mapping.brand}
-                  onChange={(e) => setMapping((m) => ({ ...m, brand: e.target.value }))}
-                >
-                  <option value="">—</option>
-                  {columns.map((c) => (
-                    <option key={`brand-${c}`} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ColumnSelect
+                label="Артикул"
+                value={mapping.sku}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, sku: v }))}
+              />
+              <ColumnSelect
+                label="Название"
+                value={mapping.name}
+                columns={columns}
+                emptyLabel="— (или артикул)"
+                onChange={(v) => setMapping((m) => ({ ...m, name: v }))}
+              />
+              <ColumnSelect
+                label="Бренд (колонка)"
+                value={mapping.brand}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, brand: v }))}
+              />
+              <ColumnSelect
+                label="Описание"
+                value={mapping.description}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, description: v }))}
+              />
+              <ColumnSelect
+                label="Применимость"
+                value={mapping.applicability}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, applicability: v }))}
+              />
+              <ColumnSelect
+                label="Аналоги"
+                value={mapping.analogs}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, analogs: v }))}
+              />
+              <ColumnSelect
+                label="Страна (колонка)"
+                value={mapping.country}
+                columns={columns}
+                onChange={(v) => setMapping((m) => ({ ...m, country: v }))}
+              />
             </div>
+            {mappableAttributes.length > 0 ? (
+              <>
+                <h3 className="h6 mt-3 mb-2">Атрибуты ERP</h3>
+                <p className="text-muted small mb-2">
+                  Сопоставьте столбцы Excel с атрибутами карточки. Совпадение по имени
+                  подставляется автоматически.
+                </p>
+                <div className="catalog-bundle-mapping-grid">
+                  {mappableAttributes.map((attr) => (
+                    <ColumnSelect
+                      key={attr.id}
+                      label={attr.name}
+                      value={attributeMappings[String(attr.id)] || ''}
+                      columns={columns}
+                      onChange={(v) =>
+                        setAttributeMappings((prev) => {
+                          const next = { ...prev };
+                          if (!v) delete next[String(attr.id)];
+                          else next[String(attr.id)] = v;
+                          return next;
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </>
+            ) : null}
           </section>
 
           <section className="catalog-bundle-defaults mb-3">
@@ -412,6 +496,22 @@ export function CatalogBundleImportPanel() {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="small">
+                Страна производителя
+                <input
+                  type="text"
+                  className="form-control form-control-sm"
+                  value={defaults.countryOfOrigin}
+                  onChange={(e) =>
+                    setDefaults((d) => ({ ...d, countryOfOrigin: e.target.value }))
+                  }
+                  placeholder="Например: Китай"
+                  autoComplete="off"
+                />
+                <span className="text-muted" style={{ fontSize: 11 }}>
+                  Для всех товаров. Если есть колонка «Страна», она важнее.
+                </span>
               </label>
             </div>
           </section>

@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { isProfileProductEnrichmentEnabled } from '../utils/profileProductEnrichment.js';
 import { saveLocalImageBufferToProductFolder } from './productImagesImport.service.js';
@@ -92,26 +93,93 @@ function cellText(cell) {
   return String(v).trim();
 }
 
-function suggestMapping(columns) {
-  const mapping = { sku: '', name: '', brand: '', description: [] };
-  const skuHints = ['артикул', 'sku', 'article', 'арт', 'код', 'номер'];
-  const nameHints = ['название', 'name', 'title', 'наименование', 'товар'];
-  const brandHints = ['бренд', 'brand', 'марка'];
-  for (const col of columns) {
+function pickColumnByHints(columns, hints, { exactFirst = true } = {}) {
+  const list = Array.isArray(columns) ? columns : [];
+  if (exactFirst) {
+    for (const col of list) {
+      const n = normKey(col);
+      if (hints.some((h) => n === h)) return col;
+    }
+  }
+  for (const col of list) {
     const n = normKey(col);
-    if (!mapping.sku && skuHints.some((h) => n === h || n.includes(h))) mapping.sku = col;
-    else if (!mapping.name && nameHints.some((h) => n === h || n.includes(h))) mapping.name = col;
-    else if (!mapping.brand && brandHints.some((h) => n === h || n.includes(h))) mapping.brand = col;
+    if (hints.some((h) => n === h || n.includes(h))) return col;
   }
-  if (!mapping.sku) {
-    const hit = columns.find((c) => /артикул|sku|article/i.test(c));
-    if (hit) mapping.sku = hit;
+  return '';
+}
+
+function suggestMapping(columns) {
+  return {
+    sku: pickColumnByHints(columns, ['артикул', 'sku', 'article', 'арт']),
+    name: pickColumnByHints(columns, ['название', 'name', 'title', 'наименование']),
+    brand: pickColumnByHints(columns, ['бренд', 'brand', 'марка']),
+    description: pickColumnByHints(columns, ['описание', 'description', 'desc']),
+    country: pickColumnByHints(columns, [
+      'страна производителя',
+      'страна производства',
+      'страна',
+      'country',
+      'country of origin',
+    ]),
+    applicability: pickColumnByHints(columns, ['применимость', 'applicability', 'применяемость']),
+    analogs: pickColumnByHints(columns, ['аналоги', 'analogs', 'analogues', 'кроссы', 'cross']),
+  };
+}
+
+function mappedColumnSet(mapping = {}) {
+  return new Set(
+    ['sku', 'name', 'brand', 'description', 'country', 'applicability', 'analogs']
+      .map((k) => normKey(mapping[k]))
+      .filter(Boolean)
+  );
+}
+
+async function loadAttributeCatalog() {
+  try {
+    const result = await query(
+      `SELECT id, name, system_key
+       FROM product_attributes
+       ORDER BY name`
+    );
+    return (result.rows || []).map((r) => ({
+      id: String(r.id),
+      name: String(r.name || ''),
+      systemKey: r.system_key != null ? String(r.system_key) : null,
+    }));
+  } catch {
+    return [];
   }
-  if (!mapping.name) {
-    const hit = columns.find((c) => /назван|name|title/i.test(c));
-    if (hit) mapping.name = hit;
+}
+
+function suggestAttributeMappings(columns, attributes) {
+  const out = {};
+  const cols = Array.isArray(columns) ? columns : [];
+  for (const attr of attributes || []) {
+    if (attr.systemKey) continue; // системные поля карточки маппим отдельно
+    const want = normKey(attr.name);
+    if (!want) continue;
+    const hit = cols.find((c) => normKey(c) === want);
+    if (hit) out[String(attr.id)] = hit;
   }
-  return mapping;
+  return out;
+}
+
+async function ensureCategoryHasAttributes(categoryId, attrIds) {
+  const cid = categoryId != null && categoryId !== '' ? Number(categoryId) : NaN;
+  if (!Number.isFinite(cid)) return;
+  for (const attrId of attrIds || []) {
+    const aid = attrId != null && attrId !== '' ? Number(attrId) : NaN;
+    if (!Number.isFinite(aid)) continue;
+    try {
+      await query(
+        `INSERT INTO category_attributes (user_category_id, attribute_id)
+         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [cid, aid]
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function shouldSkipColumn(name) {
@@ -311,10 +379,12 @@ function resolveMappedValue(row, columnName) {
   return s;
 }
 
-function buildDescription(row, mapping, columns) {
-  const used = new Set(
-    [mapping.sku, mapping.name, mapping.brand].map((c) => normKey(c)).filter(Boolean)
-  );
+function buildDescription(row, mapping, columns, extraUsedCols = []) {
+  const used = mappedColumnSet(mapping);
+  for (const c of extraUsedCols || []) {
+    const n = normKey(c);
+    if (n) used.add(n);
+  }
   const parts = [];
   for (const col of columns) {
     if (used.has(normKey(col))) continue;
@@ -399,6 +469,8 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
 
   const folderIndex = buildFolderIndex(extractRoot);
   const suggestedMapping = suggestMapping(columns);
+  const attributes = await loadAttributeCatalog();
+  const suggestedAttributeMappings = suggestAttributeMappings(columns, attributes);
 
   const previewRows = rawRows.slice(0, MAX_PREVIEW_ROWS).map((row, index) => {
     const skuGuess =
@@ -433,6 +505,8 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
     expiresAt: Date.now() + SESSION_TTL_MS,
     columns,
     suggestedMapping,
+    suggestedAttributeMappings,
+    attributes,
     extractRel: 'files',
     rows: previewRows,
   };
@@ -442,6 +516,12 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
     sessionId,
     columns,
     suggestedMapping,
+    suggestedAttributeMappings,
+    attributes: attributes.map((a) => ({
+      id: a.id,
+      name: a.name,
+      systemKey: a.systemKey,
+    })),
     totalRows: previewRows.length,
     rows: previewRows.map(({ raw, imagePaths, ...rest }) => ({
       ...rest,
@@ -479,11 +559,20 @@ export async function createFromSession(opts = {}) {
     throw err;
   }
 
+  const baseMap = meta.suggestedMapping || {};
   const mapping = {
-    sku: opts.mapping?.sku || meta.suggestedMapping?.sku || '',
-    name: opts.mapping?.name || meta.suggestedMapping?.name || '',
-    brand: opts.mapping?.brand || meta.suggestedMapping?.brand || '',
+    sku: opts.mapping?.sku || baseMap.sku || '',
+    name: opts.mapping?.name || baseMap.name || '',
+    brand: opts.mapping?.brand || baseMap.brand || '',
+    description: opts.mapping?.description || baseMap.description || '',
+    country: opts.mapping?.country || baseMap.country || '',
+    applicability: opts.mapping?.applicability || baseMap.applicability || '',
+    analogs: opts.mapping?.analogs || baseMap.analogs || '',
   };
+  const attributeMappings =
+    opts.attributeMappings && typeof opts.attributeMappings === 'object'
+      ? opts.attributeMappings
+      : meta.suggestedAttributeMappings || {};
   const defaults = opts.defaults || {};
   const categoryId =
     defaults.categoryId != null && defaults.categoryId !== '' ? defaults.categoryId : null;
@@ -496,6 +585,16 @@ export async function createFromSession(opts = {}) {
     err.statusCode = 400;
     throw err;
   }
+  const attributes = Array.isArray(meta.attributes)
+    ? meta.attributes
+    : await loadAttributeCatalog();
+  const attrById = new Map(attributes.map((a) => [String(a.id), a]));
+  const attrByName = new Map(
+    attributes.map((a) => [normKey(a.name), a]).filter(([k]) => k)
+  );
+  const applicabilityAttr =
+    attrByName.get('применимость') || attrByName.get('applicability') || null;
+  const analogsAttr = attrByName.get('аналоги') || attrByName.get('analogs') || null;
 
   const extractRoot = path.join(sessionDir(sessionId), meta.extractRel || 'files');
   const folderIndex = buildFolderIndex(extractRoot);
@@ -564,7 +663,52 @@ export async function createFromSession(opts = {}) {
         continue;
       }
 
-      const description = buildDescription(raw, mapping, meta.columns || []);
+      const attrColsUsed = Object.values(attributeMappings || {}).filter(Boolean);
+      const mappedDescription = resolveMappedValue(raw, mapping.description);
+      const description =
+        mappedDescription ||
+        buildDescription(raw, mapping, meta.columns || [], attrColsUsed) ||
+        null;
+      const countryFromCol = resolveMappedValue(raw, mapping.country);
+      const countryDefault = String(defaults.countryOfOrigin || defaults.country_of_origin || '').trim();
+      const countryOfOrigin = countryFromCol || countryDefault || null;
+
+      const attributeValues = {};
+      const attrsToAttach = [];
+
+      const applicabilityText = resolveMappedValue(raw, mapping.applicability);
+      if (applicabilityText && applicabilityAttr?.id) {
+        attributeValues[String(applicabilityAttr.id)] = applicabilityText;
+        attrsToAttach.push(applicabilityAttr.id);
+      }
+      const analogsText = resolveMappedValue(raw, mapping.analogs);
+      if (analogsText && analogsAttr?.id) {
+        attributeValues[String(analogsAttr.id)] = analogsText;
+        attrsToAttach.push(analogsAttr.id);
+      }
+
+      for (const [attrId, colName] of Object.entries(attributeMappings || {})) {
+        const aid = String(attrId || '').trim();
+        if (!aid || !colName) continue;
+        // Не дублируем, если уже записали через спец-поля
+        if (
+          (applicabilityAttr && aid === String(applicabilityAttr.id) && mapping.applicability) ||
+          (analogsAttr && aid === String(analogsAttr.id) && mapping.analogs)
+        ) {
+          continue;
+        }
+        const attr = attrById.get(aid);
+        if (!attr || attr.systemKey) continue;
+        const val = resolveMappedValue(raw, colName);
+        if (!val) continue;
+        attributeValues[aid] = val;
+        attrsToAttach.push(aid);
+      }
+
+      if (attrsToAttach.length) {
+        await ensureCategoryHasAttributes(categoryId, attrsToAttach);
+      }
+
       const payload = {
         profileId: opts.profileId,
         name,
@@ -576,10 +720,14 @@ export async function createFromSession(opts = {}) {
             : undefined,
         categoryId,
         organizationId,
-        description: description || null,
+        description,
+        country_of_origin: countryOfOrigin,
       };
       if (payload.brand_id != null && !Number.isFinite(payload.brand_id)) {
         delete payload.brand_id;
+      }
+      if (Object.keys(attributeValues).length) {
+        payload.attribute_values = attributeValues;
       }
 
       const product = await productsService.create(payload);
