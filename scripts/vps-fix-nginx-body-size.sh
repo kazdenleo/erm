@@ -27,12 +27,12 @@ p = Path('/etc/nginx/sites-enabled/erm')
 text = p.read_text(encoding='utf-8')
 nl = '\r\n' if '\r\n' in text else '\n'
 if 'client_max_body_size' in text:
-    text2 = re.sub(r'client_max_body_size\s+\S+;', 'client_max_body_size 25m;', text, count=1)
+    text2 = re.sub(r'client_max_body_size\s+\S+;', 'client_max_body_size 512m;', text, count=1)
     if text2 != text:
         p.write_text(text2, encoding='utf-8', newline='')
-        print('updated client_max_body_size to 25m')
+        print('updated client_max_body_size to 512m')
     else:
-        print('already has client_max_body_size 25m')
+        print('already has client_max_body_size 512m')
     text = text2
 else:
     needle = f'server_name dttrade.ru www.dttrade.ru;{nl}'
@@ -46,15 +46,15 @@ else:
         needle
         + nl
         + f'    # erm-client-max-body-size{nl}'
-        + f'    client_max_body_size 25m;{nl}'
+        + f'    client_max_body_size 512m;{nl}'
     )
     text = text.replace(needle, insert, 1)
     p.write_text(text, encoding='utf-8', newline='')
-    print('inserted client_max_body_size 25m')
+    print('inserted client_max_body_size 512m')
 print('--- head ---')
 print('\n'.join(text.splitlines()[:12]))
 PY
 
 nginx -t
 systemctl reload nginx
-echo "nginx reloaded (client_max_body_size 25m)"
+echo "nginx reloaded (client_max_body_size 512m)"
