@@ -54,7 +54,7 @@ function isHttpUrl(s) {
  * @param {string} ext
  * @returns {Promise<{ buf: Buffer, ext: string }>}
  */
-async function normalizeImageBufferForStorage(buf, ext) {
+export async function normalizeImageBufferForStorage(buf, ext) {
   const e = String(ext || '').toLowerCase();
   if (e === '.jpg' || e === '.jpeg' || e === '.png') {
     return { buf, ext: e === '.jpeg' ? '.jpg' : e };
@@ -65,6 +65,36 @@ async function normalizeImageBufferForStorage(buf, ext) {
   } catch {
     return { buf, ext: e || '.jpg' };
   }
+}
+
+/**
+ * Сохранить локальный буфер изображения в uploads/products/{id}.
+ * @param {string|number} productId
+ * @param {Buffer} rawBuf
+ * @param {{ filename?: string, primary?: boolean, marketplaces?: object }} [opts]
+ */
+export async function saveLocalImageBufferToProductFolder(productId, rawBuf, opts = {}) {
+  if (!Buffer.isBuffer(rawBuf) || rawBuf.length === 0) return null;
+  if (rawBuf.length > MAX_BYTES) throw new Error('Файл слишком большой');
+  const sourceName = String(opts.filename || 'image.jpg');
+  let ext = path.extname(sourceName).toLowerCase() || '.jpg';
+  let buf = rawBuf;
+  ({ buf, ext } = await normalizeImageBufferForStorage(buf, ext));
+  const contentHash = crypto.createHash('sha256').update(buf).digest('hex');
+  const perceptualHash = await computeImagePerceptualHash(buf);
+  const rec = saveNormalizedImageToProductFolder(productId, sourceName, buf, ext, {
+    primary: opts.primary === true,
+    marketplaces: opts.marketplaces,
+    contentHash,
+    perceptualHash,
+  });
+  try {
+    const { attachImageSizeToRecord } = await import('./productImageAspect.service.js');
+    await attachImageSizeToRecord(rec, buf);
+  } catch {
+    /* ignore */
+  }
+  return rec;
 }
 
 /**

@@ -628,6 +628,25 @@ export const productsApi = {
     return response.data;
   },
 
+  /** Превью ZIP пачки парсера (Excel + папки фото) */
+  catalogBundlePreview: async (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    // Не задавать Content-Type вручную — иначе нет boundary; interceptor снимает json default для FormData
+    const response = await api.post('/products/enrichment/catalog-bundle', form, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
+  /** Создать товары из сессии импорта пачки парсера */
+  catalogBundleCreate: async (payload) => {
+    const response = await api.post('/products/enrichment/catalog-bundle/create', payload, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
   /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */

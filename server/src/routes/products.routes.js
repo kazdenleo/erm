@@ -10,7 +10,11 @@ import productCompetitorsController from '../controllers/productCompetitors.cont
 import productEnrichmentController from '../controllers/productEnrichment.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { requireAuth, requireProfileAdmin } from '../middleware/auth.js';
-import { createProductImageUpload, createProductExcelImportUpload } from '../middleware/uploads.js';
+import {
+  createProductImageUpload,
+  createProductExcelImportUpload,
+  createCatalogBundleZipUpload,
+} from '../middleware/uploads.js';
 import {
   validateCreateProduct,
   validateUpdateProduct,
@@ -20,6 +24,7 @@ import {
 const router = express.Router();
 const uploadProductImages = createProductImageUpload();
 const uploadProductExcel = createProductExcelImportUpload();
+const uploadCatalogBundleZip = createCatalogBundleZipUpload();
 
 // Принудительно обновить остатки и цены у поставщиков (должен быть ДО маршрута /:id)
 // POST /api/products/refresh-supplier-stocks?productId=123 (опционально)
@@ -44,6 +49,15 @@ router.post(
 router.post(
   '/enrichment/create',
   wrapAsync(productEnrichmentController.createFromEnrichment.bind(productEnrichmentController))
+);
+router.post(
+  '/enrichment/catalog-bundle',
+  uploadCatalogBundleZip.single('file'),
+  wrapAsync(productEnrichmentController.catalogBundlePreview.bind(productEnrichmentController))
+);
+router.post(
+  '/enrichment/catalog-bundle/create',
+  wrapAsync(productEnrichmentController.catalogBundleCreate.bind(productEnrichmentController))
 );
 
 // Обновить все товары (массовое обновление)

@@ -6,6 +6,55 @@
   padding: 1rem 1.25rem 1.5rem;
 }
 
+.product-enrichment-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  padding-bottom: 0;
+}
+
+.product-enrichment-tab {
+  border: none;
+  background: transparent;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.55);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.product-enrichment-tab.is-active {
+  color: rgba(0, 0, 0, 0.88);
+  border-bottom-color: #3f6ad8;
+}
+
+.product-enrichment-tab:hover {
+  color: rgba(0, 0, 0, 0.8);
+}
+
+.catalog-bundle-mapping-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  max-width: 720px;
+}
+
+.catalog-bundle-mapping-grid label {
+  display: block;
+  margin: 0;
+}
+
+.catalog-bundle-mapping-grid select {
+  margin-top: 4px;
+}
+
+.product-enrichment-table tr.is-skipped {
+  opacity: 0.72;
+}
+
 .product-enrichment-settings {
   margin-bottom: 1.25rem;
   padding: 12px 14px;

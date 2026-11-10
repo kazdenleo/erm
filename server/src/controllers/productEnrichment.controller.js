@@ -1,8 +1,9 @@
 /**
- * Обогащение карточек товаров (PartsAPI)
+ * Обогащение карточек товаров (PartsAPI) + импорт пачки парсера
  */
 
 import * as productEnrichmentService from '../services/productEnrichment.service.js';
+import * as catalogBundleImportService from '../services/catalogBundleImport.service.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 
 class ProductEnrichmentController {
@@ -99,6 +100,67 @@ class ProductEnrichmentController {
       res.json({ success: true, data });
     } catch (error) {
       console.error('[productEnrichment] createFromEnrichment:', error?.message || error, error?.stack);
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
+  async catalogBundlePreview(req, res, next) {
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const file = req.file;
+      if (!file?.buffer) {
+        return res.status(400).json({
+          success: false,
+          error: 'Загрузите ZIP-файл (поле file)',
+          message: 'Загрузите ZIP-файл (поле file)',
+        });
+      }
+      const data = await catalogBundleImportService.uploadAndPreview(file.buffer, { profileId });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error('[productEnrichment] catalogBundlePreview:', error?.message || error, error?.stack);
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    }
+  }
+
+  async catalogBundleCreate(req, res, next) {
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const sessionId = String(req.body?.sessionId || '').trim();
+      if (!sessionId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Нужен sessionId',
+          message: 'Нужен sessionId',
+        });
+      }
+      const data = await catalogBundleImportService.createFromSession({
+        sessionId,
+        profileId,
+        mapping: req.body?.mapping || {},
+        defaults: req.body?.defaults || {},
+        selectedIndexes: Array.isArray(req.body?.selectedIndexes)
+          ? req.body.selectedIndexes
+          : undefined,
+        selectedSkus: Array.isArray(req.body?.selectedSkus) ? req.body.selectedSkus : undefined,
+      });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error('[productEnrichment] catalogBundleCreate:', error?.message || error, error?.stack);
       if (error?.statusCode) {
         return res.status(error.statusCode).json({
           success: false,

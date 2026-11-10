@@ -71,6 +71,24 @@ export function createProductExcelImportUpload() {
   });
 }
 
+/** ZIP пачки парсера (Excel + папки фото) для раздела Обогащение */
+export function createCatalogBundleZipUpload() {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 512 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+      const n = String(file?.originalname || '').toLowerCase();
+      const mime = String(file?.mimetype || '').toLowerCase();
+      const ok =
+        n.endsWith('.zip') ||
+        mime === 'application/zip' ||
+        mime === 'application/x-zip-compressed' ||
+        mime === 'application/octet-stream';
+      cb(ok ? null : new Error('Нужен ZIP-архив (.zip)'), ok);
+    },
+  });
+}
+
 export function createCertificatePhotoUpload() {
   const storage = multer.diskStorage({
     destination: (req, _file, cb) => {

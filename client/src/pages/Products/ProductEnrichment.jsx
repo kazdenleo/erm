@@ -28,6 +28,7 @@ import {
   partsIndexKeysFromProfile,
 } from '../../constants/partsindexKeys.js';
 import { pickSingleEntityId } from '../../utils/stockDestinationDefaults.js';
+import { CatalogBundleImportPanel } from './CatalogBundleImportPanel.jsx';
 import './ProductEnrichment.css';
 
 const FILLABLE_COLUMNS = {
@@ -210,6 +211,7 @@ export function ProductEnrichment() {
   const [creating, setCreating] = useState(false);
   const [createMessage, setCreateMessage] = useState('');
   const [createError, setCreateError] = useState('');
+  const [activeTab, setActiveTab] = useState('partsindex'); // partsindex | parser
 
   const skuCount = skuList.length;
   const selectedCount = useMemo(
@@ -563,7 +565,11 @@ export function ProductEnrichment() {
         iconClass="pe-7s-magic-wand"
         iconBgClass="bg-mean-fruit"
         title="Обогащение"
-        subtitle="Список бренд + артикул → сбор из PartsIndex → создание карточек в каталоге."
+        subtitle={
+          activeTab === 'parser'
+            ? 'ZIP из парсера (Excel + папки фото) → создание карточек в каталоге.'
+            : 'Список бренд + артикул → сбор из PartsIndex → создание карточек в каталоге.'
+        }
         actions={
           <>
             <Button
@@ -575,20 +581,55 @@ export function ProductEnrichment() {
             >
               К списку товаров
             </Button>
-            <Button
-              type="button"
-              className="btn-shadow"
-              variant="secondary"
-              size="small"
-              onClick={() => setSettingsOpen((v) => !v)}
-            >
-              {settingsOpen ? 'Скрыть настройки' : 'Настройки'}
-            </Button>
+            {activeTab === 'partsindex' ? (
+              <Button
+                type="button"
+                className="btn-shadow"
+                variant="secondary"
+                size="small"
+                onClick={() => setSettingsOpen((v) => !v)}
+              >
+                {settingsOpen ? 'Скрыть настройки' : 'Настройки'}
+              </Button>
+            ) : null}
           </>
         }
       />
 
       <div className="card product-enrichment-card">
+        <div className="product-enrichment-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'partsindex'}
+            className={
+              activeTab === 'partsindex'
+                ? 'product-enrichment-tab is-active'
+                : 'product-enrichment-tab'
+            }
+            onClick={() => setActiveTab('partsindex')}
+          >
+            PartsIndex
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'parser'}
+            className={
+              activeTab === 'parser'
+                ? 'product-enrichment-tab is-active'
+                : 'product-enrichment-tab'
+            }
+            onClick={() => setActiveTab('parser')}
+          >
+            Из парсера
+          </button>
+        </div>
+
+        {activeTab === 'parser' ? <CatalogBundleImportPanel /> : null}
+
+        {activeTab === 'partsindex' ? (
+          <>
         {settingsOpen && (
           <section className="product-enrichment-settings">
             <h2 className="h6 mb-1">API-ключ PartsIndex</h2>
@@ -1088,6 +1129,8 @@ export function ProductEnrichment() {
             )}
           </section>
         )}
+          </>
+        ) : null}
       </div>
 
       <Modal
