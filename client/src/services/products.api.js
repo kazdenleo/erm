@@ -639,6 +639,26 @@ export const productsApi = {
     return response.data;
   },
 
+  /** Превью папки парсера: файлы + относительные пути (без ZIP в браузере) */
+  catalogBundlePreviewFolder: async (fileList) => {
+    const files = Array.from(fileList || []);
+    const form = new FormData();
+    for (const file of files) {
+      const rel = String(file.webkitRelativePath || file.name || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '');
+      if (!rel || rel.endsWith('/')) continue;
+      if (/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(rel)) continue;
+      if (rel.split('/').some((p) => p === '.' || p === '..')) continue;
+      form.append('files', file);
+      form.append('paths', rel);
+    }
+    const response = await api.post('/products/enrichment/catalog-bundle/folder', form, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
   /** Создать товары из сессии импорта пачки парсера */
   catalogBundleCreate: async (payload) => {
     const response = await api.post('/products/enrichment/catalog-bundle/create', payload, {

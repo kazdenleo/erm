@@ -89,6 +89,33 @@ export function createCatalogBundleZipUpload() {
   });
 }
 
+/** Файлы выбранной папки парсера (xlsx + фото) — на диск, без ZIP в браузере */
+export function createCatalogBundleFolderUpload() {
+  const stagingRoot = path.resolve(__dirname, '../../uploads/tmp/catalog-import-incoming');
+  ensureDirSync(stagingRoot);
+  const storage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      if (!req._catalogIncomingDir) {
+        const id = crypto.randomUUID
+          ? crypto.randomUUID()
+          : crypto.randomBytes(8).toString('hex');
+        req._catalogIncomingDir = path.join(stagingRoot, id);
+        ensureDirSync(req._catalogIncomingDir);
+      }
+      cb(null, req._catalogIncomingDir);
+    },
+    filename: (req, _file, cb) => {
+      const idx = Number(req._catalogFileCount || 0);
+      req._catalogFileCount = idx + 1;
+      cb(null, String(idx));
+    },
+  });
+  return multer({
+    storage,
+    limits: { fileSize: 40 * 1024 * 1024, files: 20000 },
+  });
+}
+
 export function createCertificatePhotoUpload() {
   const storage = multer.diskStorage({
     destination: (req, _file, cb) => {

@@ -3,7 +3,6 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import JSZip from 'jszip';
 import { Button } from '../../components/common/Button/Button';
 import { useBrands } from '../../hooks/useBrands';
 import { useCategories } from '../../hooks/useCategories';
@@ -43,46 +42,6 @@ function ColumnSelect({ label, value, columns, onChange, emptyLabel = '—' }) {
       </select>
     </label>
   );
-}
-
-/**
- * Собрать ZIP из FileList выбора папки (webkitdirectory).
- * @param {FileList|File[]} fileList
- * @returns {Promise<File>}
- */
-async function zipFromFolderFiles(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) {
-    throw new Error('Папка пустая');
-  }
-  const zip = new JSZip();
-  let added = 0;
-  for (const file of files) {
-    const rel = String(file.webkitRelativePath || file.name || '')
-      .replace(/\\/g, '/')
-      .replace(/^\/+/, '');
-    if (!rel || rel.endsWith('/')) continue;
-    // пропускаем служебные файлы ОС
-    if (/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(rel)) continue;
-    if (rel.split('/').some((p) => p === '.' || p === '..')) continue;
-    const buf = await file.arrayBuffer();
-    zip.file(rel, buf);
-    added += 1;
-  }
-  if (!added) {
-    throw new Error('В папке нет файлов для импорта');
-  }
-  const blob = await zip.generateAsync({
-    type: 'blob',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  });
-  const rootName =
-    String(files[0]?.webkitRelativePath || 'catalog')
-      .split(/[/\\]/)[0]
-      .replace(/[^\w\-А-Яа-яЁё .]+/g, '_')
-      .trim() || 'catalog';
-  return new File([blob], `${rootName}.zip`, { type: 'application/zip' });
 }
 
 export function CatalogBundleImportPanel() {
@@ -142,7 +101,47 @@ export function CatalogBundleImportPanel() {
   const allSelected =
     selectable.length > 0 && selectable.every((r) => r.selected);
 
-  const applyPreview = async (file) => {
+  const applyPreviewData = (data) => {
+    const suggested = data?.suggestedMapping || {};
+    setSessionId(String(data?.sessionId || ''));
+    setColumns(Array.isArray(data?.columns) ? data.columns : []);
+    setAttributes(Array.isArray(data?.attributes) ? data.attributes : []);
+    setMapping({
+      ...EMPTY_MAPPING,
+      sku: suggested.sku || '',
+      name: suggested.name || '',
+      brand: suggested.brand || '',
+      description: suggested.description || '',
+      country: suggested.country || '',
+      applicability: suggested.applicability || '',
+      analogs: suggested.analogs || '',
+    });
+    setAttributeMappings(
+      data?.suggestedAttributeMappings && typeof data.suggestedAttributeMappings === 'object'
+        ? { ...data.suggestedAttributeMappings }
+        : {}
+    );
+    const nextRows = (data?.rows || []).map((r) => ({
+      ...r,
+      key: rowKey(r),
+      selected: true,
+      productId: null,
+      skipped: false,
+      createStatus: '',
+      createError: '',
+      imagesAdded: null,
+    }));
+    setRows(nextRows);
+    setDefaults((d) => ({
+      ...d,
+      organizationId: d.organizationId || singleOrganizationId || '',
+    }));
+  };
+
+  const onPickZip = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
     setUploading(true);
     setUploadError('');
     setCreateMessage('');
@@ -151,41 +150,7 @@ export function CatalogBundleImportPanel() {
     setSessionId('');
     try {
       const res = await productsApi.catalogBundlePreview(file);
-      const data = res?.data ?? res;
-      const suggested = data?.suggestedMapping || {};
-      setSessionId(String(data?.sessionId || ''));
-      setColumns(Array.isArray(data?.columns) ? data.columns : []);
-      setAttributes(Array.isArray(data?.attributes) ? data.attributes : []);
-      setMapping({
-        ...EMPTY_MAPPING,
-        sku: suggested.sku || '',
-        name: suggested.name || '',
-        brand: suggested.brand || '',
-        description: suggested.description || '',
-        country: suggested.country || '',
-        applicability: suggested.applicability || '',
-        analogs: suggested.analogs || '',
-      });
-      setAttributeMappings(
-        data?.suggestedAttributeMappings && typeof data.suggestedAttributeMappings === 'object'
-          ? { ...data.suggestedAttributeMappings }
-          : {}
-      );
-      const nextRows = (data?.rows || []).map((r) => ({
-        ...r,
-        key: rowKey(r),
-        selected: true,
-        productId: null,
-        skipped: false,
-        createStatus: '',
-        createError: '',
-        imagesAdded: null,
-      }));
-      setRows(nextRows);
-      setDefaults((d) => ({
-        ...d,
-        organizationId: d.organizationId || singleOrganizationId || '',
-      }));
+      applyPreviewData(res?.data ?? res);
     } catch (err) {
       setUploadError(
         err?.response?.data?.message || err?.message || 'Не удалось разобрать данные'
@@ -193,13 +158,6 @@ export function CatalogBundleImportPanel() {
     } finally {
       setUploading(false);
     }
-  };
-
-  const onPickZip = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    await applyPreview(file);
   };
 
   const onPickFolder = async (e) => {
@@ -210,12 +168,17 @@ export function CatalogBundleImportPanel() {
     setUploadError('');
     setCreateMessage('');
     setCreateError('');
+    setRows([]);
+    setSessionId('');
     try {
-      const zipFile = await zipFromFolderFiles(list);
-      await applyPreview(zipFile);
+      const res = await productsApi.catalogBundlePreviewFolder(list);
+      applyPreviewData(res?.data ?? res);
     } catch (err) {
+      setUploadError(
+        err?.response?.data?.message || err?.message || 'Не удалось загрузить папку'
+      );
+    } finally {
       setUploading(false);
-      setUploadError(err?.message || 'Не удалось упаковать папку');
     }
   };
 

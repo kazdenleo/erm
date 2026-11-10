@@ -14,6 +14,7 @@ import {
   createProductImageUpload,
   createProductExcelImportUpload,
   createCatalogBundleZipUpload,
+  createCatalogBundleFolderUpload,
 } from '../middleware/uploads.js';
 import {
   validateCreateProduct,
@@ -25,6 +26,7 @@ const router = express.Router();
 const uploadProductImages = createProductImageUpload();
 const uploadProductExcel = createProductExcelImportUpload();
 const uploadCatalogBundleZip = createCatalogBundleZipUpload();
+const uploadCatalogBundleFolder = createCatalogBundleFolderUpload();
 
 // Принудительно обновить остатки и цены у поставщиков (должен быть ДО маршрута /:id)
 // POST /api/products/refresh-supplier-stocks?productId=123 (опционально)
@@ -54,6 +56,13 @@ router.post(
   '/enrichment/catalog-bundle',
   uploadCatalogBundleZip.single('file'),
   wrapAsync(productEnrichmentController.catalogBundlePreview.bind(productEnrichmentController))
+);
+router.post(
+  '/enrichment/catalog-bundle/folder',
+  uploadCatalogBundleFolder.array('files', 20000),
+  wrapAsync(
+    productEnrichmentController.catalogBundleFolderPreview.bind(productEnrichmentController)
+  )
 );
 router.post(
   '/enrichment/catalog-bundle/create',

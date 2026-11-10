@@ -137,6 +137,76 @@ class ProductEnrichmentController {
     }
   }
 
+  async catalogBundleFolderPreview(req, res, next) {
+    const incomingDir = req._catalogIncomingDir;
+    try {
+      const profileId = await resolveEffectiveProfileId(req, req.user);
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (!files.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Выберите папку с Excel и фото',
+          message: 'Выберите папку с Excel и фото',
+        });
+      }
+      const pathsRaw = req.body?.paths;
+      const paths = Array.isArray(pathsRaw)
+        ? pathsRaw
+        : pathsRaw != null && pathsRaw !== ''
+          ? [pathsRaw]
+          : [];
+      if (paths.length !== files.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Не совпали список файлов и путей папки',
+          message: 'Не совпали список файлов и путей папки',
+        });
+      }
+      const byIdx = new Map();
+      for (const f of files) {
+        const idx = Number(f.filename);
+        if (Number.isFinite(idx)) byIdx.set(idx, f);
+      }
+      const diskFiles = [];
+      for (let i = 0; i < paths.length; i++) {
+        const f = byIdx.get(i) || files[i];
+        if (!f?.path) continue;
+        diskFiles.push({
+          path: f.path,
+          relativePath: String(paths[i] || f.originalname || ''),
+        });
+      }
+      const data = await catalogBundleImportService.uploadAndPreviewFromFolderFiles(diskFiles, {
+        profileId,
+      });
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error(
+        '[productEnrichment] catalogBundleFolderPreview:',
+        error?.message || error,
+        error?.stack
+      );
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+          message: error.message,
+        });
+      }
+      next(error);
+    } finally {
+      // подчистить staging, если сервис не забрал файлы
+      if (incomingDir) {
+        try {
+          const fs = await import('fs');
+          fs.rmSync(incomingDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   async catalogBundleCreate(req, res, next) {
     try {
       const profileId = await resolveEffectiveProfileId(req, req.user);

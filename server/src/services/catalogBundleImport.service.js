@@ -467,6 +467,105 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
     fs.writeFileSync(abs, data);
   }
 
+  return finalizePreviewSession({
+    sessionId,
+    profileId: opts.profileId,
+    extractRoot,
+    columns,
+    rawRows,
+  });
+}
+
+/**
+ * Превью из уже выбранной папки: список файлов на диске + относительные пути.
+ * @param {Array<{ path: string, relativePath: string }>} diskFiles
+ * @param {{ profileId: number|string }} opts
+ */
+export async function uploadAndPreviewFromFolderFiles(diskFiles, opts = {}) {
+  cleanupExpiredCatalogImportSessions();
+  await ensureEnrichmentAllowed(opts.profileId);
+
+  const list = Array.isArray(diskFiles) ? diskFiles : [];
+  if (!list.length) {
+    const err = new Error('Папка пустая');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const relPaths = list.map((f) =>
+    String(f.relativePath || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+  );
+  const rootPrefix = detectCommonRoot(relPaths.filter(Boolean));
+  const stripRoot = (parts) => (rootPrefix.length ? parts.slice(rootPrefix.length) : parts);
+
+  const xlsxIdx = [];
+  for (let i = 0; i < list.length; i++) {
+    const parts = stripRoot(zipPathParts(relPaths[i]));
+    if (parts.length === 1 && parts[0].toLowerCase().endsWith('.xlsx')) {
+      xlsxIdx.push(i);
+    }
+  }
+  if (!xlsxIdx.length) {
+    const err = new Error(
+      'В папке нет .xlsx в корне (рядом с папками артикулов). Выберите папку, где лежит Excel и подпапки с фото.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  xlsxIdx.sort((a, b) => relPaths[a].localeCompare(relPaths[b], 'ru'));
+  const xlsxFile = list[xlsxIdx[0]];
+  const xlsxBuf = fs.readFileSync(xlsxFile.path);
+  const { columns, rows: rawRows } = await parseWorkbookBuffer(xlsxBuf);
+  if (!rawRows.length) {
+    const err = new Error('В Excel нет строк с данными');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const extractRoot = path.join(sessionDir(sessionId), 'files');
+  ensureDirSync(extractRoot);
+
+  for (let i = 0; i < list.length; i++) {
+    const parts = stripRoot(zipPathParts(relPaths[i]));
+    if (!parts.length) continue;
+    if (parts.some((p) => p === '..' || p.includes('\0'))) continue;
+    const abs = path.join(extractRoot, ...parts);
+    ensureDirSync(path.dirname(abs));
+    try {
+      fs.copyFileSync(list[i].path, abs);
+    } catch {
+      try {
+        fs.renameSync(list[i].path, abs);
+      } catch (e) {
+        const err = new Error(`Не удалось сохранить файл: ${relPaths[i]}`);
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+  }
+
+  // подчистить temp multer-файлы, если остались
+  for (const f of list) {
+    try {
+      if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return finalizePreviewSession({
+    sessionId,
+    profileId: opts.profileId,
+    extractRoot,
+    columns,
+    rawRows,
+  });
+}
+
+async function finalizePreviewSession({ sessionId, profileId, extractRoot, columns, rawRows }) {
   const folderIndex = buildFolderIndex(extractRoot);
   const suggestedMapping = suggestMapping(columns);
   const attributes = await loadAttributeCatalog();
@@ -479,7 +578,9 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
       '';
     const sku = String(skuGuess || '').trim();
     const folder = sku ? folderIndex.get(skuKey(sku)) : null;
-    const imagePaths = folder ? listImageFilesInDir(folder).map((p) => path.relative(extractRoot, p)) : [];
+    const imagePaths = folder
+      ? listImageFilesInDir(folder).map((p) => path.relative(extractRoot, p))
+      : [];
     const warnings = [];
     if (!sku) warnings.push('Нет артикула');
     if (sku && !folder) warnings.push('Нет папки с фото');
@@ -500,7 +601,7 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
 
   const meta = {
     sessionId,
-    profileId: Number(opts.profileId),
+    profileId: Number(profileId),
     createdAt: Date.now(),
     expiresAt: Date.now() + SESSION_TTL_MS,
     columns,
@@ -525,7 +626,6 @@ export async function uploadAndPreview(zipBuffer, opts = {}) {
     totalRows: previewRows.length,
     rows: previewRows.map(({ raw, imagePaths, ...rest }) => ({
       ...rest,
-      // keep relative paths for create; UI can ignore
       imagePaths,
     })),
   };
@@ -790,6 +890,7 @@ export async function createFromSession(opts = {}) {
 
 export default {
   uploadAndPreview,
+  uploadAndPreviewFromFolderFiles,
   createFromSession,
   cleanupExpiredCatalogImportSessions,
 };
